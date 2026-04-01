@@ -1,3 +1,6 @@
+if ((process.env.BOT_ENTRY || "welcome") !== "legacy") {
+  require("./welcome-bot.js");
+} else {
 require("dotenv").config();
 const fs = require("fs");
 const path = require("path");
@@ -2736,3 +2739,4 @@ ELO: ${rating.elo}
 });
 
 client.login(DISCORD_TOKEN);
+}
