@@ -19,6 +19,7 @@ const {
   TextInputBuilder,
   TextInputStyle,
   SlashCommandBuilder,
+  MessageFlags,
 } = require("discord.js");
 
 const DISCORD_TOKEN = String(process.env.DISCORD_TOKEN || "").trim();
@@ -78,6 +79,7 @@ function buildRuntimeConfig(fileConfig = {}) {
     channels: {
       welcomeChannelId: envText("WELCOME_CHANNEL_ID", fileConfig?.channels?.welcomeChannelId || ""),
       reviewChannelId: envText("REVIEW_CHANNEL_ID", fileConfig?.channels?.reviewChannelId || ""),
+      tierlistChannelId: envText("TIERLIST_CHANNEL_ID", fileConfig?.channels?.tierlistChannelId || ""),
       logChannelId: envText("LOG_CHANNEL_ID", fileConfig?.channels?.logChannelId || ""),
     },
     roles: {
@@ -165,6 +167,10 @@ function loadDb() {
         channelId: appConfig.channels.welcomeChannelId,
         messageId: "",
       },
+      tierlistBoard: {
+        channelId: appConfig.channels.tierlistChannelId || "",
+        messageId: "",
+      },
       generatedRoles: {
         characters: {},
         tiers: {},
@@ -177,6 +183,7 @@ function loadDb() {
   const db = loadJsonFile(DB_PATH, fallback);
   db.config ||= {};
   db.config.welcomePanel ||= { channelId: appConfig.channels.welcomeChannelId, messageId: "" };
+  db.config.tierlistBoard ||= { channelId: appConfig.channels.tierlistChannelId || "", messageId: "" };
   db.config.generatedRoles ||= { characters: {}, tiers: {} };
   db.profiles ||= {};
   db.submissions ||= {};
@@ -229,6 +236,25 @@ function killTierFor(kills) {
 
 function formatTierLabel(tier) {
   return appConfig.killTierLabels?.[String(tier)] || `Tier ${tier}`;
+}
+
+function ephemeralPayload(payload) {
+  return { ...payload, flags: MessageFlags.Ephemeral };
+}
+
+function getCharacterSelectValue(characterId) {
+  return `main_${String(characterId || "x").trim() || "x"}`;
+}
+
+function getCharacterIdFromSelectValue(value) {
+  return String(value || "").replace(/^main_/, "").trim();
+}
+
+function normalizeCharacterSelectLabel(label) {
+  const normalized = String(label || "").trim();
+  if (normalized.length >= 2) return normalized.slice(0, 100);
+  if (normalized.length === 1) return `${normalized} `;
+  return "??";
 }
 
 function getGeneratedRoleState() {
@@ -366,6 +392,15 @@ function buildTierlistEmbeds() {
   flushChunk();
 
   return { embeds, ephemeral: true };
+}
+
+function buildTierlistBoardPayload() {
+  const payload = buildTierlistEmbeds();
+  return {
+    content: "Текстовый тир-лист. Сообщение обновляется автоматически.",
+    embeds: payload.embeds.slice(0, 10),
+    components: [],
+  };
 }
 
 function sanitizeFileName(name, fallbackExt = "png") {
@@ -516,10 +551,55 @@ async function ensureManagedRoles(client) {
   return { characterRoles: createdCharacterRoles, tierRoles: createdTierRoles };
 }
 
+async function applyMainSelection(client, member, user, selectedCharacterIds, reason = "main character sync") {
+  void client;
+  const normalizedIds = [...new Set((selectedCharacterIds || []).map((value) => String(value || "").trim()).filter(Boolean))].slice(0, 2);
+  const selectedEntries = await syncManagedCharacterRoles(member, normalizedIds, reason);
+
+  const profile = getProfile(user.id);
+  profile.displayName = member.displayName || user.username;
+  profile.username = user.username;
+  profile.mainCharacterIds = selectedEntries.map((entry) => entry.id);
+  profile.mainCharacterLabels = selectedEntries.map((entry) => entry.label);
+  profile.characterRoleIds = selectedEntries.map((entry) => entry.roleId);
+  profile.updatedAt = nowIso();
+  saveDb();
+
+  return selectedEntries;
+}
+
+async function syncPendingSubmissionMainsForUser(client, userId, selectedEntries) {
+  const pending = getPendingSubmissionForUser(userId);
+  if (!pending) return false;
+
+  pending.mainCharacterIds = selectedEntries.map((entry) => entry.id);
+  pending.mainCharacterLabels = selectedEntries.map((entry) => entry.label);
+  pending.mainRoleIds = selectedEntries.map((entry) => entry.roleId);
+  saveDb();
+
+  const reviewMessage = await fetchReviewMessage(client, pending);
+  if (reviewMessage) {
+    await reviewMessage.edit({
+      embeds: [buildReviewEmbed(pending, "pending", [{ name: "Обновление", value: "Пользователь обновил мейнов", inline: false }])],
+      components: [buildReviewButtons(pending.id)],
+    }).catch(() => {});
+  }
+
+  return true;
+}
+
 function getWelcomePanelState() {
   db.config.welcomePanel ||= { channelId: appConfig.channels.welcomeChannelId, messageId: "" };
   if (!db.config.welcomePanel.channelId) db.config.welcomePanel.channelId = appConfig.channels.welcomeChannelId;
   return db.config.welcomePanel;
+}
+
+function getTierlistBoardState() {
+  db.config.tierlistBoard ||= { channelId: appConfig.channels.tierlistChannelId || "", messageId: "" };
+  if (!db.config.tierlistBoard.channelId && appConfig.channels.tierlistChannelId) {
+    db.config.tierlistBoard.channelId = appConfig.channels.tierlistChannelId;
+  }
+  return db.config.tierlistBoard;
 }
 
 function getProfile(userId) {
@@ -724,6 +804,10 @@ function buildWelcomeComponents() {
         .setLabel(appConfig.ui.getRoleButtonLabel || "Получить роль")
         .setStyle(ButtonStyle.Primary),
       new ButtonBuilder()
+        .setCustomId("onboard_quick_mains")
+        .setLabel("Быстро сменить мейнов")
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
         .setCustomId("onboard_tierlist")
         .setLabel(appConfig.ui.tierlistButtonLabel || "Текстовый тир-лист")
         .setStyle(ButtonStyle.Secondary)
@@ -731,18 +815,23 @@ function buildWelcomeComponents() {
   ];
 }
 
-function buildCharacterPickerPayload() {
+function buildCharacterPickerPayload(mode = "full") {
   const characterEntries = getCharacterEntries();
+  const isQuick = mode === "quick";
   const embed = new EmbedBuilder()
     .setTitle("Выбери мейнов")
-    .setDescription("Можно выбрать одного или двух персонажей. После выбора сразу откроется окно для точного количества kills.");
+    .setDescription(
+      isQuick
+        ? "Можно выбрать одного или двух персонажей. Этот режим быстро обновляет только мейнов и роли, без новой заявки по kills."
+        : "Можно выбрать одного или двух персонажей. После выбора сразу откроется окно для точного количества kills."
+    );
 
   const select = new StringSelectMenuBuilder()
-    .setCustomId("onboard_pick_characters")
+    .setCustomId(isQuick ? "onboard_pick_characters_quick" : "onboard_pick_characters")
     .setPlaceholder("Выбери 1 или 2 мейнов")
     .setMinValues(1)
     .setMaxValues(2)
-    .addOptions(characterEntries.map((entry) => ({ label: entry.label, value: entry.id })));
+    .addOptions(characterEntries.map((entry) => ({ label: normalizeCharacterSelectLabel(entry.label), value: getCharacterSelectValue(entry.id) })));
 
   return {
     embeds: [embed],
@@ -752,7 +841,7 @@ function buildCharacterPickerPayload() {
         new ButtonBuilder().setCustomId("onboard_cancel").setLabel("Отмена").setStyle(ButtonStyle.Secondary)
       ),
     ],
-    ephemeral: true,
+    flags: MessageFlags.Ephemeral,
   };
 }
 
@@ -810,6 +899,47 @@ async function ensureWelcomePanel(client) {
 
   saveDb();
   return message;
+}
+
+async function ensureTierlistBoardMessage(client) {
+  const state = getTierlistBoardState();
+  const channelId = state.channelId || appConfig.channels.tierlistChannelId;
+  if (!channelId) return null;
+
+  const channel = await client.channels.fetch(channelId).catch(() => null);
+  if (!channel?.isTextBased()) {
+    throw new Error("tierlistChannelId не указывает на текстовый канал");
+  }
+
+  let message = null;
+  if (state.messageId) {
+    message = await channel.messages.fetch(state.messageId).catch(() => null);
+  }
+
+  const payload = buildTierlistBoardPayload();
+  if (!message) {
+    message = await channel.send(payload);
+    state.messageId = message.id;
+    try {
+      await message.pin();
+    } catch {}
+  } else {
+    await message.edit(payload);
+  }
+
+  state.channelId = channelId;
+  saveDb();
+  return message;
+}
+
+async function refreshTierlistBoard(client) {
+  try {
+    await ensureTierlistBoardMessage(client);
+    return true;
+  } catch (error) {
+    console.error("Tierlist board refresh failed:", error?.message || error);
+    return false;
+  }
 }
 
 async function fetchReviewMessage(client, submission) {
@@ -901,6 +1031,8 @@ async function createPendingSubmissionFromAttachment(client, input) {
     saveDb();
   }
 
+  await refreshTierlistBoard(client);
+
   return submission;
 }
 
@@ -917,6 +1049,8 @@ async function expireSubmission(client, submission) {
       components: [],
     }).catch(() => {});
   }
+
+  await refreshTierlistBoard(client);
 }
 
 async function supersedePendingSubmissionsForUser(client, userId, moderatorTag) {
@@ -985,6 +1119,7 @@ async function approveSubmission(client, submission, moderatorTag) {
   );
 
   await logLine(client, `APPROVE: <@${submission.userId}> kills ${submission.kills} -> tier ${submission.derivedTier} by ${moderatorTag}`);
+  await refreshTierlistBoard(client);
   saveDb();
 }
 
@@ -1020,6 +1155,7 @@ async function rejectSubmission(client, submission, moderatorTag, reason) {
   );
 
   await logLine(client, `REJECT: <@${submission.userId}> kills ${submission.kills} by ${moderatorTag} | reason: ${reason}`);
+  await refreshTierlistBoard(client);
   saveDb();
 }
 
@@ -1223,12 +1359,21 @@ const client = new Client({
   ],
 });
 
-client.once("ready", async () => {
+client.on("error", (error) => {
+  console.error("Discord client error:", error);
+});
+
+process.on("unhandledRejection", (error) => {
+  console.error("Unhandled rejection:", error);
+});
+
+client.once("clientReady", async () => {
   console.log(`Logged in as ${client.user.tag}`);
   const generated = await ensureManagedRoles(client);
   await registerGuildCommands(client);
   await syncApprovedTierRoles(client).catch(() => 0);
   await ensureWelcomePanel(client);
+  await refreshTierlistBoard(client);
   console.log(`Managed roles ready. Characters: ${generated.characterRoles}, tiers: ${generated.tierRoles}`);
   console.log("Welcome onboarding bot is ready");
 });
@@ -1316,12 +1461,12 @@ client.on("interactionCreate", async (interaction) => {
 
     if (subcommand === "stats") {
       const tierlist = buildTierlistEmbeds();
-      await interaction.reply({ embeds: [tierlist.embeds[0]], ephemeral: true });
+      await interaction.reply(ephemeralPayload({ embeds: [tierlist.embeds[0]] }));
       return;
     }
 
     if (!isModerator(interaction.member)) {
-      await interaction.reply({ content: "Нет прав.", ephemeral: true });
+      await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
       return;
     }
 
@@ -1332,7 +1477,7 @@ client.on("interactionCreate", async (interaction) => {
         .slice(0, 15);
 
       if (!pendingList.length) {
-        await interaction.reply({ content: "Активных pending-заявок нет.", ephemeral: true });
+        await interaction.reply(ephemeralPayload({ content: "Активных pending-заявок нет." }));
         return;
       }
 
@@ -1340,22 +1485,22 @@ client.on("interactionCreate", async (interaction) => {
         return `• <@${submission.userId}> | kills ${submission.kills} | tier ${submission.derivedTier} | id \`${submission.id}\``;
       });
 
-      await interaction.reply({
+      await interaction.reply(ephemeralPayload({
         content: `Pending (${pendingList.length}):\n${lines.join("\n")}`,
-        ephemeral: true,
-      });
+      }));
       return;
     }
 
     if (subcommand === "panel") {
-      await interaction.deferReply({ ephemeral: true });
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       await ensureWelcomePanel(client);
+      await refreshTierlistBoard(client);
       await interaction.editReply("Welcome-панель создана или обновлена.");
       return;
     }
 
     if (subcommand === "modset") {
-      await interaction.deferReply({ ephemeral: true });
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
       const target = interaction.options.getUser("target", true);
       const screenshot = interaction.options.getAttachment("screenshot", true);
@@ -1382,7 +1527,7 @@ client.on("interactionCreate", async (interaction) => {
     }
 
     if (subcommand === "removetier") {
-      await interaction.deferReply({ ephemeral: true });
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       const target = interaction.options.getUser("target", true);
       const profile = getProfile(target.id);
 
@@ -1392,12 +1537,13 @@ client.on("interactionCreate", async (interaction) => {
       saveDb();
 
       await clearTierRoles(client, target.id, "moderator removed kill tier");
+      await refreshTierlistBoard(client);
       await interaction.editReply(`Kill-tier роль у <@${target.id}> снята, approved kills очищены.`);
       return;
     }
 
     if (subcommand === "syncroles") {
-      await interaction.deferReply({ ephemeral: true });
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       const target = interaction.options.getUser("target");
       const synced = await syncApprovedTierRoles(client, target?.id || null);
       await interaction.editReply(target ? `Синкнут 1 профиль.` : `Синкнуто профилей: ${synced}.`);
@@ -1409,23 +1555,26 @@ client.on("interactionCreate", async (interaction) => {
     if (interaction.customId === "onboard_begin") {
       const pending = getPendingSubmissionForUser(interaction.user.id);
       if (pending) {
-        await interaction.reply({
+        await interaction.reply(ephemeralPayload({
           content: `У тебя уже есть pending-заявка с kills ${pending.kills}. Дождись решения модератора.`,
-          ephemeral: true,
-        });
+        }));
         return;
       }
 
       const session = getSubmitSession(interaction.user.id);
       if (session) {
-        await interaction.reply({
+        await interaction.reply(ephemeralPayload({
           content: `Ты уже на шаге отправки скрина. Отправь картинку следующим сообщением в <#${appConfig.channels.welcomeChannelId}>.`,
-          ephemeral: true,
-        });
+        }));
         return;
       }
 
-      await interaction.reply(buildCharacterPickerPayload());
+      await interaction.reply(buildCharacterPickerPayload("full"));
+      return;
+    }
+
+    if (interaction.customId === "onboard_quick_mains") {
+      await interaction.reply(buildCharacterPickerPayload("quick"));
       return;
     }
 
@@ -1445,29 +1594,29 @@ client.on("interactionCreate", async (interaction) => {
     const submission = db.submissions[submissionId];
 
     if (!submission) {
-      await interaction.reply({ content: "Заявка не найдена.", ephemeral: true });
+      await interaction.reply(ephemeralPayload({ content: "Заявка не найдена." }));
       return;
     }
 
     if (!isModerator(interaction.member)) {
-      await interaction.reply({ content: "Нет прав.", ephemeral: true });
+      await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
       return;
     }
 
     if (submission.status !== "pending") {
-      await interaction.reply({ content: `Заявка уже обработана: ${submission.status}.`, ephemeral: true });
+      await interaction.reply(ephemeralPayload({ content: `Заявка уже обработана: ${submission.status}.` }));
       return;
     }
 
     if (hoursSince(submission.createdAt) > PENDING_EXPIRE_HOURS) {
       await expireSubmission(client, submission);
-      await interaction.reply({ content: "Заявка уже истекла и была помечена как expired.", ephemeral: true });
+      await interaction.reply(ephemeralPayload({ content: "Заявка уже истекла и была помечена как expired." }));
       return;
     }
 
     if (action === "approve") {
       await approveSubmission(client, submission, interaction.user.tag);
-      await interaction.reply({ content: "Заявка одобрена. Tier-role выдана.", ephemeral: true });
+      await interaction.reply(ephemeralPayload({ content: "Заявка одобрена. Tier-role выдана." }));
       return;
     }
 
@@ -1500,34 +1649,39 @@ client.on("interactionCreate", async (interaction) => {
   }
 
   if (interaction.isStringSelectMenu()) {
-    if (interaction.customId !== "onboard_pick_characters") return;
+    if (!["onboard_pick_characters", "onboard_pick_characters_quick"].includes(interaction.customId)) return;
+
+    const isQuickSelection = interaction.customId === "onboard_pick_characters_quick";
+    const selectedIds = [...new Set((interaction.values || []).map(getCharacterIdFromSelectValue).filter(Boolean))];
 
     const pending = getPendingSubmissionForUser(interaction.user.id);
-    if (pending) {
-      await interaction.reply({ content: "У тебя уже есть pending-заявка. Новую создавать нельзя.", ephemeral: true });
+    if (!isQuickSelection && pending) {
+      await interaction.reply(ephemeralPayload({ content: "У тебя уже есть pending-заявка. Новую создавать нельзя." }));
       return;
     }
 
-    if (!interaction.values?.length || interaction.values.length > 2) {
-      await interaction.reply({ content: "Нужно выбрать одного или двух мейнов.", ephemeral: true });
+    if (!selectedIds.length || selectedIds.length > 2) {
+      await interaction.reply(ephemeralPayload({ content: "Нужно выбрать одного или двух мейнов." }));
       return;
     }
 
     const member = await fetchMember(client, interaction.user.id);
     if (!member) {
-      await interaction.reply({ content: "Не удалось получить твой профиль на сервере.", ephemeral: true });
+      await interaction.reply(ephemeralPayload({ content: "Не удалось получить твой профиль на сервере." }));
       return;
     }
 
-    const selectedEntries = await syncManagedCharacterRoles(member, interaction.values, "new main character selection");
-    const profile = getProfile(interaction.user.id);
-    profile.displayName = member.displayName || interaction.user.username;
-    profile.username = interaction.user.username;
-    profile.mainCharacterIds = selectedEntries.map((entry) => entry.id);
-    profile.mainCharacterLabels = selectedEntries.map((entry) => entry.label);
-    profile.characterRoleIds = selectedEntries.map((entry) => entry.roleId);
-    profile.updatedAt = nowIso();
-    saveDb();
+    const selectedEntries = await applyMainSelection(client, member, interaction.user, selectedIds, isQuickSelection ? "quick main selection" : "new main character selection");
+
+    if (isQuickSelection) {
+      const syncedPending = await syncPendingSubmissionMainsForUser(client, interaction.user.id, selectedEntries);
+      await interaction.reply(ephemeralPayload({
+        content: syncedPending
+          ? `Мейны обновлены: **${selectedEntries.map((entry) => entry.label).join(", ")}**. Pending-заявка тоже обновлена.`
+          : `Мейны обновлены: **${selectedEntries.map((entry) => entry.label).join(", ")}**.`,
+      }));
+      return;
+    }
 
     setMainDraft(interaction.user.id, selectedEntries.map((entry) => entry.id));
 
