@@ -471,13 +471,33 @@ function buildGraphicTierlistBoardPayload() {
     tierColors: appConfig.graphicTierlist?.tierColors || DEFAULT_GRAPHIC_TIER_COLORS,
   });
 
+  const tierSummary = [1, 2, 3, 4, 5].map((tier) => {
+    const count = stats.totalsByTier[tier] || 0;
+    return `${formatTierLabel(tier)}: **${count}**`;
+  }).join(" | ");
+
+  const topLines = entries.slice(0, 5).map((entry, index) =>
+    `**#${index + 1}** ${entry.displayName} — ${formatNumber(entry.approvedKills)} kills (${formatTierLabel(entry.killTier)})`
+  );
+
+  const description = [
+    appConfig.graphicTierlist?.subtitle || "Подтверждённые игроки и текущая расстановка по kills",
+    "",
+    tierSummary,
+    "",
+    topLines.length ? topLines.join("\n") : "Пока нет подтверждённых игроков.",
+    "",
+    `Всего: **${formatNumber(stats.totalVerified)}** | Kills: **${formatNumber(stats.totalKills)}** | Среднее: **${formatNumber(stats.averageKills)}**`,
+    "",
+    "SVG-файл с полным графическим тир-листом прикреплён ниже.",
+  ].join("\n");
+
   return {
     content: "Графический тир-лист. Ниже бот поддерживает полный текстовый рейтинг тем же порядком.",
     embeds: [
       new EmbedBuilder()
         .setTitle(appConfig.graphicTierlist?.title || "Графический тир-лист")
-        .setDescription(appConfig.graphicTierlist?.subtitle || "Подтверждённые игроки и текущая расстановка по kills")
-        .setImage(`attachment://${fileName}`),
+        .setDescription(description),
     ],
     files: [new AttachmentBuilder(Buffer.from(svg, "utf8"), { name: fileName })],
     components: [],
@@ -808,7 +828,7 @@ function getMissingTierlistText() {
 
 function getReminderImagePath() {
   const raw = String(appConfig.reminders?.missingTierlistImagePath || "").trim();
-  if (raw) return path.isAbsolute(raw) ? raw : path.resolve(process.cwd(), raw);
+  if (raw) return path.isAbsolute(raw) ? raw : path.resolve(PROJECT_ROOT, raw);
   if (fs.existsSync(DEFAULT_REMINDER_POSTER_PATH)) return DEFAULT_REMINDER_POSTER_PATH;
   return "";
 }
@@ -820,11 +840,12 @@ function buildMissingTierlistReminderPayload() {
 
   if (imagePath && fs.existsSync(imagePath)) {
     const fileName = sanitizeFileName(path.basename(imagePath) || "missing-tierlist-image.png");
-    return {
-      content,
-      embeds: [new EmbedBuilder().setImage(`attachment://${fileName}`)],
-      files: [new AttachmentBuilder(imagePath, { name: fileName })],
-    };
+    const isSvg = /\.svg$/i.test(fileName);
+    const payload = { content, files: [new AttachmentBuilder(imagePath, { name: fileName })] };
+    if (!isSvg) {
+      payload.embeds = [new EmbedBuilder().setImage(`attachment://${fileName}`)];
+    }
+    return payload;
   }
 
   if (imageUrl) {
@@ -974,6 +995,10 @@ function buildWelcomeComponents() {
 
 function buildCharacterPickerPayload(mode = "full") {
   const characterEntries = getCharacterEntries();
+  if (!characterEntries.length) {
+    return ephemeralPayload({ content: "Нет доступных персонажей. Проверь конфигурацию characters в bot.config.json." });
+  }
+
   const isQuick = mode === "quick";
   const embed = new EmbedBuilder()
     .setTitle("Выбери мейнов")
@@ -983,11 +1008,12 @@ function buildCharacterPickerPayload(mode = "full") {
         : "Можно выбрать одного или двух персонажей. После выбора сразу откроется окно для точного количества kills."
     );
 
+  const maxSelectable = Math.min(2, characterEntries.length);
   const select = new StringSelectMenuBuilder()
     .setCustomId(isQuick ? "onboard_pick_characters_quick" : "onboard_pick_characters")
-    .setPlaceholder("Выбери 1 или 2 мейнов")
+    .setPlaceholder(maxSelectable === 1 ? "Выбери мейна" : "Выбери 1 или 2 мейнов")
     .setMinValues(1)
-    .setMaxValues(2)
+    .setMaxValues(maxSelectable)
     .addOptions(characterEntries.map((entry) => ({ label: normalizeCharacterSelectLabel(entry.label), value: getCharacterSelectValue(entry.id) })));
 
   return {
@@ -1050,7 +1076,7 @@ function messageHasAttachmentName(message, fileName) {
 async function findManagedMessageInChannel(channel, predicate, limit = 75) {
   if (!channel?.isTextBased()) return null;
 
-  const pinned = await channel.messages.fetchPinned().catch(() => null);
+  const pinned = await channel.messages.fetchPins().catch(() => null);
   if (pinned?.size) {
     const pinnedMatch = [...pinned.values()]
       .sort((left, right) => Number(right.createdTimestamp || 0) - Number(left.createdTimestamp || 0))
@@ -1067,28 +1093,33 @@ async function findManagedMessageInChannel(channel, predicate, limit = 75) {
 }
 
 async function findExistingWelcomePanelMessage(channel) {
+  const botId = client.user?.id;
   return findManagedMessageInChannel(
     channel,
-    (message) => messageHasRequiredCustomIds(message, ["onboard_begin", "onboard_quick_mains", "onboard_tierlist"])
+    (message) => message.author?.id === botId && messageHasRequiredCustomIds(message, ["onboard_begin", "onboard_quick_mains", "onboard_tierlist"])
   );
 }
 
 async function findExistingGraphicTierlistMessage(channel) {
+  const botId = client.user?.id;
   return findManagedMessageInChannel(
     channel,
     (message) =>
-      String(message?.content || "").startsWith("Графический тир-лист.") ||
+      message.author?.id === botId &&
+      (String(message?.content || "").startsWith("Графический тир-лист.") ||
       messageHasEmbedTitle(message, appConfig.graphicTierlist?.title || "Графический тир-лист") ||
-      messageHasAttachmentName(message, "graphic-tierlist.svg")
+      messageHasAttachmentName(message, "graphic-tierlist.svg"))
   );
 }
 
 async function findExistingTextTierlistMessage(channel) {
+  const botId = client.user?.id;
   return findManagedMessageInChannel(
     channel,
     (message) =>
-      String(message?.content || "").startsWith("Текстовый тир-лист.") ||
-      messageHasEmbedTitle(message, appConfig.ui.tierlistTitle || "Текстовый тир-лист")
+      message.author?.id === botId &&
+      (String(message?.content || "").startsWith("Текстовый тир-лист.") ||
+      messageHasEmbedTitle(message, appConfig.ui.tierlistTitle || "Текстовый тир-лист"))
   );
 }
 
@@ -1140,11 +1171,12 @@ async function ensureTierlistBoardMessage(client) {
 async function ensureGraphicTierlistBoardMessage(client) {
   const state = getTierlistBoardState();
   const channelId = state.channelId || appConfig.channels.tierlistChannelId;
-  if (!channelId) return null;
+  if (!channelId || isPlaceholder(channelId)) return null;
 
   const channel = await client.channels.fetch(channelId).catch(() => null);
   if (!channel?.isTextBased()) {
-    throw new Error("tierlistChannelId не указывает на текстовый канал");
+    console.warn("tierlistChannelId не указывает на текстовый канал, пропускаем graphic board");
+    return null;
   }
 
   let message = null;
@@ -1182,11 +1214,12 @@ async function ensureGraphicTierlistBoardMessage(client) {
 async function ensureTextTierlistBoardMessage(client, options = {}) {
   const state = getTierlistBoardState();
   const channelId = state.channelId || appConfig.channels.tierlistChannelId;
-  if (!channelId) return null;
+  if (!channelId || isPlaceholder(channelId)) return null;
 
   const channel = await client.channels.fetch(channelId).catch(() => null);
   if (!channel?.isTextBased()) {
-    throw new Error("tierlistChannelId не указывает на текстовый канал");
+    console.warn("tierlistChannelId не указывает на текстовый канал, пропускаем text board");
+    return null;
   }
 
   if (options.forceRecreate && state.textMessageId) {
