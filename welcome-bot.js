@@ -52,6 +52,8 @@ const SUBMIT_SESSION_EXPIRE_MS = 10 * 60 * 1000;
 const PENDING_EXPIRE_HOURS = 72;
 const TEMP_MESSAGE_DELETE_MS = 12000;
 const SUBMIT_COOLDOWN_SECONDS = 120;
+const WELCOME_CLEANUP_IMAGE_GRACE_MS = 2 * 60 * 1000;
+const WELCOME_CLEANUP_BOT_REPLY_GRACE_MS = 20 * 1000;
 
 let guildCache = null;
 const mainDrafts = new Map();
@@ -220,6 +222,7 @@ function loadDb() {
       },
       tierlistBoard: {
         channelId: appConfig.channels.tierlistChannelId || "",
+        graphicChannelId: "",
         graphicMessageId: "",
         textMessageId: "",
       },
@@ -235,10 +238,11 @@ function loadDb() {
   const db = loadJsonFile(DB_PATH, fallback);
   db.config ||= {};
   db.config.welcomePanel ||= { channelId: appConfig.channels.welcomeChannelId, messageId: "" };
-  db.config.tierlistBoard ||= { channelId: appConfig.channels.tierlistChannelId || "", graphicMessageId: "", textMessageId: "" };
+  db.config.tierlistBoard ||= { channelId: appConfig.channels.tierlistChannelId || "", graphicChannelId: "", graphicMessageId: "", textMessageId: "" };
   if (db.config.tierlistBoard.messageId && !db.config.tierlistBoard.textMessageId) {
     db.config.tierlistBoard.textMessageId = db.config.tierlistBoard.messageId;
   }
+  db.config.tierlistBoard.graphicChannelId ||= "";
   db.config.tierlistBoard.graphicMessageId ||= "";
   db.config.tierlistBoard.textMessageId ||= "";
   db.config.generatedRoles ||= { characters: {}, tiers: {} };
@@ -672,6 +676,10 @@ function isImageAttachment(attachment) {
   return /\.(png|jpe?g|webp|gif)(\?|$)/i.test(url);
 }
 
+function messageHasImageAttachment(message) {
+  return [...(message?.attachments?.values?.() || [])].some((attachment) => isImageAttachment(attachment));
+}
+
 async function downloadToBuffer(url, timeoutMs = 15000) {
   const headers = {
     "User-Agent": "Mozilla/5.0 JujutsuWelcomeBot/1.0",
@@ -845,10 +853,11 @@ function getWelcomePanelState() {
 }
 
 function getTierlistBoardState() {
-  db.config.tierlistBoard ||= { channelId: appConfig.channels.tierlistChannelId || "", graphicMessageId: "", textMessageId: "" };
+  db.config.tierlistBoard ||= { channelId: appConfig.channels.tierlistChannelId || "", graphicChannelId: "", graphicMessageId: "", textMessageId: "" };
   if (db.config.tierlistBoard.messageId && !db.config.tierlistBoard.textMessageId) {
     db.config.tierlistBoard.textMessageId = db.config.tierlistBoard.messageId;
   }
+  db.config.tierlistBoard.graphicChannelId ||= "";
   db.config.tierlistBoard.graphicMessageId ||= "";
   db.config.tierlistBoard.textMessageId ||= "";
   if (!db.config.tierlistBoard.channelId && appConfig.channels.tierlistChannelId) {
@@ -1319,6 +1328,55 @@ async function findExistingTextTierlistMessage(channel) {
   );
 }
 
+function shouldKeepWelcomeChannelMessage(message, keepMessageIds) {
+  if (!message) return true;
+  if (keepMessageIds.has(message.id)) return true;
+  if (message.pinned) return true;
+
+  const ageMs = Date.now() - Number(message.createdTimestamp || 0);
+
+  if (message.author?.id === client.user?.id && messageHasRequiredCustomIds(message, ["onboard_begin", "onboard_quick_mains"])) {
+    return true;
+  }
+
+  if (message.author?.id === client.user?.id && ageMs <= WELCOME_CLEANUP_BOT_REPLY_GRACE_MS) {
+    return true;
+  }
+
+  if (messageHasImageAttachment(message)) {
+    const session = getSubmitSession(message.author?.id);
+    if (session) return true;
+    if (ageMs <= WELCOME_CLEANUP_IMAGE_GRACE_MS) return true;
+  }
+
+  return false;
+}
+
+async function cleanupWelcomeChannelMessages(channel, keepMessageIds = []) {
+  if (!channel?.isTextBased()) return 0;
+
+  const keepIds = new Set(keepMessageIds.filter(Boolean));
+  let before = null;
+  let deleted = 0;
+
+  for (let batchIndex = 0; batchIndex < 10; batchIndex += 1) {
+    const batch = await channel.messages.fetch({ limit: 100, ...(before ? { before } : {}) }).catch(() => null);
+    if (!batch?.size) break;
+
+    for (const message of batch.values()) {
+      if (shouldKeepWelcomeChannelMessage(message, keepIds)) continue;
+      if (!message.deletable) continue;
+      await message.delete().catch(() => {});
+      deleted += 1;
+    }
+
+    before = batch.last()?.id || null;
+    if (!before || batch.size < 100) break;
+  }
+
+  return deleted;
+}
+
 async function ensureWelcomePanel(client) {
   const panelState = getWelcomePanelState();
   const channel = await client.channels.fetch(panelState.channelId).catch(() => null);
@@ -1356,6 +1414,7 @@ async function ensureWelcomePanel(client) {
     }
   }
 
+  await cleanupWelcomeChannelMessages(channel, [message.id]);
   saveDb();
   return message;
 }
@@ -1366,7 +1425,7 @@ async function ensureTierlistBoardMessage(client) {
 
 async function ensureGraphicTierlistBoardMessage(client) {
   const state = getTierlistBoardState();
-  const channelId = state.channelId || appConfig.channels.tierlistChannelId;
+  const channelId = state.graphicChannelId || state.channelId || appConfig.channels.tierlistChannelId;
   if (!channelId || isPlaceholder(channelId)) return null;
 
   const channel = await client.channels.fetch(channelId).catch(() => null);
@@ -1405,6 +1464,47 @@ async function ensureGraphicTierlistBoardMessage(client) {
   state.channelId = channelId;
   saveDb();
   return { message, created };
+}
+
+async function deleteManagedChannelMessage(client, channelId, messageId) {
+  if (!channelId || !messageId) return false;
+  const channel = await client.channels.fetch(channelId).catch(() => null);
+  if (!channel?.isTextBased()) return false;
+  const message = await channel.messages.fetch(messageId).catch(() => null);
+  if (!message?.deletable) return false;
+  await message.delete().catch(() => {});
+  return true;
+}
+
+async function repostGraphicTierlistBoardToChannel(client, targetChannelId) {
+  const state = getTierlistBoardState();
+  const nextChannelId = String(targetChannelId || "").trim();
+  if (!nextChannelId || isPlaceholder(nextChannelId)) {
+    throw new Error("Нужно указать текстовый канал для графического тир-листа.");
+  }
+
+  const targetChannel = await client.channels.fetch(nextChannelId).catch(() => null);
+  if (!targetChannel?.isTextBased()) {
+    throw new Error("Указанный канал не является текстовым.");
+  }
+
+  const previousChannelId = state.graphicChannelId || state.channelId || appConfig.channels.tierlistChannelId || "";
+  const previousMessageId = state.graphicMessageId || "";
+
+  state.graphicChannelId = nextChannelId;
+  state.graphicMessageId = "";
+  saveDb();
+
+  if (previousMessageId) {
+    await deleteManagedChannelMessage(client, previousChannelId || nextChannelId, previousMessageId);
+  }
+
+  const result = await ensureGraphicTierlistBoardMessage(client);
+  return {
+    channelId: nextChannelId,
+    previousChannelId,
+    messageId: result?.message?.id || "",
+  };
 }
 
 async function ensureTextTierlistBoardMessage(client, options = {}) {
@@ -1879,6 +1979,12 @@ function buildCommands() {
         subcommand.setName("panel").setDescription("Открыть модераторскую панель управления")
       )
       .addSubcommand((subcommand) =>
+        subcommand
+          .setName("movegraphic")
+          .setDescription("Перезалить графический тир-лист в другой канал")
+          .addChannelOption((option) => option.setName("channel").setDescription("Канал для PNG тир-листа").setRequired(true))
+      )
+      .addSubcommand((subcommand) =>
         subcommand.setName("remindmissing").setDescription("Напомнить всем, кого нет в тир-листе")
       )
       .addSubcommand((subcommand) =>
@@ -1971,7 +2077,12 @@ client.on("messageCreate", async (message) => {
   if (message.channelId !== appConfig.channels.welcomeChannelId) return;
 
   const session = getSubmitSession(message.author.id);
-  if (!session) return;
+  if (!session) {
+    const reply = await message.reply("В этом канале можно отправлять только скрин сразу после кнопки «Получить роль». Остальные сообщения удаляются.").catch(() => null);
+    if (reply) scheduleDeleteMessage(reply);
+    await message.delete().catch(() => {});
+    return;
+  }
 
   const pending = getPendingSubmissionForUser(message.author.id);
   if (pending) {
@@ -2071,6 +2182,22 @@ client.on("interactionCreate", async (interaction) => {
 
     if (subcommand === "panel") {
       await interaction.reply(buildModeratorPanelPayload());
+      return;
+    }
+
+    if (subcommand === "movegraphic") {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      const targetChannel = interaction.options.getChannel("channel", true);
+      if (!targetChannel?.isTextBased?.()) {
+        await interaction.editReply("Нужен текстовый канал.");
+        return;
+      }
+
+      const result = await repostGraphicTierlistBoardToChannel(client, targetChannel.id);
+      const movedText = result.previousChannelId && result.previousChannelId !== result.channelId
+        ? ` Было: <#${result.previousChannelId}>.`
+        : "";
+      await interaction.editReply(`Графический тир-лист перезалит в <#${result.channelId}> и привязан к этому каналу для следующих обновлений.${movedText}`);
       return;
     }
 
