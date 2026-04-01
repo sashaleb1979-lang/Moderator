@@ -520,60 +520,36 @@ function buildTierlistBoardPayload() {
 
 async function buildGraphicTierlistBoardPayload(client) {
   const entries = getApprovedTierlistEntries();
-  const stats = getTierlistStats(entries);
   const guild = await getGuild(client);
   const gfx = getGraphicTierlistConfig();
   const imgCfg = getGraphicImageConfig();
 
-  let pngBuffer = null;
-  if (isPureimageAvailable()) {
-    try {
-      pngBuffer = await renderGraphicTierlistPng({
-        client,
-        guild,
-        entries,
-        title: getEffectiveGraphicTitle(),
-        tierLabels: { ...appConfig.killTierLabels, ...(gfx.tierLabels || {}) },
-        tierColors: getEffectiveTierColors(),
-        imageWidth: imgCfg.W,
-        imageHeight: imgCfg.H,
-        imageIcon: imgCfg.ICON,
-      });
-      gfx.lastUpdated = Date.now();
-      saveDb();
-    } catch (err) {
-      console.error("PNG tierlist render failed:", err?.message || err);
-    }
+  if (!isPureimageAvailable()) {
+    throw new Error("pureimage не загружен, поэтому графический PNG тир-лист не может быть собран.");
   }
 
-  const tierSummary = [1, 2, 3, 4, 5].map((tier) => {
-    const count = stats.totalsByTier[tier] || 0;
-    return `${formatTierLabel(tier)}: **${count}**`;
-  }).join(" | ");
+  const pngBuffer = await renderGraphicTierlistPng({
+    client,
+    guild,
+    entries,
+    title: getEffectiveGraphicTitle(),
+    tierLabels: { ...appConfig.killTierLabels, ...(gfx.tierLabels || {}) },
+    tierColors: getEffectiveTierColors(),
+    imageWidth: imgCfg.W,
+    imageHeight: imgCfg.H,
+    imageIcon: imgCfg.ICON,
+  });
+  if (!pngBuffer?.length) {
+    throw new Error("PNG тир-лист не был сгенерирован.");
+  }
 
-  const topLines = entries.slice(0, 5).map((entry, index) =>
-    `**#${index + 1}** ${entry.displayName} — ${formatNumber(entry.approvedKills)} kills (${formatTierLabel(entry.killTier)})`
-  );
-
-  const description = [
-    getEffectiveMessageText(),
-    "",
-    tierSummary,
-    "",
-    topLines.length ? topLines.join("\n") : "Пока нет подтверждённых игроков.",
-    "",
-    `Всего: **${formatNumber(stats.totalVerified)}** | Kills: **${formatNumber(stats.totalKills)}** | Среднее: **${formatNumber(stats.averageKills)}**`,
-  ].join("\n");
+  gfx.lastUpdated = Date.now();
+  saveDb();
 
   const embedBuilder = new EmbedBuilder()
     .setTitle(getEffectiveGraphicTitle())
-    .setDescription(description);
-
-  const files = [];
-  if (pngBuffer) {
-    files.push(new AttachmentBuilder(pngBuffer, { name: "tierlist.png" }));
-    embedBuilder.setImage("attachment://tierlist.png");
-  }
+    .setDescription(getEffectiveMessageText())
+    .setImage("attachment://tierlist.png");
 
   const components = [
     new ActionRowBuilder().addComponents(
@@ -583,9 +559,9 @@ async function buildGraphicTierlistBoardPayload(client) {
   ];
 
   return {
-    content: "Графический тир-лист. Ниже бот поддерживает полный текстовый рейтинг тем же порядком.",
+    content: "",
     embeds: [embedBuilder],
-    files,
+    files: [new AttachmentBuilder(pngBuffer, { name: "tierlist.png" })],
     components,
   };
 }
@@ -1187,12 +1163,6 @@ function buildWelcomeComponents() {
         .setLabel("Моя карточка")
         .setStyle(ButtonStyle.Secondary)
     ),
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId("welcome_editor")
-        .setLabel("Редактор")
-        .setStyle(ButtonStyle.Secondary)
-    ),
   ];
 }
 
@@ -1279,14 +1249,6 @@ function messageHasAttachmentName(message, fileName) {
 async function findManagedMessageInChannel(channel, predicate, limit = 75) {
   if (!channel?.isTextBased()) return null;
 
-  const pinned = await channel.messages.fetchPins().catch(() => null);
-  if (pinned?.size) {
-    const pinnedMatch = [...pinned.values()]
-      .sort((left, right) => Number(right.createdTimestamp || 0) - Number(left.createdTimestamp || 0))
-      .find(predicate);
-    if (pinnedMatch) return pinnedMatch;
-  }
-
   const recent = await channel.messages.fetch({ limit }).catch(() => null);
   if (!recent?.size) return null;
 
@@ -1331,7 +1293,6 @@ async function findExistingTextTierlistMessage(channel) {
 function shouldKeepWelcomeChannelMessage(message, keepMessageIds) {
   if (!message) return true;
   if (keepMessageIds.has(message.id)) return true;
-  if (message.pinned) return true;
 
   const ageMs = Date.now() - Number(message.createdTimestamp || 0);
 
@@ -1377,6 +1338,33 @@ async function cleanupWelcomeChannelMessages(channel, keepMessageIds = []) {
   return deleted;
 }
 
+async function unpinBotMessagesInChannel(channel) {
+  if (!channel?.isTextBased()) return 0;
+  const pinned = await channel.messages.fetchPins().catch(() => null);
+  if (!pinned?.size) return 0;
+
+  let changed = 0;
+  for (const message of pinned.values()) {
+    if (message.author?.id !== client.user?.id) continue;
+    await message.unpin().catch(() => {});
+    changed += 1;
+  }
+  return changed;
+}
+
+async function cleanupBotPins(client) {
+  const channels = new Set([
+    getWelcomePanelState().channelId,
+    getTierlistBoardState().channelId,
+    getTierlistBoardState().graphicChannelId,
+  ].filter(Boolean));
+
+  for (const channelId of channels) {
+    const channel = await client.channels.fetch(channelId).catch(() => null);
+    await unpinBotMessagesInChannel(channel);
+  }
+}
+
 async function ensureWelcomePanel(client) {
   const panelState = getWelcomePanelState();
   const channel = await client.channels.fetch(panelState.channelId).catch(() => null);
@@ -1404,14 +1392,9 @@ async function ensureWelcomePanel(client) {
   if (!message) {
     message = await channel.send(payload);
     panelState.messageId = message.id;
-    try {
-      await message.pin();
-    } catch {}
   } else {
     await message.edit(payload);
-    if (!message.pinned) {
-      await message.pin().catch(() => {});
-    }
+    await message.unpin().catch(() => {});
   }
 
   await cleanupWelcomeChannelMessages(channel, [message.id]);
@@ -1451,14 +1434,9 @@ async function ensureGraphicTierlistBoardMessage(client) {
   if (!message) {
     message = await channel.send(payload);
     state.graphicMessageId = message.id;
-    try {
-      await message.pin();
-    } catch {}
   } else {
     await message.edit({ ...payload, attachments: [] });
-    if (!message.pinned) {
-      await message.pin().catch(() => {});
-    }
+    await message.unpin().catch(() => {});
   }
 
   state.channelId = channelId;
@@ -1540,14 +1518,9 @@ async function ensureTextTierlistBoardMessage(client, options = {}) {
   if (!message) {
     message = await channel.send(payload);
     state.textMessageId = message.id;
-    try {
-      await message.pin();
-    } catch {}
   } else {
     await message.edit(payload);
-    if (!message.pinned) {
-      await message.pin().catch(() => {});
-    }
+    await message.unpin().catch(() => {});
   }
 
   state.channelId = channelId;
@@ -1949,6 +1922,9 @@ function buildModeratorPanelPayload(statusText = "", includeFlags = true) {
       new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId("panel_add_character").setLabel("Добавить персонажа").setStyle(ButtonStyle.Success)
       ),
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("welcome_editor").setLabel("Редактор welcome").setStyle(ButtonStyle.Secondary)
+      ),
     ],
   };
 
@@ -2058,6 +2034,7 @@ client.once("clientReady", async () => {
   await syncApprovedTierRoles(client).catch(() => 0);
   await ensureWelcomePanel(client);
   await refreshTierlistBoard(client);
+  await cleanupBotPins(client).catch(() => 0);
   console.log(`Managed roles ready. Characters: ${generated.characterRoles}, tiers: ${generated.tierRoles}`);
   console.log("Welcome onboarding bot is ready");
 });

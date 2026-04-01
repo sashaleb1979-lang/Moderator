@@ -26,8 +26,12 @@ const FONT_BOLD = "TierlistBold";
 let fontInfo = { reg: null, bold: null, source: "none", err: null };
 
 function listFontFiles() {
+  const winFontsDir = process.platform === "win32"
+    ? path.join(process.env.WINDIR || "C:\\Windows", "Fonts")
+    : null;
   const dirs = [
     path.join(__dirname, "assets", "fonts"),
+    ...(winFontsDir ? [winFontsDir] : []),
     "/usr/share/fonts/truetype/dejavu",
     "/usr/share/fonts/truetype/liberation2",
     "/usr/share/fonts/truetype/liberation",
@@ -48,8 +52,16 @@ function listFontFiles() {
 
 function pickFonts() {
   const a = path.join(__dirname, "assets", "fonts");
+  const wf = process.platform === "win32"
+    ? path.join(process.env.WINDIR || "C:\\Windows", "Fonts")
+    : "";
   const pairs = [
     [path.join(a, "DejaVuSans.ttf"), path.join(a, "DejaVuSans-Bold.ttf"), "repo-assets"],
+    [path.join(a, "NotoSans-Regular.ttf.ttf"), path.join(a, "NotoSans-Bold.ttf.ttf"), "repo-assets-noto-zip"],
+    [path.join(a, "NotoSans-Regular.ttf"), path.join(a, "NotoSans-Bold.ttf"), "repo-assets-noto"],
+    [path.join(wf, "arial.ttf"), path.join(wf, "arialbd.ttf"), "windows-arial"],
+    [path.join(wf, "segoeui.ttf"), path.join(wf, "segoeuib.ttf"), "windows-segoeui"],
+    [path.join(wf, "tahoma.ttf"), path.join(wf, "tahomabd.ttf"), "windows-tahoma"],
     ["/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", "dejavu"],
     ["/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf", "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf", "liberation2"],
     ["/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf", "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf", "liberation"],
