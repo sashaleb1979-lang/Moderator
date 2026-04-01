@@ -5,6 +5,17 @@ const path = require("path");
 const https = require("https");
 const http = require("http");
 const { renderGraphicTierlistPng, setAvatarCacheDir, clearGraphicAvatarCache, isPureimageAvailable, DEFAULT_GRAPHIC_TIER_COLORS } = require("./graphic-tierlist");
+const { buildCommands } = require("./src/onboard/commands");
+const { commitMutation } = require("./src/onboard/refresh-runner");
+const {
+  createPresentationDefaults,
+  ensurePresentationConfig,
+  getGraphicTierlistBoardState,
+  getTextTierlistBoardState,
+  getTierLabel,
+  getWelcomePanelState: readWelcomePanelState,
+  resolvePresentation,
+} = require("./src/onboard/presentation");
 
 const {
   Client,
@@ -19,7 +30,6 @@ const {
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
-  SlashCommandBuilder,
   MessageFlags,
 } = require("discord.js");
 
@@ -119,24 +129,24 @@ function buildRuntimeConfig(fileConfig = {}) {
       },
     },
     ui: {
-      welcomeTitle: envText("WELCOME_TITLE", fileConfig?.ui?.welcomeTitle || "Jujutsu Shinigans Onboarding"),
-      welcomeDescription: envText("WELCOME_DESCRIPTION", fileConfig?.ui?.welcomeDescription || "Нажми кнопку ниже, выбери 1 или 2 мейнов, укажи точное количество kills и отправь следующим сообщением скрин. После подачи заявки бот сразу выдаст тебе роль доступа, а kill-tier роль прилетит после проверки модератором."),
-      getRoleButtonLabel: envText("GET_ROLE_BUTTON_LABEL", fileConfig?.ui?.getRoleButtonLabel || "Получить роль"),
-      tierlistButtonLabel: envText("TIERLIST_BUTTON_LABEL", fileConfig?.ui?.tierlistButtonLabel || "Текстовый тир-лист"),
-      tierlistTitle: envText("TIERLIST_TITLE", fileConfig?.ui?.tierlistTitle || "Текстовый тир-лист"),
+      welcomeTitle: String(fileConfig?.ui?.welcomeTitle || "Jujutsu Shinigans Onboarding").trim(),
+      welcomeDescription: String(
+        fileConfig?.ui?.welcomeDescription ||
+        "Нажми кнопку ниже, выбери 1 или 2 мейнов, укажи точное количество kills и отправь следующим сообщением скрин. После подачи заявки бот сразу выдаст тебе роль доступа, а kill-tier роль прилетит после проверки модератором."
+      ).trim(),
+      getRoleButtonLabel: String(fileConfig?.ui?.getRoleButtonLabel || "Получить роль").trim(),
+      tierlistButtonLabel: String(fileConfig?.ui?.tierlistButtonLabel || "Текстовый тир-лист").trim(),
+      tierlistTitle: String(fileConfig?.ui?.tierlistTitle || "Текстовый тир-лист").trim(),
     },
     graphicTierlist: {
-      title: envText("GRAPHIC_TIERLIST_TITLE", fileConfig?.graphicTierlist?.title || "Графический тир-лист"),
-      subtitle: envText(
-        "GRAPHIC_TIERLIST_SUBTITLE",
-        fileConfig?.graphicTierlist?.subtitle || "Подтверждённые игроки и текущая расстановка по kills"
-      ),
+      title: String(fileConfig?.graphicTierlist?.title || "Графический тир-лист").trim(),
+      subtitle: String(fileConfig?.graphicTierlist?.subtitle || "Подтверждённые игроки и текущая расстановка по kills").trim(),
       tierColors: {
-        1: envText("GRAPHIC_TIER_COLOR_1", fileConfig?.graphicTierlist?.tierColors?.["1"] || DEFAULT_GRAPHIC_TIER_COLORS[1]),
-        2: envText("GRAPHIC_TIER_COLOR_2", fileConfig?.graphicTierlist?.tierColors?.["2"] || DEFAULT_GRAPHIC_TIER_COLORS[2]),
-        3: envText("GRAPHIC_TIER_COLOR_3", fileConfig?.graphicTierlist?.tierColors?.["3"] || DEFAULT_GRAPHIC_TIER_COLORS[3]),
-        4: envText("GRAPHIC_TIER_COLOR_4", fileConfig?.graphicTierlist?.tierColors?.["4"] || DEFAULT_GRAPHIC_TIER_COLORS[4]),
-        5: envText("GRAPHIC_TIER_COLOR_5", fileConfig?.graphicTierlist?.tierColors?.["5"] || DEFAULT_GRAPHIC_TIER_COLORS[5]),
+        1: String(fileConfig?.graphicTierlist?.tierColors?.["1"] || DEFAULT_GRAPHIC_TIER_COLORS[1]).trim(),
+        2: String(fileConfig?.graphicTierlist?.tierColors?.["2"] || DEFAULT_GRAPHIC_TIER_COLORS[2]).trim(),
+        3: String(fileConfig?.graphicTierlist?.tierColors?.["3"] || DEFAULT_GRAPHIC_TIER_COLORS[3]).trim(),
+        4: String(fileConfig?.graphicTierlist?.tierColors?.["4"] || DEFAULT_GRAPHIC_TIER_COLORS[4]).trim(),
+        5: String(fileConfig?.graphicTierlist?.tierColors?.["5"] || DEFAULT_GRAPHIC_TIER_COLORS[5]).trim(),
       },
     },
     reminders: {
@@ -154,11 +164,11 @@ function buildRuntimeConfig(fileConfig = {}) {
       ),
     },
     killTierLabels: {
-      1: envText("KILL_TIER_LABEL_1", fileConfig?.killTierLabels?.["1"] || "Низший ранг"),
-      2: envText("KILL_TIER_LABEL_2", fileConfig?.killTierLabels?.["2"] || "Средний ранг"),
-      3: envText("KILL_TIER_LABEL_3", fileConfig?.killTierLabels?.["3"] || "Высший ранг"),
-      4: envText("KILL_TIER_LABEL_4", fileConfig?.killTierLabels?.["4"] || "Особый ранг"),
-      5: envText("KILL_TIER_LABEL_5", fileConfig?.killTierLabels?.["5"] || "Абсолютный ранг"),
+      1: String(fileConfig?.killTierLabels?.["1"] || "Низший ранг").trim(),
+      2: String(fileConfig?.killTierLabels?.["2"] || "Средний ранг").trim(),
+      3: String(fileConfig?.killTierLabels?.["3"] || "Высший ранг").trim(),
+      4: String(fileConfig?.killTierLabels?.["4"] || "Особый ранг").trim(),
+      5: String(fileConfig?.killTierLabels?.["5"] || "Абсолютный ранг").trim(),
     },
     characters,
   };
@@ -221,10 +231,15 @@ function loadDb() {
         messageId: "",
       },
       tierlistBoard: {
-        channelId: appConfig.channels.tierlistChannelId || "",
-        graphicChannelId: "",
-        graphicMessageId: "",
-        textMessageId: "",
+        text: {
+          channelId: appConfig.channels.tierlistChannelId || "",
+          messageId: "",
+        },
+        graphic: {
+          channelId: appConfig.channels.tierlistChannelId || "",
+          messageId: "",
+          lastUpdated: null,
+        },
       },
       generatedRoles: {
         characters: {},
@@ -237,37 +252,27 @@ function loadDb() {
 
   const db = loadJsonFile(DB_PATH, fallback);
   db.config ||= {};
-  db.config.welcomePanel ||= { channelId: appConfig.channels.welcomeChannelId, messageId: "" };
-  db.config.tierlistBoard ||= { channelId: appConfig.channels.tierlistChannelId || "", graphicChannelId: "", graphicMessageId: "", textMessageId: "" };
-  if (db.config.tierlistBoard.messageId && !db.config.tierlistBoard.textMessageId) {
-    db.config.tierlistBoard.textMessageId = db.config.tierlistBoard.messageId;
-  }
-  db.config.tierlistBoard.graphicChannelId ||= "";
-  db.config.tierlistBoard.graphicMessageId ||= "";
-  db.config.tierlistBoard.textMessageId ||= "";
-  db.config.generatedRoles ||= { characters: {}, tiers: {} };
-  db.config.graphicTierlist ||= {
-    title: "",
-    tierColors: {},
-    tierLabels: {},
-    image: { width: null, height: null, icon: null },
-    panel: { selectedTier: 5 },
-    messageText: "",
-    lastUpdated: null,
-  };
-  db.config.graphicTierlist.image ||= { width: null, height: null, icon: null };
-  db.config.graphicTierlist.panel ||= { selectedTier: 5 };
+  const migrated = ensurePresentationConfig(db.config, {
+    defaults: createPresentationDefaults(fileConfig, { defaultGraphicTierColors: DEFAULT_GRAPHIC_TIER_COLORS }),
+    defaultWelcomeChannelId: appConfig.channels.welcomeChannelId,
+    defaultTextTierlistChannelId: appConfig.channels.tierlistChannelId || "",
+    defaultGraphicTierColors: DEFAULT_GRAPHIC_TIER_COLORS,
+  });
   db.profiles ||= {};
   db.submissions ||= {};
   db.cooldowns ||= {};
+  db.__needsSaveAfterLoad = migrated.mutated;
   return db;
 }
 
 const db = loadDb();
 
 function saveDb() {
+  delete db.__needsSaveAfterLoad;
   saveJsonFile(DB_PATH, db);
 }
+
+if (db.__needsSaveAfterLoad) saveDb();
 
 function nowIso() {
   return new Date().toISOString();
@@ -307,8 +312,12 @@ function killTierFor(kills) {
   return 1;
 }
 
+function getPresentation() {
+  return resolvePresentation(db.config, fileConfig, { defaultGraphicTierColors: DEFAULT_GRAPHIC_TIER_COLORS });
+}
+
 function formatTierLabel(tier) {
-  return appConfig.killTierLabels?.[String(tier)] || `Tier ${tier}`;
+  return getTierLabel(getPresentation(), tier);
 }
 
 function ephemeralPayload(payload) {
@@ -340,6 +349,12 @@ function getGeneratedRoleState() {
 function formatNumber(value) {
   const amount = Number(value) || 0;
   return amount.toLocaleString("ru-RU");
+}
+
+function previewText(value, max = 180) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  if (text.length <= max) return text;
+  return `${text.slice(0, Math.max(0, max - 1)).trimEnd()}…`;
 }
 
 function getProfileDisplayName(userId, profile = null) {
@@ -443,12 +458,13 @@ function getTierlistStats(entries) {
 function buildTierlistEmbeds() {
   const entries = getApprovedTierlistEntries();
   const stats = getTierlistStats(entries);
+  const presentation = getPresentation();
 
   if (!entries.length) {
     return {
       embeds: [
         new EmbedBuilder()
-          .setTitle(appConfig.ui.tierlistTitle || "Текстовый тир-лист")
+          .setTitle(presentation.tierlist.textTitle)
           .setDescription([
             "Пока нет подтверждённых игроков в тир-листе.",
             `Pending заявок: **${stats.pendingCount}**`,
@@ -471,7 +487,7 @@ function buildTierlistEmbeds() {
 
   const embeds = [
     new EmbedBuilder()
-      .setTitle(appConfig.ui.tierlistTitle || "Текстовый тир-лист")
+      .setTitle(presentation.tierlist.textTitle)
       .setDescription(summaryLines.join("\n")),
   ];
 
@@ -492,7 +508,7 @@ function buildTierlistEmbeds() {
 
   entries.forEach((entry, index) => {
     const lineNumber = index + 1;
-    const line = `${lineNumber}. [T${entry.killTier}] ${entry.displayName} — ${formatNumber(entry.approvedKills)} kills • mains: ${entry.mains.length ? entry.mains.join(", ") : "—"}`;
+    const line = `${lineNumber}. [${formatTierLabel(entry.killTier)} / T${entry.killTier}] ${entry.displayName} — ${formatNumber(entry.approvedKills)} kills • mains: ${entry.mains.length ? entry.mains.join(", ") : "—"}`;
     if (!chunk.length) chunkStart = lineNumber;
 
     if (chunk.length >= 15 || chunkLength + line.length + 1 > 3800) {
@@ -521,8 +537,9 @@ function buildTierlistBoardPayload() {
 async function buildGraphicTierlistBoardPayload(client) {
   const entries = getApprovedTierlistEntries();
   const guild = await getGuild(client);
-  const gfx = getGraphicTierlistConfig();
+  const graphicBoard = getGraphicTierlistBoardState(db.config, appConfig.channels.tierlistChannelId || "");
   const imgCfg = getGraphicImageConfig();
+  const presentation = getPresentation();
 
   if (!isPureimageAvailable()) {
     throw new Error("pureimage не загружен, поэтому графический PNG тир-лист не может быть собран.");
@@ -533,7 +550,7 @@ async function buildGraphicTierlistBoardPayload(client) {
     guild,
     entries,
     title: getEffectiveGraphicTitle(),
-    tierLabels: { ...appConfig.killTierLabels, ...(gfx.tierLabels || {}) },
+    tierLabels: presentation.tierlist.labels,
     tierColors: getEffectiveTierColors(),
     imageWidth: imgCfg.W,
     imageHeight: imgCfg.H,
@@ -542,9 +559,6 @@ async function buildGraphicTierlistBoardPayload(client) {
   if (!pngBuffer?.length) {
     throw new Error("PNG тир-лист не был сгенерирован.");
   }
-
-  gfx.lastUpdated = Date.now();
-  saveDb();
 
   const embedBuilder = new EmbedBuilder()
     .setTitle(getEffectiveGraphicTitle())
@@ -567,8 +581,7 @@ async function buildGraphicTierlistBoardPayload(client) {
 }
 
 function buildGraphicPanelTierSelect() {
-  const gfx = getGraphicTierlistConfig();
-  const selected = Number(gfx.panel?.selectedTier) || 5;
+  const selected = Number(getPresentation().tierlist.graphic.panel.selectedTier) || 5;
   const options = [5, 4, 3, 2, 1].map((t) => ({
     label: `Тир ${t} — ${formatTierLabel(t)}`,
     value: String(t),
@@ -580,9 +593,9 @@ function buildGraphicPanelTierSelect() {
 }
 
 function buildGraphicPanelPayload() {
-  const gfx = getGraphicTierlistConfig();
   const cfg = getGraphicImageConfig();
-  const selectedTier = Number(gfx.panel?.selectedTier) || 5;
+  const presentation = getPresentation();
+  const selectedTier = Number(presentation.tierlist.graphic.panel.selectedTier) || 5;
   const tierColors = getEffectiveTierColors();
   const tierColor = tierColors[selectedTier] || DEFAULT_GRAPHIC_TIER_COLORS[selectedTier];
 
@@ -631,6 +644,62 @@ function buildGraphicPanelPayload() {
   );
 
   return ephemeralPayload({ embeds: [embed], components: [row1, row2, row3, row4, row5] });
+}
+
+function buildGraphicStatusLines() {
+  const graphicBoard = getGraphicTierlistBoardState(db.config, appConfig.channels.tierlistChannelId || "");
+  const cfg = getGraphicImageConfig();
+  const presentation = getPresentation();
+  const selectedTier = Number(presentation.tierlist.graphic.panel.selectedTier) || 5;
+
+  return [
+    `title: ${presentation.tierlist.graphicTitle}`,
+    `messageText: ${previewGraphicMessageText(120)}`,
+    `channelId: ${graphicBoard.channelId || "—"}`,
+    `messageId: ${graphicBoard.messageId || "—"}`,
+    `img: ${cfg.W}x${cfg.H}, icon=${cfg.ICON}`,
+    `selectedTier: ${selectedTier} -> ${formatTierLabel(selectedTier)}`,
+    `tierColors: ${[5, 4, 3, 2, 1].map((tier) => `${tier}=${presentation.tierlist.graphic.colors[tier] || DEFAULT_GRAPHIC_TIER_COLORS[tier]}`).join(", ")}`,
+    `lastUpdated: ${graphicBoard.lastUpdated ? new Date(graphicBoard.lastUpdated).toLocaleString("ru-RU") : "—"}`,
+  ];
+}
+
+function buildWelcomeEditorPayload(statusText = "") {
+  const presentation = getPresentation();
+  const embed = new EmbedBuilder()
+    .setTitle("Welcome Editor")
+    .setDescription([
+      `**Welcome title:** ${previewText(presentation.welcome.title, 140)}`,
+      `**Welcome text:** ${previewText(presentation.welcome.description, 240)}`,
+      `**Buttons:** ${presentation.welcome.buttons.begin} / ${presentation.welcome.buttons.quickMains} / ${presentation.welcome.buttons.myCard}`,
+      `**Text tierlist:** ${presentation.tierlist.textTitle}`,
+      `**PNG tierlist:** ${presentation.tierlist.graphicTitle}`,
+      `**PNG message:** ${previewGraphicMessageText(140)}`,
+      "",
+      presentation.welcome.steps.map((step, index) => `${index + 1}. ${previewText(step, 120)}`).join("\n"),
+    ].join("\n"));
+
+  if (statusText) {
+    embed.addFields({ name: "Последнее действие", value: statusText, inline: false });
+  }
+
+  const row1 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId("welcome_editor_text").setLabel("Welcome текст").setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId("welcome_editor_steps").setLabel("Шаги welcome").setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId("welcome_editor_buttons").setLabel("Кнопки").setStyle(ButtonStyle.Primary)
+  );
+
+  const row2 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId("welcome_editor_tiers").setLabel("Названия тиров").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId("welcome_editor_png").setLabel("PNG и tierlist").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId("welcome_editor_refresh").setLabel("Пересобрать всё").setStyle(ButtonStyle.Secondary)
+  );
+
+  const row3 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId("welcome_editor_close").setLabel("Закрыть").setStyle(ButtonStyle.Danger)
+  );
+
+  return ephemeralPayload({ embeds: [embed], components: [row1, row2, row3] });
 }
 
 function sanitizeFileName(name, fallbackExt = "png") {
@@ -823,35 +892,22 @@ async function syncPendingSubmissionMainsForUser(client, userId, selectedEntries
 }
 
 function getWelcomePanelState() {
-  db.config.welcomePanel ||= { channelId: appConfig.channels.welcomeChannelId, messageId: "" };
-  if (!db.config.welcomePanel.channelId) db.config.welcomePanel.channelId = appConfig.channels.welcomeChannelId;
-  return db.config.welcomePanel;
-}
-
-function getTierlistBoardState() {
-  db.config.tierlistBoard ||= { channelId: appConfig.channels.tierlistChannelId || "", graphicChannelId: "", graphicMessageId: "", textMessageId: "" };
-  if (db.config.tierlistBoard.messageId && !db.config.tierlistBoard.textMessageId) {
-    db.config.tierlistBoard.textMessageId = db.config.tierlistBoard.messageId;
-  }
-  db.config.tierlistBoard.graphicChannelId ||= "";
-  db.config.tierlistBoard.graphicMessageId ||= "";
-  db.config.tierlistBoard.textMessageId ||= "";
-  if (!db.config.tierlistBoard.channelId && appConfig.channels.tierlistChannelId) {
-    db.config.tierlistBoard.channelId = appConfig.channels.tierlistChannelId;
-  }
-  return db.config.tierlistBoard;
+  return readWelcomePanelState(db.config, appConfig.channels.welcomeChannelId);
 }
 
 function getGraphicTierlistConfig() {
-  db.config.graphicTierlist ||= { title: "", tierColors: {}, tierLabels: {}, image: { width: null, height: null, icon: null }, panel: { selectedTier: 5 }, messageText: "", lastUpdated: null };
-  db.config.graphicTierlist.image ||= { width: null, height: null, icon: null };
-  db.config.graphicTierlist.panel ||= { selectedTier: 5 };
-  return db.config.graphicTierlist;
+  db.config.presentation ||= {};
+  db.config.presentation.tierlist ||= {};
+  db.config.presentation.tierlist.graphic ||= {};
+  db.config.presentation.tierlist.graphic.image ||= {};
+  db.config.presentation.tierlist.graphic.colors ||= {};
+  db.config.presentation.tierlist.graphic.panel ||= { selectedTier: 5 };
+  return db.config.presentation.tierlist.graphic;
 }
 
 function getGraphicImageConfig() {
-  const cfg = getGraphicTierlistConfig();
-  const img = cfg.image || {};
+  const presentation = getPresentation();
+  const img = presentation.tierlist.graphic.image || {};
   return {
     W: Math.max(1200, Number(img.width) || 2000),
     H: Math.max(700, Number(img.height) || 1200),
@@ -860,18 +916,15 @@ function getGraphicImageConfig() {
 }
 
 function getEffectiveTierColors() {
-  const gfx = getGraphicTierlistConfig();
-  return { ...DEFAULT_GRAPHIC_TIER_COLORS, ...(appConfig.graphicTierlist?.tierColors || {}), ...(gfx.tierColors || {}) };
+  return { ...getPresentation().tierlist.graphic.colors };
 }
 
 function getEffectiveGraphicTitle() {
-  const gfx = getGraphicTierlistConfig();
-  return gfx.title || appConfig.graphicTierlist?.title || "Графический тир-лист";
+  return getPresentation().tierlist.graphicTitle;
 }
 
 function getEffectiveMessageText() {
-  const gfx = getGraphicTierlistConfig();
-  return gfx.messageText || appConfig.graphicTierlist?.subtitle || "Подтверждённые игроки и текущая расстановка по kills";
+  return getPresentation().tierlist.graphicMessageText;
 }
 
 function previewGraphicMessageText(maxLen = 170) {
@@ -1132,35 +1185,31 @@ async function grantAccessRole(client, userId, reason = "welcome application sub
 }
 
 function buildWelcomeEmbed() {
-  const title = appConfig.welcomeEmbed?.title || appConfig.ui.welcomeTitle || "Jujutsu Shinigans Onboarding";
-  const desc = appConfig.welcomeEmbed?.description || appConfig.ui.welcomeDescription || "Нажми кнопку ниже, выбери мейнов, укажи kills и отправь скрин.";
+  const presentation = getPresentation();
   return new EmbedBuilder()
-    .setTitle(title)
+    .setTitle(presentation.welcome.title)
     .setDescription([
-      desc,
+      presentation.welcome.description,
       "",
-      "1. Нажми **Получить роль**.",
-      "2. Выбери **1 или 2** мейнов.",
-      "3. Введи **точное количество kills**.",
-      "4. Следующим сообщением отправь **скрин** в этот канал.",
-      "5. Бот удалит скрин после обработки, сразу даст access-role, а kill-tier прилетит после проверки модератором.",
+      ...presentation.welcome.steps.map((step, index) => `${index + 1}. ${step}`),
     ].join("\n"));
 }
 
 function buildWelcomeComponents() {
+  const presentation = getPresentation();
   return [
     new ActionRowBuilder().addComponents(
       new ButtonBuilder()
         .setCustomId("onboard_begin")
-        .setLabel(appConfig.ui.getRoleButtonLabel || "Получить роль")
+        .setLabel(presentation.welcome.buttons.begin)
         .setStyle(ButtonStyle.Primary),
       new ButtonBuilder()
         .setCustomId("onboard_quick_mains")
-        .setLabel("Быстро сменить мейнов")
+        .setLabel(presentation.welcome.buttons.quickMains)
         .setStyle(ButtonStyle.Secondary),
       new ButtonBuilder()
         .setCustomId("onboard_my_card")
-        .setLabel("Моя карточка")
+        .setLabel(presentation.welcome.buttons.myCard)
         .setStyle(ButtonStyle.Secondary)
     ),
   ];
@@ -1286,7 +1335,7 @@ async function findExistingTextTierlistMessage(channel) {
     (message) =>
       message.author?.id === botId &&
       (String(message?.content || "").startsWith("Текстовый тир-лист.") ||
-      messageHasEmbedTitle(message, appConfig.ui.tierlistTitle || "Текстовый тир-лист"))
+      messageHasEmbedTitle(message, getPresentation().tierlist.textTitle))
   );
 }
 
@@ -1353,10 +1402,12 @@ async function unpinBotMessagesInChannel(channel) {
 }
 
 async function cleanupBotPins(client) {
+  const textBoard = getTextTierlistBoardState(db.config, appConfig.channels.tierlistChannelId || "");
+  const graphicBoard = getGraphicTierlistBoardState(db.config, appConfig.channels.tierlistChannelId || "");
   const channels = new Set([
     getWelcomePanelState().channelId,
-    getTierlistBoardState().channelId,
-    getTierlistBoardState().graphicChannelId,
+    textBoard.channelId,
+    graphicBoard.channelId,
   ].filter(Boolean));
 
   for (const channelId of channels) {
@@ -1365,7 +1416,7 @@ async function cleanupBotPins(client) {
   }
 }
 
-async function ensureWelcomePanel(client) {
+async function refreshWelcomePanel(client) {
   const panelState = getWelcomePanelState();
   const channel = await client.channels.fetch(panelState.channelId).catch(() => null);
   if (!channel?.isTextBased()) {
@@ -1402,13 +1453,13 @@ async function ensureWelcomePanel(client) {
   return message;
 }
 
-async function ensureTierlistBoardMessage(client) {
-  return ensureTextTierlistBoardMessage(client);
+async function ensureWelcomePanel(client) {
+  return refreshWelcomePanel(client);
 }
 
-async function ensureGraphicTierlistBoardMessage(client) {
-  const state = getTierlistBoardState();
-  const channelId = state.graphicChannelId || state.channelId || appConfig.channels.tierlistChannelId;
+async function refreshGraphicTierlistBoard(client) {
+  const state = getGraphicTierlistBoardState(db.config, appConfig.channels.tierlistChannelId || "");
+  const channelId = state.channelId || appConfig.channels.tierlistChannelId;
   if (!channelId || isPlaceholder(channelId)) return null;
 
   const channel = await client.channels.fetch(channelId).catch(() => null);
@@ -1418,13 +1469,13 @@ async function ensureGraphicTierlistBoardMessage(client) {
   }
 
   let message = null;
-  if (state.graphicMessageId) {
-    message = await channel.messages.fetch(state.graphicMessageId).catch(() => null);
+  if (state.messageId) {
+    message = await channel.messages.fetch(state.messageId).catch(() => null);
   }
   if (!message) {
     message = await findExistingGraphicTierlistMessage(channel);
-    if (message && state.graphicMessageId !== message.id) {
-      state.graphicMessageId = message.id;
+    if (message && state.messageId !== message.id) {
+      state.messageId = message.id;
       saveDb();
     }
   }
@@ -1433,15 +1484,20 @@ async function ensureGraphicTierlistBoardMessage(client) {
   const created = !message;
   if (!message) {
     message = await channel.send(payload);
-    state.graphicMessageId = message.id;
+    state.messageId = message.id;
   } else {
     await message.edit({ ...payload, attachments: [] });
     await message.unpin().catch(() => {});
   }
 
+  state.lastUpdated = Date.now();
   state.channelId = channelId;
   saveDb();
   return { message, created };
+}
+
+async function ensureGraphicTierlistBoardMessage(client) {
+  return refreshGraphicTierlistBoard(client);
 }
 
 async function deleteManagedChannelMessage(client, channelId, messageId) {
@@ -1455,7 +1511,7 @@ async function deleteManagedChannelMessage(client, channelId, messageId) {
 }
 
 async function repostGraphicTierlistBoardToChannel(client, targetChannelId) {
-  const state = getTierlistBoardState();
+  const state = getGraphicTierlistBoardState(db.config, appConfig.channels.tierlistChannelId || "");
   const nextChannelId = String(targetChannelId || "").trim();
   if (!nextChannelId || isPlaceholder(nextChannelId)) {
     throw new Error("Нужно указать текстовый канал для графического тир-листа.");
@@ -1466,18 +1522,18 @@ async function repostGraphicTierlistBoardToChannel(client, targetChannelId) {
     throw new Error("Указанный канал не является текстовым.");
   }
 
-  const previousChannelId = state.graphicChannelId || state.channelId || appConfig.channels.tierlistChannelId || "";
-  const previousMessageId = state.graphicMessageId || "";
+  const previousChannelId = state.channelId || appConfig.channels.tierlistChannelId || "";
+  const previousMessageId = state.messageId || "";
 
-  state.graphicChannelId = nextChannelId;
-  state.graphicMessageId = "";
+  state.channelId = nextChannelId;
+  state.messageId = "";
   saveDb();
 
   if (previousMessageId) {
     await deleteManagedChannelMessage(client, previousChannelId || nextChannelId, previousMessageId);
   }
 
-  const result = await ensureGraphicTierlistBoardMessage(client);
+  const result = await refreshGraphicTierlistBoard(client);
   return {
     channelId: nextChannelId,
     previousChannelId,
@@ -1485,8 +1541,8 @@ async function repostGraphicTierlistBoardToChannel(client, targetChannelId) {
   };
 }
 
-async function ensureTextTierlistBoardMessage(client, options = {}) {
-  const state = getTierlistBoardState();
+async function refreshTextTierlistBoard(client, options = {}) {
+  const state = getTextTierlistBoardState(db.config, appConfig.channels.tierlistChannelId || "");
   const channelId = state.channelId || appConfig.channels.tierlistChannelId;
   if (!channelId || isPlaceholder(channelId)) return null;
 
@@ -1496,20 +1552,20 @@ async function ensureTextTierlistBoardMessage(client, options = {}) {
     return null;
   }
 
-  if (options.forceRecreate && state.textMessageId) {
-    const existing = await channel.messages.fetch(state.textMessageId).catch(() => null);
+  if (options.forceRecreate && state.messageId) {
+    const existing = await channel.messages.fetch(state.messageId).catch(() => null);
     if (existing) await existing.delete().catch(() => {});
-    state.textMessageId = "";
+    state.messageId = "";
   }
 
   let message = null;
-  if (state.textMessageId) {
-    message = await channel.messages.fetch(state.textMessageId).catch(() => null);
+  if (state.messageId) {
+    message = await channel.messages.fetch(state.messageId).catch(() => null);
   }
   if (!message) {
     message = await findExistingTextTierlistMessage(channel);
-    if (message && state.textMessageId !== message.id) {
-      state.textMessageId = message.id;
+    if (message && state.messageId !== message.id) {
+      state.messageId = message.id;
       saveDb();
     }
   }
@@ -1517,7 +1573,7 @@ async function ensureTextTierlistBoardMessage(client, options = {}) {
   const payload = buildTierlistBoardPayload();
   if (!message) {
     message = await channel.send(payload);
-    state.textMessageId = message.id;
+    state.messageId = message.id;
   } else {
     await message.edit(payload);
     await message.unpin().catch(() => {});
@@ -1528,17 +1584,44 @@ async function ensureTextTierlistBoardMessage(client, options = {}) {
   return message;
 }
 
-async function refreshTierlistBoard(client) {
+async function ensureTextTierlistBoardMessage(client, options = {}) {
+  return refreshTextTierlistBoard(client, options);
+}
+
+async function refreshAllTierlists(client) {
   try {
-    const state = getTierlistBoardState();
-    const hadGraphicMessage = Boolean(state.graphicMessageId);
-    await ensureGraphicTierlistBoardMessage(client);
-    await ensureTextTierlistBoardMessage(client, { forceRecreate: !hadGraphicMessage && Boolean(state.textMessageId) });
+    const graphicState = getGraphicTierlistBoardState(db.config, appConfig.channels.tierlistChannelId || "");
+    const textState = getTextTierlistBoardState(db.config, appConfig.channels.tierlistChannelId || "");
+    const hadGraphicMessage = Boolean(graphicState.messageId);
+    await refreshGraphicTierlistBoard(client);
+    await refreshTextTierlistBoard(client, { forceRecreate: !hadGraphicMessage && Boolean(textState.messageId) });
     return true;
   } catch (error) {
     console.error("Tierlist board refresh failed:", error?.message || error);
     return false;
   }
+}
+
+async function refreshTierlistBoard(client) {
+  return refreshAllTierlists(client);
+}
+
+async function applyUiMutation(client, scope, mutate) {
+  return commitMutation({
+    mutate,
+    persist: saveDb,
+    scope,
+    refreshers: {
+      refreshWelcomePanel: () => refreshWelcomePanel(client),
+      refreshGraphicTierlistBoard: () => refreshGraphicTierlistBoard(client),
+      refreshTextTierlistBoard: () => refreshTextTierlistBoard(client),
+      refreshAllTierlists: () => refreshAllTierlists(client),
+      refreshAll: async () => {
+        await refreshWelcomePanel(client);
+        await refreshAllTierlists(client);
+      },
+    },
+  });
 }
 
 async function fetchReviewMessage(client, submission) {
@@ -1923,67 +2006,12 @@ function buildModeratorPanelPayload(statusText = "", includeFlags = true) {
         new ButtonBuilder().setCustomId("panel_add_character").setLabel("Добавить персонажа").setStyle(ButtonStyle.Success)
       ),
       new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId("welcome_editor").setLabel("Редактор welcome").setStyle(ButtonStyle.Secondary)
+        new ButtonBuilder().setCustomId("welcome_editor").setLabel("Редактор UI").setStyle(ButtonStyle.Secondary)
       ),
     ],
   };
 
   return includeFlags ? ephemeralPayload(payload) : payload;
-}
-
-function buildCommands() {
-  return [
-    new SlashCommandBuilder()
-      .setName("onboard")
-      .setDescription("Welcome bot commands")
-      .addSubcommand((subcommand) =>
-        subcommand
-          .setName("profile")
-          .setDescription("Показать профиль")
-          .addUserOption((option) => option.setName("target").setDescription("Игрок"))
-      )
-      .addSubcommand((subcommand) =>
-        subcommand.setName("pending").setDescription("Показать pending-заявки")
-      )
-      .addSubcommand((subcommand) =>
-        subcommand.setName("tierlist").setDescription("Показать текстовый тир-лист")
-      )
-      .addSubcommand((subcommand) =>
-        subcommand.setName("stats").setDescription("Показать общую статистику")
-      )
-      .addSubcommand((subcommand) =>
-        subcommand.setName("panel").setDescription("Открыть модераторскую панель управления")
-      )
-      .addSubcommand((subcommand) =>
-        subcommand
-          .setName("movegraphic")
-          .setDescription("Перезалить графический тир-лист в другой канал")
-          .addChannelOption((option) => option.setName("channel").setDescription("Канал для PNG тир-листа").setRequired(true))
-      )
-      .addSubcommand((subcommand) =>
-        subcommand.setName("remindmissing").setDescription("Напомнить всем, кого нет в тир-листе")
-      )
-      .addSubcommand((subcommand) =>
-        subcommand
-          .setName("modset")
-          .setDescription("Вручную выставить kills и tier-role")
-          .addUserOption((option) => option.setName("target").setDescription("Игрок").setRequired(true))
-          .addAttachmentOption((option) => option.setName("screenshot").setDescription("Скрин-пруф").setRequired(true))
-          .addIntegerOption((option) => option.setName("kills").setDescription("Точное число kills").setMinValue(0).setRequired(true))
-      )
-      .addSubcommand((subcommand) =>
-        subcommand
-          .setName("removetier")
-          .setDescription("Снять kill-tier роль")
-          .addUserOption((option) => option.setName("target").setDescription("Игрок").setRequired(true))
-      )
-      .addSubcommand((subcommand) =>
-        subcommand
-          .setName("syncroles")
-          .setDescription("Синхронизировать kill-tier роли по базе")
-          .addUserOption((option) => option.setName("target").setDescription("Игрок"))
-      ),
-  ].map((command) => command.toJSON());
 }
 
 async function registerGuildCommands(client) {
@@ -2032,8 +2060,8 @@ client.once("clientReady", async () => {
   const generated = await ensureManagedRoles(client);
   await registerGuildCommands(client);
   await syncApprovedTierRoles(client).catch(() => 0);
-  await ensureWelcomePanel(client);
-  await refreshTierlistBoard(client);
+  await refreshWelcomePanel(client);
+  await refreshAllTierlists(client);
   await cleanupBotPins(client).catch(() => 0);
   console.log(`Managed roles ready. Characters: ${generated.characterRoles}, tiers: ${generated.tierRoles}`);
   console.log("Welcome onboarding bot is ready");
@@ -2043,7 +2071,7 @@ client.on("guildMemberAdd", async (member) => {
   if (member.guild.id !== GUILD_ID) return;
   const text = [
     `Добро пожаловать на сервер ${member.guild.name}.`,
-    `Чтобы открыть доступ и выбрать мейнов, зайди в <#${appConfig.channels.welcomeChannelId}> и нажми кнопку **${appConfig.ui.getRoleButtonLabel || "Получить роль"}**.`,
+    `Чтобы открыть доступ и выбрать мейнов, зайди в <#${appConfig.channels.welcomeChannelId}> и нажми кнопку **${getPresentation().welcome.buttons.begin}**.`,
   ].join("\n");
   await member.send(text).catch(() => {});
 });
@@ -2148,7 +2176,7 @@ client.on("interactionCreate", async (interaction) => {
       }
 
       const lines = pendingList.map((submission) => {
-        return `• <@${submission.userId}> | kills ${submission.kills} | tier ${submission.derivedTier} | id \`${submission.id}\``;
+        return `• <@${submission.userId}> | kills ${submission.kills} | tier ${submission.derivedTier} (${formatTierLabel(submission.derivedTier)}) | id \`${submission.id}\``;
       });
 
       await interaction.reply(ephemeralPayload({
@@ -2159,6 +2187,35 @@ client.on("interactionCreate", async (interaction) => {
 
     if (subcommand === "panel") {
       await interaction.reply(buildModeratorPanelPayload());
+      return;
+    }
+
+    if (subcommand === "welcomeedit") {
+      await interaction.reply(buildWelcomeEditorPayload());
+      return;
+    }
+
+    if (subcommand === "refreshwelcome") {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      await refreshWelcomePanel(client);
+      await interaction.editReply("Welcome-панель обновлена.");
+      return;
+    }
+
+    if (subcommand === "refreshtierlists") {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      const refreshed = await refreshAllTierlists(client);
+      await interaction.editReply(refreshed ? "Текстовый и PNG tier-листы обновлены." : "Не удалось обновить tier-листы.");
+      return;
+    }
+
+    if (subcommand === "graphicpanel") {
+      await interaction.reply(buildGraphicPanelPayload());
+      return;
+    }
+
+    if (subcommand === "graphicstatus") {
+      await interaction.reply(ephemeralPayload({ content: buildGraphicStatusLines().join("\n") }));
       return;
     }
 
@@ -2247,7 +2304,7 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
       await interaction.deferUpdate();
-      await refreshTierlistBoard(client);
+      await refreshGraphicTierlistBoard(client);
       return;
     }
 
@@ -2266,8 +2323,8 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
         return;
       }
-      const gfx = getGraphicTierlistConfig();
-      const selectedTier = Number(gfx.panel?.selectedTier) || 5;
+      const graphicPresentation = getGraphicTierlistConfig();
+      const selectedTier = Number(graphicPresentation.panel?.selectedTier) || 5;
 
       if (interaction.customId === "graphic_panel_close") {
         await interaction.update({ content: "PNG Panel закрыта.", embeds: [], components: [] });
@@ -2321,58 +2378,69 @@ client.on("interactionCreate", async (interaction) => {
       // Size adjustment buttons
       if (interaction.customId === "graphic_panel_icon_minus" || interaction.customId === "graphic_panel_icon_plus") {
         const delta = interaction.customId.endsWith("plus") ? 12 : -12;
-        gfx.image.icon = Math.max(64, Math.min(256, (gfx.image.icon || 112) + delta));
-        saveDb();
+        await applyUiMutation(client, "graphic", () => {
+          const image = getGraphicTierlistConfig().image;
+          image.icon = Math.max(64, Math.min(256, (image.icon || 112) + delta));
+        });
         await interaction.update(buildGraphicPanelPayload());
         return;
       }
 
       if (interaction.customId === "graphic_panel_w_minus" || interaction.customId === "graphic_panel_w_plus") {
         const delta = interaction.customId.endsWith("plus") ? 200 : -200;
-        gfx.image.width = Math.max(1200, Math.min(4096, (gfx.image.width || 2000) + delta));
-        saveDb();
+        await applyUiMutation(client, "graphic", () => {
+          const image = getGraphicTierlistConfig().image;
+          image.width = Math.max(1200, Math.min(4096, (image.width || 2000) + delta));
+        });
         await interaction.update(buildGraphicPanelPayload());
         return;
       }
 
       if (interaction.customId === "graphic_panel_h_minus" || interaction.customId === "graphic_panel_h_plus") {
         const delta = interaction.customId.endsWith("plus") ? 120 : -120;
-        gfx.image.height = Math.max(700, Math.min(2160, (gfx.image.height || 1200) + delta));
-        saveDb();
+        await applyUiMutation(client, "graphic", () => {
+          const image = getGraphicTierlistConfig().image;
+          image.height = Math.max(700, Math.min(2160, (image.height || 1200) + delta));
+        });
         await interaction.update(buildGraphicPanelPayload());
         return;
       }
 
       if (interaction.customId === "graphic_panel_reset_img") {
-        gfx.image = { width: null, height: null, icon: null };
-        saveDb();
+        await applyUiMutation(client, "graphic", () => {
+          getGraphicTierlistConfig().image = { width: null, height: null, icon: null };
+        });
         await interaction.update(buildGraphicPanelPayload());
         return;
       }
 
       if (interaction.customId === "graphic_panel_reset_color") {
-        if (gfx.tierColors) delete gfx.tierColors[selectedTier];
-        saveDb();
+        await applyUiMutation(client, "graphic", () => {
+          const colors = getGraphicTierlistConfig().colors;
+          if (colors) delete colors[selectedTier];
+        });
         await interaction.update(buildGraphicPanelPayload());
         return;
       }
 
       if (interaction.customId === "graphic_panel_reset_colors") {
-        gfx.tierColors = {};
-        saveDb();
+        await applyUiMutation(client, "graphic", () => {
+          getGraphicTierlistConfig().colors = {};
+        });
         await interaction.update(buildGraphicPanelPayload());
         return;
       }
 
       if (interaction.customId === "graphic_panel_clear_cache") {
         clearGraphicAvatarCache();
-        await interaction.reply(ephemeralPayload({ content: "Кэш аватарок очищен." }));
+        await refreshGraphicTierlistBoard(client);
+        await interaction.reply(ephemeralPayload({ content: "Кэш аватарок очищен и PNG пересобран." }));
         return;
       }
 
       if (interaction.customId === "graphic_panel_refresh") {
         await interaction.deferUpdate();
-        await refreshTierlistBoard(client);
+        await refreshGraphicTierlistBoard(client);
         await interaction.editReply(buildGraphicPanelPayload());
         return;
       }
@@ -2383,18 +2451,119 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.reply(ephemeralPayload({ content: "Нет прав. Только модераторы могут редактировать." }));
         return;
       }
-      const curTitle = appConfig.welcomeEmbed?.title || appConfig.ui.welcomeTitle || "Jujutsu Shinigans Onboarding";
-      const curDesc = appConfig.welcomeEmbed?.description || appConfig.ui.welcomeDescription || "Нажми кнопку ниже, выбери мейнов, укажи kills и отправь скрин.";
-      const modal = new ModalBuilder().setCustomId("welcome_editor_modal").setTitle("Редактор welcome-сообщения");
-      modal.addComponents(
-        new ActionRowBuilder().addComponents(
-          new TextInputBuilder().setCustomId("welcome_title").setLabel("Заголовок").setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(256).setValue(curTitle)
-        ),
-        new ActionRowBuilder().addComponents(
-          new TextInputBuilder().setCustomId("welcome_text").setLabel("Текст описания").setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(2000).setValue(curDesc)
-        )
-      );
-      await interaction.showModal(modal);
+      await interaction.reply(buildWelcomeEditorPayload());
+      return;
+    }
+
+    if (interaction.customId.startsWith("welcome_editor_")) {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      const presentation = getPresentation();
+
+      if (interaction.customId === "welcome_editor_close") {
+        await interaction.update({ content: "Welcome Editor закрыт.", embeds: [], components: [] });
+        return;
+      }
+
+      if (interaction.customId === "welcome_editor_refresh") {
+        await interaction.deferUpdate();
+        await refreshWelcomePanel(client);
+        await refreshAllTierlists(client);
+        await interaction.editReply(buildWelcomeEditorPayload("Welcome и tier-листы пересобраны."));
+        return;
+      }
+
+      if (interaction.customId === "welcome_editor_text") {
+        const modal = new ModalBuilder().setCustomId("welcome_editor_text_modal").setTitle("Welcome текст");
+        modal.addComponents(
+          new ActionRowBuilder().addComponents(
+            new TextInputBuilder().setCustomId("welcome_title").setLabel("Заголовок").setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(256).setValue(presentation.welcome.title)
+          ),
+          new ActionRowBuilder().addComponents(
+            new TextInputBuilder().setCustomId("welcome_text").setLabel("Текст описания").setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(2000).setValue(presentation.welcome.description)
+          )
+        );
+        await interaction.showModal(modal);
+        return;
+      }
+
+      if (interaction.customId === "welcome_editor_steps") {
+        const modal = new ModalBuilder().setCustomId("welcome_editor_steps_modal").setTitle("Шаги welcome");
+        const steps = [...presentation.welcome.steps];
+        while (steps.length < 5) steps.push("");
+        modal.addComponents(
+          ...steps.slice(0, 5).map((step, index) =>
+            new ActionRowBuilder().addComponents(
+              new TextInputBuilder()
+                .setCustomId(`welcome_step_${index + 1}`)
+                .setLabel(`Шаг ${index + 1}`)
+                .setStyle(TextInputStyle.Short)
+                .setRequired(true)
+                .setMaxLength(160)
+                .setValue(step)
+            )
+          )
+        );
+        await interaction.showModal(modal);
+        return;
+      }
+
+      if (interaction.customId === "welcome_editor_buttons") {
+        const modal = new ModalBuilder().setCustomId("welcome_editor_buttons_modal").setTitle("Кнопки welcome");
+        modal.addComponents(
+          new ActionRowBuilder().addComponents(
+            new TextInputBuilder().setCustomId("button_begin").setLabel("Кнопка начала").setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(80).setValue(presentation.welcome.buttons.begin)
+          ),
+          new ActionRowBuilder().addComponents(
+            new TextInputBuilder().setCustomId("button_quick").setLabel("Кнопка мейнов").setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(80).setValue(presentation.welcome.buttons.quickMains)
+          ),
+          new ActionRowBuilder().addComponents(
+            new TextInputBuilder().setCustomId("button_card").setLabel("Кнопка карточки").setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(80).setValue(presentation.welcome.buttons.myCard)
+          )
+        );
+        await interaction.showModal(modal);
+        return;
+      }
+
+      if (interaction.customId === "welcome_editor_tiers") {
+        const modal = new ModalBuilder().setCustomId("welcome_editor_tiers_modal").setTitle("Названия тиров");
+        modal.addComponents(
+          ...[1, 2, 3, 4, 5].map((tier) =>
+            new ActionRowBuilder().addComponents(
+              new TextInputBuilder()
+                .setCustomId(`tier_label_${tier}`)
+                .setLabel(`Тир ${tier}`)
+                .setStyle(TextInputStyle.Short)
+                .setRequired(true)
+                .setMaxLength(60)
+                .setValue(formatTierLabel(tier))
+            )
+          )
+        );
+        await interaction.showModal(modal);
+        return;
+      }
+
+      if (interaction.customId === "welcome_editor_png") {
+        const modal = new ModalBuilder().setCustomId("welcome_editor_png_modal").setTitle("PNG и tierlist тексты");
+        modal.addComponents(
+          new ActionRowBuilder().addComponents(
+            new TextInputBuilder().setCustomId("text_tierlist_title").setLabel("Название текстового тир-листа").setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(120).setValue(presentation.tierlist.textTitle)
+          ),
+          new ActionRowBuilder().addComponents(
+            new TextInputBuilder().setCustomId("graphic_title").setLabel("Название PNG тир-листа").setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(120).setValue(presentation.tierlist.graphicTitle)
+          ),
+          new ActionRowBuilder().addComponents(
+            new TextInputBuilder().setCustomId("graphic_message_text").setLabel("Текст под PNG").setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(4000).setValue(presentation.tierlist.graphicMessageText)
+          )
+        );
+        await interaction.showModal(modal);
+        return;
+      }
+
       return;
     }
 
@@ -2428,10 +2597,10 @@ client.on("interactionCreate", async (interaction) => {
 
       let statusText = "Сводка обновлена.";
       if (interaction.customId === "panel_refresh_welcome") {
-        await ensureWelcomePanel(client);
+        await refreshWelcomePanel(client);
         statusText = "Welcome-панель обновлена.";
       } else if (interaction.customId === "panel_refresh_tierlists") {
-        await refreshTierlistBoard(client);
+        await refreshAllTierlists(client);
         statusText = "Graphic-board и текстовый тир-лист обновлены.";
       } else if (interaction.customId === "panel_sync_roles") {
         const synced = await syncApprovedTierRoles(client);
@@ -2553,9 +2722,12 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
         return;
       }
-      const gfx = getGraphicTierlistConfig();
-      gfx.panel.selectedTier = Number(interaction.values[0]) || 5;
-      saveDb();
+      await commitMutation({
+        mutate: () => {
+          getGraphicTierlistConfig().panel.selectedTier = Number(interaction.values[0]) || 5;
+        },
+        persist: saveDb,
+      });
       await interaction.update(buildGraphicPanelPayload());
       return;
     }
@@ -2611,28 +2783,43 @@ client.on("interactionCreate", async (interaction) => {
   if (interaction.isModalSubmit()) {
     // === Graphic Panel modals ===
     if (interaction.customId === "graphic_panel_title_modal") {
-      const gfx = getGraphicTierlistConfig();
-      gfx.title = interaction.fields.getTextInputValue("graphic_title").trim();
-      saveDb();
-      await interaction.reply(ephemeralPayload({ content: `Название PNG обновлено: **${gfx.title}**` }));
+      const title = interaction.fields.getTextInputValue("graphic_title").trim();
+      if (!title) {
+        await interaction.reply(ephemeralPayload({ content: "Название PNG не может быть пустым." }));
+        return;
+      }
+      await applyUiMutation(client, "graphic", () => {
+        db.config.presentation.tierlist.graphicTitle = title;
+      });
+      await interaction.reply(ephemeralPayload({ content: `Название PNG обновлено: **${title}**` }));
       return;
     }
 
     if (interaction.customId === "graphic_panel_message_text_modal") {
-      const gfx = getGraphicTierlistConfig();
-      gfx.messageText = interaction.fields.getTextInputValue("graphic_message_text").trim();
-      saveDb();
+      const nextText = interaction.fields.getTextInputValue("graphic_message_text").trim();
+      if (!nextText) {
+        await interaction.reply(ephemeralPayload({ content: "Текст сообщения PNG не может быть пустым." }));
+        return;
+      }
+      await applyUiMutation(client, "graphic", () => {
+        db.config.presentation.tierlist.graphicMessageText = nextText;
+      });
       await interaction.reply(ephemeralPayload({ content: `Текст сообщения обновлён.` }));
       return;
     }
 
     if (interaction.customId.startsWith("graphic_panel_rename_modal:")) {
       const tierKey = interaction.customId.split(":")[1];
-      const gfx = getGraphicTierlistConfig();
-      if (!gfx.tierLabels) gfx.tierLabels = {};
-      gfx.tierLabels[tierKey] = interaction.fields.getTextInputValue("tier_name").trim();
-      saveDb();
-      await interaction.reply(ephemeralPayload({ content: `Тир ${tierKey} переименован: **${gfx.tierLabels[tierKey]}**` }));
+      const tierName = interaction.fields.getTextInputValue("tier_name").trim();
+      if (!tierName) {
+        await interaction.reply(ephemeralPayload({ content: "Название тира не может быть пустым." }));
+        return;
+      }
+      await applyUiMutation(client, "tierlists", () => {
+        db.config.presentation.tierlist.labels ||= {};
+        db.config.presentation.tierlist.labels[tierKey] = tierName;
+      });
+      await interaction.reply(ephemeralPayload({ content: `Тир ${tierKey} переименован: **${tierName}**` }));
       return;
     }
 
@@ -2643,16 +2830,16 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.reply(ephemeralPayload({ content: "Некорректный HEX-цвет. Формат: #rrggbb" }));
         return;
       }
-      const gfx = getGraphicTierlistConfig();
-      if (!gfx.tierColors) gfx.tierColors = {};
-      gfx.tierColors[tierKey] = color;
-      saveDb();
+      await applyUiMutation(client, "graphic", () => {
+        getGraphicTierlistConfig().colors ||= {};
+        getGraphicTierlistConfig().colors[tierKey] = color;
+      });
       await interaction.reply(ephemeralPayload({ content: `Цвет тира ${tierKey} обновлён: **${color}**` }));
       return;
     }
 
     // === Welcome Editor modals ===
-    if (interaction.customId === "welcome_editor_modal") {
+    if (interaction.customId === "welcome_editor_text_modal") {
       if (!isModerator(interaction.member)) {
         await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
         return;
@@ -2663,16 +2850,92 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.reply(ephemeralPayload({ content: "Название и текст не могут быть пустыми." }));
         return;
       }
-      appConfig.welcomeEmbed = appConfig.welcomeEmbed || {};
-      appConfig.welcomeEmbed.title = newTitle;
-      appConfig.welcomeEmbed.description = newText;
-      const rawConfig = loadJsonFile(CONFIG_PATH, {});
-      rawConfig.welcomeEmbed = rawConfig.welcomeEmbed || {};
-      rawConfig.welcomeEmbed.title = newTitle;
-      rawConfig.welcomeEmbed.description = newText;
-      saveJsonFile(CONFIG_PATH, rawConfig);
-      await ensureWelcomePanel(client);
-      await interaction.reply(ephemeralPayload({ content: "Welcome-сообщение обновлено." }));
+      await applyUiMutation(client, "welcome", () => {
+        db.config.presentation.welcome.title = newTitle;
+        db.config.presentation.welcome.description = newText;
+      });
+      await interaction.reply(buildWelcomeEditorPayload("Welcome-сообщение обновлено."));
+      return;
+    }
+
+    if (interaction.customId === "welcome_editor_steps_modal") {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+      const steps = [1, 2, 3, 4, 5].map((index) => interaction.fields.getTextInputValue(`welcome_step_${index}`).trim());
+      if (steps.some((step) => !step)) {
+        await interaction.reply(ephemeralPayload({ content: "Все шаги должны быть заполнены." }));
+        return;
+      }
+      await applyUiMutation(client, "welcome", () => {
+        db.config.presentation.welcome.steps = steps;
+      });
+      await interaction.reply(buildWelcomeEditorPayload("Шаги welcome обновлены."));
+      return;
+    }
+
+    if (interaction.customId === "welcome_editor_buttons_modal") {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+      const begin = interaction.fields.getTextInputValue("button_begin").trim();
+      const quick = interaction.fields.getTextInputValue("button_quick").trim();
+      const card = interaction.fields.getTextInputValue("button_card").trim();
+      if (!begin || !quick || !card) {
+        await interaction.reply(ephemeralPayload({ content: "Все подписи кнопок должны быть заполнены." }));
+        return;
+      }
+      await applyUiMutation(client, "welcome", () => {
+        db.config.presentation.welcome.buttons ||= {};
+        db.config.presentation.welcome.buttons.begin = begin;
+        db.config.presentation.welcome.buttons.quickMains = quick;
+        db.config.presentation.welcome.buttons.myCard = card;
+      });
+      await interaction.reply(buildWelcomeEditorPayload("Кнопки welcome обновлены."));
+      return;
+    }
+
+    if (interaction.customId === "welcome_editor_tiers_modal") {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+      const nextLabels = {};
+      for (const tier of [1, 2, 3, 4, 5]) {
+        const value = interaction.fields.getTextInputValue(`tier_label_${tier}`).trim();
+        if (!value) {
+          await interaction.reply(ephemeralPayload({ content: `Название тира ${tier} не может быть пустым.` }));
+          return;
+        }
+        nextLabels[tier] = value;
+      }
+      await applyUiMutation(client, "tierlists", () => {
+        db.config.presentation.tierlist.labels = nextLabels;
+      });
+      await interaction.reply(buildWelcomeEditorPayload("Названия тиров обновлены."));
+      return;
+    }
+
+    if (interaction.customId === "welcome_editor_png_modal") {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+      const textTitle = interaction.fields.getTextInputValue("text_tierlist_title").trim();
+      const graphicTitle = interaction.fields.getTextInputValue("graphic_title").trim();
+      const graphicMessageText = interaction.fields.getTextInputValue("graphic_message_text").trim();
+      if (!textTitle || !graphicTitle || !graphicMessageText) {
+        await interaction.reply(ephemeralPayload({ content: "Все поля PNG/tierlist должны быть заполнены." }));
+        return;
+      }
+      await applyUiMutation(client, "tierlists", () => {
+        db.config.presentation.tierlist.textTitle = textTitle;
+        db.config.presentation.tierlist.graphicTitle = graphicTitle;
+        db.config.presentation.tierlist.graphicMessageText = graphicMessageText;
+      });
+      await interaction.reply(buildWelcomeEditorPayload("Тексты tier-листа и PNG обновлены."));
       return;
     }
 

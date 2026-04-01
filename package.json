@@ -5,7 +5,8 @@
   "description": "Discord onboarding and moderation bot for Jujutsu Shinigans",
   "main": "welcome-bot.js",
   "scripts": {
-    "start": "node welcome-bot.js"
+    "start": "node welcome-bot.js",
+    "test": "node --test"
   },
   "engines": {
     "node": ">=18.17.0"
