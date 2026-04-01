@@ -1,0 +1,44 @@
+{
+  "channels": {
+    "welcomeChannelId": "REPLACE_WELCOME_CHANNEL_ID",
+    "reviewChannelId": "REPLACE_REVIEW_CHANNEL_ID",
+    "logChannelId": ""
+  },
+  "roles": {
+    "moderatorRoleId": "REPLACE_MODERATOR_ROLE_ID",
+    "accessRoleId": "REPLACE_ACCESS_ROLE_ID",
+    "killTierRoleIds": {
+      "1": "",
+      "2": "",
+      "3": "",
+      "4": "",
+      "5": ""
+    }
+  },
+  "ui": {
+    "welcomeTitle": "Jujutsu Shinigans Onboarding",
+    "welcomeDescription": "Нажми кнопку ниже, выбери 1 или 2 мейнов, укажи точное количество kills и отправь следующим сообщением скрин. После подачи заявки бот сразу выдаст тебе роль доступа, а kill-tier роль прилетит после проверки модератором.",
+    "getRoleButtonLabel": "Получить роль",
+    "tierlistButtonLabel": "Текстовый тир-лист",
+    "tierlistTitle": "Текстовый тир-лист"
+  },
+  "killTierLabels": {
+    "1": "Низший ранг",
+    "2": "Средний ранг",
+    "3": "Высший ранг",
+    "4": "Особый ранг",
+    "5": "Абсолютный ранг"
+  },
+  "characters": [
+    {
+      "id": "cursed_partner",
+      "label": "Проклятый союзник",
+      "roleId": ""
+    },
+    {
+      "id": "hornet_one",
+      "label": "Шершень Первый",
+      "roleId": ""
+    }
+  ]
+}
