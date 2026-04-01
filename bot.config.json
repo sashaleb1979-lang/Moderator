@@ -23,6 +23,22 @@
     "tierlistButtonLabel": "Текстовый тир-лист",
     "tierlistTitle": "Текстовый тир-лист"
   },
+  "graphicTierlist": {
+    "title": "Графический тир-лист",
+    "subtitle": "Подтверждённые игроки и текущая расстановка по kills",
+    "tierColors": {
+      "1": "#4d96ff",
+      "2": "#43aa8b",
+      "3": "#f9c74f",
+      "4": "#f46036",
+      "5": "#d7263d"
+    }
+  },
+  "reminders": {
+    "missingTierlistText": "Враг народа избегает получения роли!!! Не будь врагом!!! Стань товарищем!!!",
+    "missingTierlistImageUrl": "",
+    "missingTierlistImagePath": ""
+  },
   "killTierLabels": {
     "1": "Низший ранг",
     "2": "Средний ранг",

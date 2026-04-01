@@ -4,6 +4,7 @@ const fs = require("fs");
 const path = require("path");
 const https = require("https");
 const http = require("http");
+const { buildGraphicTierlistSvg, DEFAULT_GRAPHIC_TIER_COLORS } = require("./graphic-tierlist");
 
 const {
   Client,
@@ -26,6 +27,7 @@ const DISCORD_TOKEN = String(process.env.DISCORD_TOKEN || "").trim();
 const GUILD_ID = String(process.env.GUILD_ID || "").trim();
 const DB_PATH = path.resolve(process.cwd(), process.env.DB_PATH || "./welcome-db.json");
 const CONFIG_PATH = path.resolve(process.cwd(), process.env.CONFIG_PATH || "./bot.config.json");
+const DEFAULT_REMINDER_POSTER_PATH = path.resolve(process.cwd(), "./assets/missing-tierlist-poster.svg");
 
 const SUBMIT_SESSION_EXPIRE_MS = 10 * 60 * 1000;
 const PENDING_EXPIRE_HOURS = 72;
@@ -100,6 +102,34 @@ function buildRuntimeConfig(fileConfig = {}) {
       tierlistButtonLabel: envText("TIERLIST_BUTTON_LABEL", fileConfig?.ui?.tierlistButtonLabel || "Текстовый тир-лист"),
       tierlistTitle: envText("TIERLIST_TITLE", fileConfig?.ui?.tierlistTitle || "Текстовый тир-лист"),
     },
+    graphicTierlist: {
+      title: envText("GRAPHIC_TIERLIST_TITLE", fileConfig?.graphicTierlist?.title || "Графический тир-лист"),
+      subtitle: envText(
+        "GRAPHIC_TIERLIST_SUBTITLE",
+        fileConfig?.graphicTierlist?.subtitle || "Подтверждённые игроки и текущая расстановка по kills"
+      ),
+      tierColors: {
+        1: envText("GRAPHIC_TIER_COLOR_1", fileConfig?.graphicTierlist?.tierColors?.["1"] || DEFAULT_GRAPHIC_TIER_COLORS[1]),
+        2: envText("GRAPHIC_TIER_COLOR_2", fileConfig?.graphicTierlist?.tierColors?.["2"] || DEFAULT_GRAPHIC_TIER_COLORS[2]),
+        3: envText("GRAPHIC_TIER_COLOR_3", fileConfig?.graphicTierlist?.tierColors?.["3"] || DEFAULT_GRAPHIC_TIER_COLORS[3]),
+        4: envText("GRAPHIC_TIER_COLOR_4", fileConfig?.graphicTierlist?.tierColors?.["4"] || DEFAULT_GRAPHIC_TIER_COLORS[4]),
+        5: envText("GRAPHIC_TIER_COLOR_5", fileConfig?.graphicTierlist?.tierColors?.["5"] || DEFAULT_GRAPHIC_TIER_COLORS[5]),
+      },
+    },
+    reminders: {
+      missingTierlistText: envText(
+        "MISSING_TIERLIST_TEXT",
+        fileConfig?.reminders?.missingTierlistText || "Враг народа избегает получения роли!!! Не будь врагом!!! Стань товарищем!!!"
+      ),
+      missingTierlistImageUrl: envText(
+        "MISSING_TIERLIST_IMAGE_URL",
+        fileConfig?.reminders?.missingTierlistImageUrl || ""
+      ),
+      missingTierlistImagePath: envText(
+        "MISSING_TIERLIST_IMAGE_PATH",
+        fileConfig?.reminders?.missingTierlistImagePath || ""
+      ),
+    },
     killTierLabels: {
       1: envText("KILL_TIER_LABEL_1", fileConfig?.killTierLabels?.["1"] || "Низший ранг"),
       2: envText("KILL_TIER_LABEL_2", fileConfig?.killTierLabels?.["2"] || "Средний ранг"),
@@ -169,7 +199,8 @@ function loadDb() {
       },
       tierlistBoard: {
         channelId: appConfig.channels.tierlistChannelId || "",
-        messageId: "",
+        graphicMessageId: "",
+        textMessageId: "",
       },
       generatedRoles: {
         characters: {},
@@ -183,7 +214,12 @@ function loadDb() {
   const db = loadJsonFile(DB_PATH, fallback);
   db.config ||= {};
   db.config.welcomePanel ||= { channelId: appConfig.channels.welcomeChannelId, messageId: "" };
-  db.config.tierlistBoard ||= { channelId: appConfig.channels.tierlistChannelId || "", messageId: "" };
+  db.config.tierlistBoard ||= { channelId: appConfig.channels.tierlistChannelId || "", graphicMessageId: "", textMessageId: "" };
+  if (db.config.tierlistBoard.messageId && !db.config.tierlistBoard.textMessageId) {
+    db.config.tierlistBoard.textMessageId = db.config.tierlistBoard.messageId;
+  }
+  db.config.tierlistBoard.graphicMessageId ||= "";
+  db.config.tierlistBoard.textMessageId ||= "";
   db.config.generatedRoles ||= { characters: {}, tiers: {} };
   db.profiles ||= {};
   db.submissions ||= {};
@@ -253,7 +289,7 @@ function getCharacterIdFromSelectValue(value) {
 function normalizeCharacterSelectLabel(label) {
   const normalized = String(label || "").trim();
   if (normalized.length >= 2) return normalized.slice(0, 100);
-  if (normalized.length === 1) return `${normalized} `;
+  if (normalized.length === 1) return `${normalized} •`;
   return "??";
 }
 
@@ -339,7 +375,7 @@ function buildTierlistEmbeds() {
             `Pending заявок: **${stats.pendingCount}**`,
           ].join("\n")),
       ],
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     };
   }
 
@@ -391,14 +427,40 @@ function buildTierlistEmbeds() {
 
   flushChunk();
 
-  return { embeds, ephemeral: true };
+  return { embeds, flags: MessageFlags.Ephemeral };
 }
 
 function buildTierlistBoardPayload() {
   const payload = buildTierlistEmbeds();
   return {
-    content: "Текстовый тир-лист. Сообщение обновляется автоматически.",
+    content: "Текстовый тир-лист. Полный порядок игроков находится в этом сообщении и обновляется автоматически.",
     embeds: payload.embeds.slice(0, 10),
+    components: [],
+  };
+}
+
+function buildGraphicTierlistBoardPayload() {
+  const entries = getApprovedTierlistEntries();
+  const stats = getTierlistStats(entries);
+  const fileName = sanitizeFileName("graphic-tierlist.svg", "svg");
+  const svg = buildGraphicTierlistSvg({
+    title: appConfig.graphicTierlist?.title || "Графический тир-лист",
+    subtitle: appConfig.graphicTierlist?.subtitle || "Подтверждённые игроки и текущая расстановка по kills",
+    entries,
+    stats,
+    tierLabels: appConfig.killTierLabels,
+    tierColors: appConfig.graphicTierlist?.tierColors || DEFAULT_GRAPHIC_TIER_COLORS,
+  });
+
+  return {
+    content: "Графический тир-лист. Ниже бот поддерживает полный текстовый рейтинг тем же порядком.",
+    embeds: [
+      new EmbedBuilder()
+        .setTitle(appConfig.graphicTierlist?.title || "Графический тир-лист")
+        .setDescription(appConfig.graphicTierlist?.subtitle || "Подтверждённые игроки и текущая расстановка по kills")
+        .setImage(`attachment://${fileName}`),
+    ],
+    files: [new AttachmentBuilder(Buffer.from(svg, "utf8"), { name: fileName })],
     components: [],
   };
 }
@@ -595,7 +657,12 @@ function getWelcomePanelState() {
 }
 
 function getTierlistBoardState() {
-  db.config.tierlistBoard ||= { channelId: appConfig.channels.tierlistChannelId || "", messageId: "" };
+  db.config.tierlistBoard ||= { channelId: appConfig.channels.tierlistChannelId || "", graphicMessageId: "", textMessageId: "" };
+  if (db.config.tierlistBoard.messageId && !db.config.tierlistBoard.textMessageId) {
+    db.config.tierlistBoard.textMessageId = db.config.tierlistBoard.messageId;
+  }
+  db.config.tierlistBoard.graphicMessageId ||= "";
+  db.config.tierlistBoard.textMessageId ||= "";
   if (!db.config.tierlistBoard.channelId && appConfig.channels.tierlistChannelId) {
     db.config.tierlistBoard.channelId = appConfig.channels.tierlistChannelId;
   }
@@ -705,6 +772,77 @@ async function dmUser(client, userId, text) {
   const user = await client.users.fetch(userId).catch(() => null);
   if (!user) return;
   await user.send(text).catch(() => {});
+}
+
+function hasApprovedTierProfile(userId) {
+  const profile = db.profiles?.[userId];
+  return Number.isFinite(Number(profile?.approvedKills)) && Number.isFinite(Number(profile?.killTier));
+}
+
+function getMissingTierlistText() {
+  const base = String(appConfig.reminders?.missingTierlistText || "").trim() || "Враг народа избегает получения роли!!! Не будь врагом!!! Стань товарищем!!!";
+  return [
+    base,
+    `Получить роль и отправить заявку можно тут: <#${appConfig.channels.welcomeChannelId}>`,
+  ].join("\n");
+}
+
+function getReminderImagePath() {
+  const raw = String(appConfig.reminders?.missingTierlistImagePath || "").trim();
+  if (raw) return path.isAbsolute(raw) ? raw : path.resolve(process.cwd(), raw);
+  if (fs.existsSync(DEFAULT_REMINDER_POSTER_PATH)) return DEFAULT_REMINDER_POSTER_PATH;
+  return "";
+}
+
+function buildMissingTierlistReminderPayload() {
+  const content = getMissingTierlistText();
+  const imageUrl = String(appConfig.reminders?.missingTierlistImageUrl || "").trim();
+  const imagePath = getReminderImagePath();
+
+  if (imagePath && fs.existsSync(imagePath)) {
+    const fileName = sanitizeFileName(path.basename(imagePath) || "missing-tierlist-image.png");
+    return {
+      content,
+      embeds: [new EmbedBuilder().setImage(`attachment://${fileName}`)],
+      files: [new AttachmentBuilder(imagePath, { name: fileName })],
+    };
+  }
+
+  if (imageUrl) {
+    return {
+      content,
+      embeds: [new EmbedBuilder().setImage(imageUrl)],
+    };
+  }
+
+  return { content };
+}
+
+async function getMembersMissingTierlist(client) {
+  const guild = await getGuild(client);
+  if (!guild) return [];
+
+  await guild.members.fetch();
+  return guild.members.cache.filter((member) => !member.user.bot && !hasApprovedTierProfile(member.id));
+}
+
+async function sendMissingTierlistReminder(client) {
+  const members = await getMembersMissingTierlist(client);
+  const payload = buildMissingTierlistReminderPayload();
+
+  let sent = 0;
+  let failed = 0;
+  for (const member of members.values()) {
+    try {
+      await member.send(payload);
+      sent += 1;
+    } catch {
+      failed += 1;
+    }
+  }
+
+  await logLine(client, `REMIND_MISSING_TIERLIST: sent=${sent}, failed=${failed}, total=${members.size}`);
+  return { total: members.size, sent, failed };
 }
 
 async function fetchMember(client, userId) {
@@ -902,6 +1040,10 @@ async function ensureWelcomePanel(client) {
 }
 
 async function ensureTierlistBoardMessage(client) {
+  return ensureTextTierlistBoardMessage(client);
+}
+
+async function ensureGraphicTierlistBoardMessage(client) {
   const state = getTierlistBoardState();
   const channelId = state.channelId || appConfig.channels.tierlistChannelId;
   if (!channelId) return null;
@@ -912,17 +1054,52 @@ async function ensureTierlistBoardMessage(client) {
   }
 
   let message = null;
-  if (state.messageId) {
-    message = await channel.messages.fetch(state.messageId).catch(() => null);
+  if (state.graphicMessageId) {
+    message = await channel.messages.fetch(state.graphicMessageId).catch(() => null);
+  }
+
+  const payload = buildGraphicTierlistBoardPayload();
+  const created = !message;
+  if (!message) {
+    message = await channel.send(payload);
+    state.graphicMessageId = message.id;
+    try {
+      await message.pin();
+    } catch {}
+  } else {
+    await message.edit(payload);
+  }
+
+  state.channelId = channelId;
+  saveDb();
+  return { message, created };
+}
+
+async function ensureTextTierlistBoardMessage(client, options = {}) {
+  const state = getTierlistBoardState();
+  const channelId = state.channelId || appConfig.channels.tierlistChannelId;
+  if (!channelId) return null;
+
+  const channel = await client.channels.fetch(channelId).catch(() => null);
+  if (!channel?.isTextBased()) {
+    throw new Error("tierlistChannelId не указывает на текстовый канал");
+  }
+
+  if (options.forceRecreate && state.textMessageId) {
+    const existing = await channel.messages.fetch(state.textMessageId).catch(() => null);
+    if (existing) await existing.delete().catch(() => {});
+    state.textMessageId = "";
+  }
+
+  let message = null;
+  if (state.textMessageId) {
+    message = await channel.messages.fetch(state.textMessageId).catch(() => null);
   }
 
   const payload = buildTierlistBoardPayload();
   if (!message) {
     message = await channel.send(payload);
-    state.messageId = message.id;
-    try {
-      await message.pin();
-    } catch {}
+    state.textMessageId = message.id;
   } else {
     await message.edit(payload);
   }
@@ -934,7 +1111,10 @@ async function ensureTierlistBoardMessage(client) {
 
 async function refreshTierlistBoard(client) {
   try {
-    await ensureTierlistBoardMessage(client);
+    const state = getTierlistBoardState();
+    const hadGraphicMessage = Boolean(state.graphicMessageId);
+    await ensureGraphicTierlistBoardMessage(client);
+    await ensureTextTierlistBoardMessage(client, { forceRecreate: !hadGraphicMessage && Boolean(state.textMessageId) });
     return true;
   } catch (error) {
     console.error("Tierlist board refresh failed:", error?.message || error);
@@ -1278,8 +1458,51 @@ function buildProfilePayload(userId) {
         .setTitle("Профиль участника")
         .setDescription(lines.join("\n")),
     ],
-    ephemeral: true,
+    flags: MessageFlags.Ephemeral,
   };
+}
+
+function buildModeratorPanelPayload(statusText = "", includeFlags = true) {
+  const entries = getApprovedTierlistEntries();
+  const stats = getTierlistStats(entries);
+  const pendingCount = Object.values(db.submissions || {}).filter((submission) => isSubmissionActive(submission)).length;
+
+  const embed = new EmbedBuilder()
+    .setTitle("Onboarding Panel")
+    .setDescription([
+      "Главная модераторская панель для onboarding-бота.",
+      `Подтверждено игроков: **${formatNumber(stats.totalVerified)}**`,
+      `Pending заявок: **${formatNumber(pendingCount)}**`,
+      `Топ игрок: **${stats.topEntry ? `${stats.topEntry.displayName} — ${formatNumber(stats.topEntry.approvedKills)} kills` : "—"}**`,
+    ].join("\n"))
+    .addFields(
+      { name: "Обновить welcome", value: "Пересобирает welcome-панель и закреплённое сообщение входа.", inline: true },
+      { name: "Обновить тир-листы", value: "Перестраивает верхний graphic-board и нижний текстовый рейтинг в dedicated канале.", inline: true },
+      { name: "Синк tier-ролей", value: "Перепривязывает tier-роли всем подтверждённым игрокам по текущей базе.", inline: true },
+      { name: "Напомнить отсутствующим", value: "Шлёт DM пользователям вне тир-листа с встроенным постером из репозитория.", inline: true },
+      { name: "Обновить сводку", value: "Перерисовывает саму панель и показывает текущее состояние без лишних команд.", inline: true }
+    );
+
+  if (statusText) {
+    embed.addFields({ name: "Последнее действие", value: statusText, inline: false });
+  }
+
+  const payload = {
+    embeds: [embed],
+    components: [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("panel_refresh_welcome").setLabel("Обновить welcome").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId("panel_refresh_tierlists").setLabel("Обновить тир-листы").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId("panel_sync_roles").setLabel("Синк tier-ролей").setStyle(ButtonStyle.Secondary)
+      ),
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("panel_remind_missing").setLabel("Напомнить отсутствующим").setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId("panel_refresh_summary").setLabel("Обновить сводку").setStyle(ButtonStyle.Secondary)
+      ),
+    ],
+  };
+
+  return includeFlags ? ephemeralPayload(payload) : payload;
 }
 
 function buildCommands() {
@@ -1303,7 +1526,10 @@ function buildCommands() {
         subcommand.setName("stats").setDescription("Показать общую статистику")
       )
       .addSubcommand((subcommand) =>
-        subcommand.setName("panel").setDescription("Создать или обновить welcome-панель")
+        subcommand.setName("panel").setDescription("Открыть модераторскую панель управления")
+      )
+      .addSubcommand((subcommand) =>
+        subcommand.setName("remindmissing").setDescription("Напомнить всем, кого нет в тир-листе")
       )
       .addSubcommand((subcommand) =>
         subcommand
@@ -1492,10 +1718,16 @@ client.on("interactionCreate", async (interaction) => {
     }
 
     if (subcommand === "panel") {
+      await interaction.reply(buildModeratorPanelPayload());
+      return;
+    }
+
+    if (subcommand === "remindmissing") {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-      await ensureWelcomePanel(client);
-      await refreshTierlistBoard(client);
-      await interaction.editReply("Welcome-панель создана или обновлена.");
+      const result = await sendMissingTierlistReminder(client);
+      await interaction.editReply(
+        `Рассылка завершена. Всего без тир-листа: ${result.total}. Отправлено: ${result.sent}. Не доставлено: ${result.failed}.`
+      );
       return;
     }
 
@@ -1552,6 +1784,33 @@ client.on("interactionCreate", async (interaction) => {
   }
 
   if (interaction.isButton()) {
+    if (["panel_refresh_welcome", "panel_refresh_tierlists", "panel_sync_roles", "panel_remind_missing", "panel_refresh_summary"].includes(interaction.customId)) {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      await interaction.deferUpdate();
+
+      let statusText = "Сводка обновлена.";
+      if (interaction.customId === "panel_refresh_welcome") {
+        await ensureWelcomePanel(client);
+        statusText = "Welcome-панель обновлена.";
+      } else if (interaction.customId === "panel_refresh_tierlists") {
+        await refreshTierlistBoard(client);
+        statusText = "Graphic-board и текстовый тир-лист обновлены.";
+      } else if (interaction.customId === "panel_sync_roles") {
+        const synced = await syncApprovedTierRoles(client);
+        statusText = `Tier-роли пересинхронизированы. Профилей: ${synced}.`;
+      } else if (interaction.customId === "panel_remind_missing") {
+        const result = await sendMissingTierlistReminder(client);
+        statusText = `DM-рассылка завершена. Всего: ${result.total}, отправлено: ${result.sent}, не доставлено: ${result.failed}.`;
+      }
+
+      await interaction.editReply(buildModeratorPanelPayload(statusText, false));
+      return;
+    }
+
     if (interaction.customId === "onboard_begin") {
       const pending = getPendingSubmissionForUser(interaction.user.id);
       if (pending) {
@@ -1701,34 +1960,33 @@ client.on("interactionCreate", async (interaction) => {
     if (interaction.customId === "onboard_kills_modal") {
       const draft = getMainDraft(interaction.user.id);
       if (!draft) {
-        await interaction.reply({ content: "Сессия выбора мейнов истекла. Нажми кнопку заново.", ephemeral: true });
+        await interaction.reply(ephemeralPayload({ content: "Сессия выбора мейнов истекла. Нажми кнопку заново." }));
         return;
       }
 
       const pending = getPendingSubmissionForUser(interaction.user.id);
       if (pending) {
         clearMainDraft(interaction.user.id);
-        await interaction.reply({ content: "У тебя уже есть pending-заявка. Дождись решения модератора.", ephemeral: true });
+        await interaction.reply(ephemeralPayload({ content: "У тебя уже есть pending-заявка. Дождись решения модератора." }));
         return;
       }
 
       const kills = parseKillCount(interaction.fields.getTextInputValue("kills"));
       if (kills === null) {
-        await interaction.reply({ content: "Нужно указать точное число kills, только цифрами.", ephemeral: true });
+        await interaction.reply(ephemeralPayload({ content: "Нужно указать точное число kills, только цифрами." }));
         return;
       }
 
       setSubmitSession(interaction.user.id, { mainCharacterIds: draft.characterIds, kills });
       clearMainDraft(interaction.user.id);
 
-      await interaction.reply({
+      await interaction.reply(ephemeralPayload({
         content: [
           `Мейны сохранены, kills сохранены: **${kills}**.`,
           `Теперь следующим сообщением отправь **скрин** в <#${appConfig.channels.welcomeChannelId}>.`,
           "Бот удалит сообщение со скрином после обработки.",
         ].join("\n"),
-        ephemeral: true,
-      });
+      }));
       return;
     }
 
@@ -1736,50 +1994,49 @@ client.on("interactionCreate", async (interaction) => {
     const submission = db.submissions[submissionId];
 
     if (!submission) {
-      await interaction.reply({ content: "Заявка не найдена.", ephemeral: true });
+      await interaction.reply(ephemeralPayload({ content: "Заявка не найдена." }));
       return;
     }
 
     if (!isModerator(interaction.member)) {
-      await interaction.reply({ content: "Нет прав.", ephemeral: true });
+      await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
       return;
     }
 
     if (submission.status !== "pending") {
-      await interaction.reply({ content: `Заявка уже обработана: ${submission.status}.`, ephemeral: true });
+      await interaction.reply(ephemeralPayload({ content: `Заявка уже обработана: ${submission.status}.` }));
       return;
     }
 
     if (hoursSince(submission.createdAt) > PENDING_EXPIRE_HOURS) {
       await expireSubmission(client, submission);
-      await interaction.reply({ content: "Заявка уже истекла и была помечена как expired.", ephemeral: true });
+      await interaction.reply(ephemeralPayload({ content: "Заявка уже истекла и была помечена как expired." }));
       return;
     }
 
     if (kind === "edit_kills") {
       const kills = parseKillCount(interaction.fields.getTextInputValue("kills"));
       if (kills === null) {
-        await interaction.reply({ content: "Нужно корректное число kills.", ephemeral: true });
+        await interaction.reply(ephemeralPayload({ content: "Нужно корректное число kills." }));
         return;
       }
 
       await updateSubmissionKills(client, submission, kills, interaction.user.tag);
-      await interaction.reply({
+      await interaction.reply(ephemeralPayload({
         content: `Kills обновлены: ${kills}. Новый tier: ${killTierFor(kills)} (${formatTierLabel(killTierFor(kills))}).`,
-        ephemeral: true,
-      });
+      }));
       return;
     }
 
     if (kind === "reject_reason") {
       const reason = String(interaction.fields.getTextInputValue("reason") || "").trim().slice(0, 800);
       if (!reason) {
-        await interaction.reply({ content: "Причина не может быть пустой.", ephemeral: true });
+        await interaction.reply(ephemeralPayload({ content: "Причина не может быть пустой." }));
         return;
       }
 
       await rejectSubmission(client, submission, interaction.user.tag, reason);
-      await interaction.reply({ content: "Заявка отклонена.", ephemeral: true });
+      await interaction.reply(ephemeralPayload({ content: "Заявка отклонена." }));
       return;
     }
   }
