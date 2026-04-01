@@ -31,7 +31,8 @@ npm install
 ```env
 DISCORD_TOKEN=...
 GUILD_ID=...
-DB_PATH=./welcome-db.json
+BOT_DATA_DIR=./data
+DB_PATH=welcome-db.json
 CONFIG_PATH=./bot.config.json
 ```
 
@@ -42,7 +43,8 @@ CONFIG_PATH=./bot.config.json
 ```env
 DISCORD_TOKEN=
 GUILD_ID=
-DB_PATH=./welcome-db.json
+BOT_DATA_DIR=./data
+DB_PATH=welcome-db.json
 CONFIG_PATH=./bot.config.json
 
 WELCOME_CHANNEL_ID=
@@ -87,7 +89,8 @@ CHARACTER_CONFIG_JSON=
 
 - DISCORD_TOKEN — токен Discord-бота
 - GUILD_ID — ID твоего сервера
-- DB_PATH — путь к файлу базы внутри контейнера Railway
+- BOT_DATA_DIR — базовая папка для данных бота; на Railway сюда нужно указывать путь volume, обычно /data
+- DB_PATH — путь к JSON-базе; если путь относительный, он считается относительно BOT_DATA_DIR
 - CONFIG_PATH — путь к bot.config.json, если оставляешь файловый конфиг
 - WELCOME_CHANNEL_ID — канал welcome-панели и приёма скрина
 - REVIEW_CHANNEL_ID — приватный канал модераторов
@@ -252,13 +255,14 @@ npm start
 
 1. Создай новый Railway service под Node.js.
 2. Загрузи репозиторий.
-3. В Variables вставь минимум DISCORD_TOKEN, GUILD_ID, WELCOME_CHANNEL_ID, REVIEW_CHANNEL_ID, MODERATOR_ROLE_ID, ACCESS_ROLE_ID и CHARACTER_CONFIG_JSON.
+3. Создай Railway Volume и смонтируй его, например, в /data.
+4. В Variables вставь минимум DISCORD_TOKEN, GUILD_ID, BOT_DATA_DIR=/data, WELCOME_CHANNEL_ID, REVIEW_CHANNEL_ID, MODERATOR_ROLE_ID, ACCESS_ROLE_ID и CHARACTER_CONFIG_JSON.
 TIER_ROLE_1_ID ... TIER_ROLE_5_ID можно не задавать, если бот должен создать tier-роли сам.
-4. Если не хочешь возиться с JSON-файлом в контейнере, просто полностью управляй конфигом через Variables.
-5. Start Command: npm start.
-6. После первого запуска зайди в welcome-канал и проверь, что панель появилась.
-7. Проверь, что в tierlist-канале бот создал верхний graphic-board и нижний текстовый тир-лист.
-8. Прогони один тестовый submit, потом approve, потом проверь обновление тир-листа и кнопку быстрой смены мейнов.
+5. Если не хочешь возиться с JSON-файлом в контейнере, просто полностью управляй конфигом через Variables.
+6. Start Command: npm start.
+7. После первого запуска зайди в welcome-канал и проверь, что панель появилась.
+8. Проверь, что в tierlist-канале бот создал верхний graphic-board и нижний текстовый тир-лист.
+9. Прогони один тестовый submit, потом approve, потом перезапусти deploy и проверь, что бот обновил старые сообщения, а не создал новые.
 
 ## 12. Важно
 
@@ -267,6 +271,7 @@ Access-role и moderator-role бот сам не создаёт, потому ч
 После первого автосоздания бот сохраняет ID роли в своей базе. Потом ты можешь безопасно менять у такой роли цвет, позицию, отображение, mentionable и даже имя: бот всё равно будет держаться за сохранённый ID. Новый дубль он создаст только если эту роль удалить совсем и старый ID перестанет существовать.
 Для массовой рассылки отсутствующим в тир-листе можно указать текст через MISSING_TIERLIST_TEXT и подключить картинку через MISSING_TIERLIST_IMAGE_URL или MISSING_TIERLIST_IMAGE_PATH.
 Если путь и URL не заданы, бот сам использует встроенный poster asset из assets/missing-tierlist-poster.svg.
+Если DB лежит в Railway Volume через BOT_DATA_DIR, бот переживает redeploy с той же базой и сохранёнными message ID.
 Персонажи можно настраивать либо через bot.config.json, либо через CHARACTER_CONFIG_JSON в Railway Variables.
 Старый ELO-бот не используется в npm start, но оставлен как референс по старой логике модерации.
 Если заданы env-переменные Railway, они перекрывают bot.config.json.

@@ -23,11 +23,29 @@ const {
   MessageFlags,
 } = require("discord.js");
 
+const PROJECT_ROOT = __dirname;
+
+function resolvePathFromBase(baseDir, rawPath, fallbackRelative = "") {
+  const target = String(rawPath || fallbackRelative || "").trim();
+  if (!target) return path.resolve(baseDir, fallbackRelative || ".");
+  return path.isAbsolute(target) ? target : path.resolve(baseDir, target);
+}
+
+function resolveDataRoot() {
+  const explicitRoot = String(process.env.BOT_DATA_DIR || process.env.RAILWAY_VOLUME_MOUNT_PATH || "").trim();
+  if (explicitRoot) return resolvePathFromBase(PROJECT_ROOT, explicitRoot);
+  if (process.env.RAILWAY_ENVIRONMENT_NAME && fs.existsSync("/data")) return "/data";
+  return PROJECT_ROOT;
+}
+
+const DATA_ROOT = resolveDataRoot();
 const DISCORD_TOKEN = String(process.env.DISCORD_TOKEN || "").trim();
 const GUILD_ID = String(process.env.GUILD_ID || "").trim();
-const DB_PATH = path.resolve(process.cwd(), process.env.DB_PATH || "./welcome-db.json");
-const CONFIG_PATH = path.resolve(process.cwd(), process.env.CONFIG_PATH || "./bot.config.json");
-const DEFAULT_REMINDER_POSTER_PATH = path.resolve(process.cwd(), "./assets/missing-tierlist-poster.svg");
+const DB_PATH = resolvePathFromBase(DATA_ROOT, process.env.DB_PATH || "welcome-db.json");
+const CONFIG_PATH = resolvePathFromBase(PROJECT_ROOT, process.env.CONFIG_PATH || "./bot.config.json");
+const DEFAULT_REMINDER_POSTER_PATH = resolvePathFromBase(PROJECT_ROOT, "./assets/missing-tierlist-poster.svg");
+
+fs.mkdirSync(DATA_ROOT, { recursive: true });
 
 const SUBMIT_SESSION_EXPIRE_MS = 10 * 60 * 1000;
 const PENDING_EXPIRE_HOURS = 72;
@@ -53,6 +71,7 @@ function loadJsonFile(filePath, fallbackValue) {
 }
 
 function saveJsonFile(filePath, value) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, JSON.stringify(value, null, 2), "utf8");
 }
 
@@ -1008,6 +1027,71 @@ function buildReviewEmbed(submission, statusLabel, extraFields = []) {
   return embed;
 }
 
+function getMessageComponentCustomIds(message) {
+  return (message?.components || [])
+    .flatMap((row) => row.components || [])
+    .map((component) => String(component.customId || "").trim())
+    .filter(Boolean);
+}
+
+function messageHasRequiredCustomIds(message, requiredIds) {
+  const customIds = new Set(getMessageComponentCustomIds(message));
+  return requiredIds.every((customId) => customIds.has(customId));
+}
+
+function messageHasEmbedTitle(message, title) {
+  return (message?.embeds || []).some((embed) => String(embed?.title || "").trim() === String(title || "").trim());
+}
+
+function messageHasAttachmentName(message, fileName) {
+  return message?.attachments?.some?.((attachment) => String(attachment?.name || "").trim() === fileName) || false;
+}
+
+async function findManagedMessageInChannel(channel, predicate, limit = 75) {
+  if (!channel?.isTextBased()) return null;
+
+  const pinned = await channel.messages.fetchPinned().catch(() => null);
+  if (pinned?.size) {
+    const pinnedMatch = [...pinned.values()]
+      .sort((left, right) => Number(right.createdTimestamp || 0) - Number(left.createdTimestamp || 0))
+      .find(predicate);
+    if (pinnedMatch) return pinnedMatch;
+  }
+
+  const recent = await channel.messages.fetch({ limit }).catch(() => null);
+  if (!recent?.size) return null;
+
+  return [...recent.values()]
+    .sort((left, right) => Number(right.createdTimestamp || 0) - Number(left.createdTimestamp || 0))
+    .find(predicate) || null;
+}
+
+async function findExistingWelcomePanelMessage(channel) {
+  return findManagedMessageInChannel(
+    channel,
+    (message) => messageHasRequiredCustomIds(message, ["onboard_begin", "onboard_quick_mains", "onboard_tierlist"])
+  );
+}
+
+async function findExistingGraphicTierlistMessage(channel) {
+  return findManagedMessageInChannel(
+    channel,
+    (message) =>
+      String(message?.content || "").startsWith("Графический тир-лист.") ||
+      messageHasEmbedTitle(message, appConfig.graphicTierlist?.title || "Графический тир-лист") ||
+      messageHasAttachmentName(message, "graphic-tierlist.svg")
+  );
+}
+
+async function findExistingTextTierlistMessage(channel) {
+  return findManagedMessageInChannel(
+    channel,
+    (message) =>
+      String(message?.content || "").startsWith("Текстовый тир-лист.") ||
+      messageHasEmbedTitle(message, appConfig.ui.tierlistTitle || "Текстовый тир-лист")
+  );
+}
+
 async function ensureWelcomePanel(client) {
   const panelState = getWelcomePanelState();
   const channel = await client.channels.fetch(panelState.channelId).catch(() => null);
@@ -1018,6 +1102,13 @@ async function ensureWelcomePanel(client) {
   let message = null;
   if (panelState.messageId) {
     message = await channel.messages.fetch(panelState.messageId).catch(() => null);
+  }
+  if (!message) {
+    message = await findExistingWelcomePanelMessage(channel);
+    if (message && panelState.messageId !== message.id) {
+      panelState.messageId = message.id;
+      saveDb();
+    }
   }
 
   const payload = {
@@ -1033,6 +1124,9 @@ async function ensureWelcomePanel(client) {
     } catch {}
   } else {
     await message.edit(payload);
+    if (!message.pinned) {
+      await message.pin().catch(() => {});
+    }
   }
 
   saveDb();
@@ -1057,6 +1151,13 @@ async function ensureGraphicTierlistBoardMessage(client) {
   if (state.graphicMessageId) {
     message = await channel.messages.fetch(state.graphicMessageId).catch(() => null);
   }
+  if (!message) {
+    message = await findExistingGraphicTierlistMessage(channel);
+    if (message && state.graphicMessageId !== message.id) {
+      state.graphicMessageId = message.id;
+      saveDb();
+    }
+  }
 
   const payload = buildGraphicTierlistBoardPayload();
   const created = !message;
@@ -1068,6 +1169,9 @@ async function ensureGraphicTierlistBoardMessage(client) {
     } catch {}
   } else {
     await message.edit(payload);
+    if (!message.pinned) {
+      await message.pin().catch(() => {});
+    }
   }
 
   state.channelId = channelId;
@@ -1095,13 +1199,26 @@ async function ensureTextTierlistBoardMessage(client, options = {}) {
   if (state.textMessageId) {
     message = await channel.messages.fetch(state.textMessageId).catch(() => null);
   }
+  if (!message) {
+    message = await findExistingTextTierlistMessage(channel);
+    if (message && state.textMessageId !== message.id) {
+      state.textMessageId = message.id;
+      saveDb();
+    }
+  }
 
   const payload = buildTierlistBoardPayload();
   if (!message) {
     message = await channel.send(payload);
     state.textMessageId = message.id;
+    try {
+      await message.pin();
+    } catch {}
   } else {
     await message.edit(payload);
+    if (!message.pinned) {
+      await message.pin().catch(() => {});
+    }
   }
 
   state.channelId = channelId;
@@ -1595,6 +1712,8 @@ process.on("unhandledRejection", (error) => {
 
 client.once("clientReady", async () => {
   console.log(`Logged in as ${client.user.tag}`);
+  console.log(`Data root: ${DATA_ROOT}`);
+  console.log(`DB path: ${DB_PATH}`);
   const generated = await ensureManagedRoles(client);
   await registerGuildCommands(client);
   await syncApprovedTierRoles(client).catch(() => 0);
