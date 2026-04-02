@@ -188,6 +188,8 @@ test("command builder includes new admin refresh and editor subcommands", () => 
       "graphicstatus",
       "modset",
       "movegraphic",
+      "movenotices",
+      "movetext",
       "panel",
       "pending",
       "profile",

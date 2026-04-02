@@ -12,6 +12,8 @@ const ONBOARD_SUBCOMMAND_NAMES = [
   "graphicpanel",
   "graphicstatus",
   "movegraphic",
+  "movetext",
+  "movenotices",
   "remindmissing",
   "modset",
   "removetier",
@@ -62,6 +64,18 @@ function buildCommands() {
           .setName("movegraphic")
           .setDescription("Перезалить графический тир-лист в другой канал")
           .addChannelOption((option) => option.setName("channel").setDescription("Канал для PNG тир-листа").setRequired(true))
+      )
+      .addSubcommand((subcommand) =>
+        subcommand
+          .setName("movetext")
+          .setDescription("Перенести текстовый тир-лист в другой канал")
+          .addChannelOption((option) => option.setName("channel").setDescription("Канал для текстового тир-листа").setRequired(true))
+      )
+      .addSubcommand((subcommand) =>
+        subcommand
+          .setName("movenotices")
+          .setDescription("Перенести канал уведомлений и логов бота")
+          .addChannelOption((option) => option.setName("channel").setDescription("Канал для уведомлений бота").setRequired(true))
       )
       .addSubcommand((subcommand) =>
         subcommand.setName("remindmissing").setDescription("Напомнить всем, кого нет в тир-листе")

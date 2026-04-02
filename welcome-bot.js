@@ -322,6 +322,7 @@ function loadDb() {
   db.profiles ||= {};
   db.submissions ||= {};
   db.cooldowns ||= {};
+  db.config.notificationChannelId = String(db.config.notificationChannelId || "").trim();
   const mergedCharacters = mergeCharacterCatalog(db.config.characters, appConfig.characters);
   const charactersChanged = !sameCharacterCatalog(db.config.characters, mergedCharacters);
   db.config.characters = mergedCharacters;
@@ -413,6 +414,11 @@ function getGeneratedRoleState() {
 function getCharacterCatalog() {
   db.config.characters = mergeCharacterCatalog(db.config.characters, appConfig.characters);
   return db.config.characters;
+}
+
+function getNotificationChannelId() {
+  const configured = String(db.config.notificationChannelId || "").trim();
+  return configured || String(appConfig.channels.logChannelId || "").trim();
 }
 
 function formatNumber(value) {
@@ -1027,6 +1033,12 @@ function scheduleDeleteMessage(message, delayMs = TEMP_MESSAGE_DELETE_MS) {
   }, delayMs);
 }
 
+async function replyAndDelete(message, content, delayMs = TEMP_MESSAGE_DELETE_MS) {
+  const reply = await message.reply(content).catch(() => null);
+  if (reply) scheduleDeleteMessage(reply, delayMs);
+  return reply;
+}
+
 function isSubmissionActive(submission) {
   return submission && submission.status === "pending" && hoursSince(submission.createdAt) <= PENDING_EXPIRE_HOURS;
 }
@@ -1094,7 +1106,7 @@ function isModerator(member) {
 }
 
 async function logLine(client, text) {
-  const logChannelId = String(appConfig.channels.logChannelId || "").trim();
+  const logChannelId = getNotificationChannelId();
   if (!logChannelId) return;
   const channel = await client.channels.fetch(logChannelId).catch(() => null);
   if (channel?.isTextBased()) await channel.send(text).catch(() => {});
@@ -1643,15 +1655,84 @@ async function repostGraphicTierlistBoardToChannel(client, targetChannelId) {
   state.messageId = "";
   saveDb();
 
-  if (previousMessageId) {
-    await deleteManagedChannelMessage(client, previousChannelId || nextChannelId, previousMessageId);
+  try {
+    const result = await refreshGraphicTierlistBoard(client);
+
+    if (previousMessageId && (previousChannelId !== nextChannelId || previousMessageId !== result?.message?.id)) {
+      await deleteManagedChannelMessage(client, previousChannelId || nextChannelId, previousMessageId);
+    }
+
+    return {
+      channelId: nextChannelId,
+      previousChannelId,
+      messageId: result?.message?.id || "",
+    };
+  } catch (error) {
+    state.channelId = previousChannelId;
+    state.messageId = previousMessageId;
+    saveDb();
+    throw error;
+  }
+}
+
+async function repostTextTierlistBoardToChannel(client, targetChannelId) {
+  const state = getTextTierlistBoardState(db.config, appConfig.channels.tierlistChannelId || "");
+  const nextChannelId = String(targetChannelId || "").trim();
+  if (!nextChannelId || isPlaceholder(nextChannelId)) {
+    throw new Error("Нужно указать текстовый канал для текстового тир-листа.");
   }
 
-  const result = await refreshGraphicTierlistBoard(client);
+  const targetChannel = await client.channels.fetch(nextChannelId).catch(() => null);
+  if (!targetChannel?.isTextBased()) {
+    throw new Error("Указанный канал не является текстовым.");
+  }
+
+  const previousChannelId = state.channelId || appConfig.channels.tierlistChannelId || "";
+  const previousMessageId = state.messageId || "";
+
+  state.channelId = nextChannelId;
+  state.messageId = "";
+  saveDb();
+
+  try {
+    const message = await refreshTextTierlistBoard(client, { forceRecreate: true });
+
+    if (previousMessageId && (previousChannelId !== nextChannelId || previousMessageId !== message?.id)) {
+      await deleteManagedChannelMessage(client, previousChannelId || nextChannelId, previousMessageId);
+    }
+
+    return {
+      channelId: nextChannelId,
+      previousChannelId,
+      messageId: message?.id || "",
+    };
+  } catch (error) {
+    state.channelId = previousChannelId;
+    state.messageId = previousMessageId;
+    saveDb();
+    throw error;
+  }
+}
+
+async function moveNotificationChannel(client, targetChannelId) {
+  const nextChannelId = String(targetChannelId || "").trim();
+  if (!nextChannelId || isPlaceholder(nextChannelId)) {
+    throw new Error("Нужно указать текстовый канал для уведомлений.");
+  }
+
+  const targetChannel = await client.channels.fetch(nextChannelId).catch(() => null);
+  if (!targetChannel?.isTextBased()) {
+    throw new Error("Указанный канал не является текстовым.");
+  }
+
+  const previousChannelId = getNotificationChannelId();
+  db.config.notificationChannelId = nextChannelId;
+  saveDb();
+
+  await logLine(client, `NOTICE_CHANNEL_MOVED: now=<#${nextChannelId}> previous=${previousChannelId ? `<#${previousChannelId}>` : "none"}`);
   return {
     channelId: nextChannelId,
     previousChannelId,
-    messageId: result?.message?.id || "",
   };
 }
 
@@ -1703,21 +1784,56 @@ async function ensureTextTierlistBoardMessage(client, options = {}) {
 }
 
 async function refreshAllTierlists(client) {
+  const graphicState = getGraphicTierlistBoardState(db.config, appConfig.channels.tierlistChannelId || "");
+  const textState = getTextTierlistBoardState(db.config, appConfig.channels.tierlistChannelId || "");
+  const hadGraphicMessage = Boolean(graphicState.messageId);
+  const result = {
+    graphicOk: false,
+    textOk: false,
+    graphicError: null,
+    textError: null,
+  };
+
   try {
-    const graphicState = getGraphicTierlistBoardState(db.config, appConfig.channels.tierlistChannelId || "");
-    const textState = getTextTierlistBoardState(db.config, appConfig.channels.tierlistChannelId || "");
-    const hadGraphicMessage = Boolean(graphicState.messageId);
     await refreshGraphicTierlistBoard(client);
-    await refreshTextTierlistBoard(client, { forceRecreate: !hadGraphicMessage && Boolean(textState.messageId) });
-    return true;
+    result.graphicOk = true;
   } catch (error) {
-    console.error("Tierlist board refresh failed:", error?.message || error);
-    return false;
+    result.graphicError = error;
+    console.error("Graphic tierlist refresh failed:", error?.message || error);
   }
+
+  try {
+    await refreshTextTierlistBoard(client, { forceRecreate: !hadGraphicMessage && Boolean(textState.messageId) });
+    result.textOk = true;
+  } catch (error) {
+    result.textError = error;
+    console.error("Text tierlist refresh failed:", error?.message || error);
+  }
+
+  return result;
 }
 
 async function refreshTierlistBoard(client) {
   return refreshAllTierlists(client);
+}
+
+function buildTierlistRefreshReply(result) {
+  if (result?.graphicOk && result?.textOk) {
+    return "Текстовый и PNG tier-листы обновлены.";
+  }
+
+  if (result?.textOk && !result?.graphicOk) {
+    const graphicError = String(result?.graphicError?.message || result?.graphicError || "неизвестная ошибка").trim();
+    return `Текстовый tier-лист обновлён, но PNG не обновился: ${graphicError || "неизвестная ошибка"}.`;
+  }
+
+  if (result?.graphicOk && !result?.textOk) {
+    const textError = String(result?.textError?.message || result?.textError || "неизвестная ошибка").trim();
+    return `PNG tier-лист обновлён, но текстовый не обновился: ${textError || "неизвестная ошибка"}.`;
+  }
+
+  const fallback = String(result?.graphicError?.message || result?.textError?.message || result?.graphicError || result?.textError || "неизвестная ошибка").trim();
+  return `Не удалось обновить tier-листы: ${fallback || "неизвестная ошибка"}.`;
 }
 
 async function applyUiMutation(client, scope, mutate) {
@@ -2319,6 +2435,9 @@ client.on("interactionCreate", async (interaction) => {
     if (subcommand === "refreshtierlists") {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       const refreshed = await refreshAllTierlists(client);
+      const refreshedText = buildTierlistRefreshReply(refreshed);
+      await interaction.editReply(refreshedText);
+      return;
       await interaction.editReply(refreshed ? "Текстовый и PNG tier-листы обновлены." : "Не удалось обновить tier-листы.");
       return;
     }
@@ -2346,6 +2465,38 @@ client.on("interactionCreate", async (interaction) => {
         ? ` Было: <#${result.previousChannelId}>.`
         : "";
       await interaction.editReply(`Графический тир-лист перезалит в <#${result.channelId}> и привязан к этому каналу для следующих обновлений.${movedText}`);
+      return;
+    }
+
+    if (subcommand === "movetext") {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      const targetChannel = interaction.options.getChannel("channel", true);
+      if (!targetChannel?.isTextBased?.()) {
+        await interaction.editReply("Нужен текстовый канал.");
+        return;
+      }
+
+      const result = await repostTextTierlistBoardToChannel(client, targetChannel.id);
+      const movedText = result.previousChannelId && result.previousChannelId !== result.channelId
+        ? ` Было: <#${result.previousChannelId}>.`
+        : "";
+      await interaction.editReply(`Текстовый тир-лист перенесён в <#${result.channelId}>.${movedText}`);
+      return;
+    }
+
+    if (subcommand === "movenotices") {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      const targetChannel = interaction.options.getChannel("channel", true);
+      if (!targetChannel?.isTextBased?.()) {
+        await interaction.editReply("Нужен текстовый канал.");
+        return;
+      }
+
+      const result = await moveNotificationChannel(client, targetChannel.id);
+      const movedText = result.previousChannelId && result.previousChannelId !== result.channelId
+        ? ` Было: <#${result.previousChannelId}>.`
+        : "";
+      await interaction.editReply(`Канал уведомлений бота теперь <#${result.channelId}>.${movedText}`);
       return;
     }
 
