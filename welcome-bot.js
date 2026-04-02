@@ -4,7 +4,13 @@ const fs = require("fs");
 const path = require("path");
 const https = require("https");
 const http = require("http");
-const { renderGraphicTierlistPng, setAvatarCacheDir, clearGraphicAvatarCache, isPureimageAvailable, DEFAULT_GRAPHIC_TIER_COLORS } = require("./graphic-tierlist");
+const {
+  renderGraphicTierlistPng,
+  setAvatarCacheDir,
+  clearGraphicAvatarCache,
+  isPureimageAvailable,
+  DEFAULT_GRAPHIC_TIER_COLORS,
+} = require("./graphic-tierlist");
 const { buildCommands } = require("./src/onboard/commands");
 const { commitMutation } = require("./src/onboard/refresh-runner");
 const {
@@ -174,6 +180,60 @@ function buildRuntimeConfig(fileConfig = {}) {
   };
 }
 
+function normalizeCharacterId(value, fallback = "") {
+  const text = String(value || "").trim().toLowerCase();
+  const normalized = text.replace(/[^a-zа-яё0-9]+/gi, "_").replace(/^_+|_+$/g, "");
+  return normalized || String(fallback || "").trim();
+}
+
+function normalizeCharacterCatalog(value, fallback = []) {
+  const source = Array.isArray(value) ? value : fallback;
+  const out = [];
+  const seen = new Set();
+
+  for (const entry of source) {
+    const label = String(entry?.label || "").trim();
+    const id = normalizeCharacterId(entry?.id || label, `char_${out.length + 1}`);
+    const roleId = String(entry?.roleId || "").trim();
+    if (!label || !id || seen.has(id)) continue;
+    seen.add(id);
+    out.push({ id, label, roleId });
+  }
+
+  return out;
+}
+
+function mergeCharacterCatalog(primary, fallback = []) {
+  const merged = new Map();
+
+  for (const entry of normalizeCharacterCatalog(fallback)) {
+    merged.set(entry.id, { ...entry });
+  }
+
+  for (const entry of normalizeCharacterCatalog(primary)) {
+    const previous = merged.get(entry.id) || {};
+    merged.set(entry.id, {
+      id: entry.id,
+      label: entry.label || previous.label || entry.id,
+      roleId: entry.roleId || previous.roleId || "",
+    });
+  }
+
+  return [...merged.values()];
+}
+
+function sameCharacterCatalog(left, right) {
+  const a = normalizeCharacterCatalog(left);
+  const b = normalizeCharacterCatalog(right);
+  if (a.length !== b.length) return false;
+  for (let index = 0; index < a.length; index += 1) {
+    if (a[index].id !== b[index].id) return false;
+    if (a[index].label !== b[index].label) return false;
+    if (a[index].roleId !== b[index].roleId) return false;
+  }
+  return true;
+}
+
 function validateRuntimeConfig(config) {
   const errors = [];
 
@@ -245,6 +305,7 @@ function loadDb() {
         characters: {},
         tiers: {},
       },
+      characters: normalizeCharacterCatalog(appConfig.characters),
     },
     profiles: {},
     submissions: {},
@@ -261,7 +322,10 @@ function loadDb() {
   db.profiles ||= {};
   db.submissions ||= {};
   db.cooldowns ||= {};
-  db.__needsSaveAfterLoad = migrated.mutated;
+  const mergedCharacters = mergeCharacterCatalog(db.config.characters, appConfig.characters);
+  const charactersChanged = !sameCharacterCatalog(db.config.characters, mergedCharacters);
+  db.config.characters = mergedCharacters;
+  db.__needsSaveAfterLoad = migrated.mutated || charactersChanged;
   return db;
 }
 
@@ -344,6 +408,11 @@ function getGeneratedRoleState() {
   db.config.generatedRoles.characters ||= {};
   db.config.generatedRoles.tiers ||= {};
   return db.config.generatedRoles;
+}
+
+function getCharacterCatalog() {
+  db.config.characters = mergeCharacterCatalog(db.config.characters, appConfig.characters);
+  return db.config.characters;
 }
 
 function formatNumber(value) {
@@ -771,7 +840,7 @@ async function downloadToBuffer(url, timeoutMs = 15000) {
 
 function getCharacterEntries() {
   const generatedRoles = getGeneratedRoleState();
-  return appConfig.characters.map((entry) => ({
+  return getCharacterCatalog().map((entry) => ({
     id: String(entry.id).trim(),
     label: String(entry.label).trim(),
     roleId: String(entry.roleId || generatedRoles.characters?.[String(entry.id).trim()] || "").trim(),
@@ -822,7 +891,7 @@ async function ensureManagedRoles(client) {
   let createdTierRoles = 0;
   let changed = false;
 
-  for (const entry of appConfig.characters) {
+  for (const entry of getCharacterCatalog()) {
     const characterId = String(entry.id || "").trim();
     const roleName = String(entry.label || "").trim();
     const explicitRoleId = String(entry.roleId || generatedRoles.characters?.[characterId] || "").trim();
@@ -1248,6 +1317,51 @@ function buildCharacterPickerPayload(mode = "full") {
     ],
     flags: MessageFlags.Ephemeral,
   };
+}
+
+function buildKillsModal(initialValue = "") {
+  const modal = new ModalBuilder().setCustomId("onboard_kills_modal").setTitle("Точное количество kills");
+  const input = new TextInputBuilder()
+    .setCustomId("kills")
+    .setLabel("Введи точное число kills")
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true)
+    .setPlaceholder("Например 3120");
+  if (String(initialValue || "").trim()) input.setValue(String(initialValue).trim());
+  modal.addComponents(new ActionRowBuilder().addComponents(input));
+  return modal;
+}
+
+function buildKillsStepPayload(userId) {
+  const draft = getMainDraft(userId);
+  if (!draft?.characterIds?.length) {
+    return ephemeralPayload({ content: "Сессия выбора мейнов истекла. Нажми кнопку заново." });
+  }
+
+  const selectedEntries = getSelectedCharacterEntries(draft.characterIds);
+  const selectedLabels = selectedEntries.length
+    ? selectedEntries.map((entry) => entry.label)
+    : draft.characterIds.map((value) => String(value || "").trim()).filter(Boolean);
+
+  const embed = new EmbedBuilder()
+    .setTitle("Мейны выбраны")
+    .setDescription([
+      `Выбрано: **${selectedLabels.join(", ")}**`,
+      "",
+      "Теперь нужно указать точное число kills.",
+      "Если окно ввода случайно закрылось, просто нажми **Дальше** еще раз.",
+    ].join("\n"));
+
+  return ephemeralPayload({
+    embeds: [embed],
+    components: [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("onboard_open_kills_modal").setLabel("Дальше").setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId("onboard_change_mains").setLabel("Выбрать заново").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("onboard_cancel").setLabel("Отмена").setStyle(ButtonStyle.Secondary)
+      ),
+    ],
+  });
 }
 
 function buildReviewButtons(submissionId) {
@@ -2642,12 +2756,51 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
+      const draft = getMainDraft(interaction.user.id);
+      if (draft) {
+        await interaction.reply(buildKillsStepPayload(interaction.user.id));
+        return;
+      }
+
       await interaction.reply(buildCharacterPickerPayload("full"));
       return;
     }
 
     if (interaction.customId === "onboard_quick_mains") {
       await interaction.reply(buildCharacterPickerPayload("quick"));
+      return;
+    }
+
+    if (interaction.customId === "onboard_change_mains") {
+      clearSubmitSession(interaction.user.id);
+      await interaction.update(buildCharacterPickerPayload("full"));
+      return;
+    }
+
+    if (interaction.customId === "onboard_open_kills_modal") {
+      const pending = getPendingSubmissionForUser(interaction.user.id);
+      if (pending) {
+        clearMainDraft(interaction.user.id);
+        await interaction.reply(ephemeralPayload({ content: "У тебя уже есть pending-заявка. Дождись решения модератора." }));
+        return;
+      }
+
+      const session = getSubmitSession(interaction.user.id);
+      if (session) {
+        clearMainDraft(interaction.user.id);
+        await interaction.reply(ephemeralPayload({
+          content: `Ты уже на шаге отправки скрина. Отправь картинку следующим сообщением в <#${appConfig.channels.welcomeChannelId}>.`,
+        }));
+        return;
+      }
+
+      const draft = getMainDraft(interaction.user.id);
+      if (!draft) {
+        await interaction.reply(ephemeralPayload({ content: "Сессия выбора мейнов истекла. Нажми кнопку заново." }));
+        return;
+      }
+
+      await interaction.showModal(buildKillsModal());
       return;
     }
 
@@ -2776,7 +2929,7 @@ client.on("interactionCreate", async (interaction) => {
       .setRequired(true)
       .setPlaceholder("Например 3120");
     modal.addComponents(new ActionRowBuilder().addComponents(input));
-    await interaction.showModal(modal);
+    await interaction.update(buildKillsStepPayload(interaction.user.id));
     return;
   }
 
@@ -2949,30 +3102,45 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.reply(ephemeralPayload({ content: "Имя персонажа не может быть пустым." }));
         return;
       }
-      const charId = charName.toLowerCase().replace(/[^a-zа-яё0-9]+/gi, "_").replace(/^_+|_+$/g, "") || `char_${Date.now()}`;
-      const existing = appConfig.characters.find((c) => String(c.id).trim() === charId);
+      const characterCatalog = getCharacterCatalog();
+      if (characterCatalog.length >= 25) {
+        await interaction.reply(ephemeralPayload({ content: "Лимит персонажей для select menu достигнут (25)." }));
+        return;
+      }
+      const charId = normalizeCharacterId(charName, `char_${Date.now()}`);
+      const existing = characterCatalog.find((c) => String(c.id).trim() === charId);
       if (existing) {
         await interaction.reply(ephemeralPayload({ content: `Персонаж с ID «${charId}» уже существует.` }));
         return;
       }
-      appConfig.characters.push({ id: charId, label: charName });
+      const nextCharacter = { id: charId, label: charName, roleId: "" };
+      characterCatalog.push(nextCharacter);
       const rawConfig = loadJsonFile(CONFIG_PATH, {});
       if (!Array.isArray(rawConfig.characters)) rawConfig.characters = [];
-      rawConfig.characters.push({ id: charId, label: charName });
-      saveJsonFile(CONFIG_PATH, rawConfig);
+      if (!rawConfig.characters.some((entry) => String(entry?.id || "").trim() === charId)) {
+        rawConfig.characters.push({ id: charId, label: charName });
+      }
 
       const guild = await getGuild(client);
       let roleNote = "";
       if (guild) {
         try {
           const role = await ensureRoleByName(guild, charName);
-          if (role) roleNote = ` Роль «${role.name}» создана/найдена.`;
+          if (role) {
+            nextCharacter.roleId = role.id;
+            getGeneratedRoleState().characters[charId] = role.id;
+            const rawCharacter = rawConfig.characters.find((entry) => String(entry?.id || "").trim() === charId);
+            if (rawCharacter) rawCharacter.roleId = role.id;
+            roleNote = ` Роль «${role.name}» создана/найдена.`;
+          }
         } catch (err) {
           roleNote = ` Не удалось создать роль: ${err?.message || err}`;
         }
       }
+      saveDb();
+      saveJsonFile(CONFIG_PATH, rawConfig);
       await ensureWelcomePanel(client);
-      await interaction.reply(ephemeralPayload({ content: `Персонаж «${charName}» (ID: ${charId}) добавлен.${roleNote}` }));
+      await interaction.reply(ephemeralPayload({ content: `Персонаж «${charName}» (ID: ${charId}) добавлен в каталог и сразу доступен в выборе мейнов.${roleNote}` }));
       return;
     }
 
