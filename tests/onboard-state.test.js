@@ -5,6 +5,7 @@ const assert = require("node:assert/strict");
 
 const { commitMutation } = require("../src/onboard/refresh-runner");
 const { ONBOARD_SUBCOMMAND_NAMES } = require("../src/onboard/commands");
+const { getMainStats, getTierlistStats } = require("../src/onboard/tierlist-stats");
 const {
   createPresentationDefaults,
   ensurePresentationConfig,
@@ -178,6 +179,44 @@ test("commitMutation persists before refreshing the graphic board", async () => 
   });
 
   assert.deepEqual(calls, ["mutate", "save:1", "refresh:1"]);
+});
+
+test("tierlist stats count approval/reject rates and per-main aggregates", () => {
+  const entries = [
+    { displayName: "Alpha", approvedKills: 1000, killTier: 2, mains: ["Gojo", "Megumi"] },
+    { displayName: "Beta", approvedKills: 3000, killTier: 3, mains: ["Gojo"] },
+    { displayName: "Gamma", approvedKills: 7000, killTier: 4, mains: ["Megumi", "Megumi"] },
+  ];
+  const submissions = [
+    { status: "approved" },
+    { status: "approved" },
+    { status: "rejected" },
+    { status: "pending" },
+    { status: "superseded" },
+  ];
+
+  const tierlistStats = getTierlistStats(entries, submissions);
+  const mainStats = getMainStats(entries);
+  const gojo = mainStats.find((entry) => entry.main === "Gojo");
+  const megumi = mainStats.find((entry) => entry.main === "Megumi");
+
+  assert.equal(tierlistStats.totalVerified, 3);
+  assert.equal(tierlistStats.pendingCount, 1);
+  assert.equal(tierlistStats.approvedCount, 2);
+  assert.equal(tierlistStats.rejectedCount, 1);
+  assert.ok(Math.abs(tierlistStats.approvalRate - (200 / 3)) < 1e-9);
+  assert.ok(Math.abs(tierlistStats.rejectRate - (100 / 3)) < 1e-9);
+  assert.deepEqual(tierlistStats.totalsByTier, { 1: 0, 2: 1, 3: 1, 4: 1, 5: 0 });
+
+  assert.deepEqual(mainStats.map((entry) => entry.main), ["Megumi", "Gojo"]);
+  assert.equal(gojo.playerCount, 2);
+  assert.equal(gojo.averageKills, 2000);
+  assert.equal(gojo.medianKills, 2000);
+  assert.deepEqual(gojo.totalsByTier, { 1: 0, 2: 1, 3: 1, 4: 0, 5: 0 });
+  assert.equal(megumi.playerCount, 2);
+  assert.equal(megumi.averageKills, 4000);
+  assert.equal(megumi.medianKills, 4000);
+  assert.deepEqual(megumi.totalsByTier, { 1: 0, 2: 1, 3: 0, 4: 1, 5: 0 });
 });
 
 test("command builder includes new admin refresh and editor subcommands", () => {

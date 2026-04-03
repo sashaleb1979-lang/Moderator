@@ -22,6 +22,10 @@ const {
   getWelcomePanelState: readWelcomePanelState,
   resolvePresentation,
 } = require("./src/onboard/presentation");
+const {
+  getMainStats,
+  getTierlistStats,
+} = require("./src/onboard/tierlist-stats");
 
 const {
   Client,
@@ -426,6 +430,15 @@ function formatNumber(value) {
   return amount.toLocaleString("ru-RU");
 }
 
+function formatPercent(value) {
+  const amount = Number(value) || 0;
+  const rounded = Math.round(amount * 10) / 10;
+  return `${rounded.toLocaleString("ru-RU", {
+    minimumFractionDigits: Number.isInteger(rounded) ? 0 : 1,
+    maximumFractionDigits: 1,
+  })}%`;
+}
+
 function previewText(value, max = 180) {
   const text = String(value || "").replace(/\s+/g, " ").trim();
   if (text.length <= max) return text;
@@ -503,55 +516,89 @@ function getApprovedTierlistEntries() {
     });
 }
 
-function getTierlistStats(entries) {
-  const pendingCount = Object.values(db.submissions || {}).filter((submission) => isSubmissionActive(submission)).length;
-  const totalsByTier = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
-  let totalKills = 0;
-
-  for (const entry of entries) {
-    totalKills += entry.approvedKills;
-    if (totalsByTier[entry.killTier] !== undefined) totalsByTier[entry.killTier] += 1;
-  }
-
-  const averageKills = entries.length ? Math.round(totalKills / entries.length) : 0;
-  const medianKills = entries.length
-    ? entries[Math.floor((entries.length - 1) / 2)].approvedKills
-    : 0;
-
-  return {
-    totalVerified: entries.length,
-    pendingCount,
-    totalKills,
-    averageKills,
-    medianKills,
-    totalsByTier,
-    topEntry: entries[0] || null,
-    bottomEntry: entries[entries.length - 1] || null,
-  };
+function getStatsSnapshot(entries) {
+  return getTierlistStats(entries, Object.values(db.submissions || {}));
 }
 
-function buildTierlistEmbeds() {
+function chunkTextLines(lines, maxLength = 3800, maxLines = 15) {
+  const chunks = [];
+  let chunk = [];
+  let chunkLength = 0;
+
+  const flush = () => {
+    if (!chunk.length) return;
+    chunks.push(chunk.join("\n"));
+    chunk = [];
+    chunkLength = 0;
+  };
+
+  for (const line of lines) {
+    if (chunk.length >= maxLines || chunkLength + line.length + 1 > maxLength) {
+      flush();
+    }
+    chunk.push(line);
+    chunkLength += line.length + 1;
+  }
+
+  flush();
+  return chunks;
+}
+
+function buildMainStatsEmbeds(entries) {
+  const mainStats = getMainStats(entries);
+  if (!mainStats.length) return [];
+
+  const popularityLines = mainStats.map((stat, index) =>
+    `${index + 1}. **${stat.main}** — игроков: **${formatNumber(stat.playerCount)}** • avg kills: **${formatNumber(stat.averageKills)}** • median kills: **${formatNumber(stat.medianKills)}**`
+  );
+  const distributionLines = mainStats.map((stat) =>
+    `**${stat.main}** — T5/T4/T3/T2/T1: **${stat.totalsByTier[5]} / ${stat.totalsByTier[4]} / ${stat.totalsByTier[3]} / ${stat.totalsByTier[2]} / ${stat.totalsByTier[1]}**`
+  );
+
+  const embeds = [];
+
+  chunkTextLines(popularityLines, 3800, 12).forEach((description, index) => {
+    embeds.push(
+      new EmbedBuilder()
+        .setTitle(index === 0 ? "Статистика по мейнам" : `Статистика по мейнам — продолжение ${index + 1}`)
+        .setDescription(description)
+    );
+  });
+
+  chunkTextLines(distributionLines, 3800, 12).forEach((description, index) => {
+    embeds.push(
+      new EmbedBuilder()
+        .setTitle(index === 0 ? "Распределение тиров по мейнам" : `Распределение тиров по мейнам — продолжение ${index + 1}`)
+        .setDescription(description)
+    );
+  });
+
+  return embeds;
+}
+
+function buildStatsEmbeds() {
   const entries = getApprovedTierlistEntries();
-  const stats = getTierlistStats(entries);
+  const stats = getStatsSnapshot(entries);
   const presentation = getPresentation();
 
   if (!entries.length) {
-    return {
-      embeds: [
-        new EmbedBuilder()
-          .setTitle(presentation.tierlist.textTitle)
-          .setDescription([
-            "Пока нет подтверждённых игроков в тир-листе.",
-            `Pending заявок: **${stats.pendingCount}**`,
-          ].join("\n")),
-      ],
-      flags: MessageFlags.Ephemeral,
-    };
+    return [
+      new EmbedBuilder()
+        .setTitle(presentation.tierlist.textTitle)
+        .setDescription([
+          "Пока нет подтверждённых игроков в тир-листе.",
+          `Pending заявок: **${stats.pendingCount}**`,
+          `Approval rate: **${formatPercent(stats.approvalRate)}**`,
+          `Reject rate: **${formatPercent(stats.rejectRate)}**`,
+        ].join("\n")),
+    ];
   }
 
   const summaryLines = [
     `Подтверждено игроков: **${formatNumber(stats.totalVerified)}**`,
     `Pending заявок: **${formatNumber(stats.pendingCount)}**`,
+    `Approval rate: **${formatPercent(stats.approvalRate)}** (${formatNumber(stats.approvedCount)} одобрено)`,
+    `Reject rate: **${formatPercent(stats.rejectRate)}** (${formatNumber(stats.rejectedCount)} отклонено)`,
     `Суммарно kills: **${formatNumber(stats.totalKills)}**`,
     `Среднее kills: **${formatNumber(stats.averageKills)}**`,
     `Медиана kills: **${formatNumber(stats.medianKills)}**`,
@@ -560,11 +607,21 @@ function buildTierlistEmbeds() {
     `Последний в листе: **${stats.bottomEntry.displayName}** — **${formatNumber(stats.bottomEntry.approvedKills)}** kills`,
   ];
 
-  const embeds = [
+  return [
     new EmbedBuilder()
       .setTitle(presentation.tierlist.textTitle)
       .setDescription(summaryLines.join("\n")),
+    ...buildMainStatsEmbeds(entries),
   ];
+}
+
+function buildTierlistEmbeds() {
+  const entries = getApprovedTierlistEntries();
+  const embeds = [...buildStatsEmbeds()];
+
+  if (!entries.length) {
+    return { embeds, flags: MessageFlags.Ephemeral };
+  }
 
   let chunk = [];
   let chunkStart = 1;
@@ -1168,7 +1225,17 @@ async function getMembersMissingTierlist(client) {
   if (!guild) return [];
 
   await guild.members.fetch();
-  return guild.members.cache.filter((member) => !member.user.bot && !hasApprovedTierProfile(member.id));
+  const accessRoleId = String(appConfig.roles.accessRoleId || "").trim();
+  const tierRoleIds = new Set(getAllTierRoleIds());
+
+  return guild.members.cache.filter((member) => {
+    if (member.user.bot) return false;
+    if (!accessRoleId || !member.roles.cache.has(accessRoleId)) return false;
+    for (const roleId of tierRoleIds) {
+      if (member.roles.cache.has(roleId)) return false;
+    }
+    return true;
+  });
 }
 
 async function sendMissingTierlistReminder(client) {
@@ -2197,15 +2264,14 @@ function buildProfilePayload(userId) {
 
 function buildModeratorPanelPayload(statusText = "", includeFlags = true) {
   const entries = getApprovedTierlistEntries();
-  const stats = getTierlistStats(entries);
-  const pendingCount = Object.values(db.submissions || {}).filter((submission) => isSubmissionActive(submission)).length;
+  const stats = getStatsSnapshot(entries);
 
   const embed = new EmbedBuilder()
     .setTitle("Onboarding Panel")
     .setDescription([
       "Главная модераторская панель для onboarding-бота.",
       `Подтверждено игроков: **${formatNumber(stats.totalVerified)}**`,
-      `Pending заявок: **${formatNumber(pendingCount)}**`,
+      `Pending заявок: **${formatNumber(stats.pendingCount)}**`,
       `Топ игрок: **${stats.topEntry ? `${stats.topEntry.displayName} — ${formatNumber(stats.topEntry.approvedKills)} kills` : "—"}**`,
     ].join("\n"))
     .addFields(
@@ -2384,8 +2450,7 @@ client.on("interactionCreate", async (interaction) => {
     }
 
     if (subcommand === "stats") {
-      const tierlist = buildTierlistEmbeds();
-      await interaction.reply(ephemeralPayload({ embeds: [tierlist.embeds[0]] }));
+      await interaction.reply(ephemeralPayload({ embeds: buildStatsEmbeds() }));
       return;
     }
 
