@@ -1188,17 +1188,18 @@ function getMissingTierlistText() {
   ].join("\n");
 }
 
-function getReminderImagePath() {
+function getReminderImagePath(includeFallback = false) {
   const raw = String(appConfig.reminders?.missingTierlistImagePath || "").trim();
   if (raw) return path.isAbsolute(raw) ? raw : path.resolve(PROJECT_ROOT, raw);
-  if (fs.existsSync(DEFAULT_REMINDER_POSTER_PATH)) return DEFAULT_REMINDER_POSTER_PATH;
+  if (includeFallback && fs.existsSync(DEFAULT_REMINDER_POSTER_PATH)) return DEFAULT_REMINDER_POSTER_PATH;
   return "";
 }
 
 function buildMissingTierlistReminderPayload() {
   const content = getMissingTierlistText();
   const imageUrl = String(appConfig.reminders?.missingTierlistImageUrl || "").trim();
-  const imagePath = getReminderImagePath();
+  const imagePath = getReminderImagePath(false);
+  const fallbackImagePath = imagePath ? "" : getReminderImagePath(true);
 
   if (imagePath && fs.existsSync(imagePath)) {
     const fileName = sanitizeFileName(path.basename(imagePath) || "missing-tierlist-image.png");
@@ -1215,6 +1216,16 @@ function buildMissingTierlistReminderPayload() {
       content,
       embeds: [new EmbedBuilder().setImage(imageUrl)],
     };
+  }
+
+  if (fallbackImagePath && fs.existsSync(fallbackImagePath)) {
+    const fileName = sanitizeFileName(path.basename(fallbackImagePath) || "missing-tierlist-image.png");
+    const isSvg = /\.svg$/i.test(fileName);
+    const payload = { content, files: [new AttachmentBuilder(fallbackImagePath, { name: fileName })] };
+    if (!isSvg) {
+      payload.embeds = [new EmbedBuilder().setImage(`attachment://${fileName}`)];
+    }
+    return payload;
   }
 
   return { content };
