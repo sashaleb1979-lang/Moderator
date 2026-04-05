@@ -26,11 +26,34 @@ const {
   getMainStats,
   getTierlistStats,
 } = require("./src/onboard/tierlist-stats");
+let nonGgsCaptchaModule = null;
+try {
+  nonGgsCaptchaModule = require("./src/onboard/non-ggs-captcha");
+} catch (error) {
+  console.warn(`non-GGS captcha module unavailable: ${String(error?.message || error)}`);
+  nonGgsCaptchaModule = {
+    createCaptchaChallenge() {
+      throw new Error("non-GGS captcha module is unavailable");
+    },
+    loadCaptchaCatalog(assetDir) {
+      return {
+        assetDir: path.resolve(String(assetDir || ".")),
+        skillful: [],
+        outliers: [],
+        missingSkillfulSlots: [1, 2, 3, 4, 5],
+        missingOutlierSlots: [6, 7, 8, 9, 10],
+      };
+    },
+    renderCaptchaPng() {
+      throw new Error("non-GGS captcha module is unavailable");
+    },
+  };
+}
 const {
   createCaptchaChallenge,
   loadCaptchaCatalog,
   renderCaptchaPng,
-} = require("./src/onboard/non-ggs-captcha");
+} = nonGgsCaptchaModule;
 
 const {
   Client,
