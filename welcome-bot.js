@@ -13,6 +13,7 @@ const {
 } = require("./graphic-tierlist");
 const { buildCommands } = require("./src/onboard/commands");
 const { commitMutation } = require("./src/onboard/refresh-runner");
+const { resolveNonJjsCaptchaMode } = require("./src/onboard/non-jjs-mode");
 const {
   createPresentationDefaults,
   ensurePresentationConfig,
@@ -28,12 +29,12 @@ const {
 } = require("./src/onboard/tierlist-stats");
 let nonGgsCaptchaModule = null;
 try {
-  nonGgsCaptchaModule = require("./src/onboard/non-ggs-captcha");
+  nonGgsCaptchaModule = require("./src/onboard/non-jjs-captcha");
 } catch (error) {
-  console.warn(`non-GGS captcha module unavailable: ${String(error?.message || error)}`);
+  console.warn(`non-JJS captcha module unavailable: ${String(error?.message || error)}`);
   nonGgsCaptchaModule = {
     createCaptchaChallenge() {
-      throw new Error("non-GGS captcha module is unavailable");
+      throw new Error("non-JJS captcha module is unavailable");
     },
     loadCaptchaCatalog(assetDir) {
       return {
@@ -45,7 +46,7 @@ try {
       };
     },
     renderCaptchaPng() {
-      throw new Error("non-GGS captcha module is unavailable");
+      throw new Error("non-JJS captcha module is unavailable");
     },
   };
 }
@@ -92,7 +93,7 @@ const GUILD_ID = String(process.env.GUILD_ID || "").trim();
 const DB_PATH = resolvePathFromBase(DATA_ROOT, process.env.DB_PATH || "welcome-db.json");
 const CONFIG_PATH = resolvePathFromBase(PROJECT_ROOT, process.env.CONFIG_PATH || "./bot.config.json");
 const DEFAULT_REMINDER_POSTER_PATH = resolvePathFromBase(PROJECT_ROOT, "./assets/missing-tierlist-poster.svg");
-const NON_GGS_CAPTCHA_ASSET_DIR = resolvePathFromBase(PROJECT_ROOT, "./assets/non-ggs-captcha");
+const NON_GGS_CAPTCHA_ASSET_DIR = resolvePathFromBase(PROJECT_ROOT, "./assets/non-jjs-captcha");
 
 fs.mkdirSync(DATA_ROOT, { recursive: true });
 fs.mkdirSync(NON_GGS_CAPTCHA_ASSET_DIR, { recursive: true });
@@ -163,7 +164,10 @@ function buildRuntimeConfig(fileConfig = {}) {
     roles: {
       moderatorRoleId: envText("MODERATOR_ROLE_ID", fileConfig?.roles?.moderatorRoleId || ""),
       accessRoleId: envText("ACCESS_ROLE_ID", fileConfig?.roles?.accessRoleId || ""),
-      nonGgsAccessRoleId: envText("NON_GGS_ACCESS_ROLE_ID", fileConfig?.roles?.nonGgsAccessRoleId || ""),
+      nonGgsAccessRoleId: envText(
+        "NON_JJS_ACCESS_ROLE_ID",
+        envText("NON_GGS_ACCESS_ROLE_ID", fileConfig?.roles?.nonJjsAccessRoleId || fileConfig?.roles?.nonGgsAccessRoleId || "")
+      ),
       killTierRoleIds: {
         1: envText("TIER_ROLE_1_ID", fileConfig?.roles?.killTierRoleIds?.["1"] || ""),
         2: envText("TIER_ROLE_2_ID", fileConfig?.roles?.killTierRoleIds?.["2"] || ""),
@@ -179,12 +183,13 @@ function buildRuntimeConfig(fileConfig = {}) {
         "Нажми кнопку ниже, выбери 1 или 2 мейнов, укажи точное количество kills и отправь следующим сообщением скрин. После подачи заявки бот сразу выдаст тебе роль доступа, а kill-tier роль прилетит после проверки модератором."
       ).trim(),
       getRoleButtonLabel: String(fileConfig?.ui?.getRoleButtonLabel || "Получить роль").trim(),
-      nonGgsTitle: String(fileConfig?.ui?.nonGgsTitle || "Я не играю в GGS").trim(),
+      nonGgsTitle: String(fileConfig?.ui?.nonJjsTitle || fileConfig?.ui?.nonGgsTitle || "Я не играю в JJS").trim(),
       nonGgsDescription: String(
+        fileConfig?.ui?.nonJjsDescription ||
         fileConfig?.ui?.nonGgsDescription ||
-        "Если ты не играешь в GGS, нажми кнопку ниже. Бот запустит 2 этапа капчи и после успешного прохождения выдаст отдельную роль доступа."
+        "Если ты не играешь в JJS, нажми кнопку ниже. Бот запустит 2 этапа капчи и после успешного прохождения выдаст отдельную роль доступа."
       ).trim(),
-      nonGgsButtonLabel: String(fileConfig?.ui?.nonGgsButtonLabel || "Я не играю в GGS").trim(),
+      nonGgsButtonLabel: String(fileConfig?.ui?.nonJjsButtonLabel || fileConfig?.ui?.nonGgsButtonLabel || "Я не играю в JJS").trim(),
       tierlistButtonLabel: String(fileConfig?.ui?.tierlistButtonLabel || "Текстовый тир-лист").trim(),
       tierlistTitle: String(fileConfig?.ui?.tierlistTitle || "Текстовый тир-лист").trim(),
     },
@@ -469,6 +474,19 @@ function getNotificationChannelId() {
   return configured || String(appConfig.channels.logChannelId || "").trim();
 }
 
+function getNonJjsUiConfig() {
+  db.config.nonJjsUi ||= {};
+  return {
+    title: String(db.config.nonJjsUi.title || appConfig.ui.nonGgsTitle || "Я не играю в JJS").trim(),
+    description: String(
+      db.config.nonJjsUi.description ||
+      appConfig.ui.nonGgsDescription ||
+      "Если ты не играешь в JJS, нажми кнопку ниже. Бот запустит 2 этапа капчи и после успешного прохождения выдаст отдельную роль доступа."
+    ).trim(),
+    buttonLabel: String(db.config.nonJjsUi.buttonLabel || appConfig.ui.nonGgsButtonLabel || "Я не играю в JJS").trim(),
+  };
+}
+
 function formatNumber(value) {
   const amount = Number(value) || 0;
   return amount.toLocaleString("ru-RU");
@@ -535,7 +553,7 @@ function buildMyCardEmbed(userId) {
     lines.push(`**Статус последней заявки:** ${profile.lastSubmissionStatus}`);
   }
   if (profile?.nonGgsAccessGrantedAt) {
-    lines.push(`**Non-GGS доступ:** ${formatDateTime(profile.nonGgsAccessGrantedAt)}`);
+    lines.push(`**Отдельный доступ без JJS:** ${formatDateTime(profile.nonGgsAccessGrantedAt)}`);
   }
   if (pending) {
     lines.push("");
@@ -845,12 +863,15 @@ function buildGraphicStatusLines() {
 
 function buildWelcomeEditorPayload(statusText = "") {
   const presentation = getPresentation();
+  const nonJjsUi = getNonJjsUiConfig();
   const embed = new EmbedBuilder()
     .setTitle("Welcome Editor")
     .setDescription([
       `**Welcome title:** ${previewText(presentation.welcome.title, 140)}`,
       `**Welcome text:** ${previewText(presentation.welcome.description, 240)}`,
       `**Buttons:** ${presentation.welcome.buttons.begin} / ${presentation.welcome.buttons.quickMains} / ${presentation.welcome.buttons.myCard}`,
+      `**JJS block:** ${previewText(nonJjsUi.title, 90)} / ${previewText(nonJjsUi.buttonLabel, 80)}`,
+      `**JJS text:** ${previewText(nonJjsUi.description, 160)}`,
       `**Text tierlist:** ${presentation.tierlist.textTitle}`,
       `**PNG tierlist:** ${presentation.tierlist.graphicTitle}`,
       `**PNG message:** ${previewGraphicMessageText(140)}`,
@@ -869,12 +890,13 @@ function buildWelcomeEditorPayload(statusText = "") {
   );
 
   const row2 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId("welcome_editor_jjs").setLabel("JJS блок").setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId("welcome_editor_tiers").setLabel("Названия тиров").setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId("welcome_editor_png").setLabel("PNG и tierlist").setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId("welcome_editor_refresh").setLabel("Пересобрать всё").setStyle(ButtonStyle.Secondary)
+    new ButtonBuilder().setCustomId("welcome_editor_png").setLabel("PNG и tierlist").setStyle(ButtonStyle.Secondary)
   );
 
   const row3 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId("welcome_editor_refresh").setLabel("Пересобрать всё").setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId("welcome_editor_close").setLabel("Закрыть").setStyle(ButtonStyle.Danger)
   );
 
@@ -1398,6 +1420,24 @@ function memberHasTierRole(member) {
   return getAllTierRoleIds().some((roleId) => roleId && member.roles.cache.has(roleId));
 }
 
+function getNonJjsCaptchaModeForMember(member) {
+  const accessRoleId = String(appConfig.roles.accessRoleId || "").trim();
+  const nonJjsRoleId = getNonGgsAccessRoleId();
+
+  return resolveNonJjsCaptchaMode({
+    hasTierRole: memberHasTierRole(member),
+    hasAccessRole: Boolean(accessRoleId && member?.roles?.cache?.has(accessRoleId)),
+    hasNonJjsRole: Boolean(nonJjsRoleId && member?.roles?.cache?.has(nonJjsRoleId)),
+  });
+}
+
+function getNonJjsCaptchaStartText(modeState) {
+  if (modeState?.mode === "practice") {
+    return "Тренировочный режим: у тебя уже есть доступ или kill-tier, поэтому роли и профиль не изменятся.";
+  }
+  return "Пройди 2 этапа. В каждой картинке нужно нажать номер лишнего персонажа.";
+}
+
 async function ensureSingleTierRole(client, userId, targetTier, reason = "kill tier sync") {
   const member = await fetchMember(client, userId);
   if (!member) return;
@@ -1437,13 +1477,13 @@ async function grantAccessRole(client, userId, reason = "welcome application sub
   return true;
 }
 
-async function grantNonGgsAccessRole(client, userId, reason = "non-GGS captcha passed") {
+async function grantNonGgsAccessRole(client, userId, reason = "non-JJS captcha passed") {
   const member = await fetchMember(client, userId);
   if (!member) return false;
 
   const roleId = getNonGgsAccessRoleId();
   if (!roleId) {
-    throw new Error("NON_GGS_ACCESS_ROLE_ID не настроен. Укажи отдельную роль для non-GGS доступа.");
+    throw new Error("NON_JJS_ACCESS_ROLE_ID не настроен. Укажи отдельную роль для доступа без JJS.");
   }
 
   if (!member.roles.cache.has(roleId)) {
@@ -1485,17 +1525,18 @@ function buildWelcomeComponents() {
 }
 
 function buildNonGgsPanelPayload() {
+  const nonJjsUi = getNonJjsUiConfig();
   return {
     embeds: [
       new EmbedBuilder()
-        .setTitle(appConfig.ui.nonGgsTitle)
-        .setDescription(appConfig.ui.nonGgsDescription),
+        .setTitle(nonJjsUi.title)
+        .setDescription(nonJjsUi.description),
     ],
     components: [
       new ActionRowBuilder().addComponents(
         new ButtonBuilder()
           .setCustomId("onboard_non_ggs_start")
-          .setLabel(appConfig.ui.nonGgsButtonLabel)
+          .setLabel(nonJjsUi.buttonLabel)
           .setStyle(ButtonStyle.Success)
       ),
     ],
@@ -1524,9 +1565,10 @@ function buildNonGgsCaptchaCatalog() {
   return loadCaptchaCatalog(NON_GGS_CAPTCHA_ASSET_DIR);
 }
 
-function createNonGgsCaptchaSession(previousChallenge = null, stage = 1) {
+function createNonGgsCaptchaSession(previousChallenge = null, stage = 1, options = {}) {
   return {
     stage,
+    mode: String(options.mode || "grant").trim() || "grant",
     challenge: createCaptchaChallenge(buildNonGgsCaptchaCatalog(), { previousChallenge }),
   };
 }
@@ -1541,6 +1583,7 @@ function getNonGgsCaptchaStatusLines() {
   const missingOutliers = catalog.missingOutlierSlots.join(", ") || "—";
 
   return [
+    "JJS captcha status:",
     `roleId: ${roleId || "не задан"}`,
     `panelChannelId: ${panel.channelId || "—"}`,
     `panelMessageId: ${panel.messageId || "—"}`,
@@ -1566,18 +1609,26 @@ async function buildNonGgsCaptchaPayload(userId, noticeText = "", options = {}) 
     "Нажми кнопку с номером лишней картинки.",
   ];
 
+  if (session.mode === "practice") {
+    descriptionLines.splice(1, 0, "Тренировочный режим: роли и профиль не изменятся.");
+  }
+
   if (noticeText) {
     descriptionLines.unshift(noticeText);
   }
 
+  const title = session.mode === "practice"
+    ? "JJS-капча (тренировочный режим)"
+    : "Капча для отдельного доступа без JJS";
+
   const payload = {
     embeds: [
       new EmbedBuilder()
-        .setTitle("Капча для non-GGS доступа")
+        .setTitle(title)
         .setDescription(descriptionLines.join("\n"))
-        .setImage("attachment://non-ggs-captcha.png"),
+        .setImage("attachment://jjs-captcha.png"),
     ],
-    files: [new AttachmentBuilder(buffer, { name: "non-ggs-captcha.png" })],
+    files: [new AttachmentBuilder(buffer, { name: "jjs-captcha.png" })],
     components: buildNonGgsCaptchaButtons(),
   };
 
@@ -2494,7 +2545,7 @@ function buildProfilePayload(userId) {
     lines.push(`Access-role выдана: **${formatDateTime(profile.accessGrantedAt)}**`);
   }
   if (profile.nonGgsAccessGrantedAt) {
-    lines.push(`Non-GGS access-role выдана: **${formatDateTime(profile.nonGgsAccessGrantedAt)}**`);
+    lines.push(`Отдельная роль без JJS выдана: **${formatDateTime(profile.nonGgsAccessGrantedAt)}**`);
   }
 
   return {
@@ -2547,7 +2598,8 @@ function buildModeratorPanelPayload(statusText = "", includeFlags = true) {
         new ButtonBuilder().setCustomId("panel_add_character").setLabel("Добавить персонажа").setStyle(ButtonStyle.Success)
       ),
       new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId("welcome_editor").setLabel("Редактор UI").setStyle(ButtonStyle.Secondary)
+        new ButtonBuilder().setCustomId("welcome_editor").setLabel("Редактор UI").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("welcome_editor_jjs").setLabel("Редактировать JJS").setStyle(ButtonStyle.Secondary)
       ),
     ],
   };
@@ -2610,10 +2662,11 @@ client.once("clientReady", async () => {
 
 client.on("guildMemberAdd", async (member) => {
   if (member.guild.id !== GUILD_ID) return;
+  const nonJjsUi = getNonJjsUiConfig();
   const text = [
     `Добро пожаловать на сервер ${member.guild.name}.`,
     `Чтобы открыть доступ и выбрать мейнов, зайди в <#${appConfig.channels.welcomeChannelId}> и нажми кнопку **${getPresentation().welcome.buttons.begin}**.`,
-    `Если ты не играешь в GGS, там же есть отдельная кнопка **${appConfig.ui.nonGgsButtonLabel}** с двухэтапной капчей.`,
+    `Если ты не играешь в JJS, там же есть отдельная кнопка **${nonJjsUi.buttonLabel}** с двухэтапной капчей.`,
   ].join("\n");
   await member.send(text).catch(() => {});
 });
@@ -3109,6 +3162,24 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
+      if (interaction.customId === "welcome_editor_jjs") {
+        const nonJjsUi = getNonJjsUiConfig();
+        const modal = new ModalBuilder().setCustomId("welcome_editor_jjs_modal").setTitle("JJS блок");
+        modal.addComponents(
+          new ActionRowBuilder().addComponents(
+            new TextInputBuilder().setCustomId("jjs_title").setLabel("Заголовок блока").setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(120).setValue(nonJjsUi.title)
+          ),
+          new ActionRowBuilder().addComponents(
+            new TextInputBuilder().setCustomId("jjs_text").setLabel("Описание блока").setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(1000).setValue(nonJjsUi.description)
+          ),
+          new ActionRowBuilder().addComponents(
+            new TextInputBuilder().setCustomId("jjs_button").setLabel("Текст кнопки").setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(80).setValue(nonJjsUi.buttonLabel)
+          )
+        );
+        await interaction.showModal(modal);
+        return;
+      }
+
       if (interaction.customId === "welcome_editor_tiers") {
         const modal = new ModalBuilder().setCustomId("welcome_editor_tiers_modal").setTitle("Названия тиров");
         modal.addComponents(
@@ -3207,57 +3278,40 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
-      if (!getNonGgsAccessRoleId()) {
+      const captchaMode = getNonJjsCaptchaModeForMember(member);
+
+      if (captchaMode.mode !== "practice" && !getNonGgsAccessRoleId()) {
         await interaction.reply(ephemeralPayload({
-          content: "Отдельная роль для non-GGS доступа ещё не настроена. Заполни `NON_GGS_ACCESS_ROLE_ID`, затем попробуй снова.",
+          content: "Отдельная роль для доступа без JJS ещё не настроена. Заполни `NON_JJS_ACCESS_ROLE_ID`, затем попробуй снова.",
         }));
         return;
       }
 
       const pending = getPendingSubmissionForUser(interaction.user.id);
-      if (pending) {
+      if (pending && captchaMode.mode !== "practice") {
         await interaction.reply(ephemeralPayload({
           content: `У тебя уже есть pending-заявка с kills ${pending.kills}. Дождись решения модератора.`,
         }));
         return;
       }
 
-      if (memberHasTierRole(member)) {
-        await interaction.reply(ephemeralPayload({
-          content: "У тебя уже есть kill-tier роль, поэтому non-GGS капча тебе больше не нужна.",
-        }));
-        return;
+      if (captchaMode.mode !== "practice") {
+        clearMainDraft(interaction.user.id);
+        clearSubmitSession(interaction.user.id);
       }
-
-      if (appConfig.roles.accessRoleId && member.roles.cache.has(appConfig.roles.accessRoleId)) {
-        await interaction.reply(ephemeralPayload({
-          content: "У тебя уже есть обычная роль доступа, отдельный non-GGS доступ выдавать не нужно.",
-        }));
-        return;
-      }
-
-      if (member.roles.cache.has(getNonGgsAccessRoleId())) {
-        await interaction.reply(ephemeralPayload({
-          content: "У тебя уже есть отдельная роль доступа для non-GGS.",
-        }));
-        return;
-      }
-
-      clearMainDraft(interaction.user.id);
-      clearSubmitSession(interaction.user.id);
       clearNonGgsCaptchaSession(interaction.user.id);
 
       try {
-        setNonGgsCaptchaSession(interaction.user.id, createNonGgsCaptchaSession(null, 1));
+        setNonGgsCaptchaSession(interaction.user.id, createNonGgsCaptchaSession(null, 1, { mode: captchaMode.mode }));
         await interaction.reply(await buildNonGgsCaptchaPayload(
           interaction.user.id,
-          "Пройди 2 этапа. В каждой картинке нужно нажать номер лишнего персонажа.",
+          getNonJjsCaptchaStartText(captchaMode),
           { includeEphemeralFlag: true }
         ));
       } catch (error) {
         clearNonGgsCaptchaSession(interaction.user.id);
         await interaction.reply(ephemeralPayload({
-          content: `Не удалось запустить non-GGS капчу: ${String(error?.message || error || "неизвестная ошибка")}\nПапка с картинками: \`${NON_GGS_CAPTCHA_ASSET_DIR}\``,
+          content: `Не удалось запустить JJS-капчу: ${String(error?.message || error || "неизвестная ошибка")}\nПапка с картинками: \`${NON_GGS_CAPTCHA_ASSET_DIR}\``,
         }));
       }
       return;
@@ -3349,7 +3403,7 @@ client.on("interactionCreate", async (interaction) => {
 
       if (!session?.challenge) {
         await interaction.update({
-          content: "Капча истекла. Нажми кнопку «Я не играю в GGS» заново и начни сначала.",
+          content: "Капча истекла. Нажми кнопку «Я не играю в JJS» заново и начни сначала.",
           embeds: [],
           components: [],
           attachments: [],
@@ -3359,7 +3413,7 @@ client.on("interactionCreate", async (interaction) => {
 
       if (selectedIndex !== Number(session.challenge.correctIndex)) {
         try {
-          setNonGgsCaptchaSession(interaction.user.id, createNonGgsCaptchaSession(session.challenge, 1));
+          setNonGgsCaptchaSession(interaction.user.id, createNonGgsCaptchaSession(session.challenge, 1, { mode: session.mode }));
           await interaction.update({
             ...(await buildNonGgsCaptchaPayload(interaction.user.id, "Ответ неправильный. Попробуй ещё раз: капча полностью сброшена на первый этап.")),
             attachments: [],
@@ -3378,7 +3432,7 @@ client.on("interactionCreate", async (interaction) => {
 
       if (Number(session.stage) < NON_GGS_CAPTCHA_STAGES) {
         try {
-          setNonGgsCaptchaSession(interaction.user.id, createNonGgsCaptchaSession(session.challenge, Number(session.stage) + 1));
+          setNonGgsCaptchaSession(interaction.user.id, createNonGgsCaptchaSession(session.challenge, Number(session.stage) + 1, { mode: session.mode }));
           await interaction.update({
             ...(await buildNonGgsCaptchaPayload(interaction.user.id, "Верно. Первый этап пройден, теперь второй.")),
             attachments: [],
@@ -3396,7 +3450,18 @@ client.on("interactionCreate", async (interaction) => {
       }
 
       try {
-        await grantNonGgsAccessRole(client, interaction.user.id, "non-GGS captcha passed");
+        if (session.mode === "practice") {
+          clearNonGgsCaptchaSession(interaction.user.id);
+          await interaction.update({
+            content: "Капча пройдена. Это был тренировочный режим, роли и профиль не менялись.",
+            embeds: [],
+            components: [],
+            attachments: [],
+          });
+          return;
+        }
+
+        await grantNonGgsAccessRole(client, interaction.user.id, "non-JJS captcha passed");
         clearNonGgsCaptchaSession(interaction.user.id);
 
         const profile = getProfile(interaction.user.id);
@@ -3405,10 +3470,10 @@ client.on("interactionCreate", async (interaction) => {
         profile.updatedAt = nowIso();
         saveDb();
 
-        await logLine(client, `NON_GGS_ACCESS: <@${interaction.user.id}> passed captcha and received non-GGS role`);
+        await logLine(client, `NON_JJS_ACCESS: <@${interaction.user.id}> passed captcha and received separate no-JJS role`);
 
         await interaction.update({
-          content: "Готово. Капча пройдена, тебе выдана отдельная роль доступа для тех, кто не играет в GGS.",
+          content: "Готово. Капча пройдена, тебе выдана отдельная роль доступа для тех, кто не играет в JJS.",
           embeds: [],
           components: [],
           attachments: [],
@@ -3661,6 +3726,28 @@ client.on("interactionCreate", async (interaction) => {
         db.config.presentation.welcome.buttons.myCard = card;
       });
       await interaction.reply(buildWelcomeEditorPayload("Кнопки welcome обновлены."));
+      return;
+    }
+
+    if (interaction.customId === "welcome_editor_jjs_modal") {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+      const title = interaction.fields.getTextInputValue("jjs_title").trim();
+      const description = interaction.fields.getTextInputValue("jjs_text").trim();
+      const buttonLabel = interaction.fields.getTextInputValue("jjs_button").trim();
+      if (!title || !description || !buttonLabel) {
+        await interaction.reply(ephemeralPayload({ content: "Все поля JJS-блока должны быть заполнены." }));
+        return;
+      }
+      await applyUiMutation(client, "welcome", () => {
+        db.config.nonJjsUi ||= {};
+        db.config.nonJjsUi.title = title;
+        db.config.nonJjsUi.description = description;
+        db.config.nonJjsUi.buttonLabel = buttonLabel;
+      });
+      await interaction.reply(buildWelcomeEditorPayload("JJS-блок обновлён."));
       return;
     }
 

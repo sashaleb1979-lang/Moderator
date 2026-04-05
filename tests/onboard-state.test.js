@@ -5,6 +5,7 @@ const assert = require("node:assert/strict");
 
 const { commitMutation } = require("../src/onboard/refresh-runner");
 const { ONBOARD_SUBCOMMAND_NAMES } = require("../src/onboard/commands");
+const { resolveNonJjsCaptchaMode } = require("../src/onboard/non-jjs-mode");
 const { getMainStats, getTierlistStats } = require("../src/onboard/tierlist-stats");
 const {
   createPresentationDefaults,
@@ -219,6 +220,38 @@ test("tierlist stats count approval/reject rates and per-main aggregates", () =>
   assert.deepEqual(megumi.totalsByTier, { 1: 0, 2: 1, 3: 0, 4: 1, 5: 0 });
 });
 
+test("non-JJS captcha switches to practice mode when the member already has access", () => {
+  assert.deepEqual(
+    resolveNonJjsCaptchaMode({
+      hasAccessRole: true,
+      hasTierRole: false,
+      hasNonJjsRole: false,
+    }),
+    {
+      mode: "practice",
+      isPractice: true,
+      hasTierRole: false,
+      hasAccessRole: true,
+      hasNonJjsRole: false,
+    }
+  );
+
+  assert.deepEqual(
+    resolveNonJjsCaptchaMode({
+      hasAccessRole: false,
+      hasTierRole: false,
+      hasNonJjsRole: false,
+    }),
+    {
+      mode: "grant",
+      isPractice: false,
+      hasTierRole: false,
+      hasAccessRole: false,
+      hasNonJjsRole: false,
+    }
+  );
+});
+
 test("command builder includes new admin refresh and editor subcommands", () => {
   assert.deepEqual(
     [...ONBOARD_SUBCOMMAND_NAMES].sort(),
@@ -229,6 +262,7 @@ test("command builder includes new admin refresh and editor subcommands", () => 
       "movegraphic",
       "movenotices",
       "movetext",
+      "nonggsstatus",
       "panel",
       "pending",
       "profile",
