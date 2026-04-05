@@ -26,6 +26,11 @@ const {
   getMainStats,
   getTierlistStats,
 } = require("./src/onboard/tierlist-stats");
+const {
+  createCaptchaChallenge,
+  loadCaptchaCatalog,
+  renderCaptchaPng,
+} = require("./src/onboard/non-ggs-captcha");
 
 const {
   Client,
@@ -64,8 +69,10 @@ const GUILD_ID = String(process.env.GUILD_ID || "").trim();
 const DB_PATH = resolvePathFromBase(DATA_ROOT, process.env.DB_PATH || "welcome-db.json");
 const CONFIG_PATH = resolvePathFromBase(PROJECT_ROOT, process.env.CONFIG_PATH || "./bot.config.json");
 const DEFAULT_REMINDER_POSTER_PATH = resolvePathFromBase(PROJECT_ROOT, "./assets/missing-tierlist-poster.svg");
+const NON_GGS_CAPTCHA_ASSET_DIR = resolvePathFromBase(PROJECT_ROOT, "./assets/non-ggs-captcha");
 
 fs.mkdirSync(DATA_ROOT, { recursive: true });
+fs.mkdirSync(NON_GGS_CAPTCHA_ASSET_DIR, { recursive: true });
 setAvatarCacheDir(path.join(DATA_ROOT, "graphic_avatar_cache"));
 
 const SUBMIT_SESSION_EXPIRE_MS = 10 * 60 * 1000;
@@ -74,10 +81,13 @@ const TEMP_MESSAGE_DELETE_MS = 12000;
 const SUBMIT_COOLDOWN_SECONDS = 120;
 const WELCOME_CLEANUP_IMAGE_GRACE_MS = 2 * 60 * 1000;
 const WELCOME_CLEANUP_BOT_REPLY_GRACE_MS = 20 * 1000;
+const NON_GGS_CAPTCHA_EXPIRE_MS = 10 * 60 * 1000;
+const NON_GGS_CAPTCHA_STAGES = 2;
 
 let guildCache = null;
 const mainDrafts = new Map();
 const submitSessions = new Map();
+const nonGgsCaptchaSessions = new Map();
 
 function envText(name, fallback = "") {
   const raw = process.env[name];
@@ -130,6 +140,7 @@ function buildRuntimeConfig(fileConfig = {}) {
     roles: {
       moderatorRoleId: envText("MODERATOR_ROLE_ID", fileConfig?.roles?.moderatorRoleId || ""),
       accessRoleId: envText("ACCESS_ROLE_ID", fileConfig?.roles?.accessRoleId || ""),
+      nonGgsAccessRoleId: envText("NON_GGS_ACCESS_ROLE_ID", fileConfig?.roles?.nonGgsAccessRoleId || ""),
       killTierRoleIds: {
         1: envText("TIER_ROLE_1_ID", fileConfig?.roles?.killTierRoleIds?.["1"] || ""),
         2: envText("TIER_ROLE_2_ID", fileConfig?.roles?.killTierRoleIds?.["2"] || ""),
@@ -145,6 +156,12 @@ function buildRuntimeConfig(fileConfig = {}) {
         "Нажми кнопку ниже, выбери 1 или 2 мейнов, укажи точное количество kills и отправь следующим сообщением скрин. После подачи заявки бот сразу выдаст тебе роль доступа, а kill-tier роль прилетит после проверки модератором."
       ).trim(),
       getRoleButtonLabel: String(fileConfig?.ui?.getRoleButtonLabel || "Получить роль").trim(),
+      nonGgsTitle: String(fileConfig?.ui?.nonGgsTitle || "Я не играю в GGS").trim(),
+      nonGgsDescription: String(
+        fileConfig?.ui?.nonGgsDescription ||
+        "Если ты не играешь в GGS, нажми кнопку ниже. Бот запустит 2 этапа капчи и после успешного прохождения выдаст отдельную роль доступа."
+      ).trim(),
+      nonGgsButtonLabel: String(fileConfig?.ui?.nonGgsButtonLabel || "Я не играю в GGS").trim(),
       tierlistButtonLabel: String(fileConfig?.ui?.tierlistButtonLabel || "Текстовый тир-лист").trim(),
       tierlistTitle: String(fileConfig?.ui?.tierlistTitle || "Текстовый тир-лист").trim(),
     },
@@ -291,6 +308,10 @@ function loadDb() {
   const fallback = {
     config: {
       welcomePanel: {
+        channelId: appConfig.channels.welcomeChannelId,
+        messageId: "",
+      },
+      nonGgsPanel: {
         channelId: appConfig.channels.welcomeChannelId,
         messageId: "",
       },
@@ -489,6 +510,9 @@ function buildMyCardEmbed(userId) {
   }
   if (profile?.lastSubmissionStatus) {
     lines.push(`**Статус последней заявки:** ${profile.lastSubmissionStatus}`);
+  }
+  if (profile?.nonGgsAccessGrantedAt) {
+    lines.push(`**Non-GGS доступ:** ${formatDateTime(profile.nonGgsAccessGrantedAt)}`);
   }
   if (pending) {
     lines.push("");
@@ -1027,6 +1051,16 @@ function getWelcomePanelState() {
   return readWelcomePanelState(db.config, appConfig.channels.welcomeChannelId);
 }
 
+function getNonGgsPanelState() {
+  db.config.nonGgsPanel ||= {
+    channelId: appConfig.channels.welcomeChannelId,
+    messageId: "",
+  };
+  db.config.nonGgsPanel.channelId = getWelcomePanelState().channelId || appConfig.channels.welcomeChannelId;
+  db.config.nonGgsPanel.messageId = String(db.config.nonGgsPanel.messageId || "").trim();
+  return db.config.nonGgsPanel;
+}
+
 function getGraphicTierlistConfig() {
   db.config.presentation ||= {};
   db.config.presentation.tierlist ||= {};
@@ -1075,6 +1109,8 @@ function getProfile(userId) {
     approvedKills: null,
     killTier: null,
     accessGrantedAt: null,
+    nonGgsAccessGrantedAt: null,
+    nonGgsCaptchaPassedAt: null,
     updatedAt: null,
     lastSubmissionId: null,
     lastSubmissionStatus: null,
@@ -1148,6 +1184,32 @@ function getSubmitSession(userId) {
 
 function clearSubmitSession(userId) {
   submitSessions.delete(userId);
+}
+
+function setNonGgsCaptchaSession(userId, value) {
+  nonGgsCaptchaSessions.set(userId, { ...value, createdAt: Date.now() });
+}
+
+function getNonGgsCaptchaSession(userId) {
+  const session = nonGgsCaptchaSessions.get(userId);
+  if (!session) return null;
+  if (Date.now() - Number(session.createdAt || 0) > NON_GGS_CAPTCHA_EXPIRE_MS) {
+    nonGgsCaptchaSessions.delete(userId);
+    return null;
+  }
+  return session;
+}
+
+function clearNonGgsCaptchaSession(userId) {
+  nonGgsCaptchaSessions.delete(userId);
+}
+
+function getActiveNonGgsCaptchaSessionCount() {
+  let count = 0;
+  for (const userId of nonGgsCaptchaSessions.keys()) {
+    if (getNonGgsCaptchaSession(userId)) count += 1;
+  }
+  return count;
 }
 
 async function getGuild(client) {
@@ -1304,6 +1366,15 @@ function getAllTierRoleIds() {
   return [1, 2, 3, 4, 5].map((tier) => getTierRoleId(tier)).filter(Boolean);
 }
 
+function getNonGgsAccessRoleId() {
+  return String(appConfig.roles.nonGgsAccessRoleId || "").trim();
+}
+
+function memberHasTierRole(member) {
+  if (!member?.roles?.cache) return false;
+  return getAllTierRoleIds().some((roleId) => roleId && member.roles.cache.has(roleId));
+}
+
 async function ensureSingleTierRole(client, userId, targetTier, reason = "kill tier sync") {
   const member = await fetchMember(client, userId);
   if (!member) return;
@@ -1343,6 +1414,22 @@ async function grantAccessRole(client, userId, reason = "welcome application sub
   return true;
 }
 
+async function grantNonGgsAccessRole(client, userId, reason = "non-GGS captcha passed") {
+  const member = await fetchMember(client, userId);
+  if (!member) return false;
+
+  const roleId = getNonGgsAccessRoleId();
+  if (!roleId) {
+    throw new Error("NON_GGS_ACCESS_ROLE_ID не настроен. Укажи отдельную роль для non-GGS доступа.");
+  }
+
+  if (!member.roles.cache.has(roleId)) {
+    await member.roles.add(roleId, reason);
+  }
+
+  return true;
+}
+
 function buildWelcomeEmbed() {
   const presentation = getPresentation();
   return new EmbedBuilder()
@@ -1374,6 +1461,106 @@ function buildWelcomeComponents() {
   ];
 }
 
+function buildNonGgsPanelPayload() {
+  return {
+    embeds: [
+      new EmbedBuilder()
+        .setTitle(appConfig.ui.nonGgsTitle)
+        .setDescription(appConfig.ui.nonGgsDescription),
+    ],
+    components: [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId("onboard_non_ggs_start")
+          .setLabel(appConfig.ui.nonGgsButtonLabel)
+          .setStyle(ButtonStyle.Success)
+      ),
+    ],
+  };
+}
+
+function buildNonGgsCaptchaButtons() {
+  const rows = [];
+  for (let row = 0; row < 3; row += 1) {
+    const rowBuilder = new ActionRowBuilder();
+    for (let col = 0; col < 3; col += 1) {
+      const value = row * 3 + col + 1;
+      rowBuilder.addComponents(
+        new ButtonBuilder()
+          .setCustomId(`non_ggs_captcha_answer:${value}`)
+          .setLabel(String(value))
+          .setStyle(ButtonStyle.Secondary)
+      );
+    }
+    rows.push(rowBuilder);
+  }
+  return rows;
+}
+
+function buildNonGgsCaptchaCatalog() {
+  return loadCaptchaCatalog(NON_GGS_CAPTCHA_ASSET_DIR);
+}
+
+function createNonGgsCaptchaSession(previousChallenge = null, stage = 1) {
+  return {
+    stage,
+    challenge: createCaptchaChallenge(buildNonGgsCaptchaCatalog(), { previousChallenge }),
+  };
+}
+
+function getNonGgsCaptchaStatusLines() {
+  const panel = getNonGgsPanelState();
+  const catalog = buildNonGgsCaptchaCatalog();
+  const roleId = getNonGgsAccessRoleId();
+  const foundSkillful = catalog.skillful.map((entry) => entry.slot).join(", ") || "—";
+  const foundOutliers = catalog.outliers.map((entry) => entry.slot).join(", ") || "—";
+  const missingSkillful = catalog.missingSkillfulSlots.join(", ") || "—";
+  const missingOutliers = catalog.missingOutlierSlots.join(", ") || "—";
+
+  return [
+    `roleId: ${roleId || "не задан"}`,
+    `panelChannelId: ${panel.channelId || "—"}`,
+    `panelMessageId: ${panel.messageId || "—"}`,
+    `assetDir: ${NON_GGS_CAPTCHA_ASSET_DIR}`,
+    `skillful slots found: ${foundSkillful}`,
+    `outlier slots found: ${foundOutliers}`,
+    `missing skillful: ${missingSkillful}`,
+    `missing outliers: ${missingOutliers}`,
+    `active sessions: ${getActiveNonGgsCaptchaSessionCount()}`,
+  ];
+}
+
+async function buildNonGgsCaptchaPayload(userId, noticeText = "", options = {}) {
+  const session = getNonGgsCaptchaSession(userId);
+  if (!session?.challenge) {
+    throw new Error("Капча уже истекла. Нажми кнопку заново.");
+  }
+
+  const buffer = await renderCaptchaPng(session.challenge);
+  const stage = Number(session.stage) || 1;
+  const descriptionLines = [
+    `Этап **${stage} из ${NON_GGS_CAPTCHA_STAGES}**.`,
+    "Нажми кнопку с номером лишней картинки.",
+  ];
+
+  if (noticeText) {
+    descriptionLines.unshift(noticeText);
+  }
+
+  const payload = {
+    embeds: [
+      new EmbedBuilder()
+        .setTitle("Капча для non-GGS доступа")
+        .setDescription(descriptionLines.join("\n"))
+        .setImage("attachment://non-ggs-captcha.png"),
+    ],
+    files: [new AttachmentBuilder(buffer, { name: "non-ggs-captcha.png" })],
+    components: buildNonGgsCaptchaButtons(),
+  };
+
+  return options.includeEphemeralFlag ? ephemeralPayload(payload) : payload;
+}
+
 function buildCharacterPickerPayload(mode = "full") {
   const characterEntries = getCharacterEntries();
   if (!characterEntries.length) {
@@ -1386,7 +1573,7 @@ function buildCharacterPickerPayload(mode = "full") {
     .setDescription(
       isQuick
         ? "Можно выбрать одного или двух персонажей. Этот режим быстро обновляет только мейнов и роли, без новой заявки по kills."
-        : "Можно выбрать одного или двух персонажей. После выбора сразу откроется окно для точного количества kills."
+        : "Можно выбрать одного или двух персонажей. После выбора появится шаг с кнопкой **Дальше**, где можно открыть ввод точного количества kills."
     );
 
   const maxSelectable = Math.min(2, characterEntries.length);
@@ -1518,6 +1705,14 @@ async function findExistingWelcomePanelMessage(channel) {
   );
 }
 
+async function findExistingNonGgsPanelMessage(channel) {
+  const botId = client.user?.id;
+  return findManagedMessageInChannel(
+    channel,
+    (message) => message.author?.id === botId && messageHasRequiredCustomIds(message, ["onboard_non_ggs_start"])
+  );
+}
+
 async function findExistingGraphicTierlistMessage(channel) {
   const botId = client.user?.id;
   return findManagedMessageInChannel(
@@ -1550,6 +1745,10 @@ function shouldKeepWelcomeChannelMessage(message, keepMessageIds) {
   const ageMs = Date.now() - Number(message.createdTimestamp || 0);
 
   if (message.author?.id === client.user?.id && messageHasRequiredCustomIds(message, ["onboard_begin", "onboard_quick_mains"])) {
+    return true;
+  }
+
+  if (message.author?.id === client.user?.id && messageHasRequiredCustomIds(message, ["onboard_non_ggs_start"])) {
     return true;
   }
 
@@ -1620,41 +1819,50 @@ async function cleanupBotPins(client) {
   }
 }
 
-async function refreshWelcomePanel(client) {
-  const panelState = getWelcomePanelState();
-  const channel = await client.channels.fetch(panelState.channelId).catch(() => null);
-  if (!channel?.isTextBased()) {
-    throw new Error("welcomeChannelId не указывает на текстовый канал");
-  }
-
+async function upsertManagedPanelMessage(channel, state, payload, findExisting) {
   let message = null;
-  if (panelState.messageId) {
-    message = await channel.messages.fetch(panelState.messageId).catch(() => null);
+  if (state.messageId) {
+    message = await channel.messages.fetch(state.messageId).catch(() => null);
   }
   if (!message) {
-    message = await findExistingWelcomePanelMessage(channel);
-    if (message && panelState.messageId !== message.id) {
-      panelState.messageId = message.id;
+    message = await findExisting(channel);
+    if (message && state.messageId !== message.id) {
+      state.messageId = message.id;
       saveDb();
     }
   }
 
-  const payload = {
-    embeds: [buildWelcomeEmbed()],
-    components: buildWelcomeComponents(),
-  };
-
   if (!message) {
     message = await channel.send(payload);
-    panelState.messageId = message.id;
+    state.messageId = message.id;
   } else {
     await message.edit(payload);
     await message.unpin().catch(() => {});
   }
 
-  await cleanupWelcomeChannelMessages(channel, [message.id]);
-  saveDb();
   return message;
+}
+
+async function refreshWelcomePanel(client) {
+  const panelState = getWelcomePanelState();
+  const nonGgsPanelState = getNonGgsPanelState();
+  const channel = await client.channels.fetch(panelState.channelId).catch(() => null);
+  if (!channel?.isTextBased()) {
+    throw new Error("welcomeChannelId не указывает на текстовый канал");
+  }
+
+  const welcomePayload = {
+    embeds: [buildWelcomeEmbed()],
+    components: buildWelcomeComponents(),
+  };
+  const nonGgsPayload = buildNonGgsPanelPayload();
+
+  const welcomeMessage = await upsertManagedPanelMessage(channel, panelState, welcomePayload, findExistingWelcomePanelMessage);
+  const nonGgsMessage = await upsertManagedPanelMessage(channel, nonGgsPanelState, nonGgsPayload, findExistingNonGgsPanelMessage);
+
+  await cleanupWelcomeChannelMessages(channel, [welcomeMessage.id, nonGgsMessage.id]);
+  saveDb();
+  return { welcomeMessage, nonGgsMessage };
 }
 
 async function ensureWelcomePanel(client) {
@@ -2262,6 +2470,9 @@ function buildProfilePayload(userId) {
   if (profile.accessGrantedAt) {
     lines.push(`Access-role выдана: **${formatDateTime(profile.accessGrantedAt)}**`);
   }
+  if (profile.nonGgsAccessGrantedAt) {
+    lines.push(`Non-GGS access-role выдана: **${formatDateTime(profile.nonGgsAccessGrantedAt)}**`);
+  }
 
   return {
     embeds: [
@@ -2379,6 +2590,7 @@ client.on("guildMemberAdd", async (member) => {
   const text = [
     `Добро пожаловать на сервер ${member.guild.name}.`,
     `Чтобы открыть доступ и выбрать мейнов, зайди в <#${appConfig.channels.welcomeChannelId}> и нажми кнопку **${getPresentation().welcome.buttons.begin}**.`,
+    `Если ты не играешь в GGS, там же есть отдельная кнопка **${appConfig.ui.nonGgsButtonLabel}** с двухэтапной капчей.`,
   ].join("\n");
   await member.send(text).catch(() => {});
 });
@@ -2525,6 +2737,11 @@ client.on("interactionCreate", async (interaction) => {
 
     if (subcommand === "graphicstatus") {
       await interaction.reply(ephemeralPayload({ content: buildGraphicStatusLines().join("\n") }));
+      return;
+    }
+
+    if (subcommand === "nonggsstatus") {
+      await interaction.reply(ephemeralPayload({ content: getNonGgsCaptchaStatusLines().join("\n") }));
       return;
     }
 
@@ -2960,7 +3177,71 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
+    if (interaction.customId === "onboard_non_ggs_start") {
+      const member = await fetchMember(client, interaction.user.id);
+      if (!member) {
+        await interaction.reply(ephemeralPayload({ content: "Не удалось получить твой профиль на сервере." }));
+        return;
+      }
+
+      if (!getNonGgsAccessRoleId()) {
+        await interaction.reply(ephemeralPayload({
+          content: "Отдельная роль для non-GGS доступа ещё не настроена. Заполни `NON_GGS_ACCESS_ROLE_ID`, затем попробуй снова.",
+        }));
+        return;
+      }
+
+      const pending = getPendingSubmissionForUser(interaction.user.id);
+      if (pending) {
+        await interaction.reply(ephemeralPayload({
+          content: `У тебя уже есть pending-заявка с kills ${pending.kills}. Дождись решения модератора.`,
+        }));
+        return;
+      }
+
+      if (memberHasTierRole(member)) {
+        await interaction.reply(ephemeralPayload({
+          content: "У тебя уже есть kill-tier роль, поэтому non-GGS капча тебе больше не нужна.",
+        }));
+        return;
+      }
+
+      if (appConfig.roles.accessRoleId && member.roles.cache.has(appConfig.roles.accessRoleId)) {
+        await interaction.reply(ephemeralPayload({
+          content: "У тебя уже есть обычная роль доступа, отдельный non-GGS доступ выдавать не нужно.",
+        }));
+        return;
+      }
+
+      if (member.roles.cache.has(getNonGgsAccessRoleId())) {
+        await interaction.reply(ephemeralPayload({
+          content: "У тебя уже есть отдельная роль доступа для non-GGS.",
+        }));
+        return;
+      }
+
+      clearMainDraft(interaction.user.id);
+      clearSubmitSession(interaction.user.id);
+      clearNonGgsCaptchaSession(interaction.user.id);
+
+      try {
+        setNonGgsCaptchaSession(interaction.user.id, createNonGgsCaptchaSession(null, 1));
+        await interaction.reply(await buildNonGgsCaptchaPayload(
+          interaction.user.id,
+          "Пройди 2 этапа. В каждой картинке нужно нажать номер лишнего персонажа.",
+          { includeEphemeralFlag: true }
+        ));
+      } catch (error) {
+        clearNonGgsCaptchaSession(interaction.user.id);
+        await interaction.reply(ephemeralPayload({
+          content: `Не удалось запустить non-GGS капчу: ${String(error?.message || error || "неизвестная ошибка")}\nПапка с картинками: \`${NON_GGS_CAPTCHA_ASSET_DIR}\``,
+        }));
+      }
+      return;
+    }
+
     if (interaction.customId === "onboard_begin") {
+      clearNonGgsCaptchaSession(interaction.user.id);
       const cooldownLeft = getSubmitCooldownLeftSeconds(interaction.user.id);
       if (cooldownLeft > 0) {
         await interaction.reply(ephemeralPayload({ content: `Подожди ещё ${cooldownLeft} сек. перед новой заявкой.` }));
@@ -2994,6 +3275,7 @@ client.on("interactionCreate", async (interaction) => {
     }
 
     if (interaction.customId === "onboard_quick_mains") {
+      clearNonGgsCaptchaSession(interaction.user.id);
       await interaction.reply(buildCharacterPickerPayload("quick"));
       return;
     }
@@ -3035,6 +3317,88 @@ client.on("interactionCreate", async (interaction) => {
       clearMainDraft(interaction.user.id);
       clearSubmitSession(interaction.user.id);
       await interaction.update({ content: "Ок. Процесс отменён.", embeds: [], components: [] });
+      return;
+    }
+
+    if (interaction.customId.startsWith("non_ggs_captcha_answer:")) {
+      const selectedIndex = Number(interaction.customId.split(":")[1]);
+      const session = getNonGgsCaptchaSession(interaction.user.id);
+
+      if (!session?.challenge) {
+        await interaction.update({
+          content: "Капча истекла. Нажми кнопку «Я не играю в GGS» заново и начни сначала.",
+          embeds: [],
+          components: [],
+          attachments: [],
+        });
+        return;
+      }
+
+      if (selectedIndex !== Number(session.challenge.correctIndex)) {
+        try {
+          setNonGgsCaptchaSession(interaction.user.id, createNonGgsCaptchaSession(session.challenge, 1));
+          await interaction.update({
+            ...(await buildNonGgsCaptchaPayload(interaction.user.id, "Ответ неправильный. Попробуй ещё раз: капча полностью сброшена на первый этап.")),
+            attachments: [],
+          });
+        } catch (error) {
+          clearNonGgsCaptchaSession(interaction.user.id);
+          await interaction.update({
+            content: `Не удалось пересобрать капчу: ${String(error?.message || error || "неизвестная ошибка")}`,
+            embeds: [],
+            components: [],
+            attachments: [],
+          });
+        }
+        return;
+      }
+
+      if (Number(session.stage) < NON_GGS_CAPTCHA_STAGES) {
+        try {
+          setNonGgsCaptchaSession(interaction.user.id, createNonGgsCaptchaSession(session.challenge, Number(session.stage) + 1));
+          await interaction.update({
+            ...(await buildNonGgsCaptchaPayload(interaction.user.id, "Верно. Первый этап пройден, теперь второй.")),
+            attachments: [],
+          });
+        } catch (error) {
+          clearNonGgsCaptchaSession(interaction.user.id);
+          await interaction.update({
+            content: `Не удалось открыть следующий этап капчи: ${String(error?.message || error || "неизвестная ошибка")}`,
+            embeds: [],
+            components: [],
+            attachments: [],
+          });
+        }
+        return;
+      }
+
+      try {
+        await grantNonGgsAccessRole(client, interaction.user.id, "non-GGS captcha passed");
+        clearNonGgsCaptchaSession(interaction.user.id);
+
+        const profile = getProfile(interaction.user.id);
+        profile.nonGgsAccessGrantedAt = profile.nonGgsAccessGrantedAt || nowIso();
+        profile.nonGgsCaptchaPassedAt = nowIso();
+        profile.updatedAt = nowIso();
+        saveDb();
+
+        await logLine(client, `NON_GGS_ACCESS: <@${interaction.user.id}> passed captcha and received non-GGS role`);
+
+        await interaction.update({
+          content: "Готово. Капча пройдена, тебе выдана отдельная роль доступа для тех, кто не играет в GGS.",
+          embeds: [],
+          components: [],
+          attachments: [],
+        });
+      } catch (error) {
+        clearNonGgsCaptchaSession(interaction.user.id);
+        await interaction.update({
+          content: `Капча пройдена, но роль выдать не удалось: ${String(error?.message || error || "неизвестная ошибка")}`,
+          embeds: [],
+          components: [],
+          attachments: [],
+        });
+      }
       return;
     }
 
