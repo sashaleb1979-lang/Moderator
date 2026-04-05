@@ -11,6 +11,7 @@ const ONBOARD_SUBCOMMAND_NAMES = [
   "refreshtierlists",
   "graphicpanel",
   "graphicstatus",
+  "nonggsstatus",
   "movegraphic",
   "movetext",
   "movenotices",
@@ -58,6 +59,9 @@ function buildCommands() {
       )
       .addSubcommand((subcommand) =>
         subcommand.setName("graphicstatus").setDescription("Показать статус PNG tier-листа")
+      )
+      .addSubcommand((subcommand) =>
+        subcommand.setName("nonggsstatus").setDescription("Показать статус JJS-капчи и отдельной роли")
       )
       .addSubcommand((subcommand) =>
         subcommand
