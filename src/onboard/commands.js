@@ -8,6 +8,7 @@ const ONBOARD_SUBCOMMAND_NAMES = [
   "panel",
   "welcomeedit",
   "refreshwelcome",
+  "refreshavatars",
   "refreshtierlists",
   "graphicpanel",
   "graphicstatus",
@@ -17,6 +18,7 @@ const ONBOARD_SUBCOMMAND_NAMES = [
   "movenotices",
   "remindmissing",
   "modset",
+  "deleteprofile",
   "removetier",
   "syncroles",
 ];
@@ -50,6 +52,9 @@ function buildCommands() {
       )
       .addSubcommand((subcommand) =>
         subcommand.setName("refreshwelcome").setDescription("Обновить live welcome-панель")
+      )
+      .addSubcommand((subcommand) =>
+        subcommand.setName("refreshavatars").setDescription("Обновить аватарки в PNG tier-листе")
       )
       .addSubcommand((subcommand) =>
         subcommand.setName("refreshtierlists").setDescription("Обновить live текстовый и PNG tier-листы")
@@ -91,6 +96,12 @@ function buildCommands() {
           .addUserOption((option) => option.setName("target").setDescription("Игрок").setRequired(true))
           .addAttachmentOption((option) => option.setName("screenshot").setDescription("Скрин-пруф").setRequired(true))
           .addIntegerOption((option) => option.setName("kills").setDescription("Точное число kills").setMinValue(0).setRequired(true))
+      )
+      .addSubcommand((subcommand) =>
+        subcommand
+          .setName("deleteprofile")
+          .setDescription("Полностью удалить профиль игрока и связанные роли")
+          .addUserOption((option) => option.setName("target").setDescription("Игрок").setRequired(true))
       )
       .addSubcommand((subcommand) =>
         subcommand

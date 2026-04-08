@@ -8,6 +8,7 @@ const {
   renderGraphicTierlistPng,
   setAvatarCacheDir,
   clearGraphicAvatarCache,
+  clearGraphicAvatarCacheForUser,
   isPureimageAvailable,
   DEFAULT_GRAPHIC_TIER_COLORS,
 } = require("./graphic-tierlist");
@@ -1467,13 +1468,15 @@ async function ensureSingleTierRole(client, userId, targetTier, reason = "kill t
 
 async function clearTierRoles(client, userId, reason = "clear kill tier") {
   const member = await fetchMember(client, userId);
-  if (!member) return;
+  if (!member) return false;
 
   for (const roleId of getAllTierRoleIds()) {
     if (member.roles.cache.has(roleId)) {
       await member.roles.remove(roleId, reason).catch(() => {});
     }
   }
+
+  return true;
 }
 
 async function grantAccessRole(client, userId, reason = "welcome application submitted") {
@@ -1500,6 +1503,105 @@ async function grantNonGgsAccessRole(client, userId, reason = "non-JJS captcha p
   }
 
   return true;
+}
+
+async function revokeAccessRole(client, userId, reason = "profile purge") {
+  const member = await fetchMember(client, userId);
+  if (!member) return false;
+
+  const accessRoleId = String(appConfig.roles.accessRoleId || "").trim();
+  if (!accessRoleId || !member.roles.cache.has(accessRoleId)) return false;
+
+  await member.roles.remove(accessRoleId, reason).catch(() => {});
+  return true;
+}
+
+async function revokeNonGgsAccessRole(client, userId, reason = "profile purge") {
+  const member = await fetchMember(client, userId);
+  if (!member) return false;
+
+  const roleId = getNonGgsAccessRoleId();
+  if (!roleId || !member.roles.cache.has(roleId)) return false;
+
+  await member.roles.remove(roleId, reason).catch(() => {});
+  return true;
+}
+
+async function clearManagedCharacterRoles(client, userId, reason = "profile purge") {
+  const member = await fetchMember(client, userId);
+  if (!member) return false;
+
+  await syncManagedCharacterRoles(member, [], reason);
+  return true;
+}
+
+async function deleteSubmissionReviewMessages(client, submissions) {
+  let deleted = 0;
+  for (const submission of submissions) {
+    const reviewMessage = await fetchReviewMessage(client, submission);
+    if (!reviewMessage) continue;
+    await reviewMessage.delete().catch(() => {});
+    deleted += 1;
+  }
+  return deleted;
+}
+
+async function purgeUserProfile(client, userId, moderatorTag) {
+  const userKey = String(userId || "").trim();
+  const submissions = Object.entries(db.submissions || {})
+    .filter(([, submission]) => submission?.userId === userKey)
+    .map(([submissionId, submission]) => ({ submissionId, submission }));
+
+  clearGraphicAvatarCacheForUser(userKey);
+
+  const removedReviewMessages = await deleteSubmissionReviewMessages(
+    client,
+    submissions.map((entry) => entry.submission)
+  );
+
+  const rolesCleared = {
+    tier: await clearTierRoles(client, userKey, "moderator deleted user profile"),
+    access: await revokeAccessRole(client, userKey, "moderator deleted user profile"),
+    nonGgs: await revokeNonGgsAccessRole(client, userKey, "moderator deleted user profile"),
+    characters: await clearManagedCharacterRoles(client, userKey, "moderator deleted user profile"),
+  };
+
+  const hadProfile = Boolean(db.profiles?.[userKey]);
+  if (hadProfile) delete db.profiles[userKey];
+
+  for (const { submissionId } of submissions) {
+    delete db.submissions[submissionId];
+  }
+
+  const hadCooldown = Boolean(db.cooldowns?.[userKey]);
+  if (hadCooldown) delete db.cooldowns[userKey];
+
+  const hadMainDraft = mainDrafts.has(userKey);
+  clearMainDraft(userKey);
+
+  const hadSubmitSession = submitSessions.has(userKey);
+  clearSubmitSession(userKey);
+
+  const hadNonGgsSession = nonGgsCaptchaSessions.has(userKey);
+  clearNonGgsCaptchaSession(userKey);
+
+  saveDb();
+
+  await logLine(
+    client,
+    `DELETE_PROFILE: <@${userKey}> by ${moderatorTag}. profile=${hadProfile ? 1 : 0}, submissions=${submissions.length}, cooldown=${hadCooldown ? 1 : 0}, reviewMessages=${removedReviewMessages}`
+  );
+
+  return {
+    hadProfile,
+    deletedSubmissions: submissions.length,
+    removedReviewMessages,
+    hadCooldown,
+    hadMainDraft,
+    hadSubmitSession,
+    hadNonGgsSession,
+    rolesCleared,
+  };
 }
 
 function buildWelcomeEmbed() {
@@ -2884,6 +2986,14 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
+    if (subcommand === "refreshavatars") {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      clearGraphicAvatarCache();
+      await refreshGraphicTierlistBoard(client);
+      await interaction.editReply("Кэш аватарок очищен, PNG tier-лист пересобран.");
+      return;
+    }
+
     if (subcommand === "refreshtierlists") {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       const refreshed = await refreshAllTierlists(client);
@@ -2990,6 +3100,22 @@ client.on("interactionCreate", async (interaction) => {
       await grantAccessRole(client, target.id, "manual moderator setup");
 
       await interaction.editReply(`Готово. <@${target.id}> теперь имеет kills ${kills} и tier ${killTierFor(kills)}.`);
+      return;
+    }
+
+    if (subcommand === "deleteprofile") {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      const target = interaction.options.getUser("target", true);
+      const result = await purgeUserProfile(client, target.id, interaction.user.tag);
+      const refreshed = await refreshAllTierlists(client);
+      const refreshText = buildTierlistRefreshReply(refreshed);
+      await interaction.editReply([
+        `Профиль <@${target.id}> полностью удалён.`,
+        `Удалено заявок: ${result.deletedSubmissions}. Удалено review-сообщений: ${result.removedReviewMessages}.`,
+        `Очищено: профиль ${result.hadProfile ? "да" : "нет"}, cooldown ${result.hadCooldown ? "да" : "нет"}, main-draft ${result.hadMainDraft ? "да" : "нет"}, submit-session ${result.hadSubmitSession ? "да" : "нет"}, non-JJS session ${result.hadNonGgsSession ? "да" : "нет"}.`,
+        `Снятие ролей: tier ${result.rolesCleared.tier ? "да" : "нет"}, access ${result.rolesCleared.access ? "да" : "нет"}, non-JJS ${result.rolesCleared.nonGgs ? "да" : "нет"}, character ${result.rolesCleared.characters ? "да" : "нет"}.`,
+        refreshText,
+      ].join("\n"));
       return;
     }
 

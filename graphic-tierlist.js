@@ -335,6 +335,17 @@ function clearGraphicAvatarCache() {
   } catch {}
 }
 
+function clearGraphicAvatarCacheForUser(userId) {
+  const key = String(userId || "").trim();
+  if (!key) return;
+
+  avatarMem.delete(`disk:${key}`);
+  try {
+    const fp = avatarDiskPath(key);
+    if (fs.existsSync(fp)) fs.unlinkSync(fp);
+  } catch {}
+}
+
 // ====== DATA PREPARATION ======
 function buildBuckets(entries) {
   const buckets = { 1: [], 2: [], 3: [], 4: [], 5: [] };
@@ -512,6 +523,7 @@ module.exports = {
   renderGraphicTierlistPng,
   ensureGraphicFonts: ensureFonts,
   clearGraphicAvatarCache,
+  clearGraphicAvatarCacheForUser,
   setAvatarCacheDir,
   isPureimageAvailable: () => !!PImage,
 };

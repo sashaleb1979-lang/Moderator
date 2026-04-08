@@ -256,6 +256,7 @@ test("command builder includes new admin refresh and editor subcommands", () => 
   assert.deepEqual(
     [...ONBOARD_SUBCOMMAND_NAMES].sort(),
     [
+      "deleteprofile",
       "graphicpanel",
       "graphicstatus",
       "modset",
@@ -266,6 +267,7 @@ test("command builder includes new admin refresh and editor subcommands", () => 
       "panel",
       "pending",
       "profile",
+      "refreshavatars",
       "refreshwelcome",
       "refreshtierlists",
       "remindmissing",
