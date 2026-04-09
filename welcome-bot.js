@@ -28,6 +28,7 @@ const {
   getMainStats,
   getTierlistStats,
 } = require("./src/onboard/tierlist-stats");
+const { parseKillsFromSubmittedText } = require("./src/onboard/submission-message");
 let nonGgsCaptchaModule = null;
 try {
   nonGgsCaptchaModule = require("./src/onboard/non-jjs-captcha");
@@ -181,7 +182,7 @@ function buildRuntimeConfig(fileConfig = {}) {
       welcomeTitle: String(fileConfig?.ui?.welcomeTitle || "Jujutsu Shinigans Onboarding").trim(),
       welcomeDescription: String(
         fileConfig?.ui?.welcomeDescription ||
-        "Нажми кнопку ниже, выбери 1 или 2 мейнов, затем отправь в welcome-канал скрин и отдельное сообщение только с точным числом kills со скрина. После подачи заявки бот сразу выдаст тебе роль доступа, а kill-tier роль прилетит после проверки модератором."
+        "Нажми кнопку ниже, выбери 1 или 2 мейнов и отправь одним сообщением точное количество kills в тексте вместе со скрином. После подачи заявки бот сразу выдаст тебе роль доступа, а kill-tier роль прилетит после проверки модератором."
       ).trim(),
       getRoleButtonLabel: String(fileConfig?.ui?.getRoleButtonLabel || "Получить роль").trim(),
       nonGgsTitle: String(fileConfig?.ui?.nonJjsTitle || fileConfig?.ui?.nonGgsTitle || "Я не играю в JJS").trim(),
@@ -419,15 +420,6 @@ function parseKillCount(input) {
   const value = Number(digits);
   if (!Number.isSafeInteger(value) || value < 0) return null;
   return value;
-}
-
-function parseExactKillMessage(input) {
-  const text = String(input || "").trim();
-  if (!text) return { status: "empty", kills: null, text: "" };
-  if (!/^\d+$/.test(text)) return { status: "invalid", kills: null, text };
-  const kills = parseKillCount(text);
-  if (kills === null) return { status: "invalid", kills: null, text };
-  return { status: "valid", kills, text };
 }
 
 function killTierFor(kills) {
@@ -1758,7 +1750,7 @@ function buildCharacterPickerPayload(mode = "full") {
     .setDescription(
       isQuick
         ? "Можно выбрать одного или двух персонажей. Этот режим быстро обновляет только мейнов и роли, без новой заявки по kills."
-        : "Можно выбрать одного или двух персонажей. После выбора появится шаг с кнопкой **Дальше**, где бот переведёт тебя в режим отправки скрина и точного числа kills."
+        : "Можно выбрать одного или двух персонажей. После выбора бот попросит одним сообщением отправить kills в тексте и скрин во вложении."
     );
 
   const maxSelectable = Math.min(2, characterEntries.length);
@@ -1781,84 +1773,44 @@ function buildCharacterPickerPayload(mode = "full") {
   };
 }
 
-function buildKillsModal(initialValue = "") {
-  const modal = new ModalBuilder().setCustomId("onboard_kills_modal").setTitle("Точное количество kills");
-  const input = new TextInputBuilder()
-    .setCustomId("kills")
-    .setLabel("Введи точное число kills")
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true)
-    .setPlaceholder("Например 3120");
-  if (String(initialValue || "").trim()) input.setValue(String(initialValue).trim());
-  modal.addComponents(new ActionRowBuilder().addComponents(input));
-  return modal;
-}
-
-function buildKillsStepPayload(userId) {
-  const draft = getMainDraft(userId);
-  if (!draft?.characterIds?.length) {
+function buildSubmitStepPayload(userId, options = {}) {
+  const session = getSubmitSession(userId);
+  const mainCharacterIds = Array.isArray(options.mainCharacterIds) && options.mainCharacterIds.length
+    ? options.mainCharacterIds
+    : session?.mainCharacterIds;
+  if (!mainCharacterIds?.length) {
     return ephemeralPayload({ content: "Сессия выбора мейнов истекла. Нажми кнопку заново." });
   }
 
-  const selectedEntries = getSelectedCharacterEntries(draft.characterIds);
+  const selectedEntries = getSelectedCharacterEntries(mainCharacterIds);
   const selectedLabels = selectedEntries.length
     ? selectedEntries.map((entry) => entry.label)
-    : draft.characterIds.map((value) => String(value || "").trim()).filter(Boolean);
+    : mainCharacterIds.map((value) => String(value || "").trim()).filter(Boolean);
+  const suggestedKills = Number.isSafeInteger(options.suggestedKills) ? options.suggestedKills : null;
+  const lines = [
+    `Выбрано: **${selectedLabels.join(", ")}**`,
+    "",
+  ];
+
+  if (options.noticeText) {
+    lines.push(options.noticeText, "");
+  }
 
   const embed = new EmbedBuilder()
     .setTitle("Мейны выбраны")
     .setDescription([
-      `Выбрано: **${selectedLabels.join(", ")}**`,
-      "",
-      "Теперь нажми **Дальше** и отправь в welcome-канал две вещи:",
-      "1. **Скриншот** с kills и килы только цифрами, например `3120`, все одним сообщением",
-      "",
-      "Порядок не важен: можно сначала скрин, потом число, или наоборот.",
+      ...lines,
+      "Теперь отправь **одно сообщение** в welcome-канал:",
+      "• в тексте укажи точное количество kills",
+      "• во вложении приложи скрин",
+      suggestedKills
+        ? `Чтобы не переписывать заново, можешь просто отправить текст: **${suggestedKills}**`
+        : "Пиши в тексте только kills, например: **3120** или **3120 kills**.",
+      "Бот удалит сообщение после обработки.",
     ].join("\n"));
 
   return ephemeralPayload({
     embeds: [embed],
-    components: [
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId("onboard_prepare_submission").setLabel("Дальше").setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId("onboard_change_mains").setLabel("Выбрать заново").setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId("onboard_cancel").setLabel("Отмена").setStyle(ButtonStyle.Secondary)
-      ),
-    ],
-  });
-}
-
-function buildSubmitSessionPayload(userId, noticeText = "") {
-  const session = getSubmitSession(userId);
-  if (!session?.mainCharacterIds?.length) {
-    return ephemeralPayload({ content: "Сессия отправки истекла. Нажми кнопку заново." });
-  }
-
-  const selectedEntries = getSelectedCharacterEntries(session.mainCharacterIds);
-  const selectedLabels = selectedEntries.length
-    ? selectedEntries.map((entry) => entry.label)
-    : session.mainCharacterIds.map((value) => String(value || "").trim()).filter(Boolean);
-  const kills = Number.isFinite(Number(session.kills)) ? Number(session.kills) : null;
-  const screenshotReady = Boolean(session.screenshotUrl);
-  const lines = [
-    `Выбрано: **${selectedLabels.join(", ")}**`,
-    `Скрин: ${screenshotReady ? "**получен**" : "**ещё не получен**"}`,
-    `Число kills: ${kills !== null ? `**${kills}**` : "**ещё не получено**"}`,
-    "",
-    `Отправь в <#${appConfig.channels.welcomeChannelId}> скрин и отдельное сообщение только цифрами.`,
-    "Можно отправить их в любом порядке.",
-  ];
-
-  if (noticeText) {
-    lines.unshift(noticeText, "");
-  }
-
-  return ephemeralPayload({
-    embeds: [
-      new EmbedBuilder()
-        .setTitle("Заявка собирается")
-        .setDescription(lines.join("\n")),
-    ],
     components: [
       new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId("onboard_change_mains").setLabel("Выбрать заново").setStyle(ButtonStyle.Secondary),
@@ -2831,7 +2783,7 @@ client.on("messageCreate", async (message) => {
 
   const session = getSubmitSession(message.author.id);
   if (!session) {
-    const reply = await message.reply("В этом канале можно отправлять только скрин и отдельное сообщение с числом kills после кнопки «Получить роль». Остальные сообщения удаляются.").catch(() => null);
+    const reply = await message.reply("В этом канале принимается только заявка одним сообщением после кнопки «Получить роль»: текст с точным числом kills и скрин во вложении. Остальные сообщения удаляются.").catch(() => null);
     if (reply) scheduleDeleteMessage(reply);
     await message.delete().catch(() => {});
     return;
@@ -2846,71 +2798,47 @@ client.on("messageCreate", async (message) => {
     return;
   }
 
-  const attachment = [...message.attachments.values()].find((item) => isImageAttachment(item)) || null;
-  const exactKills = parseExactKillMessage(message.content);
-  const hadNonImageAttachment = message.attachments.size > 0 && !attachment;
-
-  if (!attachment && exactKills.status !== "valid") {
-    const text = hadNonImageAttachment
-      ? "Нужен именно скрин-картинка или отдельное сообщение только цифрами."
-      : exactKills.status === "invalid"
-        ? "Число kills нужно отправить отдельным сообщением только цифрами, без слов и символов."
-        : "Сейчас нужен либо скрин, либо отдельное сообщение только цифрами, например `3120`.";
-    const reply = await message.reply(text).catch(() => null);
+  const attachment = [...message.attachments.values()].find((item) => isImageAttachment(item));
+  if (!attachment) {
+    const reply = await message.reply("В одной заявке должны быть и kills в тексте, и скрин во вложении. Отправь одно сообщение с числом kills и приложи картинку.").catch(() => null);
     if (reply) scheduleDeleteMessage(reply);
     await message.delete().catch(() => {});
     return;
   }
 
-  const nextSession = {
-    ...session,
-    mainCharacterIds: [...(session.mainCharacterIds || [])],
-  };
-  const progressNotes = [];
-
-  if (attachment) {
-    nextSession.screenshotUrl = attachment.url;
-    progressNotes.push("Скрин сохранён.");
+  const killsResult = parseKillsFromSubmittedText(message.content);
+  if (killsResult.kills === null) {
+    const reply = await message.reply(
+      killsResult.reason === "ambiguous"
+        ? "Не понял число kills. Укажи в тексте только одно число, например `3120`, и приложи скрин в этом же сообщении."
+        : "В тексте заявки нужно указать точное число kills, например `3120` или `3120 kills`, и приложить скрин в этом же сообщении."
+    ).catch(() => null);
+    if (reply) scheduleDeleteMessage(reply);
+    await message.delete().catch(() => {});
+    return;
   }
-
-  if (exactKills.status === "valid") {
-    nextSession.kills = exactKills.kills;
-    progressNotes.push(`Число kills сохранено: **${exactKills.kills}**.`);
-  } else if (exactKills.status === "invalid") {
-    progressNotes.push("Число из этого сообщения не засчитано: нужны только цифры.");
-  }
-
-  setSubmitSession(message.author.id, nextSession);
-  const readyToSubmit = Number.isFinite(Number(nextSession.kills)) && Boolean(nextSession.screenshotUrl);
 
   try {
-    if (readyToSubmit) {
-      await createPendingSubmissionFromAttachment(client, {
-        user: message.author,
-        member: message.member,
-        mainCharacterIds: nextSession.mainCharacterIds,
-        kills: nextSession.kills,
-        screenshotUrl: nextSession.screenshotUrl,
-      });
-      await grantAccessRole(client, message.author.id, "newcomer application submitted");
+    await createPendingSubmissionFromAttachment(client, {
+      user: message.author,
+      member: message.member,
+      mainCharacterIds: session.mainCharacterIds,
+      kills: killsResult.kills,
+      screenshotUrl: attachment.url,
+    });
 
-      const profile = getProfile(message.author.id);
-      profile.accessGrantedAt = profile.accessGrantedAt || nowIso();
-      profile.updatedAt = nowIso();
-      saveDb();
+    await grantAccessRole(client, message.author.id, "newcomer application submitted");
 
-      clearSubmitSession(message.author.id);
-      const reply = await message.reply("Заявка отправлена модераторам. Доступная роль уже выдана, kill-tier прилетит после проверки.").catch(() => null);
-      if (reply) scheduleDeleteMessage(reply);
+    const profile = getProfile(message.author.id);
+    profile.accessGrantedAt = profile.accessGrantedAt || nowIso();
+    profile.updatedAt = nowIso();
+    saveDb();
 
-      await logLine(client, `SUBMIT: <@${message.author.id}> kills ${nextSession.kills} mains=${nextSession.mainCharacterIds.join(",")}`);
-    } else {
-      const waitingText = nextSession.screenshotUrl
-        ? [...progressNotes, "Теперь отправь отдельное сообщение только цифрами с точным числом kills."].join("\n")
-        : [...progressNotes, "Теперь отправь скрин с kills в этот канал."].join("\n");
-      const reply = await message.reply(waitingText).catch(() => null);
-      if (reply) scheduleDeleteMessage(reply);
-    }
+    clearSubmitSession(message.author.id);
+    const reply = await message.reply("Заявка отправлена модераторам. Доступная роль уже выдана, kill-tier прилетит после проверки.").catch(() => null);
+    if (reply) scheduleDeleteMessage(reply);
+
+    await logLine(client, `SUBMIT: <@${message.author.id}> kills ${killsResult.kills} mains=${session.mainCharacterIds.join(",")}`);
   } catch (error) {
     clearSubmitSession(message.author.id);
     const reply = await message.reply(String(error?.message || error || "Не удалось отправить заявку.")).catch(() => null);
@@ -3548,13 +3476,17 @@ client.on("interactionCreate", async (interaction) => {
 
       const session = getSubmitSession(interaction.user.id);
       if (session) {
-        await interaction.reply(buildSubmitSessionPayload(interaction.user.id));
+        await interaction.reply(ephemeralPayload({
+          content: `Ты уже на шаге подачи заявки. Отправь в <#${appConfig.channels.welcomeChannelId}> одно сообщение: число kills в тексте и скрин во вложении.`,
+        }));
         return;
       }
 
       const draft = getMainDraft(interaction.user.id);
-      if (draft) {
-        await interaction.reply(buildKillsStepPayload(interaction.user.id));
+      if (draft?.characterIds?.length) {
+        setSubmitSession(interaction.user.id, { mainCharacterIds: draft.characterIds });
+        clearMainDraft(interaction.user.id);
+        await interaction.reply(buildSubmitStepPayload(interaction.user.id));
         return;
       }
 
@@ -3569,13 +3501,12 @@ client.on("interactionCreate", async (interaction) => {
     }
 
     if (interaction.customId === "onboard_change_mains") {
-      clearMainDraft(interaction.user.id);
       clearSubmitSession(interaction.user.id);
       await interaction.update(buildCharacterPickerPayload("full"));
       return;
     }
 
-    if (["onboard_prepare_submission", "onboard_open_kills_modal"].includes(interaction.customId)) {
+    if (interaction.customId === "onboard_open_kills_modal") {
       const pending = getPendingSubmissionForUser(interaction.user.id);
       if (pending) {
         clearMainDraft(interaction.user.id);
@@ -3585,7 +3516,7 @@ client.on("interactionCreate", async (interaction) => {
 
       const session = getSubmitSession(interaction.user.id);
       if (session) {
-        await interaction.reply(buildSubmitSessionPayload(interaction.user.id));
+        await interaction.update(buildSubmitStepPayload(interaction.user.id));
         return;
       }
 
@@ -3595,16 +3526,11 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
-      setSubmitSession(interaction.user.id, {
-        mainCharacterIds: [...draft.characterIds],
-        kills: null,
-        screenshotUrl: "",
-      });
+      setSubmitSession(interaction.user.id, { mainCharacterIds: draft.characterIds });
       clearMainDraft(interaction.user.id);
-      await interaction.update(buildSubmitSessionPayload(
-        interaction.user.id,
-        "Мейны сохранены. Теперь отправь скрин и отдельное сообщение только с точным числом kills."
-      ));
+      await interaction.update(buildSubmitStepPayload(interaction.user.id, {
+        noticeText: "Отдельный шаг с вводом kills больше не нужен.",
+      }));
       return;
     }
 
@@ -3816,8 +3742,9 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    setMainDraft(interaction.user.id, selectedEntries.map((entry) => entry.id));
-    await interaction.update(buildKillsStepPayload(interaction.user.id));
+    setSubmitSession(interaction.user.id, { mainCharacterIds: selectedEntries.map((entry) => entry.id) });
+    clearMainDraft(interaction.user.id);
+    await interaction.update(buildSubmitStepPayload(interaction.user.id));
     return;
   }
 
@@ -4074,16 +4001,13 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
-      setSubmitSession(interaction.user.id, {
-        mainCharacterIds: [...draft.characterIds],
-        kills,
-        screenshotUrl: "",
-      });
+      setSubmitSession(interaction.user.id, { mainCharacterIds: draft.characterIds });
       clearMainDraft(interaction.user.id);
-      await interaction.reply(buildSubmitSessionPayload(
-        interaction.user.id,
-        `Мейны сохранены, число kills сохранено: **${kills}**. Теперь отправь скрин.`
-      ));
+
+      await interaction.reply(buildSubmitStepPayload(interaction.user.id, {
+        noticeText: "Отдельный шаг с модалкой больше не используется. Теперь бот принимает только одно сообщение с kills и со скрином.",
+        suggestedKills: kills,
+      }));
       return;
     }
 

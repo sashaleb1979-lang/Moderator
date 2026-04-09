@@ -8,17 +8,28 @@ const HARD_DEFAULT_GRAPHIC_TIER_COLORS = {
   5: "#ff6b6b",
 };
 
+const LEGACY_WELCOME_DESCRIPTION = "Нажми кнопку ниже, выбери 1 или 2 мейнов, укажи точное количество kills и отправь следующим сообщением скрин. После подачи заявки бот сразу выдаст тебе роль доступа, а kill-tier роль прилетит после проверки модератором.";
+const LEGACY_WELCOME_STEPS = [
+  "Нажми **Получить роль**.",
+  "Выбери **1 или 2** мейнов.",
+  "Введи **точное количество kills**.",
+  "Следующим сообщением отправь **скрин** в этот канал.",
+  "Бот удалит скрин после обработки, сразу даст access-role, а kill-tier прилетит после проверки модератором.",
+];
+const COMBINED_SUBMISSION_WELCOME_DESCRIPTION = "Нажми кнопку ниже, выбери 1 или 2 мейнов и отправь одним сообщением точное количество kills в тексте вместе со скрином. После подачи заявки бот сразу выдаст тебе роль доступа, а kill-tier роль прилетит после проверки модератором.";
+const COMBINED_SUBMISSION_WELCOME_STEPS = [
+  "Нажми **Получить роль**.",
+  "Выбери **1 или 2** мейнов.",
+  "Отправь **одно сообщение** в этот канал: в тексте укажи точное количество kills, а во вложении приложи скрин.",
+  "Пиши в тексте только kills, например: **3120** или **3120 kills**.",
+  "Бот удалит сообщение после обработки, сразу даст access-role, а kill-tier прилетит после проверки модератором.",
+];
+
 const HARD_DEFAULT_PRESENTATION = {
   welcome: {
     title: "Jujutsu Shinigans Onboarding",
-    description: "Нажми кнопку ниже, выбери 1 или 2 мейнов, укажи точное количество kills и отправь следующим сообщением скрин. После подачи заявки бот сразу выдаст тебе роль доступа, а kill-tier роль прилетит после проверки модератором.",
-    steps: [
-      "Нажми **Получить роль**.",
-      "Выбери **1 или 2** мейнов.",
-      "Введи **точное количество kills**.",
-      "Следующим сообщением отправь **скрин** в этот канал.",
-      "Бот удалит скрин после обработки, сразу даст access-role, а kill-tier прилетит после проверки модератором.",
-    ],
+    description: COMBINED_SUBMISSION_WELCOME_DESCRIPTION,
+    steps: COMBINED_SUBMISSION_WELCOME_STEPS,
     buttons: {
       begin: "Получить роль",
       quickMains: "Быстро сменить мейнов",
@@ -59,6 +70,11 @@ function cleanString(value) {
   return text || "";
 }
 
+function isLegacyWelcomeCopy(text) {
+  const normalized = cleanString(text).toLowerCase();
+  return Boolean(normalized) && normalized.includes("следующим сообщением") && normalized.includes("скрин");
+}
+
 function firstNonEmpty(...values) {
   for (const value of values) {
     const text = cleanString(value);
@@ -73,6 +89,17 @@ function normalizeSteps(value, fallback) {
     if (steps.length) return steps.slice(0, 5);
   }
   return [...fallback];
+}
+
+function normalizeWelcomeDescription(value, fallback) {
+  const text = cleanString(value);
+  if (!text) return cleanString(fallback);
+  return isLegacyWelcomeCopy(text) ? cleanString(fallback) : text;
+}
+
+function normalizeWelcomeSteps(value, fallback) {
+  const steps = normalizeSteps(value, fallback);
+  return steps.some((step) => isLegacyWelcomeCopy(step)) ? [...fallback] : steps;
 }
 
 function normalizeTierMap(value, fallback) {
@@ -115,8 +142,11 @@ function createPresentationDefaults(fileConfig = {}, options = {}) {
   return {
     welcome: {
       title: firstNonEmpty(welcomeEmbed.title, ui.welcomeTitle, hardDefaults.welcome.title),
-      description: firstNonEmpty(welcomeEmbed.description, ui.welcomeDescription, hardDefaults.welcome.description),
-      steps: normalizeSteps(welcomeEmbed.steps, hardDefaults.welcome.steps),
+      description: normalizeWelcomeDescription(
+        firstNonEmpty(welcomeEmbed.description, ui.welcomeDescription),
+        hardDefaults.welcome.description
+      ),
+      steps: normalizeWelcomeSteps(welcomeEmbed.steps, hardDefaults.welcome.steps),
       buttons: {
         begin: firstNonEmpty(welcomeButtons.begin, ui.getRoleButtonLabel, hardDefaults.welcome.buttons.begin),
         quickMains: firstNonEmpty(welcomeButtons.quickMains, ui.quickMainsButtonLabel, hardDefaults.welcome.buttons.quickMains),
@@ -232,6 +262,14 @@ function ensurePresentationConfig(dbConfig, options = {}) {
     presentation.tierlist.graphic.panel = { selectedTier: Number(legacyGraphic.panel.selectedTier) || 5 };
     mutated = true;
   }
+  if (isLegacyWelcomeCopy(presentation.welcome.description)) {
+    presentation.welcome.description = defaults.welcome.description;
+    mutated = true;
+  }
+  if (Array.isArray(presentation.welcome.steps) && presentation.welcome.steps.some((step) => isLegacyWelcomeCopy(step))) {
+    presentation.welcome.steps = [...defaults.welcome.steps];
+    mutated = true;
+  }
 
   return { mutated, presentation };
 }
@@ -246,8 +284,8 @@ function resolvePresentation(dbConfig = {}, fileConfig = {}, options = {}) {
   return {
     welcome: {
       title: firstNonEmpty(welcome.title, defaults.welcome.title),
-      description: firstNonEmpty(welcome.description, defaults.welcome.description),
-      steps: normalizeSteps(welcome.steps, defaults.welcome.steps),
+      description: normalizeWelcomeDescription(welcome.description, defaults.welcome.description),
+      steps: normalizeWelcomeSteps(welcome.steps, defaults.welcome.steps),
       buttons: {
         begin: firstNonEmpty(welcome.buttons?.begin, defaults.welcome.buttons.begin),
         quickMains: firstNonEmpty(welcome.buttons?.quickMains, defaults.welcome.buttons.quickMains),
