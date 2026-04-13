@@ -14,6 +14,7 @@ const {
 } = require("./splitter");
 
 const RATE_LIMIT_DELAY = 1500;
+const FAKE_DISCORD_ID = "123456789012345678";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /**
@@ -53,10 +54,36 @@ function createGuideState(channelId) {
     guildId: "",
     navTop: [],
     navBottom: [],
+    generalTechsAnchorMessageId: null,
     generalTechsThreadId: null,
     generalTechsMessageIds: [],
     characters: [],
   };
+}
+
+function estimateNavigationMessageCount(characters, guildId, channelId, options = {}) {
+  const placeholderCharacters = (characters || []).map((char) => ({
+    emoji: char.emoji,
+    name: char.name,
+    imageMessageId: FAKE_DISCORD_ID,
+  }));
+
+  return buildNavigationMessages(
+    placeholderCharacters,
+    guildId || FAKE_DISCORD_ID,
+    channelId || FAKE_DISCORD_ID,
+    { generalTechsThreadId: options.includeGeneralTechs ? FAKE_DISCORD_ID : null }
+  ).length;
+}
+
+async function deleteThreadIfExists(guild, threadId) {
+  if (!threadId) return;
+
+  const thread = await guild.channels.fetch(threadId).catch(() => null);
+  if (!thread) return;
+
+  await thread.delete().catch(() => {});
+  await sleep(RATE_LIMIT_DELAY);
 }
 
 /**
@@ -157,6 +184,7 @@ async function publishFullGuide({ channel, comboText, techsText, assetsDir, onPr
   if (techs.general.length > 0) {
     // Create a standalone message for general techs thread anchor
     const generalAnchor = await sendMessage(channel, { content: "🛠️ **Общие техи** — см. ветку ↓" });
+    state.generalTechsAnchorMessageId = generalAnchor.id;
     const generalThread = await generalAnchor.startThread({
       name: "🛠️ Общие техи",
       autoArchiveDuration: 10080,
@@ -255,21 +283,21 @@ async function publishGuideOrdered({ channel, comboText, techsText, assetsDir, o
 
   // ── 2. Top navigation placeholders ──
   progress(2, 7, "Создание навигации (заглушки)…");
-  // We don't know message IDs yet, so post placeholder text
-  const navPlaceholder1 = await sendMessage(channel, { content: "🗺️ _Навигация загружается…_" });
-  state.navTop.push(navPlaceholder1.id);
-
-  // Check if we'll need 2 nav messages
-  const needsSecondNav = combo.characters.length > 9;
-  if (needsSecondNav) {
-    const navPlaceholder2 = await sendMessage(channel, { content: "🗺️ _Навигация загружается… (часть 2)_" });
-    state.navTop.push(navPlaceholder2.id);
+  const navPlaceholderCount = estimateNavigationMessageCount(combo.characters, guildId, channel.id, {
+    includeGeneralTechs: techs.general.length > 0,
+  });
+  for (let index = 0; index < navPlaceholderCount; index++) {
+    const placeholder = await sendMessage(channel, {
+      content: index === 0 ? "🗺️ _Навигация загружается…_" : `🗺️ _Навигация загружается… (часть ${index + 1})_`,
+    });
+    state.navTop.push(placeholder.id);
   }
 
   // ── 3. General techs ──
   progress(3, 7, "Публикация общих техов…");
   if (techs.general.length > 0) {
     const generalAnchor = await sendMessage(channel, { content: "🛠️ **Общие техи** — см. ветку ↓" });
+    state.generalTechsAnchorMessageId = generalAnchor.id;
     const generalThread = await generalAnchor.startThread({
       name: "🛠️ Общие техи",
       autoArchiveDuration: 10080,
@@ -418,6 +446,22 @@ async function addCharacterToGuide({ channel, comboText, techsText, assetsDir, g
     throw new Error("В файле не найдено ни одного персонажа.");
   }
 
+  const existingIds = new Set((guideState.characters || []).map((char) => char.id));
+  const duplicate = combo.characters.find((char) => existingIds.has(char.id));
+  if (duplicate) {
+    throw new Error(`Персонаж ${duplicate.name} уже есть в гайде.`);
+  }
+
+  const requiredTopNavCount = estimateNavigationMessageCount(
+    [...(guideState.characters || []), ...combo.characters],
+    guildId,
+    channel.id,
+    { includeGeneralTechs: Boolean(guideState.generalTechsThreadId) }
+  );
+  if (requiredTopNavCount > (guideState.navTop || []).length) {
+    throw new Error("После добавления верхняя навигация перестанет помещаться в текущие сообщения. Используй `/combo publish` для полного перезалива гайда.");
+  }
+
   // ── 1. Delete bottom nav ──
   progress(2, 5, "Удаление нижней навигации…");
   for (const msgId of guideState.navBottom) {
@@ -530,12 +574,6 @@ async function addCharacterToGuide({ channel, comboText, techsText, assetsDir, g
     }
   }
 
-  // If we now need more top nav messages (was 1, now need 2)
-  if (navMessages.length > guideState.navTop.length) {
-    // Can't insert in the middle, so just post extra at bottom and note it
-    console.warn("Navigation grew beyond original placeholder count — consider republishing.");
-  }
-
   // Post bottom nav
   for (const navText of navMessages) {
     const msg = await sendMessage(channel, { content: navText });
@@ -576,7 +614,7 @@ async function removeCharacterFromGuide({ channel, guideState, characterId, onPr
     }
   }
 
-  // Thread is auto-deleted when parent message is deleted
+  await deleteThreadIfExists(channel.guild, charState.threadId);
 
   guideState.characters.splice(charIndex, 1);
 
@@ -593,6 +631,16 @@ async function removeCharacterFromGuide({ channel, guideState, characterId, onPr
  */
 async function refreshNavigation({ channel, guideState }) {
   const guildId = guideState.guildId || channel.guild.id;
+  const requiredTopNavCount = estimateNavigationMessageCount(
+    guideState.characters,
+    guildId,
+    channel.id,
+    { includeGeneralTechs: Boolean(guideState.generalTechsThreadId) }
+  );
+  if (requiredTopNavCount > (guideState.navTop || []).length) {
+    throw new Error("Текущего числа верхних navigation-сообщений уже недостаточно. Нужен полный `/combo publish` для перезалива гайда.");
+  }
+
   const navMessages = buildNavigationMessages(
     guideState.characters, guildId, channel.id,
     { generalTechsThreadId: guideState.generalTechsThreadId }
@@ -631,11 +679,17 @@ async function refreshNavigation({ channel, guideState }) {
  * Delete the entire guide from a channel.
  */
 async function deleteFullGuide({ channel, guideState }) {
+  await deleteThreadIfExists(channel.guild, guideState.generalTechsThreadId);
+  for (const char of guideState.characters || []) {
+    await deleteThreadIfExists(channel.guild, char.threadId);
+  }
+
   // Collect all message IDs
   const allIds = [
     ...guideState.navTop,
     ...guideState.navBottom,
   ];
+  if (guideState.generalTechsAnchorMessageId) allIds.push(guideState.generalTechsAnchorMessageId);
 
   for (const char of guideState.characters) {
     if (char.imageMessageId) allIds.push(char.imageMessageId);
@@ -722,4 +776,5 @@ module.exports = {
   deleteFullGuide,
   downloadUrl,
   buildTechLinkMap,
+  estimateNavigationMessageCount,
 };
