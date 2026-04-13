@@ -5119,7 +5119,9 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-  if (interaction.isStringSelectMenu()) {
+    if (interaction.customId.startsWith("combo_panel_remove_char:")) {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
         return;
       }
 
@@ -5139,6 +5141,9 @@ client.on("interactionCreate", async (interaction) => {
         });
         saveDb();
         await interaction.editReply({ content: `Персонаж удалён. Осталось: ${db.comboGuide.characters.length}.` });
+      } catch (error) {
+        await interaction.editReply({ content: `Не удалось удалить персонажа: ${error.message}` });
+      }
       return;
     }
   }
