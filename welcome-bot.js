@@ -3656,7 +3656,6 @@ client.on("interactionCreate", async (interaction) => {
 
       return;
     }
-
     if (interaction.commandName !== "onboard") return;
 
     const subcommand = interaction.options.getSubcommand();
@@ -4788,9 +4787,7 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    if (interaction.customId?.startsWith("combo_panel_remove_char:")) {
-      if (!isModerator(interaction.member)) {
-        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+  if (interaction.isStringSelectMenu()) {
         return;
       }
 
@@ -4810,9 +4807,6 @@ client.on("interactionCreate", async (interaction) => {
         });
         saveDb();
         await interaction.editReply({ content: `Персонаж удалён. Осталось: ${db.comboGuide.characters.length}.` });
-      } catch (error) {
-        await interaction.editReply({ content: `Ошибка: ${error.message}` });
-      }
       return;
     }
   }
@@ -4996,7 +4990,6 @@ client.on("interactionCreate", async (interaction) => {
       interaction.client._comboEditCtx?.delete(interaction.user.id);
       return;
     }
-
     if (interaction.customId === "rolepanel_compose_plain_modal") {
       if (!isModerator(interaction.member)) {
         await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
