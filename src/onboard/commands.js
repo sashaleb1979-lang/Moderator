@@ -1,5 +1,7 @@
 "use strict";
 
+const { ROLE_PANEL_COMMAND_NAME } = require("../role-panel");
+
 const ONBOARD_SUBCOMMAND_NAMES = [
   "profile",
   "pending",
@@ -22,6 +24,8 @@ const ONBOARD_SUBCOMMAND_NAMES = [
   "removetier",
   "syncroles",
 ];
+
+const TOP_LEVEL_COMMAND_NAMES = ["onboard", ROLE_PANEL_COMMAND_NAME];
 
 function buildCommands() {
   const { SlashCommandBuilder } = require("discord.js");
@@ -115,10 +119,15 @@ function buildCommands() {
           .setDescription("Синхронизировать kill-tier роли по базе")
           .addUserOption((option) => option.setName("target").setDescription("Игрок"))
       ),
+    new SlashCommandBuilder()
+      .setName(ROLE_PANEL_COMMAND_NAME)
+      .setDescription("Открыть панель выдачи и массового снятия ивент-ролей"),
   ].map((command) => command.toJSON());
 }
 
 module.exports = {
   ONBOARD_SUBCOMMAND_NAMES,
+  ROLE_PANEL_COMMAND_NAME,
+  TOP_LEVEL_COMMAND_NAMES,
   buildCommands,
 };

@@ -4,8 +4,20 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const { commitMutation } = require("../src/onboard/refresh-runner");
-const { ONBOARD_SUBCOMMAND_NAMES } = require("../src/onboard/commands");
+const { ONBOARD_SUBCOMMAND_NAMES, ROLE_PANEL_COMMAND_NAME, TOP_LEVEL_COMMAND_NAMES, buildCommands } = require("../src/onboard/commands");
 const { resolveNonJjsCaptchaMode } = require("../src/onboard/non-jjs-mode");
+const {
+  DEFAULT_ROLE_PANEL_BUTTON_LABEL,
+  ROLE_PANEL_CLEANUP_BEHAVIORS,
+  ROLE_PANEL_FORMATS,
+  buildRoleGrantCustomId,
+  createRoleMessageDraftFromRecord,
+  getRoleGrantRecords,
+  normalizeRoleGrantRegistry,
+  normalizeRoleMessageDraft,
+  parseRoleGrantCustomId,
+  validateRoleMessageDraft,
+} = require("../src/role-panel");
 const { getMainStats, getTierlistStats } = require("../src/onboard/tierlist-stats");
 const {
   createPresentationDefaults,
@@ -278,4 +290,102 @@ test("command builder includes new admin refresh and editor subcommands", () => 
       "welcomeedit",
     ].sort()
   );
+});
+
+test("command builder registers onboard and rolepanel top-level commands", () => {
+  assert.deepEqual([...TOP_LEVEL_COMMAND_NAMES].sort(), ["onboard", ROLE_PANEL_COMMAND_NAME].sort());
+  assert.deepEqual(buildCommands().map((command) => command.name).sort(), ["onboard", ROLE_PANEL_COMMAND_NAME].sort());
+});
+
+test("role panel draft normalization applies defaults and validation rules", () => {
+  const plainDraft = normalizeRoleMessageDraft({ content: "  Привет  " });
+  const embedResult = validateRoleMessageDraft({
+    channelId: "channel-1",
+    roleId: "role-1",
+    format: ROLE_PANEL_FORMATS.EMBED,
+    embedTitle: "  Event title  ",
+    buttonLabel: "  Участвовать  ",
+  });
+
+  assert.equal(plainDraft.format, ROLE_PANEL_FORMATS.PLAIN);
+  assert.equal(plainDraft.buttonLabel, DEFAULT_ROLE_PANEL_BUTTON_LABEL);
+  assert.equal(plainDraft.content, "Привет");
+  assert.equal(embedResult.isValid, true);
+  assert.deepEqual(embedResult.errors, []);
+  assert.equal(embedResult.draft.embedTitle, "Event title");
+  assert.equal(embedResult.draft.buttonLabel, "Участвовать");
+
+  const invalidPlain = validateRoleMessageDraft({ roleId: "role-1" });
+  assert.equal(invalidPlain.isValid, false);
+  assert.deepEqual(invalidPlain.errors.sort(), ["channelId", "content"].sort());
+});
+
+test("role grant registry keeps only valid records and filters inactive entries", () => {
+  const normalized = normalizeRoleGrantRegistry({
+    good: {
+      channelId: "channel-1",
+      messageId: "message-1",
+      roleId: "role-1",
+      format: ROLE_PANEL_FORMATS.PLAIN,
+      content: "Event text",
+      buttonLabel: "Взять роль",
+      createdAt: "2026-04-13T12:00:00.000Z",
+    },
+    disabled: {
+      channelId: "channel-2",
+      messageId: "message-2",
+      roleId: "role-1",
+      format: ROLE_PANEL_FORMATS.EMBED,
+      embedDescription: "Event description",
+      buttonLabel: "Участвовать",
+      createdAt: "2026-04-13T13:00:00.000Z",
+      disabledAt: "2026-04-13T14:00:00.000Z",
+    },
+    broken: {
+      roleId: "role-1",
+    },
+  });
+
+  assert.equal(normalized.mutated, true);
+  assert.deepEqual(Object.keys(normalized.registry).sort(), ["disabled", "good"]);
+  assert.deepEqual(
+    getRoleGrantRecords(normalized.registry, { roleId: "role-1" }).map((record) => record.id),
+    ["good"]
+  );
+  assert.deepEqual(
+    getRoleGrantRecords(normalized.registry, { roleId: "role-1", activeOnly: false }).map((record) => record.id),
+    ["disabled", "good"]
+  );
+});
+
+test("role grant custom ids round-trip cleanly", () => {
+  const customId = buildRoleGrantCustomId("ABC123");
+
+  assert.equal(customId, "rolepanel_grant:ABC123");
+  assert.equal(parseRoleGrantCustomId(customId), "ABC123");
+  assert.equal(parseRoleGrantCustomId("approve:ABC123"), "");
+  assert.equal(ROLE_PANEL_CLEANUP_BEHAVIORS.DISABLE_MESSAGES, "disable_messages");
+});
+
+test("role panel can recreate a publish draft from an existing record", () => {
+  const draft = createRoleMessageDraftFromRecord({
+    id: "REC1",
+    channelId: "channel-1",
+    messageId: "message-1",
+    roleId: "role-1",
+    format: ROLE_PANEL_FORMATS.EMBED,
+    embedTitle: "Ивент",
+    embedDescription: "Жми кнопку",
+    buttonLabel: "Участвовать",
+  });
+
+  assert.deepEqual(draft, {
+    channelId: "channel-1",
+    roleId: "role-1",
+    format: ROLE_PANEL_FORMATS.EMBED,
+    content: "",
+    embedTitle: "Ивент",
+    embedDescription: "Жми кнопку",
+    buttonLabel: "Участвовать",
+  });
 });
