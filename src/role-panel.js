@@ -13,6 +13,13 @@ const ROLE_PANEL_CLEANUP_BEHAVIORS = Object.freeze({
   DISABLE_MESSAGES: "disable_messages",
 });
 
+const ROLE_PANEL_PICKER_PAGE_SIZE = 25;
+const ROLE_PANEL_PICKER_SCOPES = Object.freeze({
+  COMPOSE_CHANNEL: "compose_channel",
+  COMPOSE_ROLE: "compose_role",
+  CLEANUP_ROLE: "cleanup_role",
+});
+
 function trimText(value, limit = 4000) {
   return String(value || "").trim().slice(0, limit);
 }
@@ -127,18 +134,66 @@ function createRoleMessageDraftFromRecord(rawValue = {}, options = {}) {
   return normalizeRoleMessageDraft(record, options);
 }
 
+function normalizeRolePanelPickerState(rawValue = {}) {
+  const rawScope = trimText(rawValue?.scope, 40);
+  const scope = Object.values(ROLE_PANEL_PICKER_SCOPES).includes(rawScope)
+    ? rawScope
+    : ROLE_PANEL_PICKER_SCOPES.COMPOSE_CHANNEL;
+  const page = Math.max(0, Number(rawValue?.page) || 0);
+
+  return {
+    scope,
+    query: trimText(rawValue?.query, 80),
+    page,
+  };
+}
+
+function filterRolePanelPickerItems(items = [], rawQuery = "") {
+  const query = trimText(rawQuery, 80).toLowerCase();
+  if (!query) return [...items];
+
+  const tokens = query.split(/\s+/).filter(Boolean);
+  return items.filter((item) => {
+    const haystack = [item?.label, item?.description, item?.keywords, item?.id]
+      .map((value) => String(value || "").toLowerCase())
+      .join(" ");
+    return tokens.every((token) => haystack.includes(token));
+  });
+}
+
+function paginateRolePanelPickerItems(items = [], rawPage = 0, pageSize = ROLE_PANEL_PICKER_PAGE_SIZE) {
+  const safePageSize = Math.max(1, Number(pageSize) || ROLE_PANEL_PICKER_PAGE_SIZE);
+  const pageCount = Math.max(1, Math.ceil(items.length / safePageSize));
+  const page = Math.min(Math.max(0, Number(rawPage) || 0), pageCount - 1);
+  const start = page * safePageSize;
+
+  return {
+    items: items.slice(start, start + safePageSize),
+    totalCount: items.length,
+    page,
+    pageCount,
+    hasPrev: page > 0,
+    hasNext: page + 1 < pageCount,
+  };
+}
+
 module.exports = {
   DEFAULT_ROLE_PANEL_BUTTON_LABEL,
   ROLE_PANEL_CLEANUP_BEHAVIORS,
   ROLE_PANEL_COMMAND_NAME,
   ROLE_PANEL_DRAFT_EXPIRE_MS,
   ROLE_PANEL_FORMATS,
+  ROLE_PANEL_PICKER_PAGE_SIZE,
+  ROLE_PANEL_PICKER_SCOPES,
   buildRoleGrantCustomId,
   createRoleMessageDraftFromRecord,
+  filterRolePanelPickerItems,
   getRoleGrantRecords,
   normalizeRoleGrantRecord,
   normalizeRoleGrantRegistry,
   normalizeRoleMessageDraft,
+  normalizeRolePanelPickerState,
+  paginateRolePanelPickerItems,
   parseRoleGrantCustomId,
   validateRoleMessageDraft,
 };

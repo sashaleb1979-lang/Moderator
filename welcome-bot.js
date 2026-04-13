@@ -33,11 +33,16 @@ const {
   ROLE_PANEL_COMMAND_NAME,
   ROLE_PANEL_DRAFT_EXPIRE_MS,
   ROLE_PANEL_FORMATS,
+  ROLE_PANEL_PICKER_PAGE_SIZE,
+  ROLE_PANEL_PICKER_SCOPES,
   buildRoleGrantCustomId,
   createRoleMessageDraftFromRecord,
+  filterRolePanelPickerItems,
   getRoleGrantRecords,
   normalizeRoleGrantRegistry,
   normalizeRoleMessageDraft,
+  normalizeRolePanelPickerState,
+  paginateRolePanelPickerItems,
   parseRoleGrantCustomId,
   validateRoleMessageDraft,
 } = require("./src/role-panel");
@@ -95,13 +100,11 @@ const {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
-  ChannelSelectMenuBuilder,
   StringSelectMenuBuilder,
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
   MessageFlags,
-  RoleSelectMenuBuilder,
 } = require("discord.js");
 
 const PROJECT_ROOT = __dirname;
@@ -148,6 +151,7 @@ const nonGgsCaptchaSessions = new Map();
 const rolePanelDrafts = new Map();
 const roleCleanupSelections = new Map();
 const roleRecordSelections = new Map();
+const rolePanelPickers = new Map();
 
 function envText(name, fallback = "") {
   const raw = process.env[name];
@@ -1383,6 +1387,291 @@ function getRoleRecordSelection(userId) {
 
 function clearRoleRecordSelection(userId) {
   roleRecordSelections.delete(userId);
+}
+
+function setRolePanelPicker(userId, value) {
+  const current = getRolePanelPicker(userId) || normalizeRolePanelPickerState(value);
+  const nextValue = normalizeRolePanelPickerState({ ...current, ...value });
+  rolePanelPickers.set(userId, { ...nextValue, createdAt: Date.now() });
+  return nextValue;
+}
+
+function getRolePanelPicker(userId) {
+  const picker = rolePanelPickers.get(userId);
+  if (!picker) return null;
+  if (Date.now() - Number(picker.createdAt || 0) > ROLE_PANEL_DRAFT_EXPIRE_MS) {
+    rolePanelPickers.delete(userId);
+    return null;
+  }
+  return normalizeRolePanelPickerState(picker);
+}
+
+function clearRolePanelPicker(userId) {
+  rolePanelPickers.delete(userId);
+}
+
+function getRolePanelPickerSelectionId(userId, scope) {
+  if (scope === ROLE_PANEL_PICKER_SCOPES.CLEANUP_ROLE) {
+    return String(getRoleCleanupSelection(userId)?.roleId || "").trim();
+  }
+
+  const draft = getRolePanelDraft(userId);
+  if (!draft) return "";
+  if (scope === ROLE_PANEL_PICKER_SCOPES.COMPOSE_CHANNEL) {
+    return String(draft.channelId || "").trim();
+  }
+
+  return String(draft.roleId || "").trim();
+}
+
+function buildRolePanelPickerReturnPayload(userId, scope, statusText = "", includeFlags = true) {
+  return scope === ROLE_PANEL_PICKER_SCOPES.CLEANUP_ROLE
+    ? buildRoleCleanupPayload(userId, statusText, includeFlags)
+    : buildRolePanelComposerPayload(userId, statusText, includeFlags);
+}
+
+function getRolePanelPickerMeta(scope) {
+  if (scope === ROLE_PANEL_PICKER_SCOPES.COMPOSE_ROLE) {
+    return {
+      title: "Role Panel • Выбор роли",
+      description: "Показываются все роли сервера. Ищи по имени или ID, затем выбери роль для кнопки выдачи.",
+      selectPlaceholder: "Выбрать роль",
+      searchTitle: "Поиск роли",
+      searchLabel: "Имя или ID роли",
+      searchPlaceholder: "Например: ивент 1234567890",
+      idTitle: "Выбор роли по ID",
+      idLabel: "ID роли",
+      backLabel: "Назад к конструктору",
+    };
+  }
+
+  if (scope === ROLE_PANEL_PICKER_SCOPES.CLEANUP_ROLE) {
+    return {
+      title: "Role Panel • Роль для снятия",
+      description: "Показываются все роли сервера. Ищи по имени или ID, затем выбери роль для массового снятия.",
+      selectPlaceholder: "Выбрать роль",
+      searchTitle: "Поиск роли для снятия",
+      searchLabel: "Имя или ID роли",
+      searchPlaceholder: "Например: ивент 1234567890",
+      idTitle: "Выбор роли по ID",
+      idLabel: "ID роли",
+      backLabel: "Назад к снятию",
+    };
+  }
+
+  return {
+    title: "Role Panel • Выбор канала",
+    description: "Показываются все каналы, куда бот может отправить сообщение. Ищи по имени или ID, затем выбери канал публикации.",
+    selectPlaceholder: "Выбрать канал",
+    searchTitle: "Поиск канала",
+    searchLabel: "Имя или ID канала",
+    searchPlaceholder: "Например: announcements 1234567890",
+    idTitle: "Выбор канала по ID",
+    idLabel: "ID канала",
+    backLabel: "Назад к конструктору",
+  };
+}
+
+function compareRolePanelText(leftValue, rightValue) {
+  return String(leftValue || "").localeCompare(String(rightValue || ""), "ru", {
+    numeric: true,
+    sensitivity: "base",
+  });
+}
+
+function compareRolePanelChannels(left, right) {
+  const leftParentPosition = Number(left.parent?.rawPosition ?? left.parent?.position ?? -1);
+  const rightParentPosition = Number(right.parent?.rawPosition ?? right.parent?.position ?? -1);
+  if (leftParentPosition !== rightParentPosition) return leftParentPosition - rightParentPosition;
+
+  const parentNameCompare = compareRolePanelText(left.parent?.name || "", right.parent?.name || "");
+  if (parentNameCompare) return parentNameCompare;
+
+  const leftPosition = Number(left.rawPosition ?? left.position ?? 0);
+  const rightPosition = Number(right.rawPosition ?? right.position ?? 0);
+  if (leftPosition !== rightPosition) return leftPosition - rightPosition;
+
+  return compareRolePanelText(left.name || left.id, right.name || right.id);
+}
+
+function buildRolePanelChannelEntry(channel) {
+  const parentName = String(channel.parent?.name || "").trim();
+  const kindLabel = channel.isThread?.() ? "тред" : "канал";
+  const channelName = String(channel.name || channel.id).trim();
+
+  return {
+    id: channel.id,
+    label: channel.isThread?.() ? channelName : `#${channelName}`,
+    description: previewText([kindLabel, parentName || "без категории", channel.id].join(" • "), 100),
+    keywords: [channelName, channel.id, parentName, channel.topic].filter(Boolean).join(" "),
+  };
+}
+
+async function getRolePanelChannelEntries(client) {
+  const guild = await getGuild(client);
+  if (!guild) return [];
+
+  const channels = await guild.channels.fetch().catch(() => guild.channels.cache);
+  return [...channels.values()]
+    .filter((channel) => channel && channel.guild?.id === guild.id)
+    .filter((channel) => channel.isTextBased?.() && typeof channel.send === "function")
+    .sort(compareRolePanelChannels)
+    .map(buildRolePanelChannelEntry);
+}
+
+function buildRolePanelRoleEntry(role) {
+  const status = role.editable
+    ? "бот может выдать"
+    : role.managed
+      ? "роль управляется интеграцией"
+      : "бот не может выдать";
+
+  return {
+    id: role.id,
+    label: String(role.name || role.id).trim(),
+    description: previewText(`${status} • ${role.id}`, 100),
+    keywords: [role.name, role.id, status, role.managed ? "managed" : "", role.editable ? "editable" : ""].filter(Boolean).join(" "),
+  };
+}
+
+async function getRolePanelRoleEntries(client) {
+  const guild = await getGuild(client);
+  if (!guild) return [];
+
+  const roles = await guild.roles.fetch().catch(() => guild.roles.cache);
+  return [...roles.values()]
+    .filter((role) => role && role.id !== guild.id)
+    .sort((left, right) => right.position - left.position || compareRolePanelText(left.name || left.id, right.name || right.id))
+    .map(buildRolePanelRoleEntry);
+}
+
+async function getRolePanelPickerEntries(client, scope) {
+  return scope === ROLE_PANEL_PICKER_SCOPES.COMPOSE_CHANNEL
+    ? getRolePanelChannelEntries(client)
+    : getRolePanelRoleEntries(client);
+}
+
+async function findRolePanelPickerEntryById(client, scope, entityId) {
+  const id = String(entityId || "").trim();
+  if (!id) return null;
+  const entries = await getRolePanelPickerEntries(client, scope);
+  return entries.find((entry) => entry.id === id) || null;
+}
+
+function buildRolePanelPickerSelectRow(userId, scope, items) {
+  const meta = getRolePanelPickerMeta(scope);
+  const selectedId = getRolePanelPickerSelectionId(userId, scope);
+  const options = items.map((item) => ({
+    label: previewText(item.label, 100) || item.id,
+    description: previewText(item.description || item.id, 100),
+    value: item.id,
+    default: selectedId === item.id,
+  }));
+
+  return new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId("rolepanel_picker_select")
+      .setPlaceholder(meta.selectPlaceholder)
+      .addOptions(options)
+  );
+}
+
+function getRolePanelPickerResultLines(pageInfo, selectedId) {
+  if (!pageInfo.items.length) {
+    return ["Ничего не найдено. Попробуй другой запрос или введи ID вручную."];
+  }
+
+  return pageInfo.items.slice(0, 10).map((item, index) => {
+    const number = pageInfo.page * ROLE_PANEL_PICKER_PAGE_SIZE + index + 1;
+    const marker = item.id === selectedId ? "•" : "◦";
+    return `${number}. ${marker} ${previewText(item.label, 70)} (${item.id})`;
+  });
+}
+
+async function buildRolePanelPickerPayload(client, userId, statusText = "", includeFlags = true) {
+  const picker = getRolePanelPicker(userId);
+  if (!picker) {
+    return buildRolePanelHomePayload("Сессия выбора истекла. Открой выбор заново.", includeFlags);
+  }
+
+  const meta = getRolePanelPickerMeta(picker.scope);
+  const entries = await getRolePanelPickerEntries(client, picker.scope);
+  const filteredEntries = filterRolePanelPickerItems(entries, picker.query);
+  const pageInfo = paginateRolePanelPickerItems(filteredEntries, picker.page, ROLE_PANEL_PICKER_PAGE_SIZE);
+  const selectedId = getRolePanelPickerSelectionId(userId, picker.scope);
+  const selectedEntry = entries.find((entry) => entry.id === selectedId) || null;
+
+  if (pageInfo.page !== picker.page) {
+    setRolePanelPicker(userId, { scope: picker.scope, query: picker.query, page: pageInfo.page });
+  }
+
+  const embed = new EmbedBuilder()
+    .setTitle(meta.title)
+    .setDescription(meta.description)
+    .addFields(
+      { name: "Текущий выбор", value: selectedEntry ? `${previewFieldText(selectedEntry.label, 200)}\n${selectedEntry.id}` : "—", inline: false },
+      { name: "Поиск", value: picker.query ? previewFieldText(picker.query, 100) : "без фильтра", inline: true },
+      { name: "Найдено", value: formatNumber(pageInfo.totalCount), inline: true },
+      { name: "Страница", value: `${pageInfo.page + 1}/${pageInfo.pageCount}`, inline: true },
+      { name: "Результаты", value: getRolePanelPickerResultLines(pageInfo, selectedId).join("\n"), inline: false }
+    );
+
+  if (statusText) {
+    embed.addFields({ name: "Последнее действие", value: statusText, inline: false });
+  }
+
+  const components = [];
+  if (pageInfo.items.length) {
+    components.push(buildRolePanelPickerSelectRow(userId, picker.scope, pageInfo.items));
+  }
+  components.push(
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId("rolepanel_picker_prev").setLabel("Предыдущая").setStyle(ButtonStyle.Secondary).setDisabled(!pageInfo.hasPrev),
+      new ButtonBuilder().setCustomId("rolepanel_picker_next").setLabel("Следующая").setStyle(ButtonStyle.Secondary).setDisabled(!pageInfo.hasNext)
+    )
+  );
+  components.push(
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId("rolepanel_picker_search").setLabel("Поиск").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("rolepanel_picker_jump_id").setLabel("Выбрать по ID").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("rolepanel_picker_clear").setLabel("Сбросить поиск").setStyle(ButtonStyle.Secondary).setDisabled(!picker.query)
+    )
+  );
+  components.push(
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId("rolepanel_picker_back").setLabel(meta.backLabel).setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("rolepanel_home").setLabel("В корень").setStyle(ButtonStyle.Secondary)
+    )
+  );
+
+  const payload = {
+    embeds: [embed],
+    components,
+  };
+
+  return includeFlags ? ephemeralPayload(payload) : payload;
+}
+
+async function selectRolePanelPickerValue(client, userId, scope, selectedId) {
+  const entityId = String(selectedId || "").trim();
+
+  if (scope === ROLE_PANEL_PICKER_SCOPES.COMPOSE_CHANNEL) {
+    setRolePanelDraft(userId, { channelId: entityId });
+    return `Канал выбран: ${formatChannelMention(entityId)}.`;
+  }
+
+  const role = await fetchRoleForPanel(client, entityId);
+  const warningText = role && !role.editable
+    ? " Роль видна в полном списке, но бот сейчас не может ей управлять."
+    : "";
+
+  if (scope === ROLE_PANEL_PICKER_SCOPES.CLEANUP_ROLE) {
+    setRoleCleanupSelection(userId, entityId);
+    return `Роль для снятия выбрана: ${formatRoleMention(entityId)}.${warningText}`;
+  }
+
+  setRolePanelDraft(userId, { roleId: entityId });
+  return `Роль выбрана: ${formatRoleMention(entityId)}.${warningText}`;
 }
 
 function getRoleGrantRegistry() {
@@ -2946,7 +3235,7 @@ function buildRolePanelComposerPayload(userId, statusText = "", includeFlags = t
 
   const embed = new EmbedBuilder()
     .setTitle("Role Panel • Конструктор")
-    .setDescription("Собери сообщение и опубликуй его в любой текстовый канал, куда бот может писать.")
+    .setDescription("Собери сообщение и опубликуй его в любой канал, куда бот может писать. Выбор канала и роли открывается в отдельном браузере с поиском по имени и ID.")
     .addFields(
       { name: "Канал", value: formatChannelMention(draft.channelId), inline: true },
       { name: "Роль", value: formatRoleMention(draft.roleId), inline: true },
@@ -2968,18 +3257,8 @@ function buildRolePanelComposerPayload(userId, statusText = "", includeFlags = t
     embeds: [embed],
     components: [
       new ActionRowBuilder().addComponents(
-        new ChannelSelectMenuBuilder()
-          .setCustomId("rolepanel_compose_channel")
-          .setPlaceholder(draft.channelId ? "Сменить канал" : "Выбрать канал")
-          .setMinValues(1)
-          .setMaxValues(1)
-      ),
-      new ActionRowBuilder().addComponents(
-        new RoleSelectMenuBuilder()
-          .setCustomId("rolepanel_compose_role")
-          .setPlaceholder(draft.roleId ? "Сменить роль" : "Выбрать роль")
-          .setMinValues(1)
-          .setMaxValues(1)
+        new ButtonBuilder().setCustomId("rolepanel_compose_pick_channel").setLabel(draft.channelId ? "Сменить канал" : "Выбрать канал").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId("rolepanel_compose_pick_role").setLabel(draft.roleId ? "Сменить роль" : "Выбрать роль").setStyle(ButtonStyle.Primary)
       ),
       new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId("rolepanel_compose_format_plain").setLabel("Обычный текст").setStyle(draft.format === ROLE_PANEL_FORMATS.PLAIN ? ButtonStyle.Primary : ButtonStyle.Secondary),
@@ -3005,7 +3284,7 @@ function buildRoleCleanupPayload(userId, statusText = "", includeFlags = true) {
   const matchingRecords = selectedRoleId ? listRoleGrantRecords({ roleId: selectedRoleId, activeOnly: true }) : [];
   const embed = new EmbedBuilder()
     .setTitle("Role Panel • Массовое снятие")
-    .setDescription("Выбери роль, проверь связанные сообщения и только потом запускай массовое снятие.")
+    .setDescription("Выбери роль через отдельный браузер с поиском по имени или ID, проверь связанные сообщения и только потом запускай массовое снятие.")
     .addFields(
       { name: "Выбранная роль", value: formatRoleMention(selectedRoleId), inline: true },
       { name: "Активные сообщения выдачи", value: String(matchingRecords.length || 0), inline: true },
@@ -3021,11 +3300,7 @@ function buildRoleCleanupPayload(userId, statusText = "", includeFlags = true) {
     embeds: [embed],
     components: [
       new ActionRowBuilder().addComponents(
-        new RoleSelectMenuBuilder()
-          .setCustomId("rolepanel_cleanup_role")
-          .setPlaceholder(selectedRoleId ? "Сменить роль для снятия" : "Выбрать роль для снятия")
-          .setMinValues(1)
-          .setMaxValues(1)
+        new ButtonBuilder().setCustomId("rolepanel_cleanup_pick_role").setLabel(selectedRoleId ? "Сменить роль" : "Выбрать роль").setStyle(ButtonStyle.Primary)
       ),
       new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId("rolepanel_cleanup_confirm_screen").setLabel("Перейти к подтверждению").setStyle(ButtonStyle.Danger).setDisabled(!selectedRoleId),
@@ -3891,23 +4166,121 @@ client.on("interactionCreate", async (interaction) => {
       }
 
       if (interaction.customId === "rolepanel_home" || interaction.customId === "rolepanel_refresh_home") {
+        clearRolePanelPicker(interaction.user.id);
         await interaction.update(buildRolePanelHomePayload("", false));
         return;
       }
 
       if (interaction.customId === "rolepanel_open_compose") {
+        clearRolePanelPicker(interaction.user.id);
         ensureRolePanelDraft(interaction.user.id);
         await interaction.update(buildRolePanelComposerPayload(interaction.user.id, "", false));
         return;
       }
 
       if (interaction.customId === "rolepanel_open_records") {
+        clearRolePanelPicker(interaction.user.id);
         await interaction.update(buildRolePanelRecordsPayload(interaction.user.id, "", false));
         return;
       }
 
       if (interaction.customId === "rolepanel_open_cleanup") {
+        clearRolePanelPicker(interaction.user.id);
         await interaction.update(buildRoleCleanupPayload(interaction.user.id, "", false));
+        return;
+      }
+
+      if (interaction.customId === "rolepanel_compose_pick_channel") {
+        setRolePanelPicker(interaction.user.id, {
+          scope: ROLE_PANEL_PICKER_SCOPES.COMPOSE_CHANNEL,
+          query: "",
+          page: 0,
+        });
+        await interaction.update(await buildRolePanelPickerPayload(client, interaction.user.id, "Показываю все доступные каналы.", false));
+        return;
+      }
+
+      if (interaction.customId === "rolepanel_compose_pick_role") {
+        setRolePanelPicker(interaction.user.id, {
+          scope: ROLE_PANEL_PICKER_SCOPES.COMPOSE_ROLE,
+          query: "",
+          page: 0,
+        });
+        await interaction.update(await buildRolePanelPickerPayload(client, interaction.user.id, "Показываю все роли сервера.", false));
+        return;
+      }
+
+      if (interaction.customId === "rolepanel_cleanup_pick_role") {
+        setRolePanelPicker(interaction.user.id, {
+          scope: ROLE_PANEL_PICKER_SCOPES.CLEANUP_ROLE,
+          query: "",
+          page: 0,
+        });
+        await interaction.update(await buildRolePanelPickerPayload(client, interaction.user.id, "Показываю все роли сервера.", false));
+        return;
+      }
+
+      if (["rolepanel_picker_prev", "rolepanel_picker_next", "rolepanel_picker_clear", "rolepanel_picker_back", "rolepanel_picker_search", "rolepanel_picker_jump_id"].includes(interaction.customId)) {
+        const picker = getRolePanelPicker(interaction.user.id);
+        if (!picker) {
+          await interaction.update(buildRolePanelHomePayload("Сессия выбора истекла. Открой выбор заново.", false));
+          return;
+        }
+
+        if (interaction.customId === "rolepanel_picker_prev") {
+          setRolePanelPicker(interaction.user.id, { page: Math.max(0, picker.page - 1) });
+          await interaction.update(await buildRolePanelPickerPayload(client, interaction.user.id, "", false));
+          return;
+        }
+
+        if (interaction.customId === "rolepanel_picker_next") {
+          setRolePanelPicker(interaction.user.id, { page: picker.page + 1 });
+          await interaction.update(await buildRolePanelPickerPayload(client, interaction.user.id, "", false));
+          return;
+        }
+
+        if (interaction.customId === "rolepanel_picker_clear") {
+          setRolePanelPicker(interaction.user.id, { query: "", page: 0 });
+          await interaction.update(await buildRolePanelPickerPayload(client, interaction.user.id, "Поиск сброшен.", false));
+          return;
+        }
+
+        if (interaction.customId === "rolepanel_picker_back") {
+          clearRolePanelPicker(interaction.user.id);
+          await interaction.update(buildRolePanelPickerReturnPayload(interaction.user.id, picker.scope, "", false));
+          return;
+        }
+
+        if (interaction.customId === "rolepanel_picker_search") {
+          const meta = getRolePanelPickerMeta(picker.scope);
+          const modal = new ModalBuilder().setCustomId("rolepanel_picker_search_modal").setTitle(meta.searchTitle);
+          const input = new TextInputBuilder()
+            .setCustomId("query")
+            .setLabel(meta.searchLabel)
+            .setStyle(TextInputStyle.Short)
+            .setRequired(false)
+            .setMaxLength(80)
+            .setPlaceholder(meta.searchPlaceholder);
+
+          if (picker.query) input.setValue(picker.query);
+
+          modal.addComponents(new ActionRowBuilder().addComponents(input));
+          await interaction.showModal(modal);
+          return;
+        }
+
+        const meta = getRolePanelPickerMeta(picker.scope);
+        const modal = new ModalBuilder().setCustomId("rolepanel_picker_id_modal").setTitle(meta.idTitle);
+        const input = new TextInputBuilder()
+          .setCustomId("entity_id")
+          .setLabel(meta.idLabel)
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+          .setMaxLength(40)
+          .setPlaceholder("123456789012345678");
+
+        modal.addComponents(new ActionRowBuilder().addComponents(input));
+        await interaction.showModal(modal);
         return;
       }
 
@@ -4709,47 +5082,6 @@ client.on("interactionCreate", async (interaction) => {
     }
   }
 
-  if (interaction.isChannelSelectMenu()) {
-    if (!interaction.customId.startsWith("rolepanel_")) return;
-    if (!isModerator(interaction.member)) {
-      await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
-      return;
-    }
-
-    if (interaction.customId === "rolepanel_compose_channel") {
-      const channelId = String(interaction.values?.[0] || "").trim();
-      setRolePanelDraft(interaction.user.id, { channelId });
-      await interaction.update(buildRolePanelComposerPayload(interaction.user.id, `Канал выбран: ${formatChannelMention(channelId)}.`, false));
-      return;
-    }
-
-    return;
-  }
-
-  if (interaction.isRoleSelectMenu()) {
-    if (!interaction.customId.startsWith("rolepanel_")) return;
-    if (!isModerator(interaction.member)) {
-      await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
-      return;
-    }
-
-    const roleId = String(interaction.values?.[0] || "").trim();
-
-    if (interaction.customId === "rolepanel_compose_role") {
-      setRolePanelDraft(interaction.user.id, { roleId });
-      await interaction.update(buildRolePanelComposerPayload(interaction.user.id, `Роль выбрана: ${formatRoleMention(roleId)}.`, false));
-      return;
-    }
-
-    if (interaction.customId === "rolepanel_cleanup_role") {
-      setRoleCleanupSelection(interaction.user.id, roleId);
-      await interaction.update(buildRoleCleanupPayload(interaction.user.id, `Роль для снятия выбрана: ${formatRoleMention(roleId)}.`, false));
-      return;
-    }
-
-    return;
-  }
-
   // ── Combo guide buttons ──
   if (interaction.isButton() || interaction.customId?.startsWith("combo_panel_")) {
     if (interaction.customId === "combo_panel_refresh_nav") {
@@ -4812,6 +5144,25 @@ client.on("interactionCreate", async (interaction) => {
   }
 
   if (interaction.isStringSelectMenu()) {
+    if (interaction.customId === "rolepanel_picker_select") {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      const picker = getRolePanelPicker(interaction.user.id);
+      if (!picker) {
+        await interaction.update(buildRolePanelHomePayload("Сессия выбора истекла. Открой выбор заново.", false));
+        return;
+      }
+
+      const selectedId = String(interaction.values?.[0] || "").trim();
+      const statusText = await selectRolePanelPickerValue(client, interaction.user.id, picker.scope, selectedId);
+      clearRolePanelPicker(interaction.user.id);
+      await interaction.update(buildRolePanelPickerReturnPayload(interaction.user.id, picker.scope, statusText, false));
+      return;
+    }
+
     // ── Combo guide select menus ──
     if (interaction.customId === "combo_select_character") {
       if (!isModerator(interaction.member)) {
@@ -5043,6 +5394,60 @@ client.on("interactionCreate", async (interaction) => {
 
       setRolePanelDraft(interaction.user.id, { buttonLabel });
       await interaction.reply(buildRolePanelComposerPayload(interaction.user.id, "Текст кнопки обновлён."));
+      return;
+    }
+
+    if (interaction.customId === "rolepanel_picker_search_modal") {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      const picker = getRolePanelPicker(interaction.user.id);
+      if (!picker) {
+        await interaction.reply(ephemeralPayload({ content: "Сессия выбора истекла. Открой выбор заново." }));
+        return;
+      }
+
+      const query = interaction.fields.getTextInputValue("query").trim();
+      setRolePanelPicker(interaction.user.id, { query, page: 0 });
+      await interaction.update(await buildRolePanelPickerPayload(
+        client,
+        interaction.user.id,
+        query ? `Поиск обновлён: ${previewFieldText(query, 100)}.` : "Поиск сброшен.",
+        false
+      ));
+      return;
+    }
+
+    if (interaction.customId === "rolepanel_picker_id_modal") {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      const picker = getRolePanelPicker(interaction.user.id);
+      if (!picker) {
+        await interaction.reply(ephemeralPayload({ content: "Сессия выбора истекла. Открой выбор заново." }));
+        return;
+      }
+
+      const entityId = interaction.fields.getTextInputValue("entity_id").trim();
+      const entry = await findRolePanelPickerEntryById(client, picker.scope, entityId);
+      if (!entry) {
+        const entityLabel = picker.scope === ROLE_PANEL_PICKER_SCOPES.COMPOSE_CHANNEL ? "Канал" : "Роль";
+        await interaction.update(await buildRolePanelPickerPayload(
+          client,
+          interaction.user.id,
+          `${entityLabel} с таким ID не найден в полном списке.`,
+          false
+        ));
+        return;
+      }
+
+      const statusText = await selectRolePanelPickerValue(client, interaction.user.id, picker.scope, entry.id);
+      clearRolePanelPicker(interaction.user.id);
+      await interaction.update(buildRolePanelPickerReturnPayload(interaction.user.id, picker.scope, statusText, false));
       return;
     }
 

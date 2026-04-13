@@ -10,11 +10,16 @@ const {
   DEFAULT_ROLE_PANEL_BUTTON_LABEL,
   ROLE_PANEL_CLEANUP_BEHAVIORS,
   ROLE_PANEL_FORMATS,
+  ROLE_PANEL_PICKER_PAGE_SIZE,
+  ROLE_PANEL_PICKER_SCOPES,
   buildRoleGrantCustomId,
   createRoleMessageDraftFromRecord,
+  filterRolePanelPickerItems,
   getRoleGrantRecords,
   normalizeRoleGrantRegistry,
   normalizeRoleMessageDraft,
+  normalizeRolePanelPickerState,
+  paginateRolePanelPickerItems,
   parseRoleGrantCustomId,
   validateRoleMessageDraft,
 } = require("../src/role-panel");
@@ -388,4 +393,54 @@ test("role panel can recreate a publish draft from an existing record", () => {
     embedDescription: "Жми кнопку",
     buttonLabel: "Участвовать",
   });
+});
+
+test("role panel picker state is normalized and query filtering searches by label and id", () => {
+  const state = normalizeRolePanelPickerState({
+    scope: ROLE_PANEL_PICKER_SCOPES.CLEANUP_ROLE,
+    query: "  Event  7788  ",
+    page: -5,
+  });
+  const filtered = filterRolePanelPickerItems([
+    { id: "1122", label: "Alpha Raid", description: "channel", keywords: "news alerts" },
+    { id: "7788", label: "Event Alerts", description: "role", keywords: "special access" },
+    { id: "9911", label: "Casual", description: "role", keywords: "member" },
+  ], state.query);
+
+  assert.deepEqual(state, {
+    scope: ROLE_PANEL_PICKER_SCOPES.CLEANUP_ROLE,
+    query: "Event  7788",
+    page: 0,
+  });
+  assert.deepEqual(filtered.map((item) => item.id), ["7788"]);
+});
+
+test("role panel picker pagination keeps all entries reachable across pages", () => {
+  const items = Array.from({ length: ROLE_PANEL_PICKER_PAGE_SIZE * 2 + 7 }, (_, index) => ({
+    id: `item-${index + 1}`,
+    label: `Item ${index + 1}`,
+  }));
+
+  const firstPage = paginateRolePanelPickerItems(items, 0);
+  const lastPage = paginateRolePanelPickerItems(items, 99);
+
+  assert.equal(firstPage.items.length, ROLE_PANEL_PICKER_PAGE_SIZE);
+  assert.equal(firstPage.page, 0);
+  assert.equal(firstPage.hasPrev, false);
+  assert.equal(firstPage.hasNext, true);
+
+  assert.equal(lastPage.pageCount, 3);
+  assert.equal(lastPage.page, 2);
+  assert.equal(lastPage.items.length, 7);
+  assert.equal(lastPage.hasPrev, true);
+  assert.equal(lastPage.hasNext, false);
+  assert.deepEqual(lastPage.items.map((item) => item.id), [
+    "item-51",
+    "item-52",
+    "item-53",
+    "item-54",
+    "item-55",
+    "item-56",
+    "item-57",
+  ]);
 });
