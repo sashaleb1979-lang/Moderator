@@ -26,6 +26,7 @@ const {
   buildComboPanelPayload,
   buildMessageSelectPayload,
   buildEditModal,
+  normalizeComboGuideEditorRoleIds,
 } = require("./src/combo-guide/editor");
 const {
   DEFAULT_ROLE_PANEL_BUTTON_LABEL,
@@ -420,8 +421,16 @@ function loadDb() {
   db.config.notificationChannelId = String(db.config.notificationChannelId || "").trim();
   const mergedCharacters = mergeCharacterCatalog(db.config.characters, appConfig.characters);
   const charactersChanged = !sameCharacterCatalog(db.config.characters, mergedCharacters);
+  const comboGuideEditorRoleIds = normalizeComboGuideEditorRoleIds(db.comboGuide?.editorRoleIds);
+  const comboGuideEditorRoleIdsChanged = Boolean(db.comboGuide && typeof db.comboGuide === "object") && (
+    !Array.isArray(db.comboGuide.editorRoleIds)
+    || JSON.stringify(comboGuideEditorRoleIds) !== JSON.stringify(db.comboGuide.editorRoleIds)
+  );
+  if (db.comboGuide && typeof db.comboGuide === "object") {
+    db.comboGuide.editorRoleIds = comboGuideEditorRoleIds;
+  }
   db.config.characters = mergedCharacters;
-  db.__needsSaveAfterLoad = migrated.mutated || charactersChanged || roleGrantRegistry.mutated;
+  db.__needsSaveAfterLoad = migrated.mutated || charactersChanged || roleGrantRegistry.mutated || comboGuideEditorRoleIdsChanged;
   return db;
 }
 
@@ -1743,6 +1752,34 @@ function isModerator(member) {
   if (!member) return false;
   if (member.permissions?.has?.(PermissionsBitField.Flags.Administrator)) return true;
   return member.roles?.cache?.has?.(appConfig.roles.moderatorRoleId) || false;
+}
+
+function getComboGuideEditorRoleIds(guideState = db.comboGuide) {
+  return normalizeComboGuideEditorRoleIds(guideState?.editorRoleIds);
+}
+
+function ensureComboGuideAccessState() {
+  if (!db.comboGuide || typeof db.comboGuide !== "object") {
+    db.comboGuide = { editorRoleIds: [] };
+    return db.comboGuide;
+  }
+
+  db.comboGuide.editorRoleIds = getComboGuideEditorRoleIds(db.comboGuide);
+  return db.comboGuide;
+}
+
+function hasComboGuidePanelAccess(member) {
+  if (isModerator(member)) return true;
+  if (!member) return false;
+
+  return getComboGuideEditorRoleIds().some((roleId) => member.roles?.cache?.has?.(roleId));
+}
+
+function buildComboPanelForMember(member, statusText = "") {
+  return buildComboPanelPayload(db.comboGuide, statusText, {
+    canManage: isModerator(member),
+    canEdit: hasComboGuidePanelAccess(member),
+  });
 }
 
 async function logLine(client, text) {
@@ -3819,12 +3856,22 @@ client.on("interactionCreate", async (interaction) => {
     }
 
     if (interaction.commandName === "combo") {
+      const sub = interaction.options.getSubcommand();
+
+      if (sub === "panel") {
+        if (!hasComboGuidePanelAccess(interaction.member)) {
+          await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+          return;
+        }
+
+        await interaction.reply(ephemeralPayload(buildComboPanelForMember(interaction.member)));
+        return;
+      }
+
       if (!isModerator(interaction.member)) {
         await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
         return;
       }
-
-      const sub = interaction.options.getSubcommand();
 
       if (sub === "publish") {
         const comboAttachment = interaction.options.getAttachment("combo_file");
@@ -3852,6 +3899,7 @@ client.on("interactionCreate", async (interaction) => {
             },
           });
 
+          state.editorRoleIds = getComboGuideEditorRoleIds(db.comboGuide);
           if (!db.comboGuide) db.comboGuide = {};
           db.comboGuide = state;
           saveDb();
@@ -3903,11 +3951,6 @@ client.on("interactionCreate", async (interaction) => {
           console.error("combo add error:", error);
           await interaction.editReply({ content: `Ошибка: ${error.message}` });
         }
-        return;
-      }
-
-      if (sub === "panel") {
-        await interaction.reply(ephemeralPayload(buildComboPanelPayload(db.comboGuide)));
         return;
       }
 
@@ -5083,7 +5126,7 @@ client.on("interactionCreate", async (interaction) => {
   }
 
   // ── Combo guide buttons ──
-  if (interaction.isButton() || interaction.customId?.startsWith("combo_panel_")) {
+  if (interaction.isButton()) {
     if (interaction.customId === "combo_panel_refresh_nav") {
       if (!isModerator(interaction.member)) {
         await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
@@ -5100,9 +5143,9 @@ client.on("interactionCreate", async (interaction) => {
         const guideChannel = await client.channels.fetch(db.comboGuide.channelId);
         await refreshNavigation({ channel: guideChannel, guideState: db.comboGuide });
         saveDb();
-        await interaction.editReply(buildComboPanelPayload(db.comboGuide, "Навигация обновлена."));
+        await interaction.editReply(buildComboPanelForMember(interaction.member, "Навигация обновлена."));
       } catch (error) {
-        await interaction.editReply(buildComboPanelPayload(db.comboGuide, `Ошибка: ${error.message}`));
+        await interaction.editReply(buildComboPanelForMember(interaction.member, `Ошибка: ${error.message}`));
       }
       return;
     }
@@ -5116,6 +5159,19 @@ client.on("interactionCreate", async (interaction) => {
       await interaction.reply(ephemeralPayload({
         content: "Для полного перезалива используй `/combo publish` с файлами. Старые сообщения будут удалены автоматически, если канал совпадает.",
       }));
+      return;
+    }
+
+    if (interaction.customId === "combo_panel_clear_editor_roles") {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      const guideState = ensureComboGuideAccessState();
+      guideState.editorRoleIds = [];
+      saveDb();
+      await interaction.update(buildComboPanelForMember(interaction.member, "Дополнительный доступ очищен."));
       return;
     }
 
@@ -5148,6 +5204,26 @@ client.on("interactionCreate", async (interaction) => {
     }
   }
 
+  if (typeof interaction.isRoleSelectMenu === "function" && interaction.isRoleSelectMenu()) {
+    if (interaction.customId === "combo_panel_editor_roles") {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      const guideState = ensureComboGuideAccessState();
+      guideState.editorRoleIds = normalizeComboGuideEditorRoleIds(interaction.values);
+      saveDb();
+
+      const statusText = guideState.editorRoleIds.length
+        ? `Дополнительный доступ обновлён: ${guideState.editorRoleIds.length} рол.`
+        : "Дополнительный доступ отключён.";
+
+      await interaction.update(buildComboPanelForMember(interaction.member, statusText));
+      return;
+    }
+  }
+
   if (interaction.isStringSelectMenu()) {
     if (interaction.customId === "rolepanel_picker_select") {
       if (!isModerator(interaction.member)) {
@@ -5170,27 +5246,31 @@ client.on("interactionCreate", async (interaction) => {
 
     // ── Combo guide select menus ──
     if (interaction.customId === "combo_select_character") {
-      if (!isModerator(interaction.member)) {
+      if (!hasComboGuidePanelAccess(interaction.member)) {
         await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
         return;
       }
 
       const charId = interaction.values[0];
       if (charId === "__general_techs__") {
-        await interaction.reply(ephemeralPayload(buildMessageSelectPayload("__general_techs__", db.comboGuide)));
+        await interaction.reply(ephemeralPayload(buildMessageSelectPayload("__general_techs__", db.comboGuide, {
+          canManage: isModerator(interaction.member),
+        })));
       } else {
         const charState = (db.comboGuide?.characters || []).find((c) => c.id === charId);
         if (!charState) {
           await interaction.reply(ephemeralPayload({ content: "Персонаж не найден в базе." }));
           return;
         }
-        await interaction.reply(ephemeralPayload(buildMessageSelectPayload(charState, db.comboGuide)));
+        await interaction.reply(ephemeralPayload(buildMessageSelectPayload(charState, db.comboGuide, {
+          canManage: isModerator(interaction.member),
+        })));
       }
       return;
     }
 
     if (interaction.customId === "combo_select_message") {
-      if (!isModerator(interaction.member)) {
+      if (!hasComboGuidePanelAccess(interaction.member)) {
         await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
         return;
       }
@@ -5306,7 +5386,7 @@ client.on("interactionCreate", async (interaction) => {
   if (interaction.isModalSubmit()) {
     // ── Combo guide edit modal ──
     if (interaction.customId?.startsWith("combo_edit_message:")) {
-      if (!isModerator(interaction.member)) {
+      if (!hasComboGuidePanelAccess(interaction.member)) {
         await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
         return;
       }

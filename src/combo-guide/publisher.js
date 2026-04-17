@@ -52,6 +52,7 @@ function createGuideState(channelId) {
   return {
     channelId,
     guildId: "",
+    editorRoleIds: [],
     navTop: [],
     navBottom: [],
     generalTechsAnchorMessageId: null,

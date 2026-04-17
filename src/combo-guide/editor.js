@@ -5,6 +5,7 @@ const {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  RoleSelectMenuBuilder,
   StringSelectMenuBuilder,
   ModalBuilder,
   TextInputBuilder,
@@ -14,12 +15,36 @@ const {
 const DISCORD_HARD_LIMIT = 2000;
 const MODAL_TEXT_LIMIT = 4000;
 
+function normalizeComboGuideEditorRoleIds(value) {
+  if (!Array.isArray(value)) return [];
+
+  const seen = new Set();
+  const normalized = [];
+
+  for (const entry of value) {
+    const roleId = String(entry || "").trim();
+    if (!roleId || seen.has(roleId)) continue;
+    seen.add(roleId);
+    normalized.push(roleId);
+  }
+
+  return normalized.slice(0, 25);
+}
+
+function formatComboGuideEditorRoleList(roleIds) {
+  if (!roleIds.length) return "Только модераторы";
+  return roleIds.map((roleId) => `<@&${roleId}>`).join("\n");
+}
+
 // ── Panel ──
 
 /**
  * Build the combo guide moderator panel payload.
  */
-function buildComboPanelPayload(guideState, statusText) {
+function buildComboPanelPayload(guideState, statusText, options = {}) {
+  const canManage = options.canManage !== false;
+  const canEdit = options.canEdit !== false;
+  const editorRoleIds = normalizeComboGuideEditorRoleIds(guideState?.editorRoleIds);
   const embed = new EmbedBuilder()
     .setTitle("🗺️ Combo Guide — Панель управления")
     .setColor(0x2f3136);
@@ -38,6 +63,12 @@ function buildComboPanelPayload(guideState, statusText) {
     embed.setDescription("Гайд ещё не опубликован. Используй `/combo publish`.");
   }
 
+  embed.addFields({
+    name: "Доп. доступ к панели",
+    value: formatComboGuideEditorRoleList(editorRoleIds),
+    inline: true,
+  });
+
   if (statusText) {
     embed.setFooter({ text: statusText });
   }
@@ -46,7 +77,7 @@ function buildComboPanelPayload(guideState, statusText) {
 
   const components = [];
 
-  if (hasGuide) {
+  if (hasGuide && canEdit) {
     // Character select menu
     const charOptions = guideState.characters.map((c) => ({
       label: `${c.emoji} ${c.name}`.slice(0, 100),
@@ -71,7 +102,9 @@ function buildComboPanelPayload(guideState, statusText) {
           .addOptions(charOptions.slice(0, 25))
       )
     );
+  }
 
+  if (hasGuide && canManage) {
     // Action buttons
     components.push(
       new ActionRowBuilder().addComponents(
@@ -89,6 +122,28 @@ function buildComboPanelPayload(guideState, statusText) {
     );
   }
 
+  if (canManage) {
+    components.push(
+      new ActionRowBuilder().addComponents(
+        new RoleSelectMenuBuilder()
+          .setCustomId("combo_panel_editor_roles")
+          .setPlaceholder("Выбери роли с доступом к панели редактирования…")
+          .setMinValues(0)
+          .setMaxValues(25)
+      )
+    );
+
+    components.push(
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId("combo_panel_clear_editor_roles")
+          .setLabel("Сбросить доп. роли")
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(!editorRoleIds.length)
+      )
+    );
+  }
+
   return {
     embeds: [embed],
     components,
@@ -99,13 +154,14 @@ function buildComboPanelPayload(guideState, statusText) {
  * Build the message selection payload for a chosen character.
  * Returns an ephemeral reply with a select menu of all messages.
  */
-function buildMessageSelectPayload(charState, guideState) {
+function buildMessageSelectPayload(charState, guideState, options = {}) {
+  const canManage = options.canManage !== false;
   const isGeneral = charState === "__general_techs__";
-  const options = [];
+  const messageOptions = [];
 
   if (isGeneral) {
     for (let i = 0; i < guideState.generalTechsMessageIds.length; i++) {
-      options.push({
+      messageOptions.push({
         label: `Общие техи — сообщение ${i + 1}`,
         value: `general_tech:${guideState.generalTechsMessageIds[i]}`,
       });
@@ -113,7 +169,7 @@ function buildMessageSelectPayload(charState, guideState) {
   } else {
     // Combo messages
     for (let i = 0; i < charState.comboMessageIds.length; i++) {
-      options.push({
+      messageOptions.push({
         label: `Комбо — сообщение ${i + 1}`,
         value: `combo:${charState.comboMessageIds[i]}`,
         description: `В канале`,
@@ -122,7 +178,7 @@ function buildMessageSelectPayload(charState, guideState) {
 
     // Tech messages in thread
     for (let i = 0; i < charState.techMessageIds.length; i++) {
-      options.push({
+      messageOptions.push({
         label: `Тех — сообщение ${i + 1}`,
         value: `tech:${charState.techMessageIds[i]}:${charState.threadId}`,
         description: `В ветке`,
@@ -130,7 +186,7 @@ function buildMessageSelectPayload(charState, guideState) {
     }
   }
 
-  if (!options.length) {
+  if (!messageOptions.length) {
     return {
       content: "У этого персонажа нет сообщений для редактирования.",
       ephemeral: true,
@@ -144,12 +200,12 @@ function buildMessageSelectPayload(charState, guideState) {
       new StringSelectMenuBuilder()
         .setCustomId("combo_select_message")
         .setPlaceholder("Выбери сообщение…")
-        .addOptions(options.slice(0, 25))
+        .addOptions(messageOptions.slice(0, 25))
     ),
   ];
 
   // Add remove button for characters (not general techs)
-  if (!isGeneral) {
+  if (!isGeneral && canManage) {
     components.push(
       new ActionRowBuilder().addComponents(
         new ButtonBuilder()
@@ -233,4 +289,5 @@ module.exports = {
   buildMessageSelectPayload,
   buildEditModal,
   handleEditSubmission,
+  normalizeComboGuideEditorRoleIds,
 };
