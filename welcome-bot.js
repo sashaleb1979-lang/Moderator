@@ -5113,60 +5113,62 @@ client.on("interactionCreate", async (interaction) => {
     }
 
     const [action, submissionId] = interaction.customId.split(":");
-    const submission = db.submissions[submissionId];
+    if (["approve", "edit", "reject"].includes(action) && submissionId) {
+      const submission = db.submissions[submissionId];
 
-    if (!submission) {
-      await interaction.reply(ephemeralPayload({ content: "Заявка не найдена." }));
-      return;
-    }
+      if (!submission) {
+        await interaction.reply(ephemeralPayload({ content: "Заявка не найдена." }));
+        return;
+      }
 
-    if (!isModerator(interaction.member)) {
-      await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
-      return;
-    }
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
 
-    if (submission.status !== "pending") {
-      await interaction.reply(ephemeralPayload({ content: `Заявка уже обработана: ${submission.status}.` }));
-      return;
-    }
+      if (submission.status !== "pending") {
+        await interaction.reply(ephemeralPayload({ content: `Заявка уже обработана: ${submission.status}.` }));
+        return;
+      }
 
-    if (hoursSince(submission.createdAt) > PENDING_EXPIRE_HOURS) {
-      await expireSubmission(client, submission);
-      await interaction.reply(ephemeralPayload({ content: "Заявка уже истекла и была помечена как expired." }));
-      return;
-    }
+      if (hoursSince(submission.createdAt) > PENDING_EXPIRE_HOURS) {
+        await expireSubmission(client, submission);
+        await interaction.reply(ephemeralPayload({ content: "Заявка уже истекла и была помечена как expired." }));
+        return;
+      }
 
-    if (action === "approve") {
-      await approveSubmission(client, submission, interaction.user.tag);
-      await interaction.reply(ephemeralPayload({ content: "Заявка одобрена. Tier-role выдана." }));
-      return;
-    }
+      if (action === "approve") {
+        await approveSubmission(client, submission, interaction.user.tag);
+        await interaction.reply(ephemeralPayload({ content: "Заявка одобрена. Tier-role выдана." }));
+        return;
+      }
 
-    if (action === "edit") {
-      const modal = new ModalBuilder().setCustomId(`edit_kills:${submissionId}`).setTitle("Edit kills");
-      const input = new TextInputBuilder()
-        .setCustomId("kills")
-        .setLabel("Новое точное количество kills")
-        .setStyle(TextInputStyle.Short)
-        .setRequired(true)
-        .setValue(String(submission.kills))
-        .setPlaceholder("Например 3120");
-      modal.addComponents(new ActionRowBuilder().addComponents(input));
-      await interaction.showModal(modal);
-      return;
-    }
+      if (action === "edit") {
+        const modal = new ModalBuilder().setCustomId(`edit_kills:${submissionId}`).setTitle("Edit kills");
+        const input = new TextInputBuilder()
+          .setCustomId("kills")
+          .setLabel("Новое точное количество kills")
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+          .setValue(String(submission.kills))
+          .setPlaceholder("Например 3120");
+        modal.addComponents(new ActionRowBuilder().addComponents(input));
+        await interaction.showModal(modal);
+        return;
+      }
 
-    if (action === "reject") {
-      const modal = new ModalBuilder().setCustomId(`reject_reason:${submissionId}`).setTitle("Reject reason");
-      const input = new TextInputBuilder()
-        .setCustomId("reason")
-        .setLabel("Причина отказа")
-        .setStyle(TextInputStyle.Paragraph)
-        .setRequired(true)
-        .setPlaceholder("Коротко и по делу");
-      modal.addComponents(new ActionRowBuilder().addComponents(input));
-      await interaction.showModal(modal);
-      return;
+      if (action === "reject") {
+        const modal = new ModalBuilder().setCustomId(`reject_reason:${submissionId}`).setTitle("Reject reason");
+        const input = new TextInputBuilder()
+          .setCustomId("reason")
+          .setLabel("Причина отказа")
+          .setStyle(TextInputStyle.Paragraph)
+          .setRequired(true)
+          .setPlaceholder("Коротко и по делу");
+        modal.addComponents(new ActionRowBuilder().addComponents(input));
+        await interaction.showModal(modal);
+        return;
+      }
     }
   }
 
