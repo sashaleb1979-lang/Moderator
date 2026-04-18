@@ -5,7 +5,6 @@ const {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
-  RoleSelectMenuBuilder,
   StringSelectMenuBuilder,
   ModalBuilder,
   TextInputBuilder,
@@ -125,11 +124,10 @@ function buildComboPanelPayload(guideState, statusText, options = {}) {
   if (canManage) {
     components.push(
       new ActionRowBuilder().addComponents(
-        new RoleSelectMenuBuilder()
-          .setCustomId("combo_panel_editor_roles")
-          .setPlaceholder("Выбери роли с доступом к панели редактирования…")
-          .setMinValues(0)
-          .setMaxValues(25)
+        new ButtonBuilder()
+          .setCustomId("combo_panel_pick_editor_role")
+          .setLabel("Добавить или убрать роль")
+          .setStyle(ButtonStyle.Primary)
       )
     );
 

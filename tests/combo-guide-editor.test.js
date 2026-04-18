@@ -41,7 +41,7 @@ test("moderator combo panel includes role access controls", () => {
   assert.equal(payload.components.length, 4);
   assert.equal(payload.components[0].toJSON().components[0].custom_id, "combo_select_character");
   assert.equal(payload.components[1].toJSON().components[0].custom_id, "combo_panel_refresh_nav");
-  assert.equal(payload.components[2].toJSON().components[0].custom_id, "combo_panel_editor_roles");
+  assert.equal(payload.components[2].toJSON().components[0].custom_id, "combo_panel_pick_editor_role");
   assert.equal(payload.components[3].toJSON().components[0].custom_id, "combo_panel_clear_editor_roles");
 
   const embed = payload.embeds[0].toJSON();

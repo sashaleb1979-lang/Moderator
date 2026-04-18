@@ -18,6 +18,7 @@ const ROLE_PANEL_PICKER_SCOPES = Object.freeze({
   COMPOSE_CHANNEL: "compose_channel",
   COMPOSE_ROLE: "compose_role",
   CLEANUP_ROLE: "cleanup_role",
+  COMBO_GUIDE_EDITOR_ROLE: "combo_guide_editor_role",
 });
 
 function trimText(value, limit = 4000) {

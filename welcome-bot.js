@@ -1424,6 +1424,10 @@ function getRolePanelPickerSelectionId(userId, scope) {
     return String(getRoleCleanupSelection(userId)?.roleId || "").trim();
   }
 
+  if (scope === ROLE_PANEL_PICKER_SCOPES.COMBO_GUIDE_EDITOR_ROLE) {
+    return "";
+  }
+
   const draft = getRolePanelDraft(userId);
   if (!draft) return "";
   if (scope === ROLE_PANEL_PICKER_SCOPES.COMPOSE_CHANNEL) {
@@ -1434,12 +1438,34 @@ function getRolePanelPickerSelectionId(userId, scope) {
 }
 
 function buildRolePanelPickerReturnPayload(userId, scope, statusText = "", includeFlags = true) {
+  if (scope === ROLE_PANEL_PICKER_SCOPES.COMBO_GUIDE_EDITOR_ROLE) {
+    const payload = buildComboPanelPayload(db.comboGuide, statusText, {
+      canManage: true,
+      canEdit: true,
+    });
+    return includeFlags ? ephemeralPayload(payload) : payload;
+  }
+
   return scope === ROLE_PANEL_PICKER_SCOPES.CLEANUP_ROLE
     ? buildRoleCleanupPayload(userId, statusText, includeFlags)
     : buildRolePanelComposerPayload(userId, statusText, includeFlags);
 }
 
 function getRolePanelPickerMeta(scope) {
+  if (scope === ROLE_PANEL_PICKER_SCOPES.COMBO_GUIDE_EDITOR_ROLE) {
+    return {
+      title: "Combo Guide • Доступ по ролям",
+      description: "Показываются все роли сервера. Ищи по имени или ID и выбирай роль. Повторный выбор той же роли убирает её из доступа.",
+      selectPlaceholder: "Добавить или убрать роль",
+      searchTitle: "Поиск роли для доступа",
+      searchLabel: "Имя или ID роли",
+      searchPlaceholder: "Например: редактор 1234567890",
+      idTitle: "Выбор роли по ID",
+      idLabel: "ID роли",
+      backLabel: "Назад к панели комбо-гайда",
+    };
+  }
+
   if (scope === ROLE_PANEL_PICKER_SCOPES.COMPOSE_ROLE) {
     return {
       title: "Role Panel • Выбор роли",
@@ -1667,6 +1693,25 @@ async function selectRolePanelPickerValue(client, userId, scope, selectedId) {
   if (scope === ROLE_PANEL_PICKER_SCOPES.COMPOSE_CHANNEL) {
     setRolePanelDraft(userId, { channelId: entityId });
     return `Канал выбран: ${formatChannelMention(entityId)}.`;
+  }
+
+  if (scope === ROLE_PANEL_PICKER_SCOPES.COMBO_GUIDE_EDITOR_ROLE) {
+    const guideState = ensureComboGuideAccessState();
+    const currentRoleIds = getComboGuideEditorRoleIds(guideState);
+
+    if (currentRoleIds.includes(entityId)) {
+      guideState.editorRoleIds = currentRoleIds.filter((roleId) => roleId !== entityId);
+      saveDb();
+      return `Доступ убран у роли ${formatRoleMention(entityId)}.`;
+    }
+
+    if (currentRoleIds.length >= 25) {
+      return "Нельзя добавить больше 25 ролей. Сначала убери лишние роли из доступа.";
+    }
+
+    guideState.editorRoleIds = normalizeComboGuideEditorRoleIds([...currentRoleIds, entityId]);
+    saveDb();
+    return `Доступ добавлен для роли ${formatRoleMention(entityId)}.`;
   }
 
   const role = await fetchRoleForPanel(client, entityId);
@@ -5162,6 +5207,21 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
+    if (interaction.customId === "combo_panel_pick_editor_role") {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      setRolePanelPicker(interaction.user.id, {
+        scope: ROLE_PANEL_PICKER_SCOPES.COMBO_GUIDE_EDITOR_ROLE,
+        query: "",
+        page: 0,
+      });
+      await interaction.update(await buildRolePanelPickerPayload(client, interaction.user.id, "Показываю все роли сервера.", false));
+      return;
+    }
+
     if (interaction.customId === "combo_panel_clear_editor_roles") {
       if (!isModerator(interaction.member)) {
         await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
@@ -5200,26 +5260,6 @@ client.on("interactionCreate", async (interaction) => {
       } catch (error) {
         await interaction.editReply({ content: `Не удалось удалить персонажа: ${error.message}` });
       }
-      return;
-    }
-  }
-
-  if (typeof interaction.isRoleSelectMenu === "function" && interaction.isRoleSelectMenu()) {
-    if (interaction.customId === "combo_panel_editor_roles") {
-      if (!isModerator(interaction.member)) {
-        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
-        return;
-      }
-
-      const guideState = ensureComboGuideAccessState();
-      guideState.editorRoleIds = normalizeComboGuideEditorRoleIds(interaction.values);
-      saveDb();
-
-      const statusText = guideState.editorRoleIds.length
-        ? `Дополнительный доступ обновлён: ${guideState.editorRoleIds.length} рол.`
-        : "Дополнительный доступ отключён.";
-
-      await interaction.update(buildComboPanelForMember(interaction.member, statusText));
       return;
     }
   }

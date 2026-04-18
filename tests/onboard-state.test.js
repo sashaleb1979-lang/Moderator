@@ -415,6 +415,20 @@ test("role panel picker state is normalized and query filtering searches by labe
   assert.deepEqual(filtered.map((item) => item.id), ["7788"]);
 });
 
+test("role panel picker accepts combo guide editor role scope", () => {
+  const state = normalizeRolePanelPickerState({
+    scope: ROLE_PANEL_PICKER_SCOPES.COMBO_GUIDE_EDITOR_ROLE,
+    query: "  helper role  ",
+    page: 2,
+  });
+
+  assert.deepEqual(state, {
+    scope: ROLE_PANEL_PICKER_SCOPES.COMBO_GUIDE_EDITOR_ROLE,
+    query: "helper role",
+    page: 2,
+  });
+});
+
 test("role panel picker pagination keeps all entries reachable across pages", () => {
   const items = Array.from({ length: ROLE_PANEL_PICKER_PAGE_SIZE * 2 + 7 }, (_, index) => ({
     id: `item-${index + 1}`,
