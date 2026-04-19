@@ -30,16 +30,21 @@ const {
 } = require("./src/combo-guide/editor");
 const {
   DEFAULT_ROLE_PANEL_BUTTON_LABEL,
+  ROLE_PANEL_AUTO_RESEND_INTERVALS,
+  ROLE_PANEL_AUTO_RESEND_TICK_MS,
   ROLE_PANEL_CLEANUP_BEHAVIORS,
   ROLE_PANEL_COMMAND_NAME,
   ROLE_PANEL_DRAFT_EXPIRE_MS,
   ROLE_PANEL_FORMATS,
+  ROLE_PANEL_MAX_BUTTONS,
   ROLE_PANEL_PICKER_PAGE_SIZE,
   ROLE_PANEL_PICKER_SCOPES,
   buildRoleGrantCustomId,
   createRoleMessageDraftFromRecord,
   filterRolePanelPickerItems,
   getRoleGrantRecords,
+  normalizeRoleButton,
+  normalizeRoleButtons,
   normalizeRoleGrantRegistry,
   normalizeRoleMessageDraft,
   normalizeRolePanelPickerState,
@@ -1326,11 +1331,7 @@ function getActiveNonGgsCaptchaSessionCount() {
 }
 
 function createRolePanelDraft(baseValue = null) {
-  const draft = normalizeRoleMessageDraft(baseValue || {});
-  return {
-    ...draft,
-    buttonLabel: draft.buttonLabel || DEFAULT_ROLE_PANEL_BUTTON_LABEL,
-  };
+  return normalizeRoleMessageDraft(baseValue || {});
 }
 
 function setRolePanelDraft(userId, value) {
@@ -1434,6 +1435,12 @@ function getRolePanelPickerSelectionId(userId, scope) {
     return String(draft.channelId || "").trim();
   }
 
+  if (scope === ROLE_PANEL_PICKER_SCOPES.COMPOSE_BUTTON_ROLE) {
+    const editingIdx = Number.isInteger(draft.editingButtonIndex) ? draft.editingButtonIndex : -1;
+    const existingButton = editingIdx >= 0 ? (Array.isArray(draft.buttons) ? draft.buttons[editingIdx] : null) : null;
+    return String(existingButton?.roleId || "").trim();
+  }
+
   return String(draft.roleId || "").trim();
 }
 
@@ -1470,6 +1477,20 @@ function getRolePanelPickerMeta(scope) {
     return {
       title: "Role Panel • Выбор роли",
       description: "Показываются все роли сервера. Ищи по имени или ID, затем выбери роль для кнопки выдачи.",
+      selectPlaceholder: "Выбрать роль",
+      searchTitle: "Поиск роли",
+      searchLabel: "Имя или ID роли",
+      searchPlaceholder: "Например: ивент 1234567890",
+      idTitle: "Выбор роли по ID",
+      idLabel: "ID роли",
+      backLabel: "Назад к конструктору",
+    };
+  }
+
+  if (scope === ROLE_PANEL_PICKER_SCOPES.COMPOSE_BUTTON_ROLE) {
+    return {
+      title: "Role Panel • Роль для кнопки",
+      description: "Выбери роль, которая будет привязана к кнопке.",
       selectPlaceholder: "Выбрать роль",
       searchTitle: "Поиск роли",
       searchLabel: "Имя или ID роли",
@@ -1724,6 +1745,22 @@ async function selectRolePanelPickerValue(client, userId, scope, selectedId) {
     return `Роль для снятия выбрана: ${formatRoleMention(entityId)}.${warningText}`;
   }
 
+  if (scope === ROLE_PANEL_PICKER_SCOPES.COMPOSE_BUTTON_ROLE) {
+    const draft = ensureRolePanelDraft(userId);
+    const editingIdx = Number.isInteger(draft.editingButtonIndex) && draft.editingButtonIndex >= 0 ? draft.editingButtonIndex : -1;
+    const buttons = Array.isArray(draft.buttons) ? [...draft.buttons] : [];
+
+    if (editingIdx >= 0 && editingIdx < buttons.length) {
+      buttons[editingIdx] = { ...buttons[editingIdx], roleId: entityId };
+      setRolePanelDraft(userId, { buttons });
+      return `Роль кнопки ${editingIdx + 1} обновлена: ${formatRoleMention(entityId)}.${warningText}`;
+    }
+
+    buttons.push({ roleId: entityId, label: DEFAULT_ROLE_PANEL_BUTTON_LABEL });
+    setRolePanelDraft(userId, { buttons, editingButtonIndex: buttons.length - 1 });
+    return `Кнопка добавлена с ролью ${formatRoleMention(entityId)}.${warningText} Можешь переименовать её.`;
+  }
+
   setRolePanelDraft(userId, { roleId: entityId });
   return `Роль выбрана: ${formatRoleMention(entityId)}.${warningText}`;
 }
@@ -1745,7 +1782,10 @@ function listRoleGrantRecords(options = {}) {
 function getRoleGrantSummaryLines(records, max = 5) {
   if (!records.length) return ["Активных выдач пока нет."];
   return records.slice(0, max).map((record) => {
-    return `${formatRoleMention(record.roleId)} -> ${formatChannelMention(record.channelId)} | ${formatDateTime(record.createdAt)}`;
+    const rolesMention = Array.isArray(record.buttons) && record.buttons.length
+      ? record.buttons.map((b) => formatRoleMention(b.roleId)).join(", ")
+      : "—";
+    return `${rolesMention} -> ${formatChannelMention(record.channelId)} | ${formatDateTime(record.createdAt)}`;
   });
 }
 
@@ -1771,9 +1811,10 @@ function buildRoleRecordSelectRow(userId, records) {
   const selectedRecord = getSelectedRoleGrantRecord(userId);
   const options = records.slice(0, 25).map((record) => {
     const status = record.disabledAt ? "Выключено" : "Активно";
+    const buttonCount = Array.isArray(record.buttons) ? record.buttons.length : 0;
     return {
-      label: previewText(`${status} • ${formatDateTime(record.createdAt)}`, 100),
-      description: previewText(`${record.roleId} • ${record.channelId} • ${record.messageId}`, 100),
+      label: previewText(`${status} • ${formatDateTime(record.createdAt)} • ${buttonCount} кнопок`, 100),
+      description: previewText(`${record.channelId} • ${record.messageId}`, 100),
       value: record.id,
       default: selectedRecord?.id === record.id,
     };
@@ -1783,6 +1824,39 @@ function buildRoleRecordSelectRow(userId, records) {
     new StringSelectMenuBuilder()
       .setCustomId("rolepanel_records_select")
       .setPlaceholder("Выбрать опубликованное сообщение")
+      .addOptions(options)
+  );
+}
+
+function buildAutoResendSelectRow(record) {
+  const currentValue = record?.autoResendIntervalMs || 0;
+  const options = ROLE_PANEL_AUTO_RESEND_INTERVALS.map((entry) => ({
+    label: entry.label,
+    value: String(entry.value),
+    default: entry.value === currentValue,
+  }));
+
+  return new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId("rolepanel_records_autoresend")
+      .setPlaceholder("Авто-переотправка")
+      .setDisabled(!record || Boolean(record?.disabledAt))
+      .addOptions(options)
+  );
+}
+
+function buildComposerAutoResendSelectRow(draft) {
+  const currentValue = draft?.autoResendIntervalMs || 0;
+  const options = ROLE_PANEL_AUTO_RESEND_INTERVALS.map((entry) => ({
+    label: entry.label,
+    value: String(entry.value),
+    default: entry.value === currentValue,
+  }));
+
+  return new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId("rolepanel_compose_autoresend")
+      .setPlaceholder("Авто-переотправка (опционально)")
       .addOptions(options)
   );
 }
@@ -3222,8 +3296,7 @@ function buildProfilePayload(userId) {
 function getRolePanelDraftErrorText(errors) {
   const labels = {
     channelId: "канал",
-    roleId: "роль",
-    buttonLabel: "текст кнопки",
+    buttons: "хотя бы одна кнопка с ролью",
     content: "текст сообщения",
     embedContent: "embed-контент",
   };
@@ -3234,17 +3307,28 @@ function getRolePanelDraftErrorText(errors) {
 
 function buildRoleGrantMessagePayload(record, options = {}) {
   const disabled = Boolean(options.disabled || record?.disabledAt);
-  const payload = {
-    components: [
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId(buildRoleGrantCustomId(record.id) || "rolepanel_grant_disabled")
-          .setLabel(String(record?.buttonLabel || DEFAULT_ROLE_PANEL_BUTTON_LABEL).trim().slice(0, 80) || DEFAULT_ROLE_PANEL_BUTTON_LABEL)
-          .setStyle(ButtonStyle.Success)
-          .setDisabled(disabled)
-      ),
-    ],
-  };
+  const buttons = Array.isArray(record?.buttons) ? record.buttons : [];
+
+  const rows = [];
+  for (let rowStart = 0; rowStart < buttons.length; rowStart += 5) {
+    const rowButtons = buttons.slice(rowStart, rowStart + 5).map((btn, localIdx) => {
+      const globalIdx = rowStart + localIdx;
+      return new ButtonBuilder()
+        .setCustomId(buildRoleGrantCustomId(record.id, globalIdx) || `rolepanel_grant_disabled_${globalIdx}`)
+        .setLabel(String(btn.label || DEFAULT_ROLE_PANEL_BUTTON_LABEL).trim().slice(0, 80) || DEFAULT_ROLE_PANEL_BUTTON_LABEL)
+        .setStyle(ButtonStyle.Success)
+        .setDisabled(disabled);
+    });
+    rows.push(new ActionRowBuilder().addComponents(...rowButtons));
+  }
+
+  if (rows.length === 0) {
+    rows.push(new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId("rolepanel_grant_disabled_empty").setLabel(DEFAULT_ROLE_PANEL_BUTTON_LABEL).setStyle(ButtonStyle.Success).setDisabled(true)
+    ));
+  }
+
+  const payload = { components: rows };
 
   if (record?.format === ROLE_PANEL_FORMATS.EMBED) {
     const embed = new EmbedBuilder();
@@ -3258,14 +3342,25 @@ function buildRoleGrantMessagePayload(record, options = {}) {
   return payload;
 }
 
-function buildRolePanelPreviewRow(draft) {
-  return new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId("rolepanel_preview_button")
-      .setLabel(String(draft?.buttonLabel || DEFAULT_ROLE_PANEL_BUTTON_LABEL).trim().slice(0, 80) || DEFAULT_ROLE_PANEL_BUTTON_LABEL)
-      .setStyle(ButtonStyle.Success)
-      .setDisabled(true)
-  );
+function buildRolePanelPreviewRows(draft) {
+  const buttons = Array.isArray(draft?.buttons) ? draft.buttons : [];
+  if (buttons.length === 0) {
+    return [new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId("rolepanel_preview_button_empty").setLabel(DEFAULT_ROLE_PANEL_BUTTON_LABEL).setStyle(ButtonStyle.Success).setDisabled(true)
+    )];
+  }
+  const rows = [];
+  for (let rowStart = 0; rowStart < buttons.length && rows.length < 4; rowStart += 5) {
+    const rowButtons = buttons.slice(rowStart, rowStart + 5).map((btn, localIdx) =>
+      new ButtonBuilder()
+        .setCustomId(`rolepanel_preview_button_${rowStart + localIdx}`)
+        .setLabel(String(btn.label || DEFAULT_ROLE_PANEL_BUTTON_LABEL).trim().slice(0, 80) || DEFAULT_ROLE_PANEL_BUTTON_LABEL)
+        .setStyle(ButtonStyle.Success)
+        .setDisabled(true)
+    );
+    rows.push(new ActionRowBuilder().addComponents(...rowButtons));
+  }
+  return rows;
 }
 
 function buildRolePanelHomePayload(statusText = "", includeFlags = true) {
@@ -3308,6 +3403,8 @@ function buildRolePanelHomePayload(statusText = "", includeFlags = true) {
 function buildRolePanelComposerPayload(userId, statusText = "", includeFlags = true) {
   const draft = ensureRolePanelDraft(userId);
   const validation = validateRoleMessageDraft(draft);
+  const buttons = Array.isArray(draft.buttons) ? draft.buttons : [];
+
   const contentPreview = draft.format === ROLE_PANEL_FORMATS.EMBED
     ? [
         draft.embedTitle ? `Заголовок: ${draft.embedTitle}` : "",
@@ -3315,14 +3412,18 @@ function buildRolePanelComposerPayload(userId, statusText = "", includeFlags = t
       ].filter(Boolean).join("\n")
     : draft.content;
 
+  const buttonLines = buttons.length
+    ? buttons.map((b, i) => `${i + 1}. ${previewFieldText(b.label, 50)} → ${formatRoleMention(b.roleId)}`).join("\n")
+    : "_нет кнопок_";
+
   const embed = new EmbedBuilder()
     .setTitle("Role Panel • Конструктор")
-    .setDescription("Собери сообщение и опубликуй его в любой канал, куда бот может писать. Выбор канала и роли открывается в отдельном браузере с поиском по имени и ID.")
+    .setDescription("Собери сообщение и опубликуй его в нужный канал. Можно добавить до 20 кнопок, каждая — со своей ролью.")
     .addFields(
       { name: "Канал", value: formatChannelMention(draft.channelId), inline: true },
-      { name: "Роль", value: formatRoleMention(draft.roleId), inline: true },
       { name: "Формат", value: draft.format === ROLE_PANEL_FORMATS.EMBED ? "embed" : "обычный текст", inline: true },
-      { name: "Текст кнопки", value: previewFieldText(draft.buttonLabel), inline: false },
+      { name: "Авто-переотправка", value: getAutoResendIntervalLabel(draft.autoResendIntervalMs || 0), inline: true },
+      { name: "Кнопки", value: buttonLines, inline: false },
       { name: draft.format === ROLE_PANEL_FORMATS.EMBED ? "Embed preview" : "Текст сообщения", value: previewFieldText(contentPreview), inline: false },
       {
         name: "Готовность к публикации",
@@ -3335,26 +3436,40 @@ function buildRolePanelComposerPayload(userId, statusText = "", includeFlags = t
     embed.addFields({ name: "Последнее действие", value: statusText, inline: false });
   }
 
+  const canAddButton = buttons.length < ROLE_PANEL_MAX_BUTTONS;
+  const hasButtons = buttons.length > 0;
+
+  const row1 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId("rolepanel_compose_pick_channel").setLabel(draft.channelId ? "Сменить канал" : "Выбрать канал").setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId("rolepanel_compose_format_plain").setLabel("Обычный текст").setStyle(draft.format === ROLE_PANEL_FORMATS.PLAIN ? ButtonStyle.Primary : ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId("rolepanel_compose_format_embed").setLabel("Embed").setStyle(draft.format === ROLE_PANEL_FORMATS.EMBED ? ButtonStyle.Primary : ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId("rolepanel_compose_edit_message").setLabel(draft.format === ROLE_PANEL_FORMATS.EMBED ? "Настроить embed" : "Текст сообщения").setStyle(ButtonStyle.Primary)
+  );
+
+  const row2Buttons = [
+    new ButtonBuilder().setCustomId("rolepanel_compose_add_button").setLabel("Добавить кнопку").setStyle(ButtonStyle.Success).setDisabled(!canAddButton),
+  ];
+
+  if (hasButtons) {
+    row2Buttons.push(
+      new ButtonBuilder().setCustomId("rolepanel_compose_edit_button_select").setLabel("Изменить кнопку").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("rolepanel_compose_remove_button_select").setLabel("Удалить кнопку").setStyle(ButtonStyle.Danger)
+    );
+  }
+
+  const row2 = new ActionRowBuilder().addComponents(...row2Buttons);
+
+  const row3 = buildComposerAutoResendSelectRow(draft);
+
+  const row4 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId("rolepanel_compose_publish").setLabel("Опубликовать").setStyle(ButtonStyle.Success).setDisabled(!validation.isValid),
+    new ButtonBuilder().setCustomId("rolepanel_compose_reset").setLabel("Сбросить").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId("rolepanel_home").setLabel("Назад").setStyle(ButtonStyle.Secondary)
+  );
+
   const payload = {
     embeds: [embed],
-    components: [
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId("rolepanel_compose_pick_channel").setLabel(draft.channelId ? "Сменить канал" : "Выбрать канал").setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId("rolepanel_compose_pick_role").setLabel(draft.roleId ? "Сменить роль" : "Выбрать роль").setStyle(ButtonStyle.Primary)
-      ),
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId("rolepanel_compose_format_plain").setLabel("Обычный текст").setStyle(draft.format === ROLE_PANEL_FORMATS.PLAIN ? ButtonStyle.Primary : ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId("rolepanel_compose_format_embed").setLabel("Embed").setStyle(draft.format === ROLE_PANEL_FORMATS.EMBED ? ButtonStyle.Primary : ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId("rolepanel_compose_edit_message").setLabel(draft.format === ROLE_PANEL_FORMATS.EMBED ? "Настроить embed" : "Текст сообщения").setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId("rolepanel_compose_edit_button").setLabel("Текст кнопки").setStyle(ButtonStyle.Secondary)
-      ),
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId("rolepanel_compose_publish").setLabel("Опубликовать").setStyle(ButtonStyle.Success).setDisabled(!validation.isValid),
-        new ButtonBuilder().setCustomId("rolepanel_compose_reset").setLabel("Сбросить").setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId("rolepanel_home").setLabel("Назад").setStyle(ButtonStyle.Secondary)
-      ),
-      buildRolePanelPreviewRow(draft),
-    ],
+    components: [row1, row2, row3, row4],
   };
 
   return includeFlags ? ephemeralPayload(payload) : payload;
@@ -3410,17 +3525,21 @@ function buildRolePanelRecordsPayload(userId, statusText = "", includeFlags = tr
   const embed = new EmbedBuilder()
     .setTitle("Role Panel • Список сообщений")
     .setDescription(records.length
-      ? "Выбери опубликованное сообщение и управляй им точечно: отключай, повторно публикуй или загружай в конструктор."
+      ? "Выбери опубликованное сообщение и управляй им точечно: удаляй, отключай, повторно публикуй или настраивай авто-переотправку."
       : "Пока нет опубликованных сообщений этой панели.");
 
   if (record) {
+    const recordButtons = Array.isArray(record.buttons) ? record.buttons : [];
+    const buttonsValue = recordButtons.length
+      ? recordButtons.map((b, i) => `${i + 1}. ${previewFieldText(b.label, 50)} → ${formatRoleMention(b.roleId)}`).join("\n")
+      : "—";
     embed.addFields(
       { name: "Статус", value: record.disabledAt ? `выключено (${formatDateTime(record.disabledAt)})` : "активно", inline: true },
-      { name: "Роль", value: formatRoleMention(record.roleId), inline: true },
       { name: "Канал", value: formatChannelMention(record.channelId), inline: true },
       { name: "ID сообщения", value: record.messageId || "—", inline: true },
       { name: "Формат", value: record.format === ROLE_PANEL_FORMATS.EMBED ? "embed" : "обычный текст", inline: true },
-      { name: "Кнопка", value: previewFieldText(record.buttonLabel), inline: true },
+      { name: "Авто-переотправка", value: getAutoResendIntervalLabel(record.autoResendIntervalMs || 0), inline: true },
+      { name: "Кнопки", value: buttonsValue, inline: false },
       { name: "Ссылка", value: messageLink ? `[Открыть сообщение](${messageLink})` : "—", inline: false },
       { name: "Содержимое", value: previewFieldText(preview), inline: false }
     );
@@ -3434,20 +3553,24 @@ function buildRolePanelRecordsPayload(userId, statusText = "", includeFlags = tr
     embed.addFields({ name: "Последнее действие", value: statusText, inline: false });
   }
 
+  const disabledCount = records.filter((r) => r.disabledAt).length;
   const components = [];
   if (records.length) {
     components.push(buildRoleRecordSelectRow(userId, records));
     components.push(
       new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId("rolepanel_records_disable").setLabel("Отключить сообщение").setStyle(ButtonStyle.Danger).setDisabled(!record || Boolean(record.disabledAt)),
-        new ButtonBuilder().setCustomId("rolepanel_records_republish").setLabel("Повторно опубликовать").setStyle(ButtonStyle.Success).setDisabled(!record),
-        new ButtonBuilder().setCustomId("rolepanel_records_load_draft").setLabel("Загрузить в конструктор").setStyle(ButtonStyle.Secondary).setDisabled(!record)
+        new ButtonBuilder().setCustomId("rolepanel_records_delete").setLabel("Удалить сообщение").setStyle(ButtonStyle.Danger).setDisabled(!record),
+        new ButtonBuilder().setCustomId("rolepanel_records_disable").setLabel("Отключить кнопку").setStyle(ButtonStyle.Danger).setDisabled(!record || Boolean(record?.disabledAt)),
+        new ButtonBuilder().setCustomId("rolepanel_records_republish").setLabel("Переопубликовать").setStyle(ButtonStyle.Success).setDisabled(!record),
+        new ButtonBuilder().setCustomId("rolepanel_records_load_draft").setLabel("В конструктор").setStyle(ButtonStyle.Secondary).setDisabled(!record)
       )
     );
+    components.push(buildAutoResendSelectRow(record));
   }
   components.push(
     new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId("rolepanel_open_records").setLabel("Обновить список").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("rolepanel_records_purge").setLabel(`Очистить историю (${disabledCount})`).setStyle(ButtonStyle.Secondary).setDisabled(!disabledCount),
+      new ButtonBuilder().setCustomId("rolepanel_open_records").setLabel("Обновить").setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId("rolepanel_home").setLabel("Назад").setStyle(ButtonStyle.Secondary)
     )
   );
@@ -3526,6 +3649,91 @@ async function disableRoleGrantRecord(client, record, reason = "") {
   return true;
 }
 
+async function deleteRoleGrantMessage(client, record, reason = "") {
+  if (!record) return false;
+
+  if (!record.disabledAt) {
+    record.disabledAt = nowIso();
+  }
+  record.disabledReason = String(reason || "deleted").trim().slice(0, 300);
+
+  const channel = await client.channels.fetch(record.channelId).catch(() => null);
+  const message = channel?.messages?.fetch ? await channel.messages.fetch(record.messageId).catch(() => null) : null;
+  if (message) {
+    await message.delete().catch(() => {});
+  }
+
+  return true;
+}
+
+function purgeDisabledRoleGrantRecords() {
+  const registry = getRoleGrantRegistry();
+  let purgedCount = 0;
+  for (const [key, record] of Object.entries(registry)) {
+    if (record.disabledAt) {
+      delete registry[key];
+      purgedCount += 1;
+    }
+  }
+  if (purgedCount) saveDb();
+  return purgedCount;
+}
+
+async function autoResendRoleGrantMessage(client, record) {
+  if (!record || record.disabledAt || !record.autoResendIntervalMs) return false;
+
+  const channel = await client.channels.fetch(record.channelId).catch(() => null);
+  if (!channel?.isTextBased?.() || typeof channel.send !== "function") return false;
+
+  const lastMessages = await channel.messages.fetch({ limit: 1 }).catch(() => null);
+  const lastMessage = lastMessages?.first?.();
+  if (lastMessage && lastMessage.id === record.messageId) return false;
+
+  const oldMessage = channel.messages?.cache?.get(record.messageId)
+    || await channel.messages.fetch(record.messageId).catch(() => null);
+  if (oldMessage) {
+    await oldMessage.delete().catch(() => {});
+  }
+
+  let sentMessage;
+  try {
+    sentMessage = await channel.send(buildRoleGrantMessagePayload(record));
+  } catch {
+    return false;
+  }
+
+  record.messageId = sentMessage.id;
+  record.lastAutoResendAt = nowIso();
+  saveDb();
+  return true;
+}
+
+async function runAutoResendTick(client) {
+  const records = listRoleGrantRecords({ activeOnly: true });
+  const now = Date.now();
+
+  for (const record of records) {
+    if (!record.autoResendIntervalMs || record.autoResendIntervalMs <= 0) continue;
+
+    const lastResend = Date.parse(record.lastAutoResendAt || record.createdAt || 0);
+    if (!Number.isFinite(lastResend) || now - lastResend < record.autoResendIntervalMs) continue;
+
+    try {
+      const resent = await autoResendRoleGrantMessage(client, record);
+      if (resent) {
+        await logLine(client, `ROLE_PANEL_AUTO_RESEND: record=${record.id} channel=${record.channelId} newMessage=${record.messageId}`);
+      }
+    } catch (error) {
+      console.error(`Auto-resend error for record ${record.id}:`, error);
+    }
+  }
+}
+
+function getAutoResendIntervalLabel(intervalMs) {
+  const entry = ROLE_PANEL_AUTO_RESEND_INTERVALS.find((i) => i.value === intervalMs);
+  return entry ? entry.label : "Выключено";
+}
+
 async function disableRoleGrantMessagesForRole(client, roleId, reason = "") {
   const records = listRoleGrantRecords({ roleId, activeOnly: true });
   let disabledCount = 0;
@@ -3547,13 +3755,6 @@ async function publishRoleGrantMessage(client, moderator, rawDraft) {
   }
 
   const draft = validation.draft;
-  const role = await fetchRoleForPanel(client, draft.roleId);
-  if (!role) {
-    throw new Error("Выбранная роль не найдена.");
-  }
-  if (!role.editable) {
-    throw new Error("Бот не может управлять этой ролью. Подними его выше роли и проверь право Manage Roles.");
-  }
 
   const channel = await fetchChannelForRolePanel(client, draft.channelId);
   if (!channel) {
@@ -3564,16 +3765,17 @@ async function publishRoleGrantMessage(client, moderator, rawDraft) {
     id: makeId(),
     channelId: channel.id,
     messageId: "",
-    roleId: role.id,
+    buttons: draft.buttons,
     format: draft.format,
     content: draft.content,
     embedTitle: draft.embedTitle,
     embedDescription: draft.embedDescription,
-    buttonLabel: draft.buttonLabel,
     createdBy: String(moderator?.id || "").trim(),
     createdAt: nowIso(),
     disabledAt: "",
     disabledReason: "",
+    autoResendIntervalMs: Number(draft.autoResendIntervalMs) || 0,
+    lastAutoResendAt: "",
   };
 
   let sentMessage;
@@ -3586,7 +3788,7 @@ async function publishRoleGrantMessage(client, moderator, rawDraft) {
   record.messageId = sentMessage.id;
   getRoleGrantRegistry()[record.id] = record;
   saveDb();
-  await logLine(client, `ROLE_PANEL_PUBLISH: role=${record.roleId} channel=${record.channelId} message=${record.messageId} by ${moderator?.tag || moderator?.id || "unknown"}`);
+  await logLine(client, `ROLE_PANEL_PUBLISH: buttons=${record.buttons.length} channel=${record.channelId} message=${record.messageId} by ${moderator?.tag || moderator?.id || "unknown"}`);
   return record;
 }
 
@@ -3598,7 +3800,7 @@ async function republishRoleGrantRecord(client, moderator, record) {
   return publishRoleGrantMessage(client, moderator, createRoleMessageDraftFromRecord(record));
 }
 
-async function grantRoleFromRolePanelMessage(client, interaction, record) {
+async function grantRoleFromRolePanelMessage(client, interaction, record, buttonIndex = 0) {
   if (!record) {
     await interaction.reply(ephemeralPayload({ content: "Эта выдача больше не существует." }));
     return;
@@ -3609,17 +3811,21 @@ async function grantRoleFromRolePanelMessage(client, interaction, record) {
     return;
   }
 
+  const button = Array.isArray(record.buttons) ? record.buttons[Number(buttonIndex) || 0] : null;
+  if (!button?.roleId) {
+    await interaction.reply(ephemeralPayload({ content: "Кнопка не найдена или роль не привязана." }));
+    return;
+  }
+
   const member = await fetchMember(client, interaction.user.id);
   if (!member) {
     await interaction.reply(ephemeralPayload({ content: "Не удалось найти тебя на сервере. Попробуй зайти заново." }));
     return;
   }
 
-  const role = await fetchRoleForPanel(client, record.roleId);
+  const role = await fetchRoleForPanel(client, button.roleId);
   if (!role) {
-    await disableRoleGrantRecord(client, record, "role missing");
-    saveDb();
-    await interaction.reply(ephemeralPayload({ content: "Эта роль уже удалена. Сообщение выдачи автоматически отключено." }));
+    await interaction.reply(ephemeralPayload({ content: "Эта роль уже удалена." }));
     return;
   }
 
@@ -3803,6 +4009,8 @@ client.once("clientReady", async () => {
   await cleanupBotPins(client).catch(() => 0);
   console.log(`Managed roles ready. Characters: ${generated.characterRoles}, tiers: ${generated.tierRoles}`);
   console.log("Welcome onboarding bot is ready");
+
+  setInterval(() => runAutoResendTick(client).catch((err) => console.error("Auto-resend tick error:", err)), ROLE_PANEL_AUTO_RESEND_TICK_MS);
 });
 
 client.on("guildMemberAdd", async (member) => {
@@ -4241,9 +4449,10 @@ client.on("interactionCreate", async (interaction) => {
   }
 
   if (interaction.isButton()) {
-    const roleGrantRecordId = parseRoleGrantCustomId(interaction.customId);
-    if (roleGrantRecordId) {
-      await grantRoleFromRolePanelMessage(client, interaction, getRoleGrantRecord(roleGrantRecordId));
+    const grantParsed = parseRoleGrantCustomId(interaction.customId);
+    if (grantParsed) {
+      const record = getRoleGrantRecord(grantParsed.recordId);
+      await grantRoleFromRolePanelMessage(client, interaction, record, grantParsed.buttonIndex);
       return;
     }
 
@@ -4284,17 +4493,8 @@ client.on("interactionCreate", async (interaction) => {
           query: "",
           page: 0,
         });
-        await interaction.update(await buildRolePanelPickerPayload(client, interaction.user.id, "Показываю все доступные каналы.", false));
-        return;
-      }
-
-      if (interaction.customId === "rolepanel_compose_pick_role") {
-        setRolePanelPicker(interaction.user.id, {
-          scope: ROLE_PANEL_PICKER_SCOPES.COMPOSE_ROLE,
-          query: "",
-          page: 0,
-        });
-        await interaction.update(await buildRolePanelPickerPayload(client, interaction.user.id, "Показываю все роли сервера.", false));
+        await interaction.deferUpdate();
+        await interaction.editReply(await buildRolePanelPickerPayload(client, interaction.user.id, "Показываю все доступные каналы.", false));
         return;
       }
 
@@ -4304,7 +4504,8 @@ client.on("interactionCreate", async (interaction) => {
           query: "",
           page: 0,
         });
-        await interaction.update(await buildRolePanelPickerPayload(client, interaction.user.id, "Показываю все роли сервера.", false));
+        await interaction.deferUpdate();
+        await interaction.editReply(await buildRolePanelPickerPayload(client, interaction.user.id, "Показываю все роли сервера.", false));
         return;
       }
 
@@ -4317,19 +4518,22 @@ client.on("interactionCreate", async (interaction) => {
 
         if (interaction.customId === "rolepanel_picker_prev") {
           setRolePanelPicker(interaction.user.id, { page: Math.max(0, picker.page - 1) });
-          await interaction.update(await buildRolePanelPickerPayload(client, interaction.user.id, "", false));
+          await interaction.deferUpdate();
+          await interaction.editReply(await buildRolePanelPickerPayload(client, interaction.user.id, "", false));
           return;
         }
 
         if (interaction.customId === "rolepanel_picker_next") {
           setRolePanelPicker(interaction.user.id, { page: picker.page + 1 });
-          await interaction.update(await buildRolePanelPickerPayload(client, interaction.user.id, "", false));
+          await interaction.deferUpdate();
+          await interaction.editReply(await buildRolePanelPickerPayload(client, interaction.user.id, "", false));
           return;
         }
 
         if (interaction.customId === "rolepanel_picker_clear") {
           setRolePanelPicker(interaction.user.id, { query: "", page: 0 });
-          await interaction.update(await buildRolePanelPickerPayload(client, interaction.user.id, "Поиск сброшен.", false));
+          await interaction.deferUpdate();
+          await interaction.editReply(await buildRolePanelPickerPayload(client, interaction.user.id, "Поиск сброшен.", false));
           return;
         }
 
@@ -4428,9 +4632,90 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
-      if (interaction.customId === "rolepanel_compose_edit_button") {
+      if (interaction.customId === "rolepanel_compose_add_button") {
         const draft = ensureRolePanelDraft(interaction.user.id);
-        const modal = new ModalBuilder().setCustomId("rolepanel_compose_button_modal").setTitle("Текст кнопки");
+        const buttons = Array.isArray(draft.buttons) ? draft.buttons : [];
+        if (buttons.length >= ROLE_PANEL_MAX_BUTTONS) {
+          await interaction.update(buildRolePanelComposerPayload(interaction.user.id, `Максимум ${ROLE_PANEL_MAX_BUTTONS} кнопок.`, false));
+          return;
+        }
+        setRolePanelDraft(interaction.user.id, { editingButtonIndex: -1 });
+        setRolePanelPicker(interaction.user.id, { scope: ROLE_PANEL_PICKER_SCOPES.COMPOSE_BUTTON_ROLE, query: "", page: 0 });
+        await interaction.deferUpdate();
+        await interaction.editReply(await buildRolePanelPickerPayload(client, interaction.user.id, "Выбери роль для новой кнопки.", false));
+        return;
+      }
+
+      if (interaction.customId === "rolepanel_compose_edit_button_select") {
+        const draft = ensureRolePanelDraft(interaction.user.id);
+        const buttons = Array.isArray(draft.buttons) ? draft.buttons : [];
+        if (buttons.length === 0) {
+          await interaction.update(buildRolePanelComposerPayload(interaction.user.id, "Нет кнопок для редактирования.", false));
+          return;
+        }
+
+        const options = buttons.slice(0, 25).map((b, i) => ({
+          label: previewText(`${i + 1}. ${b.label || DEFAULT_ROLE_PANEL_BUTTON_LABEL}`, 100),
+          description: previewText(formatRoleMention(b.roleId), 100),
+          value: String(i),
+        }));
+
+        const payload = {
+          embeds: [new EmbedBuilder().setTitle("Role Panel • Выбери кнопку для редактирования").setDescription("Выбери кнопку, у которой хочешь изменить подпись или роль.")],
+          components: [
+            new ActionRowBuilder().addComponents(
+              new StringSelectMenuBuilder().setCustomId("rolepanel_compose_button_select_edit").setPlaceholder("Выбери кнопку").addOptions(options)
+            ),
+            new ActionRowBuilder().addComponents(
+              new ButtonBuilder().setCustomId("rolepanel_compose_back_from_button_select").setLabel("Отмена").setStyle(ButtonStyle.Secondary)
+            ),
+          ],
+        };
+        await interaction.update(payload);
+        return;
+      }
+
+      if (interaction.customId === "rolepanel_compose_remove_button_select") {
+        const draft = ensureRolePanelDraft(interaction.user.id);
+        const buttons = Array.isArray(draft.buttons) ? draft.buttons : [];
+        if (buttons.length === 0) {
+          await interaction.update(buildRolePanelComposerPayload(interaction.user.id, "Нет кнопок для удаления.", false));
+          return;
+        }
+
+        const options = buttons.slice(0, 25).map((b, i) => ({
+          label: previewText(`${i + 1}. ${b.label || DEFAULT_ROLE_PANEL_BUTTON_LABEL}`, 100),
+          description: previewText(formatRoleMention(b.roleId), 100),
+          value: String(i),
+        }));
+
+        const payload = {
+          embeds: [new EmbedBuilder().setTitle("Role Panel • Удалить кнопку").setDescription("Выбери кнопку для удаления.")],
+          components: [
+            new ActionRowBuilder().addComponents(
+              new StringSelectMenuBuilder().setCustomId("rolepanel_compose_button_select_remove").setPlaceholder("Выбери кнопку для удаления").addOptions(options)
+            ),
+            new ActionRowBuilder().addComponents(
+              new ButtonBuilder().setCustomId("rolepanel_compose_back_from_button_select").setLabel("Отмена").setStyle(ButtonStyle.Secondary)
+            ),
+          ],
+        };
+        await interaction.update(payload);
+        return;
+      }
+
+      if (interaction.customId === "rolepanel_compose_back_from_button_select") {
+        await interaction.update(buildRolePanelComposerPayload(interaction.user.id, "", false));
+        return;
+      }
+
+      if (interaction.customId === "rolepanel_compose_edit_button_label") {
+        const draft = ensureRolePanelDraft(interaction.user.id);
+        const idx = Number.isInteger(draft.editingButtonIndex) && draft.editingButtonIndex >= 0 ? draft.editingButtonIndex : -1;
+        const buttons = Array.isArray(draft.buttons) ? draft.buttons : [];
+        const btn = idx >= 0 ? buttons[idx] : null;
+
+        const modal = new ModalBuilder().setCustomId("rolepanel_compose_button_label_modal").setTitle(`Подпись кнопки ${btn ? idx + 1 : ""}`);
         const input = new TextInputBuilder()
           .setCustomId("button_label")
           .setLabel("Что написано на кнопке")
@@ -4438,10 +4723,23 @@ client.on("interactionCreate", async (interaction) => {
           .setRequired(true)
           .setMaxLength(80);
 
-        if (draft.buttonLabel) input.setValue(draft.buttonLabel);
-
+        if (btn?.label) input.setValue(btn.label);
         modal.addComponents(new ActionRowBuilder().addComponents(input));
         await interaction.showModal(modal);
+        return;
+      }
+
+      if (interaction.customId === "rolepanel_compose_edit_button_role") {
+        const draft = ensureRolePanelDraft(interaction.user.id);
+        setRolePanelPicker(interaction.user.id, { scope: ROLE_PANEL_PICKER_SCOPES.COMPOSE_BUTTON_ROLE, query: "", page: 0 });
+        await interaction.deferUpdate();
+        await interaction.editReply(await buildRolePanelPickerPayload(client, interaction.user.id, `Выбери новую роль для кнопки ${(draft.editingButtonIndex >= 0 ? draft.editingButtonIndex + 1 : "")}.`, false));
+        return;
+      }
+
+      if (interaction.customId === "rolepanel_compose_edit_button") {
+        // Legacy: kept for backward compat in case any lingering interactions reference it
+        await interaction.update(buildRolePanelComposerPayload(interaction.user.id, "", false));
         return;
       }
 
@@ -4523,6 +4821,35 @@ client.on("interactionCreate", async (interaction) => {
 
         setRolePanelDraft(interaction.user.id, createRoleMessageDraftFromRecord(record));
         await interaction.update(buildRolePanelComposerPayload(interaction.user.id, "Черновик загружен из опубликованного сообщения.", false));
+        return;
+      }
+
+      if (interaction.customId === "rolepanel_records_delete") {
+        const record = getSelectedRoleGrantRecord(interaction.user.id);
+        if (!record) {
+          await interaction.update(buildRolePanelRecordsPayload(interaction.user.id, "Сначала выбери сообщение.", false));
+          return;
+        }
+
+        await interaction.deferUpdate();
+        const deleted = await deleteRoleGrantMessage(client, record, `deleted by ${interaction.user.tag}`);
+        if (deleted) saveDb();
+        await logLine(client, `ROLE_PANEL_DELETE: record=${record.id} channel=${record.channelId} message=${record.messageId} by ${interaction.user.tag}`);
+        await interaction.editReply(buildRolePanelRecordsPayload(
+          interaction.user.id,
+          deleted ? `Сообщение ${record.messageId} удалено из канала.` : "Не удалось удалить сообщение.",
+          false
+        ));
+        return;
+      }
+
+      if (interaction.customId === "rolepanel_records_purge") {
+        const purgedCount = purgeDisabledRoleGrantRecords();
+        await interaction.update(buildRolePanelRecordsPayload(
+          interaction.user.id,
+          purgedCount ? `Удалено ${purgedCount} отключённых записей из базы.` : "Нет отключённых записей для очистки.",
+          false
+        ));
         return;
       }
 
@@ -5370,6 +5697,98 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
+    if (interaction.customId === "rolepanel_records_autoresend") {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      const record = getSelectedRoleGrantRecord(interaction.user.id);
+      if (!record) {
+        await interaction.update(buildRolePanelRecordsPayload(interaction.user.id, "Сначала выбери сообщение.", false));
+        return;
+      }
+
+      const intervalMs = Number(interaction.values?.[0]) || 0;
+      record.autoResendIntervalMs = intervalMs;
+      if (intervalMs > 0 && !record.lastAutoResendAt) {
+        record.lastAutoResendAt = nowIso();
+      }
+      if (intervalMs === 0) {
+        record.lastAutoResendAt = "";
+      }
+      saveDb();
+      const label = getAutoResendIntervalLabel(intervalMs);
+      await interaction.update(buildRolePanelRecordsPayload(interaction.user.id, `Авто-переотправка: ${label}.`, false));
+      return;
+    }
+
+    if (interaction.customId === "rolepanel_compose_autoresend") {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      const intervalMs = Number(interaction.values?.[0]) || 0;
+      setRolePanelDraft(interaction.user.id, { autoResendIntervalMs: intervalMs });
+      const label = getAutoResendIntervalLabel(intervalMs);
+      await interaction.update(buildRolePanelComposerPayload(interaction.user.id, `Авто-переотправка: ${label}.`, false));
+      return;
+    }
+
+    if (interaction.customId === "rolepanel_compose_button_select_remove") {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      const idx = Number(interaction.values?.[0]);
+      const draft = ensureRolePanelDraft(interaction.user.id);
+      const buttons = Array.isArray(draft.buttons) ? [...draft.buttons] : [];
+      if (idx >= 0 && idx < buttons.length) {
+        const removed = buttons.splice(idx, 1)[0];
+        setRolePanelDraft(interaction.user.id, { buttons });
+        await interaction.update(buildRolePanelComposerPayload(interaction.user.id, `Кнопка ${idx + 1} (${removed.label}) удалена.`, false));
+      } else {
+        await interaction.update(buildRolePanelComposerPayload(interaction.user.id, "Кнопка не найдена.", false));
+      }
+      return;
+    }
+
+    if (interaction.customId === "rolepanel_compose_button_select_edit") {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      const idx = Number(interaction.values?.[0]);
+      const draft = ensureRolePanelDraft(interaction.user.id);
+      const buttons = Array.isArray(draft.buttons) ? draft.buttons : [];
+
+      if (idx < 0 || idx >= buttons.length) {
+        await interaction.update(buildRolePanelComposerPayload(interaction.user.id, "Кнопка не найдена.", false));
+        return;
+      }
+
+      setRolePanelDraft(interaction.user.id, { editingButtonIndex: idx });
+      const btn = buttons[idx];
+
+      const payload = {
+        embeds: [new EmbedBuilder()
+          .setTitle(`Role Panel • Кнопка ${idx + 1}`)
+          .setDescription(`Что хочешь изменить в кнопке «${btn.label || DEFAULT_ROLE_PANEL_BUTTON_LABEL}» (→ ${formatRoleMention(btn.roleId)})?`)],
+        components: [
+          new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId("rolepanel_compose_edit_button_label").setLabel("Изменить подпись").setStyle(ButtonStyle.Primary),
+            new ButtonBuilder().setCustomId("rolepanel_compose_edit_button_role").setLabel("Изменить роль").setStyle(ButtonStyle.Primary),
+            new ButtonBuilder().setCustomId("rolepanel_compose_back_from_button_select").setLabel("Назад").setStyle(ButtonStyle.Secondary)
+          ),
+        ],
+      };
+      await interaction.update(payload);
+      return;
+    }
+
     if (interaction.customId === "graphic_panel_select_tier") {
       if (!isModerator(interaction.member)) {
         await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
@@ -5507,7 +5926,7 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    if (interaction.customId === "rolepanel_compose_button_modal") {
+    if (interaction.customId === "rolepanel_compose_button_modal" || interaction.customId === "rolepanel_compose_button_label_modal") {
       if (!isModerator(interaction.member)) {
         await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
         return;
@@ -5519,8 +5938,17 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
-      setRolePanelDraft(interaction.user.id, { buttonLabel });
-      await interaction.reply(buildRolePanelComposerPayload(interaction.user.id, "Текст кнопки обновлён."));
+      const draft = ensureRolePanelDraft(interaction.user.id);
+      const idx = Number.isInteger(draft.editingButtonIndex) && draft.editingButtonIndex >= 0 ? draft.editingButtonIndex : -1;
+      const buttons = Array.isArray(draft.buttons) ? [...draft.buttons] : [];
+
+      if (idx >= 0 && idx < buttons.length) {
+        buttons[idx] = { ...buttons[idx], label: buttonLabel };
+        setRolePanelDraft(interaction.user.id, { buttons });
+        await interaction.reply(buildRolePanelComposerPayload(interaction.user.id, `Подпись кнопки ${idx + 1} обновлена.`));
+      } else {
+        await interaction.reply(buildRolePanelComposerPayload(interaction.user.id, "Кнопка не найдена."));
+      }
       return;
     }
 
@@ -5538,7 +5966,8 @@ client.on("interactionCreate", async (interaction) => {
 
       const query = interaction.fields.getTextInputValue("query").trim();
       setRolePanelPicker(interaction.user.id, { query, page: 0 });
-      await interaction.update(await buildRolePanelPickerPayload(
+      await interaction.deferUpdate();
+      await interaction.editReply(await buildRolePanelPickerPayload(
         client,
         interaction.user.id,
         query ? `Поиск обновлён: ${previewFieldText(query, 100)}.` : "Поиск сброшен.",
@@ -5563,7 +5992,8 @@ client.on("interactionCreate", async (interaction) => {
       const entry = await findRolePanelPickerEntryById(client, picker.scope, entityId);
       if (!entry) {
         const entityLabel = picker.scope === ROLE_PANEL_PICKER_SCOPES.COMPOSE_CHANNEL ? "Канал" : "Роль";
-        await interaction.update(await buildRolePanelPickerPayload(
+        await interaction.deferUpdate();
+        await interaction.editReply(await buildRolePanelPickerPayload(
           client,
           interaction.user.id,
           `${entityLabel} с таким ID не найден в полном списке.`,
