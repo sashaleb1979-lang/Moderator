@@ -3635,34 +3635,38 @@ async function fetchChannelForRolePanel(client, channelId) {
 }
 
 async function disableRoleGrantRecord(client, record, reason = "") {
-  if (!record || record.disabledAt) return false;
+  if (!record?.id) return false;
+  // Always mutate the actual db entry, not a copy from normalizeRoleGrantRegistry
+  const actualRecord = getRoleGrantRegistry()[record.id];
+  if (!actualRecord || actualRecord.disabledAt) return false;
 
-  record.disabledAt = nowIso();
-  record.disabledReason = String(reason || "").trim().slice(0, 300);
+  actualRecord.disabledAt = nowIso();
+  actualRecord.disabledReason = String(reason || "").trim().slice(0, 300);
 
-  const channel = await client.channels.fetch(record.channelId).catch(() => null);
-  const message = channel?.messages?.fetch ? await channel.messages.fetch(record.messageId).catch(() => null) : null;
+  const channel = await client.channels.fetch(actualRecord.channelId).catch(() => null);
+  const message = channel?.messages?.fetch ? await channel.messages.fetch(actualRecord.messageId).catch(() => null) : null;
   if (message) {
-    await message.edit(buildRoleGrantMessagePayload(record, { disabled: true })).catch(() => {});
+    await message.edit(buildRoleGrantMessagePayload(actualRecord, { disabled: true })).catch(() => {});
   }
 
   return true;
 }
 
 async function deleteRoleGrantMessage(client, record, reason = "") {
-  if (!record) return false;
+  if (!record?.id) return false;
+  // Remove from registry immediately — "delete" means gone, not just disabled
+  const registry = getRoleGrantRegistry();
+  const actualRecord = registry[record.id];
+  if (!actualRecord) return false;
 
-  if (!record.disabledAt) {
-    record.disabledAt = nowIso();
-  }
-  record.disabledReason = String(reason || "deleted").trim().slice(0, 300);
-
-  const channel = await client.channels.fetch(record.channelId).catch(() => null);
-  const message = channel?.messages?.fetch ? await channel.messages.fetch(record.messageId).catch(() => null) : null;
+  const channel = await client.channels.fetch(actualRecord.channelId).catch(() => null);
+  const message = channel?.messages?.fetch ? await channel.messages.fetch(actualRecord.messageId).catch(() => null) : null;
   if (message) {
     await message.delete().catch(() => {});
   }
 
+  delete registry[actualRecord.id];
+  // Caller is responsible for saveDb()
   return true;
 }
 
@@ -3680,30 +3684,33 @@ function purgeDisabledRoleGrantRecords() {
 }
 
 async function autoResendRoleGrantMessage(client, record) {
-  if (!record || record.disabledAt || !record.autoResendIntervalMs) return false;
+  if (!record?.id) return false;
+  // Always work from the actual db entry to ensure mutations persist in saveDb()
+  const actualRecord = getRoleGrantRegistry()[record.id];
+  if (!actualRecord || actualRecord.disabledAt || !actualRecord.autoResendIntervalMs) return false;
 
-  const channel = await client.channels.fetch(record.channelId).catch(() => null);
+  const channel = await client.channels.fetch(actualRecord.channelId).catch(() => null);
   if (!channel?.isTextBased?.() || typeof channel.send !== "function") return false;
 
   const lastMessages = await channel.messages.fetch({ limit: 1 }).catch(() => null);
   const lastMessage = lastMessages?.first?.();
-  if (lastMessage && lastMessage.id === record.messageId) return false;
+  if (lastMessage && lastMessage.id === actualRecord.messageId) return false;
 
-  const oldMessage = channel.messages?.cache?.get(record.messageId)
-    || await channel.messages.fetch(record.messageId).catch(() => null);
+  const oldMessage = channel.messages?.cache?.get(actualRecord.messageId)
+    || await channel.messages.fetch(actualRecord.messageId).catch(() => null);
   if (oldMessage) {
     await oldMessage.delete().catch(() => {});
   }
 
   let sentMessage;
   try {
-    sentMessage = await channel.send(buildRoleGrantMessagePayload(record));
+    sentMessage = await channel.send(buildRoleGrantMessagePayload(actualRecord));
   } catch {
     return false;
   }
 
-  record.messageId = sentMessage.id;
-  record.lastAutoResendAt = nowIso();
+  actualRecord.messageId = sentMessage.id;
+  actualRecord.lastAutoResendAt = nowIso();
   saveDb();
   return true;
 }
@@ -3715,13 +3722,18 @@ async function runAutoResendTick(client) {
   for (const record of records) {
     if (!record.autoResendIntervalMs || record.autoResendIntervalMs <= 0) continue;
 
-    const lastResend = Date.parse(record.lastAutoResendAt || record.createdAt || 0);
-    if (!Number.isFinite(lastResend) || now - lastResend < record.autoResendIntervalMs) continue;
+    // Re-read from registry in case record was deleted/disabled since we built the list
+    const liveRecord = getRoleGrantRecord(record.id);
+    if (!liveRecord || liveRecord.disabledAt) continue;
+
+    const lastResend = Date.parse(liveRecord.lastAutoResendAt || liveRecord.createdAt || 0);
+    if (!Number.isFinite(lastResend) || now - lastResend < liveRecord.autoResendIntervalMs) continue;
 
     try {
-      const resent = await autoResendRoleGrantMessage(client, record);
+      const resent = await autoResendRoleGrantMessage(client, liveRecord);
       if (resent) {
-        await logLine(client, `ROLE_PANEL_AUTO_RESEND: record=${record.id} channel=${record.channelId} newMessage=${record.messageId}`);
+        const updated = getRoleGrantRecord(liveRecord.id);
+        await logLine(client, `ROLE_PANEL_AUTO_RESEND: record=${liveRecord.id} channel=${liveRecord.channelId} newMessage=${updated?.messageId || liveRecord.messageId}`);
       }
     } catch (error) {
       console.error(`Auto-resend error for record ${record.id}:`, error);
@@ -3797,7 +3809,11 @@ async function republishRoleGrantRecord(client, moderator, record) {
     throw new Error("Сообщение для повторной публикации не найдено.");
   }
 
-  return publishRoleGrantMessage(client, moderator, createRoleMessageDraftFromRecord(record));
+  const nextRecord = await publishRoleGrantMessage(client, moderator, createRoleMessageDraftFromRecord(record));
+  // Delete the old Discord message and remove from registry so only the new record is active
+  await deleteRoleGrantMessage(client, record, `superseded by republish ${nextRecord.id}`);
+  saveDb();
+  return nextRecord;
 }
 
 async function grantRoleFromRolePanelMessage(client, interaction, record, buttonIndex = 0) {
@@ -4832,12 +4848,18 @@ client.on("interactionCreate", async (interaction) => {
         }
 
         await interaction.deferUpdate();
+        const msgId = record.messageId;
+        const recordId = record.id;
         const deleted = await deleteRoleGrantMessage(client, record, `deleted by ${interaction.user.tag}`);
-        if (deleted) saveDb();
-        await logLine(client, `ROLE_PANEL_DELETE: record=${record.id} channel=${record.channelId} message=${record.messageId} by ${interaction.user.tag}`);
+        if (deleted) {
+          saveDb();
+          // Clear selection so UI doesn't try to display the now-deleted record
+          clearRoleRecordSelection(interaction.user.id);
+        }
+        await logLine(client, `ROLE_PANEL_DELETE: record=${recordId} channel=${record.channelId} message=${msgId} by ${interaction.user.tag}`);
         await interaction.editReply(buildRolePanelRecordsPayload(
           interaction.user.id,
-          deleted ? `Сообщение ${record.messageId} удалено из канала.` : "Не удалось удалить сообщение.",
+          deleted ? `Сообщение ${msgId} удалено из канала и базы.` : "Не удалось удалить сообщение.",
           false
         ));
         return;
@@ -5703,23 +5725,32 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
-      const record = getSelectedRoleGrantRecord(interaction.user.id);
-      if (!record) {
-        await interaction.update(buildRolePanelRecordsPayload(interaction.user.id, "Сначала выбери сообщение.", false));
+      await interaction.deferUpdate();
+
+      const selection = getRoleRecordSelection(interaction.user.id);
+      if (!selection?.recordId) {
+        await interaction.editReply(buildRolePanelRecordsPayload(interaction.user.id, "Сначала выбери сообщение.", false));
+        return;
+      }
+
+      // Write directly to the actual db entry so saveDb() persists the change
+      const actualRecord = getRoleGrantRecord(selection.recordId);
+      if (!actualRecord) {
+        await interaction.editReply(buildRolePanelRecordsPayload(interaction.user.id, "Запись не найдена.", false));
         return;
       }
 
       const intervalMs = Number(interaction.values?.[0]) || 0;
-      record.autoResendIntervalMs = intervalMs;
-      if (intervalMs > 0 && !record.lastAutoResendAt) {
-        record.lastAutoResendAt = nowIso();
+      actualRecord.autoResendIntervalMs = intervalMs;
+      if (intervalMs > 0 && !actualRecord.lastAutoResendAt) {
+        actualRecord.lastAutoResendAt = nowIso();
       }
       if (intervalMs === 0) {
-        record.lastAutoResendAt = "";
+        actualRecord.lastAutoResendAt = "";
       }
       saveDb();
       const label = getAutoResendIntervalLabel(intervalMs);
-      await interaction.update(buildRolePanelRecordsPayload(interaction.user.id, `Авто-переотправка: ${label}.`, false));
+      await interaction.editReply(buildRolePanelRecordsPayload(interaction.user.id, `Авто-переотправка: ${label}.`, false));
       return;
     }
 
