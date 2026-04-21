@@ -3759,6 +3759,14 @@ async function runAutoResendTick(client) {
       if (resent) {
         const updated = getRoleGrantRecord(liveRecord.id);
         await logLine(client, `ROLE_PANEL_AUTO_RESEND: record=${liveRecord.id} channel=${liveRecord.channelId} newMessage=${updated?.messageId || liveRecord.messageId}`);
+      } else {
+        // Panel is already the last message — no resend needed, but reset the timer
+        // so the tick doesn't re-check every 5 minutes until the next 12-hour window.
+        const freshRecord = getRoleGrantRecord(liveRecord.id);
+        if (freshRecord && !freshRecord.disabledAt && freshRecord.autoResendIntervalMs > 0) {
+          freshRecord.lastAutoResendAt = nowIso();
+          saveDb();
+        }
       }
     } catch (error) {
       console.error(`Auto-resend error for record ${record.id}:`, error);
