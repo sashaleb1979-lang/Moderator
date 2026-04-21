@@ -58,7 +58,7 @@ function buildCommands() {
         subcommand.setName("refreshwelcome").setDescription("Обновить live welcome-панель")
       )
       .addSubcommand((subcommand) =>
-        subcommand.setName("refreshavatars").setDescription("Обновить аватарки в PNG tier-листе")
+        subcommand.setName("refreshavatars").setDescription("Обновить аватарки и имена в PNG tier-листе")
       )
       .addSubcommand((subcommand) =>
         subcommand.setName("refreshtierlists").setDescription("Обновить live текстовый и PNG tier-листы")

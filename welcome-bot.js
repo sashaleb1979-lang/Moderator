@@ -2013,6 +2013,31 @@ async function fetchMember(client, userId) {
   return guild.members.fetch(userId).catch(() => null);
 }
 
+async function syncProfileNamesFromDiscord(client) {
+  const guild = await getGuild(client);
+  if (!guild) return 0;
+  const userIds = Object.keys(db.profiles || {});
+  if (!userIds.length) return 0;
+  let updated = 0;
+  await Promise.all(
+    userIds.map(async (userId) => {
+      const member = await guild.members.fetch(userId).catch(() => null);
+      if (!member) return;
+      const profile = db.profiles[userId];
+      if (!profile) return;
+      const newDisplayName = member.displayName || member.user.username;
+      const newUsername = member.user.username;
+      if (profile.displayName !== newDisplayName || profile.username !== newUsername) {
+        profile.displayName = newDisplayName;
+        profile.username = newUsername;
+        updated++;
+      }
+    })
+  );
+  if (updated > 0) saveDb();
+  return updated;
+}
+
 async function syncManagedCharacterRoles(member, selectedCharacterIds, reason = "main character sync") {
   const selectedEntries = getSelectedCharacterEntries(selectedCharacterIds);
   const selectedRoleIds = new Set(selectedEntries.map((entry) => entry.roleId).filter(Boolean));
@@ -4308,9 +4333,10 @@ client.on("interactionCreate", async (interaction) => {
 
     if (subcommand === "refreshavatars") {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      const namesUpdated = await syncProfileNamesFromDiscord(client);
       clearGraphicAvatarCache();
       await refreshGraphicTierlistBoard(client);
-      await interaction.editReply("Кэш аватарок очищен, PNG tier-лист пересобран.");
+      await interaction.editReply(`Кэш аватарок очищен, имена обновлены (${namesUpdated}), PNG tier-лист пересобран.`);
       return;
     }
 
