@@ -54,6 +54,7 @@ LOG_CHANNEL_ID=
 
 MODERATOR_ROLE_ID=
 ACCESS_ROLE_ID=
+WARTIME_ACCESS_ROLE_ID=
 TIER_ROLE_1_ID=
 TIER_ROLE_2_ID=
 TIER_ROLE_3_ID=
@@ -97,7 +98,8 @@ CHARACTER_CONFIG_JSON=
 - TIERLIST_CHANNEL_ID — отдельный канал, куда бот публикует и обновляет текстовый тир-лист
 - LOG_CHANNEL_ID — необязательный канал логов
 - MODERATOR_ROLE_ID — роль модератора
-- ACCESS_ROLE_ID — роль доступа, которая выдаётся сразу после подачи
+- ACCESS_ROLE_ID — базовая стартовая роль, которая выдаётся сразу после подачи
+- WARTIME_ACCESS_ROLE_ID — альтернативная стартовая роль для военного режима; нужна только если планируешь включать /onboard setmode wartime
 - TIER_ROLE_1_ID ... TIER_ROLE_5_ID — пять ролей kill-tier, можно оставить пустыми и бот создаст их сам
 - WELCOME_TITLE — заголовок welcome-панели
 - WELCOME_DESCRIPTION — главный текст welcome-панели
@@ -139,7 +141,8 @@ CHARACTER_CONFIG_JSON=
 - channels.tierlistChannelId — dedicated канал, где бот держит два сообщения: верхний graphic-board и нижний текстовый тир-лист
 - channels.logChannelId — опционально, канал логов
 - roles.moderatorRoleId — роль модератора
-- roles.accessRoleId — роль, которая сразу выдаётся после подачи заявки
+- roles.accessRoleId — базовая стартовая роль, которая сразу выдаётся после подачи заявки
+- roles.wartimeAccessRoleId — альтернативная стартовая роль для режима военного времени
 - roles.killTierRoleIds.1-5 — пять ролей kill-tier, можно оставить пустыми
 - characters — список ролей мейнов
 - ui.tierlistButtonLabel — подпись кнопки текстового тир-листа
@@ -209,8 +212,15 @@ npm start
 3. Одним сообщением в welcome-канал отправляет точное количество kills в тексте и прикладывает скрин.
 4. Бот удаляет это сообщение после обработки.
 5. Бот создаёт pending-заявку в review-канале.
-6. Бот сразу выдаёт access-role.
+6. Бот сразу выдаёт стартовую роль.
 7. После Approve модератором бот выдаёт kill-tier роль.
+
+Для переключения режимов онбординга используй:
+
+- /onboard mode — показать текущий режим
+- /onboard setmode normal — обычное время, выдаётся roles.accessRoleId
+- /onboard setmode wartime — военное время, выдаётся roles.wartimeAccessRoleId
+- /onboard setmode apocalypse — новые участники без ролей удаляются сразу после входа
 
 Если человек жмёт кнопку текстового тир-листа, он получает красивый текстовый рейтинг с общей нумерацией, списком игроков, их kills, tier и краткой статистикой по серверу.
 Если человек жмёт кнопку быстрой смены мейнов, он может просто обновить своих персонажей без новой заявки по kills.

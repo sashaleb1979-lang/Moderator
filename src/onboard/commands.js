@@ -1,5 +1,6 @@
 "use strict";
 
+const { ONBOARD_ACCESS_MODES } = require("./access-mode");
 const { ROLE_PANEL_COMMAND_NAME } = require("../role-panel");
 
 const ONBOARD_SUBCOMMAND_NAMES = [
@@ -7,6 +8,8 @@ const ONBOARD_SUBCOMMAND_NAMES = [
   "pending",
   "tierlist",
   "stats",
+  "mode",
+  "setmode",
   "panel",
   "welcomeedit",
   "refreshwelcome",
@@ -47,6 +50,25 @@ function buildCommands() {
       )
       .addSubcommand((subcommand) =>
         subcommand.setName("stats").setDescription("Показать общую статистику")
+      )
+      .addSubcommand((subcommand) =>
+        subcommand.setName("mode").setDescription("Показать текущий режим онбординга")
+      )
+      .addSubcommand((subcommand) =>
+        subcommand
+          .setName("setmode")
+          .setDescription("Переключить режим онбординга")
+          .addStringOption((option) =>
+            option
+              .setName("mode")
+              .setDescription("Новый режим")
+              .setRequired(true)
+              .addChoices(
+                { name: "Обычное время", value: ONBOARD_ACCESS_MODES.NORMAL },
+                { name: "Военное время", value: ONBOARD_ACCESS_MODES.WARTIME },
+                { name: "Апокалипсис", value: ONBOARD_ACCESS_MODES.APOCALYPSE }
+              )
+          )
       )
       .addSubcommand((subcommand) =>
         subcommand.setName("panel").setDescription("Открыть модераторскую панель управления")

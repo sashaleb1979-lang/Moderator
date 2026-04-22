@@ -53,6 +53,13 @@ const {
   validateRoleMessageDraft,
 } = require("./src/role-panel");
 const { commitMutation } = require("./src/onboard/refresh-runner");
+const {
+  ONBOARD_ACCESS_MODES,
+  createOnboardModeState,
+  getOnboardAccessModeLabel,
+  isApocalypseMode,
+  normalizeOnboardAccessMode,
+} = require("./src/onboard/access-mode");
 const { resolveNonJjsCaptchaMode } = require("./src/onboard/non-jjs-mode");
 const {
   createPresentationDefaults,
@@ -210,6 +217,7 @@ function buildRuntimeConfig(fileConfig = {}) {
     roles: {
       moderatorRoleId: envText("MODERATOR_ROLE_ID", fileConfig?.roles?.moderatorRoleId || ""),
       accessRoleId: envText("ACCESS_ROLE_ID", fileConfig?.roles?.accessRoleId || ""),
+      wartimeAccessRoleId: envText("WARTIME_ACCESS_ROLE_ID", fileConfig?.roles?.wartimeAccessRoleId || ""),
       nonGgsAccessRoleId: envText(
         "NON_JJS_ACCESS_ROLE_ID",
         envText("NON_GGS_ACCESS_ROLE_ID", fileConfig?.roles?.nonJjsAccessRoleId || fileConfig?.roles?.nonGgsAccessRoleId || "")
@@ -404,6 +412,7 @@ function loadDb() {
         characters: {},
         tiers: {},
       },
+      onboardMode: createOnboardModeState(),
       characters: normalizeCharacterCatalog(appConfig.characters),
     },
     profiles: {},
@@ -424,6 +433,9 @@ function loadDb() {
   const roleGrantRegistry = normalizeRoleGrantRegistry(db.roleGrantMessages);
   db.roleGrantMessages = roleGrantRegistry.registry;
   db.config.notificationChannelId = String(db.config.notificationChannelId || "").trim();
+  const normalizedOnboardMode = createOnboardModeState(db.config.onboardMode);
+  const onboardModeChanged = JSON.stringify(normalizedOnboardMode) !== JSON.stringify(db.config.onboardMode || null);
+  db.config.onboardMode = normalizedOnboardMode;
   const mergedCharacters = mergeCharacterCatalog(db.config.characters, appConfig.characters);
   const charactersChanged = !sameCharacterCatalog(db.config.characters, mergedCharacters);
   const comboGuideEditorRoleIds = normalizeComboGuideEditorRoleIds(db.comboGuide?.editorRoleIds);
@@ -435,7 +447,7 @@ function loadDb() {
     db.comboGuide.editorRoleIds = comboGuideEditorRoleIds;
   }
   db.config.characters = mergedCharacters;
-  db.__needsSaveAfterLoad = migrated.mutated || charactersChanged || roleGrantRegistry.mutated || comboGuideEditorRoleIdsChanged;
+  db.__needsSaveAfterLoad = migrated.mutated || charactersChanged || roleGrantRegistry.mutated || comboGuideEditorRoleIdsChanged || onboardModeChanged;
   return db;
 }
 
@@ -1975,12 +1987,11 @@ async function getMembersMissingTierlist(client) {
   if (!guild) return [];
 
   await guild.members.fetch();
-  const accessRoleId = String(appConfig.roles.accessRoleId || "").trim();
   const tierRoleIds = new Set(getAllTierRoleIds());
 
   return guild.members.cache.filter((member) => {
     if (member.user.bot) return false;
-    if (!accessRoleId || !member.roles.cache.has(accessRoleId)) return false;
+    if (!memberHasManagedStartAccessRole(member)) return false;
     for (const roleId of tierRoleIds) {
       if (member.roles.cache.has(roleId)) return false;
     }
@@ -2068,8 +2079,81 @@ function getAllTierRoleIds() {
   return [1, 2, 3, 4, 5].map((tier) => getTierRoleId(tier)).filter(Boolean);
 }
 
+function getNormalAccessRoleId() {
+  return String(appConfig.roles.accessRoleId || "").trim();
+}
+
+function getWartimeAccessRoleId() {
+  return String(appConfig.roles.wartimeAccessRoleId || "").trim();
+}
+
 function getNonGgsAccessRoleId() {
   return String(appConfig.roles.nonGgsAccessRoleId || "").trim();
+}
+
+function getOnboardModeState() {
+  db.config.onboardMode = createOnboardModeState(db.config.onboardMode);
+  return db.config.onboardMode;
+}
+
+function getCurrentOnboardMode() {
+  return getOnboardModeState().mode;
+}
+
+function getManagedStartAccessRoleIds() {
+  return [...new Set([getNormalAccessRoleId(), getWartimeAccessRoleId()].filter(Boolean))];
+}
+
+function getGrantedAccessRoleIdForMode(mode = getCurrentOnboardMode()) {
+  if (normalizeOnboardAccessMode(mode) === ONBOARD_ACCESS_MODES.WARTIME) {
+    return getWartimeAccessRoleId();
+  }
+  return getNormalAccessRoleId();
+}
+
+function memberHasManagedStartAccessRole(member) {
+  if (!member?.roles?.cache) return false;
+  return getManagedStartAccessRoleIds().some((roleId) => roleId && member.roles.cache.has(roleId));
+}
+
+function getOnboardModeValidationError(mode = getCurrentOnboardMode()) {
+  const normalizedMode = normalizeOnboardAccessMode(mode);
+  if (!getNormalAccessRoleId()) return "roles.accessRoleId не заполнен.";
+  if (normalizedMode === ONBOARD_ACCESS_MODES.WARTIME && !getWartimeAccessRoleId()) {
+    return "roles.wartimeAccessRoleId не заполнен для военного режима.";
+  }
+  return "";
+}
+
+function formatRoleMention(roleId) {
+  return roleId ? `<@&${roleId}>` : "не настроена";
+}
+
+function buildOnboardModeStatusLines() {
+  const state = getOnboardModeState();
+  const normalRoleId = getNormalAccessRoleId();
+  const wartimeRoleId = getWartimeAccessRoleId();
+  const activeRoleId = getGrantedAccessRoleIdForMode(state.mode);
+  const lines = [
+    `Текущий режим онбординга: **${getOnboardAccessModeLabel(state.mode)}**.`,
+    `Базовая стартовая роль: ${formatRoleMention(normalRoleId)}.`,
+    `Активная стартовая роль после регистрации: ${formatRoleMention(activeRoleId)}.`,
+  ];
+
+  if (wartimeRoleId || state.mode === ONBOARD_ACCESS_MODES.WARTIME) {
+    lines.push(`Военная стартовая роль: ${formatRoleMention(wartimeRoleId)}.`);
+  }
+
+  if (isApocalypseMode(state.mode)) {
+    lines.push("Новые участники без ролей удаляются сразу после входа на сервер.");
+  }
+
+  if (state.changedAt) {
+    const changedByText = state.changedBy ? ` (${state.changedBy})` : "";
+    lines.push(`Последнее переключение: ${formatDateTime(state.changedAt)}${changedByText}.`);
+  }
+
+  return lines;
 }
 
 function memberHasTierRole(member) {
@@ -2078,12 +2162,11 @@ function memberHasTierRole(member) {
 }
 
 function getNonJjsCaptchaModeForMember(member) {
-  const accessRoleId = String(appConfig.roles.accessRoleId || "").trim();
   const nonJjsRoleId = getNonGgsAccessRoleId();
 
   return resolveNonJjsCaptchaMode({
     hasTierRole: memberHasTierRole(member),
-    hasAccessRole: Boolean(accessRoleId && member?.roles?.cache?.has(accessRoleId)),
+    hasAccessRole: memberHasManagedStartAccessRole(member),
     hasNonJjsRole: Boolean(nonJjsRoleId && member?.roles?.cache?.has(nonJjsRoleId)),
   });
 }
@@ -2129,9 +2212,22 @@ async function clearTierRoles(client, userId, reason = "clear kill tier") {
 async function grantAccessRole(client, userId, reason = "welcome application submitted") {
   const member = await fetchMember(client, userId);
   if (!member) return false;
-  const accessRoleId = appConfig.roles.accessRoleId;
-  if (!member.roles.cache.has(accessRoleId)) {
-    await member.roles.add(accessRoleId, reason).catch(() => {});
+
+  const mode = getCurrentOnboardMode();
+  const validationError = getOnboardModeValidationError(mode);
+  if (validationError) {
+    throw new Error(validationError);
+  }
+
+  const targetRoleId = getGrantedAccessRoleIdForMode(mode);
+  for (const roleId of getManagedStartAccessRoleIds()) {
+    if (roleId !== targetRoleId && member.roles.cache.has(roleId)) {
+      await member.roles.remove(roleId, reason).catch(() => {});
+    }
+  }
+
+  if (!member.roles.cache.has(targetRoleId)) {
+    await member.roles.add(targetRoleId, reason).catch(() => {});
   }
   return true;
 }
@@ -2156,11 +2252,14 @@ async function revokeAccessRole(client, userId, reason = "profile purge") {
   const member = await fetchMember(client, userId);
   if (!member) return false;
 
-  const accessRoleId = String(appConfig.roles.accessRoleId || "").trim();
-  if (!accessRoleId || !member.roles.cache.has(accessRoleId)) return false;
+  let removed = false;
+  for (const roleId of getManagedStartAccessRoleIds()) {
+    if (!roleId || !member.roles.cache.has(roleId)) continue;
+    await member.roles.remove(roleId, reason).catch(() => {});
+    removed = true;
+  }
 
-  await member.roles.remove(accessRoleId, reason).catch(() => {});
-  return true;
+  return removed;
 }
 
 async function revokeNonGgsAccessRole(client, userId, reason = "profile purge") {
@@ -3302,7 +3401,7 @@ function buildProfilePayload(userId) {
   }
 
   if (profile.accessGrantedAt) {
-    lines.push(`Access-role выдана: **${formatDateTime(profile.accessGrantedAt)}**`);
+    lines.push(`Стартовая роль выдана: **${formatDateTime(profile.accessGrantedAt)}**`);
   }
   if (profile.nonGgsAccessGrantedAt) {
     lines.push(`Отдельная роль без JJS выдана: **${formatDateTime(profile.nonGgsAccessGrantedAt)}**`);
@@ -3961,6 +4060,16 @@ async function removeRoleFromAllMembers(client, roleId, behavior, moderatorTag) 
 function buildModeratorPanelPayload(statusText = "", includeFlags = true) {
   const entries = getApprovedTierlistEntries();
   const stats = getStatsSnapshot(entries);
+  const onboardModeState = getOnboardModeState();
+  const currentMode = onboardModeState.mode;
+  const wartimeValidationError = getOnboardModeValidationError(ONBOARD_ACCESS_MODES.WARTIME);
+  const apocalypseDescription = isApocalypseMode(currentMode)
+    ? "Новые участники без ролей удаляются сразу при входе."
+    : "Апокалипсис выключен.";
+  const changedByText = onboardModeState.changedBy ? ` (${onboardModeState.changedBy})` : "";
+  const lastModeChangeText = onboardModeState.changedAt
+    ? `${formatDateTime(onboardModeState.changedAt)}${changedByText}`
+    : "—";
 
   const embed = new EmbedBuilder()
     .setTitle("Onboarding Panel")
@@ -3975,7 +4084,20 @@ function buildModeratorPanelPayload(statusText = "", includeFlags = true) {
       { name: "Обновить тир-листы", value: "Перестраивает верхний graphic-board и нижний текстовый рейтинг в dedicated канале.", inline: true },
       { name: "Синк tier-ролей", value: "Перепривязывает tier-роли всем подтверждённым игрокам по текущей базе.", inline: true },
       { name: "Напомнить отсутствующим", value: "Шлёт DM пользователям вне тир-листа с встроенным постером из репозитория.", inline: true },
-      { name: "Обновить сводку", value: "Перерисовывает саму панель и показывает текущее состояние без лишних команд.", inline: true }
+      { name: "Обновить сводку", value: "Перерисовывает саму панель и показывает текущее состояние без лишних команд.", inline: true },
+      {
+        name: "Режим онбординга",
+        value: [
+          `Сейчас: **${getOnboardAccessModeLabel(currentMode)}**`,
+          `Обычная стартовая роль: ${formatRoleMention(getNormalAccessRoleId())}`,
+          `Военная стартовая роль: ${formatRoleMention(getWartimeAccessRoleId())}`,
+          `Активная роль на выдачу: ${formatRoleMention(getGrantedAccessRoleIdForMode(currentMode))}`,
+          apocalypseDescription,
+          `Последнее переключение: ${lastModeChangeText}`,
+          wartimeValidationError ? `Военный режим недоступен: ${wartimeValidationError}` : "Военный режим готов к переключению.",
+        ].join("\n"),
+        inline: false,
+      }
     );
 
   if (statusText) {
@@ -3995,11 +4117,55 @@ function buildModeratorPanelPayload(statusText = "", includeFlags = true) {
         new ButtonBuilder().setCustomId("panel_refresh_summary").setLabel("Обновить сводку").setStyle(ButtonStyle.Secondary)
       ),
       new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId("panel_mode_normal")
+          .setLabel("Обычное")
+          .setStyle(currentMode === ONBOARD_ACCESS_MODES.NORMAL ? ButtonStyle.Success : ButtonStyle.Secondary)
+          .setDisabled(currentMode === ONBOARD_ACCESS_MODES.NORMAL),
+        new ButtonBuilder()
+          .setCustomId("panel_mode_wartime")
+          .setLabel("Военное")
+          .setStyle(currentMode === ONBOARD_ACCESS_MODES.WARTIME ? ButtonStyle.Success : ButtonStyle.Secondary)
+          .setDisabled(currentMode === ONBOARD_ACCESS_MODES.WARTIME || Boolean(wartimeValidationError)),
+        new ButtonBuilder()
+          .setCustomId("panel_mode_apocalypse")
+          .setLabel("Апокалипсис")
+          .setStyle(currentMode === ONBOARD_ACCESS_MODES.APOCALYPSE ? ButtonStyle.Danger : ButtonStyle.Secondary)
+          .setDisabled(currentMode === ONBOARD_ACCESS_MODES.APOCALYPSE)
+      ),
+      new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId("panel_add_character").setLabel("Добавить персонажа").setStyle(ButtonStyle.Success)
       ),
       new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId("welcome_editor").setLabel("Редактор UI").setStyle(ButtonStyle.Secondary),
         new ButtonBuilder().setCustomId("welcome_editor_jjs").setLabel("Редактировать JJS").setStyle(ButtonStyle.Secondary)
+      ),
+    ],
+  };
+
+  return includeFlags ? ephemeralPayload(payload) : payload;
+}
+
+function buildModeratorApocalypseConfirmPayload(statusText = "", includeFlags = true) {
+  const embed = new EmbedBuilder()
+    .setTitle("Подтвердить режим апокалипсиса")
+    .setDescription([
+      "Этот режим опасный.",
+      "После включения каждый новый участник без ролей будет удаляться сразу при входе.",
+      "Уже находящихся на сервере пользователей бот не трогает.",
+      "Если это не то, что нужно, вернись назад.",
+    ].join("\n"));
+
+  if (statusText) {
+    embed.addFields({ name: "Статус", value: statusText, inline: false });
+  }
+
+  const payload = {
+    embeds: [embed],
+    components: [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("panel_mode_apocalypse_confirm").setLabel("Да, включить").setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId("panel_mode_apocalypse_cancel").setLabel("Отмена").setStyle(ButtonStyle.Secondary)
       ),
     ],
   };
@@ -4064,6 +4230,26 @@ client.once("clientReady", async () => {
 
 client.on("guildMemberAdd", async (member) => {
   if (member.guild.id !== GUILD_ID) return;
+
+  if (member.user.bot) return;
+
+  const currentOnboardMode = getCurrentOnboardMode();
+
+  if (isApocalypseMode(currentOnboardMode) && member.roles.cache.size <= 1) {
+    await member.send([
+      `Сейчас на сервере ${member.guild.name} включён режим «${getOnboardAccessModeLabel(currentOnboardMode)}».`,
+      "Новые участники без ролей автоматически удаляются.",
+    ].join("\n")).catch(() => {});
+
+    const removed = await member.kick("onboarding apocalypse mode").then(() => true).catch(() => false);
+    if (removed) {
+      await logLine(client, `APOCALYPSE: удалён новый участник ${member.user.tag} (${member.id}) без ролей.`);
+    } else {
+      await logLine(client, `APOCALYPSE: не удалось удалить нового участника ${member.user.tag} (${member.id}) без ролей.`);
+    }
+    return;
+  }
+
   const nonJjsUi = getNonJjsUiConfig();
   const text = [
     `Добро пожаловать на сервер ${member.guild.name}.`,
@@ -4132,7 +4318,7 @@ client.on("messageCreate", async (message) => {
     saveDb();
 
     clearSubmitSession(message.author.id);
-    const reply = await message.reply("Заявка отправлена модераторам. Доступная роль уже выдана, kill-tier прилетит после проверки.").catch(() => null);
+    const reply = await message.reply("Заявка отправлена модераторам. Стартовая роль уже выдана, kill-tier прилетит после проверки.").catch(() => null);
     if (reply) scheduleDeleteMessage(reply);
 
     await logLine(client, `SUBMIT: <@${message.author.id}> kills ${killsResult.kills} mains=${session.mainCharacterIds.join(",")}`);
@@ -4298,6 +4484,40 @@ client.on("interactionCreate", async (interaction) => {
 
     if (!isModerator(interaction.member)) {
       await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+      return;
+    }
+
+    if (subcommand === "mode") {
+      await interaction.reply(ephemeralPayload({ content: buildOnboardModeStatusLines().join("\n") }));
+      return;
+    }
+
+    if (subcommand === "setmode") {
+      const nextMode = normalizeOnboardAccessMode(interaction.options.getString("mode", true));
+      const validationError = getOnboardModeValidationError(nextMode);
+      if (validationError) {
+        await interaction.reply(ephemeralPayload({ content: validationError }));
+        return;
+      }
+
+      const state = getOnboardModeState();
+      const previousMode = state.mode;
+      if (previousMode === nextMode) {
+        await interaction.reply(ephemeralPayload({ content: buildOnboardModeStatusLines().join("\n") }));
+        return;
+      }
+
+      state.mode = nextMode;
+      state.changedAt = nowIso();
+      state.changedBy = interaction.user.tag;
+      saveDb();
+
+      await interaction.reply(ephemeralPayload({
+        content: [
+          `Режим онбординга переключён с **${getOnboardAccessModeLabel(previousMode)}** на **${getOnboardAccessModeLabel(nextMode)}**.`,
+          ...buildOnboardModeStatusLines(),
+        ].join("\n"),
+      }));
       return;
     }
 
@@ -5241,7 +5461,54 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    if (["panel_refresh_welcome", "panel_refresh_tierlists", "panel_sync_roles", "panel_remind_missing", "panel_refresh_summary"].includes(interaction.customId)) {
+    if (interaction.customId === "panel_mode_apocalypse") {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      await interaction.update(buildModeratorApocalypseConfirmPayload("Подтверди включение перед применением.", false));
+      return;
+    }
+
+    if (interaction.customId === "panel_mode_apocalypse_confirm") {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      const state = getOnboardModeState();
+      state.mode = ONBOARD_ACCESS_MODES.APOCALYPSE;
+      state.changedAt = nowIso();
+      state.changedBy = interaction.user.tag;
+      saveDb();
+
+      await interaction.update(buildModeratorPanelPayload(
+        "Режим онбординга переключён на апокалипсис. Новые участники без ролей будут удаляться при входе.",
+        false
+      ));
+      return;
+    }
+
+    if (interaction.customId === "panel_mode_apocalypse_cancel") {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      await interaction.update(buildModeratorPanelPayload("Включение апокалипсиса отменено.", false));
+      return;
+    }
+
+    if ([
+      "panel_refresh_welcome",
+      "panel_refresh_tierlists",
+      "panel_sync_roles",
+      "panel_remind_missing",
+      "panel_refresh_summary",
+      "panel_mode_normal",
+      "panel_mode_wartime",
+    ].includes(interaction.customId)) {
       if (!isModerator(interaction.member)) {
         await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
         return;
@@ -5262,6 +5529,25 @@ client.on("interactionCreate", async (interaction) => {
       } else if (interaction.customId === "panel_remind_missing") {
         const result = await sendMissingTierlistReminder(client);
         statusText = `DM-рассылка завершена. Всего: ${result.total}, отправлено: ${result.sent}, не доставлено: ${result.failed}.`;
+      } else if (interaction.customId === "panel_mode_normal") {
+        const state = getOnboardModeState();
+        state.mode = ONBOARD_ACCESS_MODES.NORMAL;
+        state.changedAt = nowIso();
+        state.changedBy = interaction.user.tag;
+        saveDb();
+        statusText = "Режим онбординга переключён на обычное время.";
+      } else if (interaction.customId === "panel_mode_wartime") {
+        const validationError = getOnboardModeValidationError(ONBOARD_ACCESS_MODES.WARTIME);
+        if (validationError) {
+          statusText = validationError;
+        } else {
+          const state = getOnboardModeState();
+          state.mode = ONBOARD_ACCESS_MODES.WARTIME;
+          state.changedAt = nowIso();
+          state.changedBy = interaction.user.tag;
+          saveDb();
+          statusText = "Режим онбординга переключён на военное время.";
+        }
       }
 
       await interaction.editReply(buildModeratorPanelPayload(statusText, false));

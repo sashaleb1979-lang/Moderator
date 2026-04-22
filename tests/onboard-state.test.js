@@ -3,6 +3,13 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
+const {
+  ONBOARD_ACCESS_MODES,
+  createOnboardModeState,
+  getOnboardAccessModeLabel,
+  isApocalypseMode,
+  normalizeOnboardAccessMode,
+} = require("../src/onboard/access-mode");
 const { commitMutation } = require("../src/onboard/refresh-runner");
 const { ONBOARD_SUBCOMMAND_NAMES, ROLE_PANEL_COMMAND_NAME, TOP_LEVEL_COMMAND_NAMES, buildCommands } = require("../src/onboard/commands");
 const { resolveNonJjsCaptchaMode } = require("../src/onboard/non-jjs-mode");
@@ -269,6 +276,19 @@ test("non-JJS captcha switches to practice mode when the member already has acce
   );
 });
 
+test("onboard mode state normalizes persisted values and exposes readable labels", () => {
+  assert.equal(normalizeOnboardAccessMode(" wartime "), ONBOARD_ACCESS_MODES.WARTIME);
+  assert.equal(normalizeOnboardAccessMode("unknown"), ONBOARD_ACCESS_MODES.NORMAL);
+  assert.equal(getOnboardAccessModeLabel("apocalypse"), "Апокалипсис");
+  assert.equal(isApocalypseMode("apocalypse"), true);
+  assert.equal(isApocalypseMode("normal"), false);
+  assert.deepEqual(createOnboardModeState({ mode: " Apocalypse ", changedAt: " 2026-04-23T08:00:00.000Z ", changedBy: " mod " }), {
+    mode: ONBOARD_ACCESS_MODES.APOCALYPSE,
+    changedAt: "2026-04-23T08:00:00.000Z",
+    changedBy: "mod",
+  });
+});
+
 test("command builder includes new admin refresh and editor subcommands", () => {
   assert.deepEqual(
     [...ONBOARD_SUBCOMMAND_NAMES].sort(),
@@ -276,6 +296,7 @@ test("command builder includes new admin refresh and editor subcommands", () => 
       "deleteprofile",
       "graphicpanel",
       "graphicstatus",
+      "mode",
       "modset",
       "movegraphic",
       "movenotices",
@@ -289,6 +310,7 @@ test("command builder includes new admin refresh and editor subcommands", () => 
       "refreshtierlists",
       "remindmissing",
       "removetier",
+      "setmode",
       "stats",
       "syncroles",
       "tierlist",

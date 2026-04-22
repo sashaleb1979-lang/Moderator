@@ -8,6 +8,7 @@
   "roles": {
     "moderatorRoleId": "REPLACE_MODERATOR_ROLE_ID",
     "accessRoleId": "REPLACE_ACCESS_ROLE_ID",
+    "wartimeAccessRoleId": "",
     "nonJjsAccessRoleId": "",
     "killTierRoleIds": {
       "1": "",
