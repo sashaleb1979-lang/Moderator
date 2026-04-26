@@ -21,6 +21,19 @@ function createTierTotals() {
   return { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
 }
 
+function parseTrackedNumber(value) {
+  if (value === null || value === undefined) return NaN;
+  if (typeof value === "string" && !value.trim()) return NaN;
+  const amount = Number(value);
+  return Number.isFinite(amount) ? amount : NaN;
+}
+
+function hasTrackedKills(entry) {
+  const approvedKills = parseTrackedNumber(entry?.approvedKills);
+  const killTier = parseTrackedNumber(entry?.killTier);
+  return Number.isFinite(approvedKills) && approvedKills >= 0 && Number.isFinite(killTier) && killTier >= 1 && killTier <= 5;
+}
+
 function getTierlistStats(entries = [], submissions = []) {
   const pendingCount = submissions.filter((submission) => submission && submission.status === "pending").length;
   const approvedCount = submissions.filter((submission) => submission && submission.status === "approved").length;
@@ -95,7 +108,69 @@ function getMainStats(entries = []) {
     });
 }
 
+function getTrackedMemberStats(entries = []) {
+  const totalsByTier = createTierTotals();
+  const rememberedEntries = entries.filter(hasTrackedKills);
+  let totalKills = 0;
+
+  for (const entry of rememberedEntries) {
+    totalKills += normalizeKills(entry.approvedKills);
+    const tier = Number(entry.killTier);
+    if (totalsByTier[tier] !== undefined) totalsByTier[tier] += 1;
+  }
+
+  const averageKills = rememberedEntries.length ? Math.round(totalKills / rememberedEntries.length) : 0;
+  const medianKills = getMedianNumber(rememberedEntries.map((entry) => entry.approvedKills));
+
+  return {
+    totalRoleHolders: entries.length,
+    rememberedCount: rememberedEntries.length,
+    totalKills,
+    averageKills,
+    medianKills,
+    totalsByTier,
+  };
+}
+
+function getCharacterRoleStats(entries = []) {
+  return entries
+    .map((entry) => {
+      const main = String(entry?.main || "").trim();
+      const rememberedMembers = Array.isArray(entry?.rememberedMembers)
+        ? entry.rememberedMembers.filter(hasTrackedKills)
+        : [];
+      const rememberedCount = rememberedMembers.length;
+      const roleHolderCount = Math.max(Number(entry?.roleHolderCount) || 0, rememberedCount);
+      const totalKills = rememberedMembers.reduce((sum, member) => sum + normalizeKills(member.approvedKills), 0);
+      const totalsByTier = createTierTotals();
+
+      for (const member of rememberedMembers) {
+        const tier = Number(member.killTier);
+        if (totalsByTier[tier] !== undefined) totalsByTier[tier] += 1;
+      }
+
+      return {
+        main,
+        roleHolderCount,
+        rememberedCount,
+        totalKills,
+        averageKills: rememberedCount ? Math.round(totalKills / rememberedCount) : 0,
+        medianKills: getMedianNumber(rememberedMembers.map((member) => member.approvedKills)),
+        totalsByTier,
+      };
+    })
+    .filter((entry) => entry.main && entry.roleHolderCount > 0)
+    .sort((left, right) => {
+      if (right.roleHolderCount !== left.roleHolderCount) return right.roleHolderCount - left.roleHolderCount;
+      if (right.rememberedCount !== left.rememberedCount) return right.rememberedCount - left.rememberedCount;
+      if (right.averageKills !== left.averageKills) return right.averageKills - left.averageKills;
+      return left.main.localeCompare(right.main, "ru");
+    });
+}
+
 module.exports = {
+  getCharacterRoleStats,
   getMainStats,
+  getTrackedMemberStats,
   getTierlistStats,
 };

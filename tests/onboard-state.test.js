@@ -30,7 +30,12 @@ const {
   parseRoleGrantCustomId,
   validateRoleMessageDraft,
 } = require("../src/role-panel");
-const { getMainStats, getTierlistStats } = require("../src/onboard/tierlist-stats");
+const {
+  getCharacterRoleStats,
+  getMainStats,
+  getTierlistStats,
+  getTrackedMemberStats,
+} = require("../src/onboard/tierlist-stats");
 const {
   createPresentationDefaults,
   ensurePresentationConfig,
@@ -242,6 +247,91 @@ test("tierlist stats count approval/reject rates and per-main aggregates", () =>
   assert.equal(megumi.averageKills, 4000);
   assert.equal(megumi.medianKills, 4000);
   assert.deepEqual(megumi.totalsByTier, { 1: 0, 2: 1, 3: 0, 4: 1, 5: 0 });
+});
+
+test("tracked member stats count only live role holders with remembered approved kills", () => {
+  const trackedMembers = [
+    { userId: "1", approvedKills: 500, killTier: 1 },
+    { userId: "2", approvedKills: 3200, killTier: 3 },
+    { userId: "3", approvedKills: null, killTier: null },
+    { userId: "4", approvedKills: 11000, killTier: 5 },
+  ];
+
+  assert.deepEqual(getTrackedMemberStats(trackedMembers), {
+    totalRoleHolders: 4,
+    rememberedCount: 3,
+    totalKills: 14700,
+    averageKills: 4900,
+    medianKills: 3200,
+    totalsByTier: { 1: 1, 2: 0, 3: 1, 4: 0, 5: 1 },
+  });
+});
+
+test("tracked member stats ignore null and empty kills instead of coercing them to zero", () => {
+  const trackedMembers = [
+    { userId: "1", approvedKills: null, killTier: 1 },
+    { userId: "2", approvedKills: "", killTier: 2 },
+    { userId: "3", approvedKills: 0, killTier: 1 },
+  ];
+
+  assert.deepEqual(getTrackedMemberStats(trackedMembers), {
+    totalRoleHolders: 3,
+    rememberedCount: 1,
+    totalKills: 0,
+    averageKills: 0,
+    medianKills: 0,
+    totalsByTier: { 1: 1, 2: 0, 3: 0, 4: 0, 5: 0 },
+  });
+});
+
+test("character role stats separate live holders from remembered kills", () => {
+  const characterStats = getCharacterRoleStats([
+    {
+      main: "Юджи",
+      roleHolderCount: 28,
+      rememberedMembers: [
+        { userId: "1", approvedKills: 1000, killTier: 2 },
+        { userId: "2", approvedKills: 3000, killTier: 3 },
+      ],
+    },
+    {
+      main: "Мегуми",
+      roleHolderCount: 15,
+      rememberedMembers: [
+        { userId: "3", approvedKills: 7000, killTier: 4 },
+      ],
+    },
+    {
+      main: "Нобара",
+      roleHolderCount: 28,
+      rememberedMembers: [
+        { userId: "4", approvedKills: 500, killTier: 1 },
+        { userId: "5", approvedKills: 1500, killTier: 2 },
+        { userId: "6", approvedKills: 4000, killTier: 3 },
+      ],
+    },
+  ]);
+
+  assert.deepEqual(characterStats.map((entry) => entry.main), ["Нобара", "Юджи", "Мегуми"]);
+
+  const yuji = characterStats.find((entry) => entry.main === "Юджи");
+  assert.deepEqual(yuji, {
+    main: "Юджи",
+    roleHolderCount: 28,
+    rememberedCount: 2,
+    totalKills: 4000,
+    averageKills: 2000,
+    medianKills: 2000,
+    totalsByTier: { 1: 0, 2: 1, 3: 1, 4: 0, 5: 0 },
+  });
+
+  const nobara = characterStats.find((entry) => entry.main === "Нобара");
+  assert.equal(nobara.roleHolderCount, 28);
+  assert.equal(nobara.rememberedCount, 3);
+  assert.equal(nobara.totalKills, 6000);
+  assert.equal(nobara.averageKills, 2000);
+  assert.equal(nobara.medianKills, 1500);
+  assert.deepEqual(nobara.totalsByTier, { 1: 1, 2: 1, 3: 1, 4: 0, 5: 0 });
 });
 
 test("non-JJS captcha switches to practice mode when the member already has access", () => {
