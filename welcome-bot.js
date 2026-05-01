@@ -576,7 +576,7 @@ function loadDb() {
     sourcePath: db.config.integrations?.tierlist?.sourcePath,
     baseDir: DATA_ROOT,
     syncedAt: new Date().toISOString(),
-    characterCatalog: getCharacterCatalog().map((entry) => ({ id: entry.id, label: entry.label })),
+    characterCatalog: mergedCharacters.map((entry) => ({ id: entry.id, label: entry.label })),
   });
   if (dormantTierlistImport.error) {
     console.warn(`dormant Tierlist import skipped: ${dormantTierlistImport.error}`);
