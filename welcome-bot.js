@@ -71,6 +71,81 @@ const {
   resolvePresentation,
 } = require("./src/onboard/presentation");
 const {
+  createDefaultIntegrationState,
+  ensureSharedProfile,
+  normalizeIntegrationState,
+  syncSharedProfiles,
+} = require("./src/integrations/shared-profile");
+const {
+  clearDormantEloSync,
+  importDormantEloSyncFromFile,
+} = require("./src/integrations/elo-dormant");
+const {
+  clearDormantTierlistSync,
+  importDormantTierlistSyncFromFile,
+} = require("./src/integrations/tierlist-dormant");
+const {
+  LEGACY_TIERLIST_TITLE,
+  addLegacyTierlistCustomCharacter,
+  buildLegacyTierlistSummaryEmbed,
+  computeLegacyTierlistGlobalBuckets,
+  getLegacyTierlistFontDebugInfo,
+  getLegacyTierlistImageConfig,
+  getLegacyTierlistUserTierCounts,
+  loadLegacyTierlistState,
+  renderLegacyTierlistFromBuckets,
+  renderLegacyTierlistGlobalPng,
+  renderLegacyTierlistUserPng,
+  resolveLegacyTierlistCharacterImagePath,
+  saveLegacyTierlistState,
+} = require("./src/integrations/tierlist-live");
+const {
+  attachLegacyEloReviewRecord,
+  LEGACY_ELO_PENDING_EXPIRE_HOURS,
+  approveLegacyEloSubmission,
+  editLegacyEloSubmission,
+  expireLegacyEloSubmission,
+  getLegacyEloRating,
+  getLegacyEloSubmission,
+  isLegacyEloSubmissionExpired,
+  listLegacyEloPendingSubmissions,
+  loadLegacyEloDbFile,
+  parseLegacyElo,
+  rebuildLegacyEloRatings,
+  removeLegacyEloRating,
+  rejectLegacyEloSubmission,
+  saveLegacyEloDbFile,
+  tierForLegacyElo,
+  upsertDirectLegacyEloRating,
+  wipeLegacyEloRatings,
+} = require("./src/integrations/elo-review-store");
+const {
+  getDormantEloPanelSnapshot,
+  getDormantEloProfileSnapshot,
+} = require("./src/integrations/elo-panel");
+const {
+  getDormantTierlistPanelSnapshot,
+  getDormantTierlistProfileSnapshot,
+} = require("./src/integrations/tierlist-panel");
+const {
+  applyLegacyEloGraphicImageDelta,
+  buildLegacyEloGraphicEntries,
+  buildLegacyEloGraphicPanelSnapshot,
+  ensureLegacyEloGraphicState,
+  getLegacyEloGraphicMessageText,
+  previewLegacyEloGraphicMessageText,
+  resetAllLegacyEloGraphicTierColors,
+  resetLegacyEloGraphicImageOverrides,
+  resetLegacyEloGraphicTierColor,
+  setLegacyEloGraphicDashboardChannel,
+  setLegacyEloGraphicMessageText,
+  setLegacyEloGraphicSelectedTier,
+  setLegacyEloGraphicTierColor,
+  setLegacyEloGraphicTitle,
+  setLegacyEloTierLabel,
+  setLegacyEloTierLabels,
+} = require("./src/integrations/elo-graphic");
+const {
   getCharacterRoleStats,
   getTrackedMemberStats,
   getTierlistStats,
@@ -157,10 +232,46 @@ const WELCOME_CLEANUP_IMAGE_GRACE_MS = 2 * 60 * 1000;
 const WELCOME_CLEANUP_BOT_REPLY_GRACE_MS = 20 * 1000;
 const NON_GGS_CAPTCHA_EXPIRE_MS = 10 * 60 * 1000;
 const NON_GGS_CAPTCHA_STAGES = 2;
+const LEGACY_TIERLIST_SUMMARY_REFRESH_MS = 20 * 60 * 1000;
+const LEGACY_TIERLIST_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+const LEGACY_TIERLIST_MAIN_SELECT_PAGE_SIZE = 25;
+const LEGACY_TIERLIST_ROLE_INFLUENCE = {
+  1: 2.0,
+  2: 2.5,
+  3: 3.0,
+  4: 3.5,
+  5: 4.0,
+};
+const LEGACY_TIERLIST_PANEL_BUTTON_IDS = new Set([
+  "panel_tab_config",
+  "panel_tab_participants",
+  "panel_part_prev",
+  "panel_part_next",
+  "panel_part_refresh",
+  "panel_part_back",
+  "panel_part_view_png",
+  "panel_part_delete_votes",
+  "panel_part_delete_full",
+  "panel_part_cancel_delete",
+  "panel_part_confirm_delete",
+  "panel_close",
+  "panel_refresh",
+  "panel_icon_minus",
+  "panel_icon_plus",
+  "panel_w_minus",
+  "panel_w_plus",
+  "panel_h_minus",
+  "panel_h_plus",
+  "panel_reset_img",
+  "panel_fonts",
+  "panel_rename",
+  "panel_add_custom_character",
+]);
 
 let guildCache = null;
 const mainDrafts = new Map();
 const submitSessions = new Map();
+const legacyEloSubmitSessions = new Map();
 const nonGgsCaptchaSessions = new Map();
 const rolePanelDrafts = new Map();
 const roleCleanupSelections = new Map();
@@ -413,6 +524,7 @@ function loadDb() {
         characters: {},
         tiers: {},
       },
+      integrations: createDefaultIntegrationState(),
       onboardMode: createOnboardModeState(),
       characters: normalizeCharacterCatalog(appConfig.characters),
     },
@@ -437,6 +549,9 @@ function loadDb() {
   const normalizedOnboardMode = createOnboardModeState(db.config.onboardMode);
   const onboardModeChanged = JSON.stringify(normalizedOnboardMode) !== JSON.stringify(db.config.onboardMode || null);
   db.config.onboardMode = normalizedOnboardMode;
+  const normalizedIntegrations = normalizeIntegrationState(db.config.integrations);
+  const integrationsChanged = normalizedIntegrations.mutated;
+  db.config.integrations = normalizedIntegrations.integrations;
   const mergedCharacters = mergeCharacterCatalog(db.config.characters, appConfig.characters);
   const charactersChanged = !sameCharacterCatalog(db.config.characters, mergedCharacters);
   const comboGuideEditorRoleIds = normalizeComboGuideEditorRoleIds(db.comboGuide?.editorRoleIds);
@@ -448,7 +563,33 @@ function loadDb() {
     db.comboGuide.editorRoleIds = comboGuideEditorRoleIds;
   }
   db.config.characters = mergedCharacters;
-  db.__needsSaveAfterLoad = migrated.mutated || charactersChanged || roleGrantRegistry.mutated || comboGuideEditorRoleIdsChanged || onboardModeChanged;
+  const dormantEloImport = importDormantEloSyncFromFile(db, {
+    sourcePath: db.config.integrations?.elo?.sourcePath,
+    baseDir: DATA_ROOT,
+    syncedAt: new Date().toISOString(),
+  });
+  if (dormantEloImport.error) {
+    console.warn(`dormant ELO import skipped: ${dormantEloImport.error}`);
+  }
+  const dormantTierlistImport = importDormantTierlistSyncFromFile(db, {
+    sourcePath: db.config.integrations?.tierlist?.sourcePath,
+    baseDir: DATA_ROOT,
+    syncedAt: new Date().toISOString(),
+    characterCatalog: getCharacterCatalog().map((entry) => ({ id: entry.id, label: entry.label })),
+  });
+  if (dormantTierlistImport.error) {
+    console.warn(`dormant Tierlist import skipped: ${dormantTierlistImport.error}`);
+  }
+  const sharedProfiles = syncSharedProfiles(db);
+  db.__needsSaveAfterLoad = migrated.mutated
+    || charactersChanged
+    || roleGrantRegistry.mutated
+    || comboGuideEditorRoleIdsChanged
+    || onboardModeChanged
+    || integrationsChanged
+    || Boolean(dormantEloImport.mutated)
+    || Boolean(dormantTierlistImport.mutated)
+    || sharedProfiles.mutated;
   return db;
 }
 
@@ -456,6 +597,8 @@ const db = loadDb();
 
 function saveDb() {
   delete db.__needsSaveAfterLoad;
+  syncSharedProfiles(db);
+  db.config.integrations = normalizeIntegrationState(db.config.integrations).integrations;
   saveJsonFile(DB_PATH, db);
 }
 
@@ -1355,23 +1498,8 @@ function previewGraphicMessageText(maxLen = 170) {
 }
 
 function getProfile(userId) {
-  db.profiles[userId] ||= {
-    userId,
-    displayName: "",
-    username: "",
-    mainCharacterIds: [],
-    mainCharacterLabels: [],
-    characterRoleIds: [],
-    approvedKills: null,
-    killTier: null,
-    accessGrantedAt: null,
-    nonGgsAccessGrantedAt: null,
-    nonGgsCaptchaPassedAt: null,
-    updatedAt: null,
-    lastSubmissionId: null,
-    lastSubmissionStatus: null,
-    lastReviewedAt: null,
-  };
+  const ensured = ensureSharedProfile(db.profiles[userId], userId);
+  db.profiles[userId] = ensured.profile;
   return db.profiles[userId];
 }
 
@@ -2783,6 +2911,44 @@ async function findExistingGraphicTierlistMessage(channel) {
       messageHasEmbedTitle(message, getEffectiveGraphicTitle()) ||
       messageHasAttachmentName(message, "tierlist.png") ||
       messageHasAttachmentName(message, "graphic-tierlist.svg"))
+  );
+}
+
+async function findExistingLegacyEloGraphicMessage(channel) {
+  const botId = client.user?.id;
+  return findManagedMessageInChannel(
+    channel,
+    (message) =>
+      message.author?.id === botId &&
+      (
+        messageHasRequiredCustomIds(message, ["elo_graphic_refresh", "elo_graphic_panel"]) ||
+        String(message?.content || "").startsWith("ELO графический тир-лист.") ||
+        messageHasAttachmentName(message, "elo-tierlist.png")
+      )
+  );
+}
+
+async function findExistingLegacyTierlistDashboardMessage(channel) {
+  const botId = client.user?.id;
+  return findManagedMessageInChannel(
+    channel,
+    (message) =>
+      message.author?.id === botId &&
+      (
+        messageHasRequiredCustomIds(message, ["start_rating", "rate_new_characters", "my_status", "refresh_tierlist"]) ||
+        messageHasEmbedTitle(message, LEGACY_TIERLIST_TITLE) ||
+        messageHasAttachmentName(message, "tierlist.png")
+      )
+  );
+}
+
+async function findExistingLegacyTierlistSummaryMessage(channel) {
+  const botId = client.user?.id;
+  return findManagedMessageInChannel(
+    channel,
+    (message) =>
+      message.author?.id === botId &&
+      messageHasEmbedTitle(message, `${LEGACY_TIERLIST_TITLE} Summary`)
   );
 }
 
@@ -4240,7 +4406,9 @@ function buildModeratorPanelPayload(statusText = "", includeFlags = true) {
       ),
       new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId("panel_remind_missing").setLabel("Напомнить отсутствующим").setStyle(ButtonStyle.Danger),
-        new ButtonBuilder().setCustomId("panel_refresh_summary").setLabel("Обновить сводку").setStyle(ButtonStyle.Secondary)
+        new ButtonBuilder().setCustomId("panel_refresh_summary").setLabel("Обновить сводку").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("panel_open_tierlist").setLabel("Tierlist Panel").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("panel_open_elo").setLabel("ELO Panel").setStyle(ButtonStyle.Secondary)
       ),
       new ActionRowBuilder().addComponents(
         new ButtonBuilder()
@@ -4299,6 +4467,2041 @@ function buildModeratorApocalypseConfirmPayload(statusText = "", includeFlags = 
   return includeFlags ? ephemeralPayload(payload) : payload;
 }
 
+function getDormantEloImportStatusText(result) {
+  if (result?.error) return `Не удалось прочитать legacy ELO базу: ${result.error}`;
+  if (!result?.sourcePath) return "ELO sourcePath не задан. Укажи путь к legacy db.json в панели ниже.";
+  if (!result?.imported) return `Файл ELO базы пока не найден: ${result.resolvedPath || result.sourcePath}`;
+
+  return [
+    `Legacy ELO база синхронизирована. Игроков: ${result.importedUserCount}.`,
+    `Обновлено профилей: ${result.syncedProfiles}.`,
+    result.clearedProfiles ? `Очищено stale ELO-профилей: ${result.clearedProfiles}.` : null,
+  ].filter(Boolean).join(" ");
+}
+
+function refreshDormantEloImport() {
+  const result = importDormantEloSyncFromFile(db, {
+    sourcePath: db.config.integrations?.elo?.sourcePath,
+    baseDir: DATA_ROOT,
+    syncedAt: nowIso(),
+  });
+  if (result.mutated) saveDb();
+  return result;
+}
+
+function getDormantTierlistImportStatusText(result) {
+  if (result?.error) return `Не удалось прочитать legacy Tierlist state: ${result.error}`;
+  if (!result?.sourcePath) return "Tierlist sourcePath не задан. Укажи путь к legacy data/state.json в панели ниже.";
+  if (!result?.imported) return `Файл Tierlist state пока не найден: ${result.resolvedPath || result.sourcePath}`;
+
+  return [
+    `Legacy Tierlist state синхронизирован. Профилей: ${result.importedUserCount}.`,
+    `Обновлено профилей: ${result.syncedProfiles}.`,
+    result.clearedProfiles ? `Очищено stale Tierlist-профилей: ${result.clearedProfiles}.` : null,
+  ].filter(Boolean).join(" ");
+}
+
+function refreshDormantTierlistImport() {
+  const result = importDormantTierlistSyncFromFile(db, {
+    sourcePath: db.config.integrations?.tierlist?.sourcePath,
+    baseDir: DATA_ROOT,
+    syncedAt: nowIso(),
+    characterCatalog: getCharacterCatalog().map((entry) => ({ id: entry.id, label: entry.label })),
+  });
+  if (result.mutated) saveDb();
+  return result;
+}
+
+function getLiveLegacyTierlistState() {
+  return loadLegacyTierlistState({
+    sourcePath: db.config.integrations?.tierlist?.sourcePath,
+    baseDir: DATA_ROOT,
+    baseCharacterCatalog: getCharacterCatalog().map((entry) => ({ id: entry.id, label: entry.label })),
+    baseCharacterAssetsDir: CHARACTERS_ASSET_DIR,
+  });
+}
+
+function buildLegacyTierlistStateErrorPayload(prefix, state, includeFlags = true) {
+  const payload = {
+    content: `${prefix}: ${state?.error || "неизвестная ошибка"}`,
+  };
+  return includeFlags ? ephemeralPayload(payload) : payload;
+}
+
+function saveLiveLegacyTierlistStateAndResync(liveState) {
+  if (!liveState?.resolvedPath) {
+    throw new Error("Resolved legacy Tierlist state path is missing");
+  }
+
+  saveLegacyTierlistState(liveState.resolvedPath, liveState.rawState);
+  return refreshDormantTierlistImport();
+}
+
+function getLegacyTierlistSyncStatusSuffix(syncResult) {
+  return syncResult?.error ? ` Синхронизация shared профилей не удалась: ${syncResult.error}` : "";
+}
+
+function parseLegacyTierlistTimestamp(value) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  const parsed = Date.parse(String(value || ""));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function isLegacyTierlistLocked(rawUser) {
+  return parseLegacyTierlistTimestamp(rawUser?.lockUntil) > Date.now();
+}
+
+function buildLegacyTierlistDashboardComponents() {
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId("start_rating").setLabel("Начать оценку").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("rate_new_characters").setLabel("Оценить новых").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId("my_status").setLabel("Мой статус").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("refresh_tierlist").setLabel("Обновить тир-лист").setStyle(ButtonStyle.Secondary)
+    ),
+  ];
+}
+
+async function buildLegacyTierlistDashboardPayload(liveState) {
+  if (!liveState?.ok) {
+    throw new Error(liveState?.error || "Legacy Tierlist state недоступен");
+  }
+
+  const pngBuffer = await renderLegacyTierlistGlobalPng(liveState, { title: LEGACY_TIERLIST_TITLE });
+  return {
+    embeds: [
+      new EmbedBuilder()
+        .setTitle(LEGACY_TIERLIST_TITLE)
+        .setDescription("кнопка **начать оценку** откроет полный опрос. **оценить новых** позволит дооценить только что добавленных персонажей без сброса твоего тир-листа.")
+        .setImage("attachment://tierlist.png"),
+    ],
+    files: [new AttachmentBuilder(pngBuffer, { name: "tierlist.png" })],
+    components: buildLegacyTierlistDashboardComponents(),
+  };
+}
+
+async function ensureLegacyTierlistDashboardMessage(client, liveState, forcedChannelId = null) {
+  if (!liveState?.ok) {
+    throw new Error(liveState?.error || "Legacy Tierlist state недоступен");
+  }
+
+  const rawState = liveState.rawState;
+  rawState.settings ||= {};
+  const channelId = String(forcedChannelId || rawState.settings.channelId || "").trim();
+  if (!channelId) throw new Error("Не задан dashboard channel для legacy Tierlist.");
+
+  const previousChannelId = String(rawState.settings.channelId || "").trim();
+  const previousMessageId = String(rawState.settings.dashboardMessageId || "").trim();
+  if (previousMessageId && previousChannelId && previousChannelId !== channelId) {
+    const previousChannel = await client.channels.fetch(previousChannelId).catch(() => null);
+    const previousMessage = previousChannel?.isTextBased?.()
+      ? await previousChannel.messages.fetch(previousMessageId).catch(() => null)
+      : null;
+    if (previousMessage?.deletable) await previousMessage.delete().catch(() => {});
+    rawState.settings.dashboardMessageId = null;
+  }
+
+  const channel = await client.channels.fetch(channelId).catch(() => null);
+  if (!channel?.isTextBased?.()) throw new Error("Legacy Tierlist dashboard channel должен быть текстовым.");
+
+  let message = null;
+  if (rawState.settings.dashboardMessageId) {
+    message = await channel.messages.fetch(rawState.settings.dashboardMessageId).catch(() => null);
+  }
+  if (!message) {
+    message = await findExistingLegacyTierlistDashboardMessage(channel);
+  }
+
+  const payload = await buildLegacyTierlistDashboardPayload(liveState);
+  if (!message) {
+    message = await channel.send(payload);
+    await message.pin().catch(() => {});
+  } else {
+    await message.edit({ ...payload, attachments: [] });
+    await message.pin().catch(() => {});
+  }
+
+  rawState.settings.channelId = channel.id;
+  rawState.settings.dashboardMessageId = message.id;
+  rawState.settings.lastUpdated = Date.now();
+  const syncResult = saveLiveLegacyTierlistStateAndResync(liveState);
+  return { ok: true, channelId: channel.id, messageId: message.id, syncResult };
+}
+
+async function refreshLegacyTierlistDashboard(client, options = {}) {
+  const liveState = options.liveState || getLiveLegacyTierlistState();
+  if (!liveState.ok) {
+    throw new Error(liveState.error || "Legacy Tierlist state недоступен");
+  }
+
+  const channelId = String(options.channelId || liveState.rawState?.settings?.channelId || "").trim();
+  if (!channelId) {
+    return { ok: false, reason: "not_configured", liveState };
+  }
+
+  const channel = await client.channels.fetch(channelId).catch(() => null);
+  if (!channel?.isTextBased?.()) return { ok: false, reason: "missing_channel", liveState };
+
+  let message = null;
+  const messageId = String(liveState.rawState?.settings?.dashboardMessageId || "").trim();
+  if (messageId) {
+    message = await channel.messages.fetch(messageId).catch(() => null);
+  }
+  if (!message) {
+    const ensured = await ensureLegacyTierlistDashboardMessage(client, liveState, channelId);
+    return { ok: true, ensured: true, channelId: ensured.channelId, messageId: ensured.messageId, syncResult: ensured.syncResult, liveState };
+  }
+
+  const payload = await buildLegacyTierlistDashboardPayload(liveState);
+  await message.edit({ ...payload, attachments: [] });
+  liveState.rawState.settings.lastUpdated = Date.now();
+  const syncResult = saveLiveLegacyTierlistStateAndResync(liveState);
+  return { ok: true, ensured: false, channelId: channel.id, messageId: message.id, syncResult, liveState };
+}
+
+async function ensureLegacyTierlistSummaryMessage(client, liveState, forcedChannelId = null) {
+  if (!liveState?.ok) {
+    throw new Error(liveState?.error || "Legacy Tierlist state недоступен");
+  }
+
+  const rawState = liveState.rawState;
+  rawState.settings ||= {};
+  const channelId = String(forcedChannelId || rawState.settings.summaryChannelId || "").trim();
+  if (!channelId) throw new Error("Не задан summary channel для legacy Tierlist.");
+
+  const previousChannelId = String(rawState.settings.summaryChannelId || "").trim();
+  const previousMessageId = String(rawState.settings.summaryMessageId || "").trim();
+  if (previousMessageId && previousChannelId && previousChannelId !== channelId) {
+    const previousChannel = await client.channels.fetch(previousChannelId).catch(() => null);
+    const previousMessage = previousChannel?.isTextBased?.()
+      ? await previousChannel.messages.fetch(previousMessageId).catch(() => null)
+      : null;
+    if (previousMessage?.deletable) await previousMessage.delete().catch(() => {});
+    rawState.settings.summaryMessageId = null;
+  }
+
+  const channel = await client.channels.fetch(channelId).catch(() => null);
+  if (!channel?.isTextBased?.()) throw new Error("Legacy Tierlist summary channel должен быть текстовым.");
+
+  let message = null;
+  if (rawState.settings.summaryMessageId) {
+    message = await channel.messages.fetch(rawState.settings.summaryMessageId).catch(() => null);
+  }
+  if (!message) {
+    message = await findExistingLegacyTierlistSummaryMessage(channel);
+  }
+
+  const payload = { embeds: [buildLegacyTierlistSummaryEmbed(liveState, { title: LEGACY_TIERLIST_TITLE })] };
+  if (!message) {
+    message = await channel.send(payload);
+  } else {
+    await message.edit(payload);
+  }
+
+  rawState.settings.summaryChannelId = channel.id;
+  rawState.settings.summaryMessageId = message.id;
+  rawState.settings.summaryLastUpdated = Date.now();
+  const syncResult = saveLiveLegacyTierlistStateAndResync(liveState);
+  return { ok: true, channelId: channel.id, messageId: message.id, syncResult };
+}
+
+async function refreshLegacyTierlistSummaryMessage(client, options = {}) {
+  const liveState = options.liveState || getLiveLegacyTierlistState();
+  if (!liveState.ok) {
+    throw new Error(liveState.error || "Legacy Tierlist state недоступен");
+  }
+
+  const channelId = String(options.channelId || liveState.rawState?.settings?.summaryChannelId || "").trim();
+  if (!channelId) {
+    return { ok: false, reason: "not_configured", liveState };
+  }
+
+  const channel = await client.channels.fetch(channelId).catch(() => null);
+  if (!channel?.isTextBased?.()) return { ok: false, reason: "missing_channel", liveState };
+
+  let message = null;
+  const messageId = String(liveState.rawState?.settings?.summaryMessageId || "").trim();
+  if (messageId) {
+    message = await channel.messages.fetch(messageId).catch(() => null);
+  }
+  if (!message) {
+    const ensured = await ensureLegacyTierlistSummaryMessage(client, liveState, channelId);
+    return { ok: true, ensured: true, channelId: ensured.channelId, messageId: ensured.messageId, syncResult: ensured.syncResult, liveState };
+  }
+
+  await message.edit({ embeds: [buildLegacyTierlistSummaryEmbed(liveState, { title: LEGACY_TIERLIST_TITLE })] });
+  liveState.rawState.settings.summaryLastUpdated = Date.now();
+  const syncResult = saveLiveLegacyTierlistStateAndResync(liveState);
+  return { ok: true, ensured: false, channelId: channel.id, messageId: message.id, syncResult, liveState };
+}
+
+async function refreshLegacyTierlistPublicViews(client, options = {}) {
+  const liveState = options.liveState || getLiveLegacyTierlistState();
+  if (!liveState.ok) {
+    throw new Error(liveState.error || "Legacy Tierlist state недоступен");
+  }
+
+  const [dashboard, summary] = await Promise.allSettled([
+    refreshLegacyTierlistDashboard(client, { liveState }),
+    refreshLegacyTierlistSummaryMessage(client, { liveState }),
+  ]);
+
+  return {
+    liveState,
+    dashboard: dashboard.status === "fulfilled" ? dashboard.value : false,
+    summary: summary.status === "fulfilled" ? summary.value : false,
+  };
+}
+
+function persistLiveLegacyTierlistState(liveState) {
+  if (!liveState?.resolvedPath) {
+    throw new Error("Resolved legacy Tierlist state path is missing");
+  }
+  saveLegacyTierlistState(liveState.resolvedPath, liveState.rawState);
+}
+
+function formatLegacyTierlistMoment(value) {
+  const timestamp = parseLegacyTierlistTimestamp(value);
+  return timestamp ? new Date(timestamp).toLocaleString("ru-RU") : "—";
+}
+
+function getLegacyTierlistWizardUser(rawState, userId) {
+  rawState.users ||= {};
+  rawState.users[userId] ||= {
+    mainId: null,
+    lockUntil: 0,
+    lastSubmitAt: 0,
+    wizQueue: null,
+    wizIndex: 0,
+    wizMode: null,
+    influenceMultiplier: 1,
+    influenceRoleId: null,
+    influenceUpdatedAt: 0,
+    panelTierKey: "S",
+    panelTab: "config",
+    panelParticipantsPage: 0,
+    panelParticipantId: null,
+    panelDeleteTargetId: null,
+    panelDeleteMode: null,
+    mainSelectPage: 0,
+  };
+
+  const user = rawState.users[userId];
+  if (user.lastSubmitAt == null) user.lastSubmitAt = 0;
+  if (!user.panelTierKey) user.panelTierKey = "S";
+  if (!user.panelTab) user.panelTab = "config";
+  if (user.panelParticipantsPage == null) user.panelParticipantsPage = 0;
+  if (user.panelParticipantId == null) user.panelParticipantId = null;
+  if (user.mainSelectPage == null) user.mainSelectPage = 0;
+  if (user.wizMode == null) user.wizMode = null;
+  return user;
+}
+
+function getLegacyTierlistDraft(rawState, userId) {
+  rawState.draftVotes ||= {};
+  rawState.draftVotes[userId] ||= {};
+  return rawState.draftVotes[userId];
+}
+
+function getLegacyTierlistFinal(rawState, userId) {
+  rawState.finalVotes ||= {};
+  rawState.finalVotes[userId] ||= {};
+  return rawState.finalVotes[userId];
+}
+
+function isLegacyTierlistWizardLocked(rawState, userId) {
+  const user = getLegacyTierlistWizardUser(rawState, userId);
+  return parseLegacyTierlistTimestamp(user.lockUntil) > Date.now();
+}
+
+function hasSubmittedLegacyTierlist(rawState, userId) {
+  const votes = rawState?.finalVotes?.[userId] || {};
+  return Object.keys(votes).length > 0;
+}
+
+function getLegacyTierlistPendingNewCharacterIds(liveState, userId) {
+  const user = getLegacyTierlistWizardUser(liveState.rawState, userId);
+  const finalVotes = getLegacyTierlistFinal(liveState.rawState, userId);
+  return (liveState.characters || [])
+    .map((entry) => entry.id)
+    .filter((characterId) => characterId !== user.mainId)
+    .filter((characterId) => !finalVotes[characterId]);
+}
+
+function canUseLegacyTierlistCurrentWizard(rawState, userId) {
+  const user = getLegacyTierlistWizardUser(rawState, userId);
+  return !isLegacyTierlistWizardLocked(rawState, userId) || user.wizMode === "new";
+}
+
+function findLegacyTierlistCharacterMainPage(liveState, characterId) {
+  const index = (liveState.characters || []).findIndex((entry) => entry.id === characterId);
+  if (index < 0) return 0;
+  return Math.floor(index / LEGACY_TIERLIST_MAIN_SELECT_PAGE_SIZE);
+}
+
+function getLegacyTierlistMainSelectPageCount(liveState) {
+  return Math.max(1, Math.ceil((liveState.characters || []).length / LEGACY_TIERLIST_MAIN_SELECT_PAGE_SIZE));
+}
+
+function clampLegacyTierlistMainSelectPage(liveState, page) {
+  return Math.max(0, Math.min(Number(page) || 0, getLegacyTierlistMainSelectPageCount(liveState) - 1));
+}
+
+function setLegacyTierlistMain(liveState, userId, mainId) {
+  const user = getLegacyTierlistWizardUser(liveState.rawState, userId);
+  user.mainId = mainId;
+  user.mainSelectPage = findLegacyTierlistCharacterMainPage(liveState, mainId);
+
+  const draftVotes = getLegacyTierlistDraft(liveState.rawState, userId);
+  if (draftVotes[mainId]) delete draftVotes[mainId];
+  const finalVotes = getLegacyTierlistFinal(liveState.rawState, userId);
+  if (finalVotes[mainId]) delete finalVotes[mainId];
+}
+
+function startLegacyTierlistWizard(liveState, userId, mode = "full") {
+  const user = getLegacyTierlistWizardUser(liveState.rawState, userId);
+  liveState.rawState.draftVotes ||= {};
+  liveState.rawState.draftVotes[userId] = {};
+  user.wizMode = mode;
+  user.wizQueue = mode === "new"
+    ? getLegacyTierlistPendingNewCharacterIds(liveState, userId)
+    : (liveState.characters || []).map((entry) => entry.id).filter((characterId) => characterId !== user.mainId);
+  user.wizIndex = 0;
+}
+
+function currentLegacyTierlistWizardChar(rawState, userId) {
+  const user = getLegacyTierlistWizardUser(rawState, userId);
+  const queue = user.wizQueue || [];
+  const index = Math.max(0, Math.min(user.wizIndex || 0, queue.length));
+  return queue[index] || null;
+}
+
+function legacyTierlistWizardDone(rawState, userId) {
+  const user = getLegacyTierlistWizardUser(rawState, userId);
+  const queue = user.wizQueue || [];
+  return (user.wizIndex || 0) >= queue.length;
+}
+
+function setLegacyTierlistDraftTier(rawState, userId, characterId, tierKey) {
+  const user = getLegacyTierlistWizardUser(rawState, userId);
+  if (!characterId || characterId === user.mainId) return;
+  if (!["S", "A", "B", "C", "D"].includes(tierKey)) return;
+  const draftVotes = getLegacyTierlistDraft(rawState, userId);
+  draftVotes[characterId] = tierKey;
+}
+
+function advanceLegacyTierlistWizard(rawState, userId) {
+  const user = getLegacyTierlistWizardUser(rawState, userId);
+  const queue = user.wizQueue || [];
+  user.wizIndex = Math.min((user.wizIndex || 0) + 1, queue.length);
+}
+
+function rewindLegacyTierlistWizard(rawState, userId) {
+  const user = getLegacyTierlistWizardUser(rawState, userId);
+  user.wizIndex = Math.max((user.wizIndex || 0) - 1, 0);
+}
+
+function submitLegacyTierlistVotes(rawState, userId) {
+  const user = getLegacyTierlistWizardUser(rawState, userId);
+  const queue = user.wizQueue || [];
+  const draftVotes = getLegacyTierlistDraft(rawState, userId);
+  const finalVotes = getLegacyTierlistFinal(rawState, userId);
+
+  for (const characterId of queue) {
+    finalVotes[characterId] = ["S", "A", "B", "C", "D"].includes(draftVotes[characterId]) ? draftVotes[characterId] : "B";
+  }
+  if (user.mainId && finalVotes[user.mainId]) delete finalVotes[user.mainId];
+}
+
+function lockLegacyTierlistUser(rawState, userId) {
+  const user = getLegacyTierlistWizardUser(rawState, userId);
+  user.lockUntil = Date.now() + LEGACY_TIERLIST_COOLDOWN_MS;
+}
+
+function buildLegacyTierlistDraftBuckets(liveState, userId) {
+  const rawState = liveState.rawState;
+  const user = getLegacyTierlistWizardUser(rawState, userId);
+  const draftVotes = getLegacyTierlistDraft(rawState, userId);
+  const finalVotes = getLegacyTierlistFinal(rawState, userId);
+  const useExistingVotes = user.wizMode === "new";
+  const buckets = { S: [], A: [], B: [], C: [], D: [] };
+
+  for (const character of liveState.characters || []) {
+    const baseTier = useExistingVotes && finalVotes[character.id] ? finalVotes[character.id] : "B";
+    const tierKey = ["S", "A", "B", "C", "D"].includes(draftVotes[character.id]) ? draftVotes[character.id] : baseTier;
+    buckets[tierKey].push(character.id);
+  }
+
+  for (const tierKey of Object.keys(buckets)) {
+    buckets[tierKey].sort((left, right) => {
+      const leftName = liveState.charById.get(left)?.name || left;
+      const rightName = liveState.charById.get(right)?.name || right;
+      return String(leftName).localeCompare(String(rightName), "ru");
+    });
+  }
+
+  return buckets;
+}
+
+function buildLegacyTierlistMainSelectRows(liveState, userId) {
+  const user = getLegacyTierlistWizardUser(liveState.rawState, userId);
+  const page = clampLegacyTierlistMainSelectPage(liveState, user.mainSelectPage);
+  const start = page * LEGACY_TIERLIST_MAIN_SELECT_PAGE_SIZE;
+  const slice = (liveState.characters || []).slice(start, start + LEGACY_TIERLIST_MAIN_SELECT_PAGE_SIZE);
+  user.mainSelectPage = page;
+
+  const menu = new StringSelectMenuBuilder()
+    .setCustomId("select_main")
+    .setPlaceholder(`Выбери своего main (${page + 1}/${getLegacyTierlistMainSelectPageCount(liveState)})`)
+    .setMinValues(1)
+    .setMaxValues(1);
+
+  for (const character of slice) {
+    menu.addOptions({
+      label: character.name.slice(0, 100),
+      value: character.id,
+      default: user.mainId === character.id,
+    });
+  }
+
+  const rows = [new ActionRowBuilder().addComponents(menu)];
+  if (getLegacyTierlistMainSelectPageCount(liveState) > 1) {
+    rows.push(
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId("main_page_prev")
+          .setLabel(`Персонажи ${page + 1}/${getLegacyTierlistMainSelectPageCount(liveState)} <-`)
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(page <= 0),
+        new ButtonBuilder()
+          .setCustomId("main_page_next")
+          .setLabel("->")
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(page >= getLegacyTierlistMainSelectPageCount(liveState) - 1)
+      )
+    );
+  }
+
+  return rows;
+}
+
+function buildLegacyTierlistStartButtons(liveState, userId) {
+  const user = getLegacyTierlistWizardUser(liveState.rawState, userId);
+  const row = new ActionRowBuilder();
+  if (user.mainId) {
+    const name = liveState.charById.get(user.mainId)?.name || user.mainId;
+    row.addComponents(
+      new ButtonBuilder()
+        .setCustomId("wiz_use_current_main")
+        .setLabel(`Продолжить с main: ${name}`.slice(0, 80))
+        .setStyle(ButtonStyle.Primary)
+    );
+  }
+  row.addComponents(new ButtonBuilder().setCustomId("wiz_cancel").setLabel("Закрыть").setStyle(ButtonStyle.Secondary));
+  return row;
+}
+
+function buildLegacyTierlistTierButtons(disabled = false) {
+  const make = (tierKey) => new ButtonBuilder()
+    .setCustomId(`wiz_rate_${tierKey}`)
+    .setLabel(tierKey)
+    .setStyle(ButtonStyle.Secondary)
+    .setDisabled(disabled);
+
+  return new ActionRowBuilder().addComponents(make("S"), make("A"), make("B"), make("C"), make("D"));
+}
+
+function buildLegacyTierlistWizardNavRow(rawState, userId) {
+  const user = getLegacyTierlistWizardUser(rawState, userId);
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId("wiz_back").setLabel("Назад").setStyle(ButtonStyle.Secondary).setDisabled((user.wizIndex || 0) <= 0),
+    new ButtonBuilder().setCustomId("wiz_cancel").setLabel("Закрыть").setStyle(ButtonStyle.Danger)
+  );
+
+  if (legacyTierlistWizardDone(rawState, userId)) {
+    row.addComponents(new ButtonBuilder().setCustomId("wiz_submit").setLabel("Отправить").setStyle(ButtonStyle.Success));
+  }
+  return row;
+}
+
+function buildLegacyTierlistStartEmbed(liveState, userId) {
+  const user = getLegacyTierlistWizardUser(liveState.rawState, userId);
+  const locked = isLegacyTierlistWizardLocked(liveState.rawState, userId);
+  const mainName = user.mainId ? (liveState.charById.get(user.mainId)?.name || user.mainId) : "не выбран";
+  const hasFinal = hasSubmittedLegacyTierlist(liveState.rawState, userId);
+
+  const embed = new EmbedBuilder()
+    .setTitle("Оценка персонажей")
+    .setDescription([
+      "1) выбери своего main.",
+      "2) появится твой личный тир-лист.",
+      "3) оценивай персонажей по одному кнопками S A B C D.",
+      "main будет серым и заблокированным.",
+      hasFinal ? "Для новых персонажей на дашборде есть кнопка **Оценить новых**." : "После первой отправки новые персонажи можно будет дооценивать кнопкой **Оценить новых**.",
+    ].join("\n"))
+    .addFields({ name: "Main", value: `**${mainName}**`, inline: true });
+
+  if (locked) {
+    embed.addFields({ name: "Кулдаун", value: `До **${formatLegacyTierlistMoment(user.lockUntil)}**`, inline: false });
+  } else {
+    embed.addFields({ name: "Кулдаун", value: "Можно отправлять сейчас.", inline: false });
+  }
+
+  return embed;
+}
+
+function buildLegacyTierlistStartPayload(liveState, userId, statusText = "") {
+  const embed = buildLegacyTierlistStartEmbed(liveState, userId);
+  if (statusText) embed.setFooter({ text: String(statusText).slice(0, 2048) });
+  return {
+    embeds: [embed],
+    components: [buildLegacyTierlistStartButtons(liveState, userId), ...buildLegacyTierlistMainSelectRows(liveState, userId)],
+    attachments: [],
+  };
+}
+
+async function buildLegacyTierlistWizardPayload(liveState, userId) {
+  const rawState = liveState.rawState;
+  const user = getLegacyTierlistWizardUser(rawState, userId);
+  const queue = user.wizQueue || [];
+  const total = queue.length;
+  const done = Math.min(user.wizIndex || 0, total);
+  const currentId = currentLegacyTierlistWizardChar(rawState, userId);
+  const currentName = currentId ? (liveState.charById.get(currentId)?.name || currentId) : "—";
+  const lockedMain = user.mainId ? (liveState.charById.get(user.mainId)?.name || user.mainId) : "не выбран";
+  const finished = legacyTierlistWizardDone(rawState, userId);
+
+  const preview = await renderLegacyTierlistFromBuckets(liveState, {
+    title: `${LEGACY_TIERLIST_TITLE} (твоя оценка)`,
+    footerText: `progress: ${Math.min(done, total)}/${total}. ${new Date().toLocaleTimeString("ru-RU")}`,
+    buckets: buildLegacyTierlistDraftBuckets(liveState, userId),
+    lockedId: user.mainId || null,
+    highlightId: finished ? null : currentId,
+  });
+  const files = [new AttachmentBuilder(preview, { name: "preview.png" })];
+
+  let hasCharacterImage = false;
+  if (!finished && currentId) {
+    const iconPath = resolveLegacyTierlistCharacterImagePath(liveState, currentId);
+    if (iconPath && fs.existsSync(iconPath)) {
+      files.push(new AttachmentBuilder(fs.readFileSync(iconPath), { name: "character.png" }));
+      hasCharacterImage = true;
+    }
+  }
+
+  const currentEmbed = new EmbedBuilder()
+    .setTitle(finished ? "Готово" : `Сейчас: ${currentName}`)
+    .setDescription(
+      finished
+        ? "готово. проверь свой тир-лист ниже и нажми **отправить**."
+        : (user.wizMode === "new"
+            ? "доставь оценку только для новых персонажей кнопками S A B C D."
+            : "выбери тир для текущего персонажа кнопками S A B C D.")
+    )
+    .addFields(
+      { name: "Main", value: `⬛ **${lockedMain}** (locked)`, inline: true },
+      { name: "Прогресс", value: `${done}/${total}`, inline: true },
+      { name: "Сейчас", value: finished ? "—" : `**${currentName}**`, inline: false }
+    );
+
+  if (hasCharacterImage) currentEmbed.setImage("attachment://character.png");
+
+  const previewEmbed = new EmbedBuilder()
+    .setTitle("Твой тир-лист")
+    .setDescription("обновляется после каждого клика.")
+    .setImage("attachment://preview.png");
+
+  return {
+    embeds: [currentEmbed, previewEmbed],
+    components: [buildLegacyTierlistTierButtons(finished), buildLegacyTierlistWizardNavRow(rawState, userId)],
+    files,
+    attachments: [],
+  };
+}
+
+function resolveLegacyTierlistInfluenceFromMember(member) {
+  try {
+    const roles = member?.roles?.cache;
+    if (!roles) return { mult: 1, roleId: null };
+
+    let best = 1;
+    let bestRole = null;
+    for (const tierKey of [1, 2, 3, 4, 5]) {
+      const roleId = String(appConfig?.roles?.killTierRoleIds?.[tierKey] || "").trim();
+      const multiplier = LEGACY_TIERLIST_ROLE_INFLUENCE[tierKey];
+      if (!roleId || !multiplier) continue;
+      if (roles.has(roleId) && multiplier > best) {
+        best = multiplier;
+        bestRole = roleId;
+      }
+    }
+    return { mult: best, roleId: bestRole };
+  } catch {
+    return { mult: 1, roleId: null };
+  }
+}
+
+function applyLegacyTierlistPanelStatus(payload, statusText = "") {
+  if (!statusText || !payload?.embeds?.[0]) return payload;
+  payload.embeds[0].setFooter({ text: String(statusText).slice(0, 2048) });
+  return payload;
+}
+
+function buildLegacyTierlistPanelTierSelect(rawState, userId) {
+  const user = getLegacyTierlistWizardUser(rawState, userId);
+  const selected = user.panelTierKey || "S";
+
+  const menu = new StringSelectMenuBuilder()
+    .setCustomId("panel_select_tier")
+    .setPlaceholder("Выбери тир для переименования")
+    .setMinValues(1)
+    .setMaxValues(1)
+    .addOptions(
+      { label: "S", value: "S", default: selected === "S" },
+      { label: "A", value: "A", default: selected === "A" },
+      { label: "B", value: "B", default: selected === "B" },
+      { label: "C", value: "C", default: selected === "C" },
+      { label: "D", value: "D", default: selected === "D" }
+    );
+
+  return new ActionRowBuilder().addComponents(menu);
+}
+
+function buildLegacyTierlistPanelTabsRow(rawState, userId) {
+  const user = getLegacyTierlistWizardUser(rawState, userId);
+  const tab = user.panelTab || "config";
+
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId("panel_tab_config")
+      .setLabel("Настройки")
+      .setStyle(tab === "config" ? ButtonStyle.Primary : ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId("panel_tab_participants")
+      .setLabel("Участники")
+      .setStyle(tab === "participants" ? ButtonStyle.Primary : ButtonStyle.Secondary)
+  );
+}
+
+function getLegacyTierlistParticipantsList(liveState) {
+  const out = [];
+  for (const [userId, votes] of Object.entries(liveState?.rawState?.finalVotes || {})) {
+    if (!votes || Object.keys(votes).length === 0) continue;
+
+    const user = liveState.rawState?.users?.[userId] || {};
+    const inferredSubmit = (user.lockUntil && Number.isFinite(user.lockUntil)) ? (user.lockUntil - LEGACY_TIERLIST_COOLDOWN_MS) : 0;
+    const lastSubmitAt = Number(user.lastSubmitAt) || inferredSubmit || 0;
+
+    out.push({
+      userId,
+      mainId: user.mainId || null,
+      lastSubmitAt,
+    });
+  }
+
+  out.sort((left, right) => {
+    if (right.lastSubmitAt !== left.lastSubmitAt) return right.lastSubmitAt - left.lastSubmitAt;
+    return String(left.userId).localeCompare(String(right.userId));
+  });
+  return out;
+}
+
+function buildLegacyTierlistParticipantsSelectRow(liveState, userId, participants) {
+  const user = getLegacyTierlistWizardUser(liveState.rawState, userId);
+  const pageSize = 25;
+  const maxPage = Math.max(0, Math.ceil(participants.length / pageSize) - 1);
+  const page = Math.min(maxPage, Math.max(0, Number(user.panelParticipantsPage) || 0));
+  const start = page * pageSize;
+  const slice = participants.slice(start, start + pageSize);
+
+  const menu = new StringSelectMenuBuilder()
+    .setCustomId("panel_part_select_user")
+    .setPlaceholder(slice.length ? "Выбери участника" : "Нет участников")
+    .setMinValues(1)
+    .setMaxValues(1)
+    .setDisabled(slice.length === 0);
+
+  for (const participant of slice) {
+    const mainName = participant.mainId ? (liveState.charById.get(participant.mainId)?.name || participant.mainId) : "—";
+    menu.addOptions({
+      label: String(participant.userId).slice(0, 100),
+      value: participant.userId,
+      description: `main: ${mainName}`.slice(0, 100),
+      default: user.panelParticipantId === participant.userId,
+    });
+  }
+
+  return new ActionRowBuilder().addComponents(menu);
+}
+
+function buildLegacyTierlistParticipantsNavRow(rawState, userId, participants) {
+  const user = getLegacyTierlistWizardUser(rawState, userId);
+  const pageSize = 25;
+  const maxPage = Math.max(0, Math.ceil(participants.length / pageSize) - 1);
+  const page = Math.min(maxPage, Math.max(0, Number(user.panelParticipantsPage) || 0));
+
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId("panel_part_prev").setLabel("⟵").setStyle(ButtonStyle.Secondary).setDisabled(page <= 0),
+    new ButtonBuilder().setCustomId("panel_part_next").setLabel("⟶").setStyle(ButtonStyle.Secondary).setDisabled(page >= maxPage),
+    new ButtonBuilder().setCustomId("panel_part_refresh").setLabel("Обновить").setStyle(ButtonStyle.Secondary)
+  );
+}
+
+function buildLegacyTierlistParticipantsListPayload(liveState, userId, statusText = "") {
+  const user = getLegacyTierlistWizardUser(liveState.rawState, userId);
+  const participants = getLegacyTierlistParticipantsList(liveState);
+  const pageSize = 25;
+  const maxPage = Math.max(0, Math.ceil(participants.length / pageSize) - 1);
+  const page = Math.min(maxPage, Math.max(0, Number(user.panelParticipantsPage) || 0));
+  const start = page * pageSize;
+  const slice = participants.slice(start, start + pageSize);
+  const preview = slice.slice(0, 12).map((participant, index) => {
+    const mainName = participant.mainId ? (liveState.charById.get(participant.mainId)?.name || participant.mainId) : "—";
+    const when = participant.lastSubmitAt ? formatLegacyTierlistMoment(participant.lastSubmitAt) : "—";
+    return `${start + index + 1}) <@${participant.userId}>  main: **${mainName}**  submit: ${when}`;
+  });
+
+  const embed = new EmbedBuilder()
+    .setTitle("Участники тир-листа")
+    .setDescription([
+      `Всего: **${participants.length}**`,
+      `Страница: **${page + 1}/${maxPage + 1}**`,
+      "",
+      preview.length ? preview.join("\n") : "Пока никто не отправлял тир-лист.",
+    ].join("\n"));
+
+  return applyLegacyTierlistPanelStatus({
+    embeds: [embed],
+    components: [
+      buildLegacyTierlistPanelTabsRow(liveState.rawState, userId),
+      buildLegacyTierlistParticipantsSelectRow(liveState, userId, participants),
+      buildLegacyTierlistParticipantsNavRow(liveState.rawState, userId, participants),
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("panel_close").setLabel("Закрыть").setStyle(ButtonStyle.Danger)
+      ),
+    ],
+    attachments: [],
+  }, statusText);
+}
+
+function buildLegacyTierlistParticipantsDetailPayload(liveState, userId, statusText = "") {
+  const user = getLegacyTierlistWizardUser(liveState.rawState, userId);
+  const targetId = user.panelParticipantId;
+  const votes = targetId ? (liveState.rawState?.finalVotes?.[targetId] || null) : null;
+
+  if (!targetId || !votes || Object.keys(votes).length === 0) {
+    user.panelParticipantId = null;
+    user.panelDeleteTargetId = null;
+    user.panelDeleteMode = null;
+    persistLiveLegacyTierlistState(liveState);
+    return buildLegacyTierlistParticipantsListPayload(liveState, userId, statusText);
+  }
+
+  const targetUser = liveState.rawState?.users?.[targetId] || {};
+  const mainName = targetUser.mainId ? (liveState.charById.get(targetUser.mainId)?.name || targetUser.mainId) : "—";
+  const inferredSubmit = (targetUser.lockUntil && Number.isFinite(targetUser.lockUntil)) ? (targetUser.lockUntil - LEGACY_TIERLIST_COOLDOWN_MS) : 0;
+  const lastSubmitAt = Number(targetUser.lastSubmitAt) || inferredSubmit || 0;
+  const when = lastSubmitAt ? formatLegacyTierlistMoment(lastSubmitAt) : "—";
+  const counts = getLegacyTierlistUserTierCounts(votes);
+  const pending = user.panelDeleteTargetId === targetId ? user.panelDeleteMode : null;
+
+  const embed = new EmbedBuilder()
+    .setTitle("Участник")
+    .setDescription(`<@${targetId}>`)
+    .addFields(
+      { name: "Main", value: `**${mainName}**`, inline: true },
+      { name: "Submit", value: `${when}`, inline: true },
+      { name: "S/A/B/C/D", value: `${counts.S}/${counts.A}/${counts.B}/${counts.C}/${counts.D}`, inline: false }
+    );
+
+  if (pending) {
+    embed.addFields({
+      name: "Подтверждение удаления",
+      value: pending === "full"
+        ? "⚠️ **Полный сброс пользователя** (удалит голос + user record + черновики). Нажми **Подтвердить** или **Отмена**."
+        : "⚠️ **Удаление голоса** (уберёт вклад в общий тир-лист). Нажми **Подтвердить** или **Отмена**.",
+      inline: false,
+    });
+  }
+
+  const components = [buildLegacyTierlistPanelTabsRow(liveState.rawState, userId)];
+  if (!pending) {
+    components.push(
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("panel_part_view_png").setLabel("Показать PNG").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId("panel_part_delete_votes").setLabel("Удалить голос").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("panel_part_delete_full").setLabel("Полный сброс").setStyle(ButtonStyle.Danger)
+      ),
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("panel_part_back").setLabel("Назад").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("panel_close").setLabel("Закрыть").setStyle(ButtonStyle.Secondary)
+      )
+    );
+  } else {
+    components.push(
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("panel_part_confirm_delete").setLabel("Подтвердить").setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId("panel_part_cancel_delete").setLabel("Отмена").setStyle(ButtonStyle.Secondary)
+      ),
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("panel_part_back").setLabel("Назад").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("panel_close").setLabel("Закрыть").setStyle(ButtonStyle.Secondary)
+      )
+    );
+  }
+
+  return applyLegacyTierlistPanelStatus({ embeds: [embed], components, attachments: [] }, statusText);
+}
+
+function buildLegacyTierlistModPanelConfigPayload(liveState, userId, statusText = "") {
+  const cfg = getLegacyTierlistImageConfig(liveState.rawState);
+  const user = getLegacyTierlistWizardUser(liveState.rawState, userId);
+  const tierKey = user.panelTierKey || "S";
+  const tierName = liveState.rawState?.tiers?.[tierKey]?.name || tierKey;
+
+  const embed = new EmbedBuilder()
+    .setTitle("Tierlist Panel (mods)")
+    .setDescription([
+      `**Картинка:** ${cfg.W}×${cfg.H}`,
+      `**Иконки:** ${cfg.ICON}px`,
+      `**Переименование:** выбран **${tierKey}** → *${tierName}*`,
+      "",
+      "Кнопки ниже меняют параметры и сразу пересобирают PNG.",
+    ].join("\n"));
+
+  return applyLegacyTierlistPanelStatus({
+    embeds: [embed],
+    components: [
+      buildLegacyTierlistPanelTabsRow(liveState.rawState, userId),
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("panel_refresh").setLabel("Пересобрать").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("panel_icon_minus").setLabel("Иконки -").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("panel_icon_plus").setLabel("Иконки +").setStyle(ButtonStyle.Secondary)
+      ),
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("panel_w_minus").setLabel("Ширина -").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("panel_w_plus").setLabel("Ширина +").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("panel_h_minus").setLabel("Высота -").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("panel_h_plus").setLabel("Высота +").setStyle(ButtonStyle.Secondary)
+      ),
+      buildLegacyTierlistPanelTierSelect(liveState.rawState, userId),
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("panel_rename").setLabel("Переименовать тир").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId("panel_reset_img").setLabel("Сбросить размеры").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("panel_fonts").setLabel("Шрифты").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("panel_add_custom_character").setLabel("Добавить персонажа").setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId("panel_close").setLabel("Закрыть").setStyle(ButtonStyle.Danger)
+      ),
+    ],
+    attachments: [],
+  }, statusText);
+}
+
+function buildLegacyTierlistModPanelPayload(liveState, userId, statusText = "") {
+  const user = getLegacyTierlistWizardUser(liveState.rawState, userId);
+  if ((user.panelTab || "config") === "participants") {
+    return user.panelParticipantId
+      ? buildLegacyTierlistParticipantsDetailPayload(liveState, userId, statusText)
+      : buildLegacyTierlistParticipantsListPayload(liveState, userId, statusText);
+  }
+  return buildLegacyTierlistModPanelConfigPayload(liveState, userId, statusText);
+}
+
+function applyLegacyTierlistImageDelta(rawState, kind, delta) {
+  rawState.settings ||= {};
+  rawState.settings.image ||= { width: null, height: null, icon: null };
+
+  const cfg = getLegacyTierlistImageConfig(rawState);
+  if (kind === "icon") {
+    rawState.settings.image.icon = Math.max(64, Math.min(256, cfg.ICON + delta));
+  } else if (kind === "width") {
+    rawState.settings.image.width = Math.max(1200, Math.min(4096, cfg.W + delta));
+  } else if (kind === "height") {
+    rawState.settings.image.height = Math.max(700, Math.min(2160, cfg.H + delta));
+  }
+}
+
+function resetLegacyTierlistImageOverrides(rawState) {
+  rawState.settings ||= {};
+  rawState.settings.image = { width: null, height: null, icon: null };
+}
+
+async function backfillLegacyTierlistInfluenceForExistingVoters(client, { refresh = true } = {}) {
+  const liveState = getLiveLegacyTierlistState();
+  if (!liveState.ok) return { total: 0, changed: 0, skipped: true, error: liveState.error };
+
+  const voterIds = Object.entries(liveState.rawState?.finalVotes || {})
+    .filter(([, votes]) => votes && Object.keys(votes).length > 0)
+    .map(([userId]) => userId);
+
+  if (voterIds.length === 0) return { total: 0, changed: 0 };
+
+  const guild = await client.guilds.fetch(GUILD_ID);
+  let changed = 0;
+
+  for (const userId of voterIds) {
+    const member = await guild.members.fetch(userId).catch(() => null);
+    const influence = resolveLegacyTierlistInfluenceFromMember(member);
+    const user = getLegacyTierlistWizardUser(liveState.rawState, userId);
+    const prev = Number(user.influenceMultiplier) || 1;
+    const prevRole = user.influenceRoleId || null;
+
+    if (prev !== influence.mult || prevRole !== (influence.roleId || null)) {
+      user.influenceMultiplier = influence.mult;
+      user.influenceRoleId = influence.roleId;
+      user.influenceUpdatedAt = Date.now();
+      changed += 1;
+    }
+  }
+
+  if (changed > 0) {
+    saveLiveLegacyTierlistStateAndResync(liveState);
+    if (refresh) {
+      await refreshLegacyTierlistPublicViews(client, { liveState }).catch(() => {});
+    }
+  }
+
+  return { total: voterIds.length, changed };
+}
+
+async function syncLegacyTierlistInfluenceForMember(client, member) {
+  const liveState = getLiveLegacyTierlistState();
+  if (!liveState.ok) return { changed: false, skipped: true, error: liveState.error };
+
+  const userId = member.id;
+  const hasVote = Boolean(liveState.rawState?.finalVotes?.[userId] && Object.keys(liveState.rawState.finalVotes[userId] || {}).length > 0);
+  const isTracked = Boolean(liveState.rawState?.users?.[userId]);
+  if (!hasVote && !isTracked) return { changed: false, skipped: true };
+
+  const influence = resolveLegacyTierlistInfluenceFromMember(member);
+  const user = getLegacyTierlistWizardUser(liveState.rawState, userId);
+  const prev = Number(user.influenceMultiplier) || 1;
+  const prevRole = user.influenceRoleId || null;
+  if (prev === influence.mult && prevRole === (influence.roleId || null)) {
+    return { changed: false, hasVote };
+  }
+
+  user.influenceMultiplier = influence.mult;
+  user.influenceRoleId = influence.roleId;
+  user.influenceUpdatedAt = Date.now();
+  const syncResult = saveLiveLegacyTierlistStateAndResync(liveState);
+
+  if (hasVote) {
+    await refreshLegacyTierlistPublicViews(client, { liveState }).catch(() => {});
+  }
+
+  return { changed: true, hasVote, syncResult };
+}
+
+function getLiveLegacyEloState() {
+  return loadLegacyEloDbFile({
+    sourcePath: db.config.integrations?.elo?.sourcePath,
+    baseDir: DATA_ROOT,
+  });
+}
+
+function buildLegacyEloStateErrorPayload(prefix, state, includeFlags = true) {
+  const payload = {
+    content: `${prefix}: ${state?.error || "неизвестная ошибка"}`,
+  };
+  return includeFlags ? ephemeralPayload(payload) : payload;
+}
+
+function getLegacyEloResyncWarning() {
+  const result = refreshDormantEloImport();
+  return result?.error ? ` Синхронизация shared профилей не удалась: ${result.error}` : "";
+}
+
+function saveLiveLegacyEloStateAndResync(liveState) {
+  if (!liveState?.resolvedPath) {
+    throw new Error("Resolved legacy ELO db path is missing");
+  }
+
+  saveLegacyEloDbFile(liveState.resolvedPath, liveState.rawDb);
+  return refreshDormantEloImport();
+}
+
+function getLegacyEloSyncStatusSuffix(syncResult) {
+  return syncResult?.error ? ` Синхронизация shared профилей не удалась: ${syncResult.error}` : "";
+}
+
+function buildLegacyEloReviewButtons(submissionId) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`elo_review_approve:${submissionId}`).setLabel("Approve").setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId(`elo_review_edit:${submissionId}`).setLabel("Edit ELO").setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId(`elo_review_reject:${submissionId}`).setLabel("Reject").setStyle(ButtonStyle.Danger)
+  );
+}
+
+function buildLegacyEloReviewEmbed(submission, statusLabel, extraFields = []) {
+  const proofUrl = submission.reviewAttachmentUrl || submission.reviewImage || submission.screenshotUrl || "";
+  const embed = new EmbedBuilder()
+    .setTitle(`ELO заявка (${statusLabel || submission.status || "unknown"})`)
+    .setDescription([
+      `Игрок: <@${submission.userId}> (${submission.name || submission.username || submission.userId})`,
+      `ELO: **${submission.elo !== null ? formatNumber(submission.elo) : "—"}**`,
+      `Тир: **${submission.tier !== null ? submission.tier : "—"}**`,
+      `Сообщение: ${submission.messageUrl || "—"}`,
+      `ID: **${submission.id || "—"}**`,
+    ].join("\n"));
+
+  if (proofUrl) embed.setImage(proofUrl);
+  if (extraFields.length) embed.addFields(...extraFields);
+  return embed;
+}
+
+async function postLegacyEloReviewRecord(client, submission, fileAttachment = null, statusLabel = "pending", extraFields = [], components = []) {
+  const reviewChannelId = String(appConfig?.channels?.reviewChannelId || "").trim();
+  if (!reviewChannelId) return null;
+
+  const reviewChannel = await client.channels.fetch(reviewChannelId).catch(() => null);
+  if (!reviewChannel?.isTextBased?.()) return null;
+
+  const payload = {
+    embeds: [buildLegacyEloReviewEmbed(submission, statusLabel || submission.status || "pending", extraFields)],
+    components,
+  };
+  if (fileAttachment) payload.files = [fileAttachment];
+
+  const sent = await reviewChannel.send(payload).catch(() => null);
+  if (!sent) return null;
+
+  submission.reviewChannelId = sent.channel.id;
+  submission.reviewMessageId = sent.id;
+  return sent;
+}
+
+async function getLegacyEloApprovalProfileData(client, userId) {
+  const user = await client.users.fetch(userId).catch(() => null);
+  const member = await fetchMember(client, userId);
+  return {
+    displayName: member?.displayName || user?.globalName || user?.username || "",
+    username: user?.username || "",
+    avatarUrl: (
+      member?.displayAvatarURL?.({ extension: "png", forceStatic: true, size: 256 }) ||
+      user?.displayAvatarURL?.({ extension: "png", forceStatic: true, size: 256 }) ||
+      user?.defaultAvatarURL ||
+      ""
+    ),
+  };
+}
+
+function buildLegacyEloReviewPayload(submissionId, statusText = "", includeFlags = true) {
+  const liveState = getLiveLegacyEloState();
+  if (!liveState.ok) {
+    return buildLegacyEloStateErrorPayload("Не удалось открыть ELO review-заявку", liveState, includeFlags);
+  }
+
+  const submission = getLegacyEloSubmission(liveState.rawDb, submissionId);
+  if (!submission) {
+    const payload = { content: "Legacy ELO заявка не найдена." };
+    return includeFlags ? ephemeralPayload(payload) : payload;
+  }
+
+  const expired = submission.status === "pending" && isLegacyEloSubmissionExpired(submission, {
+    pendingExpireHours: LEGACY_ELO_PENDING_EXPIRE_HOURS,
+  });
+  const statusLabel = expired ? "expired" : (submission.status || "unknown");
+  const proofUrl = submission.reviewAttachmentUrl || submission.reviewImage || submission.screenshotUrl || "";
+  const embed = buildLegacyEloReviewEmbed(submission, statusLabel, [
+    { name: "Создано", value: submission.createdAt ? formatDateTime(submission.createdAt) : "—", inline: true },
+    { name: "Проверено", value: submission.reviewedAt ? formatDateTime(submission.reviewedAt) : "—", inline: true },
+    { name: "Review channel", value: formatChannelMention(submission.reviewChannelId), inline: true },
+    { name: "Review message", value: submission.reviewMessageId || "—", inline: true },
+    expired ? { name: "Expired", value: `Да, больше ${LEGACY_ELO_PENDING_EXPIRE_HOURS} ч`, inline: true } : null,
+    proofUrl ? { name: "Пруф", value: proofUrl, inline: false } : null,
+  ].filter(Boolean));
+  if (statusText) {
+    embed.addFields({ name: "Статус", value: statusText, inline: false });
+  }
+
+  const payload = {
+    embeds: [embed],
+    components: submission.status === "pending" && !expired ? [buildLegacyEloReviewButtons(submission.id)] : [],
+  };
+
+  return includeFlags ? ephemeralPayload(payload) : payload;
+}
+
+function buildLegacyEloGraphicPanelTierSelect(rawDb) {
+  const snapshot = buildLegacyEloGraphicPanelSnapshot(rawDb);
+  const options = [5, 4, 3, 2, 1].map((tier) => ({
+    label: `Tier ${tier} - ${snapshot.tierLabels[tier] || tier}`,
+    value: String(tier),
+    default: snapshot.selectedTier === tier,
+  }));
+
+  return new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder().setCustomId("elo_graphic_panel_select_tier").setPlaceholder("Выбрать тир").addOptions(options)
+  );
+}
+
+function buildLegacyEloGraphicPanelPayload(rawDb, statusText = "", includeFlags = true) {
+  const snapshot = buildLegacyEloGraphicPanelSnapshot(rawDb);
+
+  const embed = new EmbedBuilder()
+    .setTitle("ELO PNG Panel")
+    .setDescription([
+      `**Title:** ${snapshot.title}`,
+      `**Канал:** ${formatChannelMention(snapshot.dashboardChannelId)}`,
+      `**Message ID:** ${snapshot.dashboardMessageId || "—"}`,
+      `**Игроков в PNG:** ${formatNumber(snapshot.totalEntries)}`,
+      `**Картинка:** ${snapshot.image.W}x${snapshot.image.H}`,
+      `**Иконки:** ${snapshot.image.ICON}px`,
+      `**Выбранный тир:** ${snapshot.selectedTier} -> **${snapshot.selectedTierLabel}**`,
+      `**Цвет тира:** ${snapshot.selectedTierColor}`,
+      `**Текст сообщения:** ${previewLegacyEloGraphicMessageText(rawDb, 170)}`,
+      "",
+      "Панель правит legacy ELO graphicTierlist и при наличии канала сразу пересобирает PNG board.",
+    ].join("\n"));
+
+  if (statusText) {
+    embed.addFields({ name: "Последнее действие", value: statusText, inline: false });
+  }
+
+  const row1 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId("elo_graphic_panel_refresh").setLabel("Пересобрать").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId("elo_graphic_panel_bump").setLabel("Bump вниз").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId("elo_graphic_panel_setup").setLabel("Канал PNG").setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId("elo_graphic_panel_labels").setLabel("Labels").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId("elo_graphic_panel_back").setLabel("Назад").setStyle(ButtonStyle.Secondary)
+  );
+
+  const row2 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId("elo_graphic_panel_title").setLabel("Название PNG").setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId("elo_graphic_panel_message_text").setLabel("Текст сообщения").setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId("elo_graphic_panel_rename").setLabel("Переименовать тир").setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId("elo_graphic_panel_set_color").setLabel("Цвет тира").setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId("elo_graphic_panel_reset_color").setLabel("Сброс цвета тира").setStyle(ButtonStyle.Secondary)
+  );
+
+  const row3 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId("elo_graphic_panel_icon_minus").setLabel("Иконки -").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId("elo_graphic_panel_icon_plus").setLabel("Иконки +").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId("elo_graphic_panel_w_minus").setLabel("Ширина -").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId("elo_graphic_panel_w_plus").setLabel("Ширина +").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId("elo_graphic_panel_h_minus").setLabel("Высота -").setStyle(ButtonStyle.Secondary)
+  );
+
+  const row4 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId("elo_graphic_panel_h_plus").setLabel("Высота +").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId("elo_graphic_panel_reset_img").setLabel("Сбросить размеры").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId("elo_graphic_panel_reset_colors").setLabel("Сбросить все цвета").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId("elo_graphic_panel_clear_cache").setLabel("Сбросить кэш ав").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId("elo_graphic_panel_fonts").setLabel("Шрифты").setStyle(ButtonStyle.Secondary)
+  );
+
+  const payload = {
+    embeds: [embed],
+    components: [row1, row2, row3, row4, buildLegacyEloGraphicPanelTierSelect(rawDb)],
+  };
+
+  return includeFlags ? ephemeralPayload(payload) : payload;
+}
+
+async function buildLegacyEloGraphicBoardPayload(client, rawDb) {
+  const snapshot = buildLegacyEloGraphicPanelSnapshot(rawDb);
+  const guild = await getGuild(client).catch(() => null);
+
+  if (!isPureimageAvailable()) {
+    throw new Error("pureimage не загружен, поэтому legacy ELO PNG board не может быть собран.");
+  }
+
+  const pngBuffer = await renderGraphicTierlistPng({
+    client,
+    guild,
+    entries: buildLegacyEloGraphicEntries(rawDb),
+    title: snapshot.title,
+    tierLabels: snapshot.tierLabels,
+    tierColors: snapshot.tierColors,
+    imageWidth: snapshot.image.W,
+    imageHeight: snapshot.image.H,
+    imageIcon: snapshot.image.ICON,
+  });
+  if (!pngBuffer?.length) {
+    throw new Error("Legacy ELO PNG не был сгенерирован.");
+  }
+
+  return {
+    content: "ELO графический тир-лист. Сообщение обновляется из dormant legacy db.",
+    embeds: [
+      new EmbedBuilder()
+        .setTitle(snapshot.title)
+        .setDescription(getLegacyEloGraphicMessageText(rawDb))
+        .setImage("attachment://elo-tierlist.png"),
+    ],
+    files: [new AttachmentBuilder(pngBuffer, { name: "elo-tierlist.png" })],
+    components: [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("elo_graphic_refresh").setLabel("Обновить PNG").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("elo_graphic_panel").setLabel("PNG панель").setStyle(ButtonStyle.Primary)
+      ),
+    ],
+  };
+}
+
+async function refreshLegacyEloGraphicBoard(client, options = {}) {
+  const liveState = options.liveState || getLiveLegacyEloState();
+  if (!liveState.ok) {
+    throw new Error(liveState.error || "Legacy ELO db недоступна");
+  }
+
+  const graphicState = ensureLegacyEloGraphicState(liveState.rawDb);
+  const forcedChannelId = String(options.channelId || "").trim();
+  const channelId = forcedChannelId || String(graphicState.dashboardChannelId || "").trim();
+  if (!channelId) {
+    return { ok: false, reason: "not_configured", liveState };
+  }
+
+  if (forcedChannelId) {
+    graphicState.dashboardChannelId = forcedChannelId;
+  }
+
+  const channel = await client.channels.fetch(channelId).catch(() => null);
+  if (!channel?.isTextBased()) {
+    throw new Error("Указанный ELO PNG канал не является текстовым.");
+  }
+
+  let message = null;
+  if (graphicState.dashboardMessageId) {
+    message = await channel.messages.fetch(graphicState.dashboardMessageId).catch(() => null);
+  }
+  if (!message) {
+    message = await findExistingLegacyEloGraphicMessage(channel);
+    if (message && graphicState.dashboardMessageId !== message.id) {
+      graphicState.dashboardMessageId = message.id;
+    }
+  }
+
+  const payload = await buildLegacyEloGraphicBoardPayload(client, liveState.rawDb);
+  const created = !message;
+  if (!message) {
+    message = await channel.send(payload);
+  } else {
+    await message.edit({ ...payload, attachments: [] });
+    await message.unpin().catch(() => {});
+  }
+
+  graphicState.dashboardChannelId = channel.id;
+  graphicState.dashboardMessageId = message.id;
+  graphicState.lastUpdated = nowIso();
+  const syncResult = saveLiveLegacyEloStateAndResync(liveState);
+
+  return {
+    ok: true,
+    created,
+    message,
+    channelId: channel.id,
+    liveState,
+    syncResult,
+  };
+}
+
+async function bumpLegacyEloGraphicBoard(client, options = {}) {
+  const liveState = options.liveState || getLiveLegacyEloState();
+  if (!liveState.ok) {
+    throw new Error(liveState.error || "Legacy ELO db недоступна");
+  }
+
+  const graphicState = ensureLegacyEloGraphicState(liveState.rawDb);
+  const channelId = String(graphicState.dashboardChannelId || "").trim();
+  if (!channelId) {
+    return { ok: false, reason: "not_configured", liveState };
+  }
+
+  const channel = await client.channels.fetch(channelId).catch(() => null);
+  if (!channel?.isTextBased()) {
+    throw new Error("Указанный ELO PNG канал не является текстовым.");
+  }
+
+  const previousMessageId = String(graphicState.dashboardMessageId || "").trim();
+  const previousMessage = previousMessageId ? await channel.messages.fetch(previousMessageId).catch(() => null) : null;
+  const payload = await buildLegacyEloGraphicBoardPayload(client, liveState.rawDb);
+  const message = await channel.send(payload);
+
+  if (previousMessage?.deletable) {
+    await previousMessage.delete().catch(() => {});
+  }
+
+  graphicState.dashboardMessageId = message.id;
+  graphicState.lastUpdated = nowIso();
+  const syncResult = saveLiveLegacyEloStateAndResync(liveState);
+
+  return {
+    ok: true,
+    message,
+    channelId: channel.id,
+    replacedMessageId: previousMessageId || null,
+    liveState,
+    syncResult,
+  };
+}
+
+async function persistLegacyEloGraphicMutation(client, liveState, options = {}) {
+  if (options.refreshBoard) {
+    const refreshResult = await refreshLegacyEloGraphicBoard(client, { liveState });
+    if (refreshResult?.ok) {
+      return {
+        boardUpdated: true,
+        refreshResult,
+        syncResult: refreshResult.syncResult,
+      };
+    }
+  }
+
+  const syncResult = saveLiveLegacyEloStateAndResync(liveState);
+  return {
+    boardUpdated: false,
+    refreshResult: null,
+    syncResult,
+  };
+}
+
+function buildDormantEloPanelPayload(statusText = "", includeFlags = true) {
+  const snapshot = getDormantEloPanelSnapshot(db);
+
+  const embed = new EmbedBuilder()
+    .setTitle("ELO Panel")
+    .setDescription([
+      "Dormant-интеграция legacy elo-bot внутри Moderator.",
+      "Отдельный runtime elo-bot не запускается; читается только legacy db и пишется проекция в shared profiles.",
+      `Tracked профилей: **${formatNumber(snapshot.trackedProfiles)}**`,
+      `Активных рейтингов: **${formatNumber(snapshot.ratedProfiles)}**`,
+      `Pending snapshot: **${formatNumber(snapshot.pendingProfiles)}**`,
+      `Топ ELO: **${snapshot.topEntry ? `${snapshot.topEntry.displayName} — ${formatNumber(snapshot.topEntry.currentElo)}` : "—"}**`,
+    ].join("\n"))
+    .addFields(
+      {
+        name: "Источник",
+        value: snapshot.sourcePath ? previewFieldText(snapshot.sourcePath, 1024) : "Не задан. Можно указать относительный путь от data root или абсолютный путь к legacy db.json.",
+        inline: false,
+      },
+      {
+        name: "Статус",
+        value: [
+          "mode: **dormant**",
+          `status: **${snapshot.status || "not_started"}**`,
+          `last import: ${snapshot.lastImportAt ? formatDateTime(snapshot.lastImportAt) : "—"}`,
+          `last sync: ${snapshot.lastSyncAt ? formatDateTime(snapshot.lastSyncAt) : "—"}`,
+        ].join("\n"),
+        inline: true,
+      },
+      {
+        name: "Submit Panel",
+        value: [
+          `Канал: ${formatChannelMention(snapshot.submitPanel.channelId)}`,
+          `Message ID: ${snapshot.submitPanel.messageId || "—"}`,
+        ].join("\n"),
+        inline: true,
+      },
+      {
+        name: "Graphic Board",
+        value: [
+          `Канал: ${formatChannelMention(snapshot.graphicBoard.channelId)}`,
+          `Message ID: ${snapshot.graphicBoard.messageId || "—"}`,
+          `Updated: ${snapshot.graphicBoard.lastUpdated ? formatDateTime(snapshot.graphicBoard.lastUpdated) : "—"}`,
+        ].join("\n"),
+        inline: false,
+      }
+    );
+
+  if (statusText) {
+    embed.addFields({ name: "Последнее действие", value: statusText, inline: false });
+  }
+
+  const payload = {
+    embeds: [embed],
+    components: [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("elo_panel_refresh_import").setLabel("Синхронизировать legacy db").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId("elo_panel_set_source").setLabel("Путь к db").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("elo_panel_lookup").setLabel("Найти игрока").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("elo_panel_pending").setLabel("Pending").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("elo_panel_back").setLabel("Назад").setStyle(ButtonStyle.Secondary)
+      ),
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("elo_panel_graphic").setLabel("PNG Panel").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("elo_panel_rebuild").setLabel("Rebuild rating").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("elo_panel_modset").setLabel("Modset игрока").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId("elo_panel_remove").setLabel("Remove игрока").setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId("elo_panel_wipe").setLabel("Wipe rating").setStyle(ButtonStyle.Danger)
+      ),
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("elo_panel_submit_setup").setLabel("Submit Hub").setStyle(ButtonStyle.Secondary)
+      ),
+    ],
+  };
+
+  return includeFlags ? ephemeralPayload(payload) : payload;
+}
+
+function buildDormantTierlistPanelPayload(statusText = "", includeFlags = true) {
+  const snapshot = getDormantTierlistPanelSnapshot(db);
+  const liveState = getLiveLegacyTierlistState();
+  const liveStats = liveState.ok ? computeLegacyTierlistGlobalBuckets(liveState) : null;
+  const liveImage = liveState.ok ? getLegacyTierlistImageConfig(liveState.rawState) : null;
+
+  const embed = new EmbedBuilder()
+    .setTitle("Tierlist Panel")
+    .setDescription([
+      "Dormant-интеграция legacy tierlist-bot внутри Moderator.",
+      "Отдельный runtime tierlist-bot не запускается; читается только legacy state.json и пишется проекция в shared profiles.",
+      `Tracked профилей: **${formatNumber(snapshot.trackedProfiles)}**`,
+      `С отправленным tierlist: **${formatNumber(snapshot.submittedProfiles)}**`,
+      `С выбранным main: **${formatNumber(snapshot.mainSelectedProfiles)}**`,
+      `С lock/cooldown: **${formatNumber(snapshot.lockedProfiles)}**`,
+      `Максимальное влияние: **${snapshot.strongestInfluence ? `${snapshot.strongestInfluence.displayName} — x${snapshot.strongestInfluence.influenceMultiplier}` : "—"}**`,
+    ].join("\n"))
+    .addFields(
+      {
+        name: "Источник",
+        value: snapshot.sourcePath ? previewFieldText(snapshot.sourcePath, 1024) : "Не задан. Можно указать относительный путь от data root или абсолютный путь к legacy data/state.json.",
+        inline: false,
+      },
+      {
+        name: "Статус",
+        value: [
+          "mode: **dormant**",
+          `status: **${snapshot.status || "not_started"}**`,
+          `last import: ${snapshot.lastImportAt ? formatDateTime(snapshot.lastImportAt) : "—"}`,
+          `last sync: ${snapshot.lastSyncAt ? formatDateTime(snapshot.lastSyncAt) : "—"}`,
+        ].join("\n"),
+        inline: true,
+      },
+      {
+        name: "Dashboard",
+        value: [
+          `Канал: ${formatChannelMention(snapshot.dashboard.channelId)}`,
+          `Message ID: ${snapshot.dashboard.messageId || "—"}`,
+          `Updated: ${snapshot.dashboard.lastUpdated ? formatDateTime(snapshot.dashboard.lastUpdated) : "—"}`,
+        ].join("\n"),
+        inline: true,
+      },
+      {
+        name: "Summary",
+        value: [
+          `Канал: ${formatChannelMention(snapshot.summary.channelId)}`,
+          `Message ID: ${snapshot.summary.messageId || "—"}`,
+          `Updated: ${snapshot.summary.lastUpdated ? formatDateTime(snapshot.summary.lastUpdated) : "—"}`,
+        ].join("\n"),
+        inline: true,
+      }
+    );
+
+  if (liveState.ok) {
+    embed.addFields({
+      name: "Public views",
+      value: [
+        `Voters: **${formatNumber(liveStats.votersCount)}**`,
+        `Characters: **${formatNumber(liveState.characters.length)}**`,
+        `Image: **${liveImage.W}x${liveImage.H}**`,
+        `Icon: **${liveImage.ICON}px**`,
+      ].join("\n"),
+      inline: false,
+    });
+  }
+
+  if (statusText) {
+    embed.addFields({ name: "Последнее действие", value: statusText, inline: false });
+  }
+
+  const payload = {
+    embeds: [embed],
+    components: [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("tierlist_panel_refresh_import").setLabel("Синхронизировать state").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId("tierlist_panel_set_source").setLabel("Путь к state").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("tierlist_panel_lookup").setLabel("Найти игрока").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("tierlist_panel_back").setLabel("Назад").setStyle(ButtonStyle.Secondary)
+      ),
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("tierlist_panel_setup_dashboard").setLabel("Dashboard").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId("tierlist_panel_setup_summary").setLabel("Summary").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId("tierlist_panel_refresh_public").setLabel("Обновить public").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("tierlist_panel_mod_panel").setLabel("Legacy mods").setStyle(ButtonStyle.Secondary)
+      ),
+    ],
+  };
+
+  return includeFlags ? ephemeralPayload(payload) : payload;
+}
+
+function parseRequestedChannelId(value, fallbackChannelId = "") {
+  const text = String(value || "").trim();
+  if (!text) return String(fallbackChannelId || "").trim();
+
+  const mentionMatch = text.match(/^<#(\d+)>$/);
+  const candidate = mentionMatch ? mentionMatch[1] : text.replace(/\s+/g, "");
+  return /^\d{5,25}$/.test(candidate) ? candidate : "";
+}
+
+function parseRequestedUserId(value, fallbackUserId = "") {
+  const text = String(value || "").trim();
+  if (!text) return String(fallbackUserId || "").trim();
+
+  const mentionMatch = text.match(/^<@!?(\d+)>$/);
+  const candidate = mentionMatch ? mentionMatch[1] : text.replace(/\s+/g, "");
+  return /^\d{5,25}$/.test(candidate) ? candidate : "";
+}
+
+function isLikelyImageUrl(value) {
+  const text = String(value || "").trim();
+  if (!text) return false;
+
+  try {
+    const parsed = new URL(text);
+    if (!["http:", "https:"].includes(parsed.protocol)) return false;
+    if (/\.(png|jpe?g|webp|gif)(\?|$)/i.test(parsed.pathname + parsed.search)) return true;
+    return ["cdn.discordapp.com", "media.discordapp.net"].includes(parsed.hostname.toLowerCase());
+  } catch {
+    return false;
+  }
+}
+
+async function createManualApprovedLegacyEloRecord(client, liveState, targetUserId, rawText, screenshotUrl, moderatorTag) {
+  const reviewedAt = nowIso();
+  const user = await client.users.fetch(targetUserId).catch(() => null);
+  if (!user) throw new Error("Не удалось получить Discord user для modset.");
+
+  const approvalProfile = await getLegacyEloApprovalProfileData(client, targetUserId);
+  const submissionId = makeId();
+
+  let reviewAttachment = null;
+  let reviewImage = screenshotUrl;
+  try {
+    const buffer = await downloadToBuffer(screenshotUrl);
+    reviewAttachment = createReviewAttachmentFromBuffer(submissionId, buffer);
+    if (reviewAttachment?.name) reviewImage = `attachment://${reviewAttachment.name}`;
+  } catch {}
+
+  const directResult = upsertDirectLegacyEloRating(liveState.rawDb, {
+    submissionId,
+    userId: targetUserId,
+    displayName: approvalProfile.displayName,
+    username: approvalProfile.username || user.username || "",
+    avatarUrl: approvalProfile.avatarUrl,
+    rawText,
+    screenshotUrl,
+    messageUrl: screenshotUrl,
+    reviewedBy: moderatorTag,
+    reviewedAt,
+    createdAt: reviewedAt,
+    reviewImage,
+    reviewFileName: reviewAttachment?.name || null,
+  });
+
+  const reviewMessage = await postLegacyEloReviewRecord(
+    client,
+    directResult.submission,
+    reviewAttachment,
+    "approved",
+    [{ name: "Источник", value: `Ручное добавление модератором: ${moderatorTag}`, inline: false }],
+    []
+  );
+  if (reviewMessage) {
+    attachLegacyEloReviewRecord(liveState.rawDb, directResult.submission.id, {
+      reviewChannelId: reviewMessage.channel.id,
+      reviewMessageId: reviewMessage.id,
+      reviewAttachmentUrl: reviewMessage.attachments.first()?.url || "",
+      reviewImage: reviewMessage.attachments.first()?.url || directResult.submission.reviewImage || directResult.submission.screenshotUrl,
+      updatedAt: reviewedAt,
+    });
+  }
+
+  return {
+    submissionId: directResult.submission.id,
+    rating: liveState.rawDb.ratings[targetUserId] || directResult.rating,
+  };
+}
+
+function getLegacyEloSubmitPanelState(rawDb) {
+  const dbState = rawDb && typeof rawDb === "object" ? rawDb : {};
+  dbState.config ||= {};
+  dbState.config.submitPanel ||= { channelId: "", messageId: "" };
+  return dbState.config.submitPanel;
+}
+
+function setLegacyEloSubmitSession(userId, value) {
+  legacyEloSubmitSessions.set(userId, { ...value, createdAt: Date.now() });
+}
+
+function getLegacyEloSubmitSession(userId) {
+  const session = legacyEloSubmitSessions.get(userId);
+  if (!session) return null;
+  if (Date.now() - Number(session.createdAt || 0) > SUBMIT_SESSION_EXPIRE_MS) {
+    legacyEloSubmitSessions.delete(userId);
+    return null;
+  }
+  return session;
+}
+
+function clearLegacyEloSubmitSession(userId) {
+  legacyEloSubmitSessions.delete(userId);
+}
+
+function getPendingLegacyEloSubmissionForUser(rawDb, userId) {
+  return Object.values(rawDb?.submissions || {})
+    .filter((submission) => String(submission?.userId || "") === String(userId || ""))
+    .map((submission) => ({ ...submission }))
+    .filter((submission) => submission.status === "pending")
+    .sort((left, right) => Date.parse(String(right.createdAt || "")) - Date.parse(String(left.createdAt || "")))
+    .find((submission) => !isLegacyEloSubmissionExpired(submission, { pendingExpireHours: LEGACY_ELO_PENDING_EXPIRE_HOURS })) || null;
+}
+
+function getLatestLegacyEloSubmissionForUser(rawDb, userId, allowedStatuses = null) {
+  const allowed = Array.isArray(allowedStatuses) && allowedStatuses.length
+    ? new Set(allowedStatuses.map((entry) => String(entry || "").trim()).filter(Boolean))
+    : null;
+  return Object.values(rawDb?.submissions || {})
+    .filter((submission) => String(submission?.userId || "") === String(userId || ""))
+    .filter((submission) => !allowed || allowed.has(String(submission?.status || "").trim()))
+    .sort((left, right) => Date.parse(String(right.reviewedAt || right.createdAt || "")) - Date.parse(String(left.reviewedAt || left.createdAt || "")))[0] || null;
+}
+
+function getLegacyEloSubmitCooldownLeftSeconds(rawDb, userId) {
+  const last = Number(rawDb?.cooldowns?.[userId] || 0);
+  return Math.max(0, SUBMIT_COOLDOWN_SECONDS - Math.floor((Date.now() - last) / 1000));
+}
+
+function getLegacyEloSubmitEligibilityError(rawDb, userId, rawText = null) {
+  const pending = getPendingLegacyEloSubmissionForUser(rawDb, userId);
+  if (pending) return "У тебя уже есть заявка на проверке. Дождись решения модера.";
+
+  const cooldownLeft = getLegacyEloSubmitCooldownLeftSeconds(rawDb, userId);
+  if (cooldownLeft > 0) return `Кулдаун. Подожди ${cooldownLeft} сек и попробуй снова.`;
+
+  if (rawText !== null) {
+    const elo = parseLegacyElo(rawText);
+    const tier = tierForLegacyElo(elo);
+    if (!elo || !tier) return "Нужен текст с числом ELO минимум 10. Пример: 73";
+
+    const current = getLegacyEloRating(rawDb, userId);
+    if (current && Number(current.elo) === Number(elo)) {
+      return "У тебя уже стоит такой же ELO в тир-листе. Если изменится — пришли новый скрин.";
+    }
+  }
+
+  return "";
+}
+
+function buildLegacyEloSubmitHubEmbed() {
+  return new EmbedBuilder()
+    .setTitle("ELO заявки")
+    .setDescription([
+      "Жми кнопку отправки и сразу вводи текст с числом ELO.",
+      "После этого просто отправь следующим сообщением скрин с подтверждением в этот канал.",
+      "Подходит обычное вложение или вставка картинки через Ctrl+V.",
+    ].join("\n"));
+}
+
+function buildLegacyEloSubmitHubComponents() {
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId("elo_submit_open").setLabel("Отправить заявку ELO").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("elo_submit_card").setLabel("Моя карточка").setStyle(ButtonStyle.Secondary)
+    ),
+  ];
+}
+
+function buildLegacyEloSubmitAwaitPayload(channelId) {
+  return ephemeralPayload({
+    content: [
+      `Текст принят. Теперь отправь одним следующим сообщением скрин в ${formatChannelMention(channelId) || "этот канал"}.`,
+      "Можно обычным вложением или вставить картинку из буфера через Ctrl+V.",
+    ].join("\n"),
+    components: [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("elo_submit_cancel").setLabel("Отменить шаг").setStyle(ButtonStyle.Secondary)
+      ),
+    ],
+  });
+}
+
+async function buildLegacyEloMyCardPayload(client, userId) {
+  const liveState = getLiveLegacyEloState();
+  if (!liveState.ok) {
+    return buildLegacyEloStateErrorPayload("Не удалось открыть legacy ELO данные", liveState);
+  }
+
+  const rating = getLegacyEloRating(liveState.rawDb, userId);
+  const pending = getPendingLegacyEloSubmissionForUser(liveState.rawDb, userId);
+  const session = getLegacyEloSubmitSession(userId);
+
+  if (rating) {
+    const approvedSubmission = getLatestLegacyEloSubmissionForUser(liveState.rawDb, userId, ["approved"]);
+    const proofUrl = approvedSubmission?.reviewAttachmentUrl || approvedSubmission?.screenshotUrl || rating.proofUrl || "";
+    const embed = new EmbedBuilder()
+      .setTitle("Моя ELO карточка")
+      .setDescription([
+        "Статус: **в тир-листе**",
+        `ELO: **${formatNumber(rating.elo)}**`,
+        `Тир: **${rating.tier ?? "—"}**`,
+        rating.updatedAt ? `Обновлено: **${formatDateTime(rating.updatedAt)}**` : null,
+        proofUrl ? `[Открыть скрин](${proofUrl})` : null,
+      ].filter(Boolean).join("\n"));
+
+    if (rating.avatarUrl) embed.setThumbnail(rating.avatarUrl);
+    if (proofUrl) embed.setImage(proofUrl);
+    return ephemeralPayload({ embeds: [embed] });
+  }
+
+  if (pending) {
+    const proofUrl = pending.reviewAttachmentUrl || pending.screenshotUrl || "";
+    const embed = new EmbedBuilder()
+      .setTitle("Моя ELO карточка")
+      .setDescription([
+        "Статус: **заявка на проверке**",
+        `ELO: **${formatNumber(pending.elo)}**`,
+        `Тир по числу: **${pending.tier ?? "—"}**`,
+        `ID: **${pending.id || "—"}**`,
+        pending.createdAt ? `Создано: **${formatDateTime(pending.createdAt)}**` : null,
+        proofUrl ? `[Открыть скрин](${proofUrl})` : null,
+      ].filter(Boolean).join("\n"));
+
+    if (proofUrl) embed.setImage(proofUrl);
+    return ephemeralPayload({ embeds: [embed] });
+  }
+
+  if (session) {
+    return buildLegacyEloSubmitAwaitPayload(session.channelId || getLegacyEloSubmitPanelState(liveState.rawDb).channelId || "");
+  }
+
+  return ephemeralPayload({ content: "Тебя пока нет в ELO тир-листе и активной заявки тоже нет." });
+}
+
+async function ensureLegacyEloSubmitHubMessage(client, liveState, forcedChannelId = null) {
+  if (!liveState?.ok) throw new Error("Legacy ELO state is unavailable");
+
+  const state = getLegacyEloSubmitPanelState(liveState.rawDb);
+  const channelId = String(forcedChannelId || state.channelId || "").trim();
+  if (!channelId) throw new Error("Не задан submit channel для legacy ELO.");
+
+  const previousChannelId = String(state.channelId || "").trim();
+  const previousMessageId = String(state.messageId || "").trim();
+  if (previousMessageId && previousChannelId && previousChannelId !== channelId) {
+    const previousChannel = await client.channels.fetch(previousChannelId).catch(() => null);
+    const previousMessage = previousChannel?.isTextBased?.()
+      ? await previousChannel.messages.fetch(previousMessageId).catch(() => null)
+      : null;
+    if (previousMessage) await previousMessage.delete().catch(() => {});
+    state.messageId = "";
+  }
+
+  const channel = await client.channels.fetch(channelId).catch(() => null);
+  if (!channel?.isTextBased?.()) throw new Error("Legacy ELO submit channel должен быть текстовым.");
+
+  let message = null;
+  if (state.messageId) {
+    message = await channel.messages.fetch(state.messageId).catch(() => null);
+  }
+
+  const payload = {
+    embeds: [buildLegacyEloSubmitHubEmbed()],
+    components: buildLegacyEloSubmitHubComponents(),
+  };
+
+  if (!message) {
+    message = await channel.send(payload).catch(() => null);
+    if (!message) throw new Error("Не удалось отправить legacy ELO submit hub в канал.");
+    await message.pin().catch(() => {});
+  } else {
+    await message.edit(payload).catch(() => {});
+  }
+
+  state.channelId = channelId;
+  state.messageId = message.id;
+  const syncResult = saveLiveLegacyEloStateAndResync(liveState);
+  return {
+    ok: true,
+    channelId,
+    messageId: message.id,
+    syncResult,
+  };
+}
+
+async function createPendingLegacyEloSubmissionFromUrl(client, liveState, input) {
+  const elo = parseLegacyElo(input.rawText);
+  const tier = tierForLegacyElo(elo);
+  if (!input.screenshotUrl || !elo || !tier) {
+    throw new Error("Нужен скрин и число ELO минимум 10.");
+  }
+
+  const blockReason = getLegacyEloSubmitEligibilityError(liveState.rawDb, input.user.id, input.rawText);
+  if (blockReason) throw new Error(blockReason);
+
+  const submissionId = makeId();
+  let reviewAttachment = null;
+  let reviewImage = input.screenshotUrl;
+
+  try {
+    const buffer = await downloadToBuffer(input.screenshotUrl);
+    reviewAttachment = createReviewAttachmentFromBuffer(submissionId, buffer);
+    if (reviewAttachment?.name) reviewImage = `attachment://${reviewAttachment.name}`;
+  } catch {}
+
+  const previousCooldown = Number(liveState.rawDb.cooldowns?.[input.user.id] || 0);
+  liveState.rawDb.submissions[submissionId] = {
+    id: submissionId,
+    userId: input.user.id,
+    name: input.member?.displayName || input.user.username,
+    username: input.user.username,
+    elo,
+    tier,
+    screenshotUrl: input.screenshotUrl,
+    reviewImage,
+    reviewFileName: reviewAttachment?.name || null,
+    messageUrl: input.messageUrl || input.screenshotUrl,
+    status: "pending",
+    createdAt: nowIso(),
+    reviewChannelId: null,
+    reviewMessageId: null,
+    reviewedAt: null,
+    reviewedBy: null,
+    rejectReason: null,
+    reviewAttachmentUrl: "",
+  };
+  liveState.rawDb.cooldowns[input.user.id] = Date.now();
+
+  const submission = liveState.rawDb.submissions[submissionId];
+  const reviewMessage = await postLegacyEloReviewRecord(
+    client,
+    submission,
+    reviewAttachment,
+    "pending",
+    [],
+    [buildLegacyEloReviewButtons(submissionId)]
+  );
+  if (!reviewMessage) {
+    delete liveState.rawDb.submissions[submissionId];
+    if (previousCooldown) liveState.rawDb.cooldowns[input.user.id] = previousCooldown;
+    else delete liveState.rawDb.cooldowns[input.user.id];
+    throw new Error("Не удалось отправить заявку в review-канал.");
+  }
+
+  attachLegacyEloReviewRecord(liveState.rawDb, submissionId, {
+    reviewChannelId: reviewMessage.channel.id,
+    reviewMessageId: reviewMessage.id,
+    reviewAttachmentUrl: reviewMessage.attachments.first()?.url || "",
+    reviewImage: reviewMessage.attachments.first()?.url || submission.reviewImage || submission.screenshotUrl,
+    updatedAt: submission.createdAt,
+  });
+
+  const syncResult = saveLiveLegacyEloStateAndResync(liveState);
+  return {
+    submissionId,
+    syncResult,
+    submission: liveState.rawDb.submissions[submissionId],
+  };
+}
+
+function buildDormantEloProfilePayload(userId, statusText = "", includeFlags = true) {
+  const snapshot = getDormantEloProfileSnapshot(db, userId);
+  if (!snapshot) {
+    return includeFlags
+      ? ephemeralPayload({ content: "Для этого пользователя dormant ELO-проекция пока не найдена." })
+      : { content: "Для этого пользователя dormant ELO-проекция пока не найдена." };
+  }
+
+  const lines = [
+    `Игрок: <@${snapshot.userId}>`,
+    `Имя: **${snapshot.displayName}**`,
+    `Текущий ELO: **${snapshot.currentElo !== null ? formatNumber(snapshot.currentElo) : "—"}**`,
+    `Текущий tier: **${snapshot.currentTier !== null ? snapshot.currentTier : "—"}**`,
+    `Последний submission: **${snapshot.lastSubmissionId || "—"}**`,
+    `Статус submission: **${snapshot.lastSubmissionStatus || "—"}**`,
+    `Submission ELO/tier: **${snapshot.lastSubmissionElo !== null ? formatNumber(snapshot.lastSubmissionElo) : "—"} / ${snapshot.lastSubmissionTier !== null ? snapshot.lastSubmissionTier : "—"}**`,
+    `Создано: **${snapshot.lastSubmissionCreatedAt ? formatDateTime(snapshot.lastSubmissionCreatedAt) : "—"}**`,
+    `Проверено: **${snapshot.lastReviewedAt ? formatDateTime(snapshot.lastReviewedAt) : "—"}**`,
+    `Review channel: ${formatChannelMention(snapshot.reviewChannelId)}`,
+    `Review message: **${snapshot.reviewMessageId || "—"}**`,
+    `Proof: ${snapshot.proofUrl || "—"}`,
+  ];
+
+  const embed = new EmbedBuilder()
+    .setTitle("ELO Профиль")
+    .setDescription(lines.join("\n"));
+
+  if (statusText) {
+    embed.addFields({ name: "Статус", value: statusText, inline: false });
+  }
+
+  const payload = { embeds: [embed] };
+  return includeFlags ? ephemeralPayload(payload) : payload;
+}
+
+function buildDormantTierlistProfilePayload(userId, statusText = "", includeFlags = true) {
+  const snapshot = getDormantTierlistProfileSnapshot(db, userId);
+  if (!snapshot) {
+    return includeFlags
+      ? ephemeralPayload({ content: "Для этого пользователя dormant Tierlist-проекция пока не найдена." })
+      : { content: "Для этого пользователя dormant Tierlist-проекция пока не найдена." };
+  }
+
+  const lines = [
+    `Игрок: <@${snapshot.userId}>`,
+    `Имя: **${snapshot.displayName}**`,
+    `Main: **${snapshot.mainName || snapshot.mainId || "—"}**`,
+    `Main ID: **${snapshot.mainId || "—"}**`,
+    `Submitted: **${snapshot.submittedAt ? formatDateTime(snapshot.submittedAt) : "—"}**`,
+    `Lock until: **${snapshot.lockUntil ? formatDateTime(snapshot.lockUntil) : "—"}**`,
+    `Influence: **x${snapshot.influenceMultiplier || 1}**`,
+    `Influence role: ${formatRoleMention(snapshot.influenceRoleId)}`,
+    `Dashboard synced: **${snapshot.dashboardSyncedAt ? formatDateTime(snapshot.dashboardSyncedAt) : "—"}**`,
+    `Summary synced: **${snapshot.summarySyncedAt ? formatDateTime(snapshot.summarySyncedAt) : "—"}**`,
+  ];
+
+  const embed = new EmbedBuilder()
+    .setTitle("Tierlist Профиль")
+    .setDescription(lines.join("\n"));
+
+  if (statusText) {
+    embed.addFields({ name: "Статус", value: statusText, inline: false });
+  }
+
+  const payload = { embeds: [embed] };
+  return includeFlags ? ephemeralPayload(payload) : payload;
+}
+
+function buildDormantEloPendingPayload(limit = 10, includeFlags = true) {
+  const liveState = getLiveLegacyEloState();
+  if (!liveState.ok) {
+    return buildLegacyEloStateErrorPayload("Не удалось открыть pending очередь ELO", liveState, includeFlags);
+  }
+
+  const entries = listLegacyEloPendingSubmissions(liveState.rawDb, { limit });
+  const totalPending = Object.values(liveState.rawDb.submissions || {})
+    .filter((submission) => String(submission?.status || "").trim() === "pending")
+    .length;
+  const description = entries.length
+    ? entries.map((entry, index) => {
+      const expired = isLegacyEloSubmissionExpired(entry, { pendingExpireHours: LEGACY_ELO_PENDING_EXPIRE_HOURS });
+      return [
+        `${index + 1}. <@${entry.userId}> — **${previewText(entry.name || entry.username || entry.userId, 60)}**`,
+        `ELO **${entry.elo !== null ? formatNumber(entry.elo) : "—"}**`,
+        `tier **${entry.tier !== null ? entry.tier : "—"}**`,
+        `id **${entry.id}**`,
+        expired ? "expired by time" : `created ${entry.createdAt ? formatDateTime(entry.createdAt) : "—"}`,
+      ].join(" | ");
+    }).join("\n")
+    : "Pending-заявок из legacy ELO db сейчас нет.";
+
+  const payload = {
+    embeds: [
+      new EmbedBuilder()
+        .setTitle("ELO Pending Queue")
+        .setDescription(`Показано: **${entries.length}** из **${totalPending}** pending.\n\n${description}`),
+    ],
+    components: [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("elo_review_open").setLabel("Открыть заявку").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId("elo_review_refresh_pending").setLabel("Обновить").setStyle(ButtonStyle.Secondary)
+      ),
+    ],
+  };
+
+  return includeFlags ? ephemeralPayload(payload) : payload;
+}
+
 async function registerGuildCommands(client) {
   const guild = await client.guilds.fetch(GUILD_ID);
   await guild.commands.set([...buildCommands(), buildComboCommands()]);
@@ -4348,10 +6551,58 @@ client.once("clientReady", async () => {
   await refreshWelcomePanel(client);
   await refreshAllTierlists(client);
   await cleanupBotPins(client).catch(() => 0);
+  const legacyEloState = getLiveLegacyEloState();
+  if (legacyEloState.ok) {
+    const submitChannelId = String(getLegacyEloSubmitPanelState(legacyEloState.rawDb).channelId || "").trim();
+    if (submitChannelId) {
+      await ensureLegacyEloSubmitHubMessage(client, legacyEloState, submitChannelId).catch((error) => {
+        console.error("Legacy ELO submit hub setup failed:", error?.message || error);
+      });
+    }
+  }
+  const legacyTierlistState = getLiveLegacyTierlistState();
+  if (legacyTierlistState.ok) {
+    const dashboardChannelId = String(legacyTierlistState.rawState?.settings?.channelId || "").trim();
+    const summaryChannelId = String(legacyTierlistState.rawState?.settings?.summaryChannelId || "").trim();
+    if (dashboardChannelId) {
+      await ensureLegacyTierlistDashboardMessage(client, legacyTierlistState, dashboardChannelId).catch((error) => {
+        console.error("Legacy Tierlist dashboard setup failed:", error?.message || error);
+      });
+    }
+    if (summaryChannelId) {
+      await ensureLegacyTierlistSummaryMessage(client, legacyTierlistState, summaryChannelId).catch((error) => {
+        console.error("Legacy Tierlist summary setup failed:", error?.message || error);
+      });
+    }
+    try {
+      const result = await backfillLegacyTierlistInfluenceForExistingVoters(client, { refresh: true });
+      if (result.total > 0) {
+        console.log(`[legacy-tierlist][influence] startup backfill: changed ${result.changed}/${result.total}`);
+      }
+    } catch (error) {
+      console.error("Legacy Tierlist influence backfill failed:", error?.message || error);
+    }
+  }
   console.log(`Managed roles ready. Characters: ${generated.characterRoles}, tiers: ${generated.tierRoles}`);
   console.log("Welcome onboarding bot is ready");
 
   setInterval(() => runAutoResendTick(client).catch((err) => console.error("Auto-resend tick error:", err)), ROLE_PANEL_AUTO_RESEND_TICK_MS);
+  setInterval(() => {
+    refreshLegacyTierlistSummaryMessage(client).catch((error) => {
+      const text = String(error?.message || error || "").trim();
+      if (text) console.error("Legacy Tierlist summary refresh failed:", text);
+    });
+  }, LEGACY_TIERLIST_SUMMARY_REFRESH_MS);
+});
+
+client.on("guildMemberUpdate", async (_oldMember, newMember) => {
+  if (newMember.guild.id !== GUILD_ID) return;
+
+  try {
+    await syncLegacyTierlistInfluenceForMember(client, newMember);
+  } catch (error) {
+    console.error("Legacy Tierlist influence sync failed:", error?.message || error);
+  }
 });
 
 client.on("guildMemberAdd", async (member) => {
@@ -4388,6 +6639,51 @@ client.on("guildMemberAdd", async (member) => {
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
   if (message.guildId !== GUILD_ID) return;
+  const legacyEloState = getLiveLegacyEloState();
+  const legacyEloSubmitChannelId = legacyEloState.ok
+    ? String(getLegacyEloSubmitPanelState(legacyEloState.rawDb).channelId || "").trim()
+    : "";
+
+  if (legacyEloSubmitChannelId && message.channelId === legacyEloSubmitChannelId) {
+    const session = getLegacyEloSubmitSession(message.author.id);
+    if (!session) return;
+
+    const pending = getPendingLegacyEloSubmissionForUser(legacyEloState.rawDb, message.author.id);
+    if (pending) {
+      clearLegacyEloSubmitSession(message.author.id);
+      await replyAndDelete(message, "У тебя уже есть заявка на проверке. Дождись решения модера.");
+      await message.delete().catch(() => {});
+      return;
+    }
+
+    const attachment = [...message.attachments.values()].find((item) => isImageAttachment(item));
+    if (!attachment) {
+      await replyAndDelete(message, "Сейчас нужен один следующий месседж именно с картинкой. Текст уже сохранён, просто приложи скрин или вставь его через Ctrl+V.");
+      await message.delete().catch(() => {});
+      return;
+    }
+
+    try {
+      await createPendingLegacyEloSubmissionFromUrl(client, legacyEloState, {
+        user: message.author,
+        member: message.member,
+        rawText: session.rawText,
+        screenshotUrl: attachment.url,
+        messageUrl: message.url,
+      });
+
+      clearLegacyEloSubmitSession(message.author.id);
+      await replyAndDelete(message, "ELO заявка отправлена на проверку модерам.");
+      await logLine(client, `ELO SUBMIT: <@${message.author.id}> raw=${session.rawText}`);
+    } catch (error) {
+      clearLegacyEloSubmitSession(message.author.id);
+      await replyAndDelete(message, String(error?.message || error || "Не удалось отправить ELO заявку."), 16000);
+    }
+
+    await message.delete().catch(() => {});
+    return;
+  }
+
   if (message.channelId !== appConfig.channels.welcomeChannelId) return;
 
   const session = getSubmitSession(message.author.id);
@@ -5280,6 +7576,46 @@ client.on("interactionCreate", async (interaction) => {
     }
 
     // === PNG Dashboard buttons ===
+    if (interaction.customId === "elo_graphic_refresh") {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      await interaction.deferUpdate();
+      const liveState = getLiveLegacyEloState();
+      if (!liveState.ok) {
+        await interaction.followUp(buildLegacyEloStateErrorPayload("Не удалось обновить legacy ELO PNG", liveState));
+        return;
+      }
+
+      try {
+        const result = await refreshLegacyEloGraphicBoard(client, { liveState });
+        if (!result.ok) {
+          await interaction.followUp(ephemeralPayload({ content: "Legacy ELO PNG канал пока не настроен. Открой PNG Panel и задай канал." }));
+        }
+      } catch (error) {
+        await interaction.followUp(ephemeralPayload({ content: String(error?.message || error || "Не удалось обновить legacy ELO PNG.") }));
+      }
+      return;
+    }
+
+    if (interaction.customId === "elo_graphic_panel") {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      const liveState = getLiveLegacyEloState();
+      if (!liveState.ok) {
+        await interaction.reply(buildLegacyEloStateErrorPayload("Не удалось открыть legacy ELO PNG panel", liveState));
+        return;
+      }
+
+      await interaction.reply(buildLegacyEloGraphicPanelPayload(liveState.rawDb));
+      return;
+    }
+
     if (interaction.customId === "graphic_refresh") {
       if (!isModerator(interaction.member)) {
         await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
@@ -5296,6 +7632,160 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
       await interaction.reply(buildGraphicPanelPayload());
+      return;
+    }
+
+    if (interaction.customId.startsWith("elo_graphic_panel_")) {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      if (interaction.customId === "elo_graphic_panel_back") {
+        await interaction.update(buildDormantEloPanelPayload("", false));
+        return;
+      }
+
+      const liveState = getLiveLegacyEloState();
+      if (!liveState.ok) {
+        await interaction.reply(buildLegacyEloStateErrorPayload("Не удалось открыть legacy ELO PNG panel", liveState));
+        return;
+      }
+
+      const snapshot = buildLegacyEloGraphicPanelSnapshot(liveState.rawDb);
+      const selectedTier = snapshot.selectedTier;
+
+      if (interaction.customId === "elo_graphic_panel_fonts") {
+        const { ensureGraphicFonts } = require("./graphic-tierlist");
+        const ok = ensureGraphicFonts();
+        await interaction.update(buildLegacyEloGraphicPanelPayload(
+          liveState.rawDb,
+          ok ? "Шрифты PNG загружены." : "Шрифты не найдены. Положи TTF в assets/fonts/.",
+          false
+        ));
+        return;
+      }
+
+      if (interaction.customId === "elo_graphic_panel_title") {
+        const modal = new ModalBuilder().setCustomId("elo_graphic_panel_title_modal").setTitle("Название ELO PNG тир-листа");
+        modal.addComponents(new ActionRowBuilder().addComponents(
+          new TextInputBuilder().setCustomId("graphic_title").setLabel("Название наверху картинки").setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(80).setValue(snapshot.title)
+        ));
+        await interaction.showModal(modal);
+        return;
+      }
+
+      if (interaction.customId === "elo_graphic_panel_message_text") {
+        const modal = new ModalBuilder().setCustomId("elo_graphic_panel_message_text_modal").setTitle("Текст сообщения ELO PNG");
+        modal.addComponents(new ActionRowBuilder().addComponents(
+          new TextInputBuilder().setCustomId("graphic_message_text").setLabel("Текст под заголовком").setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(4000).setValue(getLegacyEloGraphicMessageText(liveState.rawDb))
+        ));
+        await interaction.showModal(modal);
+        return;
+      }
+
+      if (interaction.customId === "elo_graphic_panel_setup") {
+        const modal = new ModalBuilder().setCustomId("elo_graphic_panel_setup_modal").setTitle("Канал ELO PNG board");
+        modal.addComponents(new ActionRowBuilder().addComponents(
+          new TextInputBuilder().setCustomId("elo_graphic_channel").setLabel("ID или mention текстового канала").setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(80).setPlaceholder("123456789012345678 или <#123456789012345678>").setValue(String(snapshot.dashboardChannelId || "").slice(0, 80))
+        ));
+        await interaction.showModal(modal);
+        return;
+      }
+
+      if (interaction.customId === "elo_graphic_panel_labels") {
+        const modal = new ModalBuilder().setCustomId("elo_graphic_panel_labels_modal").setTitle("Названия ELO tiers");
+        modal.addComponents(
+          new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("tier_label_1").setLabel("Tier 1").setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(60).setValue(snapshot.tierLabels[1] || "1")),
+          new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("tier_label_2").setLabel("Tier 2").setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(60).setValue(snapshot.tierLabels[2] || "2")),
+          new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("tier_label_3").setLabel("Tier 3").setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(60).setValue(snapshot.tierLabels[3] || "3")),
+          new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("tier_label_4").setLabel("Tier 4").setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(60).setValue(snapshot.tierLabels[4] || "4")),
+          new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("tier_label_5").setLabel("Tier 5").setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(60).setValue(snapshot.tierLabels[5] || "5"))
+        );
+        await interaction.showModal(modal);
+        return;
+      }
+
+      if (interaction.customId === "elo_graphic_panel_rename") {
+        const modal = new ModalBuilder().setCustomId(`elo_graphic_panel_rename_modal:${selectedTier}`).setTitle(`Переименовать ELO tier ${selectedTier}`);
+        modal.addComponents(new ActionRowBuilder().addComponents(
+          new TextInputBuilder().setCustomId("tier_name").setLabel("Новое название тира").setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(60).setValue(snapshot.tierLabels[selectedTier] || String(selectedTier))
+        ));
+        await interaction.showModal(modal);
+        return;
+      }
+
+      if (interaction.customId === "elo_graphic_panel_set_color") {
+        const modal = new ModalBuilder().setCustomId(`elo_graphic_panel_color_modal:${selectedTier}`).setTitle(`Цвет ELO tier ${selectedTier}`);
+        modal.addComponents(new ActionRowBuilder().addComponents(
+          new TextInputBuilder().setCustomId("tier_color").setLabel("HEX цвет, пример #ff6b6b").setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(7).setValue(snapshot.tierColors[selectedTier] || "")
+        ));
+        await interaction.showModal(modal);
+        return;
+      }
+
+      if (interaction.customId === "elo_graphic_panel_refresh") {
+        await interaction.deferUpdate();
+        try {
+          const result = await refreshLegacyEloGraphicBoard(client, { liveState });
+          const status = result.ok
+            ? `Legacy ELO PNG пересобран в ${formatChannelMention(result.channelId)}.${getLegacyEloSyncStatusSuffix(result.syncResult)}`
+            : "Legacy ELO PNG канал пока не настроен. Сначала укажи канал.";
+          await interaction.editReply(buildLegacyEloGraphicPanelPayload(liveState.rawDb, status, false));
+        } catch (error) {
+          await interaction.editReply(buildLegacyEloGraphicPanelPayload(liveState.rawDb, String(error?.message || error || "Не удалось пересобрать legacy ELO PNG."), false));
+        }
+        return;
+      }
+
+      if (interaction.customId === "elo_graphic_panel_bump") {
+        await interaction.deferUpdate();
+        try {
+          const result = await bumpLegacyEloGraphicBoard(client, { liveState });
+          const status = result.ok
+            ? `Legacy ELO PNG отправлен заново вниз канала ${formatChannelMention(result.channelId)}.${getLegacyEloSyncStatusSuffix(result.syncResult)}`
+            : "Legacy ELO PNG канал пока не настроен. Сначала укажи канал.";
+          await interaction.editReply(buildLegacyEloGraphicPanelPayload(liveState.rawDb, status, false));
+        } catch (error) {
+          await interaction.editReply(buildLegacyEloGraphicPanelPayload(liveState.rawDb, String(error?.message || error || "Не удалось перезалить legacy ELO PNG."), false));
+        }
+        return;
+      }
+
+      if (interaction.customId === "elo_graphic_panel_icon_minus" || interaction.customId === "elo_graphic_panel_icon_plus") {
+        const delta = interaction.customId.endsWith("plus") ? 12 : -12;
+        applyLegacyEloGraphicImageDelta(liveState.rawDb, "icon", delta);
+      } else if (interaction.customId === "elo_graphic_panel_w_minus" || interaction.customId === "elo_graphic_panel_w_plus") {
+        const delta = interaction.customId.endsWith("plus") ? 200 : -200;
+        applyLegacyEloGraphicImageDelta(liveState.rawDb, "width", delta);
+      } else if (interaction.customId === "elo_graphic_panel_h_minus" || interaction.customId === "elo_graphic_panel_h_plus") {
+        const delta = interaction.customId.endsWith("plus") ? 120 : -120;
+        applyLegacyEloGraphicImageDelta(liveState.rawDb, "height", delta);
+      } else if (interaction.customId === "elo_graphic_panel_reset_img") {
+        resetLegacyEloGraphicImageOverrides(liveState.rawDb);
+      } else if (interaction.customId === "elo_graphic_panel_reset_color") {
+        resetLegacyEloGraphicTierColor(liveState.rawDb, selectedTier);
+      } else if (interaction.customId === "elo_graphic_panel_reset_colors") {
+        resetAllLegacyEloGraphicTierColors(liveState.rawDb);
+      } else if (interaction.customId === "elo_graphic_panel_clear_cache") {
+        clearGraphicAvatarCache();
+      } else {
+        return;
+      }
+
+      await interaction.deferUpdate();
+      try {
+        const persisted = await persistLegacyEloGraphicMutation(client, liveState, { refreshBoard: true });
+        const status = [
+          interaction.customId === "elo_graphic_panel_clear_cache"
+            ? "Кэш аватарок очищен."
+            : "Настройки legacy ELO PNG обновлены.",
+          persisted.boardUpdated ? "PNG board пересобран." : "PNG board пока не настроен.",
+        ].join(" ") + getLegacyEloSyncStatusSuffix(persisted.syncResult);
+        await interaction.editReply(buildLegacyEloGraphicPanelPayload(liveState.rawDb, status, false));
+      } catch (error) {
+        await interaction.editReply(buildLegacyEloGraphicPanelPayload(liveState.rawDb, String(error?.message || error || "Не удалось обновить legacy ELO PNG настройки."), false));
+      }
       return;
     }
 
@@ -5624,6 +8114,1113 @@ client.on("interactionCreate", async (interaction) => {
 
       await interaction.update(buildModeratorPanelPayload("Включение апокалипсиса отменено.", false));
       return;
+    }
+
+    if (interaction.customId === "panel_open_elo") {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      await interaction.update(buildDormantEloPanelPayload("", false));
+      return;
+    }
+
+    if (interaction.customId === "panel_open_tierlist") {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      await interaction.update(buildDormantTierlistPanelPayload("", false));
+      return;
+    }
+
+    if (["tierlist_panel_refresh_import", "tierlist_panel_back", "tierlist_panel_refresh_public"].includes(interaction.customId)) {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      if (interaction.customId === "tierlist_panel_back") {
+        await interaction.update(buildModeratorPanelPayload("", false));
+        return;
+      }
+
+      await interaction.deferUpdate();
+
+      if (interaction.customId === "tierlist_panel_refresh_public") {
+        const liveState = getLiveLegacyTierlistState();
+        if (!liveState.ok) {
+          await interaction.editReply(buildDormantTierlistPanelPayload(`Legacy public views недоступны: ${liveState.error}`, false));
+          return;
+        }
+
+        try {
+          const result = await refreshLegacyTierlistPublicViews(client, { liveState });
+          const dashboardOk = result.dashboard && result.dashboard.ok;
+          const summaryOk = result.summary && result.summary.ok;
+          const syncResult = result.dashboard?.syncResult || result.summary?.syncResult || null;
+          const statusText = (!dashboardOk && !summaryOk)
+            ? "Не нашёл ни dashboard, ни summary. Сначала настрой каналы через Tierlist Panel."
+            : `Обновлено: dashboard ${dashboardOk ? "ok" : "—"}, summary ${summaryOk ? "ok" : "—"}.${getLegacyTierlistSyncStatusSuffix(syncResult)}`;
+          await interaction.editReply(buildDormantTierlistPanelPayload(statusText, false));
+        } catch (error) {
+          await interaction.editReply(buildDormantTierlistPanelPayload(String(error?.message || error || "Не удалось обновить legacy Tierlist public views."), false));
+        }
+        return;
+      }
+
+      const result = refreshDormantTierlistImport();
+      await interaction.editReply(buildDormantTierlistPanelPayload(getDormantTierlistImportStatusText(result), false));
+      return;
+    }
+
+    if (interaction.customId === "tierlist_panel_set_source") {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      const modal = new ModalBuilder().setCustomId("tierlist_panel_source_modal").setTitle("Путь к legacy Tierlist state");
+      const input = new TextInputBuilder()
+        .setCustomId("tierlist_source_path")
+        .setLabel("Относительный путь от data root или абсолютный путь")
+        .setStyle(TextInputStyle.Short)
+        .setRequired(false)
+        .setMaxLength(500)
+        .setPlaceholder("tierlist/data/state.json или C:\\path\\to\\tierlist\\state.json")
+        .setValue(String(db.config.integrations?.tierlist?.sourcePath || "").slice(0, 500));
+
+      modal.addComponents(new ActionRowBuilder().addComponents(input));
+      await interaction.showModal(modal);
+      return;
+    }
+
+    if (interaction.customId === "tierlist_panel_lookup") {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      const modal = new ModalBuilder().setCustomId("tierlist_panel_lookup_modal").setTitle("Tierlist lookup");
+      const input = new TextInputBuilder()
+        .setCustomId("tierlist_lookup_user")
+        .setLabel("ID или mention игрока; пусто = показать себя")
+        .setStyle(TextInputStyle.Short)
+        .setRequired(false)
+        .setMaxLength(80)
+        .setPlaceholder("123456789012345678 или <@123456789012345678>");
+
+      modal.addComponents(new ActionRowBuilder().addComponents(input));
+      await interaction.showModal(modal);
+      return;
+    }
+
+    if (["tierlist_panel_setup_dashboard", "tierlist_panel_setup_summary"].includes(interaction.customId)) {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      const liveState = getLiveLegacyTierlistState();
+      const isDashboard = interaction.customId === "tierlist_panel_setup_dashboard";
+      const modal = new ModalBuilder()
+        .setCustomId(isDashboard ? "tierlist_panel_dashboard_setup_modal" : "tierlist_panel_summary_setup_modal")
+        .setTitle(isDashboard ? "Tierlist dashboard channel" : "Tierlist summary channel");
+      const input = new TextInputBuilder()
+        .setCustomId(isDashboard ? "tierlist_dashboard_channel" : "tierlist_summary_channel")
+        .setLabel("ID или mention текстового канала")
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true)
+        .setMaxLength(80)
+        .setPlaceholder("<#123456789012345678> или 123456789012345678")
+        .setValue(
+          String(
+            isDashboard
+              ? liveState?.rawState?.settings?.channelId || db.config.integrations?.tierlist?.dashboard?.channelId || ""
+              : liveState?.rawState?.settings?.summaryChannelId || db.config.integrations?.tierlist?.summary?.channelId || ""
+          ).slice(0, 80)
+        );
+
+      modal.addComponents(new ActionRowBuilder().addComponents(input));
+      await interaction.showModal(modal);
+      return;
+    }
+
+    if (interaction.customId === "tierlist_panel_mod_panel") {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      const liveState = getLiveLegacyTierlistState();
+      if (!liveState.ok) {
+        await interaction.reply(buildLegacyTierlistStateErrorPayload("Не удалось открыть legacy Tierlist panel", liveState));
+        return;
+      }
+
+      await interaction.reply(buildLegacyTierlistModPanelPayload(liveState, interaction.user.id));
+      return;
+    }
+
+    if (interaction.customId === "start_rating") {
+      const liveState = getLiveLegacyTierlistState();
+      if (!liveState.ok) {
+        await interaction.reply(buildLegacyTierlistStateErrorPayload("Не удалось открыть legacy Tierlist state", liveState));
+        return;
+      }
+
+      const user = getLegacyTierlistWizardUser(liveState.rawState, interaction.user.id);
+      if (Array.isArray(user.wizQueue) && user.wizQueue.length && canUseLegacyTierlistCurrentWizard(liveState.rawState, interaction.user.id)) {
+        await interaction.reply(ephemeralPayload(await buildLegacyTierlistWizardPayload(liveState, interaction.user.id)));
+        return;
+      }
+
+      const pendingNewCount = getLegacyTierlistPendingNewCharacterIds(liveState, interaction.user.id).length;
+      const statusText = pendingNewCount > 0 ? `Новых персонажей без твоей оценки: ${pendingNewCount}.` : "";
+      await interaction.reply(ephemeralPayload(buildLegacyTierlistStartPayload(liveState, interaction.user.id, statusText)));
+      return;
+    }
+
+    if (interaction.customId === "rate_new_characters") {
+      const liveState = getLiveLegacyTierlistState();
+      if (!liveState.ok) {
+        await interaction.reply(buildLegacyTierlistStateErrorPayload("Не удалось открыть legacy Tierlist state", liveState));
+        return;
+      }
+
+      const user = getLegacyTierlistWizardUser(liveState.rawState, interaction.user.id);
+      if (!hasSubmittedLegacyTierlist(liveState.rawState, interaction.user.id)) {
+        await interaction.reply(ephemeralPayload({ content: "Сначала отправь полный тир-лист кнопкой Начать оценку." }));
+        return;
+      }
+
+      if (Array.isArray(user.wizQueue) && user.wizQueue.length) {
+        if (user.wizMode === "new") {
+          await interaction.reply(ephemeralPayload(await buildLegacyTierlistWizardPayload(liveState, interaction.user.id)));
+          return;
+        }
+
+        await interaction.reply(ephemeralPayload({ content: "Сначала заверши или закрой текущую сессию оценки." }));
+        return;
+      }
+
+      const pendingIds = getLegacyTierlistPendingNewCharacterIds(liveState, interaction.user.id);
+      if (!pendingIds.length) {
+        await interaction.reply(ephemeralPayload({ content: "Для тебя пока нет новых персонажей без оценки." }));
+        return;
+      }
+
+      startLegacyTierlistWizard(liveState, interaction.user.id, "new");
+      persistLiveLegacyTierlistState(liveState);
+      await interaction.reply(ephemeralPayload(await buildLegacyTierlistWizardPayload(liveState, interaction.user.id)));
+      return;
+    }
+
+    if (["main_page_prev", "main_page_next"].includes(interaction.customId)) {
+      const liveState = getLiveLegacyTierlistState();
+      if (!liveState.ok) {
+        await interaction.reply(buildLegacyTierlistStateErrorPayload("Не удалось открыть legacy Tierlist state", liveState));
+        return;
+      }
+
+      const user = getLegacyTierlistWizardUser(liveState.rawState, interaction.user.id);
+      const nextPage = interaction.customId === "main_page_prev"
+        ? user.mainSelectPage - 1
+        : user.mainSelectPage + 1;
+      user.mainSelectPage = clampLegacyTierlistMainSelectPage(liveState, nextPage);
+      persistLiveLegacyTierlistState(liveState);
+      await interaction.update(buildLegacyTierlistStartPayload(liveState, interaction.user.id));
+      return;
+    }
+
+    if (interaction.customId === "wiz_use_current_main") {
+      const liveState = getLiveLegacyTierlistState();
+      if (!liveState.ok) {
+        await interaction.reply(buildLegacyTierlistStateErrorPayload("Не удалось открыть legacy Tierlist state", liveState));
+        return;
+      }
+
+      const user = getLegacyTierlistWizardUser(liveState.rawState, interaction.user.id);
+      if (!user.mainId) {
+        await interaction.update(buildLegacyTierlistStartPayload(liveState, interaction.user.id, "Сначала выбери своего main."));
+        return;
+      }
+      if (isLegacyTierlistWizardLocked(liveState.rawState, interaction.user.id)) {
+        await interaction.update(buildLegacyTierlistStartPayload(liveState, interaction.user.id, `Кулдаун до ${formatLegacyTierlistMoment(user.lockUntil)}.`));
+        return;
+      }
+
+      startLegacyTierlistWizard(liveState, interaction.user.id, "full");
+      persistLiveLegacyTierlistState(liveState);
+      await interaction.deferUpdate();
+      await interaction.editReply(await buildLegacyTierlistWizardPayload(liveState, interaction.user.id));
+      return;
+    }
+
+    if (interaction.customId === "wiz_cancel") {
+      await interaction.update({ content: "Ок, закрыто.", embeds: [], components: [], attachments: [] });
+      return;
+    }
+
+    if (interaction.customId === "wiz_back") {
+      const liveState = getLiveLegacyTierlistState();
+      if (!liveState.ok) {
+        await interaction.reply(buildLegacyTierlistStateErrorPayload("Не удалось открыть legacy Tierlist state", liveState));
+        return;
+      }
+
+      const user = getLegacyTierlistWizardUser(liveState.rawState, interaction.user.id);
+      if (!Array.isArray(user.wizQueue) || !user.wizQueue.length) {
+        await interaction.update({ content: "Сессия оценки истекла. Нажми Начать оценку заново.", embeds: [], components: [], attachments: [] });
+        return;
+      }
+
+      rewindLegacyTierlistWizard(liveState.rawState, interaction.user.id);
+      persistLiveLegacyTierlistState(liveState);
+      await interaction.deferUpdate();
+      await interaction.editReply(await buildLegacyTierlistWizardPayload(liveState, interaction.user.id));
+      return;
+    }
+
+    if (interaction.customId.startsWith("wiz_rate_")) {
+      const liveState = getLiveLegacyTierlistState();
+      if (!liveState.ok) {
+        await interaction.reply(buildLegacyTierlistStateErrorPayload("Не удалось открыть legacy Tierlist state", liveState));
+        return;
+      }
+
+      const tierKey = interaction.customId.slice("wiz_rate_".length).toUpperCase();
+      const user = getLegacyTierlistWizardUser(liveState.rawState, interaction.user.id);
+      if (!Array.isArray(user.wizQueue) || !user.wizQueue.length) {
+        await interaction.update({ content: "Сессия оценки истекла. Нажми Начать оценку заново.", embeds: [], components: [], attachments: [] });
+        return;
+      }
+
+      const currentId = currentLegacyTierlistWizardChar(liveState.rawState, interaction.user.id);
+      if (!currentId) {
+        await interaction.deferUpdate();
+        await interaction.editReply(await buildLegacyTierlistWizardPayload(liveState, interaction.user.id));
+        return;
+      }
+
+      setLegacyTierlistDraftTier(liveState.rawState, interaction.user.id, currentId, tierKey);
+      advanceLegacyTierlistWizard(liveState.rawState, interaction.user.id);
+      persistLiveLegacyTierlistState(liveState);
+      await interaction.deferUpdate();
+      await interaction.editReply(await buildLegacyTierlistWizardPayload(liveState, interaction.user.id));
+      return;
+    }
+
+    if (interaction.customId === "wiz_submit") {
+      const liveState = getLiveLegacyTierlistState();
+      if (!liveState.ok) {
+        await interaction.reply(buildLegacyTierlistStateErrorPayload("Не удалось открыть legacy Tierlist state", liveState));
+        return;
+      }
+
+      const user = getLegacyTierlistWizardUser(liveState.rawState, interaction.user.id);
+      if (!Array.isArray(user.wizQueue) || !user.wizQueue.length || !legacyTierlistWizardDone(liveState.rawState, interaction.user.id)) {
+        await interaction.reply(ephemeralPayload({ content: "Сначала заверши оценку всех персонажей в текущей сессии." }));
+        return;
+      }
+
+      await interaction.deferUpdate();
+      const mode = user.wizMode || "full";
+      submitLegacyTierlistVotes(liveState.rawState, interaction.user.id);
+
+      const influence = resolveLegacyTierlistInfluenceFromMember(interaction.member);
+      user.influenceMultiplier = influence.mult;
+      user.influenceRoleId = influence.roleId;
+      user.influenceUpdatedAt = Date.now();
+      user.lastSubmitAt = Date.now();
+      if (mode !== "new") {
+        lockLegacyTierlistUser(liveState.rawState, interaction.user.id);
+      }
+      user.wizQueue = null;
+      user.wizIndex = 0;
+      user.wizMode = null;
+      liveState.rawState.draftVotes ||= {};
+      liveState.rawState.draftVotes[interaction.user.id] = {};
+
+      const syncResult = saveLiveLegacyTierlistStateAndResync(liveState);
+      await refreshLegacyTierlistPublicViews(client, { liveState });
+
+      const description = mode === "new"
+        ? [
+            "Новые персонажи сохранены.",
+            `Main: **${user.mainId ? (liveState.charById.get(user.mainId)?.name || user.mainId) : "не выбран"}**`,
+            `Вес голоса: x${Number(user.influenceMultiplier || 1).toFixed(1)}`,
+          ].join("\n")
+        : [
+            "Тир-лист сохранён.",
+            `Main: **${user.mainId ? (liveState.charById.get(user.mainId)?.name || user.mainId) : "не выбран"}**`,
+            `Вес голоса: x${Number(user.influenceMultiplier || 1).toFixed(1)}`,
+            `Следующая полная отправка: **${formatLegacyTierlistMoment(user.lockUntil)}**`,
+          ].join("\n");
+
+      await interaction.editReply({
+        embeds: [new EmbedBuilder().setTitle(mode === "new" ? "Дооценка сохранена" : "Тир-лист сохранён").setDescription(`${description}${getLegacyTierlistSyncStatusSuffix(syncResult)}`)],
+        components: [],
+        files: [],
+        attachments: [],
+      });
+      return;
+    }
+
+    if (interaction.customId === "refresh_tierlist") {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав (нужно Manage Guild)." }));
+        return;
+      }
+
+      const liveState = getLiveLegacyTierlistState();
+      if (!liveState.ok) {
+        await interaction.reply(buildLegacyTierlistStateErrorPayload("Не удалось открыть legacy Tierlist state", liveState));
+        return;
+      }
+
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      try {
+        const result = await refreshLegacyTierlistPublicViews(client, { liveState });
+        const dashboardOk = result.dashboard && result.dashboard.ok;
+        const summaryOk = result.summary && result.summary.ok;
+        if (!dashboardOk && !summaryOk) {
+          await interaction.editReply("Не нашёл ни dashboard, ни summary. Сначала настрой их через Tierlist Panel.");
+          return;
+        }
+
+        const syncResult = result.dashboard?.syncResult || result.summary?.syncResult || null;
+        await interaction.editReply(`Ок. Обновлено: dashboard ${dashboardOk ? "ok" : "—"}, summary ${summaryOk ? "ok" : "—"}.${getLegacyTierlistSyncStatusSuffix(syncResult)}`);
+      } catch (error) {
+        await interaction.editReply(String(error?.message || error || "Не удалось обновить Tierlist public views."));
+      }
+      return;
+    }
+
+    if (interaction.customId === "my_status") {
+      const liveState = getLiveLegacyTierlistState();
+      if (!liveState.ok) {
+        await interaction.reply(buildLegacyTierlistStateErrorPayload("Не удалось открыть legacy Tierlist state", liveState));
+        return;
+      }
+
+      const rawUser = liveState.rawState?.users?.[interaction.user.id] || {};
+      const mainName = rawUser.mainId
+        ? liveState.charById.get(rawUser.mainId)?.name || rawUser.mainId
+        : "не выбран";
+      const locked = isLegacyTierlistLocked(rawUser);
+      const votes = liveState.rawState?.finalVotes?.[interaction.user.id] || null;
+
+      if (votes && Object.keys(votes).length > 0) {
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+        try {
+          const png = await renderLegacyTierlistUserPng(liveState, interaction.user.id, "(твой тир-лист)");
+          const attachment = new AttachmentBuilder(png, { name: "my-tierlist.png" });
+          const lastSubmitAt = rawUser.lastSubmitAt ? formatTime(parseLegacyTierlistTimestamp(rawUser.lastSubmitAt)) : "—";
+          const counts = getLegacyTierlistUserTierCounts(votes);
+          const embed = new EmbedBuilder()
+            .setTitle("Твой статус")
+            .setDescription([
+              `Main: **${mainName}**`,
+              `Submit: ${lastSubmitAt}`,
+              `S/A/B/C/D: ${counts.S}/${counts.A}/${counts.B}/${counts.C}/${counts.D}`,
+              locked ? `Кулдаун до: **${formatTime(parseLegacyTierlistTimestamp(rawUser.lockUntil))}**` : "Можно отправлять оценку: **да**",
+            ].join("\n"))
+            .setImage("attachment://my-tierlist.png");
+
+          await interaction.editReply({ embeds: [embed], files: [attachment] });
+        } catch (error) {
+          await interaction.editReply(String(error?.message || error || "Не удалось собрать PNG твоего тир-листа."));
+        }
+        return;
+      }
+
+      const lines = [
+        `Main: **${mainName}**`,
+        "Ты ещё не отправлял тир-лист.",
+        locked ? `Кулдаун до: **${formatTime(parseLegacyTierlistTimestamp(rawUser.lockUntil))}**` : "Можно отправлять оценку: **да**",
+      ];
+      await interaction.reply(ephemeralPayload({ content: lines.join("\n") }));
+      return;
+    }
+
+    if (LEGACY_TIERLIST_PANEL_BUTTON_IDS.has(interaction.customId)) {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      const liveState = getLiveLegacyTierlistState();
+      if (!liveState.ok) {
+        await interaction.reply(buildLegacyTierlistStateErrorPayload("Не удалось открыть legacy Tierlist panel", liveState));
+        return;
+      }
+
+      const userId = interaction.user.id;
+      const panelUser = getLegacyTierlistWizardUser(liveState.rawState, userId);
+
+      if (interaction.customId === "panel_tab_config") {
+        panelUser.panelTab = "config";
+        panelUser.panelParticipantId = null;
+        persistLiveLegacyTierlistState(liveState);
+        await interaction.update(buildLegacyTierlistModPanelPayload(liveState, userId));
+        return;
+      }
+
+      if (interaction.customId === "panel_tab_participants") {
+        panelUser.panelTab = "participants";
+        panelUser.panelParticipantId = null;
+        panelUser.panelParticipantsPage = 0;
+        persistLiveLegacyTierlistState(liveState);
+        await interaction.update(buildLegacyTierlistModPanelPayload(liveState, userId));
+        return;
+      }
+
+      if (interaction.customId === "panel_part_prev") {
+        panelUser.panelTab = "participants";
+        panelUser.panelParticipantId = null;
+        panelUser.panelParticipantsPage = Math.max(0, (Number(panelUser.panelParticipantsPage) || 0) - 1);
+        persistLiveLegacyTierlistState(liveState);
+        await interaction.update(buildLegacyTierlistModPanelPayload(liveState, userId));
+        return;
+      }
+
+      if (interaction.customId === "panel_part_next") {
+        panelUser.panelTab = "participants";
+        panelUser.panelParticipantId = null;
+        panelUser.panelParticipantsPage = (Number(panelUser.panelParticipantsPage) || 0) + 1;
+        persistLiveLegacyTierlistState(liveState);
+        await interaction.update(buildLegacyTierlistModPanelPayload(liveState, userId));
+        return;
+      }
+
+      if (interaction.customId === "panel_part_refresh") {
+        panelUser.panelTab = "participants";
+        persistLiveLegacyTierlistState(liveState);
+        await interaction.update(buildLegacyTierlistModPanelPayload(liveState, userId));
+        return;
+      }
+
+      if (interaction.customId === "panel_part_back") {
+        panelUser.panelTab = "participants";
+        panelUser.panelParticipantId = null;
+        panelUser.panelDeleteTargetId = null;
+        panelUser.panelDeleteMode = null;
+        persistLiveLegacyTierlistState(liveState);
+        await interaction.update(buildLegacyTierlistModPanelPayload(liveState, userId));
+        return;
+      }
+
+      if (interaction.customId === "panel_part_view_png") {
+        const targetId = panelUser.panelParticipantId;
+        const votes = targetId ? liveState.rawState?.finalVotes?.[targetId] : null;
+        if (!targetId || !votes || Object.keys(votes).length === 0) {
+          await interaction.reply(ephemeralPayload({ content: "У этого пользователя нет сохранённого тир-листа." }));
+          return;
+        }
+
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+        const png = await renderLegacyTierlistUserPng(liveState, targetId, "(его тир-лист)");
+        const attachment = new AttachmentBuilder(png, { name: "user-tierlist.png" });
+        const embed = new EmbedBuilder()
+          .setTitle("Tierlist пользователя")
+          .setDescription(`<@${targetId}>`)
+          .setImage("attachment://user-tierlist.png");
+        await interaction.editReply({ embeds: [embed], files: [attachment] });
+        return;
+      }
+
+      if (interaction.customId === "panel_part_delete_votes" || interaction.customId === "panel_part_delete_full") {
+        const targetId = panelUser.panelParticipantId;
+        if (!targetId) {
+          await interaction.reply(ephemeralPayload({ content: "Не выбран участник." }));
+          return;
+        }
+
+        panelUser.panelDeleteTargetId = targetId;
+        panelUser.panelDeleteMode = interaction.customId === "panel_part_delete_full" ? "full" : "votes";
+        persistLiveLegacyTierlistState(liveState);
+        await interaction.update(buildLegacyTierlistModPanelPayload(liveState, userId));
+        return;
+      }
+
+      if (interaction.customId === "panel_part_cancel_delete") {
+        panelUser.panelDeleteTargetId = null;
+        panelUser.panelDeleteMode = null;
+        persistLiveLegacyTierlistState(liveState);
+        await interaction.update(buildLegacyTierlistModPanelPayload(liveState, userId));
+        return;
+      }
+
+      if (interaction.customId === "panel_part_confirm_delete") {
+        const targetId = panelUser.panelDeleteTargetId;
+        const mode = panelUser.panelDeleteMode;
+        if (!targetId || !mode) {
+          await interaction.reply(ephemeralPayload({ content: "Нечего подтверждать." }));
+          return;
+        }
+
+        if (mode === "votes") {
+          delete liveState.rawState.finalVotes[targetId];
+        } else if (mode === "full") {
+          delete liveState.rawState.finalVotes[targetId];
+          delete liveState.rawState.draftVotes[targetId];
+          delete liveState.rawState.users[targetId];
+        }
+
+        panelUser.panelDeleteTargetId = null;
+        panelUser.panelDeleteMode = null;
+        panelUser.panelParticipantId = null;
+
+        await interaction.deferUpdate();
+        const syncResult = saveLiveLegacyTierlistStateAndResync(liveState);
+        await refreshLegacyTierlistPublicViews(client, { liveState });
+        await interaction.editReply(buildLegacyTierlistModPanelPayload(liveState, userId, `Удаление выполнено.${getLegacyTierlistSyncStatusSuffix(syncResult)}`));
+        return;
+      }
+
+      if (interaction.customId === "panel_close") {
+        await interaction.update({ content: "Ок.", embeds: [], components: [], attachments: [] });
+        return;
+      }
+
+      if (interaction.customId === "panel_refresh") {
+        await interaction.deferUpdate();
+        const result = await refreshLegacyTierlistPublicViews(client, { liveState });
+        const dashboardOk = result.dashboard && result.dashboard.ok;
+        const summaryOk = result.summary && result.summary.ok;
+        const syncResult = result.dashboard?.syncResult || result.summary?.syncResult || null;
+        await interaction.editReply(buildLegacyTierlistModPanelPayload(
+          liveState,
+          userId,
+          `Обновлено: dashboard ${dashboardOk ? "ok" : "—"}, summary ${summaryOk ? "ok" : "—"}.${getLegacyTierlistSyncStatusSuffix(syncResult)}`
+        ));
+        return;
+      }
+
+      if (interaction.customId === "panel_icon_minus" || interaction.customId === "panel_icon_plus") {
+        applyLegacyTierlistImageDelta(liveState.rawState, "icon", interaction.customId === "panel_icon_plus" ? 12 : -12);
+        await interaction.deferUpdate();
+        const syncResult = saveLiveLegacyTierlistStateAndResync(liveState);
+        await refreshLegacyTierlistPublicViews(client, { liveState });
+        const cfg = getLegacyTierlistImageConfig(liveState.rawState);
+        await interaction.editReply(buildLegacyTierlistModPanelPayload(liveState, userId, `img: ${cfg.W}x${cfg.H}, icon=${cfg.ICON}.${getLegacyTierlistSyncStatusSuffix(syncResult)}`));
+        return;
+      }
+
+      if (interaction.customId === "panel_w_minus" || interaction.customId === "panel_w_plus") {
+        applyLegacyTierlistImageDelta(liveState.rawState, "width", interaction.customId === "panel_w_plus" ? 200 : -200);
+        await interaction.deferUpdate();
+        const syncResult = saveLiveLegacyTierlistStateAndResync(liveState);
+        await refreshLegacyTierlistPublicViews(client, { liveState });
+        const cfg = getLegacyTierlistImageConfig(liveState.rawState);
+        await interaction.editReply(buildLegacyTierlistModPanelPayload(liveState, userId, `img: ${cfg.W}x${cfg.H}, icon=${cfg.ICON}.${getLegacyTierlistSyncStatusSuffix(syncResult)}`));
+        return;
+      }
+
+      if (interaction.customId === "panel_h_minus" || interaction.customId === "panel_h_plus") {
+        applyLegacyTierlistImageDelta(liveState.rawState, "height", interaction.customId === "panel_h_plus" ? 120 : -120);
+        await interaction.deferUpdate();
+        const syncResult = saveLiveLegacyTierlistStateAndResync(liveState);
+        await refreshLegacyTierlistPublicViews(client, { liveState });
+        const cfg = getLegacyTierlistImageConfig(liveState.rawState);
+        await interaction.editReply(buildLegacyTierlistModPanelPayload(liveState, userId, `img: ${cfg.W}x${cfg.H}, icon=${cfg.ICON}.${getLegacyTierlistSyncStatusSuffix(syncResult)}`));
+        return;
+      }
+
+      if (interaction.customId === "panel_reset_img") {
+        resetLegacyTierlistImageOverrides(liveState.rawState);
+        await interaction.deferUpdate();
+        const syncResult = saveLiveLegacyTierlistStateAndResync(liveState);
+        await refreshLegacyTierlistPublicViews(client, { liveState });
+        const cfg = getLegacyTierlistImageConfig(liveState.rawState);
+        await interaction.editReply(buildLegacyTierlistModPanelPayload(liveState, userId, `img: ${cfg.W}x${cfg.H}, icon=${cfg.ICON}.${getLegacyTierlistSyncStatusSuffix(syncResult)}`));
+        return;
+      }
+
+      if (interaction.customId === "panel_fonts") {
+        const info = getLegacyTierlistFontDebugInfo();
+        const lines = [
+          "assets/fonts ttf files:",
+          info.files.length ? info.files.map((filePath) => `- ${path.basename(filePath)}`).join("\n") : "- (none)",
+          "",
+          `picked regular: ${info.regularFile ? path.basename(info.regularFile) : "(null)"}`,
+          `picked bold: ${info.boldFile ? path.basename(info.boldFile) : "(null)"}`,
+          `fallback: ${info.usedFallback}`,
+        ];
+        await interaction.reply(ephemeralPayload({ content: lines.join("\n") }));
+        return;
+      }
+
+      if (interaction.customId === "panel_rename") {
+        const tierKey = panelUser.panelTierKey || "S";
+        const currentName = liveState.rawState?.tiers?.[tierKey]?.name || tierKey;
+        const modal = new ModalBuilder()
+          .setCustomId(`panel_rename_modal:${tierKey}`)
+          .setTitle(`Переименовать тир ${tierKey}`);
+        const input = new TextInputBuilder()
+          .setCustomId("tier_name")
+          .setLabel("Новое название (на картинке)")
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+          .setMaxLength(24)
+          .setValue(String(currentName).slice(0, 24));
+        modal.addComponents(new ActionRowBuilder().addComponents(input));
+        await interaction.showModal(modal);
+        return;
+      }
+
+      if (interaction.customId === "panel_add_custom_character") {
+        const modal = new ModalBuilder()
+          .setCustomId("panel_add_custom_character_modal")
+          .setTitle("Добавить персонажа в legacy Tierlist");
+        modal.addComponents(
+          new ActionRowBuilder().addComponents(
+            new TextInputBuilder()
+              .setCustomId("character_name")
+              .setLabel("Имя персонажа")
+              .setStyle(TextInputStyle.Short)
+              .setRequired(true)
+              .setMaxLength(100)
+          ),
+          new ActionRowBuilder().addComponents(
+            new TextInputBuilder()
+              .setCustomId("character_id")
+              .setLabel("ID латиницей (необязательно)")
+              .setStyle(TextInputStyle.Short)
+              .setRequired(false)
+              .setMaxLength(64)
+              .setPlaceholder("например ryu")
+          ),
+          new ActionRowBuilder().addComponents(
+            new TextInputBuilder()
+              .setCustomId("character_image_url")
+              .setLabel("Прямой URL PNG/JPG")
+              .setStyle(TextInputStyle.Paragraph)
+              .setRequired(true)
+              .setMaxLength(1000)
+              .setPlaceholder("https://cdn.discordapp.com/.../image.png")
+          )
+        );
+        await interaction.showModal(modal);
+        return;
+      }
+
+      await interaction.reply(ephemeralPayload({ content: "Неизвестная кнопка панели." }));
+      return;
+    }
+
+    if (["elo_panel_refresh_import", "elo_panel_back"].includes(interaction.customId)) {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      if (interaction.customId === "elo_panel_back") {
+        await interaction.update(buildModeratorPanelPayload("", false));
+        return;
+      }
+
+      await interaction.deferUpdate();
+      const result = refreshDormantEloImport();
+      await interaction.editReply(buildDormantEloPanelPayload(getDormantEloImportStatusText(result), false));
+      return;
+    }
+
+    if (["elo_panel_pending", "elo_review_refresh_pending"].includes(interaction.customId)) {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      if (interaction.customId === "elo_panel_pending") {
+        await interaction.reply(buildDormantEloPendingPayload(15));
+        return;
+      }
+
+      await interaction.update(buildDormantEloPendingPayload(15, false));
+      return;
+    }
+
+    if (interaction.customId === "elo_panel_set_source") {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      const modal = new ModalBuilder().setCustomId("elo_panel_source_modal").setTitle("Путь к legacy ELO db");
+      const input = new TextInputBuilder()
+        .setCustomId("elo_source_path")
+        .setLabel("Относительный путь от data root или абсолютный путь")
+        .setStyle(TextInputStyle.Short)
+        .setRequired(false)
+        .setMaxLength(500)
+        .setPlaceholder("elo-db.json или C:\\path\\to\\elo\\db.json")
+        .setValue(String(db.config.integrations?.elo?.sourcePath || "").slice(0, 500));
+
+      modal.addComponents(new ActionRowBuilder().addComponents(input));
+      await interaction.showModal(modal);
+      return;
+    }
+
+    if (interaction.customId === "elo_panel_lookup") {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      const modal = new ModalBuilder().setCustomId("elo_panel_lookup_modal").setTitle("ELO lookup");
+      const input = new TextInputBuilder()
+        .setCustomId("elo_lookup_user")
+        .setLabel("ID или mention игрока; пусто = показать себя")
+        .setStyle(TextInputStyle.Short)
+        .setRequired(false)
+        .setMaxLength(80)
+        .setPlaceholder("123456789012345678 или <@123456789012345678>");
+
+      modal.addComponents(new ActionRowBuilder().addComponents(input));
+      await interaction.showModal(modal);
+      return;
+    }
+
+    if (interaction.customId === "elo_panel_graphic") {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      const liveState = getLiveLegacyEloState();
+      if (!liveState.ok) {
+        await interaction.update(buildLegacyEloStateErrorPayload("Не удалось открыть legacy ELO PNG panel", liveState, false));
+        return;
+      }
+
+      await interaction.update(buildLegacyEloGraphicPanelPayload(liveState.rawDb, "", false));
+      return;
+    }
+
+    if (interaction.customId === "elo_panel_rebuild") {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      const liveState = getLiveLegacyEloState();
+      if (!liveState.ok) {
+        await interaction.reply(buildLegacyEloStateErrorPayload("Не удалось открыть legacy ELO базу", liveState));
+        return;
+      }
+
+      await interaction.deferUpdate();
+      try {
+        const rebuilt = rebuildLegacyEloRatings(liveState.rawDb, { rebuiltAt: nowIso() });
+
+        let boardUpdated = false;
+        let syncResult = null;
+        const refreshResult = await refreshLegacyEloGraphicBoard(client, { liveState });
+        if (refreshResult?.ok) {
+          boardUpdated = true;
+          syncResult = refreshResult.syncResult;
+        } else {
+          syncResult = saveLiveLegacyEloStateAndResync(liveState);
+        }
+
+        await logLine(
+          client,
+          `ELO REBUILD: total=${rebuilt.total} retiered=${rebuilt.retiered} hidden=${rebuilt.hidden} clearedCards=${rebuilt.cleanup.clearedCards} png=${boardUpdated ? "updated" : "skipped"} by ${interaction.user.tag}`
+        );
+
+        await interaction.editReply(buildDormantEloPanelPayload(
+          [
+            `Legacy ELO rebuild завершён.`,
+            `Проверено: ${rebuilt.total}.`,
+            `Сменили tier: ${rebuilt.retiered}.`,
+            `Скрыто как невалидные: ${rebuilt.hidden}.`,
+            `Роли: пропущены в dormant mode.`,
+            `Legacy card links: ${rebuilt.cleanup.clearedCards}.`,
+            `Legacy index link: ${rebuilt.cleanup.clearedIndexLink ? "да" : "нет"}.`,
+            `PNG: ${boardUpdated ? "обновлён" : "не настроен или пропущен"}.`,
+          ].join(" ") + getLegacyEloSyncStatusSuffix(syncResult),
+          false
+        ));
+      } catch (error) {
+        await interaction.editReply(buildDormantEloPanelPayload(String(error?.message || error || "Не удалось выполнить legacy ELO rebuild."), false));
+      }
+      return;
+    }
+
+    if (interaction.customId === "elo_panel_modset") {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      const modal = new ModalBuilder().setCustomId("elo_panel_modset_modal").setTitle("Legacy ELO modset");
+      const userInput = new TextInputBuilder()
+        .setCustomId("elo_modset_user")
+        .setLabel("ID или mention игрока")
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true)
+        .setMaxLength(80)
+        .setPlaceholder("123456789012345678 или <@123456789012345678>");
+      const eloInput = new TextInputBuilder()
+        .setCustomId("elo_modset_text")
+        .setLabel("Текст с числом ELO")
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true)
+        .setMaxLength(100)
+        .setPlaceholder("Например: 110 или мой elo 110");
+      const screenshotInput = new TextInputBuilder()
+        .setCustomId("elo_modset_screenshot_url")
+        .setLabel("Прямая ссылка на скрин-картинку")
+        .setStyle(TextInputStyle.Paragraph)
+        .setRequired(true)
+        .setMaxLength(1000)
+        .setPlaceholder("https://cdn.discordapp.com/.../proof.png");
+
+      modal.addComponents(
+        new ActionRowBuilder().addComponents(userInput),
+        new ActionRowBuilder().addComponents(eloInput),
+        new ActionRowBuilder().addComponents(screenshotInput)
+      );
+      await interaction.showModal(modal);
+      return;
+    }
+
+    if (interaction.customId === "elo_panel_submit_setup") {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      const liveState = getLiveLegacyEloState();
+      if (!liveState.ok) {
+        await interaction.reply(buildLegacyEloStateErrorPayload("Не удалось открыть legacy ELO базу", liveState));
+        return;
+      }
+
+      const submitPanel = getLegacyEloSubmitPanelState(liveState.rawDb);
+      const modal = new ModalBuilder().setCustomId("elo_panel_submit_setup_modal").setTitle("Legacy ELO submit hub");
+      const input = new TextInputBuilder()
+        .setCustomId("elo_submit_channel")
+        .setLabel("ID или mention текстового канала")
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true)
+        .setMaxLength(80)
+        .setPlaceholder("123456789012345678 или <#123456789012345678>")
+        .setValue(String(submitPanel.channelId || ""));
+
+      modal.addComponents(new ActionRowBuilder().addComponents(input));
+      await interaction.showModal(modal);
+      return;
+    }
+
+    if (interaction.customId === "elo_submit_open") {
+      const liveState = getLiveLegacyEloState();
+      if (!liveState.ok) {
+        await interaction.reply(buildLegacyEloStateErrorPayload("Не удалось открыть legacy ELO данные", liveState));
+        return;
+      }
+
+      const session = getLegacyEloSubmitSession(interaction.user.id);
+      const submitPanel = getLegacyEloSubmitPanelState(liveState.rawDb);
+      if (session) {
+        await interaction.reply(buildLegacyEloSubmitAwaitPayload(session.channelId || submitPanel.channelId || interaction.channelId));
+        return;
+      }
+
+      const blockReason = getLegacyEloSubmitEligibilityError(liveState.rawDb, interaction.user.id);
+      if (blockReason) {
+        await interaction.reply(ephemeralPayload({ content: blockReason }));
+        return;
+      }
+
+      const modal = new ModalBuilder().setCustomId("elo_submit_modal").setTitle("ELO заявка");
+      const textInput = new TextInputBuilder()
+        .setCustomId("elo_submit_text")
+        .setLabel("Текст с числом ELO")
+        .setStyle(TextInputStyle.Paragraph)
+        .setRequired(true)
+        .setMaxLength(1000)
+        .setPlaceholder("Например 73 или мой elo 73");
+
+      modal.addComponents(new ActionRowBuilder().addComponents(textInput));
+      await interaction.showModal(modal);
+      return;
+    }
+
+    if (interaction.customId === "elo_submit_card") {
+      await interaction.reply(await buildLegacyEloMyCardPayload(client, interaction.user.id));
+      return;
+    }
+
+    if (interaction.customId === "elo_submit_cancel") {
+      clearLegacyEloSubmitSession(interaction.user.id);
+      await interaction.reply(ephemeralPayload({ content: "Ок. Шаг отправки ELO отменён." }));
+      return;
+    }
+
+    if (interaction.customId === "elo_review_open") {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      const modal = new ModalBuilder().setCustomId("elo_review_open_modal").setTitle("Открыть ELO заявку");
+      const input = new TextInputBuilder()
+        .setCustomId("elo_review_submission_id")
+        .setLabel("ID submission")
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true)
+        .setMaxLength(80)
+        .setPlaceholder("Например MABC123XYZ");
+
+      modal.addComponents(new ActionRowBuilder().addComponents(input));
+      await interaction.showModal(modal);
+      return;
+    }
+
+    if (interaction.customId === "elo_panel_remove") {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      const modal = new ModalBuilder().setCustomId("elo_panel_remove_modal").setTitle("Remove ELO player");
+      const input = new TextInputBuilder()
+        .setCustomId("elo_remove_user")
+        .setLabel("ID или mention игрока")
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true)
+        .setMaxLength(80)
+        .setPlaceholder("123456789012345678 или <@123456789012345678>");
+
+      modal.addComponents(new ActionRowBuilder().addComponents(input));
+      await interaction.showModal(modal);
+      return;
+    }
+
+    if (interaction.customId === "elo_panel_wipe") {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      const modal = new ModalBuilder().setCustomId("elo_panel_wipe_modal").setTitle("Wipe ELO rating");
+      const modeInput = new TextInputBuilder()
+        .setCustomId("elo_wipe_mode")
+        .setLabel("Режим: soft или hard")
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true)
+        .setMaxLength(10)
+        .setPlaceholder("soft");
+      const confirmInput = new TextInputBuilder()
+        .setCustomId("elo_wipe_confirm")
+        .setLabel("Подтверждение: WIPE")
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true)
+        .setMaxLength(10)
+        .setPlaceholder("WIPE");
+
+      modal.addComponents(
+        new ActionRowBuilder().addComponents(modeInput),
+        new ActionRowBuilder().addComponents(confirmInput)
+      );
+      await interaction.showModal(modal);
+      return;
+    }
+
+    const [eloReviewAction, eloReviewSubmissionId] = interaction.customId.split(":");
+    if (["elo_review_approve", "elo_review_edit", "elo_review_reject"].includes(eloReviewAction) && eloReviewSubmissionId) {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      const liveState = getLiveLegacyEloState();
+      if (!liveState.ok) {
+        await interaction.reply(buildLegacyEloStateErrorPayload("Не удалось открыть ELO review-заявку", liveState));
+        return;
+      }
+
+      const submission = getLegacyEloSubmission(liveState.rawDb, eloReviewSubmissionId);
+      if (!submission) {
+        await interaction.reply(ephemeralPayload({ content: "Legacy ELO заявка не найдена." }));
+        return;
+      }
+
+      if (submission.status !== "pending") {
+        await interaction.reply(buildLegacyEloReviewPayload(eloReviewSubmissionId, `Заявка уже обработана: ${submission.status}.`));
+        return;
+      }
+
+      if (isLegacyEloSubmissionExpired(submission, { pendingExpireHours: LEGACY_ELO_PENDING_EXPIRE_HOURS })) {
+        const expired = expireLegacyEloSubmission(liveState.rawDb, eloReviewSubmissionId, { reviewedAt: nowIso() });
+        saveLegacyEloDbFile(liveState.resolvedPath, expired.db);
+        const syncWarning = getLegacyEloResyncWarning();
+        await interaction.update(buildLegacyEloReviewPayload(eloReviewSubmissionId, `Заявка протухла и помечена expired.${syncWarning}`, false));
+        return;
+      }
+
+      if (eloReviewAction === "elo_review_approve") {
+        try {
+          const profileData = await getLegacyEloApprovalProfileData(client, submission.userId);
+          const approved = approveLegacyEloSubmission(liveState.rawDb, eloReviewSubmissionId, {
+            reviewedBy: interaction.user.tag,
+            reviewedAt: nowIso(),
+            displayName: profileData.displayName,
+            username: profileData.username,
+            avatarUrl: profileData.avatarUrl,
+          });
+          saveLegacyEloDbFile(liveState.resolvedPath, approved.db);
+          const syncWarning = getLegacyEloResyncWarning();
+          await dmUser(
+            client,
+            submission.userId,
+            [
+              "Твоя ELO-заявка одобрена.",
+              `ELO: ${approved.submission.elo}`,
+              `Тир: ${approved.submission.tier}`,
+              `Пруф: ${approved.rating.proofUrl || approved.submission.screenshotUrl || "—"}`,
+            ].join("\n")
+          );
+          await logLine(client, `ELO APPROVE: <@${submission.userId}> elo ${approved.submission.elo} -> tier ${approved.submission.tier} (id ${approved.submission.id}) by ${interaction.user.tag}`);
+          await interaction.update(buildLegacyEloReviewPayload(eloReviewSubmissionId, `Одобрено.${syncWarning}`, false));
+        } catch (error) {
+          await interaction.reply(ephemeralPayload({ content: String(error?.message || error || "Не удалось одобрить ELO заявку.") }));
+        }
+        return;
+      }
+
+      if (eloReviewAction === "elo_review_edit") {
+        const modal = new ModalBuilder().setCustomId(`elo_review_edit_modal:${eloReviewSubmissionId}`).setTitle("Edit ELO");
+        const input = new TextInputBuilder()
+          .setCustomId("elo_review_value")
+          .setLabel("Новое ELO")
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+          .setValue(String(submission.elo || ""))
+          .setPlaceholder("Например 73");
+        modal.addComponents(new ActionRowBuilder().addComponents(input));
+        await interaction.showModal(modal);
+        return;
+      }
+
+      if (eloReviewAction === "elo_review_reject") {
+        const modal = new ModalBuilder().setCustomId(`elo_review_reject_modal:${eloReviewSubmissionId}`).setTitle("Reject reason");
+        const input = new TextInputBuilder()
+          .setCustomId("elo_review_reason")
+          .setLabel("Причина отказа")
+          .setStyle(TextInputStyle.Paragraph)
+          .setRequired(true)
+          .setPlaceholder("Коротко и по делу");
+        modal.addComponents(new ActionRowBuilder().addComponents(input));
+        await interaction.showModal(modal);
+        return;
+      }
     }
 
     if ([
@@ -6081,6 +9678,74 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
+    if (interaction.customId === "select_main") {
+      const liveState = getLiveLegacyTierlistState();
+      if (!liveState.ok) {
+        await interaction.reply(buildLegacyTierlistStateErrorPayload("Не удалось открыть legacy Tierlist state", liveState));
+        return;
+      }
+
+      const selectedId = String(interaction.values?.[0] || "").trim();
+      if (!selectedId || !liveState.charById.has(selectedId)) {
+        await interaction.update(buildLegacyTierlistStartPayload(liveState, interaction.user.id, "Выбери персонажа из списка."));
+        return;
+      }
+
+      if (isLegacyTierlistWizardLocked(liveState.rawState, interaction.user.id)) {
+        const user = getLegacyTierlistWizardUser(liveState.rawState, interaction.user.id);
+        await interaction.update(buildLegacyTierlistStartPayload(liveState, interaction.user.id, `Кулдаун до ${formatLegacyTierlistMoment(user.lockUntil)}.`));
+        return;
+      }
+
+      setLegacyTierlistMain(liveState, interaction.user.id, selectedId);
+      startLegacyTierlistWizard(liveState, interaction.user.id, "full");
+      persistLiveLegacyTierlistState(liveState);
+      await interaction.deferUpdate();
+      await interaction.editReply(await buildLegacyTierlistWizardPayload(liveState, interaction.user.id));
+      return;
+    }
+
+    if (interaction.customId === "panel_select_tier") {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      const liveState = getLiveLegacyTierlistState();
+      if (!liveState.ok) {
+        await interaction.reply(buildLegacyTierlistStateErrorPayload("Не удалось открыть legacy Tierlist panel", liveState));
+        return;
+      }
+
+      const user = getLegacyTierlistWizardUser(liveState.rawState, interaction.user.id);
+      user.panelTierKey = String(interaction.values?.[0] || "S").trim() || "S";
+      persistLiveLegacyTierlistState(liveState);
+      await interaction.update(buildLegacyTierlistModPanelPayload(liveState, interaction.user.id));
+      return;
+    }
+
+    if (interaction.customId === "panel_part_select_user") {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      const liveState = getLiveLegacyTierlistState();
+      if (!liveState.ok) {
+        await interaction.reply(buildLegacyTierlistStateErrorPayload("Не удалось открыть legacy Tierlist panel", liveState));
+        return;
+      }
+
+      const user = getLegacyTierlistWizardUser(liveState.rawState, interaction.user.id);
+      user.panelTab = "participants";
+      user.panelParticipantId = String(interaction.values?.[0] || "").trim() || null;
+      user.panelDeleteTargetId = null;
+      user.panelDeleteMode = null;
+      persistLiveLegacyTierlistState(liveState);
+      await interaction.update(buildLegacyTierlistModPanelPayload(liveState, interaction.user.id));
+      return;
+    }
+
     // ── Combo guide select menus ──
     if (interaction.customId === "combo_select_character") {
       if (!hasComboGuidePanelAccess(interaction.member)) {
@@ -6278,6 +9943,28 @@ client.on("interactionCreate", async (interaction) => {
         persist: saveDb,
       });
       await interaction.update(buildGraphicPanelPayload());
+      return;
+    }
+
+    if (interaction.customId === "elo_graphic_panel_select_tier") {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      const liveState = getLiveLegacyEloState();
+      if (!liveState.ok) {
+        await interaction.reply(buildLegacyEloStateErrorPayload("Не удалось открыть legacy ELO PNG panel", liveState));
+        return;
+      }
+
+      setLegacyEloGraphicSelectedTier(liveState.rawDb, Number(interaction.values?.[0]) || 5);
+      const syncResult = saveLiveLegacyEloStateAndResync(liveState);
+      await interaction.update(buildLegacyEloGraphicPanelPayload(
+        liveState.rawDb,
+        `Выбран тир ${buildLegacyEloGraphicPanelSnapshot(liveState.rawDb).selectedTier}.${getLegacyEloSyncStatusSuffix(syncResult)}`,
+        false
+      ));
       return;
     }
 
@@ -6714,6 +10401,734 @@ client.on("interactionCreate", async (interaction) => {
       saveJsonFile(CONFIG_PATH, rawConfig);
       await ensureWelcomePanel(client);
       await interaction.reply(ephemeralPayload({ content: `Персонаж «${charName}» (ID: ${charId}) добавлен в каталог и сразу доступен в выборе мейнов.${roleNote}` }));
+      return;
+    }
+
+    if (interaction.customId === "elo_panel_source_modal") {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      const sourcePath = interaction.fields.getTextInputValue("elo_source_path").trim();
+      db.config.integrations = normalizeIntegrationState(db.config.integrations).integrations;
+
+      let statusText = "";
+      if (!sourcePath) {
+        const cleared = clearDormantEloSync(db, { syncedAt: nowIso(), sourcePath: "" });
+        saveDb();
+        statusText = `ELO sourcePath очищен. Снято проекций: ${cleared.clearedProfiles}.`;
+      } else {
+        db.config.integrations.elo.sourcePath = sourcePath;
+        saveDb();
+        const result = refreshDormantEloImport();
+        statusText = getDormantEloImportStatusText(result);
+      }
+
+      await interaction.reply(buildDormantEloPanelPayload(statusText));
+      return;
+    }
+
+    if (interaction.customId === "tierlist_panel_source_modal") {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      const sourcePath = interaction.fields.getTextInputValue("tierlist_source_path").trim();
+      db.config.integrations = normalizeIntegrationState(db.config.integrations).integrations;
+
+      let statusText = "";
+      if (!sourcePath) {
+        const cleared = clearDormantTierlistSync(db, { syncedAt: nowIso(), sourcePath: "" });
+        saveDb();
+        statusText = `Tierlist sourcePath очищен. Снято проекций: ${cleared.clearedProfiles}.`;
+      } else {
+        db.config.integrations.tierlist.sourcePath = sourcePath;
+        saveDb();
+        const result = refreshDormantTierlistImport();
+        statusText = getDormantTierlistImportStatusText(result);
+      }
+
+      await interaction.reply(buildDormantTierlistPanelPayload(statusText));
+      return;
+    }
+
+    if (interaction.customId === "elo_panel_lookup_modal") {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      const requestedUserId = parseRequestedUserId(
+        interaction.fields.getTextInputValue("elo_lookup_user"),
+        interaction.user.id
+      );
+      if (!requestedUserId) {
+        await interaction.reply(ephemeralPayload({ content: "Нужен корректный user ID или Discord mention." }));
+        return;
+      }
+
+      await interaction.reply(buildDormantEloProfilePayload(requestedUserId));
+      return;
+    }
+
+    if (interaction.customId === "tierlist_panel_lookup_modal") {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      const requestedUserId = parseRequestedUserId(
+        interaction.fields.getTextInputValue("tierlist_lookup_user"),
+        interaction.user.id
+      );
+      if (!requestedUserId) {
+        await interaction.reply(ephemeralPayload({ content: "Нужен корректный user ID или Discord mention." }));
+        return;
+      }
+
+      await interaction.reply(buildDormantTierlistProfilePayload(requestedUserId));
+      return;
+    }
+
+    if (interaction.customId.startsWith("panel_rename_modal:")) {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      const tierKey = interaction.customId.split(":")[1] || "S";
+      const name = String(interaction.fields.getTextInputValue("tier_name") || "").trim().slice(0, 24);
+      if (!name) {
+        await interaction.reply(ephemeralPayload({ content: "Пустое имя." }));
+        return;
+      }
+
+      const liveState = getLiveLegacyTierlistState();
+      if (!liveState.ok) {
+        await interaction.reply(buildLegacyTierlistStateErrorPayload("Не удалось открыть legacy Tierlist state", liveState));
+        return;
+      }
+
+      liveState.rawState.tiers ||= {};
+      liveState.rawState.tiers[tierKey] ||= {};
+      liveState.rawState.tiers[tierKey].name = name;
+
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      const syncResult = saveLiveLegacyTierlistStateAndResync(liveState);
+      await refreshLegacyTierlistPublicViews(client, { liveState });
+      await interaction.editReply(`Ок. Теперь **${tierKey}** называется: **${name}**.${getLegacyTierlistSyncStatusSuffix(syncResult)}`);
+      return;
+    }
+
+    if (interaction.customId === "panel_add_custom_character_modal") {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      const name = String(interaction.fields.getTextInputValue("character_name") || "").trim().slice(0, 100);
+      const requestedId = String(interaction.fields.getTextInputValue("character_id") || "").trim().slice(0, 64);
+      const imageUrl = String(interaction.fields.getTextInputValue("character_image_url") || "").trim().slice(0, 1000);
+      const characterId = normalizeCharacterId(requestedId || name, `char_${Date.now()}`);
+
+      if (!name) {
+        await interaction.reply(ephemeralPayload({ content: "Имя персонажа пустое." }));
+        return;
+      }
+      if (!characterId) {
+        await interaction.reply(ephemeralPayload({ content: "Не удалось получить id. Укажи id латиницей или дай имя попроще." }));
+        return;
+      }
+      if (!imageUrl) {
+        await interaction.reply(ephemeralPayload({ content: "Нужен прямой URL PNG/JPG картинки." }));
+        return;
+      }
+
+      const liveState = getLiveLegacyTierlistState();
+      if (!liveState.ok) {
+        await interaction.reply(buildLegacyTierlistStateErrorPayload("Не удалось открыть legacy Tierlist state", liveState));
+        return;
+      }
+
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      try {
+        await addLegacyTierlistCustomCharacter(liveState, {
+          id: characterId,
+          name,
+          imageUrl,
+        });
+
+        const syncResult = saveLiveLegacyTierlistStateAndResync(liveState);
+        const refreshed = await refreshLegacyTierlistPublicViews(client, { liveState });
+        const updatedTargets = [];
+        if (refreshed.dashboard && refreshed.dashboard.ok) updatedTargets.push("dashboard");
+        if (refreshed.summary && refreshed.summary.ok) updatedTargets.push("summary");
+        const statusText = updatedTargets.length
+          ? `Обновлено: ${updatedTargets.join(", ")}.`
+          : "Персонаж сохранён, но dashboard и summary пока не настроены.";
+
+        await interaction.editReply([
+          `Персонаж **${name}** добавлен.`,
+          `id: ${characterId}`,
+          `${statusText}${getLegacyTierlistSyncStatusSuffix(syncResult)}`,
+        ].join("\n"));
+      } catch (error) {
+        await interaction.editReply(String(error?.message || error || "Не удалось добавить персонажа."));
+      }
+      return;
+    }
+
+    if (["tierlist_panel_dashboard_setup_modal", "tierlist_panel_summary_setup_modal"].includes(interaction.customId)) {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      const isDashboard = interaction.customId === "tierlist_panel_dashboard_setup_modal";
+      const channelId = parseRequestedChannelId(
+        interaction.fields.getTextInputValue(isDashboard ? "tierlist_dashboard_channel" : "tierlist_summary_channel")
+      );
+      if (!channelId) {
+        await interaction.reply(ephemeralPayload({ content: "Нужен корректный ID или mention текстового канала." }));
+        return;
+      }
+
+      const liveState = getLiveLegacyTierlistState();
+      if (!liveState.ok) {
+        await interaction.reply(buildLegacyTierlistStateErrorPayload("Не удалось открыть legacy Tierlist state", liveState));
+        return;
+      }
+
+      try {
+        const result = isDashboard
+          ? await ensureLegacyTierlistDashboardMessage(client, liveState, channelId)
+          : await ensureLegacyTierlistSummaryMessage(client, liveState, channelId);
+
+        await interaction.reply(buildDormantTierlistPanelPayload(
+          `${isDashboard ? "Legacy Tierlist dashboard" : "Legacy Tierlist summary"} создан/обновлён в ${formatChannelMention(result.channelId)}. Message ID: ${result.messageId || "—"}.${getLegacyTierlistSyncStatusSuffix(result.syncResult)}`
+        ));
+      } catch (error) {
+        await interaction.reply(ephemeralPayload({ content: String(error?.message || error || "Не удалось настроить legacy Tierlist public view.") }));
+      }
+      return;
+    }
+
+    if (interaction.customId === "elo_panel_modset_modal") {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      const targetUserId = parseRequestedUserId(interaction.fields.getTextInputValue("elo_modset_user"));
+      if (!targetUserId) {
+        await interaction.reply(ephemeralPayload({ content: "Нужен корректный user ID или Discord mention." }));
+        return;
+      }
+
+      const rawText = String(interaction.fields.getTextInputValue("elo_modset_text") || "").trim();
+      if (!rawText) {
+        await interaction.reply(ephemeralPayload({ content: "Нужен текст с числом ELO." }));
+        return;
+      }
+
+      const screenshotUrl = String(interaction.fields.getTextInputValue("elo_modset_screenshot_url") || "").trim();
+      if (!isLikelyImageUrl(screenshotUrl)) {
+        await interaction.reply(ephemeralPayload({ content: "Нужна прямая ссылка на image URL, например из Discord CDN." }));
+        return;
+      }
+
+      const liveState = getLiveLegacyEloState();
+      if (!liveState.ok) {
+        await interaction.reply(buildLegacyEloStateErrorPayload("Не удалось открыть legacy ELO базу", liveState));
+        return;
+      }
+
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      try {
+        const created = await createManualApprovedLegacyEloRecord(
+          client,
+          liveState,
+          targetUserId,
+          rawText,
+          screenshotUrl,
+          interaction.user.tag
+        );
+
+        let boardUpdated = false;
+        let syncResult = null;
+        const refreshResult = await refreshLegacyEloGraphicBoard(client, { liveState });
+        if (refreshResult?.ok) {
+          boardUpdated = true;
+          syncResult = refreshResult.syncResult;
+        } else {
+          syncResult = saveLiveLegacyEloStateAndResync(liveState);
+        }
+
+        const latestRating = liveState.rawDb?.ratings?.[targetUserId] || created.rating;
+        const eloValue = latestRating?.elo ?? created.rating?.elo ?? "—";
+        const tierValue = latestRating?.tier ?? created.rating?.tier ?? "—";
+        const proofUrl = latestRating?.proofUrl || screenshotUrl;
+
+        await dmUser(
+          client,
+          targetUserId,
+          [
+            "Модератор обновил твой ELO рейтинг.",
+            `ELO: ${eloValue}`,
+            `Тир: ${tierValue}`,
+            `Пруф: ${proofUrl}`,
+          ].join("\n")
+        );
+        await logLine(client, `ELO MODSET: <@${targetUserId}> ELO ${eloValue} -> Tier ${tierValue} by ${interaction.user.tag}`);
+
+        await interaction.editReply(buildDormantEloPanelPayload(
+          [
+            `Legacy ELO modset выполнен для <@${targetUserId}>.`,
+            `ELO: ${eloValue}.`,
+            `Tier: ${tierValue}.`,
+            `Review ID: ${created.submissionId}.`,
+            `PNG: ${boardUpdated ? "обновлён" : "не настроен или пропущен"}.`,
+          ].join(" ") + getLegacyEloSyncStatusSuffix(syncResult),
+          false
+        ));
+      } catch (error) {
+        await interaction.editReply(buildDormantEloPanelPayload(String(error?.message || error || "Не удалось выполнить legacy ELO modset."), false));
+      }
+      return;
+    }
+
+    if (interaction.customId === "elo_panel_submit_setup_modal") {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      const channelId = parseRequestedChannelId(interaction.fields.getTextInputValue("elo_submit_channel"));
+      if (!channelId) {
+        await interaction.reply(ephemeralPayload({ content: "Нужен корректный ID или mention текстового канала." }));
+        return;
+      }
+
+      const liveState = getLiveLegacyEloState();
+      if (!liveState.ok) {
+        await interaction.reply(buildLegacyEloStateErrorPayload("Не удалось открыть legacy ELO базу", liveState));
+        return;
+      }
+
+      try {
+        const result = await ensureLegacyEloSubmitHubMessage(client, liveState, channelId);
+        await interaction.reply(buildDormantEloPanelPayload(
+          `Legacy ELO submit hub создан/обновлён в ${formatChannelMention(result.channelId)}. Message ID: ${result.messageId || "—"}.${getLegacyEloSyncStatusSuffix(result.syncResult)}`
+        ));
+      } catch (error) {
+        await interaction.reply(ephemeralPayload({ content: String(error?.message || error || "Не удалось настроить legacy ELO submit hub.") }));
+      }
+      return;
+    }
+
+    if (interaction.customId === "elo_submit_modal") {
+      const liveState = getLiveLegacyEloState();
+      if (!liveState.ok) {
+        await interaction.reply(buildLegacyEloStateErrorPayload("Не удалось открыть legacy ELO данные", liveState));
+        return;
+      }
+
+      const rawText = String(interaction.fields.getTextInputValue("elo_submit_text") || "").trim();
+      const blockReason = getLegacyEloSubmitEligibilityError(liveState.rawDb, interaction.user.id, rawText);
+      if (blockReason) {
+        await interaction.reply(ephemeralPayload({ content: blockReason }));
+        return;
+      }
+
+      const submitPanel = getLegacyEloSubmitPanelState(liveState.rawDb);
+      const targetChannelId = submitPanel.channelId || interaction.channelId;
+      setLegacyEloSubmitSession(interaction.user.id, {
+        rawText,
+        channelId: targetChannelId,
+      });
+      await interaction.reply(buildLegacyEloSubmitAwaitPayload(targetChannelId));
+      return;
+    }
+
+    if (interaction.customId === "elo_graphic_panel_setup_modal") {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      const channelId = parseRequestedChannelId(interaction.fields.getTextInputValue("elo_graphic_channel"));
+      if (!channelId) {
+        await interaction.reply(ephemeralPayload({ content: "Нужен корректный ID или mention текстового канала." }));
+        return;
+      }
+
+      const liveState = getLiveLegacyEloState();
+      if (!liveState.ok) {
+        await interaction.reply(buildLegacyEloStateErrorPayload("Не удалось открыть legacy ELO PNG panel", liveState));
+        return;
+      }
+
+      try {
+        setLegacyEloGraphicDashboardChannel(liveState.rawDb, channelId);
+        const result = await refreshLegacyEloGraphicBoard(client, { liveState, channelId });
+        const status = result.ok
+          ? `Legacy ELO PNG создан/обновлён в ${formatChannelMention(result.channelId)}.${getLegacyEloSyncStatusSuffix(result.syncResult)}`
+          : "Не удалось настроить legacy ELO PNG канал.";
+        await interaction.reply(buildLegacyEloGraphicPanelPayload(liveState.rawDb, status));
+      } catch (error) {
+        await interaction.reply(ephemeralPayload({ content: String(error?.message || error || "Не удалось настроить legacy ELO PNG канал.") }));
+      }
+      return;
+    }
+
+    if (interaction.customId === "elo_graphic_panel_labels_modal") {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      const liveState = getLiveLegacyEloState();
+      if (!liveState.ok) {
+        await interaction.reply(buildLegacyEloStateErrorPayload("Не удалось открыть legacy ELO PNG panel", liveState));
+        return;
+      }
+
+      const nextLabels = {
+        1: interaction.fields.getTextInputValue("tier_label_1").trim(),
+        2: interaction.fields.getTextInputValue("tier_label_2").trim(),
+        3: interaction.fields.getTextInputValue("tier_label_3").trim(),
+        4: interaction.fields.getTextInputValue("tier_label_4").trim(),
+        5: interaction.fields.getTextInputValue("tier_label_5").trim(),
+      };
+      if (!setLegacyEloTierLabels(liveState.rawDb, nextLabels)) {
+        await interaction.reply(ephemeralPayload({ content: "Все названия tiers должны быть заполнены." }));
+        return;
+      }
+
+      try {
+        const persisted = await persistLegacyEloGraphicMutation(client, liveState, { refreshBoard: true });
+        await interaction.reply(buildLegacyEloGraphicPanelPayload(
+          liveState.rawDb,
+          `Названия tiers обновлены.${persisted.boardUpdated ? " PNG board пересобран." : " PNG board пока не настроен."}${getLegacyEloSyncStatusSuffix(persisted.syncResult)}`
+        ));
+      } catch (error) {
+        await interaction.reply(ephemeralPayload({ content: String(error?.message || error || "Не удалось обновить labels для legacy ELO PNG.") }));
+      }
+      return;
+    }
+
+    if (interaction.customId === "elo_graphic_panel_title_modal") {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      const title = interaction.fields.getTextInputValue("graphic_title").trim();
+      if (!title) {
+        await interaction.reply(ephemeralPayload({ content: "Название PNG не может быть пустым." }));
+        return;
+      }
+
+      const liveState = getLiveLegacyEloState();
+      if (!liveState.ok) {
+        await interaction.reply(buildLegacyEloStateErrorPayload("Не удалось открыть legacy ELO PNG panel", liveState));
+        return;
+      }
+
+      setLegacyEloGraphicTitle(liveState.rawDb, title);
+      try {
+        const persisted = await persistLegacyEloGraphicMutation(client, liveState, { refreshBoard: true });
+        await interaction.reply(buildLegacyEloGraphicPanelPayload(
+          liveState.rawDb,
+          `Название PNG обновлено: **${title}**.${persisted.boardUpdated ? " PNG board пересобран." : " PNG board пока не настроен."}${getLegacyEloSyncStatusSuffix(persisted.syncResult)}`
+        ));
+      } catch (error) {
+        await interaction.reply(ephemeralPayload({ content: String(error?.message || error || "Не удалось обновить название legacy ELO PNG.") }));
+      }
+      return;
+    }
+
+    if (interaction.customId === "elo_graphic_panel_message_text_modal") {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      const nextText = interaction.fields.getTextInputValue("graphic_message_text").trim();
+      if (!nextText) {
+        await interaction.reply(ephemeralPayload({ content: "Текст сообщения PNG не может быть пустым." }));
+        return;
+      }
+
+      const liveState = getLiveLegacyEloState();
+      if (!liveState.ok) {
+        await interaction.reply(buildLegacyEloStateErrorPayload("Не удалось открыть legacy ELO PNG panel", liveState));
+        return;
+      }
+
+      setLegacyEloGraphicMessageText(liveState.rawDb, nextText);
+      try {
+        const persisted = await persistLegacyEloGraphicMutation(client, liveState, { refreshBoard: true });
+        await interaction.reply(buildLegacyEloGraphicPanelPayload(
+          liveState.rawDb,
+          `Текст сообщения PNG обновлён.${persisted.boardUpdated ? " PNG board пересобран." : " PNG board пока не настроен."}${getLegacyEloSyncStatusSuffix(persisted.syncResult)}`
+        ));
+      } catch (error) {
+        await interaction.reply(ephemeralPayload({ content: String(error?.message || error || "Не удалось обновить текст legacy ELO PNG.") }));
+      }
+      return;
+    }
+
+    if (interaction.customId.startsWith("elo_graphic_panel_rename_modal:")) {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      const tierKey = interaction.customId.split(":")[1];
+      const tierName = interaction.fields.getTextInputValue("tier_name").trim();
+      if (!tierName) {
+        await interaction.reply(ephemeralPayload({ content: "Название тира не может быть пустым." }));
+        return;
+      }
+
+      const liveState = getLiveLegacyEloState();
+      if (!liveState.ok) {
+        await interaction.reply(buildLegacyEloStateErrorPayload("Не удалось открыть legacy ELO PNG panel", liveState));
+        return;
+      }
+
+      setLegacyEloTierLabel(liveState.rawDb, tierKey, tierName);
+      try {
+        const persisted = await persistLegacyEloGraphicMutation(client, liveState, { refreshBoard: true });
+        await interaction.reply(buildLegacyEloGraphicPanelPayload(
+          liveState.rawDb,
+          `Tier ${tierKey} переименован: **${tierName}**.${persisted.boardUpdated ? " PNG board пересобран." : " PNG board пока не настроен."}${getLegacyEloSyncStatusSuffix(persisted.syncResult)}`
+        ));
+      } catch (error) {
+        await interaction.reply(ephemeralPayload({ content: String(error?.message || error || "Не удалось переименовать tier для legacy ELO PNG.") }));
+      }
+      return;
+    }
+
+    if (interaction.customId.startsWith("elo_graphic_panel_color_modal:")) {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      const tierKey = interaction.customId.split(":")[1];
+      const color = interaction.fields.getTextInputValue("tier_color").trim();
+      const liveState = getLiveLegacyEloState();
+      if (!liveState.ok) {
+        await interaction.reply(buildLegacyEloStateErrorPayload("Не удалось открыть legacy ELO PNG panel", liveState));
+        return;
+      }
+      if (!setLegacyEloGraphicTierColor(liveState.rawDb, tierKey, color)) {
+        await interaction.reply(ephemeralPayload({ content: "Нужен HEX цвет вида #ff6b6b" }));
+        return;
+      }
+
+      try {
+        const persisted = await persistLegacyEloGraphicMutation(client, liveState, { refreshBoard: true });
+        await interaction.reply(buildLegacyEloGraphicPanelPayload(
+          liveState.rawDb,
+          `Цвет tier ${tierKey} обновлён.${persisted.boardUpdated ? " PNG board пересобран." : " PNG board пока не настроен."}${getLegacyEloSyncStatusSuffix(persisted.syncResult)}`
+        ));
+      } catch (error) {
+        await interaction.reply(ephemeralPayload({ content: String(error?.message || error || "Не удалось обновить цвет tier для legacy ELO PNG.") }));
+      }
+      return;
+    }
+
+    if (interaction.customId === "elo_review_open_modal") {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      const submissionId = String(interaction.fields.getTextInputValue("elo_review_submission_id") || "").trim();
+      if (!submissionId) {
+        await interaction.reply(ephemeralPayload({ content: "Нужен ID заявки." }));
+        return;
+      }
+
+      await interaction.reply(buildLegacyEloReviewPayload(submissionId));
+      return;
+    }
+
+    if (interaction.customId === "elo_panel_remove_modal") {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      const userId = parseRequestedUserId(interaction.fields.getTextInputValue("elo_remove_user"));
+      if (!userId) {
+        await interaction.reply(ephemeralPayload({ content: "Нужен корректный user ID или Discord mention." }));
+        return;
+      }
+
+      const liveState = getLiveLegacyEloState();
+      if (!liveState.ok) {
+        await interaction.reply(buildLegacyEloStateErrorPayload("Не удалось открыть legacy ELO базу", liveState));
+        return;
+      }
+
+      const removed = removeLegacyEloRating(liveState.rawDb, userId);
+      if (!removed.removed) {
+        await interaction.reply(ephemeralPayload({ content: "Этого игрока нет в legacy ELO рейтинге." }));
+        return;
+      }
+
+      saveLegacyEloDbFile(liveState.resolvedPath, removed.db);
+      clearGraphicAvatarCacheForUser(userId);
+      const syncWarning = getLegacyEloResyncWarning();
+      await logLine(client, `ELO REMOVE: <@${userId}> removed from legacy rating by ${interaction.user.tag}`);
+      await interaction.reply(buildDormantEloPanelPayload(
+        `Удалил <@${userId}> из legacy ELO рейтинга. Mini-card link: ${removed.removedMiniCardId ? "да" : "нет"}. Legacy card link: ${removed.removedCardMessageId ? "да" : "нет"}.${syncWarning}`
+      ));
+      return;
+    }
+
+    if (interaction.customId === "elo_panel_wipe_modal") {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      const mode = String(interaction.fields.getTextInputValue("elo_wipe_mode") || "").trim().toLowerCase();
+      const confirm = String(interaction.fields.getTextInputValue("elo_wipe_confirm") || "").trim();
+      if (!["soft", "hard"].includes(mode)) {
+        await interaction.reply(ephemeralPayload({ content: "Режим wipe должен быть soft или hard." }));
+        return;
+      }
+      if (confirm !== "WIPE") {
+        await interaction.reply(ephemeralPayload({ content: "Не подтверждено. В confirm надо написать ровно: WIPE" }));
+        return;
+      }
+
+      const liveState = getLiveLegacyEloState();
+      if (!liveState.ok) {
+        await interaction.reply(buildLegacyEloStateErrorPayload("Не удалось открыть legacy ELO базу", liveState));
+        return;
+      }
+
+      const wiped = wipeLegacyEloRatings(liveState.rawDb, { mode });
+      saveLegacyEloDbFile(liveState.resolvedPath, wiped.db);
+      clearGraphicAvatarCache();
+      const syncWarning = getLegacyEloResyncWarning();
+      await logLine(client, `ELO WIPE_RATINGS (${mode}) by ${interaction.user.tag}`);
+      await interaction.reply(buildDormantEloPanelPayload(
+        [
+          `Рейтинг очищен. mode=${mode}.`,
+          `Удалено игроков: ${wiped.removedRatings}.`,
+          `Очищено mini-card ссылок: ${wiped.removedMiniCards}.`,
+          `Legacy card links: ${wiped.cleanup.clearedCardLinks}.`,
+          `Legacy index link: ${wiped.cleanup.clearedIndexLink ? "да" : "нет"}.`,
+        ].join(" ") + syncWarning
+      ));
+      return;
+    }
+
+    if (interaction.customId.startsWith("elo_review_edit_modal:")) {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      const submissionId = interaction.customId.split(":")[1] || "";
+      const liveState = getLiveLegacyEloState();
+      if (!liveState.ok) {
+        await interaction.reply(buildLegacyEloStateErrorPayload("Не удалось открыть ELO review-заявку", liveState));
+        return;
+      }
+
+      const submission = getLegacyEloSubmission(liveState.rawDb, submissionId);
+      if (!submission) {
+        await interaction.reply(ephemeralPayload({ content: "Legacy ELO заявка не найдена." }));
+        return;
+      }
+
+      if (submission.status !== "pending") {
+        await interaction.reply(buildLegacyEloReviewPayload(submissionId, `Заявка уже обработана: ${submission.status}.`));
+        return;
+      }
+
+      if (isLegacyEloSubmissionExpired(submission, { pendingExpireHours: LEGACY_ELO_PENDING_EXPIRE_HOURS })) {
+        const expired = expireLegacyEloSubmission(liveState.rawDb, submissionId, { reviewedAt: nowIso() });
+        saveLegacyEloDbFile(liveState.resolvedPath, expired.db);
+        const syncWarning = getLegacyEloResyncWarning();
+        await interaction.reply(buildLegacyEloReviewPayload(submissionId, `Заявка протухла и помечена expired.${syncWarning}`));
+        return;
+      }
+
+      try {
+        const edited = editLegacyEloSubmission(
+          liveState.rawDb,
+          submissionId,
+          interaction.fields.getTextInputValue("elo_review_value")
+        );
+        saveLegacyEloDbFile(liveState.resolvedPath, edited.db);
+        const syncWarning = getLegacyEloResyncWarning();
+        await logLine(client, `ELO EDIT: <@${submission.userId}> pending elo ${edited.submission.elo} -> tier ${edited.submission.tier} (id ${edited.submission.id}) by ${interaction.user.tag}`);
+        await interaction.reply(buildLegacyEloReviewPayload(submissionId, `ELO обновлено: ${edited.submission.elo} (тир ${edited.submission.tier}).${syncWarning}`));
+      } catch (error) {
+        await interaction.reply(ephemeralPayload({ content: String(error?.message || error || "Не удалось изменить ELO в заявке.") }));
+      }
+      return;
+    }
+
+    if (interaction.customId.startsWith("elo_review_reject_modal:")) {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      const submissionId = interaction.customId.split(":")[1] || "";
+      const liveState = getLiveLegacyEloState();
+      if (!liveState.ok) {
+        await interaction.reply(buildLegacyEloStateErrorPayload("Не удалось открыть ELO review-заявку", liveState));
+        return;
+      }
+
+      const submission = getLegacyEloSubmission(liveState.rawDb, submissionId);
+      if (!submission) {
+        await interaction.reply(ephemeralPayload({ content: "Legacy ELO заявка не найдена." }));
+        return;
+      }
+
+      if (submission.status !== "pending") {
+        await interaction.reply(buildLegacyEloReviewPayload(submissionId, `Заявка уже обработана: ${submission.status}.`));
+        return;
+      }
+
+      const reason = String(interaction.fields.getTextInputValue("elo_review_reason") || "").trim().slice(0, 800);
+      if (!reason) {
+        await interaction.reply(ephemeralPayload({ content: "Нужна причина отказа." }));
+        return;
+      }
+
+      const rejected = rejectLegacyEloSubmission(liveState.rawDb, submissionId, {
+        reviewedBy: interaction.user.tag,
+        reviewedAt: nowIso(),
+        reason,
+      });
+      saveLegacyEloDbFile(liveState.resolvedPath, rejected.db);
+      const syncWarning = getLegacyEloResyncWarning();
+      await dmUser(
+        client,
+        submission.userId,
+        [
+          "Твоя ELO-заявка отклонена.",
+          `Причина: ${reason}`,
+          `Пруф: ${submission.screenshotUrl || submission.reviewAttachmentUrl || "—"}`,
+        ].join("\n")
+      );
+      await logLine(client, `ELO REJECT: <@${submission.userId}> elo ${submission.elo} (id ${submission.id}) by ${interaction.user.tag} | reason: ${reason}`);
+      await interaction.reply(buildLegacyEloReviewPayload(submissionId, `Отклонено.${syncWarning}`));
       return;
     }
 

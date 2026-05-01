@@ -53,13 +53,98 @@
   },
   "characters": [
     {
-      "id": "cursed_partner",
-      "label": "Проклятый союзник",
+      "id": "honored_one",
+      "label": "Honored One",
       "roleId": ""
     },
     {
-      "id": "hornet_one",
-      "label": "Шершень Первый",
+      "id": "vessel",
+      "label": "Vessel",
+      "roleId": ""
+    },
+    {
+      "id": "restless_gambler",
+      "label": "Restless Gambler",
+      "roleId": ""
+    },
+    {
+      "id": "ten_shadows",
+      "label": "Ten Shadows",
+      "roleId": ""
+    },
+    {
+      "id": "perfection",
+      "label": "Perfection",
+      "roleId": ""
+    },
+    {
+      "id": "blood_manipulator",
+      "label": "Blood Manipulator",
+      "roleId": ""
+    },
+    {
+      "id": "switcher",
+      "label": "Switcher",
+      "roleId": ""
+    },
+    {
+      "id": "defense_attorney",
+      "label": "Defense Attorney",
+      "roleId": ""
+    },
+    {
+      "id": "cursed_partners",
+      "label": "Cursed Partners",
+      "roleId": ""
+    },
+    {
+      "id": "head_of_the_hei",
+      "label": "Head of the Hei",
+      "roleId": ""
+    },
+    {
+      "id": "puppet_master",
+      "label": "Puppet Master",
+      "roleId": ""
+    },
+    {
+      "id": "salaryman",
+      "label": "Salaryman",
+      "roleId": ""
+    },
+    {
+      "id": "locust_guy",
+      "label": "Locust Guy",
+      "roleId": ""
+    },
+    {
+      "id": "star_rage",
+      "label": "Star Rage",
+      "roleId": ""
+    },
+    {
+      "id": "aspiring_mangaka",
+      "label": "Aspiring Mangaka",
+      "roleId": ""
+    },
+    {
+      "id": "lucky_coward",
+      "label": "Lucky Coward",
+      "roleId": ""
+    },
+    {
+      "id": "disaster_plants",
+      "label": "Disaster Plants",
+      "roleId": ""
+    },
+    {
+      "id": "crow_charmer",
+      "label": "Crow Charmer",
+      "roleId": ""
+    },
+    {
+      "id": "ryu",
+      "label": "Ryu",
       "roleId": ""
     }
   ]
