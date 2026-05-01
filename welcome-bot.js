@@ -8832,6 +8832,44 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
+      if (interaction.customId === "panel_set_img") {
+        const cfg = getLegacyTierlistImageConfig(liveState.rawState);
+        const modal = new ModalBuilder()
+          .setCustomId("panel_set_img_modal")
+          .setTitle("Размеры legacy Tierlist");
+        modal.addComponents(
+          new ActionRowBuilder().addComponents(
+            new TextInputBuilder()
+              .setCustomId("tierlist_width")
+              .setLabel("Ширина PNG (1200-4096)")
+              .setStyle(TextInputStyle.Short)
+              .setRequired(false)
+              .setMaxLength(4)
+              .setValue(String(cfg.W))
+          ),
+          new ActionRowBuilder().addComponents(
+            new TextInputBuilder()
+              .setCustomId("tierlist_height")
+              .setLabel("Высота PNG (700-2160)")
+              .setStyle(TextInputStyle.Short)
+              .setRequired(false)
+              .setMaxLength(4)
+              .setValue(String(cfg.H))
+          ),
+          new ActionRowBuilder().addComponents(
+            new TextInputBuilder()
+              .setCustomId("tierlist_icon")
+              .setLabel("Размер иконок (64-256)")
+              .setStyle(TextInputStyle.Short)
+              .setRequired(false)
+              .setMaxLength(3)
+              .setValue(String(cfg.ICON))
+          )
+        );
+        await interaction.showModal(modal);
+        return;
+      }
+
       if (interaction.customId === "panel_icon_minus" || interaction.customId === "panel_icon_plus") {
         applyLegacyTierlistImageDelta(liveState.rawState, "icon", interaction.customId === "panel_icon_plus" ? 12 : -12);
         await interaction.deferUpdate();
