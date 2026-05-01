@@ -420,6 +420,7 @@ test("command builder registers onboard and rolepanel top-level commands", () =>
 
 test("role panel draft normalization applies defaults and validation rules", () => {
   const plainDraft = normalizeRoleMessageDraft({ content: "  Привет  " });
+  const singleButtonDraft = normalizeRoleMessageDraft({ roleId: "role-1" });
   const embedResult = validateRoleMessageDraft({
     channelId: "channel-1",
     roleId: "role-1",
@@ -429,12 +430,13 @@ test("role panel draft normalization applies defaults and validation rules", () 
   });
 
   assert.equal(plainDraft.format, ROLE_PANEL_FORMATS.PLAIN);
-  assert.equal(plainDraft.buttonLabel, DEFAULT_ROLE_PANEL_BUTTON_LABEL);
   assert.equal(plainDraft.content, "Привет");
+  assert.deepEqual(plainDraft.buttons, []);
+  assert.deepEqual(singleButtonDraft.buttons, [{ roleId: "role-1", label: DEFAULT_ROLE_PANEL_BUTTON_LABEL }]);
   assert.equal(embedResult.isValid, true);
   assert.deepEqual(embedResult.errors, []);
   assert.equal(embedResult.draft.embedTitle, "Event title");
-  assert.equal(embedResult.draft.buttonLabel, "Участвовать");
+  assert.deepEqual(embedResult.draft.buttons, [{ roleId: "role-1", label: "Участвовать" }]);
 
   const invalidPlain = validateRoleMessageDraft({ roleId: "role-1" });
   assert.equal(invalidPlain.isValid, false);
@@ -481,10 +483,13 @@ test("role grant registry keeps only valid records and filters inactive entries"
 
 test("role grant custom ids round-trip cleanly", () => {
   const customId = buildRoleGrantCustomId("ABC123");
+  const indexedCustomId = buildRoleGrantCustomId("ABC123", 2);
 
   assert.equal(customId, "rolepanel_grant:ABC123");
-  assert.equal(parseRoleGrantCustomId(customId), "ABC123");
-  assert.equal(parseRoleGrantCustomId("approve:ABC123"), "");
+  assert.equal(indexedCustomId, "rolepanel_grant:ABC123:2");
+  assert.deepEqual(parseRoleGrantCustomId(customId), { recordId: "ABC123", buttonIndex: 0 });
+  assert.deepEqual(parseRoleGrantCustomId(indexedCustomId), { recordId: "ABC123", buttonIndex: 2 });
+  assert.equal(parseRoleGrantCustomId("approve:ABC123"), null);
   assert.equal(ROLE_PANEL_CLEANUP_BEHAVIORS.DISABLE_MESSAGES, "disable_messages");
 });
 
@@ -502,12 +507,13 @@ test("role panel can recreate a publish draft from an existing record", () => {
 
   assert.deepEqual(draft, {
     channelId: "channel-1",
-    roleId: "role-1",
     format: ROLE_PANEL_FORMATS.EMBED,
     content: "",
     embedTitle: "Ивент",
     embedDescription: "Жми кнопку",
-    buttonLabel: "Участвовать",
+    buttons: [{ roleId: "role-1", label: "Участвовать" }],
+    editingButtonIndex: -1,
+    autoResendIntervalMs: 0,
   });
 });
 

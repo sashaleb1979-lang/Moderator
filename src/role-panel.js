@@ -97,7 +97,9 @@ function validateRoleMessageDraft(rawValue = {}, options = {}) {
 
 function buildRoleGrantCustomId(recordId, buttonIndex = 0) {
   const id = trimText(recordId, 64);
-  return id ? `rolepanel_grant:${id}:${Number(buttonIndex) || 0}` : "";
+  if (!id) return "";
+  const normalizedIndex = Math.max(0, Number(buttonIndex) || 0);
+  return normalizedIndex > 0 ? `rolepanel_grant:${id}:${normalizedIndex}` : `rolepanel_grant:${id}`;
 }
 
 function parseRoleGrantCustomId(customId) {

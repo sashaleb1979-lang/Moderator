@@ -57,7 +57,7 @@ test("loadLegacyTierlistState reads legacy state and merges custom characters", 
   assert.equal(liveState.rawState.settings.summaryMessageId, null);
 });
 
-test("computeLegacyTierlistGlobalBuckets respects stored influence multipliers", () => {
+test("computeLegacyTierlistGlobalBuckets follows legacy averaging with stored influence multipliers", () => {
   const liveState = {
     rawState: {
       tiers: {},
@@ -83,8 +83,9 @@ test("computeLegacyTierlistGlobalBuckets respects stored influence multipliers",
   const result = computeLegacyTierlistGlobalBuckets(liveState);
 
   assert.equal(result.votersCount, 2);
-  assert.deepEqual(result.buckets.S, ["gojo"]);
-  assert.deepEqual(result.buckets.A, ["yuji"]);
+  assert.deepEqual(result.buckets.S, []);
+  assert.deepEqual(result.buckets.A, ["gojo", "yuji"]);
+  assert.ok(result.meta.gojo.avg > result.meta.yuji.avg);
   assert.equal(result.meta.gojo.votes, 2);
 });
 
