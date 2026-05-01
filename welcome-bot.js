@@ -4542,6 +4542,7 @@ function buildModeratorPanelPayload(statusText = "", includeFlags = true) {
           `Text tierlist: ${formatChannelMention(getTextTierlistChannelId())}`,
           `Graphic tierlist: ${formatChannelMention(getGraphicTierlistChannelId())}`,
           `Notice/log: ${formatChannelMention(getNotificationChannelId())}`,
+          "_ELO‑каналы — внутри ELO Panel; tierlist dashboard/summary — внутри Tierlist Panel._",
         ].join("\n"),
         inline: false,
       }
@@ -6052,7 +6053,14 @@ function buildDormantEloPanelPayload(statusText = "", includeFlags = true) {
       },
       {
         name: "Важно",
-        value: "Общие Welcome/Review/Tierlist каналы сюда не подставляются. Для legacy ELO используй отдельно кнопки Submit Hub и PNG Panel.",
+        value: "Общие Welcome/Review/Tierlist каналы сюда не подставляются. Для legacy ELO используй кнопку «Каналы ELO» (общая настройка) или отдельно Submit Hub / PNG Panel.",
+        inline: false,
+      },
+      {
+        name: "Выдача ролей",
+        value: isLegacyEloRoleGrantEnabled()
+          ? "**ВКЛ** — Moderator выдаёт LEGACY_ELO_TIER_ROLE_* по рейтингам."
+          : "**ВЫКЛ** — все 5 ELO‑ролей сняты у всех; sync пропускается.",
         inline: false,
       }
     );
@@ -6061,6 +6069,7 @@ function buildDormantEloPanelPayload(statusText = "", includeFlags = true) {
     embed.addFields({ name: "Последнее действие", value: statusText, inline: false });
   }
 
+  const grantEnabled = isLegacyEloRoleGrantEnabled();
   const payload = {
     embeds: [embed],
     components: [
@@ -6079,7 +6088,12 @@ function buildDormantEloPanelPayload(statusText = "", includeFlags = true) {
         new ButtonBuilder().setCustomId("elo_panel_wipe").setLabel("Wipe rating").setStyle(ButtonStyle.Danger)
       ),
       new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId("elo_panel_submit_setup").setLabel("Submit Hub").setStyle(ButtonStyle.Secondary)
+        new ButtonBuilder().setCustomId("elo_panel_channels").setLabel("Каналы ELO").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId("elo_panel_submit_setup").setLabel("Submit Hub").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder()
+          .setCustomId("elo_panel_role_grant_toggle")
+          .setLabel(grantEnabled ? "Выдача ролей: ВКЛ" : "Выдача ролей: ВЫКЛ")
+          .setStyle(grantEnabled ? ButtonStyle.Success : ButtonStyle.Danger)
       ),
     ],
   };
@@ -6515,6 +6529,10 @@ async function ensureLegacyEloSubmitHubMessage(client, liveState, forcedChannelI
   let message = null;
   if (state.messageId) {
     message = await channel.messages.fetch(state.messageId).catch(() => null);
+    if (message && message.author?.id && client.user?.id && message.author.id !== client.user.id) {
+      message = null;
+      state.messageId = "";
+    }
   }
 
   const payload = {
@@ -6527,7 +6545,13 @@ async function ensureLegacyEloSubmitHubMessage(client, liveState, forcedChannelI
     if (!message) throw new Error("Не удалось отправить legacy ELO submit hub в канал.");
     await message.pin().catch(() => {});
   } else {
-    await message.edit(payload).catch(() => {});
+    const edited = await message.edit(payload).catch(() => null);
+    if (!edited) {
+      state.messageId = "";
+      message = await channel.send(payload).catch(() => null);
+      if (!message) throw new Error("Не удалось отправить legacy ELO submit hub в канал.");
+      await message.pin().catch(() => {});
+    }
   }
 
   state.channelId = channelId;
@@ -6735,7 +6759,55 @@ function getLegacyEloTierRoleTarget(rawDb, userId) {
   return Number.isInteger(tier) && tier >= 1 && tier <= 5 ? tier : null;
 }
 
+function isLegacyEloRoleGrantEnabled() {
+  return db.config.integrations?.elo?.roleGrantEnabled !== false;
+}
+
+function setLegacyEloRoleGrantEnabled(value) {
+  db.config.integrations ||= {};
+  db.config.integrations.elo ||= {};
+  db.config.integrations.elo.roleGrantEnabled = Boolean(value);
+}
+
+async function revokeAllLegacyEloTierRoles(client, options = {}) {
+  const pool = getAllLegacyEloTierRoleIds();
+  if (pool.length === 0) {
+    return { processed: 0, removed: 0, errors: 0, skipped: "legacy_elo_role_ids_not_configured" };
+  }
+
+  const reason = String(options.reason || "legacy elo role grant disabled").trim() || "legacy elo role grant disabled";
+  const guild = await client.guilds.fetch(GUILD_ID).catch(() => null);
+  if (!guild) return { processed: 0, removed: 0, errors: 0, skipped: "guild_not_available" };
+
+  await guild.members.fetch().catch(() => {});
+
+  const poolSet = new Set(pool);
+  let processed = 0;
+  let removed = 0;
+  let errors = 0;
+
+  for (const member of guild.members.cache.values()) {
+    const matched = member.roles.cache.filter((role) => poolSet.has(role.id));
+    if (matched.size === 0) continue;
+    processed += 1;
+    for (const roleId of matched.keys()) {
+      try {
+        await member.roles.remove(roleId, reason);
+        removed += 1;
+      } catch (error) {
+        errors += 1;
+      }
+    }
+  }
+
+  return { processed, removed, errors };
+}
+
 async function syncLegacyEloTierRoles(client, rawDb, options = {}) {
+  if (!isLegacyEloRoleGrantEnabled()) {
+    return { processed: 0, assigned: 0, cleared: 0, skipped: "elo_role_grant_disabled" };
+  }
+
   const allTierRoleIds = getAllLegacyEloTierRoleIds();
   if (allTierRoleIds.length !== 5) {
     return { processed: 0, assigned: 0, cleared: 0, skipped: "legacy_elo_role_ids_not_configured" };
@@ -9514,6 +9586,95 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
+    if (interaction.customId === "elo_panel_channels") {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      const liveState = getLiveLegacyEloState();
+      if (!liveState.ok) {
+        await interaction.reply(buildLegacyEloStateErrorPayload("Не удалось открыть legacy ELO базу", liveState));
+        return;
+      }
+
+      const submitPanel = getLegacyEloSubmitPanelState(liveState.rawDb);
+      const graphicState = db.config.integrations?.elo?.graphicBoard || {};
+      const modal = new ModalBuilder().setCustomId("elo_panel_channels_modal").setTitle("Каналы ELO");
+
+      const submitInput = new TextInputBuilder()
+        .setCustomId("elo_channel_submit")
+        .setLabel("Submit Hub канал")
+        .setStyle(TextInputStyle.Short)
+        .setRequired(false)
+        .setMaxLength(80)
+        .setPlaceholder("<#123456789012345678> или 123456789012345678")
+        .setValue(String(submitPanel.channelId || "").slice(0, 80));
+
+      const graphicInput = new TextInputBuilder()
+        .setCustomId("elo_channel_graphic")
+        .setLabel("Graphic board (PNG) канал")
+        .setStyle(TextInputStyle.Short)
+        .setRequired(false)
+        .setMaxLength(80)
+        .setPlaceholder("<#123456789012345678> или 123456789012345678")
+        .setValue(String(graphicState.channelId || "").slice(0, 80));
+
+      modal.addComponents(
+        new ActionRowBuilder().addComponents(submitInput),
+        new ActionRowBuilder().addComponents(graphicInput)
+      );
+      await interaction.showModal(modal);
+      return;
+    }
+
+    if (interaction.customId === "elo_panel_role_grant_toggle") {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+      const willEnable = !isLegacyEloRoleGrantEnabled();
+      setLegacyEloRoleGrantEnabled(willEnable);
+      saveDb();
+
+      let statusText = willEnable ? "Выдача ELO‑ролей включена." : "Выдача ELO‑ролей выключена.";
+
+      if (willEnable) {
+        const liveState = getLiveLegacyEloState();
+        if (liveState.ok) {
+          try {
+            const result = await syncLegacyEloTierRoles(client, liveState.rawDb, { reason: "elo role grant toggle on" });
+            if (result.skipped) {
+              statusText += ` Sync пропущен: ${result.skipped}.`;
+            } else {
+              statusText += ` Sync: assigned ${result.assigned}, cleared ${result.cleared}.`;
+            }
+          } catch (error) {
+            statusText += ` Ошибка sync: ${String(error?.message || error)}.`;
+          }
+        } else {
+          statusText += " Legacy ELO db недоступна — sync пропущен.";
+        }
+      } else {
+        try {
+          const result = await revokeAllLegacyEloTierRoles(client, { reason: "elo role grant toggled off" });
+          if (result.skipped) {
+            statusText += ` Снятие пропущено: ${result.skipped}.`;
+          } else {
+            statusText += ` Снято ролей: ${result.removed} у ${result.processed} участников.${result.errors ? ` Ошибок: ${result.errors}.` : ""}`;
+          }
+        } catch (error) {
+          statusText += ` Ошибка снятия ролей: ${String(error?.message || error)}.`;
+        }
+      }
+
+      await interaction.editReply(buildDormantEloPanelPayload(statusText, false));
+      return;
+    }
+
     if (interaction.customId === "elo_panel_submit_setup") {
       if (!isModerator(interaction.member)) {
         await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
@@ -11381,6 +11542,75 @@ client.on("interactionCreate", async (interaction) => {
       } catch (error) {
         await interaction.editReply(buildDormantEloPanelPayload(String(error?.message || error || "Не удалось выполнить legacy ELO modset."), false));
       }
+      return;
+    }
+
+    if (interaction.customId === "elo_panel_channels_modal") {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+      const submitChannelId = parseRequestedChannelId(interaction.fields.getTextInputValue("elo_channel_submit"), "");
+      const graphicChannelId = parseRequestedChannelId(interaction.fields.getTextInputValue("elo_channel_graphic"), "");
+
+      for (const [label, channelId] of [
+        ["Submit Hub", submitChannelId],
+        ["Graphic board", graphicChannelId],
+      ]) {
+        if (!channelId) continue;
+        const channel = await client.channels.fetch(channelId).catch(() => null);
+        if (!channel?.isTextBased?.()) {
+          await interaction.editReply({ content: `${label} канал не найден или не является текстовым.`, embeds: [], components: [] });
+          return;
+        }
+      }
+
+      const liveState = getLiveLegacyEloState();
+      if (!liveState.ok) {
+        await interaction.editReply(buildLegacyEloStateErrorPayload("Не удалось открыть legacy ELO базу", liveState));
+        return;
+      }
+
+      const notes = [];
+
+      try {
+        const submitPanel = getLegacyEloSubmitPanelState(liveState.rawDb);
+        if (submitChannelId) {
+          const result = await ensureLegacyEloSubmitHubMessage(client, liveState, submitChannelId);
+          notes.push(`Submit Hub → ${formatChannelMention(result.channelId)} (msg ${result.messageId || "—"}).`);
+        } else if (submitPanel.channelId) {
+          submitPanel.channelId = "";
+          submitPanel.messageId = "";
+          saveLiveLegacyEloStateAndResync(liveState);
+          notes.push("Submit Hub канал сброшен.");
+        }
+      } catch (error) {
+        notes.push(`Submit Hub ошибка: ${String(error?.message || error)}.`);
+      }
+
+      try {
+        if (graphicChannelId) {
+          setLegacyEloGraphicDashboardChannel(liveState.rawDb, graphicChannelId);
+          const result = await refreshLegacyEloGraphicBoard(client, { liveState, channelId: graphicChannelId });
+          notes.push(result.ok
+            ? `PNG board → ${formatChannelMention(result.channelId)}.`
+            : "PNG board не удалось пересобрать.");
+        } else {
+          const graphicState = db.config.integrations?.elo?.graphicBoard || {};
+          if (graphicState.channelId) {
+            setLegacyEloGraphicDashboardChannel(liveState.rawDb, "");
+            notes.push("PNG board канал сброшен.");
+          }
+        }
+      } catch (error) {
+        notes.push(`PNG board ошибка: ${String(error?.message || error)}.`);
+      }
+
+      const statusText = `Каналы ELO сохранены. ${notes.join(" ")}`.trim();
+      await interaction.editReply(buildDormantEloPanelPayload(statusText, false));
       return;
     }
 

@@ -174,6 +174,7 @@ function createDefaultIntegrationState() {
       sourcePath: "",
       lastImportAt: null,
       lastSyncAt: null,
+      roleGrantEnabled: true,
       submitPanel: {
         channelId: "",
         messageId: "",
@@ -226,6 +227,7 @@ function normalizeIntegrationState(value = {}) {
       sourcePath: cleanString(source?.elo?.sourcePath, 500),
       lastImportAt: normalizeNullableString(source?.elo?.lastImportAt, 80),
       lastSyncAt: normalizeNullableString(source?.elo?.lastSyncAt, 80),
+      roleGrantEnabled: source?.elo?.roleGrantEnabled !== false,
       submitPanel: {
         channelId: cleanString(source?.elo?.submitPanel?.channelId, 40),
         messageId: cleanString(source?.elo?.submitPanel?.messageId, 40),
