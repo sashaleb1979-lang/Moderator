@@ -288,6 +288,7 @@ test("character role stats separate live holders from remembered kills", () => {
   const characterStats = getCharacterRoleStats([
     {
       main: "Юджи",
+      roleId: "role-yuji",
       roleHolderCount: 28,
       rememberedMembers: [
         { userId: "1", approvedKills: 1000, killTier: 2 },
@@ -296,6 +297,7 @@ test("character role stats separate live holders from remembered kills", () => {
     },
     {
       main: "Мегуми",
+      roleId: "role-megumi",
       roleHolderCount: 15,
       rememberedMembers: [
         { userId: "3", approvedKills: 7000, killTier: 4 },
@@ -303,6 +305,7 @@ test("character role stats separate live holders from remembered kills", () => {
     },
     {
       main: "Нобара",
+      roleId: "role-nobara",
       roleHolderCount: 28,
       rememberedMembers: [
         { userId: "4", approvedKills: 500, killTier: 1 },
@@ -317,6 +320,7 @@ test("character role stats separate live holders from remembered kills", () => {
   const yuji = characterStats.find((entry) => entry.main === "Юджи");
   assert.deepEqual(yuji, {
     main: "Юджи",
+    roleId: "role-yuji",
     roleHolderCount: 28,
     rememberedCount: 2,
     totalKills: 4000,

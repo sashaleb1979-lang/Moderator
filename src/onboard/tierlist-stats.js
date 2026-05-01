@@ -136,6 +136,7 @@ function getCharacterRoleStats(entries = []) {
   return entries
     .map((entry) => {
       const main = String(entry?.main || "").trim();
+      const roleId = String(entry?.roleId || "").trim();
       const rememberedMembers = Array.isArray(entry?.rememberedMembers)
         ? entry.rememberedMembers.filter(hasTrackedKills)
         : [];
@@ -151,6 +152,7 @@ function getCharacterRoleStats(entries = []) {
 
       return {
         main,
+        roleId,
         roleHolderCount,
         rememberedCount,
         totalKills,

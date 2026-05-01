@@ -674,6 +674,33 @@ function getStatsSnapshot(entries) {
   return getTierlistStats(entries, Object.values(db.submissions || {}));
 }
 
+function normalizeCharacterReference(value) {
+  if (!value) return null;
+  if (typeof value === "object") {
+    const id = String(value.id || "").trim();
+    const label = String(value.label || value.name || value.id || "").trim();
+    const roleId = String(value.roleId || "").trim();
+    if (!id && !label && !roleId) return null;
+    return { id, label, roleId };
+  }
+
+  const label = String(value || "").trim();
+  return label ? { id: "", label, roleId: "" } : null;
+}
+
+function formatCharacterReference(value) {
+  const reference = normalizeCharacterReference(value);
+  if (!reference) return "—";
+  return reference.roleId ? formatRoleMention(reference.roleId) : (reference.label || "—");
+}
+
+function formatCharacterReferenceList(values = []) {
+  const formatted = [...new Set((Array.isArray(values) ? values : [])
+    .map((value) => formatCharacterReference(value))
+    .filter(Boolean))];
+  return formatted.length ? formatted.join(", ") : "—";
+}
+
 function parseTrackedStatNumber(value) {
   if (value === null || value === undefined) return NaN;
   if (typeof value === "string" && !value.trim()) return NaN;
@@ -719,6 +746,7 @@ async function getLiveCharacterStatsContext(client) {
       entry.id,
       {
         main: entry.label,
+        roleId: entry.roleId,
         roleHolderCount: 0,
         rememberedMembers: [],
       },
@@ -733,8 +761,10 @@ async function getLiveCharacterStatsContext(client) {
     const memberCharacters = characterEntries.filter((entry) => member.roles.cache.has(entry.roleId));
     if (!memberCharacters.length) continue;
 
-    const labels = [...new Set(memberCharacters.map((entry) => entry.label))].sort((left, right) => left.localeCompare(right, "ru"));
-    liveMainsByUserId.set(member.id, labels);
+    const liveMains = memberCharacters
+      .map((entry) => ({ id: entry.id, label: entry.label, roleId: entry.roleId }))
+      .sort((left, right) => left.label.localeCompare(right.label, "ru"));
+    liveMainsByUserId.set(member.id, liveMains);
 
     let trackedMember = trackedMembersByUserId.get(member.id);
     if (!trackedMember) {
@@ -786,10 +816,10 @@ function buildMainStatsEmbeds(characterStats = []) {
   if (!characterStats.length) return [];
 
   const popularityLines = characterStats.map((stat, index) =>
-    `${index + 1}. **${stat.main}** — с ролью: **${formatNumber(stat.roleHolderCount)}** • бот помнит kills: **${formatNumber(stat.rememberedCount)}** • sum kills: **${formatNumber(stat.totalKills)}** • avg kills: **${formatNumber(stat.averageKills)}** • median kills: **${formatNumber(stat.medianKills)}**`
+    `${index + 1}. ${stat.roleId ? formatRoleMention(stat.roleId) : `**${stat.main}**`} — с ролью: **${formatNumber(stat.roleHolderCount)}** • с kills: **${formatNumber(stat.rememberedCount)}** • сумма: **${formatNumber(stat.totalKills)}** • ср: **${formatNumber(stat.averageKills)}** • мед: **${formatNumber(stat.medianKills)}**`
   );
   const distributionLines = characterStats.map((stat) =>
-    `**${stat.main}** — remembered T5/T4/T3/T2/T1: **${stat.totalsByTier[5]} / ${stat.totalsByTier[4]} / ${stat.totalsByTier[3]} / ${stat.totalsByTier[2]} / ${stat.totalsByTier[1]}**`
+    `${stat.roleId ? formatRoleMention(stat.roleId) : `**${stat.main}**`} — тиры T5/T4/T3/T2/T1: **${stat.totalsByTier[5]} / ${stat.totalsByTier[4]} / ${stat.totalsByTier[3]} / ${stat.totalsByTier[2]} / ${stat.totalsByTier[1]}**`
   );
 
   const embeds = [];
@@ -797,7 +827,7 @@ function buildMainStatsEmbeds(characterStats = []) {
   chunkTextLines(popularityLines, 3800, 12).forEach((description, index) => {
     embeds.push(
       new EmbedBuilder()
-        .setTitle(index === 0 ? "Статистика по ролям персонажей" : `Статистика по ролям персонажей — продолжение ${index + 1}`)
+        .setTitle(index === 0 ? "Персонажи" : `Персонажи — продолжение ${index + 1}`)
         .setDescription(description)
     );
   });
@@ -805,7 +835,7 @@ function buildMainStatsEmbeds(characterStats = []) {
   chunkTextLines(distributionLines, 3800, 12).forEach((description, index) => {
     embeds.push(
       new EmbedBuilder()
-        .setTitle(index === 0 ? "Распределение тиров по ролям персонажей" : `Распределение тиров по ролям персонажей — продолжение ${index + 1}`)
+        .setTitle(index === 0 ? "Персонажи — тиры" : `Персонажи — тиры ${index + 1}`)
         .setDescription(description)
     );
   });
@@ -818,43 +848,32 @@ function buildStatsEmbedsFromContext(entries, liveContext) {
   const trackedStats = liveContext?.trackedMemberStats || getTrackedMemberStats([]);
   const presentation = getPresentation();
 
-  if (!entries.length && trackedStats.totalRoleHolders === 0) {
-    return [
-      new EmbedBuilder()
-        .setTitle(presentation.tierlist.textTitle)
-        .setDescription([
-          "Пока нет подтверждённых игроков и нет участников с управляемыми ролями персонажей.",
-          `Pending заявок: **${stats.pendingCount}**`,
-          `Approval rate: **${formatPercent(stats.approvalRate)}**`,
-          `Reject rate: **${formatPercent(stats.rejectRate)}**`,
-        ].join("\n")),
-    ];
-  }
-
   const summaryLines = [];
-  if (!entries.length) {
-    summaryLines.push("Пока нет подтверждённых игроков в тир-листе.");
+  if (!entries.length && trackedStats.totalRoleHolders === 0) {
+    summaryLines.push("Пока нет подтверждённых игроков и нет участников с ролями персонажей.");
+  } else if (!entries.length) {
+    summaryLines.push("Подтверждённых игроков пока нет.");
   } else {
-    summaryLines.push(`Подтверждено игроков: **${formatNumber(stats.totalVerified)}**`);
+    summaryLines.push(`Подтверждено: **${formatNumber(stats.totalVerified)}**`);
   }
 
   summaryLines.push(
-    `Pending заявок: **${formatNumber(stats.pendingCount)}**`,
-    `Approval rate: **${formatPercent(stats.approvalRate)}** (${formatNumber(stats.approvedCount)} одобрено)`,
-    `Reject rate: **${formatPercent(stats.rejectRate)}** (${formatNumber(stats.rejectedCount)} отклонено)`,
-    `Участников с ролью персонажа: **${formatNumber(trackedStats.totalRoleHolders)}**`,
-    `Участников с ролью и запомненными kills: **${formatNumber(trackedStats.rememberedCount)}**`,
-    `Суммарно kills по живым ролям: **${formatNumber(trackedStats.totalKills)}**`,
-    `Среднее kills по живым ролям: **${formatNumber(trackedStats.averageKills)}**`,
-    `Медиана kills по живым ролям: **${formatNumber(trackedStats.medianKills)}**`,
-    `Tier 5/4/3/2/1 по живым ролям: **${trackedStats.totalsByTier[5]} / ${trackedStats.totalsByTier[4]} / ${trackedStats.totalsByTier[3]} / ${trackedStats.totalsByTier[2]} / ${trackedStats.totalsByTier[1]}**`
+    `Заявки pending: **${formatNumber(stats.pendingCount)}**`,
+    `Одобрено: **${formatNumber(stats.approvedCount)}** (${formatPercent(stats.approvalRate)})`,
+    `Отклонено: **${formatNumber(stats.rejectedCount)}** (${formatPercent(stats.rejectRate)})`,
+    `С ролью персонажа: **${formatNumber(trackedStats.totalRoleHolders)}**`,
+    `С ролью и kills: **${formatNumber(trackedStats.rememberedCount)}**`,
+    `Kills сумма: **${formatNumber(trackedStats.totalKills)}**`,
+    `Kills среднее: **${formatNumber(trackedStats.averageKills)}**`,
+    `Kills медиана: **${formatNumber(trackedStats.medianKills)}**`,
+    `Тиры T5/T4/T3/T2/T1: **${trackedStats.totalsByTier[5]} / ${trackedStats.totalsByTier[4]} / ${trackedStats.totalsByTier[3]} / ${trackedStats.totalsByTier[2]} / ${trackedStats.totalsByTier[1]}**`
   );
 
   if (stats.topEntry) {
-    summaryLines.push(`Топ 1: **${stats.topEntry.displayName}** — **${formatNumber(stats.topEntry.approvedKills)}** kills`);
+    summaryLines.push(`Лидер: **${stats.topEntry.displayName}** — **${formatNumber(stats.topEntry.approvedKills)}** kills`);
   }
   if (stats.bottomEntry) {
-    summaryLines.push(`Последний в листе: **${stats.bottomEntry.displayName}** — **${formatNumber(stats.bottomEntry.approvedKills)}** kills`);
+    summaryLines.push(`Хвост: **${stats.bottomEntry.displayName}** — **${formatNumber(stats.bottomEntry.approvedKills)}** kills`);
   }
 
   return [
@@ -897,7 +916,7 @@ async function buildTierlistEmbeds(client) {
 
   entries.forEach((entry, index) => {
     const lineNumber = index + 1;
-    const line = `${lineNumber}. [${formatTierLabel(entry.killTier)} / T${entry.killTier}] ${entry.displayName} — ${formatNumber(entry.approvedKills)} kills • mains: ${entry.mains.length ? entry.mains.join(", ") : "—"}`;
+    const line = `${lineNumber}. [T${entry.killTier}] ${entry.displayName} — ${formatNumber(entry.approvedKills)} kills • мейны: ${formatCharacterReferenceList(entry.mains)}`;
     if (!chunk.length) chunkStart = lineNumber;
 
     if (chunk.length >= 15 || chunkLength + line.length + 1 > 3800) {
