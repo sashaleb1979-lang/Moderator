@@ -457,10 +457,7 @@ function validateRuntimeConfig(config) {
   if (!GUILD_ID) errors.push("GUILD_ID отсутствует в .env");
   if (!config || typeof config !== "object") errors.push("bot.config.json не найден или повреждён");
 
-  if (config?.channels) {
-    if (isPlaceholder(config.channels.welcomeChannelId)) errors.push("channels.welcomeChannelId не заполнен");
-    if (isPlaceholder(config.channels.reviewChannelId)) errors.push("channels.reviewChannelId не заполнен");
-  } else {
+  if (!config?.channels) {
     errors.push("channels отсутствует в bot.config.json");
   }
 
@@ -547,6 +544,7 @@ function loadDb() {
   const roleGrantRegistry = normalizeRoleGrantRegistry(db.roleGrantMessages);
   db.roleGrantMessages = roleGrantRegistry.registry;
   db.config.notificationChannelId = String(db.config.notificationChannelId || "").trim();
+  db.config.reviewChannelId = String(db.config.reviewChannelId || "").trim();
   const normalizedOnboardMode = createOnboardModeState(db.config.onboardMode);
   const onboardModeChanged = JSON.stringify(normalizedOnboardMode) !== JSON.stringify(db.config.onboardMode || null);
   db.config.onboardMode = normalizedOnboardMode;
@@ -685,6 +683,28 @@ function getCharacterCatalog() {
 function getNotificationChannelId() {
   const configured = String(db.config.notificationChannelId || "").trim();
   return configured || String(appConfig.channels.logChannelId || "").trim();
+}
+
+function getWelcomeChannelId() {
+  const channelId = String(getWelcomePanelState().channelId || appConfig.channels.welcomeChannelId || "").trim();
+  return isPlaceholder(channelId) ? "" : channelId;
+}
+
+function getReviewChannelId() {
+  const configured = String(db.config.reviewChannelId || "").trim();
+  const fallback = String(appConfig.channels.reviewChannelId || "").trim();
+  const channelId = configured || fallback;
+  return isPlaceholder(channelId) ? "" : channelId;
+}
+
+function getTextTierlistChannelId() {
+  const channelId = String(getTextTierlistBoardState(db.config, appConfig.channels.tierlistChannelId || "").channelId || appConfig.channels.tierlistChannelId || "").trim();
+  return isPlaceholder(channelId) ? "" : channelId;
+}
+
+function getGraphicTierlistChannelId() {
+  const channelId = String(getGraphicTierlistBoardState(db.config, appConfig.channels.tierlistChannelId || "").channelId || appConfig.channels.tierlistChannelId || "").trim();
+  return isPlaceholder(channelId) ? "" : channelId;
 }
 
 function getNonJjsUiConfig() {
@@ -2258,9 +2278,10 @@ function hasApprovedTierProfile(userId) {
 
 function getMissingTierlistText() {
   const base = String(appConfig.reminders?.missingTierlistText || "").trim() || "Враг народа избегает получения роли!!! Не будь врагом!!! Стань товарищем!!!";
+  const welcomeChannelId = getWelcomeChannelId();
   return [
     base,
-    `Получить роль и отправить заявку можно тут: <#${appConfig.channels.welcomeChannelId}>`,
+    welcomeChannelId ? `Получить роль и отправить заявку можно тут: <#${welcomeChannelId}>` : "Канал welcome пока не настроен.",
   ].join("\n");
 }
 
@@ -3142,6 +3163,10 @@ async function upsertManagedPanelMessage(channel, state, payload, findExisting) 
 async function refreshWelcomePanel(client) {
   const panelState = getWelcomePanelState();
   const nonGgsPanelState = getNonGgsPanelState();
+  if (!panelState.channelId || isPlaceholder(panelState.channelId)) {
+    console.warn("welcomeChannelId не задан, пропускаем refreshWelcomePanel");
+    return null;
+  }
   const channel = await client.channels.fetch(panelState.channelId).catch(() => null);
   if (!channel?.isTextBased()) {
     throw new Error("welcomeChannelId не указывает на текстовый канал");
@@ -3167,7 +3192,7 @@ async function ensureWelcomePanel(client) {
 
 async function refreshGraphicTierlistBoard(client) {
   const state = getGraphicTierlistBoardState(db.config, appConfig.channels.tierlistChannelId || "");
-  const channelId = state.channelId || appConfig.channels.tierlistChannelId;
+  const channelId = getGraphicTierlistChannelId();
   if (!channelId || isPlaceholder(channelId)) return null;
 
   const channel = await client.channels.fetch(channelId).catch(() => null);
@@ -3230,7 +3255,7 @@ async function repostGraphicTierlistBoardToChannel(client, targetChannelId) {
     throw new Error("Указанный канал не является текстовым.");
   }
 
-  const previousChannelId = state.channelId || appConfig.channels.tierlistChannelId || "";
+  const previousChannelId = getGraphicTierlistChannelId();
   const previousMessageId = state.messageId || "";
 
   state.channelId = nextChannelId;
@@ -3269,7 +3294,7 @@ async function repostTextTierlistBoardToChannel(client, targetChannelId) {
     throw new Error("Указанный канал не является текстовым.");
   }
 
-  const previousChannelId = state.channelId || appConfig.channels.tierlistChannelId || "";
+  const previousChannelId = getTextTierlistChannelId();
   const previousMessageId = state.messageId || "";
 
   state.channelId = nextChannelId;
@@ -3320,7 +3345,7 @@ async function moveNotificationChannel(client, targetChannelId) {
 
 async function refreshTextTierlistBoard(client, options = {}) {
   const state = getTextTierlistBoardState(db.config, appConfig.channels.tierlistChannelId || "");
-  const channelId = state.channelId || appConfig.channels.tierlistChannelId;
+  const channelId = getTextTierlistChannelId();
   if (!channelId || isPlaceholder(channelId)) return null;
 
   const channel = await client.channels.fetch(channelId).catch(() => null);
@@ -3444,7 +3469,12 @@ async function fetchReviewMessage(client, submission) {
 }
 
 async function postReviewRecord(client, submission, fileAttachment = null, statusLabel = "pending", extraFields = [], components = []) {
-  const channel = await client.channels.fetch(appConfig.channels.reviewChannelId).catch(() => null);
+  const reviewChannelId = getReviewChannelId();
+  if (!reviewChannelId || isPlaceholder(reviewChannelId)) {
+    throw new Error("reviewChannelId не задан. Открой мод-панель и настрой каналы.");
+  }
+
+  const channel = await client.channels.fetch(reviewChannelId).catch(() => null);
   if (!channel?.isTextBased()) throw new Error("reviewChannelId не указывает на текстовый канал");
 
   const payload = {
@@ -4460,6 +4490,17 @@ function buildModeratorPanelPayload(statusText = "", includeFlags = true) {
           wartimeValidationError ? `Военный режим недоступен: ${wartimeValidationError}` : "Военный режим готов к переключению.",
         ].join("\n"),
         inline: false,
+      },
+      {
+        name: "Каналы",
+        value: [
+          `Welcome: ${formatChannelMention(getWelcomeChannelId())}`,
+          `Review: ${formatChannelMention(getReviewChannelId())}`,
+          `Text tierlist: ${formatChannelMention(getTextTierlistChannelId())}`,
+          `Graphic tierlist: ${formatChannelMention(getGraphicTierlistChannelId())}`,
+          `Notice/log: ${formatChannelMention(getNotificationChannelId())}`,
+        ].join("\n"),
+        inline: false,
       }
     );
 
@@ -4477,6 +4518,7 @@ function buildModeratorPanelPayload(statusText = "", includeFlags = true) {
       ),
       new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId("panel_remind_missing").setLabel("Напомнить отсутствующим").setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId("panel_config_channels").setLabel("Каналы").setStyle(ButtonStyle.Secondary),
         new ButtonBuilder().setCustomId("panel_refresh_summary").setLabel("Обновить сводку").setStyle(ButtonStyle.Secondary),
         new ButtonBuilder().setCustomId("panel_open_tierlist").setLabel("Tierlist Panel").setStyle(ButtonStyle.Secondary),
         new ButtonBuilder().setCustomId("panel_open_elo").setLabel("ELO Panel").setStyle(ButtonStyle.Secondary)
@@ -6670,7 +6712,9 @@ client.once("clientReady", async () => {
   const generated = await ensureManagedRoles(client);
   await registerGuildCommands(client);
   await syncApprovedTierRoles(client).catch(() => 0);
-  await refreshWelcomePanel(client);
+  await refreshWelcomePanel(client).catch((error) => {
+    console.error("Welcome panel refresh failed:", error?.message || error);
+  });
   await refreshAllTierlists(client);
   await cleanupBotPins(client).catch(() => 0);
   const legacyEloState = getLiveLegacyEloState();
@@ -6759,9 +6803,12 @@ client.on("guildMemberAdd", async (member) => {
   }
 
   const nonJjsUi = getNonJjsUiConfig();
+  const welcomeChannelId = getWelcomeChannelId();
   const text = [
     `Добро пожаловать на сервер ${member.guild.name}.`,
-    `Чтобы открыть доступ и выбрать мейнов, зайди в <#${appConfig.channels.welcomeChannelId}> и нажми кнопку **${getPresentation().welcome.buttons.begin}**.`,
+    welcomeChannelId
+      ? `Чтобы открыть доступ и выбрать мейнов, зайди в <#${welcomeChannelId}> и нажми кнопку **${getPresentation().welcome.buttons.begin}**.`
+      : "Welcome-канал пока не настроен. Попроси модератора указать его через Onboarding Panel.",
     `Если ты не играешь в JJS, там же есть отдельная кнопка **${nonJjsUi.buttonLabel}** с двухэтапной капчей.`,
   ].join("\n");
   await member.send(text).catch(() => {});
@@ -6815,7 +6862,7 @@ client.on("messageCreate", async (message) => {
     return;
   }
 
-  if (message.channelId !== appConfig.channels.welcomeChannelId) return;
+  if (message.channelId !== getWelcomeChannelId()) return;
 
   const session = getSubmitSession(message.author.id);
   if (!session) {
@@ -8055,6 +8102,65 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
       await interaction.reply(buildWelcomeEditorPayload());
+      return;
+    }
+
+    if (interaction.customId === "panel_config_channels") {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      const modal = new ModalBuilder().setCustomId("panel_config_channels_modal").setTitle("Каналы Moderator");
+      const welcomeInput = new TextInputBuilder()
+        .setCustomId("panel_channel_welcome")
+        .setLabel("Welcome канал")
+        .setStyle(TextInputStyle.Short)
+        .setRequired(false)
+        .setMaxLength(40)
+        .setPlaceholder("#channel или 123456789012345678")
+        .setValue(String(getWelcomeChannelId()).slice(0, 40));
+      const reviewInput = new TextInputBuilder()
+        .setCustomId("panel_channel_review")
+        .setLabel("Review канал")
+        .setStyle(TextInputStyle.Short)
+        .setRequired(false)
+        .setMaxLength(40)
+        .setPlaceholder("#channel или 123456789012345678")
+        .setValue(String(getReviewChannelId()).slice(0, 40));
+      const textTierlistInput = new TextInputBuilder()
+        .setCustomId("panel_channel_text_tierlist")
+        .setLabel("Text tierlist канал")
+        .setStyle(TextInputStyle.Short)
+        .setRequired(false)
+        .setMaxLength(40)
+        .setPlaceholder("#channel или 123456789012345678")
+        .setValue(String(getTextTierlistChannelId()).slice(0, 40));
+      const graphicTierlistInput = new TextInputBuilder()
+        .setCustomId("panel_channel_graphic_tierlist")
+        .setLabel("Graphic tierlist канал")
+        .setStyle(TextInputStyle.Short)
+        .setRequired(false)
+        .setMaxLength(40)
+        .setPlaceholder("#channel или 123456789012345678")
+        .setValue(String(getGraphicTierlistChannelId()).slice(0, 40));
+      const noticesInput = new TextInputBuilder()
+        .setCustomId("panel_channel_notices")
+        .setLabel("Notice/log канал")
+        .setStyle(TextInputStyle.Short)
+        .setRequired(false)
+        .setMaxLength(40)
+        .setPlaceholder("#channel или 123456789012345678")
+        .setValue(String(getNotificationChannelId()).slice(0, 40));
+
+      modal.addComponents(
+        new ActionRowBuilder().addComponents(welcomeInput),
+        new ActionRowBuilder().addComponents(reviewInput),
+        new ActionRowBuilder().addComponents(textTierlistInput),
+        new ActionRowBuilder().addComponents(graphicTierlistInput),
+        new ActionRowBuilder().addComponents(noticesInput)
+      );
+      await interaction.showModal(modal);
       return;
     }
 
@@ -9566,8 +9672,11 @@ client.on("interactionCreate", async (interaction) => {
 
       const session = getSubmitSession(interaction.user.id);
       if (session) {
+        const welcomeChannelId = getWelcomeChannelId();
         await interaction.reply(ephemeralPayload({
-          content: `Ты уже на шаге подачи заявки. Отправь в <#${appConfig.channels.welcomeChannelId}> одно сообщение: число kills в тексте и скрин во вложении.`,
+          content: welcomeChannelId
+            ? `Ты уже на шаге подачи заявки. Отправь в <#${welcomeChannelId}> одно сообщение: число kills в тексте и скрин во вложении.`
+            : "Ты уже на шаге подачи заявки. Welcome-канал пока не настроен, попроси модератора указать его через Onboarding Panel.",
         }));
         return;
       }
@@ -10569,6 +10678,91 @@ client.on("interactionCreate", async (interaction) => {
         db.config.presentation.tierlist.graphicMessageText = graphicMessageText;
       });
       await interaction.reply(buildWelcomeEditorPayload("Тексты tier-листа и PNG обновлены."));
+      return;
+    }
+
+    if (interaction.customId === "panel_config_channels_modal") {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      const welcomeChannelId = parseRequestedChannelId(interaction.fields.getTextInputValue("panel_channel_welcome"), "");
+      const reviewChannelId = parseRequestedChannelId(interaction.fields.getTextInputValue("panel_channel_review"), "");
+      const textTierlistChannelId = parseRequestedChannelId(interaction.fields.getTextInputValue("panel_channel_text_tierlist"), "");
+      const graphicTierlistChannelId = parseRequestedChannelId(interaction.fields.getTextInputValue("panel_channel_graphic_tierlist"), "");
+      const noticesChannelId = parseRequestedChannelId(interaction.fields.getTextInputValue("panel_channel_notices"), "");
+
+      for (const [label, channelId] of [
+        ["Welcome", welcomeChannelId],
+        ["Review", reviewChannelId],
+        ["Text tierlist", textTierlistChannelId],
+        ["Graphic tierlist", graphicTierlistChannelId],
+        ["Notice/log", noticesChannelId],
+      ]) {
+        if (!channelId) continue;
+        const channel = await client.channels.fetch(channelId).catch(() => null);
+        if (!channel?.isTextBased?.()) {
+          await interaction.reply(ephemeralPayload({ content: `${label} канал не найден или не является текстовым.` }));
+          return;
+        }
+      }
+
+      const welcomePanel = getWelcomePanelState();
+      welcomePanel.channelId = welcomeChannelId;
+      if (!welcomeChannelId) {
+        welcomePanel.messageId = "";
+        db.config.nonGgsPanel ||= { channelId: "", messageId: "" };
+        db.config.nonGgsPanel.channelId = "";
+        db.config.nonGgsPanel.messageId = "";
+      }
+
+      db.config.reviewChannelId = reviewChannelId;
+
+      const textBoardState = getTextTierlistBoardState(db.config, appConfig.channels.tierlistChannelId || "");
+      const previousTextChannelId = String(textBoardState.channelId || "").trim();
+      textBoardState.channelId = textTierlistChannelId;
+      if (!textTierlistChannelId || previousTextChannelId !== textTierlistChannelId) {
+        textBoardState.messageId = "";
+      }
+
+      const graphicBoardState = getGraphicTierlistBoardState(db.config, appConfig.channels.tierlistChannelId || "");
+      const previousGraphicChannelId = String(graphicBoardState.channelId || "").trim();
+      graphicBoardState.channelId = graphicTierlistChannelId;
+      if (!graphicTierlistChannelId || previousGraphicChannelId !== graphicTierlistChannelId) {
+        graphicBoardState.messageId = "";
+      }
+
+      db.config.notificationChannelId = noticesChannelId;
+      saveDb();
+
+      let statusText = "Каналы сохранены.";
+      const refreshNotes = [];
+
+      if (welcomeChannelId) {
+        try {
+          const result = await refreshWelcomePanel(client);
+          if (result?.welcomeMessage?.id) {
+            refreshNotes.push(`welcome обновлён в <#${welcomeChannelId}>`);
+          }
+        } catch (error) {
+          refreshNotes.push(`welcome не обновился: ${String(error?.message || error)}`);
+        }
+      }
+
+      const tierlistResult = await refreshAllTierlists(client);
+      if (tierlistResult.graphicError) {
+        refreshNotes.push(`graphic tierlist: ${String(tierlistResult.graphicError?.message || tierlistResult.graphicError)}`);
+      }
+      if (tierlistResult.textError) {
+        refreshNotes.push(`text tierlist: ${String(tierlistResult.textError?.message || tierlistResult.textError)}`);
+      }
+
+      if (refreshNotes.length) {
+        statusText = `${statusText} ${refreshNotes.join("; ")}`;
+      }
+
+      await interaction.reply(buildModeratorPanelPayload(statusText));
       return;
     }
 
