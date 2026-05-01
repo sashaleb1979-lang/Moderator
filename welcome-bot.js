@@ -6186,6 +6186,9 @@ function buildDormantTierlistPanelPayload(statusText = "", includeFlags = true) 
         new ButtonBuilder().setCustomId("tierlist_panel_refresh_public").setLabel("Обновить public").setStyle(ButtonStyle.Secondary),
         new ButtonBuilder().setCustomId("tierlist_panel_mod_panel").setLabel("Legacy mods").setStyle(ButtonStyle.Secondary)
       ),
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("tierlist_panel_channels").setLabel("Каналы Tierlist").setStyle(ButtonStyle.Primary)
+      ),
     ],
   };
 
@@ -8770,6 +8773,51 @@ client.on("interactionCreate", async (interaction) => {
         );
 
       modal.addComponents(new ActionRowBuilder().addComponents(input));
+      await interaction.showModal(modal);
+      return;
+    }
+
+    if (interaction.customId === "tierlist_panel_channels") {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      const liveState = getLiveLegacyTierlistState();
+      const modal = new ModalBuilder().setCustomId("tierlist_panel_channels_modal").setTitle("Каналы Tierlist");
+
+      const dashboardInput = new TextInputBuilder()
+        .setCustomId("tierlist_channel_dashboard")
+        .setLabel("Dashboard канал")
+        .setStyle(TextInputStyle.Short)
+        .setRequired(false)
+        .setMaxLength(80)
+        .setPlaceholder("<#123456789012345678> или 123456789012345678")
+        .setValue(
+          String(
+            liveState?.rawState?.settings?.channelId ||
+            db.config.integrations?.tierlist?.dashboard?.channelId || ""
+          ).slice(0, 80)
+        );
+
+      const summaryInput = new TextInputBuilder()
+        .setCustomId("tierlist_channel_summary")
+        .setLabel("Summary канал")
+        .setStyle(TextInputStyle.Short)
+        .setRequired(false)
+        .setMaxLength(80)
+        .setPlaceholder("<#123456789012345678> или 123456789012345678")
+        .setValue(
+          String(
+            liveState?.rawState?.settings?.summaryChannelId ||
+            db.config.integrations?.tierlist?.summary?.channelId || ""
+          ).slice(0, 80)
+        );
+
+      modal.addComponents(
+        new ActionRowBuilder().addComponents(dashboardInput),
+        new ActionRowBuilder().addComponents(summaryInput)
+      );
       await interaction.showModal(modal);
       return;
     }
@@ -11454,6 +11502,64 @@ client.on("interactionCreate", async (interaction) => {
       } catch (error) {
         await interaction.reply(ephemeralPayload({ content: String(error?.message || error || "Не удалось настроить legacy Tierlist public view.") }));
       }
+      return;
+    }
+
+    if (interaction.customId === "tierlist_panel_channels_modal") {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+      const dashboardChannelId = parseRequestedChannelId(interaction.fields.getTextInputValue("tierlist_channel_dashboard"), "");
+      const summaryChannelId = parseRequestedChannelId(interaction.fields.getTextInputValue("tierlist_channel_summary"), "");
+
+      for (const [label, channelId] of [
+        ["Dashboard", dashboardChannelId],
+        ["Summary", summaryChannelId],
+      ]) {
+        if (!channelId) continue;
+        const channel = await client.channels.fetch(channelId).catch(() => null);
+        if (!channel?.isTextBased?.()) {
+          await interaction.editReply({ content: `${label} канал не найден или не является текстовым.`, embeds: [], components: [] });
+          return;
+        }
+      }
+
+      const liveState = getLiveLegacyTierlistState();
+      if (!liveState.ok) {
+        await interaction.editReply(buildLegacyTierlistStateErrorPayload("Не удалось открыть legacy Tierlist state", liveState, false));
+        return;
+      }
+
+      const notes = [];
+
+      if (dashboardChannelId) {
+        try {
+          const result = await ensureLegacyTierlistDashboardMessage(client, liveState, dashboardChannelId);
+          notes.push(`Dashboard → ${formatChannelMention(result.channelId)} (msg ${result.messageId || "—"}).`);
+        } catch (error) {
+          notes.push(`Dashboard ошибка: ${String(error?.message || error)}.`);
+        }
+      }
+
+      if (summaryChannelId) {
+        try {
+          const result = await ensureLegacyTierlistSummaryMessage(client, liveState, summaryChannelId);
+          notes.push(`Summary → ${formatChannelMention(result.channelId)} (msg ${result.messageId || "—"}).`);
+        } catch (error) {
+          notes.push(`Summary ошибка: ${String(error?.message || error)}.`);
+        }
+      }
+
+      if (!dashboardChannelId && !summaryChannelId) {
+        notes.push("Ни один канал не задан — изменений нет.");
+      }
+
+      const statusText = `Каналы Tierlist сохранены. ${notes.join(" ")}`.trim();
+      await interaction.editReply(buildDormantTierlistPanelPayload(statusText, false));
       return;
     }
 
