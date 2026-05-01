@@ -3059,6 +3059,18 @@ async function findExistingTextTierlistMessage(channel) {
   );
 }
 
+async function fetchStoredBotMessage(channel, state, messageKey, botId) {
+  const messageId = String(state?.[messageKey] || "").trim();
+  if (!messageId) return null;
+
+  const message = await channel.messages.fetch(messageId).catch(() => null);
+  if (!message) return null;
+  if (message.author?.id === botId) return message;
+
+  state[messageKey] = "";
+  return null;
+}
+
 function shouldKeepWelcomeChannelMessage(message, keepMessageIds) {
   if (!message) return true;
   if (keepMessageIds.has(message.id)) return true;
@@ -3140,11 +3152,8 @@ async function cleanupBotPins(client) {
   }
 }
 
-async function upsertManagedPanelMessage(channel, state, payload, findExisting) {
-  let message = null;
-  if (state.messageId) {
-    message = await channel.messages.fetch(state.messageId).catch(() => null);
-  }
+async function upsertManagedPanelMessage(channel, state, payload, findExisting, botId) {
+  let message = await fetchStoredBotMessage(channel, state, "messageId", botId);
   if (!message) {
     message = await findExisting(channel);
     if (message && state.messageId !== message.id) {
@@ -3182,8 +3191,9 @@ async function refreshWelcomePanel(client) {
   };
   const nonGgsPayload = buildNonGgsPanelPayload();
 
-  const welcomeMessage = await upsertManagedPanelMessage(channel, panelState, welcomePayload, findExistingWelcomePanelMessage);
-  const nonGgsMessage = await upsertManagedPanelMessage(channel, nonGgsPanelState, nonGgsPayload, findExistingNonGgsPanelMessage);
+  const botId = client.user?.id;
+  const welcomeMessage = await upsertManagedPanelMessage(channel, panelState, welcomePayload, findExistingWelcomePanelMessage, botId);
+  const nonGgsMessage = await upsertManagedPanelMessage(channel, nonGgsPanelState, nonGgsPayload, findExistingNonGgsPanelMessage, botId);
 
   await cleanupWelcomeChannelMessages(channel, [welcomeMessage.id, nonGgsMessage.id]);
   saveDb();
@@ -3205,10 +3215,7 @@ async function refreshGraphicTierlistBoard(client) {
     return null;
   }
 
-  let message = null;
-  if (state.messageId) {
-    message = await channel.messages.fetch(state.messageId).catch(() => null);
-  }
+  let message = await fetchStoredBotMessage(channel, state, "messageId", client.user?.id);
   if (!message) {
     message = await findExistingGraphicTierlistMessage(channel);
     if (message && state.messageId !== message.id) {
@@ -3364,10 +3371,7 @@ async function refreshTextTierlistBoard(client, options = {}) {
     state.messageId = "";
   }
 
-  let message = null;
-  if (state.messageId) {
-    message = await channel.messages.fetch(state.messageId).catch(() => null);
-  }
+  let message = await fetchStoredBotMessage(channel, state, "messageId", client.user?.id);
   if (!message) {
     message = await findExistingTextTierlistMessage(channel);
     if (message && state.messageId !== message.id) {
@@ -4721,10 +4725,7 @@ async function ensureLegacyTierlistDashboardMessage(client, liveState, forcedCha
   const channel = await client.channels.fetch(channelId).catch(() => null);
   if (!channel?.isTextBased?.()) throw new Error("Legacy Tierlist dashboard channel должен быть текстовым.");
 
-  let message = null;
-  if (rawState.settings.dashboardMessageId) {
-    message = await channel.messages.fetch(rawState.settings.dashboardMessageId).catch(() => null);
-  }
+  let message = await fetchStoredBotMessage(channel, rawState.settings, "dashboardMessageId", client.user?.id);
   if (!message) {
     message = await findExistingLegacyTierlistDashboardMessage(channel);
   }
@@ -4759,11 +4760,7 @@ async function refreshLegacyTierlistDashboard(client, options = {}) {
   const channel = await client.channels.fetch(channelId).catch(() => null);
   if (!channel?.isTextBased?.()) return { ok: false, reason: "missing_channel", liveState };
 
-  let message = null;
-  const messageId = String(liveState.rawState?.settings?.dashboardMessageId || "").trim();
-  if (messageId) {
-    message = await channel.messages.fetch(messageId).catch(() => null);
-  }
+  let message = await fetchStoredBotMessage(channel, liveState.rawState?.settings, "dashboardMessageId", client.user?.id);
   if (!message) {
     const ensured = await ensureLegacyTierlistDashboardMessage(client, liveState, channelId);
     return { ok: true, ensured: true, channelId: ensured.channelId, messageId: ensured.messageId, syncResult: ensured.syncResult, liveState };
@@ -4800,10 +4797,7 @@ async function ensureLegacyTierlistSummaryMessage(client, liveState, forcedChann
   const channel = await client.channels.fetch(channelId).catch(() => null);
   if (!channel?.isTextBased?.()) throw new Error("Legacy Tierlist summary channel должен быть текстовым.");
 
-  let message = null;
-  if (rawState.settings.summaryMessageId) {
-    message = await channel.messages.fetch(rawState.settings.summaryMessageId).catch(() => null);
-  }
+  let message = await fetchStoredBotMessage(channel, rawState.settings, "summaryMessageId", client.user?.id);
   if (!message) {
     message = await findExistingLegacyTierlistSummaryMessage(channel);
   }
@@ -4836,11 +4830,7 @@ async function refreshLegacyTierlistSummaryMessage(client, options = {}) {
   const channel = await client.channels.fetch(channelId).catch(() => null);
   if (!channel?.isTextBased?.()) return { ok: false, reason: "missing_channel", liveState };
 
-  let message = null;
-  const messageId = String(liveState.rawState?.settings?.summaryMessageId || "").trim();
-  if (messageId) {
-    message = await channel.messages.fetch(messageId).catch(() => null);
-  }
+  let message = await fetchStoredBotMessage(channel, liveState.rawState?.settings, "summaryMessageId", client.user?.id);
   if (!message) {
     const ensured = await ensureLegacyTierlistSummaryMessage(client, liveState, channelId);
     return { ok: true, ensured: true, channelId: ensured.channelId, messageId: ensured.messageId, syncResult: ensured.syncResult, liveState };
@@ -5880,10 +5870,7 @@ async function refreshLegacyEloGraphicBoard(client, options = {}) {
     throw new Error("Указанный ELO PNG канал не является текстовым.");
   }
 
-  let message = null;
-  if (graphicState.dashboardMessageId) {
-    message = await channel.messages.fetch(graphicState.dashboardMessageId).catch(() => null);
-  }
+  let message = await fetchStoredBotMessage(channel, graphicState, "dashboardMessageId", client.user?.id);
   if (!message) {
     message = await findExistingLegacyEloGraphicMessage(channel);
     if (message && graphicState.dashboardMessageId !== message.id) {
@@ -10867,6 +10854,8 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
       const welcomeChannelId = parseRequestedChannelId(interaction.fields.getTextInputValue("panel_channel_welcome"), "");
       const reviewChannelId = parseRequestedChannelId(interaction.fields.getTextInputValue("panel_channel_review"), "");
       const textTierlistChannelId = parseRequestedChannelId(interaction.fields.getTextInputValue("panel_channel_text_tierlist"), "");
@@ -10883,7 +10872,7 @@ client.on("interactionCreate", async (interaction) => {
         if (!channelId) continue;
         const channel = await client.channels.fetch(channelId).catch(() => null);
         if (!channel?.isTextBased?.()) {
-          await interaction.reply(ephemeralPayload({ content: `${label} канал не найден или не является текстовым.` }));
+          await interaction.editReply({ content: `${label} канал не найден или не является текстовым.`, embeds: [], components: [] });
           return;
         }
       }
@@ -10942,7 +10931,7 @@ client.on("interactionCreate", async (interaction) => {
         statusText = `${statusText} ${refreshNotes.join("; ")}`;
       }
 
-      await interaction.reply(buildModeratorPanelPayload(statusText));
+      await interaction.editReply(buildModeratorPanelPayload(statusText, false));
       return;
     }
 
