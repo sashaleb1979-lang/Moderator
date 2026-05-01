@@ -262,6 +262,7 @@ const LEGACY_TIERLIST_PANEL_BUTTON_IDS = new Set([
   "panel_w_plus",
   "panel_h_minus",
   "panel_h_plus",
+  "panel_set_img",
   "panel_reset_img",
   "panel_fonts",
   "panel_rename",
@@ -4587,7 +4588,7 @@ async function ensureLegacyTierlistDashboardMessage(client, liveState, forcedCha
 
   const rawState = liveState.rawState;
   rawState.settings ||= {};
-  const channelId = String(forcedChannelId || rawState.settings.channelId || "").trim();
+  const channelId = String(forcedChannelId || rawState.settings.channelId || appConfig.channels.tierlistChannelId || "").trim();
   if (!channelId) throw new Error("Не задан dashboard channel для legacy Tierlist.");
 
   const previousChannelId = String(rawState.settings.channelId || "").trim();
@@ -4634,7 +4635,7 @@ async function refreshLegacyTierlistDashboard(client, options = {}) {
     throw new Error(liveState.error || "Legacy Tierlist state недоступен");
   }
 
-  const channelId = String(options.channelId || liveState.rawState?.settings?.channelId || "").trim();
+  const channelId = String(options.channelId || liveState.rawState?.settings?.channelId || appConfig.channels.tierlistChannelId || "").trim();
   if (!channelId) {
     return { ok: false, reason: "not_configured", liveState };
   }
@@ -5375,6 +5376,7 @@ function buildLegacyTierlistModPanelConfigPayload(liveState, userId, statusText 
       buildLegacyTierlistPanelTabsRow(liveState.rawState, userId),
       new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId("panel_refresh").setLabel("Пересобрать").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("panel_set_img").setLabel("Задать размеры").setStyle(ButtonStyle.Primary),
         new ButtonBuilder().setCustomId("panel_icon_minus").setLabel("Иконки -").setStyle(ButtonStyle.Secondary),
         new ButtonBuilder().setCustomId("panel_icon_plus").setLabel("Иконки +").setStyle(ButtonStyle.Secondary)
       ),
@@ -6507,6 +6509,56 @@ async function registerGuildCommands(client) {
   await guild.commands.set([...buildCommands(), buildComboCommands()]);
 }
 
+function getLegacyEloTierRoleTarget(rawDb, userId) {
+  const rating = rawDb?.ratings?.[userId];
+  const tier = Number(rating?.tier);
+  return Number.isInteger(tier) && tier >= 1 && tier <= 5 ? tier : null;
+}
+
+async function syncLegacyEloTierRoles(client, rawDb, options = {}) {
+  const allTierRoleIds = getAllTierRoleIds();
+  if (!allTierRoleIds.length) {
+    return { processed: 0, assigned: 0, cleared: 0 };
+  }
+
+  const targetUserId = String(options.targetUserId || "").trim();
+  const reason = String(options.reason || "legacy elo tier role sync").trim() || "legacy elo tier role sync";
+  const explicitClearUserIds = Array.isArray(options.clearUserIds)
+    ? options.clearUserIds.map((value) => String(value || "").trim()).filter(Boolean)
+    : [];
+  const clearUserIds = new Set(explicitClearUserIds);
+  const targetUserIds = targetUserId
+    ? [targetUserId]
+    : Object.keys(rawDb?.ratings || {}).map((value) => String(value || "").trim()).filter(Boolean);
+
+  let processed = 0;
+  let assigned = 0;
+  let cleared = 0;
+
+  for (const userId of targetUserIds) {
+    processed += 1;
+    const tier = getLegacyEloTierRoleTarget(rawDb, userId);
+    if (tier) {
+      await ensureSingleTierRole(client, userId, tier, reason);
+      assigned += 1;
+      clearUserIds.delete(userId);
+      continue;
+    }
+
+    const didClear = await clearTierRoles(client, userId, reason);
+    if (didClear) cleared += 1;
+    clearUserIds.delete(userId);
+  }
+
+  for (const userId of clearUserIds) {
+    processed += 1;
+    const didClear = await clearTierRoles(client, userId, reason);
+    if (didClear) cleared += 1;
+  }
+
+  return { processed, assigned, cleared };
+}
+
 async function syncApprovedTierRoles(client, targetUserId = null) {
   if (targetUserId) {
     const profile = db.profiles[targetUserId];
@@ -6559,10 +6611,19 @@ client.once("clientReady", async () => {
         console.error("Legacy ELO submit hub setup failed:", error?.message || error);
       });
     }
+
+    try {
+      const roleSync = await syncLegacyEloTierRoles(client, legacyEloState.rawDb, { reason: "legacy elo startup sync" });
+      if (roleSync.processed > 0) {
+        console.log(`[legacy-elo][roles] startup sync: assigned ${roleSync.assigned}, cleared ${roleSync.cleared}`);
+      }
+    } catch (error) {
+      console.error("Legacy ELO tier role sync failed:", error?.message || error);
+    }
   }
   const legacyTierlistState = getLiveLegacyTierlistState();
   if (legacyTierlistState.ok) {
-    const dashboardChannelId = String(legacyTierlistState.rawState?.settings?.channelId || "").trim();
+    const dashboardChannelId = String(legacyTierlistState.rawState?.settings?.channelId || appConfig.channels.tierlistChannelId || "").trim();
     const summaryChannelId = String(legacyTierlistState.rawState?.settings?.summaryChannelId || "").trim();
     if (dashboardChannelId) {
       await ensureLegacyTierlistDashboardMessage(client, legacyTierlistState, dashboardChannelId).catch((error) => {
@@ -8773,6 +8834,44 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
+      if (interaction.customId === "panel_set_img") {
+        const cfg = getLegacyTierlistImageConfig(liveState.rawState);
+        const modal = new ModalBuilder()
+          .setCustomId("panel_set_img_modal")
+          .setTitle("Размеры legacy Tierlist");
+        modal.addComponents(
+          new ActionRowBuilder().addComponents(
+            new TextInputBuilder()
+              .setCustomId("tierlist_width")
+              .setLabel("Ширина PNG (1200-4096)")
+              .setStyle(TextInputStyle.Short)
+              .setRequired(false)
+              .setMaxLength(4)
+              .setValue(String(cfg.W))
+          ),
+          new ActionRowBuilder().addComponents(
+            new TextInputBuilder()
+              .setCustomId("tierlist_height")
+              .setLabel("Высота PNG (700-2160)")
+              .setStyle(TextInputStyle.Short)
+              .setRequired(false)
+              .setMaxLength(4)
+              .setValue(String(cfg.H))
+          ),
+          new ActionRowBuilder().addComponents(
+            new TextInputBuilder()
+              .setCustomId("tierlist_icon")
+              .setLabel("Размер иконок (64-256)")
+              .setStyle(TextInputStyle.Short)
+              .setRequired(false)
+              .setMaxLength(3)
+              .setValue(String(cfg.ICON))
+          )
+        );
+        await interaction.showModal(modal);
+        return;
+      }
+
       if (interaction.customId === "panel_add_custom_character") {
         const modal = new ModalBuilder()
           .setCustomId("panel_add_custom_character_modal")
@@ -8826,7 +8925,15 @@ client.on("interactionCreate", async (interaction) => {
 
       await interaction.deferUpdate();
       const result = refreshDormantEloImport();
-      await interaction.editReply(buildDormantEloPanelPayload(getDormantEloImportStatusText(result), false));
+      let statusText = getDormantEloImportStatusText(result);
+      const liveState = getLiveLegacyEloState();
+      if (liveState.ok) {
+        const roleSync = await syncLegacyEloTierRoles(client, liveState.rawDb, { reason: "legacy elo import sync" });
+        if (roleSync.processed > 0) {
+          statusText += ` Роли: assigned ${roleSync.assigned}, cleared ${roleSync.cleared}.`;
+        }
+      }
+      await interaction.editReply(buildDormantEloPanelPayload(statusText, false));
       return;
     }
 
@@ -8917,6 +9024,7 @@ client.on("interactionCreate", async (interaction) => {
       await interaction.deferUpdate();
       try {
         const rebuilt = rebuildLegacyEloRatings(liveState.rawDb, { rebuiltAt: nowIso() });
+        const roleSync = await syncLegacyEloTierRoles(client, liveState.rawDb, { reason: "legacy elo rebuild" });
 
         let boardUpdated = false;
         let syncResult = null;
@@ -8939,7 +9047,7 @@ client.on("interactionCreate", async (interaction) => {
             `Проверено: ${rebuilt.total}.`,
             `Сменили tier: ${rebuilt.retiered}.`,
             `Скрыто как невалидные: ${rebuilt.hidden}.`,
-            `Роли: пропущены в dormant mode.`,
+            `Роли: assigned ${roleSync.assigned}, cleared ${roleSync.cleared}.`,
             `Legacy card links: ${rebuilt.cleanup.clearedCards}.`,
             `Legacy index link: ${rebuilt.cleanup.clearedIndexLink ? "да" : "нет"}.`,
             `PNG: ${boardUpdated ? "обновлён" : "не настроен или пропущен"}.`,
@@ -9174,6 +9282,10 @@ client.on("interactionCreate", async (interaction) => {
             displayName: profileData.displayName,
             username: profileData.username,
             avatarUrl: profileData.avatarUrl,
+          });
+          await syncLegacyEloTierRoles(client, liveState.rawDb, {
+            targetUserId: submission.userId,
+            reason: "legacy elo approve",
           });
           saveLegacyEloDbFile(liveState.resolvedPath, approved.db);
           const syncWarning = getLegacyEloResyncWarning();
@@ -10423,6 +10535,13 @@ client.on("interactionCreate", async (interaction) => {
         saveDb();
         const result = refreshDormantEloImport();
         statusText = getDormantEloImportStatusText(result);
+        const liveState = getLiveLegacyEloState();
+        if (liveState.ok) {
+          const roleSync = await syncLegacyEloTierRoles(client, liveState.rawDb, { reason: "legacy elo source sync" });
+          if (roleSync.processed > 0) {
+            statusText += ` Роли: assigned ${roleSync.assigned}, cleared ${roleSync.cleared}.`;
+          }
+        }
       }
 
       await interaction.reply(buildDormantEloPanelPayload(statusText));
@@ -10519,6 +10638,62 @@ client.on("interactionCreate", async (interaction) => {
       const syncResult = saveLiveLegacyTierlistStateAndResync(liveState);
       await refreshLegacyTierlistPublicViews(client, { liveState });
       await interaction.editReply(`Ок. Теперь **${tierKey}** называется: **${name}**.${getLegacyTierlistSyncStatusSuffix(syncResult)}`);
+      return;
+    }
+
+    if (interaction.customId === "panel_set_img_modal") {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      const parseField = (rawValue, min, max, label) => {
+        const text = String(rawValue || "").trim();
+        if (!text) return null;
+        if (!/^\d+$/.test(text)) {
+          throw new Error(`${label}: нужно целое число.`);
+        }
+        const value = Number(text);
+        if (value < min || value > max) {
+          throw new Error(`${label}: диапазон ${min}-${max}.`);
+        }
+        return value;
+      };
+
+      let width = null;
+      let height = null;
+      let icon = null;
+      try {
+        width = parseField(interaction.fields.getTextInputValue("tierlist_width"), 1200, 4096, "Ширина");
+        height = parseField(interaction.fields.getTextInputValue("tierlist_height"), 700, 2160, "Высота");
+        icon = parseField(interaction.fields.getTextInputValue("tierlist_icon"), 64, 256, "Иконки");
+      } catch (error) {
+        await interaction.reply(ephemeralPayload({ content: String(error?.message || error || "Неверные значения размеров.") }));
+        return;
+      }
+
+      if (width == null && height == null && icon == null) {
+        await interaction.reply(ephemeralPayload({ content: "Укажи хотя бы одно значение размера." }));
+        return;
+      }
+
+      const liveState = getLiveLegacyTierlistState();
+      if (!liveState.ok) {
+        await interaction.reply(buildLegacyTierlistStateErrorPayload("Не удалось открыть legacy Tierlist state", liveState));
+        return;
+      }
+
+      liveState.rawState.settings ||= {};
+      liveState.rawState.settings.image ||= { width: null, height: null, icon: null };
+      if (width != null) liveState.rawState.settings.image.width = width;
+      if (height != null) liveState.rawState.settings.image.height = height;
+      if (icon != null) liveState.rawState.settings.image.icon = icon;
+
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      const syncResult = saveLiveLegacyTierlistStateAndResync(liveState);
+      await refreshLegacyTierlistPublicViews(client, { liveState });
+      const cfg = getLegacyTierlistImageConfig(liveState.rawState);
+      await interaction.editReply(`Ок. Теперь img: ${cfg.W}x${cfg.H}, icon=${cfg.ICON}.${getLegacyTierlistSyncStatusSuffix(syncResult)}`);
       return;
     }
 
@@ -10655,6 +10830,10 @@ client.on("interactionCreate", async (interaction) => {
           screenshotUrl,
           interaction.user.tag
         );
+        await syncLegacyEloTierRoles(client, liveState.rawDb, {
+          targetUserId,
+          reason: "legacy elo modset",
+        });
 
         let boardUpdated = false;
         let syncResult = null;
@@ -10984,6 +11163,10 @@ client.on("interactionCreate", async (interaction) => {
       }
 
       saveLegacyEloDbFile(liveState.resolvedPath, removed.db);
+      await syncLegacyEloTierRoles(client, liveState.rawDb, {
+        targetUserId: userId,
+        reason: "legacy elo remove",
+      });
       clearGraphicAvatarCacheForUser(userId);
       const syncWarning = getLegacyEloResyncWarning();
       await logLine(client, `ELO REMOVE: <@${userId}> removed from legacy rating by ${interaction.user.tag}`);
@@ -11018,6 +11201,10 @@ client.on("interactionCreate", async (interaction) => {
 
       const wiped = wipeLegacyEloRatings(liveState.rawDb, { mode });
       saveLegacyEloDbFile(liveState.resolvedPath, wiped.db);
+      await syncLegacyEloTierRoles(client, liveState.rawDb, {
+        clearUserIds: wiped.removedUserIds,
+        reason: `legacy elo wipe ${mode}`,
+      });
       clearGraphicAvatarCache();
       const syncWarning = getLegacyEloResyncWarning();
       await logLine(client, `ELO WIPE_RATINGS (${mode}) by ${interaction.user.tag}`);
