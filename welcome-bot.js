@@ -5977,12 +5977,19 @@ async function persistLegacyEloGraphicMutation(client, liveState, options = {}) 
 
 function buildDormantEloPanelPayload(statusText = "", includeFlags = true) {
   const snapshot = getDormantEloPanelSnapshot(db);
+  const submitPanelChannelText = snapshot.submitPanel.channelId
+    ? formatChannelMention(snapshot.submitPanel.channelId)
+    : "не задан отдельно";
+  const graphicBoardChannelText = snapshot.graphicBoard.channelId
+    ? formatChannelMention(snapshot.graphicBoard.channelId)
+    : "не задан отдельно";
 
   const embed = new EmbedBuilder()
     .setTitle("ELO Panel")
     .setDescription([
       "Dormant-интеграция legacy elo-bot внутри Moderator.",
       "Отдельный runtime elo-bot не запускается; читается только legacy db и пишется проекция в shared profiles.",
+      "Submit Hub и PNG board настраиваются отдельно внутри этой панели.",
       `Tracked профилей: **${formatNumber(snapshot.trackedProfiles)}**`,
       `Активных рейтингов: **${formatNumber(snapshot.ratedProfiles)}**`,
       `Pending snapshot: **${formatNumber(snapshot.pendingProfiles)}**`,
@@ -6007,7 +6014,7 @@ function buildDormantEloPanelPayload(statusText = "", includeFlags = true) {
       {
         name: "Submit Panel",
         value: [
-          `Канал: ${formatChannelMention(snapshot.submitPanel.channelId)}`,
+          `Канал: ${submitPanelChannelText}`,
           `Message ID: ${snapshot.submitPanel.messageId || "—"}`,
         ].join("\n"),
         inline: true,
@@ -6015,10 +6022,15 @@ function buildDormantEloPanelPayload(statusText = "", includeFlags = true) {
       {
         name: "Graphic Board",
         value: [
-          `Канал: ${formatChannelMention(snapshot.graphicBoard.channelId)}`,
+          `Канал: ${graphicBoardChannelText}`,
           `Message ID: ${snapshot.graphicBoard.messageId || "—"}`,
           `Updated: ${snapshot.graphicBoard.lastUpdated ? formatDateTime(snapshot.graphicBoard.lastUpdated) : "—"}`,
         ].join("\n"),
+        inline: false,
+      },
+      {
+        name: "Важно",
+        value: "Общие Welcome/Review/Tierlist каналы сюда не подставляются. Для legacy ELO используй отдельно кнопки Submit Hub и PNG Panel.",
         inline: false,
       }
     );
@@ -8602,7 +8614,7 @@ client.on("interactionCreate", async (interaction) => {
       const modal = new ModalBuilder().setCustomId("tierlist_panel_source_modal").setTitle("Путь к legacy Tierlist state");
       const input = new TextInputBuilder()
         .setCustomId("tierlist_source_path")
-        .setLabel("Относительный путь от data root или абсолютный путь")
+        .setLabel("Путь к state.json")
         .setStyle(TextInputStyle.Short)
         .setRequired(false)
         .setMaxLength(500)
@@ -9355,7 +9367,7 @@ client.on("interactionCreate", async (interaction) => {
       const modal = new ModalBuilder().setCustomId("elo_panel_source_modal").setTitle("Путь к legacy ELO db");
       const input = new TextInputBuilder()
         .setCustomId("elo_source_path")
-        .setLabel("Относительный путь от data root или абсолютный путь")
+        .setLabel("Путь к db.json")
         .setStyle(TextInputStyle.Short)
         .setRequired(false)
         .setMaxLength(500)
