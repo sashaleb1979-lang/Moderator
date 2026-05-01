@@ -956,6 +956,23 @@ function chunkTextLines(lines, maxLength = 3800, maxLines = 15) {
   return chunks;
 }
 
+function estimateEmbedTextLength(embed) {
+  const data = typeof embed?.toJSON === "function" ? embed.toJSON() : (embed || {});
+  let total = 0;
+
+  total += String(data.title || "").length;
+  total += String(data.description || "").length;
+  total += String(data.footer?.text || "").length;
+  total += String(data.author?.name || "").length;
+
+  for (const field of data.fields || []) {
+    total += String(field?.name || "").length;
+    total += String(field?.value || "").length;
+  }
+
+  return total;
+}
+
 function buildMainStatsEmbeds(characterStats = []) {
   if (!characterStats.length) return [];
 
@@ -1078,10 +1095,63 @@ async function buildTierlistEmbeds(client) {
 }
 
 async function buildTierlistBoardPayload(client) {
-  const payload = await buildTierlistEmbeds(client);
+  const liveContext = await getLiveCharacterStatsContext(client);
+  const entries = getApprovedTierlistEntries({ liveMainsByUserId: liveContext.liveMainsByUserId });
+  const baseEmbeds = buildStatsEmbedsFromContext(entries, liveContext);
+  const embeds = baseEmbeds.length ? [baseEmbeds[0]] : [];
+  const maxTotalEmbedLength = 5800;
+  let totalEmbedLength = embeds.reduce((sum, embed) => sum + estimateEmbedTextLength(embed), 0);
+  let shownCount = 0;
+
+  if (entries.length) {
+    let chunk = [];
+    let chunkStart = 1;
+    let chunkLength = 0;
+
+    const flushChunk = () => {
+      if (!chunk.length) return true;
+
+      const embed = new EmbedBuilder()
+        .setTitle(`Рейтинг #${chunkStart}-${chunkStart + chunk.length - 1}`)
+        .setDescription(chunk.join("\n"));
+      const embedLength = estimateEmbedTextLength(embed);
+      if (totalEmbedLength + embedLength > maxTotalEmbedLength) {
+        return false;
+      }
+
+      embeds.push(embed);
+      totalEmbedLength += embedLength;
+      shownCount = chunkStart + chunk.length - 1;
+      chunk = [];
+      chunkLength = 0;
+      return true;
+    };
+
+    entries.forEach((entry, index) => {
+      const lineNumber = index + 1;
+      const mainsText = previewText(formatCharacterReferenceList(entry.mains), 120);
+      const line = `${lineNumber}. T${entry.killTier} ${entry.displayName} — ${formatNumber(entry.approvedKills)} • ${mainsText}`;
+      if (!chunk.length) chunkStart = lineNumber;
+
+      if (chunk.length >= 25 || chunkLength + line.length + 1 > 2600) {
+        if (!flushChunk()) return;
+        chunkStart = lineNumber;
+      }
+
+      chunk.push(line);
+      chunkLength += line.length + 1;
+    });
+
+    flushChunk();
+  }
+
+  const content = shownCount > 0 && shownCount < entries.length
+    ? `Текстовый тир-лист. Discord ограничил размер embeds, поэтому показаны позиции 1-${shownCount} из ${entries.length}.`
+    : "Текстовый тир-лист. Полный порядок игроков находится в этом сообщении и обновляется автоматически.";
+
   return {
-    content: "Текстовый тир-лист. Полный порядок игроков находится в этом сообщении и обновляется автоматически.",
-    embeds: payload.embeds.slice(0, 10),
+    content,
+    embeds,
     components: [],
   };
 }
