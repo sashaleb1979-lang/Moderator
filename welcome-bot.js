@@ -346,6 +346,13 @@ function buildRuntimeConfig(fileConfig = {}) {
         4: envText("TIER_ROLE_4_ID", fileConfig?.roles?.killTierRoleIds?.["4"] || ""),
         5: envText("TIER_ROLE_5_ID", fileConfig?.roles?.killTierRoleIds?.["5"] || ""),
       },
+      legacyEloTierRoleIds: {
+        1: envText("LEGACY_ELO_TIER_ROLE_1_ID", fileConfig?.roles?.legacyEloTierRoleIds?.["1"] || ""),
+        2: envText("LEGACY_ELO_TIER_ROLE_2_ID", fileConfig?.roles?.legacyEloTierRoleIds?.["2"] || ""),
+        3: envText("LEGACY_ELO_TIER_ROLE_3_ID", fileConfig?.roles?.legacyEloTierRoleIds?.["3"] || ""),
+        4: envText("LEGACY_ELO_TIER_ROLE_4_ID", fileConfig?.roles?.legacyEloTierRoleIds?.["4"] || ""),
+        5: envText("LEGACY_ELO_TIER_ROLE_5_ID", fileConfig?.roles?.legacyEloTierRoleIds?.["5"] || ""),
+      },
     },
     ui: {
       welcomeTitle: String(fileConfig?.ui?.welcomeTitle || "Jujutsu Shinigans Onboarding").trim(),
@@ -2429,6 +2436,15 @@ function getAllTierRoleIds() {
   return [1, 2, 3, 4, 5].map((tier) => getTierRoleId(tier)).filter(Boolean);
 }
 
+function getLegacyEloTierRoleId(tier) {
+  const tierKey = String(tier);
+  return String(appConfig.roles.legacyEloTierRoleIds?.[tierKey] || "").trim();
+}
+
+function getAllLegacyEloTierRoleIds() {
+  return [1, 2, 3, 4, 5].map((tier) => getLegacyEloTierRoleId(tier)).filter(Boolean);
+}
+
 function getNormalAccessRoleId() {
   return String(appConfig.roles.accessRoleId || "").trim();
 }
@@ -2546,11 +2562,30 @@ async function ensureSingleTierRole(client, userId, targetTier, reason = "kill t
   }
 }
 
+async function ensureSingleRoleInPool(client, userId, targetRoleId, roleIds, reason = "role sync") {
+  const member = await fetchMember(client, userId);
+  if (!member) return;
+
+  for (const roleId of roleIds) {
+    if (roleId !== targetRoleId && member.roles.cache.has(roleId)) {
+      await member.roles.remove(roleId, reason).catch(() => {});
+    }
+  }
+
+  if (targetRoleId && !member.roles.cache.has(targetRoleId)) {
+    await member.roles.add(targetRoleId, reason).catch(() => {});
+  }
+}
+
 async function clearTierRoles(client, userId, reason = "clear kill tier") {
+  return clearRolePool(client, userId, getAllTierRoleIds(), reason);
+}
+
+async function clearRolePool(client, userId, roleIds, reason = "clear role pool") {
   const member = await fetchMember(client, userId);
   if (!member) return false;
 
-  for (const roleId of getAllTierRoleIds()) {
+  for (const roleId of roleIds) {
     if (member.roles.cache.has(roleId)) {
       await member.roles.remove(roleId, reason).catch(() => {});
     }
@@ -6701,9 +6736,9 @@ function getLegacyEloTierRoleTarget(rawDb, userId) {
 }
 
 async function syncLegacyEloTierRoles(client, rawDb, options = {}) {
-  const allTierRoleIds = getAllTierRoleIds();
-  if (!allTierRoleIds.length) {
-    return { processed: 0, assigned: 0, cleared: 0 };
+  const allTierRoleIds = getAllLegacyEloTierRoleIds();
+  if (allTierRoleIds.length !== 5) {
+    return { processed: 0, assigned: 0, cleared: 0, skipped: "legacy_elo_role_ids_not_configured" };
   }
 
   const targetUserId = String(options.targetUserId || "").trim();
@@ -6724,20 +6759,20 @@ async function syncLegacyEloTierRoles(client, rawDb, options = {}) {
     processed += 1;
     const tier = getLegacyEloTierRoleTarget(rawDb, userId);
     if (tier) {
-      await ensureSingleTierRole(client, userId, tier, reason);
+      await ensureSingleRoleInPool(client, userId, getLegacyEloTierRoleId(tier), allTierRoleIds, reason);
       assigned += 1;
       clearUserIds.delete(userId);
       continue;
     }
 
-    const didClear = await clearTierRoles(client, userId, reason);
+    const didClear = await clearRolePool(client, userId, allTierRoleIds, reason);
     if (didClear) cleared += 1;
     clearUserIds.delete(userId);
   }
 
   for (const userId of clearUserIds) {
     processed += 1;
-    const didClear = await clearTierRoles(client, userId, reason);
+    const didClear = await clearRolePool(client, userId, allTierRoleIds, reason);
     if (didClear) cleared += 1;
   }
 
