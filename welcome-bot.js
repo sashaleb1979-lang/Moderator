@@ -6849,6 +6849,9 @@ client.once("clientReady", async () => {
 
   setInterval(() => runAutoResendTick(client).catch((err) => console.error("Auto-resend tick error:", err)), ROLE_PANEL_AUTO_RESEND_TICK_MS);
   setInterval(() => {
+    const tierlistSourcePath = String(db.config.integrations?.tierlist?.sourcePath || "").trim();
+    if (!tierlistSourcePath) return;
+
     refreshLegacyTierlistSummaryMessage(client).catch((error) => {
       const text = String(error?.message || error || "").trim();
       if (text) console.error("Legacy Tierlist summary refresh failed:", text);
