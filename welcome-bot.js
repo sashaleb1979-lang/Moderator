@@ -124,6 +124,9 @@ const {
   getDormantEloProfileSnapshot,
 } = require("./src/integrations/elo-panel");
 const {
+  parseLegacyEloManualChatInput,
+} = require("./src/integrations/elo-manual-chat");
+const {
   getDormantTierlistPanelSnapshot,
   getDormantTierlistProfileSnapshot,
 } = require("./src/integrations/tierlist-panel");
@@ -273,6 +276,7 @@ let guildCache = null;
 const mainDrafts = new Map();
 const submitSessions = new Map();
 const legacyEloSubmitSessions = new Map();
+const legacyEloManualModsetSessions = new Map();
 const nonGgsCaptchaSessions = new Map();
 const rolePanelDrafts = new Map();
 const roleCleanupSelections = new Map();
@@ -6228,6 +6232,58 @@ async function createManualApprovedLegacyEloRecord(client, liveState, targetUser
   };
 }
 
+async function performLegacyEloManualModset(client, liveState, targetUserId, rawText, screenshotUrl, moderatorTag) {
+  const created = await createManualApprovedLegacyEloRecord(
+    client,
+    liveState,
+    targetUserId,
+    rawText,
+    screenshotUrl,
+    moderatorTag
+  );
+
+  await syncLegacyEloTierRoles(client, liveState.rawDb, {
+    targetUserId,
+    reason: "legacy elo modset",
+  });
+
+  let boardUpdated = false;
+  let syncResult = null;
+  const refreshResult = await refreshLegacyEloGraphicBoard(client, { liveState });
+  if (refreshResult?.ok) {
+    boardUpdated = true;
+    syncResult = refreshResult.syncResult;
+  } else {
+    syncResult = saveLiveLegacyEloStateAndResync(liveState);
+  }
+
+  const latestRating = liveState.rawDb?.ratings?.[targetUserId] || created.rating;
+  const eloValue = latestRating?.elo ?? created.rating?.elo ?? "—";
+  const tierValue = latestRating?.tier ?? created.rating?.tier ?? "—";
+  const proofUrl = latestRating?.proofUrl || screenshotUrl;
+
+  await dmUser(
+    client,
+    targetUserId,
+    [
+      "Модератор обновил твой ELO рейтинг.",
+      `ELO: ${eloValue}`,
+      `Тир: ${tierValue}`,
+      `Пруф: ${proofUrl}`,
+    ].join("\n")
+  );
+  await logLine(client, `ELO MODSET: <@${targetUserId}> ELO ${eloValue} -> Tier ${tierValue} by ${moderatorTag}`);
+
+  return {
+    created,
+    eloValue,
+    tierValue,
+    proofUrl,
+    boardUpdated,
+    syncResult,
+  };
+}
+
 function getLegacyEloSubmitPanelState(rawDb) {
   const dbState = rawDb && typeof rawDb === "object" ? rawDb : {};
   dbState.config ||= {};
@@ -6237,6 +6293,10 @@ function getLegacyEloSubmitPanelState(rawDb) {
 
 function setLegacyEloSubmitSession(userId, value) {
   legacyEloSubmitSessions.set(userId, { ...value, createdAt: Date.now() });
+}
+
+function setLegacyEloManualModsetSession(userId, value) {
+  legacyEloManualModsetSessions.set(userId, { ...value, createdAt: Date.now() });
 }
 
 function getLegacyEloSubmitSession(userId) {
@@ -6249,8 +6309,22 @@ function getLegacyEloSubmitSession(userId) {
   return session;
 }
 
+function getLegacyEloManualModsetSession(userId) {
+  const session = legacyEloManualModsetSessions.get(userId);
+  if (!session) return null;
+  if (Date.now() - Number(session.createdAt || 0) > SUBMIT_SESSION_EXPIRE_MS) {
+    legacyEloManualModsetSessions.delete(userId);
+    return null;
+  }
+  return session;
+}
+
 function clearLegacyEloSubmitSession(userId) {
   legacyEloSubmitSessions.delete(userId);
+}
+
+function clearLegacyEloManualModsetSession(userId) {
+  legacyEloManualModsetSessions.delete(userId);
 }
 
 function getPendingLegacyEloSubmissionForUser(rawDb, userId) {
@@ -6821,6 +6895,112 @@ client.on("messageCreate", async (message) => {
   const legacyEloSubmitChannelId = legacyEloState.ok
     ? String(getLegacyEloSubmitPanelState(legacyEloState.rawDb).channelId || "").trim()
     : "";
+
+  const legacyEloManualModsetSession = getLegacyEloManualModsetSession(message.author.id);
+  if (legacyEloManualModsetSession && message.channelId === legacyEloManualModsetSession.channelId) {
+    if (!isModerator(message.member)) {
+      clearLegacyEloManualModsetSession(message.author.id);
+      return;
+    }
+
+    const rawMessageText = String(message.content || "").trim();
+    if (/^(отмена|cancel)$/i.test(rawMessageText)) {
+      clearLegacyEloManualModsetSession(message.author.id);
+      await replyAndDelete(message, "Ручной legacy ELO modset отменён.");
+      await message.delete().catch(() => {});
+      return;
+    }
+
+    const parsedManualInput = parseLegacyEloManualChatInput(
+      rawMessageText,
+      legacyEloManualModsetSession.targetUserId || ""
+    );
+    const attachment = [...message.attachments.values()].find((item) => isImageAttachment(item));
+    const targetUserId = parsedManualInput.targetUserId;
+    const rawText = parsedManualInput.rawText || rawMessageText;
+    const eloValue = parseLegacyElo(rawText);
+
+    if (legacyEloManualModsetSession.stage === "awaiting_user") {
+      if (!targetUserId) {
+        await replyAndDelete(message, "Сначала пришли ID или mention игрока. Можно сразу одним сообщением: <@игрок> 110 и картинка.");
+        await message.delete().catch(() => {});
+        return;
+      }
+
+      if (!attachment || !eloValue) {
+        setLegacyEloManualModsetSession(message.author.id, {
+          channelId: message.channelId,
+          stage: "awaiting_payload",
+          targetUserId,
+        });
+        await replyAndDelete(
+          message,
+          [
+            `Игрок сохранён: <@${targetUserId}>.`,
+            `Теперь отправь следующим сообщением в ${formatChannelMention(message.channelId) || "этот канал"} текст с числом ELO и картинку.`,
+            "Можно написать просто `110` и приложить скрин.",
+            "Картинка обязательна. Для отмены напиши `отмена`.",
+          ].join("\n")
+        );
+        await message.delete().catch(() => {});
+        return;
+      }
+    }
+
+    if (!targetUserId) {
+      await replyAndDelete(message, "Не удалось определить игрока. Пришли mention или Discord user ID.");
+      await message.delete().catch(() => {});
+      return;
+    }
+
+    if (!eloValue) {
+      await replyAndDelete(message, "Нужен текст с числом ELO. Пример: 73 или 110 elo.");
+      await message.delete().catch(() => {});
+      return;
+    }
+
+    if (!attachment) {
+      await replyAndDelete(message, "Нужна картинка со скрином. Без картинки ручной modset не принимается.");
+      await message.delete().catch(() => {});
+      return;
+    }
+
+    if (!legacyEloState.ok) {
+      clearLegacyEloManualModsetSession(message.author.id);
+      await replyAndDelete(message, `Не удалось открыть legacy ELO базу: ${legacyEloState.error}`);
+      await message.delete().catch(() => {});
+      return;
+    }
+
+    try {
+      const modsetResult = await performLegacyEloManualModset(
+        client,
+        legacyEloState,
+        targetUserId,
+        rawText,
+        attachment.url,
+        message.author.tag
+      );
+      clearLegacyEloManualModsetSession(message.author.id);
+      await replyAndDelete(
+        message,
+        [
+          `Legacy ELO modset выполнен для <@${targetUserId}>.`,
+          `ELO: ${modsetResult.eloValue}.`,
+          `Tier: ${modsetResult.tierValue}.`,
+          `Review ID: ${modsetResult.created.submissionId}.`,
+          `PNG: ${modsetResult.boardUpdated ? "обновлён" : "не настроен или пропущен"}.`,
+        ].join(" ") + getLegacyEloSyncStatusSuffix(modsetResult.syncResult),
+        16000
+      );
+    } catch (error) {
+      clearLegacyEloManualModsetSession(message.author.id);
+      await replyAndDelete(message, String(error?.message || error || "Не удалось выполнить legacy ELO modset."), 16000);
+    }
+
+    await message.delete().catch(() => {});
+    return;
+  }
 
   if (legacyEloSubmitChannelId && message.channelId === legacyEloSubmitChannelId) {
     const session = getLegacyEloSubmitSession(message.author.id);
@@ -9280,35 +9460,20 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
-      const modal = new ModalBuilder().setCustomId("elo_panel_modset_modal").setTitle("Legacy ELO modset");
-      const userInput = new TextInputBuilder()
-        .setCustomId("elo_modset_user")
-        .setLabel("ID или mention игрока")
-        .setStyle(TextInputStyle.Short)
-        .setRequired(true)
-        .setMaxLength(80)
-        .setPlaceholder("123456789012345678 или <@123456789012345678>");
-      const eloInput = new TextInputBuilder()
-        .setCustomId("elo_modset_text")
-        .setLabel("Текст с числом ELO")
-        .setStyle(TextInputStyle.Short)
-        .setRequired(true)
-        .setMaxLength(100)
-        .setPlaceholder("Например: 110 или мой elo 110");
-      const screenshotInput = new TextInputBuilder()
-        .setCustomId("elo_modset_screenshot_url")
-        .setLabel("Прямая ссылка на скрин-картинку")
-        .setStyle(TextInputStyle.Paragraph)
-        .setRequired(true)
-        .setMaxLength(1000)
-        .setPlaceholder("https://cdn.discordapp.com/.../proof.png");
+      clearLegacyEloManualModsetSession(interaction.user.id);
+      setLegacyEloManualModsetSession(interaction.user.id, {
+        channelId: interaction.channelId,
+        stage: "awaiting_user",
+      });
 
-      modal.addComponents(
-        new ActionRowBuilder().addComponents(userInput),
-        new ActionRowBuilder().addComponents(eloInput),
-        new ActionRowBuilder().addComponents(screenshotInput)
-      );
-      await interaction.showModal(modal);
+      await interaction.reply(ephemeralPayload({
+        content: [
+          `Ручной legacy ELO modset запущен в ${formatChannelMention(interaction.channelId) || "этом канале"}.`,
+          "Вариант 1: отправь одним сообщением `@игрок 110` и приложи картинку.",
+          "Вариант 2: сначала отправь `@игрок`, потом следующим сообщением пришли `110` и картинку.",
+          "Картинка обязательна. Для отмены напиши `отмена`.",
+        ].join("\n"),
+      }));
       return;
     }
 
