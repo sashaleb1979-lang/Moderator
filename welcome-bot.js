@@ -691,6 +691,19 @@ function getCharacterCatalog() {
   return db.config.characters;
 }
 
+function getLegacyTierlistBaseCharacterCatalog() {
+  const source = Array.isArray(fileConfig?.characters) && fileConfig.characters.length
+    ? fileConfig.characters
+    : appConfig.characters;
+
+  return source
+    .map((entry) => ({
+      id: String(entry?.id || "").trim(),
+      label: String(entry?.label || entry?.name || entry?.id || "").trim(),
+    }))
+    .filter((entry) => entry.id);
+}
+
 function getNotificationChannelId() {
   const configured = String(db.config.notificationChannelId || "").trim();
   return configured || String(appConfig.channels.logChannelId || "").trim();
@@ -1245,7 +1258,7 @@ function buildGraphicPanelTierSelect() {
   );
 }
 
-function buildGraphicPanelPayload() {
+function buildGraphicPanelPayload(statusText = "", includeFlags = true) {
   const cfg = getGraphicImageConfig();
   const presentation = getPresentation();
   const selectedTier = Number(presentation.tierlist.graphic.panel.selectedTier) || 5;
@@ -1265,8 +1278,13 @@ function buildGraphicPanelPayload() {
       "Панель меняет только PNG-контур и связанные подписи и цвета.",
     ].join("\n"));
 
+  if (statusText) {
+    embed.addFields({ name: "Последнее действие", value: statusText, inline: false });
+  }
+
   const row1 = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId("graphic_panel_refresh").setLabel("Пересобрать").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId("graphic_panel_resend").setLabel("Отправить заново").setStyle(ButtonStyle.Danger),
     new ButtonBuilder().setCustomId("graphic_panel_title").setLabel("Название PNG").setStyle(ButtonStyle.Primary),
     new ButtonBuilder().setCustomId("graphic_panel_message_text").setLabel("Текст сообщения").setStyle(ButtonStyle.Primary),
     new ButtonBuilder().setCustomId("graphic_panel_rename").setLabel("Переименовать тир").setStyle(ButtonStyle.Primary)
@@ -1296,7 +1314,8 @@ function buildGraphicPanelPayload() {
     new ButtonBuilder().setCustomId("graphic_panel_close").setLabel("Закрыть").setStyle(ButtonStyle.Danger)
   );
 
-  return ephemeralPayload({ embeds: [embed], components: [row1, row2, row3, row4, row5] });
+  const payload = { embeds: [embed], components: [row1, row2, row3, row4, row5] };
+  return includeFlags ? ephemeralPayload(payload) : payload;
 }
 
 function buildGraphicStatusLines() {
@@ -3239,7 +3258,7 @@ async function ensureWelcomePanel(client) {
   return refreshWelcomePanel(client);
 }
 
-async function refreshGraphicTierlistBoard(client) {
+async function refreshGraphicTierlistBoard(client, options = {}) {
   const state = getGraphicTierlistBoardState(db.config, appConfig.channels.tierlistChannelId || "");
   const channelId = getGraphicTierlistChannelId();
   if (!channelId || isPlaceholder(channelId)) return null;
@@ -3248,6 +3267,12 @@ async function refreshGraphicTierlistBoard(client) {
   if (!channel?.isTextBased()) {
     console.warn("tierlistChannelId не указывает на текстовый канал, пропускаем graphic board");
     return null;
+  }
+
+  if (options.forceRecreate && state.messageId) {
+    const existing = await channel.messages.fetch(state.messageId).catch(() => null);
+    if (existing) await existing.delete().catch(() => {});
+    state.messageId = "";
   }
 
   let message = await fetchStoredBotMessage(channel, state, "messageId", client.user?.id);
@@ -3431,6 +3456,52 @@ async function refreshTextTierlistBoard(client, options = {}) {
 
 async function ensureTextTierlistBoardMessage(client, options = {}) {
   return refreshTextTierlistBoard(client, options);
+}
+
+async function resendAllTierlists(client) {
+  const result = {
+    graphicOk: false,
+    textOk: false,
+    graphicError: null,
+    textError: null,
+  };
+
+  try {
+    await refreshGraphicTierlistBoard(client, { forceRecreate: true });
+    result.graphicOk = true;
+  } catch (error) {
+    result.graphicError = error;
+    console.error("Graphic tierlist resend failed:", error?.message || error);
+  }
+
+  try {
+    await refreshTextTierlistBoard(client, { forceRecreate: true });
+    result.textOk = true;
+  } catch (error) {
+    result.textError = error;
+    console.error("Text tierlist resend failed:", error?.message || error);
+  }
+
+  return result;
+}
+
+function buildTierlistResendReply(result) {
+  if (result?.graphicOk && result?.textOk) {
+    return "PNG и текстовый tier-листы отправлены заново.";
+  }
+
+  if (result?.textOk && !result?.graphicOk) {
+    const graphicError = String(result?.graphicError?.message || result?.graphicError || "неизвестная ошибка").trim();
+    return `Текстовый tier-лист пересоздан, но PNG не пересоздался: ${graphicError || "неизвестная ошибка"}.`;
+  }
+
+  if (result?.graphicOk && !result?.textOk) {
+    const textError = String(result?.textError?.message || result?.textError || "неизвестная ошибка").trim();
+    return `PNG tier-лист пересоздан, но текстовый не пересоздался: ${textError || "неизвестная ошибка"}.`;
+  }
+
+  const fallback = String(result?.graphicError?.message || result?.textError?.message || result?.graphicError || result?.textError || "неизвестная ошибка").trim();
+  return `Не удалось отправить tier-листы заново: ${fallback || "неизвестная ошибка"}.`;
 }
 
 async function refreshAllTierlists(client) {
@@ -4673,7 +4744,7 @@ function getLiveLegacyTierlistState() {
   return loadLegacyTierlistState({
     sourcePath: db.config.integrations?.tierlist?.sourcePath,
     baseDir: DATA_ROOT,
-    baseCharacterCatalog: getCharacterCatalog().map((entry) => ({ id: entry.id, label: entry.label })),
+    baseCharacterCatalog: getLegacyTierlistBaseCharacterCatalog(),
     baseCharacterAssetsDir: CHARACTERS_ASSET_DIR,
   });
 }
@@ -8381,10 +8452,17 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
+      if (interaction.customId === "graphic_panel_resend") {
+        await interaction.deferUpdate();
+        const resent = await resendAllTierlists(client);
+        await interaction.editReply(buildGraphicPanelPayload(buildTierlistResendReply(resent), false));
+        return;
+      }
+
       if (interaction.customId === "graphic_panel_refresh") {
         await interaction.deferUpdate();
         await refreshGraphicTierlistBoard(client);
-        await interaction.editReply(buildGraphicPanelPayload());
+        await interaction.editReply(buildGraphicPanelPayload("PNG tier-лист пересобран.", false));
         return;
       }
     }
