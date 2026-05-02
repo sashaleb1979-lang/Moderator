@@ -6187,7 +6187,8 @@ function buildDormantTierlistPanelPayload(statusText = "", includeFlags = true) 
         new ButtonBuilder().setCustomId("tierlist_panel_mod_panel").setLabel("Legacy mods").setStyle(ButtonStyle.Secondary)
       ),
       new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId("tierlist_panel_channels").setLabel("Каналы Tierlist").setStyle(ButtonStyle.Primary)
+        new ButtonBuilder().setCustomId("tierlist_panel_channels").setLabel("Каналы Tierlist").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId("tierlist_panel_resend_messages").setLabel("Отправить заново").setStyle(ButtonStyle.Danger)
       ),
     ],
   };
@@ -8835,6 +8836,68 @@ client.on("interactionCreate", async (interaction) => {
       }
 
       await interaction.reply(buildLegacyTierlistModPanelPayload(liveState, interaction.user.id));
+      return;
+    }
+
+    if (interaction.customId === "tierlist_panel_resend_messages") {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+      const liveState = getLiveLegacyTierlistState();
+      if (!liveState.ok) {
+        await interaction.editReply(buildLegacyTierlistStateErrorPayload("Не удалось открыть legacy Tierlist state", liveState, false));
+        return;
+      }
+
+      const rawSettings = liveState.rawState.settings || (liveState.rawState.settings = {});
+      const dashboardChannelId = String(rawSettings.channelId || "").trim();
+      const summaryChannelId = String(rawSettings.summaryChannelId || "").trim();
+
+      if (!dashboardChannelId && !summaryChannelId) {
+        await interaction.editReply(buildDormantTierlistPanelPayload("Каналы не настроены. Сначала укажи каналы через «Каналы Tierlist».", false));
+        return;
+      }
+
+      const notes = [];
+
+      if (dashboardChannelId) {
+        const oldId = String(rawSettings.dashboardMessageId || "").trim();
+        if (oldId) {
+          const ch = await client.channels.fetch(dashboardChannelId).catch(() => null);
+          const msg = ch?.isTextBased?.() ? await ch.messages.fetch(oldId).catch(() => null) : null;
+          if (msg?.deletable) await msg.delete().catch(() => {});
+          rawSettings.dashboardMessageId = null;
+        }
+        try {
+          const result = await ensureLegacyTierlistDashboardMessage(client, liveState);
+          notes.push(`Dashboard переслан в ${formatChannelMention(result.channelId)} (msg ${result.messageId}).`);
+        } catch (error) {
+          notes.push(`Dashboard ошибка: ${String(error?.message || error)}.`);
+        }
+      }
+
+      if (summaryChannelId) {
+        const oldId = String(rawSettings.summaryMessageId || "").trim();
+        if (oldId) {
+          const ch = await client.channels.fetch(summaryChannelId).catch(() => null);
+          const msg = ch?.isTextBased?.() ? await ch.messages.fetch(oldId).catch(() => null) : null;
+          if (msg?.deletable) await msg.delete().catch(() => {});
+          rawSettings.summaryMessageId = null;
+        }
+        try {
+          const result = await ensureLegacyTierlistSummaryMessage(client, liveState);
+          notes.push(`Summary переслан в ${formatChannelMention(result.channelId)} (msg ${result.messageId}).`);
+        } catch (error) {
+          notes.push(`Summary ошибка: ${String(error?.message || error)}.`);
+        }
+      }
+
+      const statusText = `Сообщения отправлены заново. ${notes.join(" ")}`.trim();
+      await interaction.editReply(buildDormantTierlistPanelPayload(statusText, false));
       return;
     }
 
