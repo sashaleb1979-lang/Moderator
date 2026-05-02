@@ -3276,7 +3276,7 @@ async function refreshGraphicTierlistBoard(client, options = {}) {
   }
 
   let message = await fetchStoredBotMessage(channel, state, "messageId", client.user?.id);
-  if (!message) {
+  if (!message && !options.forceRecreate) {
     message = await findExistingGraphicTierlistMessage(channel);
     if (message && state.messageId !== message.id) {
       state.messageId = message.id;
@@ -3432,7 +3432,7 @@ async function refreshTextTierlistBoard(client, options = {}) {
   }
 
   let message = await fetchStoredBotMessage(channel, state, "messageId", client.user?.id);
-  if (!message) {
+  if (!message && !options.forceRecreate) {
     message = await findExistingTextTierlistMessage(channel);
     if (message && state.messageId !== message.id) {
       state.messageId = message.id;
