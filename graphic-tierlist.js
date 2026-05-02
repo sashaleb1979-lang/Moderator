@@ -350,13 +350,13 @@ function clearGraphicAvatarCacheForUser(userId) {
 function buildBuckets(entries) {
   const buckets = { 1: [], 2: [], 3: [], 4: [], 5: [] };
   for (const entry of entries) {
-    const tier = Number(entry.killTier);
+    const tier = Number(entry.killTier ?? entry.tier);
     if (!buckets[tier]) continue;
     buckets[tier].push({
       userId: entry.userId,
-      name: entry.displayName || entry.userId,
-      username: entry.displayName || entry.userId,
-      kills: Number(entry.approvedKills) || 0,
+      name: entry.displayName || entry.name || entry.userId,
+      username: entry.displayName || entry.username || entry.name || entry.userId,
+      kills: Number(entry.approvedKills ?? entry.kills) || 0,
       tier,
     });
   }
