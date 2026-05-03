@@ -1142,65 +1142,96 @@ async function buildTierlistEmbeds(client) {
   return { embeds, flags: MessageFlags.Ephemeral };
 }
 
-async function buildTierlistBoardPayload(client) {
+async function buildTierlistBoardPayload(client, options = {}) {
   const liveContext = await getLiveCharacterStatsContext(client);
   const entries = getApprovedTierlistEntries({ liveMainsByUserId: liveContext.liveMainsByUserId });
-  const baseEmbeds = buildStatsEmbedsFromContext(entries, liveContext);
-  const embeds = baseEmbeds.length ? [baseEmbeds[0]] : [];
-  const maxTotalEmbedLength = 5800;
-  let totalEmbedLength = embeds.reduce((sum, embed) => sum + estimateEmbedTextLength(embed), 0);
-  let shownCount = 0;
 
-  if (entries.length) {
-    let chunk = [];
-    let chunkStart = 1;
-    let chunkLength = 0;
+  const PAGE_SIZE = 25;
+  const totalPages = Math.max(1, Math.ceil(entries.length / PAGE_SIZE));
+  let pageIndex = Number.isFinite(Number(options.page)) ? Number(options.page) : 0;
+  if (pageIndex < 0) pageIndex = 0;
+  if (pageIndex >= totalPages) pageIndex = totalPages - 1;
 
-    const flushChunk = () => {
-      if (!chunk.length) return true;
+  const presentation = getPresentation();
+  const baseTitle = presentation.tierlist.textTitle || "Tier List";
+  const tierColors = { 5: 0xE53935, 4: 0xFB8C00, 3: 0xFDD835, 2: 0x43A047, 1: 0x9E9E9E };
 
-      const embed = new EmbedBuilder()
-        .setTitle(`Рейтинг #${chunkStart}-${chunkStart + chunk.length - 1}`)
-        .setDescription(chunk.join("\n"));
-      const embedLength = estimateEmbedTextLength(embed);
-      if (totalEmbedLength + embedLength > maxTotalEmbedLength) {
-        return false;
-      }
+  const pageEntries = entries.slice(pageIndex * PAGE_SIZE, pageIndex * PAGE_SIZE + PAGE_SIZE);
 
-      embeds.push(embed);
-      totalEmbedLength += embedLength;
-      shownCount = chunkStart + chunk.length - 1;
-      chunk = [];
-      chunkLength = 0;
-      return true;
-    };
+  const dominantTier = (() => {
+    if (!pageEntries.length) return 0;
+    const tally = new Map();
+    for (const entry of pageEntries) tally.set(entry.killTier, (tally.get(entry.killTier) || 0) + 1);
+    let best = 0; let bestCount = -1;
+    for (const [tier, count] of tally) {
+      if (count > bestCount) { best = tier; bestCount = count; }
+    }
+    return best;
+  })();
+  const embedColor = tierColors[dominantTier] || 0x5865F2;
 
-    entries.forEach((entry, index) => {
-      const lineNumber = index + 1;
-      const mainsText = previewText(formatCharacterReferenceList(entry.mains), 120);
-      const line = `${lineNumber}. T${entry.killTier} ${entry.displayName} — ${formatNumber(entry.approvedKills)} • ${mainsText}`;
-      if (!chunk.length) chunkStart = lineNumber;
+  const embeds = [];
 
-      if (chunk.length >= 25 || chunkLength + line.length + 1 > 2600) {
-        if (!flushChunk()) return;
-        chunkStart = lineNumber;
-      }
-
-      chunk.push(line);
-      chunkLength += line.length + 1;
-    });
-
-    flushChunk();
+  if (pageIndex === 0 && entries.length) {
+    const baseEmbeds = buildStatsEmbedsFromContext(entries, liveContext);
+    if (baseEmbeds.length) {
+      const first = baseEmbeds[0];
+      try { first.setColor(embedColor); } catch {}
+      embeds.push(first);
+    }
   }
 
-  const content = shownCount > 0 && shownCount < entries.length
-    ? `Текстовый тир-лист. Discord ограничил размер embeds, поэтому показаны позиции 1-${shownCount} из ${entries.length}.`
-    : "Текстовый тир-лист. Полный порядок игроков находится в этом сообщении и обновляется автоматически.";
+  if (!entries.length) {
+    embeds.push(
+      new EmbedBuilder()
+        .setTitle(baseTitle)
+        .setColor(embedColor)
+        .setDescription("Подтверждённых игроков пока нет.")
+    );
+  } else {
+    const rankLines = pageEntries.map((entry, idx) => {
+      const rank = pageIndex * PAGE_SIZE + idx + 1;
+      const mention = entry.userId ? `<@${entry.userId}>` : (entry.displayName || "—");
+      const mainsText = previewText(formatCharacterReferenceList(entry.mains), 120);
+      return `**#${rank}** • T${entry.killTier} • ${mention} — ${formatNumber(entry.approvedKills)} kills • ${mainsText}`;
+    });
+
+    const rankEmbed = new EmbedBuilder()
+      .setTitle(`${baseTitle} — стр. ${pageIndex + 1}/${totalPages}`)
+      .setColor(embedColor)
+      .setDescription(rankLines.join("\n"))
+      .setFooter({ text: `Всего участников: ${entries.length} • Страница ${pageIndex + 1} из ${totalPages}` });
+    embeds.push(rankEmbed);
+  }
+
+  const components = [];
+  if (totalPages > 1) {
+    components.push(
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId("text_tierlist_first")
+          .setLabel("⏮ В начало")
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(pageIndex === 0),
+        new ButtonBuilder()
+          .setCustomId("text_tierlist_prev")
+          .setLabel("◀ Назад")
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(pageIndex === 0),
+        new ButtonBuilder()
+          .setCustomId("text_tierlist_next")
+          .setLabel("Вперёд ▶")
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(pageIndex >= totalPages - 1)
+      )
+    );
+  }
 
   return {
-    content,
+    content: "",
     embeds,
-    components: [],
+    components,
+    allowedMentions: { parse: [] },
   };
 }
 
@@ -1288,7 +1319,7 @@ function buildGraphicPanelPayload(statusText = "", includeFlags = true) {
 
   const row1 = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId("graphic_panel_refresh").setLabel("Пересобрать").setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId("graphic_panel_resend").setLabel("Отправить заново").setStyle(ButtonStyle.Danger),
+    new ButtonBuilder().setCustomId("panel_resend_graphic").setLabel("Переотправить PNG").setStyle(ButtonStyle.Danger),
     new ButtonBuilder().setCustomId("graphic_panel_title").setLabel("Название PNG").setStyle(ButtonStyle.Primary),
     new ButtonBuilder().setCustomId("graphic_panel_message_text").setLabel("Текст сообщения").setStyle(ButtonStyle.Primary),
     new ButtonBuilder().setCustomId("graphic_panel_rename").setLabel("Переименовать тир").setStyle(ButtonStyle.Primary)
@@ -1314,7 +1345,7 @@ function buildGraphicPanelPayload(statusText = "", includeFlags = true) {
     new ButtonBuilder().setCustomId("graphic_panel_reset_img").setLabel("Сбросить размеры").setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId("graphic_panel_reset_colors").setLabel("Сбросить все цвета").setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId("graphic_panel_clear_cache").setLabel("Сбросить кэш ав").setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId("graphic_panel_fonts").setLabel("Шрифты").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId("panel_resend_text").setLabel("Переотправить текст").setStyle(ButtonStyle.Danger),
     new ButtonBuilder().setCustomId("graphic_panel_close").setLabel("Закрыть").setStyle(ButtonStyle.Danger)
   );
 
@@ -3387,6 +3418,17 @@ async function moveNotificationChannel(client, targetChannelId) {
   };
 }
 
+function getTextTierlistPaginationState() {
+  db.config.textTierlist ||= {};
+  if (typeof db.config.textTierlist.page !== "number" || db.config.textTierlist.page < 0) {
+    db.config.textTierlist.page = 0;
+  }
+  if (typeof db.config.textTierlist.lastInteractionAt !== "number") {
+    db.config.textTierlist.lastInteractionAt = 0;
+  }
+  return db.config.textTierlist;
+}
+
 async function refreshTextTierlistBoard(client, options = {}) {
   const state = getTextTierlistBoardState(db.config, appConfig.channels.tierlistChannelId || "");
   const channelId = getTextTierlistChannelId();
@@ -3413,7 +3455,17 @@ async function refreshTextTierlistBoard(client, options = {}) {
     }
   }
 
-  const payload = await buildTierlistBoardPayload(client);
+  // Pagination state with 10-min auto-reset.
+  const pagination = getTextTierlistPaginationState();
+  const now = Date.now();
+  if (Number.isFinite(options.page)) {
+    pagination.page = Math.max(0, Math.floor(options.page));
+    pagination.lastInteractionAt = now;
+  } else if (pagination.lastInteractionAt && now - pagination.lastInteractionAt > 10 * 60 * 1000) {
+    pagination.page = 0;
+  }
+
+  const payload = await buildTierlistBoardPayload(client, { page: pagination.page });
   if (!message) {
     message = await channel.send(payload);
     state.messageId = message.id;
@@ -4753,7 +4805,7 @@ function isLegacyTierlistLocked(rawUser) {
 }
 
 function buildLegacyTierlistDashboardComponents() {
-  return [
+  const rows = [
     new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId("start_rating").setLabel("Начать оценку").setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId("rate_new_characters").setLabel("Оценить точечно").setStyle(ButtonStyle.Success),
@@ -4761,6 +4813,22 @@ function buildLegacyTierlistDashboardComponents() {
       new ButtonBuilder().setCustomId("refresh_tierlist").setLabel("Обновить тир-лист").setStyle(ButtonStyle.Secondary)
     ),
   ];
+
+  try {
+    const textBoard = getTextTierlistBoardState(db.config, appConfig.channels.tierlistChannelId || "");
+    const channelId = String(textBoard?.channelId || "").trim();
+    const messageId = String(textBoard?.messageId || "").trim();
+    if (channelId && messageId && GUILD_ID) {
+      const url = `https://discord.com/channels/${GUILD_ID}/${channelId}/${messageId}`;
+      rows.push(
+        new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setStyle(ButtonStyle.Link).setLabel("Текстовый рейтинг и статистика").setURL(url)
+        )
+      );
+    }
+  } catch {}
+
+  return rows;
 }
 
 async function buildLegacyTierlistDashboardPayload(liveState) {
@@ -8737,10 +8805,29 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
-      if (interaction.customId === "graphic_panel_resend") {
+      if (interaction.customId === "graphic_panel_resend" || interaction.customId === "panel_resend_graphic") {
         await interaction.deferUpdate();
-        const resent = await resendAllTierlists(client);
-        await interaction.editReply(buildGraphicPanelPayload(buildTierlistResendReply(resent), false));
+        let statusText;
+        try {
+          await refreshGraphicTierlistBoard(client, { forceRecreate: true });
+          statusText = "PNG tier-лист отправлен заново.";
+        } catch (error) {
+          statusText = `Не удалось отправить PNG tier-лист: ${String(error?.message || error)}`;
+        }
+        await interaction.editReply(buildGraphicPanelPayload(statusText, false));
+        return;
+      }
+
+      if (interaction.customId === "panel_resend_text") {
+        await interaction.deferUpdate();
+        let statusText;
+        try {
+          await refreshTextTierlistBoard(client, { forceRecreate: true, page: 0 });
+          statusText = "Текстовый tier-лист отправлен заново.";
+        } catch (error) {
+          statusText = `Не удалось отправить текстовый tier-лист: ${String(error?.message || error)}`;
+        }
+        await interaction.editReply(buildGraphicPanelPayload(statusText, false));
         return;
       }
 
@@ -9046,6 +9133,33 @@ client.on("interactionCreate", async (interaction) => {
       }
 
       await interaction.update(buildDormantTierlistPanelPayload("", false));
+      return;
+    }
+
+    if (interaction.customId === "text_tierlist_first" || interaction.customId === "text_tierlist_prev" || interaction.customId === "text_tierlist_next") {
+      try {
+        const pagination = getTextTierlistPaginationState();
+        const liveContext = await getLiveCharacterStatsContext(client);
+        const total = getApprovedTierlistEntries({ liveMainsByUserId: liveContext.liveMainsByUserId }).length;
+        const PAGE_SIZE = 25;
+        const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+        let nextPage = pagination.page;
+        if (interaction.customId === "text_tierlist_first") nextPage = 0;
+        else if (interaction.customId === "text_tierlist_prev") nextPage = Math.max(0, pagination.page - 1);
+        else if (interaction.customId === "text_tierlist_next") nextPage = Math.min(totalPages - 1, pagination.page + 1);
+
+        pagination.page = nextPage;
+        pagination.lastInteractionAt = Date.now();
+        saveDb();
+
+        const payload = await buildTierlistBoardPayload(client, { page: nextPage });
+        await interaction.update(payload);
+      } catch (error) {
+        console.error("text tierlist pagination error:", error?.message || error);
+        if (!interaction.replied && !interaction.deferred) {
+          await interaction.reply(ephemeralPayload({ content: "Не удалось обновить страницу тир-листа." })).catch(() => {});
+        }
+      }
       return;
     }
 
