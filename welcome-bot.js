@@ -2236,7 +2236,8 @@ function getSelectedCharacterEntries(characterIds) {
   return characterIds.map((characterId) => getCharacterById(characterId)).filter(Boolean);
 }
 
-async function ensureRoleByName(guild, roleName, explicitRoleId = "") {
+async function ensureRoleByName(guild, roleName, explicitRoleId = "", options = {}) {
+  const { createIfMissing = true } = options;
   const normalizedName = String(roleName || "").trim();
   const preferredRoleId = String(explicitRoleId || "").trim();
   if (!normalizedName) return null;
@@ -2247,8 +2248,22 @@ async function ensureRoleByName(guild, roleName, explicitRoleId = "") {
   }
 
   await guild.roles.fetch().catch(() => null);
-  const foundByName = guild.roles.cache.find((role) => role.name === normalizedName) || null;
-  if (foundByName) return foundByName;
+  const matches = guild.roles.cache.filter((role) => role.name === normalizedName);
+  if (matches.size) {
+    // Prefer the role with the most non-bot members (the original moderator-managed one).
+    let best = null;
+    let bestCount = -1;
+    for (const role of matches.values()) {
+      const count = role.members ? role.members.filter((m) => !m.user?.bot).size : 0;
+      if (count > bestCount) {
+        best = role;
+        bestCount = count;
+      }
+    }
+    if (best) return best;
+  }
+
+  if (!createIfMissing) return null;
 
   return guild.roles.create({
     name: normalizedName,
@@ -2257,6 +2272,59 @@ async function ensureRoleByName(guild, roleName, explicitRoleId = "") {
     mentionable: false,
     reason: "Auto-created by onboarding bot",
   });
+}
+
+async function reconcileCharacterRolesFromGuild(guild) {
+  if (!guild) return { resolved: 0, deletedDuplicates: 0 };
+  await guild.roles.fetch().catch(() => null);
+  try { await guild.members.fetch(); } catch { /* best-effort */ }
+
+  const generatedRoles = getGeneratedRoleState();
+  let changed = false;
+  let resolved = 0;
+  let deletedDuplicates = 0;
+
+  for (const entry of getCharacterCatalog()) {
+    const characterId = String(entry.id || "").trim();
+    const roleName = String(entry.label || "").trim();
+    if (!characterId || !roleName) continue;
+
+    const matches = [...guild.roles.cache.filter((role) => role.name === roleName).values()];
+    if (!matches.length) continue;
+
+    // The original is the role with the most non-bot members; everything else
+    // with the same name is a stray auto-created duplicate.
+    let original = matches[0];
+    let originalCount = original.members ? original.members.filter((m) => !m.user?.bot).size : 0;
+    for (const role of matches) {
+      const count = role.members ? role.members.filter((m) => !m.user?.bot).size : 0;
+      if (count > originalCount) {
+        original = role;
+        originalCount = count;
+      }
+    }
+
+    if (generatedRoles.characters[characterId] !== original.id) {
+      generatedRoles.characters[characterId] = original.id;
+      changed = true;
+    }
+    resolved += 1;
+
+    for (const role of matches) {
+      if (role.id === original.id) continue;
+      const holders = role.members ? role.members.filter((m) => !m.user?.bot) : new Map();
+      if (holders.size > 0) continue; // never delete a role that has members
+      try {
+        await role.delete("Cleanup duplicate auto-created character role");
+        deletedDuplicates += 1;
+      } catch (error) {
+        console.warn(`Failed to delete duplicate character role ${role.id}:`, error?.message || error);
+      }
+    }
+  }
+
+  if (changed) saveDb();
+  return { resolved, deletedDuplicates };
 }
 
 async function ensureManagedRoles(client) {
@@ -2268,15 +2336,25 @@ async function ensureManagedRoles(client) {
   let createdTierRoles = 0;
   let changed = false;
 
+  // Character roles are managed by moderators. Never auto-create — only
+  // resolve to the existing moderator-assigned role and clean up duplicates.
+  try {
+    const reconcile = await reconcileCharacterRolesFromGuild(guild);
+    if (reconcile.deletedDuplicates) {
+      console.log(`Cleaned up ${reconcile.deletedDuplicates} duplicate character role(s).`);
+    }
+  } catch (error) {
+    console.warn("reconcileCharacterRolesFromGuild failed:", error?.message || error);
+  }
+
   for (const entry of getCharacterCatalog()) {
     const characterId = String(entry.id || "").trim();
     const roleName = String(entry.label || "").trim();
     const explicitRoleId = String(entry.roleId || generatedRoles.characters?.[characterId] || "").trim();
     if (!characterId || !roleName) continue;
 
-    const role = await ensureRoleByName(guild, roleName, explicitRoleId);
+    const role = await ensureRoleByName(guild, roleName, explicitRoleId, { createIfMissing: false });
     if (!role) continue;
-    if (!explicitRoleId || role.id !== explicitRoleId) createdCharacterRoles += 1;
     if (generatedRoles.characters[characterId] !== role.id) {
       generatedRoles.characters[characterId] = role.id;
       changed = true;
@@ -2556,17 +2634,16 @@ function getMainsPickerResultLines(pageInfo, selectedIds = []) {
   });
 }
 
-function buildMainsPickerSelectRow(picker, pageItems) {
-  const maxSelectable = Math.min(2, pageItems.length);
+function buildMainsPickerSelectRow(picker, entries) {
+  const maxSelectable = Math.min(2, entries.length);
   return new ActionRowBuilder().addComponents(
     new StringSelectMenuBuilder()
       .setCustomId("onboard_picker_select")
       .setPlaceholder(maxSelectable === 1 ? "Выбери мейна" : "Выбери 1 или 2 мейнов")
       .setMinValues(1)
       .setMaxValues(maxSelectable)
-      .addOptions(pageItems.map((entry) => ({
+      .addOptions(entries.map((entry) => ({
         label: normalizeCharacterSelectLabel(entry.label),
-        description: previewText(entry.id, 100),
         value: getCharacterSelectValue(entry.id),
         default: picker.selectedIds.includes(entry.id),
       })))
@@ -2580,74 +2657,40 @@ function buildMainsPickerPayload(userId, options = {}) {
     return options.includeEphemeralFlag === false ? payload : ephemeralPayload(payload);
   }
 
-  const allEntries = getCharacterPickerEntries();
-  if (!allEntries.length) {
+  const entries = getCharacterPickerEntries();
+  if (!entries.length) {
     const payload = { content: "Нет доступных персонажей. Проверь конфигурацию characters в bot.config.json." };
     return options.includeEphemeralFlag === false ? payload : ephemeralPayload(payload);
   }
+  if (entries.length > 25) {
+    throw new Error(`Список мейнов слишком большой для Discord select menu: ${entries.length}.`);
+  }
 
-  const filteredEntries = getMainsPickerEntries(picker.query);
-  const pageInfo = paginateRolePanelPickerItems(filteredEntries, picker.page, Math.min(ROLE_PANEL_PICKER_PAGE_SIZE, 25));
-  const selectedLabels = getMainsPickerSelectionLabels(picker.selectedIds);
   const isQuick = picker.mode === "quick";
-  const statusText = String(options.statusText || "").trim();
-
+  const selectedLabels = getMainsPickerSelectionLabels(picker.selectedIds);
   const embed = new EmbedBuilder()
-    .setTitle(isQuick ? "Быстро сменить мейнов" : "Шаг 1. Выбери мейнов")
+    .setColor(0x5865F2)
+    .setTitle(isQuick ? "Сменить мейнов" : "Выбери мейнов")
     .setDescription(
-      isQuick
-        ? "Выбери одного или двух мейнов из текущего списка. Можно искать по имени и листать страницы, затем сохранить новые роли."
-        : "Выбери одного или двух мейнов из текущего списка. Можно искать по имени и листать страницы, затем перейти к отправке kills."
-    )
-    .addFields(
-      { name: "Текущий выбор", value: selectedLabels.length ? selectedLabels.join(", ") : "—", inline: false },
-      { name: "Поиск", value: picker.query || "без фильтра", inline: true },
-      { name: "Найдено", value: String(pageInfo.totalCount), inline: true },
-      { name: "Страница", value: `${pageInfo.page + 1}/${pageInfo.pageCount}`, inline: true },
-      { name: "Результаты", value: getMainsPickerResultLines(pageInfo, picker.selectedIds).join("\n"), inline: false },
-      {
-        name: isQuick ? "Что дальше" : "Шаг 2",
-        value: isQuick
-          ? "После подтверждения бот сразу обновит мейнов и связанные роли."
-          : "После подтверждения откроется отдельная панель отправки kills и получения доступа.",
-        inline: false,
-      }
+      [
+        "Выбери одного или двух персонажей в меню ниже и нажми **Подтвердить**.",
+        selectedLabels.length ? `Текущий выбор: **${selectedLabels.join(", ")}**` : null,
+      ].filter(Boolean).join("\n")
     );
 
-  if (statusText) {
-    embed.addFields({ name: "Последнее действие", value: statusText, inline: false });
-  }
-
-  const components = [];
-  if (pageInfo.items.length) {
-    components.push(buildMainsPickerSelectRow(picker, pageInfo.items));
-  }
-  components.push(
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId("onboard_picker_prev").setLabel("Предыдущая").setStyle(ButtonStyle.Secondary).setDisabled(!pageInfo.hasPrev),
-      new ButtonBuilder().setCustomId("onboard_picker_next").setLabel("Следующая").setStyle(ButtonStyle.Secondary).setDisabled(!pageInfo.hasNext),
-      new ButtonBuilder().setCustomId("onboard_picker_search").setLabel("Поиск").setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId("onboard_picker_clear_search").setLabel("Сбросить поиск").setStyle(ButtonStyle.Secondary).setDisabled(!picker.query),
-      new ButtonBuilder().setCustomId("onboard_picker_clear_selection").setLabel("Сбросить выбор").setStyle(ButtonStyle.Secondary).setDisabled(!picker.selectedIds.length)
-    )
-  );
-  components.push(
+  const components = [
+    buildMainsPickerSelectRow(picker, entries),
     new ActionRowBuilder().addComponents(
       new ButtonBuilder()
         .setCustomId("onboard_picker_continue")
-        .setLabel(isQuick ? "Сохранить мейнов" : "Дальше: отправить kills")
+        .setLabel(isQuick ? "Сохранить" : "Подтвердить")
         .setStyle(ButtonStyle.Success)
         .setDisabled(!picker.selectedIds.length),
-      new ButtonBuilder().setCustomId("onboard_picker_manual").setLabel("Ввести руками").setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId("onboard_cancel").setLabel("Отмена").setStyle(ButtonStyle.Secondary)
-    )
-  );
+    ),
+  ];
 
-  const payload = {
-    embeds: [embed],
-    components,
-  };
-
+  const payload = { embeds: [embed], components };
   return options.includeEphemeralFlag === false ? payload : ephemeralPayload(payload);
 }
 
@@ -3857,23 +3900,6 @@ async function buildNonGgsCaptchaPayload(userId, noticeText = "", options = {}) 
   return options.includeEphemeralFlag ? ephemeralPayload(payload) : payload;
 }
 
-function buildOnboardKillsModal(suggestedKills = null) {
-  const modal = new ModalBuilder().setCustomId("onboard_kills_modal").setTitle("Указать kills");
-  const input = new TextInputBuilder()
-    .setCustomId("kills")
-    .setLabel("Точное количество kills")
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true)
-    .setPlaceholder("Например 3120");
-
-  if (Number.isSafeInteger(suggestedKills)) {
-    input.setValue(String(suggestedKills));
-  }
-
-  modal.addComponents(new ActionRowBuilder().addComponents(input));
-  return modal;
-}
-
 function buildCharacterPickerPayload(mode = "full") {
   const characterEntries = getCharacterPickerEntries();
   const validationError = getCharacterPickerValidationError(characterEntries);
@@ -3923,49 +3949,24 @@ function buildSubmitStepPayload(userId, options = {}) {
   const selectedLabels = selectedEntries.length
     ? selectedEntries.map((entry) => entry.label)
     : mainCharacterIds.map((value) => String(value || "").trim()).filter(Boolean);
-  const profile = db.profiles?.[userId] || null;
-  const isKillsUpdate = hasTrackedProfileKills(profile);
   const welcomeChannelId = getWelcomeChannelId();
   const uploadTarget = welcomeChannelId ? `<#${welcomeChannelId}>` : "welcome-канал";
-  const suggestedKills = Number.isSafeInteger(options.suggestedKills)
-    ? options.suggestedKills
-    : Number.isSafeInteger(session?.suggestedKills)
-      ? session.suggestedKills
-      : null;
+
   const lines = [];
-
-  if (options.noticeText) {
-    lines.push(options.noticeText);
-  }
-
+  if (options.noticeText) lines.push(options.noticeText);
   lines.push(
     `Мейны: **${selectedLabels.join(", ")}**.`,
-    isKillsUpdate
-      ? "Бот отправит это модераторам как обновление kills."
-      : "Бот отправит это модераторам как новую заявку.",
-    suggestedKills
-      ? `Kills сохранены: **${suggestedKills}**. Теперь отправь в ${uploadTarget} одно сообщение со скрином. Число можно не повторять в тексте, но можно и продублировать.`
-      : `Нажми кнопку **Указать kills**, чтобы бот запомнил точное число. Либо сразу отправь в ${uploadTarget} одно сообщение: число kills в тексте и скрин во вложении.`,
-    "Если нужно сменить мейнов до отправки, нажми **Выбрать мейнов заново**.",
-    "Бот удалит сообщение после обработки."
+    `Отправь одним сообщением в ${uploadTarget} число kills в тексте и скрин во вложении — бот выдаст роль доступа и передаст заявку модератору.`
   );
 
   const payload = {
     embeds: [
       new EmbedBuilder()
-        .setTitle("Шаг 2. Отправить kills и получить доступ")
+        .setColor(0x57F287)
+        .setTitle("Готово. Кидай kills и скрин")
         .setDescription(lines.join("\n")),
     ],
-    components: [
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId("onboard_open_kills_modal")
-          .setLabel(suggestedKills ? "Изменить kills" : "Указать kills")
-          .setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId("onboard_change_mains").setLabel("Выбрать мейнов заново").setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId("onboard_cancel").setLabel("Отмена").setStyle(ButtonStyle.Secondary)
-      ),
-    ],
+    components: [],
   };
 
   return options.includeEphemeralFlag === false ? payload : ephemeralPayload(payload);
@@ -12030,75 +12031,6 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    if (["onboard_picker_prev", "onboard_picker_next", "onboard_picker_clear_search", "onboard_picker_clear_selection"].includes(interaction.customId)) {
-      const picker = getMainsPickerSession(interaction.user.id);
-      if (!picker) {
-        await interaction.update(buildMainsPickerPayload(interaction.user.id, { includeEphemeralFlag: false }));
-        return;
-      }
-
-      if (interaction.customId === "onboard_picker_prev") {
-        setMainsPickerSession(interaction.user.id, { page: Math.max(0, picker.page - 1) });
-        await interaction.update(buildMainsPickerPayload(interaction.user.id, {
-          includeEphemeralFlag: false,
-          statusText: "Открыта предыдущая страница.",
-        }));
-        return;
-      }
-
-      if (interaction.customId === "onboard_picker_next") {
-        setMainsPickerSession(interaction.user.id, { page: picker.page + 1 });
-        await interaction.update(buildMainsPickerPayload(interaction.user.id, {
-          includeEphemeralFlag: false,
-          statusText: "Открыта следующая страница.",
-        }));
-        return;
-      }
-
-      if (interaction.customId === "onboard_picker_clear_search") {
-        setMainsPickerSession(interaction.user.id, { query: "", page: 0 });
-        await interaction.update(buildMainsPickerPayload(interaction.user.id, {
-          includeEphemeralFlag: false,
-          statusText: "Поиск сброшен.",
-        }));
-        return;
-      }
-
-      setMainsPickerSession(interaction.user.id, { selectedIds: [] });
-      await interaction.update(buildMainsPickerPayload(interaction.user.id, {
-        includeEphemeralFlag: false,
-        statusText: "Выбор очищен.",
-      }));
-      return;
-    }
-
-    if (interaction.customId === "onboard_picker_search") {
-      const picker = getMainsPickerSession(interaction.user.id);
-      if (!picker) {
-        await interaction.update(buildMainsPickerPayload(interaction.user.id, { includeEphemeralFlag: false }));
-        return;
-      }
-
-      const modal = new ModalBuilder().setCustomId("onboard_picker_search_modal").setTitle("Поиск мейна");
-      const input = new TextInputBuilder()
-        .setCustomId("query")
-        .setLabel("Имя или ID персонажа")
-        .setStyle(TextInputStyle.Short)
-        .setRequired(false)
-        .setPlaceholder("Например Honored One")
-        .setValue(picker.query || "");
-      modal.addComponents(new ActionRowBuilder().addComponents(input));
-      await interaction.showModal(modal);
-      return;
-    }
-
-    if (interaction.customId === "onboard_picker_manual") {
-      const picker = getMainsPickerSession(interaction.user.id);
-      const mode = picker?.mode === "quick" ? "quick" : "full";
-      await interaction.showModal(buildManualMainSelectionModal(mode));
-      return;
-    }
-
     if (interaction.customId === "onboard_picker_continue") {
       const picker = getMainsPickerSession(interaction.user.id);
       if (!picker) {
@@ -12111,32 +12043,6 @@ client.on("interactionCreate", async (interaction) => {
         mode: picker.mode,
         responseMethod: "update",
       });
-      return;
-    }
-
-    if (interaction.customId === "onboard_open_kills_modal") {
-      const pending = getPendingSubmissionForUser(interaction.user.id);
-      if (pending) {
-        clearMainDraft(interaction.user.id);
-        await interaction.reply(ephemeralPayload({ content: "У тебя уже есть pending-заявка. Дождись решения модератора." }));
-        return;
-      }
-
-      const session = getSubmitSession(interaction.user.id);
-      if (session?.mainCharacterIds?.length) {
-        await interaction.showModal(buildOnboardKillsModal(session.suggestedKills));
-        return;
-      }
-
-      const draft = getMainDraft(interaction.user.id);
-      if (!draft?.characterIds?.length) {
-        await interaction.reply(ephemeralPayload({ content: "Сессия выбора мейнов истекла. Нажми кнопку заново." }));
-        return;
-      }
-
-      setSubmitSession(interaction.user.id, { mainCharacterIds: draft.characterIds });
-      clearMainDraft(interaction.user.id);
-      await interaction.showModal(buildOnboardKillsModal());
       return;
     }
 
@@ -12739,26 +12645,13 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
-      const pageInfo = paginateRolePanelPickerItems(
-        getMainsPickerEntries(picker.query),
-        picker.page,
-        Math.min(ROLE_PANEL_PICKER_PAGE_SIZE, 25)
-      );
-      const currentPageIds = new Set(pageInfo.items.map((entry) => entry.id));
-      const selectedFromPage = [...new Set((interaction.values || []).map(getCharacterIdFromSelectValue).filter(Boolean))];
-      const preservedSelections = picker.selectedIds.filter((entryId) => !currentPageIds.has(entryId));
-      let nextSelectedIds = [...new Set([...preservedSelections, ...selectedFromPage])];
-      let statusText = `Выбрано: ${getMainsPickerSelectionLabels(nextSelectedIds).join(", ")}.`;
-
-      if (nextSelectedIds.length > 2) {
-        nextSelectedIds = [...new Set([...selectedFromPage, ...preservedSelections])].slice(0, 2);
-        statusText = `Можно выбрать максимум двух мейнов. Сохранил: ${getMainsPickerSelectionLabels(nextSelectedIds).join(", ")}.`;
-      }
+      const nextSelectedIds = [...new Set(
+        (interaction.values || []).map(getCharacterIdFromSelectValue).filter(Boolean)
+      )].slice(0, 2);
 
       setMainsPickerSession(interaction.user.id, { selectedIds: nextSelectedIds });
       await interaction.update(buildMainsPickerPayload(interaction.user.id, {
         includeEphemeralFlag: false,
-        statusText,
       }));
       return;
     }
@@ -12777,23 +12670,6 @@ client.on("interactionCreate", async (interaction) => {
   }
 
   if (interaction.isModalSubmit()) {
-    if (interaction.customId === "onboard_picker_search_modal") {
-      const picker = getMainsPickerSession(interaction.user.id);
-      if (!picker) {
-        await interaction.reply(ephemeralPayload({ content: "Сессия выбора мейнов истекла. Нажми кнопку заново." }));
-        return;
-      }
-
-      const query = interaction.fields.getTextInputValue("query").trim();
-      setMainsPickerSession(interaction.user.id, { query, page: 0 });
-      await interaction.deferUpdate();
-      await interaction.editReply(buildMainsPickerPayload(interaction.user.id, {
-        includeEphemeralFlag: false,
-        statusText: query ? `Поиск обновлён: ${previewFieldText(query, 100)}.` : "Поиск сброшен.",
-      }));
-      return;
-    }
-
     if (["onboard_manual_mains_modal", "onboard_manual_mains_quick_modal"].includes(interaction.customId)) {
       const mode = interaction.customId === "onboard_manual_mains_quick_modal" ? "quick" : "full";
       const mainsText = interaction.fields.getTextInputValue("mains");
@@ -14259,44 +14135,6 @@ client.on("interactionCreate", async (interaction) => {
         await reviewMessage.edit(buildLegacyEloReviewChannelPayload(rejected.submission, "rejected")).catch(() => {});
       }
       await interaction.reply(ephemeralPayload({ content: `Отклонено.${syncWarning}` }));
-      return;
-    }
-
-    if (interaction.customId === "onboard_kills_modal") {
-      const session = getSubmitSession(interaction.user.id);
-      const draft = getMainDraft(interaction.user.id);
-      const mainCharacterIds = Array.isArray(session?.mainCharacterIds) && session.mainCharacterIds.length
-        ? session.mainCharacterIds
-        : draft?.characterIds;
-
-      if (!mainCharacterIds?.length) {
-        await interaction.reply(ephemeralPayload({ content: "Сессия выбора мейнов истекла. Нажми кнопку заново." }));
-        return;
-      }
-
-      const pending = getPendingSubmissionForUser(interaction.user.id);
-      if (pending) {
-        clearMainDraft(interaction.user.id);
-        await interaction.reply(ephemeralPayload({ content: "У тебя уже есть pending-заявка. Дождись решения модератора." }));
-        return;
-      }
-
-      const kills = parseKillCount(interaction.fields.getTextInputValue("kills"));
-      if (kills === null) {
-        await interaction.reply(ephemeralPayload({ content: "Нужно указать точное число kills, только цифрами." }));
-        return;
-      }
-
-      setSubmitSession(interaction.user.id, {
-        mainCharacterIds,
-        suggestedKills: kills,
-      });
-      clearMainDraft(interaction.user.id);
-
-      await interaction.reply(buildSubmitStepPayload(interaction.user.id, {
-        noticeText: "Запомнил kills. Теперь отправь скрин, чтобы бот подал заявку и выдал доступ.",
-        suggestedKills: kills,
-      }));
       return;
     }
 
