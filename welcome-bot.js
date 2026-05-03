@@ -697,9 +697,7 @@ function getCharacterCatalog() {
 }
 
 function getLegacyTierlistBaseCharacterCatalog() {
-  const source = Array.isArray(fileConfig?.characters) && fileConfig.characters.length
-    ? fileConfig.characters
-    : appConfig.characters;
+  const source = getCharacterCatalog();
 
   return source
     .map((entry) => ({
