@@ -309,7 +309,7 @@ const MANAGED_CHARACTER_ROLE_NAME_ALIASES = {
   aspiring_mangaka: ["Чарльз", "Шарль"],
   lucky_coward: ["Харута"],
   disaster_plants: ["Ханами"],
-  crowd_charmer: ["Мэй Мэй", "Мей Мей", "Мэй-Мэй", "Меи Меи"],
+  crow_charmer: ["Мэй Мэй", "Мей Мей", "Мэй-Мэй", "Меи Меи"],
   ryu: ["Рю", "Рю Ишигори"],
 };
 const NON_CHARACTER_ROLE_NAME_PATTERNS = [
