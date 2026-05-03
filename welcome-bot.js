@@ -3180,35 +3180,6 @@ async function cleanupWelcomeChannelMessages(channel, keepMessageIds = []) {
   return deleted;
 }
 
-async function unpinBotMessagesInChannel(channel) {
-  if (!channel?.isTextBased()) return 0;
-  const pinned = await channel.messages.fetchPins().catch(() => null);
-  if (!pinned?.size) return 0;
-
-  let changed = 0;
-  for (const message of pinned.values()) {
-    if (message.author?.id !== client.user?.id) continue;
-    await message.unpin().catch(() => {});
-    changed += 1;
-  }
-  return changed;
-}
-
-async function cleanupBotPins(client) {
-  const textBoard = getTextTierlistBoardState(db.config, appConfig.channels.tierlistChannelId || "");
-  const graphicBoard = getGraphicTierlistBoardState(db.config, appConfig.channels.tierlistChannelId || "");
-  const channels = new Set([
-    getWelcomePanelState().channelId,
-    textBoard.channelId,
-    graphicBoard.channelId,
-  ].filter(Boolean));
-
-  for (const channelId of channels) {
-    const channel = await client.channels.fetch(channelId).catch(() => null);
-    await unpinBotMessagesInChannel(channel);
-  }
-}
-
 async function upsertManagedPanelMessage(channel, state, payload, findExisting, botId) {
   let message = await fetchStoredBotMessage(channel, state, "messageId", botId);
   if (!message) {
@@ -3224,7 +3195,6 @@ async function upsertManagedPanelMessage(channel, state, payload, findExisting, 
     state.messageId = message.id;
   } else {
     await message.edit(payload);
-    await message.unpin().catch(() => {});
   }
 
   return message;
@@ -3294,7 +3264,6 @@ async function refreshGraphicTierlistBoard(client, options = {}) {
     state.messageId = message.id;
   } else {
     await message.edit({ ...payload, attachments: [] });
-    await message.unpin().catch(() => {});
   }
 
   state.lastUpdated = Date.now();
@@ -3449,7 +3418,6 @@ async function refreshTextTierlistBoard(client, options = {}) {
     state.messageId = message.id;
   } else {
     await message.edit(payload);
-    await message.unpin().catch(() => {});
   }
 
   state.channelId = channelId;
@@ -4590,7 +4558,7 @@ function buildModeratorPanelPayload(statusText = "", includeFlags = true) {
       `Топ игрок: **${stats.topEntry ? `${stats.topEntry.displayName} — ${formatNumber(stats.topEntry.approvedKills)} kills` : "—"}**`,
     ].join("\n"))
     .addFields(
-      { name: "Обновить welcome", value: "Пересобирает welcome-панель и закреплённое сообщение входа.", inline: true },
+      { name: "Обновить welcome", value: "Пересобирает welcome-панель и сообщение входа.", inline: true },
       { name: "Обновить тир-листы", value: "Перестраивает верхний graphic-board и нижний текстовый рейтинг в dedicated канале.", inline: true },
       { name: "Синк tier-ролей", value: "Перепривязывает tier-роли всем подтверждённым игрокам по текущей базе.", inline: true },
       { name: "Напомнить отсутствующим", value: "Шлёт DM пользователям вне тир-листа с встроенным постером из репозитория.", inline: true },
@@ -4844,10 +4812,8 @@ async function ensureLegacyTierlistDashboardMessage(client, liveState, forcedCha
   const payload = await buildLegacyTierlistDashboardPayload(liveState);
   if (!message) {
     message = await channel.send(payload);
-    await message.pin().catch(() => {});
   } else {
     await message.edit({ ...payload, attachments: [] });
-    await message.pin().catch(() => {});
   }
 
   rawState.settings.channelId = channel.id;
@@ -6214,7 +6180,6 @@ async function refreshLegacyEloGraphicBoard(client, options = {}) {
     message = await channel.send(payload);
   } else {
     await message.edit({ ...payload, attachments: [] });
-    await message.unpin().catch(() => {});
   }
 
   graphicState.dashboardChannelId = channel.id;
@@ -6840,14 +6805,12 @@ async function ensureLegacyEloSubmitHubMessage(client, liveState, forcedChannelI
   if (!message) {
     message = await channel.send(payload).catch(() => null);
     if (!message) throw new Error("Не удалось отправить legacy ELO submit hub в канал.");
-    await message.pin().catch(() => {});
   } else {
     const edited = await message.edit(payload).catch(() => null);
     if (!edited) {
       state.messageId = "";
       message = await channel.send(payload).catch(() => null);
       if (!message) throw new Error("Не удалось отправить legacy ELO submit hub в канал.");
-      await message.pin().catch(() => {});
     }
   }
 
@@ -7193,7 +7156,6 @@ client.once("clientReady", async () => {
     console.error("Welcome panel refresh failed:", error?.message || error);
   });
   await refreshAllTierlists(client);
-  await cleanupBotPins(client).catch(() => 0);
   const legacyEloState = getLiveLegacyEloState();
   if (legacyEloState.ok) {
     const submitChannelId = String(getLegacyEloSubmitPanelState(legacyEloState.rawDb).channelId || "").trim();
