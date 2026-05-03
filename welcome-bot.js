@@ -3475,7 +3475,7 @@ function buildCharacterPickerPayload(mode = "full") {
     .setDescription(
       isQuick
         ? "Можно выбрать одного или двух персонажей. Этот режим быстро обновляет только мейнов и роли, без новой заявки по kills."
-        : "Можно выбрать одного или двух персонажей. После выбора бот попросит одним сообщением отправить kills в тексте и скрин во вложении."
+        : "Можно выбрать одного или двух персонажей. После выбора сразу отправь одним сообщением kills в тексте и скрин во вложении."
     );
 
   const maxSelectable = Math.min(2, characterEntries.length);
@@ -3498,23 +3498,6 @@ function buildCharacterPickerPayload(mode = "full") {
   };
 }
 
-function buildOnboardKillsModal(suggestedKills = null) {
-  const modal = new ModalBuilder().setCustomId("onboard_kills_modal").setTitle("Указать kills");
-  const input = new TextInputBuilder()
-    .setCustomId("kills")
-    .setLabel("Точное количество kills")
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true)
-    .setPlaceholder("Например 3120");
-
-  if (Number.isSafeInteger(suggestedKills)) {
-    input.setValue(String(suggestedKills));
-  }
-
-  modal.addComponents(new ActionRowBuilder().addComponents(input));
-  return modal;
-}
-
 function buildSubmitStepPayload(userId, options = {}) {
   const session = getSubmitSession(userId);
   const mainCharacterIds = Array.isArray(options.mainCharacterIds) && options.mainCharacterIds.length
@@ -3528,46 +3511,35 @@ function buildSubmitStepPayload(userId, options = {}) {
   const selectedLabels = selectedEntries.length
     ? selectedEntries.map((entry) => entry.label)
     : mainCharacterIds.map((value) => String(value || "").trim()).filter(Boolean);
+  const profile = db.profiles?.[userId] || null;
+  const isKillsUpdate = hasTrackedProfileKills(profile);
+  const welcomeChannelId = getWelcomeChannelId();
+  const uploadTarget = welcomeChannelId ? `<#${welcomeChannelId}>` : "welcome-канал";
   const suggestedKills = Number.isSafeInteger(options.suggestedKills)
     ? options.suggestedKills
     : Number.isSafeInteger(session?.suggestedKills)
       ? session.suggestedKills
       : null;
-  const lines = [
-    `Выбрано: **${selectedLabels.join(", ")}**`,
-    "",
-  ];
+  const lines = [];
 
   if (options.noticeText) {
-    lines.push(options.noticeText, "");
+    lines.push(options.noticeText);
   }
 
-  const embed = new EmbedBuilder()
-    .setTitle("Мейны выбраны")
-    .setDescription([
-      ...lines,
-      "Теперь отправь **одно сообщение** в welcome-канал:",
-      "• в тексте укажи точное количество kills",
-      "• во вложении приложи скрин",
-      suggestedKills
-        ? `Чтобы не переписывать заново, можешь просто отправить текст: **${suggestedKills}**`
-        : "Пиши в тексте только kills, например: **3120** или **3120 kills**.",
-      "Бот удалит сообщение после обработки.",
-    ].join("\n"));
+  lines.push(
+    `Мейны выбраны: **${selectedLabels.join(", ")}**.`,
+    `Теперь просто отправь одним сообщением в ${uploadTarget}: число kills в тексте и скрин во вложении.`,
+    isKillsUpdate
+      ? "Бот отправит это модераторам как обновление kills."
+      : "Бот отправит это модераторам как новую заявку.",
+    suggestedKills
+      ? `Если kills уже вводил, можешь просто отправить текст: **${suggestedKills}**.`
+      : "Пиши в тексте только kills, например: **3120** или **3120 kills**.",
+    "Если нужно сменить мейнов до отправки, нажми на welcome-панели **Быстро сменить мейнов**.",
+    "Бот удалит сообщение после обработки."
+  );
 
-  return ephemeralPayload({
-    embeds: [embed],
-    components: [
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId("onboard_open_kills_modal")
-          .setLabel(suggestedKills ? "Изменить kills" : "Ввести kills")
-          .setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId("onboard_change_mains").setLabel("Выбрать заново").setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId("onboard_cancel").setLabel("Отмена").setStyle(ButtonStyle.Secondary)
-      ),
-    ],
-  });
+  return ephemeralPayload({ content: lines.join("\n") });
 }
 
 function buildReviewButtons(submissionId) {
@@ -8343,6 +8315,9 @@ client.on("messageCreate", async (message) => {
   }
 
   try {
+    const existingProfile = db.profiles?.[message.author.id] || null;
+    const isKillsUpdate = hasTrackedProfileKills(existingProfile);
+
     await createPendingSubmissionFromAttachment(client, {
       user: message.author,
       member: message.member,
@@ -8359,7 +8334,11 @@ client.on("messageCreate", async (message) => {
     saveDb();
 
     clearSubmitSession(message.author.id);
-    const reply = await message.reply("Заявка отправлена модераторам. Стартовая роль уже выдана, kill-tier прилетит после проверки.").catch(() => null);
+    const reply = await message.reply(
+      isKillsUpdate
+        ? "Обновление kills отправлено модераторам. Текущие kills и tier изменятся после проверки."
+        : "Заявка отправлена модераторам. Стартовая роль уже выдана, kill-tier прилетит после проверки."
+    ).catch(() => null);
     if (reply) scheduleDeleteMessage(reply);
 
     await logLine(client, `SUBMIT: <@${message.author.id}> kills ${killsResult.kills} mains=${session.mainCharacterIds.join(",")}`);
@@ -11450,7 +11429,7 @@ client.on("interactionCreate", async (interaction) => {
         }
 
         await interaction.reply(buildSubmitStepPayload(interaction.user.id, {
-          noticeText: `Ты уже на шаге подачи заявки. Отправь в <#${welcomeChannelId}> одно сообщение или поменяй kills кнопкой ниже.`,
+          noticeText: `Ты уже на шаге загрузки. Просто отправь одним сообщением kills и скрин в <#${welcomeChannelId}>.`,
         }));
         return;
       }
@@ -11489,7 +11468,9 @@ client.on("interactionCreate", async (interaction) => {
 
       const session = getSubmitSession(interaction.user.id);
       if (session?.mainCharacterIds?.length) {
-        await interaction.showModal(buildOnboardKillsModal(session.suggestedKills));
+        await interaction.update(buildSubmitStepPayload(interaction.user.id, {
+          noticeText: "Отдельный 3-й шаг с вводом kills убран. Просто отправь одним сообщением kills и скрин.",
+        }));
         return;
       }
 
@@ -11499,7 +11480,11 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
-      await interaction.showModal(buildOnboardKillsModal());
+      setSubmitSession(interaction.user.id, { mainCharacterIds: draft.characterIds });
+      clearMainDraft(interaction.user.id);
+      await interaction.update(buildSubmitStepPayload(interaction.user.id, {
+        noticeText: "Отдельный 3-й шаг с вводом kills убран. Просто отправь одним сообщением kills и скрин.",
+      }));
       return;
     }
 
@@ -12119,11 +12104,24 @@ client.on("interactionCreate", async (interaction) => {
     const selectedEntries = await applyMainSelection(client, member, interaction.user, selectedIds, isQuickSelection ? "quick main selection" : "new main character selection");
 
     if (isQuickSelection) {
+      const activeSubmitSession = getSubmitSession(interaction.user.id);
+      const updatedMainCharacterIds = selectedEntries.map((entry) => entry.id);
+      if (activeSubmitSession?.mainCharacterIds?.length) {
+        setSubmitSession(interaction.user.id, {
+          ...activeSubmitSession,
+          mainCharacterIds: updatedMainCharacterIds,
+        });
+      }
+
       const syncedPending = await syncPendingSubmissionMainsForUser(client, interaction.user.id, selectedEntries);
+      const welcomeChannelId = getWelcomeChannelId();
+      const uploadTarget = welcomeChannelId ? `<#${welcomeChannelId}>` : "welcome-канал";
       await interaction.reply(ephemeralPayload({
-        content: syncedPending
-          ? `Мейны обновлены: **${selectedEntries.map((entry) => entry.label).join(", ")}**. Pending-заявка тоже обновлена.`
-          : `Мейны обновлены: **${selectedEntries.map((entry) => entry.label).join(", ")}**.`,
+        content: activeSubmitSession?.mainCharacterIds?.length
+          ? `Мейны обновлены: **${selectedEntries.map((entry) => entry.label).join(", ")}**. Текущая загрузка тоже обновлена, теперь просто отправь одним сообщением kills и скрин в ${uploadTarget}.`
+          : syncedPending
+            ? `Мейны обновлены: **${selectedEntries.map((entry) => entry.label).join(", ")}**. Pending-заявка тоже обновлена.`
+            : `Мейны обновлены: **${selectedEntries.map((entry) => entry.label).join(", ")}**.`,
       }));
       return;
     }
@@ -13607,7 +13605,7 @@ client.on("interactionCreate", async (interaction) => {
       clearMainDraft(interaction.user.id);
 
       await interaction.reply(buildSubmitStepPayload(interaction.user.id, {
-        noticeText: "Запомнил kills для этого шага. Теперь отправь одно сообщение с этим числом и скрином.",
+        noticeText: "Запомнил kills. Отдельный 3-й шаг убран: теперь просто отправь одно сообщение с этим числом и скрином.",
         suggestedKills: kills,
       }));
       return;
