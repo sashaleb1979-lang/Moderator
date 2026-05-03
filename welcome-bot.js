@@ -700,6 +700,10 @@ function getGeneratedRoleState() {
   return db.config.generatedRoles;
 }
 
+function getManagedCharacterCatalog() {
+  return normalizeCharacterCatalog(appConfig.characters);
+}
+
 function getCharacterCatalog() {
   db.config.characters = mergeCharacterCatalog(db.config.characters, appConfig.characters);
   return db.config.characters;
@@ -1139,7 +1143,7 @@ function medianNumber(arr) {
 
 async function cleanupOrphanCharacterRoles(client) {
   const generated = getGeneratedRoleState();
-  const catalogIds = new Set(getCharacterCatalog().map((entry) => String(entry.id || "").trim()));
+  const catalogIds = new Set(getManagedCharacterCatalog().map((entry) => String(entry.id || "").trim()));
   const orphanIds = Object.keys(generated.characters || {}).filter((id) => !catalogIds.has(String(id).trim()));
   if (!orphanIds.length) return { removed: 0, deletedRoles: 0 };
 
@@ -2009,7 +2013,7 @@ async function downloadToBuffer(url, timeoutMs = 15000) {
 
 function getCharacterEntries() {
   const generatedRoles = getGeneratedRoleState();
-  return getCharacterCatalog().map((entry) => ({
+  return getManagedCharacterCatalog().map((entry) => ({
     id: String(entry.id).trim(),
     label: String(entry.label).trim(),
     roleId: String(generatedRoles.characters?.[String(entry.id).trim()] || entry.roleId || "").trim(),
@@ -2284,7 +2288,7 @@ async function reconcileCharacterRolesFromGuild(guild) {
   let resolved = 0;
   let deletedDuplicates = 0;
 
-  for (const entry of getCharacterCatalog()) {
+  for (const entry of getManagedCharacterCatalog()) {
     const characterId = String(entry.id || "").trim();
     const roleName = String(entry.label || "").trim();
     if (!characterId || !roleName) continue;
@@ -2347,7 +2351,7 @@ async function ensureManagedRoles(client) {
     console.warn("reconcileCharacterRolesFromGuild failed:", error?.message || error);
   }
 
-  for (const entry of getCharacterCatalog()) {
+  for (const entry of getManagedCharacterCatalog()) {
     const characterId = String(entry.id || "").trim();
     const roleName = String(entry.label || "").trim();
     const explicitRoleId = String(entry.roleId || generatedRoles.characters?.[characterId] || "").trim();
