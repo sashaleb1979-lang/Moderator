@@ -266,10 +266,14 @@ const LEGACY_TIERLIST_PANEL_BUTTON_IDS = new Set([
   "panel_h_minus",
   "panel_h_plus",
   "panel_set_img",
+  "panel_role_coefficients",
   "panel_reset_img",
   "panel_fonts",
   "panel_rename",
   "panel_add_custom_character",
+  "panel_wipe_votes_all",
+  "panel_confirm_wipe_votes_all",
+  "panel_cancel_wipe_votes_all",
 ]);
 
 let guildCache = null;
@@ -351,7 +355,6 @@ function buildRuntimeConfig(fileConfig = {}) {
         2: envText("LEGACY_ELO_TIER_ROLE_2_ID", fileConfig?.roles?.legacyEloTierRoleIds?.["2"] || ""),
         3: envText("LEGACY_ELO_TIER_ROLE_3_ID", fileConfig?.roles?.legacyEloTierRoleIds?.["3"] || ""),
         4: envText("LEGACY_ELO_TIER_ROLE_4_ID", fileConfig?.roles?.legacyEloTierRoleIds?.["4"] || ""),
-        5: envText("LEGACY_ELO_TIER_ROLE_5_ID", fileConfig?.roles?.legacyEloTierRoleIds?.["5"] || ""),
       },
     },
     ui: {
@@ -4776,7 +4779,8 @@ function parseLegacyTierlistTimestamp(value) {
 }
 
 function isLegacyTierlistLocked(rawUser) {
-  return parseLegacyTierlistTimestamp(rawUser?.lockUntil) > Date.now();
+  void rawUser;
+  return false;
 }
 
 function buildLegacyTierlistDashboardComponents() {
@@ -4800,7 +4804,7 @@ async function buildLegacyTierlistDashboardPayload(liveState) {
     embeds: [
       new EmbedBuilder()
         .setTitle(LEGACY_TIERLIST_TITLE)
-        .setDescription("кнопка **начать оценку** откроет полный опрос. **оценить новых** позволит дооценить только что добавленных персонажей без сброса твоего тир-листа.")
+        .setDescription("кнопка **начать оценку** откроет твой тир-лист. Мейны подхватываются автоматически из ролей персонажей внутри Moderator. **оценить новых** позволит дооценить только что добавленных персонажей без сброса твоего тир-листа.")
         .setImage("attachment://tierlist.png"),
     ],
     files: [new AttachmentBuilder(pngBuffer, { name: "tierlist.png" })],
@@ -4979,10 +4983,93 @@ function formatLegacyTierlistMoment(value) {
   return timestamp ? new Date(timestamp).toLocaleString("ru-RU") : "—";
 }
 
+function normalizeLegacyTierlistMainIds(mainIds, liveState = null) {
+  const values = Array.isArray(mainIds)
+    ? mainIds
+    : (mainIds ? [mainIds] : []);
+  const charById = liveState?.charById instanceof Map ? liveState.charById : null;
+
+  return [...new Set(values
+    .map((value) => String(value || "").trim())
+    .filter((value) => value && (!charById || charById.has(value))))].slice(0, 2);
+}
+
+function getLegacyTierlistMainIds(rawUser, liveState = null) {
+  const normalized = normalizeLegacyTierlistMainIds(rawUser?.mainIds, liveState);
+  if (normalized.length) return normalized;
+
+  const single = String(rawUser?.mainId || "").trim();
+  return normalizeLegacyTierlistMainIds(single ? [single] : [], liveState);
+}
+
+function sameLegacyTierlistMainIds(left = [], right = []) {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function getLegacyTierlistMainNames(liveState, rawUser) {
+  return getLegacyTierlistMainIds(rawUser, liveState)
+    .map((characterId) => liveState.charById.get(characterId)?.name || characterId);
+}
+
+function formatLegacyTierlistMainSummary(liveState, rawUser, fallback = "не выбраны") {
+  const names = getLegacyTierlistMainNames(liveState, rawUser);
+  return names.length ? names.join(", ") : fallback;
+}
+
+function legacyTierlistMemberHasRole(member, roleId) {
+  const normalizedRoleId = String(roleId || "").trim();
+  if (!normalizedRoleId || !member) return false;
+  if (member.roles?.cache?.has) return member.roles.cache.has(normalizedRoleId);
+  if (Array.isArray(member.roles)) return member.roles.includes(normalizedRoleId);
+  if (Array.isArray(member.roles?.value)) return member.roles.value.includes(normalizedRoleId);
+  return false;
+}
+
+function setLegacyTierlistMainIds(liveState, userId, mainIds) {
+  const user = getLegacyTierlistWizardUser(liveState.rawState, userId);
+  const normalized = normalizeLegacyTierlistMainIds(mainIds, liveState);
+
+  user.mainIds = normalized;
+  user.mainId = normalized[0] || null;
+  user.mainSelectPage = 0;
+
+  const draftVotes = getLegacyTierlistDraft(liveState.rawState, userId);
+  const finalVotes = getLegacyTierlistFinal(liveState.rawState, userId);
+  for (const mainId of normalized) {
+    if (draftVotes[mainId]) delete draftVotes[mainId];
+    if (finalVotes[mainId]) delete finalVotes[mainId];
+  }
+
+  return normalized;
+}
+
+function resolveLegacyTierlistMainIdsFromMember(member, profile, liveState) {
+  const fromRoles = getCharacterEntries()
+    .filter((entry) => entry.roleId && legacyTierlistMemberHasRole(member, entry.roleId))
+    .map((entry) => entry.id);
+
+  if (fromRoles.length) return normalizeLegacyTierlistMainIds(fromRoles, liveState);
+  return normalizeLegacyTierlistMainIds(profile?.mainCharacterIds, liveState);
+}
+
+function syncLegacyTierlistMainsForMember(liveState, userId, member, profile = null) {
+  const currentUser = getLegacyTierlistWizardUser(liveState.rawState, userId);
+  const currentIds = getLegacyTierlistMainIds(currentUser, liveState);
+  const nextIds = resolveLegacyTierlistMainIdsFromMember(member, profile || db.profiles?.[userId], liveState);
+
+  if (!sameLegacyTierlistMainIds(currentIds, nextIds)) {
+    setLegacyTierlistMainIds(liveState, userId, nextIds);
+    return { changed: true, mainIds: nextIds };
+  }
+
+  return { changed: false, mainIds: currentIds };
+}
+
 function getLegacyTierlistWizardUser(rawState, userId) {
   rawState.users ||= {};
   rawState.users[userId] ||= {
     mainId: null,
+    mainIds: [],
     lockUntil: 0,
     lastSubmitAt: 0,
     wizQueue: null,
@@ -4997,15 +5084,23 @@ function getLegacyTierlistWizardUser(rawState, userId) {
     panelParticipantId: null,
     panelDeleteTargetId: null,
     panelDeleteMode: null,
+    panelWipeAllVotesConfirm: false,
     mainSelectPage: 0,
   };
 
   const user = rawState.users[userId];
+  user.mainIds = normalizeLegacyTierlistMainIds(
+    Array.isArray(user.mainIds) && user.mainIds.length
+      ? user.mainIds
+      : (user.mainId ? [user.mainId] : [])
+  );
+  user.mainId = user.mainIds[0] || null;
   if (user.lastSubmitAt == null) user.lastSubmitAt = 0;
   if (!user.panelTierKey) user.panelTierKey = "S";
   if (!user.panelTab) user.panelTab = "config";
   if (user.panelParticipantsPage == null) user.panelParticipantsPage = 0;
   if (user.panelParticipantId == null) user.panelParticipantId = null;
+  if (user.panelWipeAllVotesConfirm == null) user.panelWipeAllVotesConfirm = false;
   if (user.mainSelectPage == null) user.mainSelectPage = 0;
   if (user.wizMode == null) user.wizMode = null;
   return user;
@@ -5024,8 +5119,9 @@ function getLegacyTierlistFinal(rawState, userId) {
 }
 
 function isLegacyTierlistWizardLocked(rawState, userId) {
-  const user = getLegacyTierlistWizardUser(rawState, userId);
-  return parseLegacyTierlistTimestamp(user.lockUntil) > Date.now();
+  void rawState;
+  void userId;
+  return false;
 }
 
 function hasSubmittedLegacyTierlist(rawState, userId) {
@@ -5036,9 +5132,10 @@ function hasSubmittedLegacyTierlist(rawState, userId) {
 function getLegacyTierlistPendingNewCharacterIds(liveState, userId) {
   const user = getLegacyTierlistWizardUser(liveState.rawState, userId);
   const finalVotes = getLegacyTierlistFinal(liveState.rawState, userId);
+  const mainIds = new Set(getLegacyTierlistMainIds(user, liveState));
   return (liveState.characters || [])
     .map((entry) => entry.id)
-    .filter((characterId) => characterId !== user.mainId)
+    .filter((characterId) => !mainIds.has(characterId))
     .filter((characterId) => !finalVotes[characterId]);
 }
 
@@ -5062,24 +5159,20 @@ function clampLegacyTierlistMainSelectPage(liveState, page) {
 }
 
 function setLegacyTierlistMain(liveState, userId, mainId) {
+  setLegacyTierlistMainIds(liveState, userId, mainId ? [mainId] : []);
   const user = getLegacyTierlistWizardUser(liveState.rawState, userId);
-  user.mainId = mainId;
   user.mainSelectPage = findLegacyTierlistCharacterMainPage(liveState, mainId);
-
-  const draftVotes = getLegacyTierlistDraft(liveState.rawState, userId);
-  if (draftVotes[mainId]) delete draftVotes[mainId];
-  const finalVotes = getLegacyTierlistFinal(liveState.rawState, userId);
-  if (finalVotes[mainId]) delete finalVotes[mainId];
 }
 
 function startLegacyTierlistWizard(liveState, userId, mode = "full") {
   const user = getLegacyTierlistWizardUser(liveState.rawState, userId);
+  const mainIds = new Set(getLegacyTierlistMainIds(user, liveState));
   liveState.rawState.draftVotes ||= {};
   liveState.rawState.draftVotes[userId] = {};
   user.wizMode = mode;
   user.wizQueue = mode === "new"
     ? getLegacyTierlistPendingNewCharacterIds(liveState, userId)
-    : (liveState.characters || []).map((entry) => entry.id).filter((characterId) => characterId !== user.mainId);
+    : (liveState.characters || []).map((entry) => entry.id).filter((characterId) => !mainIds.has(characterId));
   user.wizIndex = 0;
 }
 
@@ -5098,7 +5191,7 @@ function legacyTierlistWizardDone(rawState, userId) {
 
 function setLegacyTierlistDraftTier(rawState, userId, characterId, tierKey) {
   const user = getLegacyTierlistWizardUser(rawState, userId);
-  if (!characterId || characterId === user.mainId) return;
+  if (!characterId || getLegacyTierlistMainIds(user).includes(characterId)) return;
   if (!["S", "A", "B", "C", "D"].includes(tierKey)) return;
   const draftVotes = getLegacyTierlistDraft(rawState, userId);
   draftVotes[characterId] = tierKey;
@@ -5124,12 +5217,28 @@ function submitLegacyTierlistVotes(rawState, userId) {
   for (const characterId of queue) {
     finalVotes[characterId] = ["S", "A", "B", "C", "D"].includes(draftVotes[characterId]) ? draftVotes[characterId] : "B";
   }
-  if (user.mainId && finalVotes[user.mainId]) delete finalVotes[user.mainId];
+  for (const mainId of getLegacyTierlistMainIds(user)) {
+    if (finalVotes[mainId]) delete finalVotes[mainId];
+  }
 }
 
 function lockLegacyTierlistUser(rawState, userId) {
   const user = getLegacyTierlistWizardUser(rawState, userId);
-  user.lockUntil = Date.now() + LEGACY_TIERLIST_COOLDOWN_MS;
+  user.lockUntil = 0;
+}
+
+function wipeLegacyTierlistVotesOnly(rawState) {
+  rawState.finalVotes = {};
+  rawState.draftVotes = {};
+
+  for (const user of Object.values(rawState?.users || {})) {
+    if (!user || typeof user !== "object") continue;
+    user.lockUntil = 0;
+    user.lastSubmitAt = 0;
+    user.wizQueue = null;
+    user.wizIndex = 0;
+    user.wizMode = null;
+  }
 }
 
 function buildLegacyTierlistDraftBuckets(liveState, userId) {
@@ -5158,61 +5267,18 @@ function buildLegacyTierlistDraftBuckets(liveState, userId) {
 }
 
 function buildLegacyTierlistMainSelectRows(liveState, userId) {
-  const user = getLegacyTierlistWizardUser(liveState.rawState, userId);
-  const page = clampLegacyTierlistMainSelectPage(liveState, user.mainSelectPage);
-  const start = page * LEGACY_TIERLIST_MAIN_SELECT_PAGE_SIZE;
-  const slice = (liveState.characters || []).slice(start, start + LEGACY_TIERLIST_MAIN_SELECT_PAGE_SIZE);
-  user.mainSelectPage = page;
-
-  const menu = new StringSelectMenuBuilder()
-    .setCustomId("select_main")
-    .setPlaceholder(`Выбери своего main (${page + 1}/${getLegacyTierlistMainSelectPageCount(liveState)})`)
-    .setMinValues(1)
-    .setMaxValues(1);
-
-  for (const character of slice) {
-    menu.addOptions({
-      label: character.name.slice(0, 100),
-      value: character.id,
-      default: user.mainId === character.id,
-    });
-  }
-
-  const rows = [new ActionRowBuilder().addComponents(menu)];
-  if (getLegacyTierlistMainSelectPageCount(liveState) > 1) {
-    rows.push(
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId("main_page_prev")
-          .setLabel(`Персонажи ${page + 1}/${getLegacyTierlistMainSelectPageCount(liveState)} <-`)
-          .setStyle(ButtonStyle.Secondary)
-          .setDisabled(page <= 0),
-        new ButtonBuilder()
-          .setCustomId("main_page_next")
-          .setLabel("->")
-          .setStyle(ButtonStyle.Secondary)
-          .setDisabled(page >= getLegacyTierlistMainSelectPageCount(liveState) - 1)
-      )
-    );
-  }
-
-  return rows;
+  void liveState;
+  void userId;
+  return [];
 }
 
 function buildLegacyTierlistStartButtons(liveState, userId) {
-  const user = getLegacyTierlistWizardUser(liveState.rawState, userId);
-  const row = new ActionRowBuilder();
-  if (user.mainId) {
-    const name = liveState.charById.get(user.mainId)?.name || user.mainId;
-    row.addComponents(
-      new ButtonBuilder()
-        .setCustomId("wiz_use_current_main")
-        .setLabel(`Продолжить с main: ${name}`.slice(0, 80))
-        .setStyle(ButtonStyle.Primary)
-    );
-  }
-  row.addComponents(new ButtonBuilder().setCustomId("wiz_cancel").setLabel("Закрыть").setStyle(ButtonStyle.Secondary));
-  return row;
+  void liveState;
+  void userId;
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId("wiz_use_current_main").setLabel("Открыть оценку").setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId("wiz_cancel").setLabel("Закрыть").setStyle(ButtonStyle.Secondary)
+  );
 }
 
 function buildLegacyTierlistTierButtons(disabled = false) {
@@ -5240,26 +5306,24 @@ function buildLegacyTierlistWizardNavRow(rawState, userId) {
 
 function buildLegacyTierlistStartEmbed(liveState, userId) {
   const user = getLegacyTierlistWizardUser(liveState.rawState, userId);
-  const locked = isLegacyTierlistWizardLocked(liveState.rawState, userId);
-  const mainName = user.mainId ? (liveState.charById.get(user.mainId)?.name || user.mainId) : "не выбран";
+  const mainIds = getLegacyTierlistMainIds(user, liveState);
+  const mainsText = formatLegacyTierlistMainSummary(liveState, user);
   const hasFinal = hasSubmittedLegacyTierlist(liveState.rawState, userId);
 
   const embed = new EmbedBuilder()
     .setTitle("Оценка персонажей")
     .setDescription([
-      "1) выбери своего main.",
-      "2) появится твой личный тир-лист.",
-      "3) оценивай персонажей по одному кнопками S A B C D.",
-      "main будет серым и заблокированным.",
+      "Твои мейны подхватываются автоматически из ролей персонажей внутри Moderator.",
+      "Оценивай персонажей по одному кнопками S A B C D.",
+      mainIds.length
+        ? "Найденные мейны будут серыми и заблокированными в твоём тир-листе."
+        : "Мейны не найдены — можешь оценивать всех персонажей.",
       hasFinal ? "Для новых персонажей на дашборде есть кнопка **Оценить новых**." : "После первой отправки новые персонажи можно будет дооценивать кнопкой **Оценить новых**.",
     ].join("\n"))
-    .addFields({ name: "Main", value: `**${mainName}**`, inline: true });
-
-  if (locked) {
-    embed.addFields({ name: "Кулдаун", value: `До **${formatLegacyTierlistMoment(user.lockUntil)}**`, inline: false });
-  } else {
-    embed.addFields({ name: "Кулдаун", value: "Можно отправлять сейчас.", inline: false });
-  }
+    .addFields(
+      { name: "Мейны", value: `**${mainsText}**`, inline: false },
+      { name: "Статус", value: "Можно отправлять оценку в любой момент.", inline: false }
+    );
 
   return embed;
 }
@@ -5269,7 +5333,7 @@ function buildLegacyTierlistStartPayload(liveState, userId, statusText = "") {
   if (statusText) embed.setFooter({ text: String(statusText).slice(0, 2048) });
   return {
     embeds: [embed],
-    components: [buildLegacyTierlistStartButtons(liveState, userId), ...buildLegacyTierlistMainSelectRows(liveState, userId)],
+    components: [buildLegacyTierlistStartButtons(liveState, userId)],
     attachments: [],
   };
 }
@@ -5277,19 +5341,20 @@ function buildLegacyTierlistStartPayload(liveState, userId, statusText = "") {
 async function buildLegacyTierlistWizardPayload(liveState, userId) {
   const rawState = liveState.rawState;
   const user = getLegacyTierlistWizardUser(rawState, userId);
+  const mainIds = getLegacyTierlistMainIds(user, liveState);
   const queue = user.wizQueue || [];
   const total = queue.length;
   const done = Math.min(user.wizIndex || 0, total);
   const currentId = currentLegacyTierlistWizardChar(rawState, userId);
   const currentName = currentId ? (liveState.charById.get(currentId)?.name || currentId) : "—";
-  const lockedMain = user.mainId ? (liveState.charById.get(user.mainId)?.name || user.mainId) : "не выбран";
+  const lockedMain = formatLegacyTierlistMainSummary(liveState, user);
   const finished = legacyTierlistWizardDone(rawState, userId);
 
   const preview = await renderLegacyTierlistFromBuckets(liveState, {
     title: `${LEGACY_TIERLIST_TITLE} (твоя оценка)`,
     footerText: `progress: ${Math.min(done, total)}/${total}. ${new Date().toLocaleTimeString("ru-RU")}`,
     buckets: buildLegacyTierlistDraftBuckets(liveState, userId),
-    lockedId: user.mainId || null,
+    lockedIds: mainIds,
     highlightId: finished ? null : currentId,
   });
   const files = [new AttachmentBuilder(preview, { name: "preview.png" })];
@@ -5313,7 +5378,7 @@ async function buildLegacyTierlistWizardPayload(liveState, userId) {
             : "выбери тир для текущего персонажа кнопками S A B C D.")
     )
     .addFields(
-      { name: "Main", value: `⬛ **${lockedMain}** (locked)`, inline: true },
+      { name: "Мейны", value: mainIds.length ? `⬛ **${lockedMain}** (locked)` : "не выбраны", inline: true },
       { name: "Прогресс", value: `${done}/${total}`, inline: true },
       { name: "Сейчас", value: finished ? "—" : `**${currentName}**`, inline: false }
     );
@@ -5333,16 +5398,46 @@ async function buildLegacyTierlistWizardPayload(liveState, userId) {
   };
 }
 
-function resolveLegacyTierlistInfluenceFromMember(member) {
+function normalizeLegacyTierlistInfluenceValue(value, fallback) {
+  const amount = Number(value);
+  return Number.isFinite(amount) && amount > 0 ? amount : fallback;
+}
+
+function getLegacyTierlistInfluenceConfig(rawState) {
+  const stored = rawState?.settings?.roleInfluence || {};
+  return {
+    default: normalizeLegacyTierlistInfluenceValue(stored.default, 1),
+    1: normalizeLegacyTierlistInfluenceValue(stored[1], LEGACY_TIERLIST_ROLE_INFLUENCE[1]),
+    2: normalizeLegacyTierlistInfluenceValue(stored[2], LEGACY_TIERLIST_ROLE_INFLUENCE[2]),
+    3: normalizeLegacyTierlistInfluenceValue(stored[3], LEGACY_TIERLIST_ROLE_INFLUENCE[3]),
+    4: normalizeLegacyTierlistInfluenceValue(stored[4], LEGACY_TIERLIST_ROLE_INFLUENCE[4]),
+    5: normalizeLegacyTierlistInfluenceValue(stored[5], LEGACY_TIERLIST_ROLE_INFLUENCE[5]),
+  };
+}
+
+function formatLegacyTierlistInfluenceSummary(rawState) {
+  const cfg = getLegacyTierlistInfluenceConfig(rawState);
+  return [
+    `без роли x${cfg.default.toFixed(2)}`,
+    `T1 x${cfg[1].toFixed(2)}`,
+    `T2 x${cfg[2].toFixed(2)}`,
+    `T3 x${cfg[3].toFixed(2)}`,
+    `T4 x${cfg[4].toFixed(2)}`,
+    `T5 x${cfg[5].toFixed(2)}`,
+  ].join(", ");
+}
+
+function resolveLegacyTierlistInfluenceFromMember(member, rawState = null) {
   try {
     const roles = member?.roles?.cache;
-    if (!roles) return { mult: 1, roleId: null };
+    const influenceConfig = getLegacyTierlistInfluenceConfig(rawState);
+    if (!roles) return { mult: influenceConfig.default, roleId: null };
 
-    let best = 1;
+    let best = influenceConfig.default;
     let bestRole = null;
     for (const tierKey of [1, 2, 3, 4, 5]) {
       const roleId = String(appConfig?.roles?.killTierRoleIds?.[tierKey] || "").trim();
-      const multiplier = LEGACY_TIERLIST_ROLE_INFLUENCE[tierKey];
+      const multiplier = influenceConfig[tierKey];
       if (!roleId || !multiplier) continue;
       if (roles.has(roleId) && multiplier > best) {
         best = multiplier;
@@ -5351,7 +5446,7 @@ function resolveLegacyTierlistInfluenceFromMember(member) {
     }
     return { mult: best, roleId: bestRole };
   } catch {
-    return { mult: 1, roleId: null };
+    return { mult: getLegacyTierlistInfluenceConfig(rawState).default, roleId: null };
   }
 }
 
@@ -5403,12 +5498,13 @@ function getLegacyTierlistParticipantsList(liveState) {
     if (!votes || Object.keys(votes).length === 0) continue;
 
     const user = liveState.rawState?.users?.[userId] || {};
-    const inferredSubmit = (user.lockUntil && Number.isFinite(user.lockUntil)) ? (user.lockUntil - LEGACY_TIERLIST_COOLDOWN_MS) : 0;
-    const lastSubmitAt = Number(user.lastSubmitAt) || inferredSubmit || 0;
+    const mainIds = getLegacyTierlistMainIds(user, liveState);
+    const lastSubmitAt = Number(user.lastSubmitAt) || 0;
 
     out.push({
       userId,
-      mainId: user.mainId || null,
+      mainId: mainIds[0] || null,
+      mainIds,
       lastSubmitAt,
     });
   }
@@ -5436,11 +5532,13 @@ function buildLegacyTierlistParticipantsSelectRow(liveState, userId, participant
     .setDisabled(slice.length === 0);
 
   for (const participant of slice) {
-    const mainName = participant.mainId ? (liveState.charById.get(participant.mainId)?.name || participant.mainId) : "—";
+    const mainName = participant.mainIds?.length
+      ? participant.mainIds.map((mainId) => liveState.charById.get(mainId)?.name || mainId).join(", ")
+      : "—";
     menu.addOptions({
       label: String(participant.userId).slice(0, 100),
       value: participant.userId,
-      description: `main: ${mainName}`.slice(0, 100),
+      description: `мейны: ${mainName}`.slice(0, 100),
       default: user.panelParticipantId === participant.userId,
     });
   }
@@ -5470,9 +5568,11 @@ function buildLegacyTierlistParticipantsListPayload(liveState, userId, statusTex
   const start = page * pageSize;
   const slice = participants.slice(start, start + pageSize);
   const preview = slice.slice(0, 12).map((participant, index) => {
-    const mainName = participant.mainId ? (liveState.charById.get(participant.mainId)?.name || participant.mainId) : "—";
+    const mainName = participant.mainIds?.length
+      ? participant.mainIds.map((mainId) => liveState.charById.get(mainId)?.name || mainId).join(", ")
+      : "—";
     const when = participant.lastSubmitAt ? formatLegacyTierlistMoment(participant.lastSubmitAt) : "—";
-    return `${start + index + 1}) <@${participant.userId}>  main: **${mainName}**  submit: ${when}`;
+    return `${start + index + 1}) <@${participant.userId}>  мейны: **${mainName}**  submit: ${when}`;
   });
 
   const embed = new EmbedBuilder()
@@ -5512,9 +5612,8 @@ function buildLegacyTierlistParticipantsDetailPayload(liveState, userId, statusT
   }
 
   const targetUser = liveState.rawState?.users?.[targetId] || {};
-  const mainName = targetUser.mainId ? (liveState.charById.get(targetUser.mainId)?.name || targetUser.mainId) : "—";
-  const inferredSubmit = (targetUser.lockUntil && Number.isFinite(targetUser.lockUntil)) ? (targetUser.lockUntil - LEGACY_TIERLIST_COOLDOWN_MS) : 0;
-  const lastSubmitAt = Number(targetUser.lastSubmitAt) || inferredSubmit || 0;
+  const mainName = formatLegacyTierlistMainSummary(liveState, targetUser, "—");
+  const lastSubmitAt = Number(targetUser.lastSubmitAt) || 0;
   const when = lastSubmitAt ? formatLegacyTierlistMoment(lastSubmitAt) : "—";
   const counts = getLegacyTierlistUserTierCounts(votes);
   const pending = user.panelDeleteTargetId === targetId ? user.panelDeleteMode : null;
@@ -5523,7 +5622,7 @@ function buildLegacyTierlistParticipantsDetailPayload(liveState, userId, statusT
     .setTitle("Участник")
     .setDescription(`<@${targetId}>`)
     .addFields(
-      { name: "Main", value: `**${mainName}**`, inline: true },
+      { name: "Мейны", value: `**${mainName}**`, inline: true },
       { name: "Submit", value: `${when}`, inline: true },
       { name: "S/A/B/C/D", value: `${counts.S}/${counts.A}/${counts.B}/${counts.C}/${counts.D}`, inline: false }
     );
@@ -5579,25 +5678,43 @@ function buildLegacyTierlistModPanelConfigPayload(liveState, userId, statusText 
       `**Картинка:** ${cfg.W}×${cfg.H}`,
       `**Иконки:** ${cfg.ICON}px`,
       `**Переименование:** выбран **${tierKey}** → *${tierName}*`,
+      `**Коэффициенты:** ${formatLegacyTierlistInfluenceSummary(liveState.rawState)}`,
       "",
       "Кнопки ниже меняют параметры и сразу пересобирают PNG.",
     ].join("\n"));
+
+  if (user.panelWipeAllVotesConfirm) {
+    embed.addFields({
+      name: "Подтверждение удаления",
+      value: "⚠️ Будут удалены все голоса по персонажам, черновики и submission/cooldown traces. Пользователи, их мейны, влияние и настройки панели останутся.",
+      inline: false,
+    });
+  }
+
+  const firstRow = user.panelWipeAllVotesConfirm
+    ? new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId("panel_confirm_wipe_votes_all").setLabel("Подтвердить wipe").setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId("panel_cancel_wipe_votes_all").setLabel("Отмена").setStyle(ButtonStyle.Secondary)
+    )
+    : new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId("panel_refresh").setLabel("Пересобрать").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("panel_set_img").setLabel("Задать размеры").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("panel_icon_minus").setLabel("Иконки -").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("panel_icon_plus").setLabel("Иконки +").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("panel_wipe_votes_all").setLabel("Стереть все голоса").setStyle(ButtonStyle.Danger)
+    );
 
   return applyLegacyTierlistPanelStatus({
     embeds: [embed],
     components: [
       buildLegacyTierlistPanelTabsRow(liveState.rawState, userId),
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId("panel_refresh").setLabel("Пересобрать").setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId("panel_set_img").setLabel("Задать размеры").setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId("panel_icon_minus").setLabel("Иконки -").setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId("panel_icon_plus").setLabel("Иконки +").setStyle(ButtonStyle.Secondary)
-      ),
+      firstRow,
       new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId("panel_w_minus").setLabel("Ширина -").setStyle(ButtonStyle.Secondary),
         new ButtonBuilder().setCustomId("panel_w_plus").setLabel("Ширина +").setStyle(ButtonStyle.Secondary),
         new ButtonBuilder().setCustomId("panel_h_minus").setLabel("Высота -").setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId("panel_h_plus").setLabel("Высота +").setStyle(ButtonStyle.Secondary)
+        new ButtonBuilder().setCustomId("panel_h_plus").setLabel("Высота +").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("panel_role_coefficients").setLabel("Коэффициенты").setStyle(ButtonStyle.Primary)
       ),
       buildLegacyTierlistPanelTierSelect(liveState.rawState, userId),
       new ActionRowBuilder().addComponents(
@@ -5656,7 +5773,7 @@ async function backfillLegacyTierlistInfluenceForExistingVoters(client, { refres
 
   for (const userId of voterIds) {
     const member = await guild.members.fetch(userId).catch(() => null);
-    const influence = resolveLegacyTierlistInfluenceFromMember(member);
+    const influence = resolveLegacyTierlistInfluenceFromMember(member, liveState.rawState);
     const user = getLegacyTierlistWizardUser(liveState.rawState, userId);
     const prev = Number(user.influenceMultiplier) || 1;
     const prevRole = user.influenceRoleId || null;
@@ -5688,7 +5805,7 @@ async function syncLegacyTierlistInfluenceForMember(client, member) {
   const isTracked = Boolean(liveState.rawState?.users?.[userId]);
   if (!hasVote && !isTracked) return { changed: false, skipped: true };
 
-  const influence = resolveLegacyTierlistInfluenceFromMember(member);
+  const influence = resolveLegacyTierlistInfluenceFromMember(member, liveState.rawState);
   const user = getLegacyTierlistWizardUser(liveState.rawState, userId);
   const prev = Number(user.influenceMultiplier) || 1;
   const prevRole = user.influenceRoleId || null;
@@ -6185,8 +6302,7 @@ function buildDormantTierlistPanelPayload(statusText = "", includeFlags = true) 
       "Отдельный runtime tierlist-bot не запускается; читается только legacy state.json и пишется проекция в shared profiles.",
       `Tracked профилей: **${formatNumber(snapshot.trackedProfiles)}**`,
       `С отправленным tierlist: **${formatNumber(snapshot.submittedProfiles)}**`,
-      `С выбранным main: **${formatNumber(snapshot.mainSelectedProfiles)}**`,
-      `С lock/cooldown: **${formatNumber(snapshot.lockedProfiles)}**`,
+      `С сохранёнными мейнами: **${formatNumber(snapshot.mainSelectedProfiles)}**`,
       `Максимальное влияние: **${snapshot.strongestInfluence ? `${snapshot.strongestInfluence.displayName} — x${snapshot.strongestInfluence.influenceMultiplier}` : "—"}**`,
     ].join("\n"))
     .addFields(
@@ -6255,7 +6371,7 @@ function buildDormantTierlistPanelPayload(statusText = "", includeFlags = true) 
         new ButtonBuilder().setCustomId("tierlist_panel_setup_dashboard").setLabel("Dashboard").setStyle(ButtonStyle.Primary),
         new ButtonBuilder().setCustomId("tierlist_panel_setup_summary").setLabel("Summary").setStyle(ButtonStyle.Primary),
         new ButtonBuilder().setCustomId("tierlist_panel_refresh_public").setLabel("Обновить public").setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId("tierlist_panel_mod_panel").setLabel("Legacy mods").setStyle(ButtonStyle.Secondary)
+        new ButtonBuilder().setCustomId("tierlist_panel_mod_panel").setLabel("Графика / моды").setStyle(ButtonStyle.Secondary)
       ),
       new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId("tierlist_panel_channels").setLabel("Каналы Tierlist").setStyle(ButtonStyle.Primary),
@@ -8992,8 +9108,14 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
+      const mainSync = syncLegacyTierlistMainsForMember(liveState, interaction.user.id, interaction.member, getProfile(interaction.user.id));
+      if (mainSync.changed) persistLiveLegacyTierlistState(liveState);
+
       const pendingNewCount = getLegacyTierlistPendingNewCharacterIds(liveState, interaction.user.id).length;
-      const statusText = pendingNewCount > 0 ? `Новых персонажей без твоей оценки: ${pendingNewCount}.` : "";
+      const mainText = mainSync.mainIds.length
+        ? `Авто-мейны: ${formatLegacyTierlistMainSummary(liveState, getLegacyTierlistWizardUser(liveState.rawState, interaction.user.id))}.`
+        : "Авто-мейны не найдены: можно оценивать всех персонажей.";
+      const statusText = pendingNewCount > 0 ? `${mainText} Новых персонажей без твоей оценки: ${pendingNewCount}.` : mainText;
       await interaction.reply(ephemeralPayload(buildLegacyTierlistStartPayload(liveState, interaction.user.id, statusText)));
       return;
     }
@@ -9004,6 +9126,9 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.reply(buildLegacyTierlistStateErrorPayload("Не удалось открыть legacy Tierlist state", liveState));
         return;
       }
+
+      const mainSync = syncLegacyTierlistMainsForMember(liveState, interaction.user.id, interaction.member, getProfile(interaction.user.id));
+      if (mainSync.changed) persistLiveLegacyTierlistState(liveState);
 
       const user = getLegacyTierlistWizardUser(liveState.rawState, interaction.user.id);
       if (!hasSubmittedLegacyTierlist(liveState.rawState, interaction.user.id)) {
@@ -9040,13 +9165,9 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
-      const user = getLegacyTierlistWizardUser(liveState.rawState, interaction.user.id);
-      const nextPage = interaction.customId === "main_page_prev"
-        ? user.mainSelectPage - 1
-        : user.mainSelectPage + 1;
-      user.mainSelectPage = clampLegacyTierlistMainSelectPage(liveState, nextPage);
-      persistLiveLegacyTierlistState(liveState);
-      await interaction.update(buildLegacyTierlistStartPayload(liveState, interaction.user.id));
+      const mainSync = syncLegacyTierlistMainsForMember(liveState, interaction.user.id, interaction.member, getProfile(interaction.user.id));
+      if (mainSync.changed) persistLiveLegacyTierlistState(liveState);
+      await interaction.update(buildLegacyTierlistStartPayload(liveState, interaction.user.id, "Ручной выбор main больше не используется. Мейны берутся из ролей."));
       return;
     }
 
@@ -9057,15 +9178,8 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
-      const user = getLegacyTierlistWizardUser(liveState.rawState, interaction.user.id);
-      if (!user.mainId) {
-        await interaction.update(buildLegacyTierlistStartPayload(liveState, interaction.user.id, "Сначала выбери своего main."));
-        return;
-      }
-      if (isLegacyTierlistWizardLocked(liveState.rawState, interaction.user.id)) {
-        await interaction.update(buildLegacyTierlistStartPayload(liveState, interaction.user.id, `Кулдаун до ${formatLegacyTierlistMoment(user.lockUntil)}.`));
-        return;
-      }
+      const mainSync = syncLegacyTierlistMainsForMember(liveState, interaction.user.id, interaction.member, getProfile(interaction.user.id));
+      if (mainSync.changed) persistLiveLegacyTierlistState(liveState);
 
       startLegacyTierlistWizard(liveState, interaction.user.id, "full");
       persistLiveLegacyTierlistState(liveState);
@@ -9145,14 +9259,12 @@ client.on("interactionCreate", async (interaction) => {
       const mode = user.wizMode || "full";
       submitLegacyTierlistVotes(liveState.rawState, interaction.user.id);
 
-      const influence = resolveLegacyTierlistInfluenceFromMember(interaction.member);
+      const influence = resolveLegacyTierlistInfluenceFromMember(interaction.member, liveState.rawState);
       user.influenceMultiplier = influence.mult;
       user.influenceRoleId = influence.roleId;
       user.influenceUpdatedAt = Date.now();
       user.lastSubmitAt = Date.now();
-      if (mode !== "new") {
-        lockLegacyTierlistUser(liveState.rawState, interaction.user.id);
-      }
+      lockLegacyTierlistUser(liveState.rawState, interaction.user.id);
       user.wizQueue = null;
       user.wizIndex = 0;
       user.wizMode = null;
@@ -9162,17 +9274,18 @@ client.on("interactionCreate", async (interaction) => {
       const syncResult = saveLiveLegacyTierlistStateAndResync(liveState);
       await refreshLegacyTierlistPublicViews(client, { liveState });
 
+      const mainsText = formatLegacyTierlistMainSummary(liveState, user);
       const description = mode === "new"
         ? [
             "Новые персонажи сохранены.",
-            `Main: **${user.mainId ? (liveState.charById.get(user.mainId)?.name || user.mainId) : "не выбран"}**`,
+            `Мейны: **${mainsText}**`,
             `Вес голоса: x${Number(user.influenceMultiplier || 1).toFixed(1)}`,
           ].join("\n")
         : [
             "Тир-лист сохранён.",
-            `Main: **${user.mainId ? (liveState.charById.get(user.mainId)?.name || user.mainId) : "не выбран"}**`,
+            `Мейны: **${mainsText}**`,
             `Вес голоса: x${Number(user.influenceMultiplier || 1).toFixed(1)}`,
-            `Следующая полная отправка: **${formatLegacyTierlistMoment(user.lockUntil)}**`,
+            "Можно сразу запускать новую оценку снова.",
           ].join("\n");
 
       await interaction.editReply({
@@ -9221,10 +9334,11 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
+      const mainSync = syncLegacyTierlistMainsForMember(liveState, interaction.user.id, interaction.member, getProfile(interaction.user.id));
+      if (mainSync.changed) persistLiveLegacyTierlistState(liveState);
+
       const rawUser = liveState.rawState?.users?.[interaction.user.id] || {};
-      const mainName = rawUser.mainId
-        ? liveState.charById.get(rawUser.mainId)?.name || rawUser.mainId
-        : "не выбран";
+      const mainName = formatLegacyTierlistMainSummary(liveState, rawUser);
       const locked = isLegacyTierlistLocked(rawUser);
       const votes = liveState.rawState?.finalVotes?.[interaction.user.id] || null;
 
@@ -9234,15 +9348,15 @@ client.on("interactionCreate", async (interaction) => {
         try {
           const png = await renderLegacyTierlistUserPng(liveState, interaction.user.id, "(твой тир-лист)");
           const attachment = new AttachmentBuilder(png, { name: "my-tierlist.png" });
-          const lastSubmitAt = rawUser.lastSubmitAt ? formatTime(parseLegacyTierlistTimestamp(rawUser.lastSubmitAt)) : "—";
+          const lastSubmitAt = rawUser.lastSubmitAt ? formatLegacyTierlistMoment(rawUser.lastSubmitAt) : "—";
           const counts = getLegacyTierlistUserTierCounts(votes);
           const embed = new EmbedBuilder()
             .setTitle("Твой статус")
             .setDescription([
-              `Main: **${mainName}**`,
+              `Мейны: **${mainName}**`,
               `Submit: ${lastSubmitAt}`,
               `S/A/B/C/D: ${counts.S}/${counts.A}/${counts.B}/${counts.C}/${counts.D}`,
-              locked ? `Кулдаун до: **${formatTime(parseLegacyTierlistTimestamp(rawUser.lockUntil))}**` : "Можно отправлять оценку: **да**",
+              locked ? `Кулдаун до: **${formatLegacyTierlistMoment(rawUser.lockUntil)}**` : "Можно отправлять оценку: **да**",
             ].join("\n"))
             .setImage("attachment://my-tierlist.png");
 
@@ -9254,9 +9368,9 @@ client.on("interactionCreate", async (interaction) => {
       }
 
       const lines = [
-        `Main: **${mainName}**`,
+        `Мейны: **${mainName}**`,
         "Ты ещё не отправлял тир-лист.",
-        locked ? `Кулдаун до: **${formatTime(parseLegacyTierlistTimestamp(rawUser.lockUntil))}**` : "Можно отправлять оценку: **да**",
+        locked ? `Кулдаун до: **${formatLegacyTierlistMoment(rawUser.lockUntil)}**` : "Можно отправлять оценку: **да**",
       ];
       await interaction.reply(ephemeralPayload({ content: lines.join("\n") }));
       return;
@@ -9280,6 +9394,7 @@ client.on("interactionCreate", async (interaction) => {
       if (interaction.customId === "panel_tab_config") {
         panelUser.panelTab = "config";
         panelUser.panelParticipantId = null;
+        panelUser.panelWipeAllVotesConfirm = false;
         persistLiveLegacyTierlistState(liveState);
         await interaction.update(buildLegacyTierlistModPanelPayload(liveState, userId));
         return;
@@ -9289,6 +9404,7 @@ client.on("interactionCreate", async (interaction) => {
         panelUser.panelTab = "participants";
         panelUser.panelParticipantId = null;
         panelUser.panelParticipantsPage = 0;
+        panelUser.panelWipeAllVotesConfirm = false;
         persistLiveLegacyTierlistState(liveState);
         await interaction.update(buildLegacyTierlistModPanelPayload(liveState, userId));
         return;
@@ -9324,6 +9440,7 @@ client.on("interactionCreate", async (interaction) => {
         panelUser.panelParticipantId = null;
         panelUser.panelDeleteTargetId = null;
         panelUser.panelDeleteMode = null;
+        panelUser.panelWipeAllVotesConfirm = false;
         persistLiveLegacyTierlistState(liveState);
         await interaction.update(buildLegacyTierlistModPanelPayload(liveState, userId));
         return;
@@ -9397,7 +9514,33 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
+      if (interaction.customId === "panel_wipe_votes_all") {
+        panelUser.panelTab = "config";
+        panelUser.panelWipeAllVotesConfirm = true;
+        persistLiveLegacyTierlistState(liveState);
+        await interaction.update(buildLegacyTierlistModPanelPayload(liveState, userId, "Подтверди глобальное удаление всех голосов по персонажам."));
+        return;
+      }
+
+      if (interaction.customId === "panel_cancel_wipe_votes_all") {
+        panelUser.panelWipeAllVotesConfirm = false;
+        persistLiveLegacyTierlistState(liveState);
+        await interaction.update(buildLegacyTierlistModPanelPayload(liveState, userId, "Глобальное удаление голосов отменено."));
+        return;
+      }
+
+      if (interaction.customId === "panel_confirm_wipe_votes_all") {
+        panelUser.panelWipeAllVotesConfirm = false;
+        await interaction.deferUpdate();
+        wipeLegacyTierlistVotesOnly(liveState.rawState);
+        const syncResult = saveLiveLegacyTierlistStateAndResync(liveState);
+        await refreshLegacyTierlistPublicViews(client, { liveState });
+        await interaction.editReply(buildLegacyTierlistModPanelPayload(liveState, userId, `Все голоса по персонажам удалены.${getLegacyTierlistSyncStatusSuffix(syncResult)}`));
+        return;
+      }
+
       if (interaction.customId === "panel_close") {
+        panelUser.panelWipeAllVotesConfirm = false;
         await interaction.update({ content: "Ок.", embeds: [], components: [], attachments: [] });
         return;
       }
@@ -9413,6 +9556,36 @@ client.on("interactionCreate", async (interaction) => {
           userId,
           `Обновлено: dashboard ${dashboardOk ? "ok" : "—"}, summary ${summaryOk ? "ok" : "—"}.${getLegacyTierlistSyncStatusSuffix(syncResult)}`
         ));
+        return;
+      }
+
+      if (interaction.customId === "panel_role_coefficients") {
+        const influenceCfg = getLegacyTierlistInfluenceConfig(liveState.rawState);
+        const modal = new ModalBuilder()
+          .setCustomId("panel_role_coefficients_modal")
+          .setTitle("Коэффициенты влияния");
+
+        modal.addComponents(
+          new ActionRowBuilder().addComponents(
+            new TextInputBuilder()
+              .setCustomId("tierlist_influence_low")
+              .setLabel("Без роли / T1 / T2")
+              .setStyle(TextInputStyle.Paragraph)
+              .setRequired(true)
+              .setMaxLength(80)
+              .setValue(`default=${influenceCfg.default.toFixed(2)}\n1=${influenceCfg[1].toFixed(2)}\n2=${influenceCfg[2].toFixed(2)}`)
+          ),
+          new ActionRowBuilder().addComponents(
+            new TextInputBuilder()
+              .setCustomId("tierlist_influence_high")
+              .setLabel("T3 / T4 / T5")
+              .setStyle(TextInputStyle.Paragraph)
+              .setRequired(true)
+              .setMaxLength(80)
+              .setValue(`3=${influenceCfg[3].toFixed(2)}\n4=${influenceCfg[4].toFixed(2)}\n5=${influenceCfg[5].toFixed(2)}`)
+          )
+        );
+        await interaction.showModal(modal);
         return;
       }
 
@@ -10566,23 +10739,9 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
-      const selectedId = String(interaction.values?.[0] || "").trim();
-      if (!selectedId || !liveState.charById.has(selectedId)) {
-        await interaction.update(buildLegacyTierlistStartPayload(liveState, interaction.user.id, "Выбери персонажа из списка."));
-        return;
-      }
-
-      if (isLegacyTierlistWizardLocked(liveState.rawState, interaction.user.id)) {
-        const user = getLegacyTierlistWizardUser(liveState.rawState, interaction.user.id);
-        await interaction.update(buildLegacyTierlistStartPayload(liveState, interaction.user.id, `Кулдаун до ${formatLegacyTierlistMoment(user.lockUntil)}.`));
-        return;
-      }
-
-      setLegacyTierlistMain(liveState, interaction.user.id, selectedId);
-      startLegacyTierlistWizard(liveState, interaction.user.id, "full");
-      persistLiveLegacyTierlistState(liveState);
-      await interaction.deferUpdate();
-      await interaction.editReply(await buildLegacyTierlistWizardPayload(liveState, interaction.user.id));
+      const mainSync = syncLegacyTierlistMainsForMember(liveState, interaction.user.id, interaction.member, getProfile(interaction.user.id));
+      if (mainSync.changed) persistLiveLegacyTierlistState(liveState);
+      await interaction.update(buildLegacyTierlistStartPayload(liveState, interaction.user.id, "Ручной выбор main больше не используется. Мейны берутся из ролей."));
       return;
     }
 
@@ -11550,6 +11709,79 @@ client.on("interactionCreate", async (interaction) => {
       await refreshLegacyTierlistPublicViews(client, { liveState });
       const cfg = getLegacyTierlistImageConfig(liveState.rawState);
       await interaction.editReply(`Ок. Теперь img: ${cfg.W}x${cfg.H}, icon=${cfg.ICON}.${getLegacyTierlistSyncStatusSuffix(syncResult)}`);
+      return;
+    }
+
+    if (interaction.customId === "panel_role_coefficients_modal") {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      const parseInfluenceBlock = (rawText, expectedKeys, label) => {
+        const lines = String(rawText || "")
+          .split(/\r?\n/)
+          .map((line) => line.trim())
+          .filter(Boolean);
+
+        const result = {};
+        for (const line of lines) {
+          const match = line.match(/^([a-z0-9]+)\s*=\s*([0-9]+(?:[.,][0-9]+)?)$/i);
+          if (!match) {
+            throw new Error(`${label}: используй строки формата key=value.`);
+          }
+
+          const key = match[1].toLowerCase();
+          if (!expectedKeys.includes(key)) {
+            throw new Error(`${label}: ключ ${key} не поддерживается.`);
+          }
+
+          const value = Number(match[2].replace(",", "."));
+          if (!Number.isFinite(value) || value <= 0) {
+            throw new Error(`${label}: коэффициент для ${key} должен быть положительным числом.`);
+          }
+          result[key] = value;
+        }
+
+        for (const key of expectedKeys) {
+          if (!(key in result)) {
+            throw new Error(`${label}: не хватает значения для ${key}.`);
+          }
+        }
+
+        return result;
+      };
+
+      let low = null;
+      let high = null;
+      try {
+        low = parseInfluenceBlock(interaction.fields.getTextInputValue("tierlist_influence_low"), ["default", "1", "2"], "Блок без роли / T1 / T2");
+        high = parseInfluenceBlock(interaction.fields.getTextInputValue("tierlist_influence_high"), ["3", "4", "5"], "Блок T3 / T4 / T5");
+      } catch (error) {
+        await interaction.reply(ephemeralPayload({ content: String(error?.message || error || "Неверный формат коэффициентов.") }));
+        return;
+      }
+
+      const liveState = getLiveLegacyTierlistState();
+      if (!liveState.ok) {
+        await interaction.reply(buildLegacyTierlistStateErrorPayload("Не удалось открыть legacy Tierlist state", liveState));
+        return;
+      }
+
+      liveState.rawState.settings ||= {};
+      liveState.rawState.settings.roleInfluence = {
+        default: low.default,
+        1: low[1],
+        2: low[2],
+        3: high[3],
+        4: high[4],
+        5: high[5],
+      };
+
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      const syncResult = saveLiveLegacyTierlistStateAndResync(liveState);
+      await refreshLegacyTierlistPublicViews(client, { liveState });
+      await interaction.editReply(`Коэффициенты сохранены: ${formatLegacyTierlistInfluenceSummary(liveState.rawState)}.${getLegacyTierlistSyncStatusSuffix(syncResult)}`);
       return;
     }
 

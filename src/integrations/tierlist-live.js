@@ -304,11 +304,20 @@ function readLegacyTierlistCustomCharacters(liveState) {
   return loadJsonIfExists(liveState?.customCharactersPath, []);
 }
 
+function getLegacyTierlistUserMainIds(rawUser = {}) {
+  const mainIds = Array.isArray(rawUser?.mainIds) ? rawUser.mainIds : [];
+  const fallback = mainIds.length ? mainIds : (rawUser?.mainId ? [rawUser.mainId] : []);
+  return [...new Set(fallback
+    .map((value) => cleanString(value, 80))
+    .filter(Boolean))].slice(0, 2);
+}
+
 function appendLegacyTierlistCharacterToActiveWizards(rawState, characterId) {
   for (const userId of Object.keys(rawState?.users || {})) {
     const user = rawState.users[userId];
-    if (!user?.mainId || !Array.isArray(user.wizQueue) || (user.wizIndex || 0) >= user.wizQueue.length) continue;
-    if (user.mainId === characterId) continue;
+    const mainIds = getLegacyTierlistUserMainIds(user);
+    if (!mainIds.length || !Array.isArray(user.wizQueue) || (user.wizIndex || 0) >= user.wizQueue.length) continue;
+    if (mainIds.includes(characterId)) continue;
     if (user.wizQueue.includes(characterId)) continue;
     user.wizQueue.push(characterId);
   }
@@ -637,6 +646,14 @@ async function renderLegacyTierlistFromBuckets(liveState, options = {}) {
 
   const rawState = liveState?.rawState || {};
   const buckets = options.buckets || { S: [], A: [], B: [], C: [], D: [] };
+  const lockedIds = new Set(
+    [
+      ...(Array.isArray(options.lockedIds) ? options.lockedIds : []),
+      options.lockedId,
+    ]
+      .map((value) => cleanString(value, 80))
+      .filter(Boolean)
+  );
   const { W, H: configuredHeight, ICON } = getLegacyTierlistImageConfig(rawState);
 
   const topY = 110;
@@ -721,7 +738,7 @@ async function renderLegacyTierlistFromBuckets(liveState, options = {}) {
         ctx.fillRect(x, iconY, ICON, ICON);
       }
 
-      if (options.lockedId && characterId === options.lockedId) {
+      if (lockedIds.has(characterId)) {
         ctx.fillStyle = "rgba(0,0,0,0.55)";
         ctx.fillRect(x, iconY, ICON, ICON);
         ctx.fillStyle = "rgba(230,230,230,0.95)";
@@ -745,13 +762,13 @@ async function renderLegacyTierlistGlobalPng(liveState, options = {}) {
 
 async function renderLegacyTierlistUserPng(liveState, targetUserId, titleSuffix = "") {
   const voteMap = liveState?.rawState?.finalVotes?.[targetUserId] || {};
-  const mainId = cleanString(liveState?.rawState?.users?.[targetUserId]?.mainId, 80) || null;
+  const mainIds = getLegacyTierlistUserMainIds(liveState?.rawState?.users?.[targetUserId] || {});
   const buckets = buildLegacyTierlistBucketsFromVoteMap(liveState, voteMap);
   return renderLegacyTierlistFromBuckets(liveState, {
     title: `${LEGACY_TIERLIST_TITLE}${titleSuffix ? ` ${titleSuffix}` : ""}`,
     footerText: `user: ${targetUserId}. updated: ${new Date().toLocaleString("ru-RU")}`,
     buckets,
-    lockedId: mainId,
+    lockedIds: mainIds,
   });
 }
 
