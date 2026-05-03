@@ -291,6 +291,32 @@ const LEGACY_TIERLIST_PANEL_BUTTON_IDS = new Set([
   "panel_confirm_wipe_votes_all",
   "panel_cancel_wipe_votes_all",
 ]);
+const MANAGED_CHARACTER_ROLE_NAME_ALIASES = {
+  honored_one: ["Годжо"],
+  vessel: ["Юджи"],
+  restless_gambler: ["Хакари"],
+  ten_shadows: ["Мегуми"],
+  perfection: ["Махито"],
+  blood_manipulator: ["Чосо"],
+  switcher: ["Тодо"],
+  defense_attorney: ["Хигурума", "Хигурама"],
+  cursed_partners: ["Юта", "Юта Оккоцу"],
+  head_of_the_hei: ["Наоя", "Наобито"],
+  puppet_master: ["Мехамару"],
+  salaryman: ["Нанами"],
+  locust_guy: ["Локуст Гай", "Локуст"],
+  star_rage: ["Юки"],
+  aspiring_mangaka: ["Чарльз", "Шарль"],
+  lucky_coward: ["Харута"],
+  disaster_plants: ["Ханами"],
+  crowd_charmer: ["Мэй Мэй", "Мей Мей", "Мэй-Мэй", "Меи Меи"],
+  ryu: ["Рю", "Рю Ишигори"],
+};
+const NON_CHARACTER_ROLE_NAME_PATTERNS = [
+  /^\d+\s*-\s*\d+к$/i,
+  /^\d+к\+$/i,
+  /(бот|админ|модер|клан|турнир|ивент|батальон|дивизия|форма|гномята|фантом|frieren|shimolti|опущ|проклятие|маг|зек)/i,
+];
 
 let guildCache = null;
 const mainDrafts = new Map();
@@ -2250,6 +2276,21 @@ function getSelectedCharacterEntries(characterIds) {
   return characterIds.map((characterId) => getCharacterById(characterId)).filter(Boolean);
 }
 
+function getManagedCharacterRoleNameCandidates(entry) {
+  const characterId = String(entry?.id || "").trim();
+  return [...new Set([
+    String(entry?.label || "").trim(),
+    ...((Array.isArray(MANAGED_CHARACTER_ROLE_NAME_ALIASES[characterId]) ? MANAGED_CHARACTER_ROLE_NAME_ALIASES[characterId] : [])
+      .map((value) => String(value || "").trim())),
+  ].filter(Boolean))];
+}
+
+function isManagedCharacterRoleNameCandidate(roleName) {
+  const normalized = String(roleName || "").trim();
+  if (!normalized) return false;
+  return !NON_CHARACTER_ROLE_NAME_PATTERNS.some((pattern) => pattern.test(normalized));
+}
+
 function getManagedCharacterRecoveryExcludedRoleIds(guild) {
   return new Set([
     String(guild?.id || "").trim(),
@@ -2265,7 +2306,7 @@ function getManagedCharacterRecoveryExcludedRoleIds(guild) {
 function buildGuildCharacterRoleCandidates(guild) {
   const excludedRoleIds = getManagedCharacterRecoveryExcludedRoleIds(guild);
   return [...guild.roles.cache.values()]
-    .filter((role) => role && !role.managed && !excludedRoleIds.has(role.id))
+    .filter((role) => role && !role.managed && !excludedRoleIds.has(role.id) && isManagedCharacterRoleNameCandidate(role.name))
     .map((role) => ({
       id: role.id,
       name: role.name,
@@ -2275,7 +2316,10 @@ function buildGuildCharacterRoleCandidates(guild) {
 
 async function ensureRoleByName(guild, roleName, explicitRoleId = "", options = {}) {
   const { createIfMissing = true } = options;
-  const normalizedName = String(roleName || "").trim();
+  const normalizedNames = [...new Set((Array.isArray(roleName) ? roleName : [roleName])
+    .map((value) => String(value || "").trim())
+    .filter(Boolean))];
+  const normalizedName = normalizedNames[0] || "";
   const preferredRoleIds = [...new Set((Array.isArray(explicitRoleId) ? explicitRoleId : [explicitRoleId])
     .map((value) => String(value || "").trim())
     .filter((roleId) => roleId && !isPlaceholder(roleId)))];
@@ -2287,19 +2331,21 @@ async function ensureRoleByName(guild, roleName, explicitRoleId = "", options = 
   }
 
   await guild.roles.fetch().catch(() => null);
-  const matches = guild.roles.cache.filter((role) => role.name === normalizedName);
-  if (matches.size) {
-    // Prefer the role with the most non-bot members (the original moderator-managed one).
-    let best = null;
-    let bestCount = -1;
-    for (const role of matches.values()) {
-      const count = role.members ? role.members.filter((m) => !m.user?.bot).size : 0;
-      if (count > bestCount) {
-        best = role;
-        bestCount = count;
+  for (const candidateName of normalizedNames) {
+    const matches = guild.roles.cache.filter((role) => role.name === candidateName);
+    if (matches.size) {
+      // Prefer the role with the most non-bot members (the original moderator-managed one).
+      let best = null;
+      let bestCount = -1;
+      for (const role of matches.values()) {
+        const count = role.members ? role.members.filter((m) => !m.user?.bot).size : 0;
+        if (count > bestCount) {
+          best = role;
+          bestCount = count;
+        }
       }
+      if (best) return best;
     }
-    if (best) return best;
   }
 
   if (!createIfMissing) return null;
@@ -2343,15 +2389,18 @@ async function reconcileCharacterRolesFromGuild(guild) {
 
   for (const entry of getManagedCharacterCatalog()) {
     const characterId = String(entry.id || "").trim();
-    const roleName = String(entry.label || "").trim();
+    const roleNames = getManagedCharacterRoleNameCandidates(entry);
+    const roleName = roleNames[0] || "";
     if (!characterId || !roleName) continue;
 
-    const matches = [...guild.roles.cache.filter((role) => role.name === roleName).values()];
-    if (matches.length > 1) duplicateCandidates += matches.length - 1;
+    for (const candidateName of roleNames) {
+      const matches = [...guild.roles.cache.filter((role) => role.name === candidateName).values()];
+      if (matches.length > 1) duplicateCandidates += matches.length - 1;
+    }
 
     const role = await ensureRoleByName(
       guild,
-      roleName,
+      roleNames,
       [
         entry.roleId,
         recoveryPlan.recoveredRoleIds[characterId],
@@ -2436,12 +2485,13 @@ async function ensureManagedRoles(client) {
 
   for (const entry of getManagedCharacterCatalog()) {
     const characterId = String(entry.id || "").trim();
-    const roleName = String(entry.label || "").trim();
+    const roleNames = getManagedCharacterRoleNameCandidates(entry);
+    const roleName = roleNames[0] || "";
     if (!characterId || !roleName) continue;
 
     const role = await ensureRoleByName(
       guild,
-      roleName,
+      roleNames,
       [entry.roleId, historicalRoleIds[characterId], generatedRoles.characters[characterId]],
       { createIfMissing: false }
     );
