@@ -697,7 +697,9 @@ function getCharacterCatalog() {
 }
 
 function getLegacyTierlistBaseCharacterCatalog() {
-  const source = getCharacterCatalog();
+  const source = Array.isArray(fileConfig?.characters) && fileConfig.characters.length
+    ? fileConfig.characters
+    : appConfig.characters;
 
   return source
     .map((entry) => ({
@@ -1451,30 +1453,44 @@ function buildCharactersRankingEmbed(entries, liveContext) {
 
   // Cluster info from legacy tierlist live state.
   const clusterByCharId = new Map();
-  const clusterByLabel = new Map();
+  const clusterByAlias = new Map();
   let clusterRanking = [];
   const normalizeClusterLookupKey = (value) => String(value || "")
     .trim()
     .toLowerCase()
     .replace(/[_\-]+/g, " ")
     .replace(/\s+/g, " ");
+
+  const registerClusterAlias = (value, cluster) => {
+    const compactKey = normalizeClusterLookupKey(value);
+    if (compactKey) clusterByAlias.set(compactKey, cluster);
+
+    const normalizedIdKey = normalizeCharacterId(value);
+    if (normalizedIdKey) clusterByAlias.set(normalizedIdKey, cluster);
+  };
+
   try {
-    const live = getLiveLegacyTierlistState();
+    const live = loadLegacyTierlistState({
+      sourcePath: db.config.integrations?.tierlist?.sourcePath,
+      baseDir: DATA_ROOT,
+      baseCharacterCatalog: getCharacterCatalog().map((entry) => ({ id: entry.id, label: entry.label })),
+      baseCharacterAssetsDir: CHARACTERS_ASSET_DIR,
+    });
     if (live?.ok) {
       const { buckets, meta } = computeLegacyTierlistGlobalBuckets(live);
       for (const tierKey of ["S", "A", "B", "C", "D"]) {
         const tierName = String(getTierState(live.rawState, tierKey)?.name || tierKey).trim();
         for (const id of buckets[tierKey] || []) {
+          const votes = Number(meta?.[id]?.votes) || 0;
+          if (votes <= 0) continue;
           const avg = Number(meta?.[id]?.avg) || 0;
           const cluster = { tierKey, name: tierName, avg };
           const normalizedId = String(id || "").trim();
           clusterByCharId.set(normalizedId, cluster);
 
-          const liveLabelKey = normalizeClusterLookupKey(live.charById?.get(normalizedId)?.name);
-          if (liveLabelKey) clusterByLabel.set(liveLabelKey, cluster);
-
-          const metaLabelKey = normalizeClusterLookupKey(meta?.[id]?.name);
-          if (metaLabelKey) clusterByLabel.set(metaLabelKey, cluster);
+          registerClusterAlias(normalizedId, cluster);
+          registerClusterAlias(live.charById?.get(normalizedId)?.name, cluster);
+          registerClusterAlias(meta?.[id]?.name, cluster);
         }
       }
       clusterRanking = Object.entries(meta || {})
@@ -1491,7 +1507,12 @@ function buildCharactersRankingEmbed(entries, liveContext) {
 
   const items = characterStats.map((stat) => {
     const id = String(stat.id || "").trim();
-    const cluster = clusterByCharId.get(id) || clusterByLabel.get(normalizeClusterLookupKey(stat.main)) || null;
+    const cluster = clusterByCharId.get(id)
+      || clusterByAlias.get(id)
+      || clusterByAlias.get(normalizeCharacterId(id))
+      || clusterByAlias.get(normalizeClusterLookupKey(stat.main))
+      || clusterByAlias.get(normalizeCharacterId(stat.main))
+      || null;
 
     return {
       id,
