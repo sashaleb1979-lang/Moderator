@@ -126,6 +126,7 @@ function pickFontFiles() {
     ? path.join(process.env.WINDIR || "C:\\Windows", "Fonts")
     : "";
   const pairs = [
+    [path.join(repoFontsDir, "NotoSans-Regular.ttf.ttf"), path.join(repoFontsDir, "NotoSans-Bold.ttf.ttf")],
     [path.join(repoFontsDir, "NotoSans-Regular.ttf"), path.join(repoFontsDir, "NotoSans-Bold.ttf")],
     [path.join(repoFontsDir, "DejaVuSans.ttf"), path.join(repoFontsDir, "DejaVuSans-Bold.ttf")],
     [path.join(repoFontsDir, "montserrat-bold.ttf"), path.join(repoFontsDir, "montserrat-bold.ttf")],
@@ -686,7 +687,7 @@ async function renderLegacyTierlistFromBuckets(liveState, options = {}) {
   ctx.fillText(String(options.title || LEGACY_TIERLIST_TITLE), 40, 82);
 
   fill(ctx, "#cfcfcf");
-  ctx.font = `22px '${FONT_REG}'`;
+  ctx.font = `24px '${FONT_BOLD}'`;
   ctx.fillText(String(options.footerText || ""), 40, H - 18);
 
   let yCursor = topY;
@@ -709,7 +710,7 @@ async function renderLegacyTierlistFromBuckets(liveState, options = {}) {
     ctx.fillText(tierState.name || tierKey, 40 + 70, y + Math.floor(blockHeight / 2) + 18);
 
     fill(ctx, "#111111");
-    ctx.font = `24px '${FONT_REG}'`;
+    ctx.font = `24px '${FONT_BOLD}'`;
     ctx.fillText(tierKey, 40 + 70, y + blockHeight - 18);
 
     const list = buckets[tierKey] || [];

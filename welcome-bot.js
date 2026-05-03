@@ -1453,7 +1453,7 @@ function getCharacterEntries() {
   return getCharacterCatalog().map((entry) => ({
     id: String(entry.id).trim(),
     label: String(entry.label).trim(),
-    roleId: String(entry.roleId || generatedRoles.characters?.[String(entry.id).trim()] || "").trim(),
+    roleId: String(generatedRoles.characters?.[String(entry.id).trim()] || entry.roleId || "").trim(),
   }));
 }
 
@@ -5048,7 +5048,7 @@ function resolveLegacyTierlistMainIdsFromMember(member, profile, liveState) {
     .filter((entry) => entry.roleId && legacyTierlistMemberHasRole(member, entry.roleId))
     .map((entry) => entry.id);
 
-  if (fromRoles.length) return normalizeLegacyTierlistMainIds(fromRoles, liveState);
+  if (fromRoles.length) return normalizeLegacyTierlistMainIds(fromRoles);
   return normalizeLegacyTierlistMainIds(profile?.mainCharacterIds, liveState);
 }
 
@@ -5063,6 +5063,12 @@ function syncLegacyTierlistMainsForMember(liveState, userId, member, profile = n
   }
 
   return { changed: false, mainIds: currentIds };
+}
+
+async function syncLegacyTierlistMainsForInteraction(client, liveState, interaction) {
+  const freshMember = await fetchMember(client, interaction.user.id).catch(() => null);
+  const member = freshMember || interaction.member;
+  return syncLegacyTierlistMainsForMember(liveState, interaction.user.id, member, getProfile(interaction.user.id));
 }
 
 function getLegacyTierlistWizardUser(rawState, userId) {
@@ -6093,7 +6099,7 @@ function buildLegacyEloGraphicPanelPayload(rawDb, statusText = "", includeFlags 
 
   const row1 = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId("elo_graphic_panel_refresh").setLabel("Пересобрать").setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId("elo_graphic_panel_bump").setLabel("Bump вниз").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId("elo_graphic_panel_bump").setLabel("Отправить заново").setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId("elo_graphic_panel_setup").setLabel("Канал PNG").setStyle(ButtonStyle.Primary),
     new ButtonBuilder().setCustomId("elo_graphic_panel_labels").setLabel("Labels").setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId("elo_graphic_panel_back").setLabel("Назад").setStyle(ButtonStyle.Secondary)
@@ -9129,7 +9135,7 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
-      await interaction.reply(buildLegacyTierlistModPanelPayload(liveState, interaction.user.id));
+      await interaction.reply(ephemeralPayload(buildLegacyTierlistModPanelPayload(liveState, interaction.user.id)));
       return;
     }
 
@@ -9208,15 +9214,12 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
-      const mainSync = syncLegacyTierlistMainsForMember(liveState, interaction.user.id, interaction.member, getProfile(interaction.user.id));
+      const mainSync = await syncLegacyTierlistMainsForInteraction(client, liveState, interaction);
       if (mainSync.changed) persistLiveLegacyTierlistState(liveState);
 
-      const pendingNewCount = getLegacyTierlistPendingNewCharacterIds(liveState, interaction.user.id).length;
-      const mainText = mainSync.mainIds.length
-        ? `Авто-мейны: ${formatLegacyTierlistMainSummary(liveState, getLegacyTierlistWizardUser(liveState.rawState, interaction.user.id))}.`
-        : "Авто-мейны не найдены: можно оценивать всех персонажей.";
-      const statusText = pendingNewCount > 0 ? `${mainText} Новых персонажей без твоей оценки: ${pendingNewCount}.` : mainText;
-      await interaction.reply(ephemeralPayload(buildLegacyTierlistStartPayload(liveState, interaction.user.id, statusText)));
+      startLegacyTierlistWizard(liveState, interaction.user.id, "full");
+      persistLiveLegacyTierlistState(liveState);
+      await interaction.reply(ephemeralPayload(await buildLegacyTierlistWizardPayload(liveState, interaction.user.id)));
       return;
     }
 
@@ -9227,7 +9230,7 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
-      const mainSync = syncLegacyTierlistMainsForMember(liveState, interaction.user.id, interaction.member, getProfile(interaction.user.id));
+      const mainSync = await syncLegacyTierlistMainsForInteraction(client, liveState, interaction);
       if (mainSync.changed) persistLiveLegacyTierlistState(liveState);
 
       const user = getLegacyTierlistWizardUser(liveState.rawState, interaction.user.id);
@@ -9275,7 +9278,7 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
-      const mainSync = syncLegacyTierlistMainsForMember(liveState, interaction.user.id, interaction.member, getProfile(interaction.user.id));
+      const mainSync = await syncLegacyTierlistMainsForInteraction(client, liveState, interaction);
       if (mainSync.changed) persistLiveLegacyTierlistState(liveState);
 
       const pendingIds = getLegacyTierlistPendingNewCharacterIds(liveState, interaction.user.id);
@@ -9303,7 +9306,7 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
-      const mainSync = syncLegacyTierlistMainsForMember(liveState, interaction.user.id, interaction.member, getProfile(interaction.user.id));
+      const mainSync = await syncLegacyTierlistMainsForInteraction(client, liveState, interaction);
       if (mainSync.changed) persistLiveLegacyTierlistState(liveState);
       await interaction.update(buildLegacyTierlistStartPayload(liveState, interaction.user.id, "Ручной выбор main больше не используется. Мейны берутся из ролей."));
       return;
@@ -9316,7 +9319,7 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
-      const mainSync = syncLegacyTierlistMainsForMember(liveState, interaction.user.id, interaction.member, getProfile(interaction.user.id));
+      const mainSync = await syncLegacyTierlistMainsForInteraction(client, liveState, interaction);
       if (mainSync.changed) persistLiveLegacyTierlistState(liveState);
 
       startLegacyTierlistWizard(liveState, interaction.user.id, "full");
@@ -9478,7 +9481,7 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
-      const mainSync = syncLegacyTierlistMainsForMember(liveState, interaction.user.id, interaction.member, getProfile(interaction.user.id));
+      const mainSync = await syncLegacyTierlistMainsForInteraction(client, liveState, interaction);
       if (mainSync.changed) persistLiveLegacyTierlistState(liveState);
 
       const rawUser = liveState.rawState?.users?.[interaction.user.id] || {};
@@ -10883,7 +10886,7 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
-      const mainSync = syncLegacyTierlistMainsForMember(liveState, interaction.user.id, interaction.member, getProfile(interaction.user.id));
+      const mainSync = await syncLegacyTierlistMainsForInteraction(client, liveState, interaction);
       if (mainSync.changed) persistLiveLegacyTierlistState(liveState);
       await interaction.update(buildLegacyTierlistStartPayload(liveState, interaction.user.id, "Ручной выбор main больше не используется. Мейны берутся из ролей."));
       return;
@@ -10896,7 +10899,7 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
-      const mainSync = syncLegacyTierlistMainsForMember(liveState, interaction.user.id, interaction.member, getProfile(interaction.user.id));
+      const mainSync = await syncLegacyTierlistMainsForInteraction(client, liveState, interaction);
       if (mainSync.changed) persistLiveLegacyTierlistState(liveState);
 
       const user = getLegacyTierlistWizardUser(liveState.rawState, interaction.user.id);
@@ -11965,8 +11968,15 @@ client.on("interactionCreate", async (interaction) => {
 
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       const syncResult = saveLiveLegacyTierlistStateAndResync(liveState);
-      await refreshLegacyTierlistPublicViews(client, { liveState });
-      await interaction.editReply(`Коэффициенты сохранены: ${formatLegacyTierlistInfluenceSummary(liveState.rawState)}.${getLegacyTierlistSyncStatusSuffix(syncResult)}`);
+      const backfillResult = await backfillLegacyTierlistInfluenceForExistingVoters(client, { refresh: true });
+      if (!backfillResult.changed) {
+        await refreshLegacyTierlistPublicViews(client, { liveState }).catch(() => {});
+      }
+      await interaction.editReply([
+        `Коэффициенты сохранены: ${formatLegacyTierlistInfluenceSummary(liveState.rawState)}.`,
+        backfillResult.total ? `Пересчитано влияний: ${backfillResult.changed}/${backfillResult.total}.` : "Голосов для пересчёта пока нет.",
+        getLegacyTierlistSyncStatusSuffix(syncResult),
+      ].filter(Boolean).join(" "));
       return;
     }
 
