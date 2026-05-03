@@ -9275,6 +9275,9 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
+      const mainSync = syncLegacyTierlistMainsForMember(liveState, interaction.user.id, interaction.member, getProfile(interaction.user.id));
+      if (mainSync.changed) persistLiveLegacyTierlistState(liveState);
+
       const pendingIds = getLegacyTierlistPendingNewCharacterIds(liveState, interaction.user.id);
       if (!pendingIds.length) {
         await interaction.update(buildLegacyTierlistPointRatePayload(liveState, interaction.user.id, "Для тебя пока нет новых персонажей без оценки."));
@@ -10892,6 +10895,9 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.reply(buildLegacyTierlistStateErrorPayload("Не удалось открыть legacy Tierlist state", liveState));
         return;
       }
+
+      const mainSync = syncLegacyTierlistMainsForMember(liveState, interaction.user.id, interaction.member, getProfile(interaction.user.id));
+      if (mainSync.changed) persistLiveLegacyTierlistState(liveState);
 
       const user = getLegacyTierlistWizardUser(liveState.rawState, interaction.user.id);
       if (!hasSubmittedLegacyTierlist(liveState.rawState, interaction.user.id)) {

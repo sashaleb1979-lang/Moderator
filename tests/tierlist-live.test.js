@@ -8,6 +8,7 @@ const assert = require("node:assert/strict");
 
 const {
   LEGACY_TIERLIST_TITLE,
+  appendLegacyTierlistCharacterToActiveWizards,
   buildLegacyTierlistBucketsFromVoteMap,
   buildLegacyTierlistSummaryEmbed,
   computeLegacyTierlistGlobalBuckets,
@@ -122,4 +123,24 @@ test("buildLegacyTierlistBucketsFromVoteMap and summary embed follow legacy tier
   assert.equal(embed.data.title, `${LEGACY_TIERLIST_TITLE} Summary`);
   assert.equal(embed.data.fields[0].name, "Имба");
   assert.match(embed.data.fields[0].value, /Gojo/);
+});
+
+test("appendLegacyTierlistCharacterToActiveWizards appends for no-main users and skips targeted sessions", () => {
+  const rawState = {
+    users: {
+      noMainFull: { wizMode: "full", wizQueue: ["gojo"], wizIndex: 0, mainIds: [] },
+      noMainNew: { wizMode: "new", wizQueue: ["yuji"], wizIndex: 0, mainIds: [] },
+      targeted: { wizMode: "targeted", wizQueue: ["mahito"], wizIndex: 0, mainIds: [] },
+      lockedMain: { wizMode: "full", wizQueue: ["gojo"], wizIndex: 0, mainIds: ["sukuna"] },
+      finished: { wizMode: "full", wizQueue: ["gojo"], wizIndex: 1, mainIds: [] },
+    },
+  };
+
+  appendLegacyTierlistCharacterToActiveWizards(rawState, "sukuna");
+
+  assert.deepEqual(rawState.users.noMainFull.wizQueue, ["gojo", "sukuna"]);
+  assert.deepEqual(rawState.users.noMainNew.wizQueue, ["yuji", "sukuna"]);
+  assert.deepEqual(rawState.users.targeted.wizQueue, ["mahito"]);
+  assert.deepEqual(rawState.users.lockedMain.wizQueue, ["gojo"]);
+  assert.deepEqual(rawState.users.finished.wizQueue, ["gojo"]);
 });

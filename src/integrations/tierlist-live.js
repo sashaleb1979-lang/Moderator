@@ -318,7 +318,7 @@ function appendLegacyTierlistCharacterToActiveWizards(rawState, characterId) {
     const wizardMode = String(user?.wizMode || "").trim();
     const mainIds = getLegacyTierlistUserMainIds(user);
     if (!["full", "new"].includes(wizardMode)) continue;
-    if (!mainIds.length || !Array.isArray(user.wizQueue) || (user.wizIndex || 0) >= user.wizQueue.length) continue;
+    if (!Array.isArray(user.wizQueue) || (user.wizIndex || 0) >= user.wizQueue.length) continue;
     if (mainIds.includes(characterId)) continue;
     if (user.wizQueue.includes(characterId)) continue;
     user.wizQueue.push(characterId);
@@ -828,6 +828,7 @@ module.exports = {
   LEGACY_TIER_ORDER,
   LEGACY_TIER_DEFAULTS,
   addLegacyTierlistCustomCharacter,
+  appendLegacyTierlistCharacterToActiveWizards,
   avgToLegacyTier,
   buildLegacyTierlistBucketsFromVoteMap,
   buildLegacyTierlistSummaryEmbed,
