@@ -1478,7 +1478,12 @@ function buildCharactersRankingEmbed(entries, liveContext) {
         }
       }
       clusterRanking = Object.entries(meta || {})
-        .map(([id, m]) => ({ id: String(id), avg: Number(m?.avg) || 0, votes: Number(m?.votes) || 0 }))
+        .map(([id, m]) => ({
+          id: String(id),
+          name: String(m?.name || id),
+          avg: Number(m?.avg) || 0,
+          votes: Number(m?.votes) || 0,
+        }))
         .filter((x) => x.votes > 0)
         .sort((a, b) => b.avg - a.avg);
     }
@@ -1544,7 +1549,7 @@ function buildCharactersRankingEmbed(entries, liveContext) {
     body = acc + `\n…ещё ${lines.length - kept} персонажей`;
   }
   let description = `${legend}\n\n${body}`;
-  if (facts.length) description += `\n\n**✨ Доп. факты**\n${facts.join("\n")}`;
+  if (facts.length) description += `\n\n**✨ Доп. факты**\n${facts.join("\n\n")}`;
 
   return new EmbedBuilder()
     .setTitle("🎭 Персонажи — рейтинг мейнов")
@@ -1555,6 +1560,27 @@ function buildCharactersRankingEmbed(entries, liveContext) {
 function buildCharacterFacts(items, clusterRanking, refOf) {
   const byId = new Map(items.map((r) => [r.id, r]));
   const lines = [];
+  const factPlaceIcons = ["🥇", "🥈", "🥉"];
+
+  const formatCountWord = (value, forms) => {
+    const amount = Math.abs(Number(value) || 0);
+    const lastTwo = amount % 100;
+    const last = amount % 10;
+    if (lastTwo >= 11 && lastTwo <= 14) return forms[2];
+    if (last === 1) return forms[0];
+    if (last >= 2 && last <= 4) return forms[1];
+    return forms[2];
+  };
+
+  const formatMainsCount = (value) => `${value} ${formatCountWord(value, ["мейн", "мейна", "мейнов"])}`;
+  const formatPlayersCount = (value) => `${value} ${formatCountWord(value, ["игрок", "игрока", "игроков"])}`;
+  const formatFactPlaces = (positions, renderScore) => positions
+    .map((position, index) => {
+      const marker = factPlaceIcons[index] || `${index + 1}.`;
+      return `${marker} ${position.items.map(refOf).join(", ")} — ${renderScore(position.score)}`;
+    })
+    .join(" • ");
+  const refOrName = (item, fallbackName) => item ? refOf(item) : `**${String(fallbackName || "—").trim()}**`;
 
   const topPositions = (arr, scoreFn, takePositions) => {
     const enriched = arr
@@ -1579,15 +1605,13 @@ function buildCharacterFacts(items, clusterRanking, refOf) {
   // 1. Топ-3 по медиане kills
   const medTop = topPositions(items.filter((r) => r.mainsCount > 0), (r) => r.medKills, 3);
   if (medTop.length) {
-    const txt = medTop.map((p, idx) => `${idx + 1}. ${p.items.map(refOf).join(", ")} (${formatKillsRoundK(p.score)})`).join(" · ");
-    lines.push(`📈 Топ медиана kills: ${txt}`);
+    lines.push(`**📈 Лучшие по медиане kills**\n${formatFactPlaces(medTop, (score) => formatKillsCompact(score))}`);
   }
 
   // 2. Низшая медиана kills (топ-3 снизу)
   const medBot = topPositions(items.filter((r) => r.mainsCount > 0), (r) => -r.medKills, 3);
   if (medBot.length) {
-    const txt = medBot.map((p, idx) => `${idx + 1}. ${p.items.map(refOf).join(", ")} (${formatKillsRoundK(-p.score)})`).join(" · ");
-    lines.push(`📉 Низшая медиана kills: ${txt}`);
+    lines.push(`**📉 Самая низкая медиана kills**\n${formatFactPlaces(medBot, (score) => formatKillsCompact(-score))}`);
   }
 
   // 3. Топ кластера / Анскил (по cluster.avg)
@@ -1597,9 +1621,9 @@ function buildCharacterFacts(items, clusterRanking, refOf) {
     if (top.id !== bot.id) {
       const topItem = byId.get(top.id);
       const botItem = byId.get(bot.id);
-      const topTxt = topItem ? refOf(topItem) : `**${top.id}**`;
-      const botTxt = botItem ? refOf(botItem) : `**${bot.id}**`;
-      lines.push(`👑 Топ кластера: ${topTxt} · 💀 Анскил: ${botTxt}`);
+      const topTxt = refOrName(topItem, top.name || top.id);
+      const botTxt = refOrName(botItem, bot.name || bot.id);
+      lines.push(`**👑 Глобальный рейтинг tierlist**\nВерх: ${topTxt} • Низ: ${botTxt}`);
     }
   }
 
@@ -1607,7 +1631,7 @@ function buildCharacterFacts(items, clusterRanking, refOf) {
   const highTop = topPositions(items.filter((r) => r.highCount > 0), (r) => r.highCount, 1);
   if (highTop.length) {
     const p = highTop[0];
-    lines.push(`🔥 Хай-игроков больше всего: ${p.items.map(refOf).join(", ")} (${p.score})`);
+    lines.push(`**🔥 Хай-игроков больше всего**\n${p.items.map(refOf).join(", ")} — ${formatPlayersCount(p.score)}`);
   }
 
   // 5. Лучший хай-рейт (T5+T4 / mainsCount)
@@ -1617,22 +1641,19 @@ function buildCharacterFacts(items, clusterRanking, refOf) {
     2
   );
   if (rateTop.length) {
-    const txt = rateTop.map((p, idx) => `${idx + 1}. ${p.items.map(refOf).join(", ")} (${p.score}%)`).join(" · ");
-    lines.push(`⚡ Хай-рейт: ${txt}`);
+    lines.push(`**⚡ Лучший хай-рейт**\n${formatFactPlaces(rateTop, (score) => `${score}%`)}`);
   }
 
   // 6. Самый популярный (1 + 2)
   const popTop = topPositions(items.filter((r) => r.mainsCount > 0), (r) => r.mainsCount, 2);
   if (popTop.length) {
-    const txt = popTop.map((p, idx) => `${idx + 1}. ${p.items.map(refOf).join(", ")} (${p.score})`).join(" · ");
-    lines.push(`💖 Популярный: ${txt}`);
+    lines.push(`**💖 Самые популярные**\n${formatFactPlaces(popTop, (score) => formatMainsCount(score))}`);
   }
 
   // 7. Самый редкий (1 + 2)
   const rareTop = topPositions(items.filter((r) => r.mainsCount > 0), (r) => -r.mainsCount, 2);
   if (rareTop.length) {
-    const txt = rareTop.map((p, idx) => `${idx + 1}. ${p.items.map(refOf).join(", ")} (${-p.score})`).join(" · ");
-    lines.push(`🪶 Редкий: ${txt}`);
+    lines.push(`**🪶 Самые редкие**\n${formatFactPlaces(rareTop, (score) => formatMainsCount(-score))}`);
   }
 
   // 8. Tierlist лидер / аутсайдер
@@ -1642,7 +1663,7 @@ function buildCharacterFacts(items, clusterRanking, refOf) {
     const best = sorted[0];
     const worst = sorted[sorted.length - 1];
     if (best.id !== worst.id) {
-      lines.push(`🏆 Tierlist лидер: ${refOf(best)} (${best.cluster.name}) · 🌑 Аутсайдер: ${refOf(worst)} (${worst.cluster.name})`);
+      lines.push(`**🏆 Среди мейнов из панели**\nЛидер: ${refOf(best)} — ${best.cluster.name} • Аутсайдер: ${refOf(worst)} — ${worst.cluster.name}`);
     }
   }
 
@@ -1650,6 +1671,16 @@ function buildCharacterFacts(items, clusterRanking, refOf) {
 }
 
 function buildRecentKillChangesEmbed() {
+  const formatKillsChangeValue = (value) => {
+    const n = Math.max(0, Math.round(Number(value) || 0));
+    if (n < 100) return String(n);
+    if (n < 100000) {
+      const k = n / 1000;
+      return `${k.toFixed(1).replace(/\.0$/, "")}к`;
+    }
+    return `${Math.round(n / 1000)}к`;
+  };
+
   const killSubs = Object.values(db.submissions || {})
     .filter((s) => s && s.status === "approved" && s.userId && Number.isFinite(Number(s.kills)))
     .sort((a, b) => {
@@ -1684,13 +1715,13 @@ function buildRecentKillChangesEmbed() {
   const lines = top.map((c) => {
     const delta = c.to - c.from;
     const pct = c.from > 0 ? Math.round((delta / c.from) * 100) : 100;
-    return `📈 <@${c.userId}> · **${formatKillsCompact(c.from)}** 🗓 ${formatDateOnly(c.fromAt)} → **${formatKillsCompact(c.to)}** 🗓 ${formatDateOnly(c.toAt)} · 🚀 +${formatKillsCompact(delta)} (+${pct}%)`;
+    return [`<@${c.userId}>`, `**${formatKillsChangeValue(c.from)} → ${formatKillsChangeValue(c.to)}** • +${formatKillsChangeValue(delta)} (+${pct}%) • ${formatDateOnly(c.fromAt)} → ${formatDateOnly(c.toAt)}`].join("\n");
   });
 
   return new EmbedBuilder()
     .setTitle("⚡ Последние изменения")
     .setColor(0x00897B)
-    .setDescription(lines.join("\n"));
+    .setDescription(lines.join("\n\n"));
 }
 
 async function buildGraphicTierlistBoardPayload(client) {
