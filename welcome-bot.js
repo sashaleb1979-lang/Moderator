@@ -9019,6 +9019,40 @@ client.on("interactionCreate", async (interaction) => {
       }
     }
 
+    if (interaction.customId === "panel_resend_graphic") {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+      await interaction.deferUpdate();
+      let statusText;
+      try {
+        await refreshGraphicTierlistBoard(client, { forceRecreate: true });
+        statusText = "PNG tier-лист отправлен заново.";
+      } catch (error) {
+        statusText = `Не удалось отправить PNG tier-лист: ${String(error?.message || error)}`;
+      }
+      await interaction.editReply(buildModeratorPanelPayload(statusText, false));
+      return;
+    }
+
+    if (interaction.customId === "panel_resend_text") {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+      await interaction.deferUpdate();
+      let statusText;
+      try {
+        await refreshTextTierlistBoard(client, { forceRecreate: true, page: 0 });
+        statusText = "Текстовый tier-лист отправлен заново.";
+      } catch (error) {
+        statusText = `Не удалось отправить текстовый tier-лист: ${String(error?.message || error)}`;
+      }
+      await interaction.editReply(buildModeratorPanelPayload(statusText, false));
+      return;
+    }
+
     if (interaction.customId === "welcome_editor") {
       if (!isModerator(interaction.member)) {
         await interaction.reply(ephemeralPayload({ content: "Нет прав. Только модераторы могут редактировать." }));
