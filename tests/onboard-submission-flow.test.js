@@ -14,7 +14,7 @@ const DEFAULT_GRAPHIC_TIER_COLORS = {
   5: "#555555",
 };
 
-test("legacy welcome copy is normalized to the single-message submission flow", () => {
+test("legacy welcome copy is normalized to the mains-first submission flow", () => {
   const legacyDescription = "Нажми кнопку ниже, выбери 1 или 2 мейнов, укажи точное количество kills и отправь следующим сообщением скрин. После подачи заявки бот сразу выдаст тебе роль доступа, а kill-tier роль прилетит после проверки модератором.";
   const legacySteps = [
     "Нажми **Получить роль**.",
@@ -35,8 +35,8 @@ test("legacy welcome copy is normalized to the single-message submission flow", 
     defaultGraphicTierColors: DEFAULT_GRAPHIC_TIER_COLORS,
   });
 
-  assert.match(resolved.welcome.description, /одним сообщением/i);
-  assert.ok(resolved.welcome.steps.some((step) => /одно сообщение/i.test(step)));
+  assert.match(resolved.welcome.description, /затем укажи точное количество kills/i);
+  assert.ok(resolved.welcome.steps.some((step) => /указать kills/i.test(step)));
   assert.ok(resolved.welcome.steps.every((step) => !/следующим сообщением/i.test(step)));
 });
 
@@ -64,8 +64,8 @@ test("ensurePresentationConfig rewrites persisted legacy welcome text", () => {
   });
 
   assert.equal(result.mutated, true);
-  assert.match(dbConfig.presentation.welcome.description, /одним сообщением/i);
-  assert.ok(dbConfig.presentation.welcome.steps.some((step) => /одно сообщение/i.test(step)));
+  assert.match(dbConfig.presentation.welcome.description, /затем укажи точное количество kills/i);
+  assert.ok(dbConfig.presentation.welcome.steps.some((step) => /указать kills/i.test(step)));
 });
 
 test("parseKillsFromSubmittedText extracts a single kills value from free text", () => {

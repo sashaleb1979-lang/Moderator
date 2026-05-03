@@ -103,6 +103,8 @@ const {
 } = require("./src/integrations/tierlist-live");
 const {
   buildLegacyCharacterSyncIndex,
+  getLegacyMainsBackfillDisposition,
+  getLegacyTierlistClusterStatusNote,
   resolveLegacyCharacterMatch,
   resolveLegacyMainIdsFromRuntimeEntries,
 } = require("./src/integrations/tierlist-character-sync");
@@ -286,6 +288,7 @@ const LEGACY_TIERLIST_PANEL_BUTTON_IDS = new Set([
 let guildCache = null;
 const mainDrafts = new Map();
 const submitSessions = new Map();
+const mainsPickerSessions = new Map();
 const legacyEloSubmitSessions = new Map();
 const legacyEloManualModsetSessions = new Map();
 const nonGgsCaptchaSessions = new Map();
@@ -1492,14 +1495,16 @@ function buildCharactersRankingEmbed(entries, liveContext) {
         .filter((x) => x.votes > 0)
         .sort((a, b) => b.avg - a.avg);
     } else if (live?.error) {
-      clusterStatusNote = "_Кластеры tierlist временно недоступны._";
-      if (!String(live.error).includes("sourcePath не задан")) {
+      clusterStatusNote = getLegacyTierlistClusterStatusNote(live.error);
+      if (clusterStatusNote) {
         console.warn(`[characters-ranking] failed to load legacy tierlist state: ${live.error}`);
       }
     }
   } catch (error) {
-    clusterStatusNote = "_Кластеры tierlist временно недоступны._";
-    console.warn(`[characters-ranking] failed to resolve tierlist clusters: ${error?.message || error}`);
+    clusterStatusNote = getLegacyTierlistClusterStatusNote(error?.message || error);
+    if (clusterStatusNote) {
+      console.warn(`[characters-ranking] failed to resolve tierlist clusters: ${error?.message || error}`);
+    }
   }
 
   const items = characterStats.map((stat) => {
@@ -2096,7 +2101,16 @@ function resolveCharacterSelectionFromText(input, options = {}) {
 }
 
 async function replyWithCharacterPicker(interaction, mode = "full", method = "reply") {
-  const payload = buildCharacterPickerPayload(mode);
+  const picker = setMainsPickerSession(interaction.user.id, {
+    mode,
+    query: "",
+    page: 0,
+    selectedIds: getInitialMainsPickerSelectedIds(interaction.user.id),
+  });
+  const payload = buildMainsPickerPayload(interaction.user.id, {
+    picker,
+    includeEphemeralFlag: method !== "update",
+  });
   if (method === "update") {
     await interaction.update(payload);
     return;
@@ -2125,6 +2139,7 @@ async function fallbackToManualMainSelection(interaction, mode = "full", error =
     console.warn(`character picker fallback (${mode}): ${message}`);
   }
 
+  clearMainsPickerSession(interaction.user.id);
   await interaction.showModal(buildManualMainSelectionModal(mode));
 }
 
@@ -2149,18 +2164,18 @@ async function completeMainSelection(interaction, selectedEntries, options = {})
 
   const pending = getPendingSubmissionForUser(interaction.user.id);
   if (!isQuickSelection && pending) {
-    await interaction.reply(ephemeralPayload({ content: "У тебя уже есть pending-заявка. Новую создавать нельзя." }));
+    await respondToOnboardError(interaction, "У тебя уже есть pending-заявка. Новую создавать нельзя.");
     return;
   }
 
   if (!selectedIds.length || selectedIds.length > 2) {
-    await interaction.reply(ephemeralPayload({ content: "Нужно выбрать одного или двух мейнов." }));
+    await respondToOnboardError(interaction, "Нужно выбрать одного или двух мейнов.");
     return;
   }
 
   const member = await fetchMember(client, interaction.user.id);
   if (!member) {
-    await interaction.reply(ephemeralPayload({ content: "Не удалось получить твой профиль на сервере." }));
+    await respondToOnboardError(interaction, "Не удалось получить твой профиль на сервере.");
     return;
   }
 
@@ -2185,20 +2200,31 @@ async function completeMainSelection(interaction, selectedEntries, options = {})
     const syncedPending = await syncPendingSubmissionMainsForUser(client, interaction.user.id, appliedEntries);
     const welcomeChannelId = getWelcomeChannelId();
     const uploadTarget = welcomeChannelId ? `<#${welcomeChannelId}>` : "welcome-канал";
-    await interaction.reply(ephemeralPayload({
-      content: activeSubmitSession?.mainCharacterIds?.length
-        ? `Мейны обновлены: **${appliedEntries.map((entry) => entry.label).join(", ")}**. Текущая загрузка тоже обновлена, теперь просто отправь одним сообщением kills и скрин в ${uploadTarget}.`
-        : syncedPending
-          ? `Мейны обновлены: **${appliedEntries.map((entry) => entry.label).join(", ")}**. Pending-заявка тоже обновлена.`
-          : `Мейны обновлены: **${appliedEntries.map((entry) => entry.label).join(", ")}**.`,
-    }));
+    clearMainsPickerSession(interaction.user.id);
+    const content = activeSubmitSession?.mainCharacterIds?.length
+      ? `Мейны обновлены: **${appliedEntries.map((entry) => entry.label).join(", ")}**. Текущая загрузка тоже обновлена, теперь просто отправь kills и скрин в ${uploadTarget}.`
+      : syncedPending
+        ? `Мейны обновлены: **${appliedEntries.map((entry) => entry.label).join(", ")}**. Pending-заявка тоже обновлена.`
+        : `Мейны обновлены: **${appliedEntries.map((entry) => entry.label).join(", ")}**.`;
+
+    if (responseMethod === "update") {
+      await interaction.update({ content, embeds: [], components: [] });
+      return;
+    }
+
+    await interaction.reply(ephemeralPayload({ content }));
     return;
   }
 
-  setSubmitSession(interaction.user.id, { mainCharacterIds: appliedEntries.map((entry) => entry.id) });
+  const activeSubmitSession = getSubmitSession(interaction.user.id);
+  setSubmitSession(interaction.user.id, {
+    ...activeSubmitSession,
+    mainCharacterIds: appliedEntries.map((entry) => entry.id),
+  });
   clearMainDraft(interaction.user.id);
+  clearMainsPickerSession(interaction.user.id);
   if (responseMethod === "update") {
-    await interaction.update(buildSubmitStepPayload(interaction.user.id));
+    await interaction.update(buildSubmitStepPayload(interaction.user.id, { includeEphemeralFlag: false }));
     return;
   }
 
@@ -2447,6 +2473,189 @@ function getSubmitSession(userId) {
 
 function clearSubmitSession(userId) {
   submitSessions.delete(userId);
+}
+
+function normalizeMainsPickerState(rawValue = {}) {
+  const mode = rawValue?.mode === "quick" ? "quick" : "full";
+  const query = String(rawValue?.query || "").trim().slice(0, 80);
+  const page = Math.max(0, Number(rawValue?.page) || 0);
+  const selectedIds = [...new Set(
+    (Array.isArray(rawValue?.selectedIds) ? rawValue.selectedIds : [])
+      .map((value) => String(value || "").trim())
+      .filter(Boolean)
+  )].slice(0, 2);
+
+  return {
+    mode,
+    query,
+    page,
+    selectedIds,
+  };
+}
+
+function setMainsPickerSession(userId, value) {
+  const current = getMainsPickerSession(userId) || normalizeMainsPickerState(value);
+  const nextValue = normalizeMainsPickerState({ ...current, ...value });
+  mainsPickerSessions.set(userId, { ...nextValue, createdAt: Date.now() });
+  return nextValue;
+}
+
+function getMainsPickerSession(userId) {
+  const session = mainsPickerSessions.get(userId);
+  if (!session) return null;
+  if (Date.now() - Number(session.createdAt || 0) > SUBMIT_SESSION_EXPIRE_MS) {
+    mainsPickerSessions.delete(userId);
+    return null;
+  }
+  return normalizeMainsPickerState(session);
+}
+
+function clearMainsPickerSession(userId) {
+  mainsPickerSessions.delete(userId);
+}
+
+function getMainsPickerEntries(rawQuery = "") {
+  return filterRolePanelPickerItems(
+    getCharacterPickerEntries().map((entry) => ({
+      ...entry,
+      description: entry.id,
+      keywords: `${entry.label} ${entry.id}`,
+    })),
+    rawQuery
+  );
+}
+
+function getMainsPickerSelectionLabels(selectedIds = []) {
+  const selectedEntries = getSelectedCharacterEntries(selectedIds);
+  return selectedEntries.length
+    ? selectedEntries.map((entry) => entry.label)
+    : selectedIds.map((value) => String(value || "").trim()).filter(Boolean);
+}
+
+function getInitialMainsPickerSelectedIds(userId) {
+  const submitSession = getSubmitSession(userId);
+  if (Array.isArray(submitSession?.mainCharacterIds) && submitSession.mainCharacterIds.length) {
+    return submitSession.mainCharacterIds;
+  }
+
+  const draft = getMainDraft(userId);
+  if (Array.isArray(draft?.characterIds) && draft.characterIds.length) {
+    return draft.characterIds;
+  }
+
+  const profile = db.profiles?.[userId] || null;
+  if (Array.isArray(profile?.mainCharacterIds) && profile.mainCharacterIds.length) {
+    return profile.mainCharacterIds;
+  }
+
+  return [];
+}
+
+function getMainsPickerResultLines(pageInfo, selectedIds = []) {
+  if (!pageInfo.items.length) {
+    return ["Ничего не найдено. Попробуй другой запрос или сбрось поиск."];
+  }
+
+  return pageInfo.items.map((entry, index) => {
+    const number = pageInfo.page * Math.min(ROLE_PANEL_PICKER_PAGE_SIZE, 25) + index + 1;
+    const marker = selectedIds.includes(entry.id) ? "•" : "◦";
+    return `${number}. ${marker} ${previewText(entry.label, 70)} (${entry.id})`;
+  });
+}
+
+function buildMainsPickerSelectRow(picker, pageItems) {
+  const maxSelectable = Math.min(2, pageItems.length);
+  return new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId("onboard_picker_select")
+      .setPlaceholder(maxSelectable === 1 ? "Выбери мейна" : "Выбери 1 или 2 мейнов")
+      .setMinValues(1)
+      .setMaxValues(maxSelectable)
+      .addOptions(pageItems.map((entry) => ({
+        label: normalizeCharacterSelectLabel(entry.label),
+        description: previewText(entry.id, 100),
+        value: getCharacterSelectValue(entry.id),
+        default: picker.selectedIds.includes(entry.id),
+      })))
+  );
+}
+
+function buildMainsPickerPayload(userId, options = {}) {
+  const picker = options.picker || getMainsPickerSession(userId);
+  if (!picker) {
+    const payload = { content: "Сессия выбора мейнов истекла. Нажми кнопку заново." };
+    return options.includeEphemeralFlag === false ? payload : ephemeralPayload(payload);
+  }
+
+  const allEntries = getCharacterPickerEntries();
+  if (!allEntries.length) {
+    const payload = { content: "Нет доступных персонажей. Проверь конфигурацию characters в bot.config.json." };
+    return options.includeEphemeralFlag === false ? payload : ephemeralPayload(payload);
+  }
+
+  const filteredEntries = getMainsPickerEntries(picker.query);
+  const pageInfo = paginateRolePanelPickerItems(filteredEntries, picker.page, Math.min(ROLE_PANEL_PICKER_PAGE_SIZE, 25));
+  const selectedLabels = getMainsPickerSelectionLabels(picker.selectedIds);
+  const isQuick = picker.mode === "quick";
+  const statusText = String(options.statusText || "").trim();
+
+  const embed = new EmbedBuilder()
+    .setTitle(isQuick ? "Быстро сменить мейнов" : "Шаг 1. Выбери мейнов")
+    .setDescription(
+      isQuick
+        ? "Выбери одного или двух мейнов из текущего списка. Можно искать по имени и листать страницы, затем сохранить новые роли."
+        : "Выбери одного или двух мейнов из текущего списка. Можно искать по имени и листать страницы, затем перейти к отправке kills."
+    )
+    .addFields(
+      { name: "Текущий выбор", value: selectedLabels.length ? selectedLabels.join(", ") : "—", inline: false },
+      { name: "Поиск", value: picker.query || "без фильтра", inline: true },
+      { name: "Найдено", value: String(pageInfo.totalCount), inline: true },
+      { name: "Страница", value: `${pageInfo.page + 1}/${pageInfo.pageCount}`, inline: true },
+      { name: "Результаты", value: getMainsPickerResultLines(pageInfo, picker.selectedIds).join("\n"), inline: false },
+      {
+        name: isQuick ? "Что дальше" : "Шаг 2",
+        value: isQuick
+          ? "После подтверждения бот сразу обновит мейнов и связанные роли."
+          : "После подтверждения откроется отдельная панель отправки kills и получения доступа.",
+        inline: false,
+      }
+    );
+
+  if (statusText) {
+    embed.addFields({ name: "Последнее действие", value: statusText, inline: false });
+  }
+
+  const components = [];
+  if (pageInfo.items.length) {
+    components.push(buildMainsPickerSelectRow(picker, pageInfo.items));
+  }
+  components.push(
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId("onboard_picker_prev").setLabel("Предыдущая").setStyle(ButtonStyle.Secondary).setDisabled(!pageInfo.hasPrev),
+      new ButtonBuilder().setCustomId("onboard_picker_next").setLabel("Следующая").setStyle(ButtonStyle.Secondary).setDisabled(!pageInfo.hasNext),
+      new ButtonBuilder().setCustomId("onboard_picker_search").setLabel("Поиск").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("onboard_picker_clear_search").setLabel("Сбросить поиск").setStyle(ButtonStyle.Secondary).setDisabled(!picker.query),
+      new ButtonBuilder().setCustomId("onboard_picker_clear_selection").setLabel("Сбросить выбор").setStyle(ButtonStyle.Secondary).setDisabled(!picker.selectedIds.length)
+    )
+  );
+  components.push(
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId("onboard_picker_continue")
+        .setLabel(isQuick ? "Сохранить мейнов" : "Дальше: отправить kills")
+        .setStyle(ButtonStyle.Success)
+        .setDisabled(!picker.selectedIds.length),
+      new ButtonBuilder().setCustomId("onboard_picker_manual").setLabel("Ввести руками").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("onboard_cancel").setLabel("Отмена").setStyle(ButtonStyle.Secondary)
+    )
+  );
+
+  const payload = {
+    embeds: [embed],
+    components,
+  };
+
+  return options.includeEphemeralFlag === false ? payload : ephemeralPayload(payload);
 }
 
 function setNonGgsCaptchaSession(userId, value) {
@@ -3655,6 +3864,23 @@ async function buildNonGgsCaptchaPayload(userId, noticeText = "", options = {}) 
   return options.includeEphemeralFlag ? ephemeralPayload(payload) : payload;
 }
 
+function buildOnboardKillsModal(suggestedKills = null) {
+  const modal = new ModalBuilder().setCustomId("onboard_kills_modal").setTitle("Указать kills");
+  const input = new TextInputBuilder()
+    .setCustomId("kills")
+    .setLabel("Точное количество kills")
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true)
+    .setPlaceholder("Например 3120");
+
+  if (Number.isSafeInteger(suggestedKills)) {
+    input.setValue(String(suggestedKills));
+  }
+
+  modal.addComponents(new ActionRowBuilder().addComponents(input));
+  return modal;
+}
+
 function buildCharacterPickerPayload(mode = "full") {
   const characterEntries = getCharacterPickerEntries();
   const validationError = getCharacterPickerValidationError(characterEntries);
@@ -3720,19 +3946,36 @@ function buildSubmitStepPayload(userId, options = {}) {
   }
 
   lines.push(
-    `Мейны выбраны: **${selectedLabels.join(", ")}**.`,
-    `Теперь просто отправь одним сообщением в ${uploadTarget}: число kills в тексте и скрин во вложении.`,
+    `Мейны: **${selectedLabels.join(", ")}**.`,
     isKillsUpdate
       ? "Бот отправит это модераторам как обновление kills."
       : "Бот отправит это модераторам как новую заявку.",
     suggestedKills
-      ? `Если kills уже вводил, можешь просто отправить текст: **${suggestedKills}**.`
-      : "Пиши в тексте только kills, например: **3120** или **3120 kills**.",
-    "Если нужно сменить мейнов до отправки, нажми на welcome-панели **Быстро сменить мейнов**.",
+      ? `Kills сохранены: **${suggestedKills}**. Теперь отправь в ${uploadTarget} одно сообщение со скрином. Число можно не повторять в тексте, но можно и продублировать.`
+      : `Нажми кнопку **Указать kills**, чтобы бот запомнил точное число. Либо сразу отправь в ${uploadTarget} одно сообщение: число kills в тексте и скрин во вложении.`,
+    "Если нужно сменить мейнов до отправки, нажми **Выбрать мейнов заново**.",
     "Бот удалит сообщение после обработки."
   );
 
-  return ephemeralPayload({ content: lines.join("\n") });
+  const payload = {
+    embeds: [
+      new EmbedBuilder()
+        .setTitle("Шаг 2. Отправить kills и получить доступ")
+        .setDescription(lines.join("\n")),
+    ],
+    components: [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId("onboard_open_kills_modal")
+          .setLabel(suggestedKills ? "Изменить kills" : "Указать kills")
+          .setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId("onboard_change_mains").setLabel("Выбрать мейнов заново").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("onboard_cancel").setLabel("Отмена").setStyle(ButtonStyle.Secondary)
+      ),
+    ],
+  };
+
+  return options.includeEphemeralFlag === false ? payload : ephemeralPayload(payload);
 }
 
 function buildReviewButtons(submissionId) {
@@ -5760,6 +6003,20 @@ async function refreshLegacyTierlistPublicViews(client, options = {}) {
   };
 }
 
+async function tryRefreshLegacyTierlistPublicViews(client, liveState) {
+  try {
+    await refreshLegacyTierlistPublicViews(client, { liveState });
+    return null;
+  } catch (error) {
+    return String(error?.message || error || "unknown refresh error").trim() || "unknown refresh error";
+  }
+}
+
+function getLegacyTierlistRefreshWarningText(refreshError) {
+  const text = String(refreshError || "").trim();
+  return text ? ` Предупреждение: public views не обновились (${text}).` : "";
+}
+
 async function submitAddCharacterUnified(client, { name, idHint = "", imageUrl = "" }) {
   const trimmedName = String(name || "").trim().slice(0, 100);
   if (!trimmedName) throw new Error("Имя персонажа пустое.");
@@ -6737,13 +6994,13 @@ function resetLegacyTierlistImageOverrides(rawState) {
 
 async function backfillLegacyTierlistInfluenceForExistingVoters(client, { refresh = true } = {}) {
   const liveState = getLiveLegacyTierlistState();
-  if (!liveState.ok) return { total: 0, changed: 0, skipped: true, error: liveState.error };
+  if (!liveState.ok) return { total: 0, changed: 0, skipped: true, error: liveState.error, refreshed: false, refreshError: null };
 
   const voterIds = Object.entries(liveState.rawState?.finalVotes || {})
     .filter(([, votes]) => votes && Object.keys(votes).length > 0)
     .map(([userId]) => userId);
 
-  if (voterIds.length === 0) return { total: 0, changed: 0 };
+  if (voterIds.length === 0) return { total: 0, changed: 0, refreshed: false, refreshError: null };
 
   const guild = await client.guilds.fetch(GUILD_ID);
   let changed = 0;
@@ -6763,29 +7020,50 @@ async function backfillLegacyTierlistInfluenceForExistingVoters(client, { refres
     }
   }
 
+  let refreshError = null;
   if (changed > 0) {
     saveLiveLegacyTierlistStateAndResync(liveState);
     if (refresh) {
-      await refreshLegacyTierlistPublicViews(client, { liveState }).catch(() => {});
+      refreshError = await tryRefreshLegacyTierlistPublicViews(client, liveState);
     }
   }
 
-  return { total: voterIds.length, changed };
+  return { total: voterIds.length, changed, refreshed: Boolean(refresh && changed > 0 && !refreshError), refreshError };
 }
 
 async function backfillLegacyTierlistMainsForExistingMembers(client, { refresh = true } = {}) {
   const liveState = getLiveLegacyTierlistState();
-  if (!liveState.ok) return { total: 0, changed: 0, skipped: true, error: liveState.error };
+  if (!liveState.ok) {
+    return {
+      total: 0,
+      changed: 0,
+      skipped: true,
+      error: liveState.error,
+      refreshed: false,
+      refreshError: null,
+      skippedMissingMembers: 0,
+    };
+  }
 
   const trackedUserIds = new Set(Object.keys(liveState.rawState?.users || {}));
   const managedCharacterRoleIds = getCharacterRoleIds();
   if (trackedUserIds.size === 0 && managedCharacterRoleIds.length === 0) {
-    return { total: 0, changed: 0 };
+    return { total: 0, changed: 0, refreshed: false, refreshError: null, skippedMissingMembers: 0 };
   }
 
   const guild = await client.guilds.fetch(GUILD_ID);
   const members = await guild.members.fetch().catch(() => null);
-  if (!members) return { total: 0, changed: 0, skipped: true, error: "Не удалось получить список участников guild." };
+  if (!members) {
+    return {
+      total: 0,
+      changed: 0,
+      skipped: true,
+      error: "Не удалось получить список участников guild.",
+      refreshed: false,
+      refreshError: null,
+      skippedMissingMembers: 0,
+    };
+  }
 
   const candidateIds = new Set([...trackedUserIds]);
   for (const member of members.values()) {
@@ -6797,8 +7075,18 @@ async function backfillLegacyTierlistMainsForExistingMembers(client, { refresh =
 
   let changed = 0;
   let needsRefresh = false;
+  let skippedMissingMembers = 0;
   for (const userId of candidateIds) {
     const member = members.get(userId) || null;
+    const disposition = getLegacyMainsBackfillDisposition({
+      member,
+      isTrackedUser: trackedUserIds.has(userId),
+    });
+    if (!disposition.shouldSync) {
+      if (disposition.skippedReason === "missing_member") skippedMissingMembers += 1;
+      continue;
+    }
+
     const result = syncLegacyTierlistMainsForMember(liveState, userId, member, db.profiles?.[userId]);
     if (!result.changed) continue;
 
@@ -6808,48 +7096,65 @@ async function backfillLegacyTierlistMainsForExistingMembers(client, { refresh =
     }
   }
 
+  let refreshError = null;
   if (changed > 0) {
     saveLiveLegacyTierlistStateAndResync(liveState);
     if (refresh && needsRefresh) {
-      await refreshLegacyTierlistPublicViews(client, { liveState }).catch(() => {});
+      refreshError = await tryRefreshLegacyTierlistPublicViews(client, liveState);
     }
   }
 
-  return { total: candidateIds.size, changed, refreshed: needsRefresh && changed > 0 };
+  return {
+    total: candidateIds.size,
+    changed,
+    refreshed: Boolean(refresh && needsRefresh && changed > 0 && !refreshError),
+    refreshError,
+    skippedMissingMembers,
+  };
 }
 
 async function syncLegacyTierlistInfluenceForMember(client, member) {
   const liveState = getLiveLegacyTierlistState();
-  if (!liveState.ok) return { changed: false, skipped: true, error: liveState.error };
+  if (!liveState.ok) return { changed: false, skipped: true, error: liveState.error, hasVote: false, refreshError: null };
 
   const userId = member.id;
   const hasVote = Boolean(liveState.rawState?.finalVotes?.[userId] && Object.keys(liveState.rawState.finalVotes[userId] || {}).length > 0);
   const isTracked = Boolean(liveState.rawState?.users?.[userId]);
-  if (!hasVote && !isTracked) return { changed: false, skipped: true };
+  if (!hasVote && !isTracked) return { changed: false, skipped: true, hasVote: false, refreshError: null };
 
   const influence = resolveLegacyTierlistInfluenceFromMember(member, liveState.rawState);
   const user = getLegacyTierlistWizardUser(liveState.rawState, userId);
   const prev = Number(user.influenceMultiplier) || 1;
   const prevRole = user.influenceRoleId || null;
   if (prev === influence.mult && prevRole === (influence.roleId || null)) {
-    return { changed: false, hasVote };
+    return { changed: false, hasVote, refreshError: null };
   }
 
   user.influenceMultiplier = influence.mult;
   user.influenceRoleId = influence.roleId;
   user.influenceUpdatedAt = Date.now();
   const syncResult = saveLiveLegacyTierlistStateAndResync(liveState);
+  let refreshError = null;
 
   if (hasVote) {
-    await refreshLegacyTierlistPublicViews(client, { liveState }).catch(() => {});
+    refreshError = await tryRefreshLegacyTierlistPublicViews(client, liveState);
   }
 
-  return { changed: true, hasVote, syncResult };
+  return { changed: true, hasVote, syncResult, refreshError };
 }
 
 async function syncLiveLegacyTierlistMainsForMember(client, member, profile = null) {
   const liveState = getLiveLegacyTierlistState();
-  if (!liveState.ok) return { changed: false, skipped: true, error: liveState.error };
+  if (!liveState.ok) {
+    return {
+      changed: false,
+      skipped: true,
+      error: liveState.error,
+      mainIds: [],
+      hasVote: false,
+      refreshError: null,
+    };
+  }
 
   const result = syncLegacyTierlistMainsForMember(liveState, member.id, member, profile || db.profiles?.[member.id]);
   if (!result.changed) {
@@ -6858,6 +7163,7 @@ async function syncLiveLegacyTierlistMainsForMember(client, member, profile = nu
       mainIds: result.mainIds,
       hasVote: hasSubmittedLegacyTierlist(liveState.rawState, member.id),
       resolution: result.resolution,
+      refreshError: null,
     };
   }
 
@@ -6865,12 +7171,7 @@ async function syncLiveLegacyTierlistMainsForMember(client, member, profile = nu
   const syncResult = saveLiveLegacyTierlistStateAndResync(liveState);
   let refreshError = null;
   if (hasVote) {
-    try {
-      await refreshLegacyTierlistPublicViews(client, { liveState });
-    } catch (error) {
-      refreshError = String(error?.message || error || "unknown refresh error");
-      console.warn(`[legacy-tierlist] failed to refresh public views after mains sync for ${member.id}: ${refreshError}`);
-    }
+    refreshError = await tryRefreshLegacyTierlistPublicViews(client, liveState);
   }
 
   return {
@@ -8252,16 +8553,27 @@ client.once("clientReady", async () => {
     }
     try {
       const result = await backfillLegacyTierlistInfluenceForExistingVoters(client, { refresh: true });
-      if (result.total > 0) {
-        console.log(`[legacy-tierlist][influence] startup backfill: changed ${result.changed}/${result.total}`);
+      if (result.error) {
+        console.warn(`[legacy-tierlist][influence] startup backfill skipped: ${result.error}`);
+      }
+      if (result.total > 0 || result.refreshError) {
+        const parts = [`changed ${result.changed}/${result.total}`];
+        if (result.refreshError) parts.push(`refresh warning: ${result.refreshError}`);
+        console.log(`[legacy-tierlist][influence] startup backfill: ${parts.join(" • ")}`);
       }
     } catch (error) {
       console.error("Legacy Tierlist influence backfill failed:", error?.message || error);
     }
     try {
       const result = await backfillLegacyTierlistMainsForExistingMembers(client, { refresh: true });
-      if (result.total > 0) {
-        console.log(`[legacy-tierlist][mains] startup backfill: changed ${result.changed}/${result.total}`);
+      if (result.error) {
+        console.warn(`[legacy-tierlist][mains] startup backfill skipped: ${result.error}`);
+      }
+      if (result.total > 0 || result.skippedMissingMembers > 0 || result.refreshError) {
+        const parts = [`changed ${result.changed}/${result.total}`];
+        if (result.skippedMissingMembers) parts.push(`skipped missing members ${result.skippedMissingMembers}`);
+        if (result.refreshError) parts.push(`refresh warning: ${result.refreshError}`);
+        console.log(`[legacy-tierlist][mains] startup backfill: ${parts.join(" • ")}`);
       }
     } catch (error) {
       console.error("Legacy Tierlist mains backfill failed:", error?.message || error);
@@ -8286,13 +8598,25 @@ client.on("guildMemberUpdate", async (_oldMember, newMember) => {
   if (newMember.guild.id !== GUILD_ID) return;
 
   try {
-    await syncLegacyTierlistInfluenceForMember(client, newMember);
+    const result = await syncLegacyTierlistInfluenceForMember(client, newMember);
+    if (result?.error) {
+      console.warn(`[legacy-tierlist] influence sync skipped for ${newMember.id}: ${result.error}`);
+    }
+    if (result?.refreshError) {
+      console.warn(`[legacy-tierlist] influence sync refresh warning for ${newMember.id}: ${result.refreshError}`);
+    }
   } catch (error) {
     console.error("Legacy Tierlist influence sync failed:", error?.message || error);
   }
 
   try {
-    await syncLiveLegacyTierlistMainsForMember(client, newMember);
+    const result = await syncLiveLegacyTierlistMainsForMember(client, newMember);
+    if (result?.error) {
+      console.warn(`[legacy-tierlist] mains sync skipped for ${newMember.id}: ${result.error}`);
+    }
+    if (result?.refreshError) {
+      console.warn(`[legacy-tierlist] mains sync refresh warning for ${newMember.id}: ${result.refreshError}`);
+    }
   } catch (error) {
     console.error("Legacy Tierlist mains sync failed:", error?.message || error);
   }
@@ -8514,7 +8838,13 @@ client.on("messageCreate", async (message) => {
   }
 
   const killsResult = parseKillsFromSubmittedText(message.content);
-  if (killsResult.kills === null) {
+  const effectiveKills = killsResult.kills !== null
+    ? killsResult.kills
+    : killsResult.reason === "missing" && Number.isSafeInteger(session?.suggestedKills)
+      ? session.suggestedKills
+      : null;
+
+  if (effectiveKills === null) {
     const reply = await message.reply(
       killsResult.reason === "ambiguous"
         ? "Не понял число kills. Укажи в тексте только одно число, например `3120`, и приложи скрин в этом же сообщении."
@@ -8533,7 +8863,7 @@ client.on("messageCreate", async (message) => {
       user: message.author,
       member: message.member,
       mainCharacterIds: session.mainCharacterIds,
-      kills: killsResult.kills,
+      kills: effectiveKills,
       screenshotUrl: attachment.url,
     });
 
@@ -10481,7 +10811,10 @@ client.on("interactionCreate", async (interaction) => {
       liveState.rawState.draftVotes[interaction.user.id] = {};
 
       const syncResult = saveLiveLegacyTierlistStateAndResync(liveState);
-      await refreshLegacyTierlistPublicViews(client, { liveState });
+      const refreshError = await tryRefreshLegacyTierlistPublicViews(client, liveState);
+      if (refreshError) {
+        console.warn(`[legacy-tierlist] wizard submit refresh warning for ${interaction.user.id}: ${refreshError}`);
+      }
 
       const mainsText = formatLegacyTierlistMainSummary(liveState, user);
       const description = mode === "new"
@@ -10504,7 +10837,7 @@ client.on("interactionCreate", async (interaction) => {
           ].join("\n");
 
       await interaction.editReply({
-        embeds: [new EmbedBuilder().setTitle(mode === "new" ? "Дооценка сохранена" : mode === "targeted" ? "Точечная оценка сохранена" : "Тир-лист сохранён").setDescription(`${description}${getLegacyTierlistSyncStatusSuffix(syncResult)}`)],
+        embeds: [new EmbedBuilder().setTitle(mode === "new" ? "Дооценка сохранена" : mode === "targeted" ? "Точечная оценка сохранена" : "Тир-лист сохранён").setDescription(`${description}${getLegacyTierlistSyncStatusSuffix(syncResult)}${getLegacyTierlistRefreshWarningText(refreshError)}`)],
         components: [],
         files: [],
         attachments: [],
@@ -10732,13 +11065,16 @@ client.on("interactionCreate", async (interaction) => {
           }
         }
         invalidateLiveCharacterStatsContext();
-        await refreshLegacyTierlistPublicViews(client, { liveState });
+        const refreshError = await tryRefreshLegacyTierlistPublicViews(client, liveState);
+        if (refreshError) {
+          console.warn(`[legacy-tierlist] panel participant delete refresh warning for ${targetId}: ${refreshError}`);
+        }
         if (mode === "full") {
           try { await refreshAllTierlists(client); } catch (error) {
             console.warn("refreshAllTierlists (panel full delete) failed:", error?.message || error);
           }
         }
-        await interaction.editReply(buildLegacyTierlistModPanelPayload(liveState, userId, `Удаление выполнено.${getLegacyTierlistSyncStatusSuffix(syncResult)}`));
+        await interaction.editReply(buildLegacyTierlistModPanelPayload(liveState, userId, `Удаление выполнено.${getLegacyTierlistSyncStatusSuffix(syncResult)}${getLegacyTierlistRefreshWarningText(refreshError)}`));
         return;
       }
 
@@ -10762,8 +11098,11 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.deferUpdate();
         wipeLegacyTierlistVotesOnly(liveState.rawState);
         const syncResult = saveLiveLegacyTierlistStateAndResync(liveState);
-        await refreshLegacyTierlistPublicViews(client, { liveState });
-        await interaction.editReply(buildLegacyTierlistModPanelPayload(liveState, userId, `Все голоса по персонажам удалены.${getLegacyTierlistSyncStatusSuffix(syncResult)}`));
+        const refreshError = await tryRefreshLegacyTierlistPublicViews(client, liveState);
+        if (refreshError) {
+          console.warn(`[legacy-tierlist] panel wipe votes refresh warning: ${refreshError}`);
+        }
+        await interaction.editReply(buildLegacyTierlistModPanelPayload(liveState, userId, `Все голоса по персонажам удалены.${getLegacyTierlistSyncStatusSuffix(syncResult)}${getLegacyTierlistRefreshWarningText(refreshError)}`));
         return;
       }
 
@@ -10775,15 +11114,25 @@ client.on("interactionCreate", async (interaction) => {
 
       if (interaction.customId === "panel_refresh") {
         await interaction.deferUpdate();
-        const result = await refreshLegacyTierlistPublicViews(client, { liveState });
-        const dashboardOk = result.dashboard && result.dashboard.ok;
-        const summaryOk = result.summary && result.summary.ok;
-        const syncResult = result.dashboard?.syncResult || result.summary?.syncResult || null;
-        await interaction.editReply(buildLegacyTierlistModPanelPayload(
-          liveState,
-          userId,
-          `Обновлено: dashboard ${dashboardOk ? "ok" : "—"}, summary ${summaryOk ? "ok" : "—"}.${getLegacyTierlistSyncStatusSuffix(syncResult)}`
-        ));
+        try {
+          const result = await refreshLegacyTierlistPublicViews(client, { liveState });
+          const dashboardOk = result.dashboard && result.dashboard.ok;
+          const summaryOk = result.summary && result.summary.ok;
+          const syncResult = result.dashboard?.syncResult || result.summary?.syncResult || null;
+          await interaction.editReply(buildLegacyTierlistModPanelPayload(
+            liveState,
+            userId,
+            `Обновлено: dashboard ${dashboardOk ? "ok" : "—"}, summary ${summaryOk ? "ok" : "—"}.${getLegacyTierlistSyncStatusSuffix(syncResult)}`
+          ));
+        } catch (error) {
+          const refreshError = String(error?.message || error || "unknown refresh error").trim() || "unknown refresh error";
+          console.warn(`[legacy-tierlist] panel refresh warning: ${refreshError}`);
+          await interaction.editReply(buildLegacyTierlistModPanelPayload(
+            liveState,
+            userId,
+            `Не удалось обновить public views.${getLegacyTierlistRefreshWarningText(refreshError)}`
+          ));
+        }
         return;
       }
 
@@ -10859,9 +11208,12 @@ client.on("interactionCreate", async (interaction) => {
         applyLegacyTierlistImageDelta(liveState.rawState, "icon", interaction.customId === "panel_icon_plus" ? 12 : -12);
         await interaction.deferUpdate();
         const syncResult = saveLiveLegacyTierlistStateAndResync(liveState);
-        await refreshLegacyTierlistPublicViews(client, { liveState });
+        const refreshError = await tryRefreshLegacyTierlistPublicViews(client, liveState);
+        if (refreshError) {
+          console.warn(`[legacy-tierlist] panel icon resize refresh warning: ${refreshError}`);
+        }
         const cfg = getLegacyTierlistImageConfig(liveState.rawState);
-        await interaction.editReply(buildLegacyTierlistModPanelPayload(liveState, userId, `img: ${cfg.W}x${cfg.H}, icon=${cfg.ICON}.${getLegacyTierlistSyncStatusSuffix(syncResult)}`));
+        await interaction.editReply(buildLegacyTierlistModPanelPayload(liveState, userId, `img: ${cfg.W}x${cfg.H}, icon=${cfg.ICON}.${getLegacyTierlistSyncStatusSuffix(syncResult)}${getLegacyTierlistRefreshWarningText(refreshError)}`));
         return;
       }
 
@@ -10869,9 +11221,12 @@ client.on("interactionCreate", async (interaction) => {
         applyLegacyTierlistImageDelta(liveState.rawState, "width", interaction.customId === "panel_w_plus" ? 200 : -200);
         await interaction.deferUpdate();
         const syncResult = saveLiveLegacyTierlistStateAndResync(liveState);
-        await refreshLegacyTierlistPublicViews(client, { liveState });
+        const refreshError = await tryRefreshLegacyTierlistPublicViews(client, liveState);
+        if (refreshError) {
+          console.warn(`[legacy-tierlist] panel width resize refresh warning: ${refreshError}`);
+        }
         const cfg = getLegacyTierlistImageConfig(liveState.rawState);
-        await interaction.editReply(buildLegacyTierlistModPanelPayload(liveState, userId, `img: ${cfg.W}x${cfg.H}, icon=${cfg.ICON}.${getLegacyTierlistSyncStatusSuffix(syncResult)}`));
+        await interaction.editReply(buildLegacyTierlistModPanelPayload(liveState, userId, `img: ${cfg.W}x${cfg.H}, icon=${cfg.ICON}.${getLegacyTierlistSyncStatusSuffix(syncResult)}${getLegacyTierlistRefreshWarningText(refreshError)}`));
         return;
       }
 
@@ -10879,9 +11234,12 @@ client.on("interactionCreate", async (interaction) => {
         applyLegacyTierlistImageDelta(liveState.rawState, "height", interaction.customId === "panel_h_plus" ? 120 : -120);
         await interaction.deferUpdate();
         const syncResult = saveLiveLegacyTierlistStateAndResync(liveState);
-        await refreshLegacyTierlistPublicViews(client, { liveState });
+        const refreshError = await tryRefreshLegacyTierlistPublicViews(client, liveState);
+        if (refreshError) {
+          console.warn(`[legacy-tierlist] panel height resize refresh warning: ${refreshError}`);
+        }
         const cfg = getLegacyTierlistImageConfig(liveState.rawState);
-        await interaction.editReply(buildLegacyTierlistModPanelPayload(liveState, userId, `img: ${cfg.W}x${cfg.H}, icon=${cfg.ICON}.${getLegacyTierlistSyncStatusSuffix(syncResult)}`));
+        await interaction.editReply(buildLegacyTierlistModPanelPayload(liveState, userId, `img: ${cfg.W}x${cfg.H}, icon=${cfg.ICON}.${getLegacyTierlistSyncStatusSuffix(syncResult)}${getLegacyTierlistRefreshWarningText(refreshError)}`));
         return;
       }
 
@@ -10889,9 +11247,12 @@ client.on("interactionCreate", async (interaction) => {
         resetLegacyTierlistImageOverrides(liveState.rawState);
         await interaction.deferUpdate();
         const syncResult = saveLiveLegacyTierlistStateAndResync(liveState);
-        await refreshLegacyTierlistPublicViews(client, { liveState });
+        const refreshError = await tryRefreshLegacyTierlistPublicViews(client, liveState);
+        if (refreshError) {
+          console.warn(`[legacy-tierlist] panel reset image refresh warning: ${refreshError}`);
+        }
         const cfg = getLegacyTierlistImageConfig(liveState.rawState);
-        await interaction.editReply(buildLegacyTierlistModPanelPayload(liveState, userId, `img: ${cfg.W}x${cfg.H}, icon=${cfg.ICON}.${getLegacyTierlistSyncStatusSuffix(syncResult)}`));
+        await interaction.editReply(buildLegacyTierlistModPanelPayload(liveState, userId, `img: ${cfg.W}x${cfg.H}, icon=${cfg.ICON}.${getLegacyTierlistSyncStatusSuffix(syncResult)}${getLegacyTierlistRefreshWarningText(refreshError)}`));
         return;
       }
 
@@ -11641,7 +12002,7 @@ client.on("interactionCreate", async (interaction) => {
           }
 
           await interaction.reply(buildSubmitStepPayload(interaction.user.id, {
-            noticeText: `Ты уже на шаге загрузки. Просто отправь одним сообщением kills и скрин в <#${welcomeChannelId}>.`,
+            noticeText: `Ты уже на шаге отправки kills. Проверь число и загрузи скрин в <#${welcomeChannelId}>.`,
           }));
           return;
         }
@@ -11672,8 +12033,91 @@ client.on("interactionCreate", async (interaction) => {
     }
 
     if (interaction.customId === "onboard_change_mains") {
-      clearSubmitSession(interaction.user.id);
       await openCharacterPicker(interaction, "full", "update");
+      return;
+    }
+
+    if (["onboard_picker_prev", "onboard_picker_next", "onboard_picker_clear_search", "onboard_picker_clear_selection"].includes(interaction.customId)) {
+      const picker = getMainsPickerSession(interaction.user.id);
+      if (!picker) {
+        await interaction.update(buildMainsPickerPayload(interaction.user.id, { includeEphemeralFlag: false }));
+        return;
+      }
+
+      if (interaction.customId === "onboard_picker_prev") {
+        setMainsPickerSession(interaction.user.id, { page: Math.max(0, picker.page - 1) });
+        await interaction.update(buildMainsPickerPayload(interaction.user.id, {
+          includeEphemeralFlag: false,
+          statusText: "Открыта предыдущая страница.",
+        }));
+        return;
+      }
+
+      if (interaction.customId === "onboard_picker_next") {
+        setMainsPickerSession(interaction.user.id, { page: picker.page + 1 });
+        await interaction.update(buildMainsPickerPayload(interaction.user.id, {
+          includeEphemeralFlag: false,
+          statusText: "Открыта следующая страница.",
+        }));
+        return;
+      }
+
+      if (interaction.customId === "onboard_picker_clear_search") {
+        setMainsPickerSession(interaction.user.id, { query: "", page: 0 });
+        await interaction.update(buildMainsPickerPayload(interaction.user.id, {
+          includeEphemeralFlag: false,
+          statusText: "Поиск сброшен.",
+        }));
+        return;
+      }
+
+      setMainsPickerSession(interaction.user.id, { selectedIds: [] });
+      await interaction.update(buildMainsPickerPayload(interaction.user.id, {
+        includeEphemeralFlag: false,
+        statusText: "Выбор очищен.",
+      }));
+      return;
+    }
+
+    if (interaction.customId === "onboard_picker_search") {
+      const picker = getMainsPickerSession(interaction.user.id);
+      if (!picker) {
+        await interaction.update(buildMainsPickerPayload(interaction.user.id, { includeEphemeralFlag: false }));
+        return;
+      }
+
+      const modal = new ModalBuilder().setCustomId("onboard_picker_search_modal").setTitle("Поиск мейна");
+      const input = new TextInputBuilder()
+        .setCustomId("query")
+        .setLabel("Имя или ID персонажа")
+        .setStyle(TextInputStyle.Short)
+        .setRequired(false)
+        .setPlaceholder("Например Honored One")
+        .setValue(picker.query || "");
+      modal.addComponents(new ActionRowBuilder().addComponents(input));
+      await interaction.showModal(modal);
+      return;
+    }
+
+    if (interaction.customId === "onboard_picker_manual") {
+      const picker = getMainsPickerSession(interaction.user.id);
+      const mode = picker?.mode === "quick" ? "quick" : "full";
+      await interaction.showModal(buildManualMainSelectionModal(mode));
+      return;
+    }
+
+    if (interaction.customId === "onboard_picker_continue") {
+      const picker = getMainsPickerSession(interaction.user.id);
+      if (!picker) {
+        await interaction.update(buildMainsPickerPayload(interaction.user.id, { includeEphemeralFlag: false }));
+        return;
+      }
+
+      const selectedEntries = getSelectedCharacterEntries(picker.selectedIds);
+      await completeMainSelection(interaction, selectedEntries, {
+        mode: picker.mode,
+        responseMethod: "update",
+      });
       return;
     }
 
@@ -11687,9 +12131,7 @@ client.on("interactionCreate", async (interaction) => {
 
       const session = getSubmitSession(interaction.user.id);
       if (session?.mainCharacterIds?.length) {
-        await interaction.update(buildSubmitStepPayload(interaction.user.id, {
-          noticeText: "Отдельный 3-й шаг с вводом kills убран. Просто отправь одним сообщением kills и скрин.",
-        }));
+        await interaction.showModal(buildOnboardKillsModal(session.suggestedKills));
         return;
       }
 
@@ -11701,13 +12143,12 @@ client.on("interactionCreate", async (interaction) => {
 
       setSubmitSession(interaction.user.id, { mainCharacterIds: draft.characterIds });
       clearMainDraft(interaction.user.id);
-      await interaction.update(buildSubmitStepPayload(interaction.user.id, {
-        noticeText: "Отдельный 3-й шаг с вводом kills убран. Просто отправь одним сообщением kills и скрин.",
-      }));
+      await interaction.showModal(buildOnboardKillsModal());
       return;
     }
 
     if (interaction.customId === "onboard_cancel") {
+      clearMainsPickerSession(interaction.user.id);
       clearMainDraft(interaction.user.id);
       clearSubmitSession(interaction.user.id);
       await interaction.update({ content: "Ок. Процесс отменён.", embeds: [], components: [] });
@@ -12298,6 +12739,37 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
+    if (interaction.customId === "onboard_picker_select") {
+      const picker = getMainsPickerSession(interaction.user.id);
+      if (!picker) {
+        await interaction.update(buildMainsPickerPayload(interaction.user.id, { includeEphemeralFlag: false }));
+        return;
+      }
+
+      const pageInfo = paginateRolePanelPickerItems(
+        getMainsPickerEntries(picker.query),
+        picker.page,
+        Math.min(ROLE_PANEL_PICKER_PAGE_SIZE, 25)
+      );
+      const currentPageIds = new Set(pageInfo.items.map((entry) => entry.id));
+      const selectedFromPage = [...new Set((interaction.values || []).map(getCharacterIdFromSelectValue).filter(Boolean))];
+      const preservedSelections = picker.selectedIds.filter((entryId) => !currentPageIds.has(entryId));
+      let nextSelectedIds = [...new Set([...preservedSelections, ...selectedFromPage])];
+      let statusText = `Выбрано: ${getMainsPickerSelectionLabels(nextSelectedIds).join(", ")}.`;
+
+      if (nextSelectedIds.length > 2) {
+        nextSelectedIds = [...new Set([...selectedFromPage, ...preservedSelections])].slice(0, 2);
+        statusText = `Можно выбрать максимум двух мейнов. Сохранил: ${getMainsPickerSelectionLabels(nextSelectedIds).join(", ")}.`;
+      }
+
+      setMainsPickerSession(interaction.user.id, { selectedIds: nextSelectedIds });
+      await interaction.update(buildMainsPickerPayload(interaction.user.id, {
+        includeEphemeralFlag: false,
+        statusText,
+      }));
+      return;
+    }
+
     if (!["onboard_pick_characters", "onboard_pick_characters_quick"].includes(interaction.customId)) return;
 
     const isQuickSelection = interaction.customId === "onboard_pick_characters_quick";
@@ -12312,6 +12784,23 @@ client.on("interactionCreate", async (interaction) => {
   }
 
   if (interaction.isModalSubmit()) {
+    if (interaction.customId === "onboard_picker_search_modal") {
+      const picker = getMainsPickerSession(interaction.user.id);
+      if (!picker) {
+        await interaction.reply(ephemeralPayload({ content: "Сессия выбора мейнов истекла. Нажми кнопку заново." }));
+        return;
+      }
+
+      const query = interaction.fields.getTextInputValue("query").trim();
+      setMainsPickerSession(interaction.user.id, { query, page: 0 });
+      await interaction.deferUpdate();
+      await interaction.editReply(buildMainsPickerPayload(interaction.user.id, {
+        includeEphemeralFlag: false,
+        statusText: query ? `Поиск обновлён: ${previewFieldText(query, 100)}.` : "Поиск сброшен.",
+      }));
+      return;
+    }
+
     if (["onboard_manual_mains_modal", "onboard_manual_mains_quick_modal"].includes(interaction.customId)) {
       const mode = interaction.customId === "onboard_manual_mains_quick_modal" ? "quick" : "full";
       const mainsText = interaction.fields.getTextInputValue("mains");
@@ -12322,7 +12811,10 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
-      await completeMainSelection(interaction, resolution.entries, { mode });
+      await completeMainSelection(interaction, resolution.entries, {
+        mode,
+        responseMethod: getMainsPickerSession(interaction.user.id) ? "update" : "reply",
+      });
       return;
     }
 
@@ -12903,8 +13395,11 @@ client.on("interactionCreate", async (interaction) => {
 
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       const syncResult = saveLiveLegacyTierlistStateAndResync(liveState);
-      await refreshLegacyTierlistPublicViews(client, { liveState });
-      await interaction.editReply(`Ок. Теперь **${tierKey}** называется: **${name}**.${getLegacyTierlistSyncStatusSuffix(syncResult)}`);
+      const refreshError = await tryRefreshLegacyTierlistPublicViews(client, liveState);
+      if (refreshError) {
+        console.warn(`[legacy-tierlist] panel rename refresh warning for ${tierKey}: ${refreshError}`);
+      }
+      await interaction.editReply(`Ок. Теперь **${tierKey}** называется: **${name}**.${getLegacyTierlistSyncStatusSuffix(syncResult)}${getLegacyTierlistRefreshWarningText(refreshError)}`);
       return;
     }
 
@@ -12958,9 +13453,12 @@ client.on("interactionCreate", async (interaction) => {
 
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       const syncResult = saveLiveLegacyTierlistStateAndResync(liveState);
-      await refreshLegacyTierlistPublicViews(client, { liveState });
+      const refreshError = await tryRefreshLegacyTierlistPublicViews(client, liveState);
+      if (refreshError) {
+        console.warn(`[legacy-tierlist] panel set image refresh warning: ${refreshError}`);
+      }
       const cfg = getLegacyTierlistImageConfig(liveState.rawState);
-      await interaction.editReply(`Ок. Теперь img: ${cfg.W}x${cfg.H}, icon=${cfg.ICON}.${getLegacyTierlistSyncStatusSuffix(syncResult)}`);
+      await interaction.editReply(`Ок. Теперь img: ${cfg.W}x${cfg.H}, icon=${cfg.ICON}.${getLegacyTierlistSyncStatusSuffix(syncResult)}${getLegacyTierlistRefreshWarningText(refreshError)}`);
       return;
     }
 
@@ -13033,12 +13531,17 @@ client.on("interactionCreate", async (interaction) => {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       const syncResult = saveLiveLegacyTierlistStateAndResync(liveState);
       const backfillResult = await backfillLegacyTierlistInfluenceForExistingVoters(client, { refresh: true });
+      let refreshError = backfillResult.refreshError || null;
       if (!backfillResult.changed) {
-        await refreshLegacyTierlistPublicViews(client, { liveState }).catch(() => {});
+        refreshError = refreshError || await tryRefreshLegacyTierlistPublicViews(client, liveState);
+      }
+      if (refreshError) {
+        console.warn(`[legacy-tierlist] influence panel refresh warning: ${refreshError}`);
       }
       await interaction.editReply([
         `Коэффициенты сохранены: ${formatLegacyTierlistInfluenceSummary(liveState.rawState)}.`,
         backfillResult.total ? `Пересчитано влияний: ${backfillResult.changed}/${backfillResult.total}.` : "Голосов для пересчёта пока нет.",
+        refreshError ? `Предупреждение: public views не обновились (${refreshError}).` : "",
         getLegacyTierlistSyncStatusSuffix(syncResult),
       ].filter(Boolean).join(" "));
       return;
@@ -13798,7 +14301,7 @@ client.on("interactionCreate", async (interaction) => {
       clearMainDraft(interaction.user.id);
 
       await interaction.reply(buildSubmitStepPayload(interaction.user.id, {
-        noticeText: "Запомнил kills. Отдельный 3-й шаг убран: теперь просто отправь одно сообщение с этим числом и скрином.",
+        noticeText: "Запомнил kills. Теперь отправь скрин, чтобы бот подал заявку и выдал доступ.",
         suggestedKills: kills,
       }));
       return;
