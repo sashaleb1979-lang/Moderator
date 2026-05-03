@@ -4950,6 +4950,79 @@ async function refreshLegacyTierlistPublicViews(client, options = {}) {
   };
 }
 
+async function submitAddCharacterUnified(client, { name, idHint = "", imageUrl = "" }) {
+  const trimmedName = String(name || "").trim().slice(0, 100);
+  if (!trimmedName) throw new Error("Имя персонажа пустое.");
+
+  const characterId = normalizeCharacterId(idHint || trimmedName, `char_${Date.now()}`);
+  if (!characterId) throw new Error("Не удалось получить id. Укажи id латиницей или дай имя попроще.");
+
+  const characterCatalog = getCharacterCatalog();
+  if (characterCatalog.length >= 25 && !characterCatalog.some((c) => String(c.id).trim() === characterId)) {
+    throw new Error("Лимит персонажей для select menu достигнут (25).");
+  }
+  if (characterCatalog.some((c) => String(c.id).trim() === characterId)) {
+    throw new Error(`Персонаж с ID «${characterId}» уже существует.`);
+  }
+
+  const liveState = getLiveLegacyTierlistState();
+  if (!liveState.ok) {
+    throw new Error(liveState.error || "Legacy Tierlist state недоступен");
+  }
+
+  const trimmedUrl = String(imageUrl || "").trim();
+  if (!trimmedUrl) throw new Error("Нужен прямой URL PNG/JPG картинки.");
+
+  // Download/normalize image and persist as custom character.
+  await addLegacyTierlistCustomCharacter(liveState, {
+    id: characterId,
+    name: trimmedName,
+    imageUrl: trimmedUrl,
+  });
+
+  const nextCharacter = { id: characterId, label: trimmedName, roleId: "" };
+  characterCatalog.push(nextCharacter);
+  const rawConfig = loadJsonFile(CONFIG_PATH, {});
+  if (!Array.isArray(rawConfig.characters)) rawConfig.characters = [];
+  if (!rawConfig.characters.some((entry) => String(entry?.id || "").trim() === characterId)) {
+    rawConfig.characters.push({ id: characterId, label: trimmedName });
+  }
+
+  const guild = await getGuild(client);
+  let roleNote = "";
+  if (guild) {
+    try {
+      const role = await ensureRoleByName(guild, trimmedName);
+      if (role) {
+        nextCharacter.roleId = role.id;
+        getGeneratedRoleState().characters[characterId] = role.id;
+        const rawCharacter = rawConfig.characters.find((entry) => String(entry?.id || "").trim() === characterId);
+        if (rawCharacter) rawCharacter.roleId = role.id;
+        roleNote = ` Роль «${role.name}» создана/найдена.`;
+      }
+    } catch (err) {
+      roleNote = ` Не удалось создать роль: ${err?.message || err}`;
+    }
+  }
+
+  saveDb();
+  saveJsonFile(CONFIG_PATH, rawConfig);
+  const syncResult = saveLiveLegacyTierlistStateAndResync(liveState);
+
+  let viewsNote = "";
+  try {
+    const refreshed = await refreshLegacyTierlistPublicViews(client, { liveState, force: true });
+    const targets = [];
+    if (refreshed.dashboard && refreshed.dashboard.ok) targets.push("dashboard");
+    if (refreshed.summary && refreshed.summary.ok) targets.push("summary");
+    if (targets.length) viewsNote = ` Обновлено: ${targets.join(", ")}.`;
+  } catch {}
+
+  await ensureWelcomePanel(client).catch(() => {});
+
+  return { characterId, name: trimmedName, roleNote, viewsNote, syncResult };
+}
+
 function persistLiveLegacyTierlistState(liveState) {
   if (!liveState?.resolvedPath) {
     throw new Error("Resolved legacy Tierlist state path is missing");
@@ -8885,14 +8958,34 @@ client.on("interactionCreate", async (interaction) => {
       const modal = new ModalBuilder()
         .setCustomId("panel_add_character_modal")
         .setTitle("Добавить персонажа");
-      const nameInput = new TextInputBuilder()
-        .setCustomId("character_name")
-        .setLabel("Имя персонажа")
-        .setStyle(TextInputStyle.Short)
-        .setRequired(true)
-        .setMinLength(1)
-        .setMaxLength(100);
-      modal.addComponents(new ActionRowBuilder().addComponents(nameInput));
+      modal.addComponents(
+        new ActionRowBuilder().addComponents(
+          new TextInputBuilder()
+            .setCustomId("character_name")
+            .setLabel("Имя персонажа")
+            .setStyle(TextInputStyle.Short)
+            .setRequired(true)
+            .setMaxLength(100)
+        ),
+        new ActionRowBuilder().addComponents(
+          new TextInputBuilder()
+            .setCustomId("character_id")
+            .setLabel("ID латиницей (необязательно)")
+            .setStyle(TextInputStyle.Short)
+            .setRequired(false)
+            .setMaxLength(64)
+            .setPlaceholder("например ryu")
+        ),
+        new ActionRowBuilder().addComponents(
+          new TextInputBuilder()
+            .setCustomId("character_image_url")
+            .setLabel("Прямой URL PNG/JPG")
+            .setStyle(TextInputStyle.Paragraph)
+            .setRequired(true)
+            .setMaxLength(1000)
+            .setPlaceholder("https://cdn.discordapp.com/.../image.png")
+        )
+      );
       await interaction.showModal(modal);
       return;
     }
@@ -11663,55 +11756,30 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    if (interaction.customId === "panel_add_character_modal") {
+    if (interaction.customId === "panel_add_character_modal" || interaction.customId === "panel_add_custom_character_modal") {
       if (!isModerator(interaction.member)) {
         await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
         return;
       }
-      const charName = interaction.fields.getTextInputValue("character_name").trim();
-      if (!charName) {
-        await interaction.reply(ephemeralPayload({ content: "Имя персонажа не может быть пустым." }));
-        return;
-      }
-      const characterCatalog = getCharacterCatalog();
-      if (characterCatalog.length >= 25) {
-        await interaction.reply(ephemeralPayload({ content: "Лимит персонажей для select menu достигнут (25)." }));
-        return;
-      }
-      const charId = normalizeCharacterId(charName, `char_${Date.now()}`);
-      const existing = characterCatalog.find((c) => String(c.id).trim() === charId);
-      if (existing) {
-        await interaction.reply(ephemeralPayload({ content: `Персонаж с ID «${charId}» уже существует.` }));
-        return;
-      }
-      const nextCharacter = { id: charId, label: charName, roleId: "" };
-      characterCatalog.push(nextCharacter);
-      const rawConfig = loadJsonFile(CONFIG_PATH, {});
-      if (!Array.isArray(rawConfig.characters)) rawConfig.characters = [];
-      if (!rawConfig.characters.some((entry) => String(entry?.id || "").trim() === charId)) {
-        rawConfig.characters.push({ id: charId, label: charName });
-      }
+      const charName = String(interaction.fields.getTextInputValue("character_name") || "").trim();
+      const idHint = (() => {
+        try { return String(interaction.fields.getTextInputValue("character_id") || "").trim(); } catch { return ""; }
+      })();
+      const imageUrl = (() => {
+        try { return String(interaction.fields.getTextInputValue("character_image_url") || "").trim(); } catch { return ""; }
+      })();
 
-      const guild = await getGuild(client);
-      let roleNote = "";
-      if (guild) {
-        try {
-          const role = await ensureRoleByName(guild, charName);
-          if (role) {
-            nextCharacter.roleId = role.id;
-            getGeneratedRoleState().characters[charId] = role.id;
-            const rawCharacter = rawConfig.characters.find((entry) => String(entry?.id || "").trim() === charId);
-            if (rawCharacter) rawCharacter.roleId = role.id;
-            roleNote = ` Роль «${role.name}» создана/найдена.`;
-          }
-        } catch (err) {
-          roleNote = ` Не удалось создать роль: ${err?.message || err}`;
-        }
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      try {
+        const result = await submitAddCharacterUnified(client, { name: charName, idHint, imageUrl });
+        await interaction.editReply([
+          `Персонаж **${result.name}** добавлен.`,
+          `id: ${result.characterId}${result.roleNote || ""}`,
+          `${result.viewsNote || ""}${getLegacyTierlistSyncStatusSuffix(result.syncResult)}`.trim(),
+        ].filter(Boolean).join("\n"));
+      } catch (error) {
+        await interaction.editReply(String(error?.message || error || "Не удалось добавить персонажа."));
       }
-      saveDb();
-      saveJsonFile(CONFIG_PATH, rawConfig);
-      await ensureWelcomePanel(client);
-      await interaction.reply(ephemeralPayload({ content: `Персонаж «${charName}» (ID: ${charId}) добавлен в каталог и сразу доступен в выборе мейнов.${roleNote}` }));
       return;
     }
 
@@ -11976,61 +12044,8 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    if (interaction.customId === "panel_add_custom_character_modal") {
-      if (!isModerator(interaction.member)) {
-        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
-        return;
-      }
-
-      const name = String(interaction.fields.getTextInputValue("character_name") || "").trim().slice(0, 100);
-      const requestedId = String(interaction.fields.getTextInputValue("character_id") || "").trim().slice(0, 64);
-      const imageUrl = String(interaction.fields.getTextInputValue("character_image_url") || "").trim().slice(0, 1000);
-      const characterId = normalizeCharacterId(requestedId || name, `char_${Date.now()}`);
-
-      if (!name) {
-        await interaction.reply(ephemeralPayload({ content: "Имя персонажа пустое." }));
-        return;
-      }
-      if (!characterId) {
-        await interaction.reply(ephemeralPayload({ content: "Не удалось получить id. Укажи id латиницей или дай имя попроще." }));
-        return;
-      }
-      if (!imageUrl) {
-        await interaction.reply(ephemeralPayload({ content: "Нужен прямой URL PNG/JPG картинки." }));
-        return;
-      }
-
-      const liveState = getLiveLegacyTierlistState();
-      if (!liveState.ok) {
-        await interaction.reply(buildLegacyTierlistStateErrorPayload("Не удалось открыть legacy Tierlist state", liveState));
-        return;
-      }
-
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-      try {
-        await addLegacyTierlistCustomCharacter(liveState, {
-          id: characterId,
-          name,
-          imageUrl,
-        });
-
-        const syncResult = saveLiveLegacyTierlistStateAndResync(liveState);
-        const refreshed = await refreshLegacyTierlistPublicViews(client, { liveState });
-        const updatedTargets = [];
-        if (refreshed.dashboard && refreshed.dashboard.ok) updatedTargets.push("dashboard");
-        if (refreshed.summary && refreshed.summary.ok) updatedTargets.push("summary");
-        const statusText = updatedTargets.length
-          ? `Обновлено: ${updatedTargets.join(", ")}.`
-          : "Персонаж сохранён, но dashboard и summary пока не настроены.";
-
-        await interaction.editReply([
-          `Персонаж **${name}** добавлен.`,
-          `id: ${characterId}`,
-          `${statusText}${getLegacyTierlistSyncStatusSuffix(syncResult)}`,
-        ].join("\n"));
-      } catch (error) {
-        await interaction.editReply(String(error?.message || error || "Не удалось добавить персонажа."));
-      }
+    if (interaction.customId === "panel_add_custom_character_modal_legacy_disabled_path") {
+      // Handler unified above.
       return;
     }
 
