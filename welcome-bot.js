@@ -102,6 +102,11 @@ const {
   saveLegacyTierlistState,
 } = require("./src/integrations/tierlist-live");
 const {
+  buildLegacyCharacterSyncIndex,
+  resolveLegacyCharacterMatch,
+  resolveLegacyMainIdsFromRuntimeEntries,
+} = require("./src/integrations/tierlist-character-sync");
+const {
   attachLegacyEloReviewRecord,
   LEGACY_ELO_PENDING_EXPIRE_HOURS,
   approveLegacyEloSubmission,
@@ -1451,32 +1456,22 @@ function buildCharactersRankingEmbed(entries, liveContext) {
   const characterStats = Array.isArray(liveContext?.characterStats) ? liveContext.characterStats : [];
   if (!characterStats.length) return null;
 
-  // Cluster info from legacy tierlist live state.
-  const clusterByCharId = new Map();
-  const clusterByAlias = new Map();
+  const runtimeCharacters = getCharacterEntries();
+  const runtimeCharacterById = new Map(runtimeCharacters.map((entry) => [String(entry.id || "").trim(), entry]));
+  const runtimeCharacterByRoleId = new Map(
+    runtimeCharacters
+      .filter((entry) => String(entry.roleId || "").trim())
+      .map((entry) => [String(entry.roleId || "").trim(), entry])
+  );
+  const clusterByLegacyId = new Map();
   let clusterRanking = [];
-  const normalizeClusterLookupKey = (value) => String(value || "")
-    .trim()
-    .toLowerCase()
-    .replace(/[_\-]+/g, " ")
-    .replace(/\s+/g, " ");
-
-  const registerClusterAlias = (value, cluster) => {
-    const compactKey = normalizeClusterLookupKey(value);
-    if (compactKey) clusterByAlias.set(compactKey, cluster);
-
-    const normalizedIdKey = normalizeCharacterId(value);
-    if (normalizedIdKey) clusterByAlias.set(normalizedIdKey, cluster);
-  };
+  let legacyCharacterIndex = null;
+  let clusterStatusNote = "";
 
   try {
-    const live = loadLegacyTierlistState({
-      sourcePath: db.config.integrations?.tierlist?.sourcePath,
-      baseDir: DATA_ROOT,
-      baseCharacterCatalog: getCharacterCatalog().map((entry) => ({ id: entry.id, label: entry.label })),
-      baseCharacterAssetsDir: CHARACTERS_ASSET_DIR,
-    });
+    const live = getLiveLegacyTierlistState();
     if (live?.ok) {
+      legacyCharacterIndex = buildLegacyCharacterSyncIndex(live.characters);
       const { buckets, meta } = computeLegacyTierlistGlobalBuckets(live);
       for (const tierKey of ["S", "A", "B", "C", "D"]) {
         const tierName = String(getTierState(live.rawState, tierKey)?.name || tierKey).trim();
@@ -1484,13 +1479,7 @@ function buildCharactersRankingEmbed(entries, liveContext) {
           const votes = Number(meta?.[id]?.votes) || 0;
           if (votes <= 0) continue;
           const avg = Number(meta?.[id]?.avg) || 0;
-          const cluster = { tierKey, name: tierName, avg };
-          const normalizedId = String(id || "").trim();
-          clusterByCharId.set(normalizedId, cluster);
-
-          registerClusterAlias(normalizedId, cluster);
-          registerClusterAlias(live.charById?.get(normalizedId)?.name, cluster);
-          registerClusterAlias(meta?.[id]?.name, cluster);
+          clusterByLegacyId.set(String(id || "").trim(), { tierKey, name: tierName, avg });
         }
       }
       clusterRanking = Object.entries(meta || {})
@@ -1502,40 +1491,51 @@ function buildCharactersRankingEmbed(entries, liveContext) {
         }))
         .filter((x) => x.votes > 0)
         .sort((a, b) => b.avg - a.avg);
+    } else if (live?.error) {
+      clusterStatusNote = "_Кластеры tierlist временно недоступны._";
+      if (!String(live.error).includes("sourcePath не задан")) {
+        console.warn(`[characters-ranking] failed to load legacy tierlist state: ${live.error}`);
+      }
     }
-  } catch {}
+  } catch (error) {
+    clusterStatusNote = "_Кластеры tierlist временно недоступны._";
+    console.warn(`[characters-ranking] failed to resolve tierlist clusters: ${error?.message || error}`);
+  }
 
   const items = characterStats.map((stat) => {
     const id = String(stat.id || "").trim();
-    const cluster = clusterByCharId.get(id)
-      || clusterByAlias.get(id)
-      || clusterByAlias.get(normalizeCharacterId(id))
-      || clusterByAlias.get(normalizeClusterLookupKey(stat.main))
-      || clusterByAlias.get(normalizeCharacterId(stat.main))
-      || null;
+    const roleId = String(stat.roleId || "").trim();
+    const runtimeEntry = runtimeCharacterById.get(id)
+      || runtimeCharacterByRoleId.get(roleId)
+      || { id, label: stat.main, main: stat.main, roleId };
+    const legacyMatch = legacyCharacterIndex ? resolveLegacyCharacterMatch(runtimeEntry, legacyCharacterIndex) : null;
+    const legacyId = legacyMatch?.character?.id || null;
+    const cluster = legacyId ? clusterByLegacyId.get(legacyId) || null : null;
 
     return {
       id,
+      legacyId,
       main: stat.main,
-      roleId: stat.roleId,
-      mainsCount: stat.rememberedCount || 0,
-      totalKills: stat.totalKills || 0,
-      avgKills: stat.averageKills || 0,
-      medKills: stat.medianKills || 0,
+      roleId,
+      peopleCount: Number(stat.roleHolderCount) || 0,
+      trackedCount: Number(stat.rememberedCount) || 0,
+      totalKills: Number(stat.totalKills) || 0,
+      avgKills: Number(stat.averageKills) || 0,
+      medKills: Number(stat.medianKills) || 0,
       bestPlayer: stat.bestPlayer || null,
       dist: stat.totalsByTier || { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 },
-      highCount: stat.highCount || 0,
-      lowCount: stat.lowCount || 0,
+      highCount: Number(stat.highCount) || 0,
+      lowCount: Number(stat.lowCount) || 0,
       cluster,
     };
   });
 
-  const visible = items.filter((r) => r.mainsCount > 0);
+  const visible = items.filter((r) => r.peopleCount > 0);
   if (!visible.length) return null;
 
-  // Sort by the visible people-count signal first, then by median and total kills.
   visible.sort((a, b) => {
-    if (b.mainsCount !== a.mainsCount) return b.mainsCount - a.mainsCount;
+    if (b.peopleCount !== a.peopleCount) return b.peopleCount - a.peopleCount;
+    if (b.trackedCount !== a.trackedCount) return b.trackedCount - a.trackedCount;
     if (b.medKills !== a.medKills) return b.medKills - a.medKills;
     if (b.totalKills !== a.totalKills) return b.totalKills - a.totalKills;
     return String(a.main).localeCompare(String(b.main), "ru");
@@ -1546,9 +1546,11 @@ function buildCharactersRankingEmbed(entries, liveContext) {
   const lines = visible.map((r, idx) => {
     const place = idx + 1;
     const parts = [`#${place} ${refOf(r)}`];
-    parts.push(`👥 ${r.mainsCount}`);
+    parts.push(`👥 ${r.peopleCount}`);
     parts.push(`🏷 ${r.cluster?.name || "—"}`);
-    parts.push(`📊 ${formatKillsCompact(r.avgKills)}/${formatKillsCompact(r.medKills)}/${formatKillsCompact(r.totalKills)}`);
+    parts.push(`📊 ${r.trackedCount > 0
+      ? `${formatKillsCompact(r.avgKills)}/${formatKillsCompact(r.medKills)}/${formatKillsCompact(r.totalKills)}`
+      : "—/—/—"}`);
     if (r.bestPlayer && r.bestPlayer.userId && r.bestPlayer.kills > 0) {
       parts.push(`🏆 <@${r.bestPlayer.userId}> (${formatKillsCompact(r.bestPlayer.kills)})`);
     }
@@ -1556,7 +1558,7 @@ function buildCharactersRankingEmbed(entries, liveContext) {
   });
 
   const facts = buildCharacterFacts(visible, clusterRanking, refOf);
-  const legend = "**Что значит:** 👥 людей с мейном • 🏷 кластер • 📊 сред/мед/сумм • 🏆 самый высокий kills";
+  const legend = "**Что значит:** 👥 людей с ролью • 🏷 кластер • 📊 сред/мед/сумм kills • 🏆 самый высокий kills";
 
   let body = lines.join("\n");
   if (body.length > 3300) {
@@ -1569,7 +1571,7 @@ function buildCharactersRankingEmbed(entries, liveContext) {
     }
     body = acc + `\n…ещё ${lines.length - kept} персонажей`;
   }
-  let description = `${legend}\n\n${body}`;
+  let description = `${legend}${clusterStatusNote ? `\n${clusterStatusNote}` : ""}\n\n${body}`;
   if (facts.length) description += `\n\n**✨ Доп. факты**\n${facts.join("\n\n")}`;
 
   return new EmbedBuilder()
@@ -1579,7 +1581,11 @@ function buildCharactersRankingEmbed(entries, liveContext) {
 }
 
 function buildCharacterFacts(items, clusterRanking, refOf) {
-  const byId = new Map(items.map((r) => [r.id, r]));
+  const byId = new Map();
+  for (const item of items) {
+    byId.set(item.id, item);
+    if (item.legacyId) byId.set(item.legacyId, item);
+  }
   const lines = [];
   const factPlaceIcons = ["🥇", "🥈", "🥉"];
 
@@ -1593,7 +1599,6 @@ function buildCharacterFacts(items, clusterRanking, refOf) {
     return forms[2];
   };
 
-  const formatMainsCount = (value) => `${value} ${formatCountWord(value, ["мейн", "мейна", "мейнов"])}`;
   const formatPlayersCount = (value) => `${value} ${formatCountWord(value, ["игрок", "игрока", "игроков"])}`;
   const formatFactPlaces = (positions, renderScore) => positions
     .map((position, index) => {
@@ -1624,13 +1629,13 @@ function buildCharacterFacts(items, clusterRanking, refOf) {
   };
 
   // 1. Топ-3 по медиане kills
-  const medTop = topPositions(items.filter((r) => r.mainsCount > 0), (r) => r.medKills, 3);
+  const medTop = topPositions(items.filter((r) => r.trackedCount > 0), (r) => r.medKills, 3);
   if (medTop.length) {
     lines.push(`**📈 Лучшие по медиане kills**\n${formatFactPlaces(medTop, (score) => formatKillsCompact(score))}`);
   }
 
   // 2. Низшая медиана kills (топ-3 снизу)
-  const medBot = topPositions(items.filter((r) => r.mainsCount > 0), (r) => -r.medKills, 3);
+  const medBot = topPositions(items.filter((r) => r.trackedCount > 0), (r) => -r.medKills, 3);
   if (medBot.length) {
     lines.push(`**📉 Самая низкая медиана kills**\n${formatFactPlaces(medBot, (score) => formatKillsCompact(-score))}`);
   }
@@ -1655,10 +1660,10 @@ function buildCharacterFacts(items, clusterRanking, refOf) {
     lines.push(`**🔥 Хай-игроков больше всего**\n${p.items.map(refOf).join(", ")} — ${formatPlayersCount(p.score)}`);
   }
 
-  // 5. Лучший хай-рейт (T5+T4 / mainsCount)
+  // 5. Лучший хай-рейт (T5+T4 / remembered players)
   const rateTop = topPositions(
-    items.filter((r) => r.mainsCount >= 3),
-    (r) => Math.round((r.highCount / r.mainsCount) * 100),
+    items.filter((r) => r.trackedCount >= 3),
+    (r) => Math.round((r.highCount / r.trackedCount) * 100),
     2
   );
   if (rateTop.length) {
@@ -1666,24 +1671,24 @@ function buildCharacterFacts(items, clusterRanking, refOf) {
   }
 
   // 6. Самый популярный (1 + 2)
-  const popTop = topPositions(items.filter((r) => r.mainsCount > 0), (r) => r.mainsCount, 2);
+  const popTop = topPositions(items.filter((r) => r.peopleCount > 0), (r) => r.peopleCount, 2);
   if (popTop.length) {
-    lines.push(`**💖 Самые популярные**\n${formatFactPlaces(popTop, (score) => formatMainsCount(score))}`);
+    lines.push(`**💖 Самые популярные**\n${formatFactPlaces(popTop, (score) => formatPlayersCount(score))}`);
   }
 
   // 7. Самый редкий (1 + 2)
-  const rareTop = topPositions(items.filter((r) => r.mainsCount > 0), (r) => -r.mainsCount, 2);
+  const rareTop = topPositions(items.filter((r) => r.peopleCount > 0), (r) => -r.peopleCount, 2);
   if (rareTop.length) {
-    lines.push(`**🪶 Самые редкие**\n${formatFactPlaces(rareTop, (score) => formatMainsCount(-score))}`);
+    lines.push(`**🪶 Самые редкие**\n${formatFactPlaces(rareTop, (score) => formatPlayersCount(-score))}`);
   }
 
   // 8. Tierlist лидер / аутсайдер
-  const withCluster = items.filter((r) => r.cluster);
+  const withCluster = items.filter((r) => r.cluster && r.peopleCount > 0);
   if (withCluster.length >= 2) {
     const sorted = [...withCluster].sort((a, b) => (b.cluster.avg || 0) - (a.cluster.avg || 0));
     const best = sorted[0];
     const worst = sorted[sorted.length - 1];
-    if (best.id !== worst.id) {
+    if ((best.legacyId || best.id) !== (worst.legacyId || worst.id)) {
       lines.push(`**🏆 Среди мейнов из панели**\nЛидер: ${refOf(best)} — ${best.cluster.name} • Аутсайдер: ${refOf(worst)} — ${worst.cluster.name}`);
     }
   }
@@ -5706,25 +5711,25 @@ function setLegacyTierlistMainIds(liveState, userId, mainIds) {
 }
 
 function resolveLegacyTierlistMainIdsFromMember(member, profile, liveState) {
-  const fromRoles = getCharacterEntries()
-    .filter((entry) => entry.roleId && legacyTierlistMemberHasRole(member, entry.roleId))
-    .map((entry) => entry.id);
-
-  if (fromRoles.length) return normalizeLegacyTierlistMainIds(fromRoles);
-  return normalizeLegacyTierlistMainIds(profile?.mainCharacterIds, liveState);
+  return resolveLegacyMainIdsFromRuntimeEntries({
+    runtimeEntries: getCharacterEntries().filter((entry) => entry.roleId && legacyTierlistMemberHasRole(member, entry.roleId)),
+    profileMainIds: profile?.mainCharacterIds,
+    legacyCharacters: liveState?.characters,
+  });
 }
 
 function syncLegacyTierlistMainsForMember(liveState, userId, member, profile = null) {
   const currentUser = getLegacyTierlistWizardUser(liveState.rawState, userId);
   const currentIds = getLegacyTierlistMainIds(currentUser, liveState);
-  const nextIds = resolveLegacyTierlistMainIdsFromMember(member, profile || db.profiles?.[userId], liveState);
+  const resolution = resolveLegacyTierlistMainIdsFromMember(member, profile || db.profiles?.[userId], liveState);
+  const nextIds = resolution.mainIds;
 
   if (!sameLegacyTierlistMainIds(currentIds, nextIds)) {
     setLegacyTierlistMainIds(liveState, userId, nextIds);
-    return { changed: true, mainIds: nextIds };
+    return { changed: true, mainIds: nextIds, resolution };
   }
 
-  return { changed: false, mainIds: currentIds };
+  return { changed: false, mainIds: currentIds, resolution };
 }
 
 async function syncLegacyTierlistMainsForInteraction(client, liveState, interaction) {
@@ -6660,16 +6665,34 @@ async function syncLiveLegacyTierlistMainsForMember(client, member, profile = nu
 
   const result = syncLegacyTierlistMainsForMember(liveState, member.id, member, profile || db.profiles?.[member.id]);
   if (!result.changed) {
-    return { changed: false, mainIds: result.mainIds, hasVote: hasSubmittedLegacyTierlist(liveState.rawState, member.id) };
+    return {
+      changed: false,
+      mainIds: result.mainIds,
+      hasVote: hasSubmittedLegacyTierlist(liveState.rawState, member.id),
+      resolution: result.resolution,
+    };
   }
 
   const hasVote = hasSubmittedLegacyTierlist(liveState.rawState, member.id);
   const syncResult = saveLiveLegacyTierlistStateAndResync(liveState);
+  let refreshError = null;
   if (hasVote) {
-    await refreshLegacyTierlistPublicViews(client, { liveState }).catch(() => {});
+    try {
+      await refreshLegacyTierlistPublicViews(client, { liveState });
+    } catch (error) {
+      refreshError = String(error?.message || error || "unknown refresh error");
+      console.warn(`[legacy-tierlist] failed to refresh public views after mains sync for ${member.id}: ${refreshError}`);
+    }
   }
 
-  return { changed: true, mainIds: result.mainIds, hasVote, syncResult };
+  return {
+    changed: true,
+    mainIds: result.mainIds,
+    hasVote,
+    syncResult,
+    refreshError,
+    resolution: result.resolution,
+  };
 }
 
 function getLiveLegacyEloState() {
