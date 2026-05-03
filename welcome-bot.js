@@ -768,6 +768,10 @@ function previewText(value, max = 180) {
   return `${text.slice(0, Math.max(0, max - 1)).trimEnd()}…`;
 }
 
+function clampEmbedDescription(value, max = 3800) {
+  return previewText(value, max);
+}
+
 function formatRoleMention(roleId) {
   const id = String(roleId || "").trim();
   return id ? `<@&${id}>` : "—";
@@ -1222,7 +1226,7 @@ async function buildTierlistBoardPayload(client, options = {}) {
   const liveContext = await getLiveCharacterStatsContext(client);
   const entries = getApprovedTierlistEntries({ liveMainsByUserId: liveContext.liveMainsByUserId });
 
-  const PAGE_SIZE = 25;
+  const PAGE_SIZE = 20;
   const totalPages = Math.max(1, Math.ceil(entries.length / PAGE_SIZE));
   let pageIndex = Number.isFinite(Number(options.page)) ? Number(options.page) : 0;
   if (pageIndex < 0) pageIndex = 0;
@@ -1232,30 +1236,9 @@ async function buildTierlistBoardPayload(client, options = {}) {
   const baseTitle = presentation.tierlist.textTitle || "Tier List";
   const tierColors = { 5: 0xE53935, 4: 0xFB8C00, 3: 0xFDD835, 2: 0x43A047, 1: 0x9E9E9E };
 
-  // ELO state for per-row links and ranking adjustments.
+  // ELO state for main ranking adjustments.
   const eloLive = (() => { try { return getLiveLegacyEloState(); } catch { return { ok: false }; } })();
   const eloRatings = (eloLive?.ok && eloLive.rawDb?.ratings) ? eloLive.rawDb.ratings : {};
-  const eloBoard = eloLive?.ok && eloLive.rawDb?.elo?.graphic
-    ? eloLive.rawDb.elo.graphic
-    : (eloLive?.ok && eloLive.rawDb?.graphic ? eloLive.rawDb.graphic : null);
-  const eloChannelId = String(eloBoard?.dashboardChannelId || "").trim();
-  const eloMessageId = String(eloBoard?.dashboardMessageId || "").trim();
-  const eloJumpUrl = (eloChannelId && eloMessageId && GUILD_ID)
-    ? `https://discord.com/channels/${GUILD_ID}/${eloChannelId}/${eloMessageId}`
-    : "";
-
-  const formatEloChip = (userId) => {
-    const rating = eloRatings[userId];
-    if (!rating) return "";
-    const eloVal = Number(rating.elo);
-    const tierVal = Number(rating.tier);
-    const parts = [];
-    if (Number.isFinite(tierVal) && tierVal >= 1) parts.push(`T${tierVal}`);
-    if (Number.isFinite(eloVal)) parts.push(String(eloVal));
-    if (!parts.length) return "";
-    const label = `ELO ${parts.join(" · ")}`;
-    return eloJumpUrl ? `[${label}](${eloJumpUrl})` : label;
-  };
 
   const pageEntries = entries.slice(pageIndex * PAGE_SIZE, pageIndex * PAGE_SIZE + PAGE_SIZE);
   const dominantTier = (() => {
@@ -1299,16 +1282,14 @@ async function buildTierlistBoardPayload(client, options = {}) {
     const rankLines = pageEntries.map((entry, idx) => {
       const rank = pageIndex * PAGE_SIZE + idx + 1;
       const mention = entry.userId ? `<@${entry.userId}>` : (entry.displayName || "—");
-      const mainsText = previewText(formatCharacterReferenceList(entry.mains), 100);
-      const eloChip = formatEloChip(entry.userId);
-      const eloPart = eloChip ? ` · ${eloChip}` : "";
-      return `**#${rank}** • T${entry.killTier} • ${mention} — ${formatNumber(entry.approvedKills)} kills • ${mainsText}${eloPart}`;
+        const mainsText = previewText(formatCharacterReferenceList(entry.mains), 56);
+        return `**#${rank}** • T${entry.killTier} • ${mention} — ${formatNumber(entry.approvedKills)} kills • ${mainsText}`;
     });
 
     const rankEmbed = new EmbedBuilder()
       .setTitle(`${baseTitle} — стр. ${pageIndex + 1}/${totalPages}`)
       .setColor(embedColor)
-      .setDescription(rankLines.join("\n"))
+        .setDescription(clampEmbedDescription(rankLines.join("\n"), 3800))
       .setFooter({ text: `Всего участников: ${entries.length} • Страница ${pageIndex + 1} из ${totalPages}` });
     embeds.push(rankEmbed);
   }
@@ -3635,13 +3616,11 @@ async function refreshGraphicTierlistBoard(client, options = {}) {
     return null;
   }
 
-  if (options.forceRecreate && state.messageId) {
-    const existing = await channel.messages.fetch(state.messageId).catch(() => null);
-    if (existing) await existing.delete().catch(() => {});
-    state.messageId = "";
-  }
+  const staleMessage = options.forceRecreate && state.messageId
+    ? await channel.messages.fetch(state.messageId).catch(() => null)
+    : null;
 
-  let message = await fetchStoredBotMessage(channel, state, "messageId", client.user?.id);
+  let message = options.forceRecreate ? null : await fetchStoredBotMessage(channel, state, "messageId", client.user?.id);
   if (!message && !options.forceRecreate) {
     message = await findExistingGraphicTierlistMessage(channel);
     if (message && state.messageId !== message.id) {
@@ -3652,7 +3631,13 @@ async function refreshGraphicTierlistBoard(client, options = {}) {
 
   const payload = await buildGraphicTierlistBoardPayload(client);
   const created = !message;
-  if (!message) {
+  if (options.forceRecreate) {
+    message = await channel.send(payload);
+    if (staleMessage && staleMessage.id !== message.id) {
+      await staleMessage.delete().catch(() => {});
+    }
+    state.messageId = message.id;
+  } else if (!message) {
     message = await channel.send(payload);
     state.messageId = message.id;
   } else {
@@ -3804,13 +3789,11 @@ async function refreshTextTierlistBoard(client, options = {}) {
     return null;
   }
 
-  if (options.forceRecreate && state.messageId) {
-    const existing = await channel.messages.fetch(state.messageId).catch(() => null);
-    if (existing) await existing.delete().catch(() => {});
-    state.messageId = "";
-  }
+  const staleMessage = options.forceRecreate && state.messageId
+    ? await channel.messages.fetch(state.messageId).catch(() => null)
+    : null;
 
-  let message = await fetchStoredBotMessage(channel, state, "messageId", client.user?.id);
+  let message = options.forceRecreate ? null : await fetchStoredBotMessage(channel, state, "messageId", client.user?.id);
   if (!message && !options.forceRecreate) {
     message = await findExistingTextTierlistMessage(channel);
     if (message && state.messageId !== message.id) {
@@ -3830,7 +3813,13 @@ async function refreshTextTierlistBoard(client, options = {}) {
   }
 
   const payload = await buildTierlistBoardPayload(client, { page: pagination.page });
-  if (!message) {
+  if (options.forceRecreate) {
+    message = await channel.send(payload);
+    if (staleMessage && staleMessage.id !== message.id) {
+      await staleMessage.delete().catch(() => {});
+    }
+    state.messageId = message.id;
+  } else if (!message) {
     message = await channel.send(payload);
     state.messageId = message.id;
   } else {
@@ -9524,7 +9513,7 @@ client.on("interactionCreate", async (interaction) => {
         const pagination = getTextTierlistPaginationState();
         const liveContext = await getLiveCharacterStatsContext(client);
         const total = getApprovedTierlistEntries({ liveMainsByUserId: liveContext.liveMainsByUserId }).length;
-        const PAGE_SIZE = 25;
+        const PAGE_SIZE = 20;
         const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
         let nextPage = pagination.page;
         if (interaction.customId === "text_tierlist_first") nextPage = 0;
