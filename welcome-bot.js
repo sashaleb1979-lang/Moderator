@@ -1239,16 +1239,6 @@ async function buildTierlistBoardPayload(client, options = {}) {
   // ELO state for main ranking adjustments.
   const eloLive = (() => { try { return getLiveLegacyEloState(); } catch { return { ok: false }; } })();
   const eloRatings = (eloLive?.ok && eloLive.rawDb?.ratings) ? eloLive.rawDb.ratings : {};
-  const formatEloChip = (userId) => {
-    const rating = eloRatings[userId];
-    if (!rating) return "";
-    const tierVal = Number(rating.tier);
-    const eloVal = Number(rating.elo);
-    const parts = [];
-    if (Number.isFinite(tierVal) && tierVal >= 1) parts.push(`T${tierVal}`);
-    if (Number.isFinite(eloVal)) parts.push(formatNumber(eloVal));
-    return parts.length ? `ELO ${parts.join(" · ")}` : "";
-  };
 
   const pageEntries = entries.slice(pageIndex * PAGE_SIZE, pageIndex * PAGE_SIZE + PAGE_SIZE);
   const dominantTier = (() => {
@@ -1292,16 +1282,14 @@ async function buildTierlistBoardPayload(client, options = {}) {
     const rankLines = pageEntries.map((entry, idx) => {
       const rank = pageIndex * PAGE_SIZE + idx + 1;
       const mention = entry.userId ? `<@${entry.userId}>` : (entry.displayName || "—");
-      const mainsText = previewText(formatCharacterReferenceList(entry.mains), 44);
-      const eloText = formatEloChip(entry.userId);
-      const eloPart = eloText ? ` • ${eloText}` : "";
-      return `**#${rank}** • T${entry.killTier} • ${mention} — ${formatNumber(entry.approvedKills)} kills • ${mainsText}${eloPart}`;
+        const mainsText = previewText(formatCharacterReferenceList(entry.mains), 56);
+        return `**#${rank}** • T${entry.killTier} • ${mention} — ${formatNumber(entry.approvedKills)} kills • ${mainsText}`;
     });
 
     const rankEmbed = new EmbedBuilder()
       .setTitle(`${baseTitle} — стр. ${pageIndex + 1}/${totalPages}`)
       .setColor(embedColor)
-      .setDescription(clampEmbedDescription(rankLines.join("\n"), 3800))
+        .setDescription(clampEmbedDescription(rankLines.join("\n"), 3800))
       .setFooter({ text: `Всего участников: ${entries.length} • Страница ${pageIndex + 1} из ${totalPages}` });
     embeds.push(rankEmbed);
   }
