@@ -77,6 +77,10 @@ const {
   syncSharedProfiles,
 } = require("./src/integrations/shared-profile");
 const {
+  buildManagedCharacterEntries,
+  normalizeManagedCharacterCatalog,
+} = require("./src/integrations/character-role-catalog");
+const {
   clearDormantEloSync,
   importDormantEloSyncFromFile,
 } = require("./src/integrations/elo-dormant");
@@ -701,7 +705,7 @@ function getGeneratedRoleState() {
 }
 
 function getManagedCharacterCatalog() {
-  return normalizeCharacterCatalog(appConfig.characters);
+  return normalizeManagedCharacterCatalog(appConfig.characters);
 }
 
 function getCharacterCatalog() {
@@ -710,16 +714,10 @@ function getCharacterCatalog() {
 }
 
 function getLegacyTierlistBaseCharacterCatalog() {
-  const source = Array.isArray(fileConfig?.characters) && fileConfig.characters.length
-    ? fileConfig.characters
-    : appConfig.characters;
-
-  return source
-    .map((entry) => ({
-      id: String(entry?.id || "").trim(),
-      label: String(entry?.label || entry?.name || entry?.id || "").trim(),
-    }))
-    .filter((entry) => entry.id);
+  return getManagedCharacterCatalog().map((entry) => ({
+    id: String(entry.id || "").trim(),
+    label: String(entry.label || entry.id || "").trim(),
+  }));
 }
 
 function getNotificationChannelId() {
@@ -1147,31 +1145,13 @@ async function cleanupOrphanCharacterRoles(client) {
   const orphanIds = Object.keys(generated.characters || {}).filter((id) => !catalogIds.has(String(id).trim()));
   if (!orphanIds.length) return { removed: 0, deletedRoles: 0 };
 
-  let guild = null;
-  try { guild = await getGuild(client); } catch { guild = null; }
-  if (guild) {
-    try { await guild.members.fetch(); } catch { /* best-effort */ }
-  }
-  let deletedRoles = 0;
+  void client;
   for (const orphanId of orphanIds) {
-    const roleId = String(generated.characters[orphanId] || "").trim();
     delete generated.characters[orphanId];
-    if (!guild || !roleId) continue;
-    const role = await guild.roles.fetch(roleId).catch(() => null);
-    if (!role) continue;
-    const holders = role.members ? role.members.filter((m) => !m.user?.bot) : new Map();
-    if (holders.size === 0) {
-      try {
-        await role.delete("Orphan auto-character role cleanup");
-        deletedRoles += 1;
-      } catch (error) {
-        console.warn("Failed to delete orphan character role:", error?.message || error);
-      }
-    }
   }
   saveDb();
   invalidateLiveCharacterStatsContext();
-  return { removed: orphanIds.length, deletedRoles };
+  return { removed: orphanIds.length, deletedRoles: 0 };
 }
 
 function estimateEmbedTextLength(embed) {
@@ -2012,21 +1992,19 @@ async function downloadToBuffer(url, timeoutMs = 15000) {
 }
 
 function getCharacterEntries() {
-  const generatedRoles = getGeneratedRoleState();
-  return getManagedCharacterCatalog().map((entry) => ({
-    id: String(entry.id).trim(),
-    label: String(entry.label).trim(),
-    roleId: String(generatedRoles.characters?.[String(entry.id).trim()] || entry.roleId || "").trim(),
-  }));
+  return buildManagedCharacterEntries({
+    managedCharacters: getManagedCharacterCatalog(),
+    generatedRoleIds: getGeneratedRoleState().characters,
+  });
 }
 
 function getCharacterPickerEntries() {
-  return getCharacterEntries().filter((entry) => entry.id && entry.label);
+  return getCharacterEntries().filter((entry) => entry.id && entry.label && String(entry.roleId || "").trim());
 }
 
 function getCharacterPickerValidationError(characterEntries) {
   if (!characterEntries.length) {
-    return "Нет доступных персонажей. Проверь конфигурацию characters в bot.config.json.";
+    return "Нет доступных персонажей с привязанными ролями. Проверь канонические роли персонажей и синк ролей.";
   }
 
   if (characterEntries.length > 25) {
@@ -2279,14 +2257,14 @@ async function ensureRoleByName(guild, roleName, explicitRoleId = "", options = 
 }
 
 async function reconcileCharacterRolesFromGuild(guild) {
-  if (!guild) return { resolved: 0, deletedDuplicates: 0 };
+  if (!guild) return { resolved: 0, duplicateCandidates: 0 };
   await guild.roles.fetch().catch(() => null);
   try { await guild.members.fetch(); } catch { /* best-effort */ }
 
   const generatedRoles = getGeneratedRoleState();
   let changed = false;
   let resolved = 0;
-  let deletedDuplicates = 0;
+  let duplicateCandidates = 0;
 
   for (const entry of getManagedCharacterCatalog()) {
     const characterId = String(entry.id || "").trim();
@@ -2294,10 +2272,17 @@ async function reconcileCharacterRolesFromGuild(guild) {
     if (!characterId || !roleName) continue;
 
     const matches = [...guild.roles.cache.filter((role) => role.name === roleName).values()];
-    if (!matches.length) continue;
+    if (!matches.length) {
+      if (generatedRoles.characters[characterId]) {
+        delete generatedRoles.characters[characterId];
+        changed = true;
+      }
+      continue;
+    }
 
-    // The original is the role with the most non-bot members; everything else
-    // with the same name is a stray auto-created duplicate.
+    if (matches.length > 1) duplicateCandidates += matches.length - 1;
+
+    // Prefer the moderator-managed role that is actually in use.
     let original = matches[0];
     let originalCount = original.members ? original.members.filter((m) => !m.user?.bot).size : 0;
     for (const role of matches) {
@@ -2313,22 +2298,13 @@ async function reconcileCharacterRolesFromGuild(guild) {
       changed = true;
     }
     resolved += 1;
-
-    for (const role of matches) {
-      if (role.id === original.id) continue;
-      const holders = role.members ? role.members.filter((m) => !m.user?.bot) : new Map();
-      if (holders.size > 0) continue; // never delete a role that has members
-      try {
-        await role.delete("Cleanup duplicate auto-created character role");
-        deletedDuplicates += 1;
-      } catch (error) {
-        console.warn(`Failed to delete duplicate character role ${role.id}:`, error?.message || error);
-      }
-    }
   }
 
-  if (changed) saveDb();
-  return { resolved, deletedDuplicates };
+  if (changed) {
+    saveDb();
+    invalidateLiveCharacterStatsContext();
+  }
+  return { resolved, duplicateCandidates };
 }
 
 async function ensureManagedRoles(client) {
@@ -2341,11 +2317,11 @@ async function ensureManagedRoles(client) {
   let changed = false;
 
   // Character roles are managed by moderators. Never auto-create — only
-  // resolve to the existing moderator-assigned role and clean up duplicates.
+  // resolve to the existing moderator-assigned role and leave duplicates untouched.
   try {
     const reconcile = await reconcileCharacterRolesFromGuild(guild);
-    if (reconcile.deletedDuplicates) {
-      console.log(`Cleaned up ${reconcile.deletedDuplicates} duplicate character role(s).`);
+    if (reconcile.duplicateCandidates) {
+      console.warn(`Detected ${reconcile.duplicateCandidates} duplicate character role(s); leaving them untouched.`);
     }
   } catch (error) {
     console.warn("reconcileCharacterRolesFromGuild failed:", error?.message || error);
@@ -2354,11 +2330,17 @@ async function ensureManagedRoles(client) {
   for (const entry of getManagedCharacterCatalog()) {
     const characterId = String(entry.id || "").trim();
     const roleName = String(entry.label || "").trim();
-    const explicitRoleId = String(entry.roleId || generatedRoles.characters?.[characterId] || "").trim();
+    const explicitRoleId = String(entry.roleId || "").trim();
     if (!characterId || !roleName) continue;
 
     const role = await ensureRoleByName(guild, roleName, explicitRoleId, { createIfMissing: false });
-    if (!role) continue;
+    if (!role) {
+      if (generatedRoles.characters[characterId]) {
+        delete generatedRoles.characters[characterId];
+        changed = true;
+      }
+      continue;
+    }
     if (generatedRoles.characters[characterId] !== role.id) {
       generatedRoles.characters[characterId] = role.id;
       changed = true;
@@ -2378,7 +2360,10 @@ async function ensureManagedRoles(client) {
     }
   }
 
-  if (changed) saveDb();
+  if (changed) {
+    saveDb();
+    invalidateLiveCharacterStatsContext();
+  }
 
   try {
     await cleanupOrphanCharacterRoles(client);
@@ -6047,31 +6032,9 @@ async function submitAddCharacterUnified(client, { name, idHint = "", imageUrl =
 
   const nextCharacter = { id: characterId, label: trimmedName, roleId: "" };
   characterCatalog.push(nextCharacter);
-  const rawConfig = loadJsonFile(CONFIG_PATH, {});
-  if (!Array.isArray(rawConfig.characters)) rawConfig.characters = [];
-  if (!rawConfig.characters.some((entry) => String(entry?.id || "").trim() === characterId)) {
-    rawConfig.characters.push({ id: characterId, label: trimmedName });
-  }
-
-  const guild = await getGuild(client);
-  let roleNote = "";
-  if (guild) {
-    try {
-      const role = await ensureRoleByName(guild, trimmedName);
-      if (role) {
-        nextCharacter.roleId = role.id;
-        getGeneratedRoleState().characters[characterId] = role.id;
-        const rawCharacter = rawConfig.characters.find((entry) => String(entry?.id || "").trim() === characterId);
-        if (rawCharacter) rawCharacter.roleId = role.id;
-        roleNote = ` Роль «${role.name}» создана/найдена.`;
-      }
-    } catch (err) {
-      roleNote = ` Не удалось создать роль: ${err?.message || err}`;
-    }
-  }
+  const roleNote = " Custom персонаж добавлен только в legacy tierlist и не участвует в onboarding-ролях.";
 
   saveDb();
-  saveJsonFile(CONFIG_PATH, rawConfig);
   const syncResult = saveLiveLegacyTierlistStateAndResync(liveState);
 
   let viewsNote = "";
