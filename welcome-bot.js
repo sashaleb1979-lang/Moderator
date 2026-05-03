@@ -5549,20 +5549,34 @@ function buildLegacyTierlistPanelTabsRow(rawState, userId) {
 
 function getLegacyTierlistParticipantsList(liveState) {
   const out = [];
-  for (const [userId, votes] of Object.entries(liveState?.rawState?.finalVotes || {})) {
-    if (!votes || Object.keys(votes).length === 0) continue;
+  const seen = new Set();
+  const finalVotes = liveState?.rawState?.finalVotes || {};
+  const draftVotes = liveState?.rawState?.draftVotes || {};
+  const users = liveState?.rawState?.users || {};
 
-    const user = liveState.rawState?.users?.[userId] || {};
+  const addEntry = (userId, hasVotes) => {
+    if (!userId || seen.has(userId)) return;
+    const user = users[userId] || {};
     const mainIds = getLegacyTierlistMainIds(user, liveState);
+    const draftCount = Object.keys(draftVotes[userId] || {}).length;
+    if (!hasVotes && mainIds.length === 0 && draftCount === 0) return;
     const lastSubmitAt = Number(user.lastSubmitAt) || 0;
-
+    seen.add(userId);
     out.push({
       userId,
       mainId: mainIds[0] || null,
       mainIds,
       lastSubmitAt,
+      hasVotes,
+      hasDrafts: draftCount > 0,
     });
+  };
+
+  for (const [userId, votes] of Object.entries(finalVotes)) {
+    if (votes && Object.keys(votes).length > 0) addEntry(userId, true);
   }
+  for (const userId of Object.keys(users)) addEntry(userId, false);
+  for (const userId of Object.keys(draftVotes)) addEntry(userId, false);
 
   out.sort((left, right) => {
     if (right.lastSubmitAt !== left.lastSubmitAt) return right.lastSubmitAt - left.lastSubmitAt;
@@ -5657,8 +5671,12 @@ function buildLegacyTierlistParticipantsDetailPayload(liveState, userId, statusT
   const user = getLegacyTierlistWizardUser(liveState.rawState, userId);
   const targetId = user.panelParticipantId;
   const votes = targetId ? (liveState.rawState?.finalVotes?.[targetId] || null) : null;
+  const targetUser = targetId ? (liveState.rawState?.users?.[targetId] || {}) : {};
+  const targetMainIds = targetId ? getLegacyTierlistMainIds(targetUser, liveState) : [];
+  const draftVotesCount = targetId ? Object.keys(liveState.rawState?.draftVotes?.[targetId] || {}).length : 0;
+  const hasAnyData = Boolean(votes && Object.keys(votes).length > 0) || targetMainIds.length > 0 || draftVotesCount > 0;
 
-  if (!targetId || !votes || Object.keys(votes).length === 0) {
+  if (!targetId || !hasAnyData) {
     user.panelParticipantId = null;
     user.panelDeleteTargetId = null;
     user.panelDeleteMode = null;
@@ -5666,12 +5684,12 @@ function buildLegacyTierlistParticipantsDetailPayload(liveState, userId, statusT
     return buildLegacyTierlistParticipantsListPayload(liveState, userId, statusText);
   }
 
-  const targetUser = liveState.rawState?.users?.[targetId] || {};
   const mainName = formatLegacyTierlistMainSummary(liveState, targetUser, "—");
   const lastSubmitAt = Number(targetUser.lastSubmitAt) || 0;
   const when = lastSubmitAt ? formatLegacyTierlistMoment(lastSubmitAt) : "—";
-  const counts = getLegacyTierlistUserTierCounts(votes);
+  const counts = votes ? getLegacyTierlistUserTierCounts(votes) : { S: 0, A: 0, B: 0, C: 0, D: 0 };
   const pending = user.panelDeleteTargetId === targetId ? user.panelDeleteMode : null;
+  const hasVotes = Boolean(votes && Object.keys(votes).length > 0);
 
   const embed = new EmbedBuilder()
     .setTitle("Участник")
@@ -5679,8 +5697,16 @@ function buildLegacyTierlistParticipantsDetailPayload(liveState, userId, statusT
     .addFields(
       { name: "Мейны", value: `**${mainName}**`, inline: true },
       { name: "Submit", value: `${when}`, inline: true },
-      { name: "S/A/B/C/D", value: `${counts.S}/${counts.A}/${counts.B}/${counts.C}/${counts.D}`, inline: false }
+      { name: "S/A/B/C/D", value: hasVotes ? `${counts.S}/${counts.A}/${counts.B}/${counts.C}/${counts.D}` : "—", inline: false }
     );
+
+  if (!hasVotes) {
+    embed.addFields({
+      name: "Состояние",
+      value: `Нет финальных голосов. Черновики: ${draftVotesCount}. Можно использовать **Полный сброс** чтобы стереть все следы.`,
+      inline: false,
+    });
+  }
 
   if (pending) {
     embed.addFields({
@@ -5696,8 +5722,8 @@ function buildLegacyTierlistParticipantsDetailPayload(liveState, userId, statusT
   if (!pending) {
     components.push(
       new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId("panel_part_view_png").setLabel("Показать PNG").setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId("panel_part_delete_votes").setLabel("Удалить голос").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("panel_part_view_png").setLabel("Показать PNG").setStyle(ButtonStyle.Primary).setDisabled(!hasVotes),
+        new ButtonBuilder().setCustomId("panel_part_delete_votes").setLabel("Удалить голос").setStyle(ButtonStyle.Secondary).setDisabled(!hasVotes),
         new ButtonBuilder().setCustomId("panel_part_delete_full").setLabel("Полный сброс").setStyle(ButtonStyle.Danger)
       ),
       new ActionRowBuilder().addComponents(
@@ -7688,79 +7714,8 @@ client.on("interactionCreate", async (interaction) => {
 
     const subcommand = interaction.options.getSubcommand();
 
-    if (subcommand === "profile") {
-      const target = interaction.options.getUser("target") || interaction.user;
-      await interaction.reply(buildProfilePayload(target.id));
-      return;
-    }
-
-    if (subcommand === "tierlist") {
-      await interaction.reply(await buildTierlistEmbeds(client));
-      return;
-    }
-
-    if (subcommand === "stats") {
-      await interaction.reply(ephemeralPayload({ embeds: await buildStatsEmbeds(client) }));
-      return;
-    }
-
     if (!isModerator(interaction.member)) {
       await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
-      return;
-    }
-
-    if (subcommand === "mode") {
-      await interaction.reply(ephemeralPayload({ content: buildOnboardModeStatusLines().join("\n") }));
-      return;
-    }
-
-    if (subcommand === "setmode") {
-      const nextMode = normalizeOnboardAccessMode(interaction.options.getString("mode", true));
-      const validationError = getOnboardModeValidationError(nextMode);
-      if (validationError) {
-        await interaction.reply(ephemeralPayload({ content: validationError }));
-        return;
-      }
-
-      const state = getOnboardModeState();
-      const previousMode = state.mode;
-      if (previousMode === nextMode) {
-        await interaction.reply(ephemeralPayload({ content: buildOnboardModeStatusLines().join("\n") }));
-        return;
-      }
-
-      state.mode = nextMode;
-      state.changedAt = nowIso();
-      state.changedBy = interaction.user.tag;
-      saveDb();
-
-      await interaction.reply(ephemeralPayload({
-        content: [
-          `Режим онбординга переключён с **${getOnboardAccessModeLabel(previousMode)}** на **${getOnboardAccessModeLabel(nextMode)}**.`,
-          ...buildOnboardModeStatusLines(),
-        ].join("\n"),
-      }));
-      return;
-    }
-
-    if (subcommand === "pending") {
-      const pendingList = Object.values(db.submissions || {})
-        .filter((submission) => isSubmissionActive(submission))
-        .sort((left, right) => Date.parse(right.createdAt || 0) - Date.parse(left.createdAt || 0))
-        .slice(0, 15);
-
-      if (!pendingList.length) {
-        await interaction.reply(ephemeralPayload({ content: "Активных pending-заявок нет." }));
-        return;
-      }
-
-      const lines = pendingList.map((submission) => {
-        return `• <@${submission.userId}> | kills ${submission.kills} | tier ${submission.derivedTier} (${formatTierLabel(submission.derivedTier)}) | id \`${submission.id}\``;
-      });
-
-      await interaction.reply(ephemeralPayload({
-        content: `Pending (${pendingList.length}):\n${lines.join("\n")}`,
-      }));
       return;
     }
 
@@ -7771,47 +7726,6 @@ client.on("interactionCreate", async (interaction) => {
 
     if (subcommand === "welcomeedit") {
       await interaction.reply(buildWelcomeEditorPayload());
-      return;
-    }
-
-    if (subcommand === "refreshwelcome") {
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-      await refreshWelcomePanel(client);
-      await interaction.editReply("Welcome-панель обновлена.");
-      return;
-    }
-
-    if (subcommand === "refreshavatars") {
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-      const namesUpdated = await syncProfileNamesFromDiscord(client);
-      clearGraphicAvatarCache();
-      await refreshGraphicTierlistBoard(client);
-      await interaction.editReply(`Кэш аватарок очищен, имена обновлены (${namesUpdated}), PNG tier-лист пересобран.`);
-      return;
-    }
-
-    if (subcommand === "refreshtierlists") {
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-      const refreshed = await refreshAllTierlists(client);
-      const refreshedText = buildTierlistRefreshReply(refreshed);
-      await interaction.editReply(refreshedText);
-      return;
-      await interaction.editReply(refreshed ? "Текстовый и PNG tier-листы обновлены." : "Не удалось обновить tier-листы.");
-      return;
-    }
-
-    if (subcommand === "graphicpanel") {
-      await interaction.reply(buildGraphicPanelPayload());
-      return;
-    }
-
-    if (subcommand === "graphicstatus") {
-      await interaction.reply(ephemeralPayload({ content: buildGraphicStatusLines().join("\n") }));
-      return;
-    }
-
-    if (subcommand === "nonggsstatus") {
-      await interaction.reply(ephemeralPayload({ content: getNonGgsCaptchaStatusLines().join("\n") }));
       return;
     }
 
@@ -7863,21 +7777,30 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    if (subcommand === "remindmissing") {
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-      const result = await sendMissingTierlistReminder(client);
-      await interaction.editReply(
-        `Рассылка завершена. Всего без тир-листа: ${result.total}. Отправлено: ${result.sent}. Не доставлено: ${result.failed}.`
-      );
-      return;
-    }
-
     if (subcommand === "modset") {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
-      const target = interaction.options.getUser("target", true);
+      const targetUser = interaction.options.getUser("target");
+      const userIdInput = (interaction.options.getString("user_id") || "").trim();
       const screenshot = interaction.options.getAttachment("screenshot", true);
       const kills = interaction.options.getInteger("kills", true);
+
+      let target = targetUser;
+      if (!target && userIdInput) {
+        if (!/^\d{17,20}$/.test(userIdInput)) {
+          await interaction.editReply("user_id должен быть числовым Discord ID (17–20 цифр).");
+          return;
+        }
+        target = await client.users.fetch(userIdInput).catch(() => null);
+        if (!target) {
+          await interaction.editReply(`Не удалось получить пользователя по ID ${userIdInput}.`);
+          return;
+        }
+      }
+      if (!target) {
+        await interaction.editReply("Укажи `target` (пользователь в сервере) или `user_id` (для тех, кто вышел).");
+        return;
+      }
 
       if (!isImageAttachment(screenshot)) {
         await interaction.editReply("Нужен image attachment.");
@@ -7901,12 +7824,25 @@ client.on("interactionCreate", async (interaction) => {
 
     if (subcommand === "deleteprofile") {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-      const target = interaction.options.getUser("target", true);
-      const result = await purgeUserProfile(client, target.id, interaction.user.tag);
+      const targetUser = interaction.options.getUser("target");
+      const userIdInput = (interaction.options.getString("user_id") || "").trim();
+      let targetId = targetUser?.id || null;
+      if (!targetId && userIdInput) {
+        if (!/^\d{17,20}$/.test(userIdInput)) {
+          await interaction.editReply("user_id должен быть числовым Discord ID (17–20 цифр).");
+          return;
+        }
+        targetId = userIdInput;
+      }
+      if (!targetId) {
+        await interaction.editReply("Укажи `target` или `user_id`.");
+        return;
+      }
+      const result = await purgeUserProfile(client, targetId, interaction.user.tag);
       const refreshed = await refreshAllTierlists(client);
       const refreshText = buildTierlistRefreshReply(refreshed);
       await interaction.editReply([
-        `Профиль <@${target.id}> полностью удалён.`,
+        `Профиль <@${targetId}> полностью удалён.`,
         `Удалено заявок: ${result.deletedSubmissions}. Удалено review-сообщений: ${result.removedReviewMessages}.`,
         `Очищено: профиль ${result.hadProfile ? "да" : "нет"}, cooldown ${result.hadCooldown ? "да" : "нет"}, main-draft ${result.hadMainDraft ? "да" : "нет"}, submit-session ${result.hadSubmitSession ? "да" : "нет"}, non-JJS session ${result.hadNonGgsSession ? "да" : "нет"}.`,
         `Снятие ролей: tier ${result.rolesCleared.tier ? "да" : "нет"}, access ${result.rolesCleared.access ? "да" : "нет"}, non-JJS ${result.rolesCleared.nonGgs ? "да" : "нет"}, character ${result.rolesCleared.characters ? "да" : "нет"}.`,
@@ -7917,25 +7853,30 @@ client.on("interactionCreate", async (interaction) => {
 
     if (subcommand === "removetier") {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-      const target = interaction.options.getUser("target", true);
-      const profile = getProfile(target.id);
+      const targetUser = interaction.options.getUser("target");
+      const userIdInput = (interaction.options.getString("user_id") || "").trim();
+      let targetId = targetUser?.id || null;
+      if (!targetId && userIdInput) {
+        if (!/^\d{17,20}$/.test(userIdInput)) {
+          await interaction.editReply("user_id должен быть числовым Discord ID (17–20 цифр).");
+          return;
+        }
+        targetId = userIdInput;
+      }
+      if (!targetId) {
+        await interaction.editReply("Укажи `target` или `user_id`.");
+        return;
+      }
+      const profile = getProfile(targetId);
 
       profile.approvedKills = null;
       profile.killTier = null;
       profile.updatedAt = nowIso();
       saveDb();
 
-      await clearTierRoles(client, target.id, "moderator removed kill tier");
+      await clearTierRoles(client, targetId, "moderator removed kill tier");
       await refreshTierlistBoard(client);
-      await interaction.editReply(`Kill-tier роль у <@${target.id}> снята, approved kills очищены.`);
-      return;
-    }
-
-    if (subcommand === "syncroles") {
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-      const target = interaction.options.getUser("target");
-      const synced = await syncApprovedTierRoles(client, target?.id || null);
-      await interaction.editReply(target ? `Синкнут 1 профиль.` : `Синкнуто профилей: ${synced}.`);
+      await interaction.editReply(`Kill-tier роль у <@${targetId}> снята, approved kills очищены.`);
       return;
     }
   }
