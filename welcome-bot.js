@@ -1091,44 +1091,6 @@ function estimateEmbedTextLength(embed) {
   return total;
 }
 
-function estimateEmbedsTotalLength(embeds = []) {
-  return embeds.reduce((total, embed) => total + estimateEmbedTextLength(embed), 0);
-}
-
-function enforceEmbedBudget(embeds = [], maxTotal = 5800) {
-  if (!Array.isArray(embeds) || embeds.length === 0) return embeds;
-
-  let total = estimateEmbedsTotalLength(embeds);
-  if (total <= maxTotal) return embeds;
-
-  const trimOrder = embeds.length >= 4 ? [1, 2, 0, 3] : embeds.map((_, index) => index);
-  const minLengths = new Map([
-    [0, 280],
-    [1, 700],
-    [2, 220],
-    [3, 900],
-  ]);
-
-  for (const index of trimOrder) {
-    const embed = embeds[index];
-    if (!embed || typeof embed.toJSON !== "function") continue;
-
-    let description = String(embed.toJSON()?.description || "");
-    const minLength = minLengths.get(index) || 200;
-    while (total > maxTotal && description.length > minLength) {
-      const overflow = total - maxTotal;
-      const nextLength = Math.max(minLength, description.length - Math.max(overflow + 32, 120));
-      description = previewText(description, nextLength);
-      embed.setDescription(description);
-      total = estimateEmbedsTotalLength(embeds);
-    }
-
-    if (total <= maxTotal) break;
-  }
-
-  return embeds;
-}
-
 function buildMainStatsEmbeds(characterStats = []) {
   if (!characterStats.length) return [];
 
@@ -1206,7 +1168,7 @@ function buildStatsEmbedsFromContext(entries, liveContext) {
     new EmbedBuilder()
       .setTitle(`📋 ${presentation.tierlist.textTitle}`)
       .setColor(0x5865F2)
-      .setDescription(clampEmbedDescription(lines.join("\n"), 1400)),
+      .setDescription(lines.join("\n")),
     ...buildMainStatsEmbeds(liveContext?.characterStats || []),
   ];
 }
@@ -1367,8 +1329,6 @@ async function buildTierlistBoardPayload(client, options = {}) {
     );
   }
 
-  enforceEmbedBudget(embeds, 5800);
-
   return {
     content: "",
     embeds,
@@ -1515,7 +1475,6 @@ function buildCharactersRankingEmbed(entries, liveContext, eloRatings = {}) {
     description = acc + `\n…ещё ${lines.length - acc.split("\n").length} персонажей`;
   }
   if (facts.length) description += `\n\n**Доп. факты**\n${facts.join("\n")}`;
-  description = clampEmbedDescription(description, 3000);
 
   return new EmbedBuilder()
     .setTitle("🎭 Персонажи — рейтинг мейнов")
@@ -1613,7 +1572,7 @@ function buildRecentKillChangesEmbed() {
   return new EmbedBuilder()
     .setTitle("⚡ Топ-5 последних изменений")
     .setColor(0x00897B)
-    .setDescription(clampEmbedDescription(lines.join("\n"), 1000));
+    .setDescription(lines.join("\n"));
 }
 
 async function buildGraphicTierlistBoardPayload(client) {
