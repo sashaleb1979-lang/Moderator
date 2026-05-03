@@ -4787,7 +4787,7 @@ function buildLegacyTierlistDashboardComponents() {
   return [
     new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId("start_rating").setLabel("Начать оценку").setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId("rate_new_characters").setLabel("Оценить новых").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId("rate_new_characters").setLabel("Оценить точечно").setStyle(ButtonStyle.Success),
       new ButtonBuilder().setCustomId("my_status").setLabel("Мой статус").setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId("refresh_tierlist").setLabel("Обновить тир-лист").setStyle(ButtonStyle.Secondary)
     ),
@@ -4804,7 +4804,7 @@ async function buildLegacyTierlistDashboardPayload(liveState) {
     embeds: [
       new EmbedBuilder()
         .setTitle(LEGACY_TIERLIST_TITLE)
-        .setDescription("кнопка **начать оценку** откроет твой тир-лист. Мейны подхватываются автоматически из ролей персонажей внутри Moderator. **оценить новых** позволит дооценить только что добавленных персонажей без сброса твоего тир-листа.")
+        .setDescription("кнопка **начать оценку** откроет полный тир-лист. Мейны подхватываются автоматически из ролей персонажей внутри Moderator. **оценить точечно** откроет удобный выбор персонажей: можно вызвать только нужные карточки или отдельно дооценить новых без полного сброса.")
         .setImage("attachment://tierlist.png"),
     ],
     files: [new AttachmentBuilder(pngBuffer, { name: "tierlist.png" })],
@@ -5085,6 +5085,7 @@ function getLegacyTierlistWizardUser(rawState, userId) {
     panelDeleteTargetId: null,
     panelDeleteMode: null,
     panelWipeAllVotesConfirm: false,
+    pointRatePage: 0,
     mainSelectPage: 0,
   };
 
@@ -5101,6 +5102,7 @@ function getLegacyTierlistWizardUser(rawState, userId) {
   if (user.panelParticipantsPage == null) user.panelParticipantsPage = 0;
   if (user.panelParticipantId == null) user.panelParticipantId = null;
   if (user.panelWipeAllVotesConfirm == null) user.panelWipeAllVotesConfirm = false;
+  if (user.pointRatePage == null) user.pointRatePage = 0;
   if (user.mainSelectPage == null) user.mainSelectPage = 0;
   if (user.wizMode == null) user.wizMode = null;
   return user;
@@ -5139,6 +5141,34 @@ function getLegacyTierlistPendingNewCharacterIds(liveState, userId) {
     .filter((characterId) => !finalVotes[characterId]);
 }
 
+function getLegacyTierlistRateableEntries(liveState, userId) {
+  const user = getLegacyTierlistWizardUser(liveState.rawState, userId);
+  const mainIds = new Set(getLegacyTierlistMainIds(user, liveState));
+  const finalVotes = getLegacyTierlistFinal(liveState.rawState, userId);
+
+  return (liveState.characters || [])
+    .filter((entry) => entry?.id && !mainIds.has(entry.id))
+    .map((entry) => ({
+      id: entry.id,
+      name: entry.name || entry.id,
+      currentTier: finalVotes[entry.id] || null,
+    }))
+    .sort((left, right) => {
+      const leftNew = left.currentTier ? 1 : 0;
+      const rightNew = right.currentTier ? 1 : 0;
+      if (leftNew !== rightNew) return leftNew - rightNew;
+      return String(left.name).localeCompare(String(right.name), "ru");
+    });
+}
+
+function getLegacyTierlistPointRatePageCount(liveState, userId) {
+  return Math.max(1, Math.ceil(getLegacyTierlistRateableEntries(liveState, userId).length / LEGACY_TIERLIST_MAIN_SELECT_PAGE_SIZE));
+}
+
+function clampLegacyTierlistPointRatePage(liveState, userId, page) {
+  return Math.max(0, Math.min(Number(page) || 0, getLegacyTierlistPointRatePageCount(liveState, userId) - 1));
+}
+
 function canUseLegacyTierlistCurrentWizard(rawState, userId) {
   const user = getLegacyTierlistWizardUser(rawState, userId);
   return !isLegacyTierlistWizardLocked(rawState, userId) || user.wizMode === "new";
@@ -5164,15 +5194,22 @@ function setLegacyTierlistMain(liveState, userId, mainId) {
   user.mainSelectPage = findLegacyTierlistCharacterMainPage(liveState, mainId);
 }
 
-function startLegacyTierlistWizard(liveState, userId, mode = "full") {
+function startLegacyTierlistWizard(liveState, userId, mode = "full", selectedIds = null) {
   const user = getLegacyTierlistWizardUser(liveState.rawState, userId);
   const mainIds = new Set(getLegacyTierlistMainIds(user, liveState));
   liveState.rawState.draftVotes ||= {};
   liveState.rawState.draftVotes[userId] = {};
   user.wizMode = mode;
-  user.wizQueue = mode === "new"
-    ? getLegacyTierlistPendingNewCharacterIds(liveState, userId)
-    : (liveState.characters || []).map((entry) => entry.id).filter((characterId) => !mainIds.has(characterId));
+  if (Array.isArray(selectedIds) && selectedIds.length) {
+    const allowedIds = new Set((liveState.characters || []).map((entry) => entry.id));
+    user.wizQueue = [...new Set(selectedIds
+      .map((value) => String(value || "").trim())
+      .filter((characterId) => characterId && allowedIds.has(characterId) && !mainIds.has(characterId)))];
+  } else {
+    user.wizQueue = mode === "new"
+      ? getLegacyTierlistPendingNewCharacterIds(liveState, userId)
+      : (liveState.characters || []).map((entry) => entry.id).filter((characterId) => !mainIds.has(characterId));
+  }
   user.wizIndex = 0;
 }
 
@@ -5246,7 +5283,7 @@ function buildLegacyTierlistDraftBuckets(liveState, userId) {
   const user = getLegacyTierlistWizardUser(rawState, userId);
   const draftVotes = getLegacyTierlistDraft(rawState, userId);
   const finalVotes = getLegacyTierlistFinal(rawState, userId);
-  const useExistingVotes = user.wizMode === "new";
+  const useExistingVotes = user.wizMode === "new" || user.wizMode === "targeted";
   const buckets = { S: [], A: [], B: [], C: [], D: [] };
 
   for (const character of liveState.characters || []) {
@@ -5318,7 +5355,7 @@ function buildLegacyTierlistStartEmbed(liveState, userId) {
       mainIds.length
         ? "Найденные мейны будут серыми и заблокированными в твоём тир-листе."
         : "Мейны не найдены — можешь оценивать всех персонажей.",
-      hasFinal ? "Для новых персонажей на дашборде есть кнопка **Оценить новых**." : "После первой отправки новые персонажи можно будет дооценивать кнопкой **Оценить новых**.",
+      hasFinal ? "Кнопка **Оценить точечно** откроет выбор нужных карточек и быструю дооценку только новых персонажей." : "После первой отправки откроется кнопка **Оценить точечно**: через неё можно будет вызывать только нужные карточки без полного сброса.",
     ].join("\n"))
     .addFields(
       { name: "Мейны", value: `**${mainsText}**`, inline: false },
@@ -5336,6 +5373,67 @@ function buildLegacyTierlistStartPayload(liveState, userId, statusText = "") {
     components: [buildLegacyTierlistStartButtons(liveState, userId)],
     attachments: [],
   };
+}
+
+function buildLegacyTierlistPointRatePayload(liveState, userId, statusText = "") {
+  const user = getLegacyTierlistWizardUser(liveState.rawState, userId);
+  const entries = getLegacyTierlistRateableEntries(liveState, userId);
+  const pendingIds = getLegacyTierlistPendingNewCharacterIds(liveState, userId);
+  const page = clampLegacyTierlistPointRatePage(liveState, userId, user.pointRatePage || 0);
+  const pageSize = LEGACY_TIERLIST_MAIN_SELECT_PAGE_SIZE;
+  const pageCount = getLegacyTierlistPointRatePageCount(liveState, userId);
+  const slice = entries.slice(page * pageSize, page * pageSize + pageSize);
+  user.pointRatePage = page;
+
+  const preview = slice.slice(0, 10).map((entry, index) => {
+    const marker = entry.currentTier ? `сейчас ${entry.currentTier}` : "без оценки";
+    return `${page * pageSize + index + 1}. **${entry.name}** — ${marker}`;
+  });
+
+  const embed = new EmbedBuilder()
+    .setTitle("Точечная оценка")
+    .setDescription([
+      "Выбери одного или нескольких персонажей, и бот откроет только их карточки без полного сброса тир-листа.",
+      `Страница: **${page + 1}/${pageCount}**`,
+      `Без оценки: **${pendingIds.length}**`,
+      `Уже оценены: **${Math.max(0, entries.length - pendingIds.length)}**`,
+      "",
+      preview.length ? preview.join("\n") : "Нет персонажей для точечной оценки.",
+    ].join("\n"));
+
+  const select = new StringSelectMenuBuilder()
+    .setCustomId("point_rate_select")
+    .setPlaceholder(slice.length ? "Выбери персонажей для точечной оценки" : "Нет доступных персонажей")
+    .setMinValues(1)
+    .setMaxValues(Math.max(1, Math.min(slice.length, LEGACY_TIERLIST_MAIN_SELECT_PAGE_SIZE)))
+    .setDisabled(slice.length === 0);
+
+  for (const entry of slice) {
+    select.addOptions({
+      label: String(entry.name).slice(0, 100),
+      value: entry.id,
+      description: (entry.currentTier ? `сейчас ${entry.currentTier}` : "без оценки").slice(0, 100),
+    });
+  }
+
+  const components = [];
+  if (slice.length) {
+    components.push(new ActionRowBuilder().addComponents(select));
+  }
+  components.push(
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId("point_rate_page_prev").setLabel("⟵").setStyle(ButtonStyle.Secondary).setDisabled(page <= 0),
+      new ButtonBuilder().setCustomId("point_rate_page_next").setLabel("⟶").setStyle(ButtonStyle.Secondary).setDisabled(page >= pageCount - 1),
+      new ButtonBuilder().setCustomId("point_rate_new").setLabel("Только новых").setStyle(ButtonStyle.Primary).setDisabled(pendingIds.length === 0),
+      new ButtonBuilder().setCustomId("point_rate_close").setLabel("Закрыть").setStyle(ButtonStyle.Secondary)
+    )
+  );
+
+  return applyLegacyTierlistPanelStatus({
+    embeds: [embed],
+    components,
+    attachments: [],
+  }, statusText);
 }
 
 async function buildLegacyTierlistWizardPayload(liveState, userId) {
@@ -5375,6 +5473,8 @@ async function buildLegacyTierlistWizardPayload(liveState, userId) {
         ? "готово. проверь свой тир-лист ниже и нажми **отправить**."
         : (user.wizMode === "new"
             ? "доставь оценку только для новых персонажей кнопками S A B C D."
+            : user.wizMode === "targeted"
+              ? "переоцени только выбранных персонажей кнопками S A B C D."
             : "выбери тир для текущего персонажа кнопками S A B C D.")
     )
     .addFields(
@@ -9137,24 +9237,59 @@ client.on("interactionCreate", async (interaction) => {
       }
 
       if (Array.isArray(user.wizQueue) && user.wizQueue.length) {
-        if (user.wizMode === "new") {
-          await interaction.reply(ephemeralPayload(await buildLegacyTierlistWizardPayload(liveState, interaction.user.id)));
-          return;
-        }
+        await interaction.reply(ephemeralPayload(await buildLegacyTierlistWizardPayload(liveState, interaction.user.id)));
+        return;
+      }
 
-        await interaction.reply(ephemeralPayload({ content: "Сначала заверши или закрой текущую сессию оценки." }));
+      const entries = getLegacyTierlistRateableEntries(liveState, interaction.user.id);
+      if (!entries.length) {
+        await interaction.reply(ephemeralPayload({ content: "Для тебя сейчас нет персонажей для точечной оценки." }));
+        return;
+      }
+
+      user.pointRatePage = 0;
+      persistLiveLegacyTierlistState(liveState);
+      await interaction.reply(ephemeralPayload(buildLegacyTierlistPointRatePayload(liveState, interaction.user.id, "Выбери нужные карточки или нажми Только новых.")));
+      return;
+    }
+
+    if (["point_rate_page_prev", "point_rate_page_next"].includes(interaction.customId)) {
+      const liveState = getLiveLegacyTierlistState();
+      if (!liveState.ok) {
+        await interaction.reply(buildLegacyTierlistStateErrorPayload("Не удалось открыть legacy Tierlist state", liveState));
+        return;
+      }
+
+      const user = getLegacyTierlistWizardUser(liveState.rawState, interaction.user.id);
+      const delta = interaction.customId === "point_rate_page_prev" ? -1 : 1;
+      user.pointRatePage = clampLegacyTierlistPointRatePage(liveState, interaction.user.id, (user.pointRatePage || 0) + delta);
+      persistLiveLegacyTierlistState(liveState);
+      await interaction.update(buildLegacyTierlistPointRatePayload(liveState, interaction.user.id));
+      return;
+    }
+
+    if (interaction.customId === "point_rate_new") {
+      const liveState = getLiveLegacyTierlistState();
+      if (!liveState.ok) {
+        await interaction.reply(buildLegacyTierlistStateErrorPayload("Не удалось открыть legacy Tierlist state", liveState));
         return;
       }
 
       const pendingIds = getLegacyTierlistPendingNewCharacterIds(liveState, interaction.user.id);
       if (!pendingIds.length) {
-        await interaction.reply(ephemeralPayload({ content: "Для тебя пока нет новых персонажей без оценки." }));
+        await interaction.update(buildLegacyTierlistPointRatePayload(liveState, interaction.user.id, "Для тебя пока нет новых персонажей без оценки."));
         return;
       }
 
       startLegacyTierlistWizard(liveState, interaction.user.id, "new");
       persistLiveLegacyTierlistState(liveState);
-      await interaction.reply(ephemeralPayload(await buildLegacyTierlistWizardPayload(liveState, interaction.user.id)));
+      await interaction.deferUpdate();
+      await interaction.editReply(await buildLegacyTierlistWizardPayload(liveState, interaction.user.id));
+      return;
+    }
+
+    if (interaction.customId === "point_rate_close") {
+      await interaction.update({ content: "Ок, закрыто.", embeds: [], components: [], attachments: [] });
       return;
     }
 
@@ -9281,6 +9416,12 @@ client.on("interactionCreate", async (interaction) => {
             `Мейны: **${mainsText}**`,
             `Вес голоса: x${Number(user.influenceMultiplier || 1).toFixed(1)}`,
           ].join("\n")
+        : mode === "targeted"
+          ? [
+              "Выбранные персонажи переоценены.",
+              `Мейны: **${mainsText}**`,
+              `Вес голоса: x${Number(user.influenceMultiplier || 1).toFixed(1)}`,
+            ].join("\n")
         : [
             "Тир-лист сохранён.",
             `Мейны: **${mainsText}**`,
@@ -9289,7 +9430,7 @@ client.on("interactionCreate", async (interaction) => {
           ].join("\n");
 
       await interaction.editReply({
-        embeds: [new EmbedBuilder().setTitle(mode === "new" ? "Дооценка сохранена" : "Тир-лист сохранён").setDescription(`${description}${getLegacyTierlistSyncStatusSuffix(syncResult)}`)],
+        embeds: [new EmbedBuilder().setTitle(mode === "new" ? "Дооценка сохранена" : mode === "targeted" ? "Точечная оценка сохранена" : "Тир-лист сохранён").setDescription(`${description}${getLegacyTierlistSyncStatusSuffix(syncResult)}`)],
         components: [],
         files: [],
         attachments: [],
@@ -9339,7 +9480,6 @@ client.on("interactionCreate", async (interaction) => {
 
       const rawUser = liveState.rawState?.users?.[interaction.user.id] || {};
       const mainName = formatLegacyTierlistMainSummary(liveState, rawUser);
-      const locked = isLegacyTierlistLocked(rawUser);
       const votes = liveState.rawState?.finalVotes?.[interaction.user.id] || null;
 
       if (votes && Object.keys(votes).length > 0) {
@@ -9356,7 +9496,8 @@ client.on("interactionCreate", async (interaction) => {
               `Мейны: **${mainName}**`,
               `Submit: ${lastSubmitAt}`,
               `S/A/B/C/D: ${counts.S}/${counts.A}/${counts.B}/${counts.C}/${counts.D}`,
-              locked ? `Кулдаун до: **${formatLegacyTierlistMoment(rawUser.lockUntil)}**` : "Можно отправлять оценку: **да**",
+              "Можно отправлять оценку: **да**",
+              "Для частичного обновления используй кнопку **Оценить точечно**.",
             ].join("\n"))
             .setImage("attachment://my-tierlist.png");
 
@@ -9370,7 +9511,7 @@ client.on("interactionCreate", async (interaction) => {
       const lines = [
         `Мейны: **${mainName}**`,
         "Ты ещё не отправлял тир-лист.",
-        locked ? `Кулдаун до: **${formatLegacyTierlistMoment(rawUser.lockUntil)}**` : "Можно отправлять оценку: **да**",
+        "Можно отправлять оценку: **да**",
       ];
       await interaction.reply(ephemeralPayload({ content: lines.join("\n") }));
       return;
@@ -10742,6 +10883,44 @@ client.on("interactionCreate", async (interaction) => {
       const mainSync = syncLegacyTierlistMainsForMember(liveState, interaction.user.id, interaction.member, getProfile(interaction.user.id));
       if (mainSync.changed) persistLiveLegacyTierlistState(liveState);
       await interaction.update(buildLegacyTierlistStartPayload(liveState, interaction.user.id, "Ручной выбор main больше не используется. Мейны берутся из ролей."));
+      return;
+    }
+
+    if (interaction.customId === "point_rate_select") {
+      const liveState = getLiveLegacyTierlistState();
+      if (!liveState.ok) {
+        await interaction.reply(buildLegacyTierlistStateErrorPayload("Не удалось открыть legacy Tierlist state", liveState));
+        return;
+      }
+
+      const user = getLegacyTierlistWizardUser(liveState.rawState, interaction.user.id);
+      if (!hasSubmittedLegacyTierlist(liveState.rawState, interaction.user.id)) {
+        await interaction.update({ content: "Сначала отправь полный тир-лист кнопкой Начать оценку.", embeds: [], components: [], attachments: [] });
+        return;
+      }
+
+      if (Array.isArray(user.wizQueue) && user.wizQueue.length) {
+        await interaction.deferUpdate();
+        await interaction.editReply(await buildLegacyTierlistWizardPayload(liveState, interaction.user.id));
+        return;
+      }
+
+      const selectedIds = [...new Set((interaction.values || []).map((value) => String(value || "").trim()).filter(Boolean))];
+      if (!selectedIds.length) {
+        await interaction.update(buildLegacyTierlistPointRatePayload(liveState, interaction.user.id, "Выбери хотя бы одного персонажа."));
+        return;
+      }
+
+      startLegacyTierlistWizard(liveState, interaction.user.id, "targeted", selectedIds);
+      const startedUser = getLegacyTierlistWizardUser(liveState.rawState, interaction.user.id);
+      if (!Array.isArray(startedUser.wizQueue) || !startedUser.wizQueue.length) {
+        await interaction.update(buildLegacyTierlistPointRatePayload(liveState, interaction.user.id, "Не удалось собрать очередь для точечной оценки."));
+        return;
+      }
+
+      persistLiveLegacyTierlistState(liveState);
+      await interaction.deferUpdate();
+      await interaction.editReply(await buildLegacyTierlistWizardPayload(liveState, interaction.user.id));
       return;
     }
 

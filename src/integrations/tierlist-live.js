@@ -315,7 +315,9 @@ function getLegacyTierlistUserMainIds(rawUser = {}) {
 function appendLegacyTierlistCharacterToActiveWizards(rawState, characterId) {
   for (const userId of Object.keys(rawState?.users || {})) {
     const user = rawState.users[userId];
+    const wizardMode = String(user?.wizMode || "").trim();
     const mainIds = getLegacyTierlistUserMainIds(user);
+    if (!["full", "new"].includes(wizardMode)) continue;
     if (!mainIds.length || !Array.isArray(user.wizQueue) || (user.wizIndex || 0) >= user.wizQueue.length) continue;
     if (mainIds.includes(characterId)) continue;
     if (user.wizQueue.includes(characterId)) continue;
