@@ -2018,6 +2018,193 @@ function getCharacterEntries() {
   }));
 }
 
+function getCharacterPickerEntries() {
+  return getCharacterEntries().filter((entry) => entry.id && entry.label);
+}
+
+function getCharacterPickerValidationError(characterEntries) {
+  if (!characterEntries.length) {
+    return "Нет доступных персонажей. Проверь конфигурацию characters в bot.config.json.";
+  }
+
+  if (characterEntries.length > 25) {
+    return `Список мейнов слишком большой для Discord select menu: ${characterEntries.length}. Переключаюсь на ручной ввод.`;
+  }
+
+  return "";
+}
+
+function buildManualMainSelectionModal(mode = "full") {
+  const modal = new ModalBuilder()
+    .setCustomId(mode === "quick" ? "onboard_manual_mains_quick_modal" : "onboard_manual_mains_modal")
+    .setTitle(mode === "quick" ? "Быстро сменить мейнов" : "Указать мейнов");
+
+  const mainsInput = new TextInputBuilder()
+    .setCustomId("mains")
+    .setLabel("1 или 2 мейна")
+    .setStyle(TextInputStyle.Paragraph)
+    .setRequired(true)
+    .setPlaceholder("Например: Honored One, Vessel");
+
+  modal.addComponents(new ActionRowBuilder().addComponents(mainsInput));
+  return modal;
+}
+
+function resolveCharacterSelectionFromText(input, options = {}) {
+  const normalizedParts = String(input || "")
+    .split(/[\n,;|]+/)
+    .map((part) => normalizeCharacterId(part))
+    .filter(Boolean);
+
+  if (!normalizedParts.length) {
+    return { entries: [], error: "Нужно указать одного или двух мейнов." };
+  }
+
+  const uniqueParts = [...new Set(normalizedParts)].slice(0, 3);
+  if (uniqueParts.length > 2) {
+    return { entries: [], error: "Можно указать только одного или двух мейнов." };
+  }
+
+  const entries = getCharacterPickerEntries();
+  const aliases = new Map();
+
+  for (const entry of entries) {
+    aliases.set(normalizeCharacterId(entry.id), entry);
+    aliases.set(normalizeCharacterId(entry.label), entry);
+  }
+
+  const selectedEntries = [];
+  for (const alias of uniqueParts) {
+    const entry = aliases.get(alias);
+    if (!entry) {
+      return {
+        entries: [],
+        error: `Не удалось распознать мейна: ${alias}. Укажи точное имя из welcome-панели.`,
+      };
+    }
+
+    if (!selectedEntries.some((selectedEntry) => selectedEntry.id === entry.id)) {
+      selectedEntries.push(entry);
+    }
+  }
+
+  if (!selectedEntries.length || selectedEntries.length > 2) {
+    return { entries: [], error: "Нужно выбрать одного или двух мейнов." };
+  }
+
+  return { entries: selectedEntries, error: "" };
+}
+
+async function replyWithCharacterPicker(interaction, mode = "full", method = "reply") {
+  const payload = buildCharacterPickerPayload(mode);
+  if (method === "update") {
+    await interaction.update(payload);
+    return;
+  }
+  await interaction.reply(payload);
+}
+
+async function respondToOnboardError(interaction, message) {
+  const payload = ephemeralPayload({ content: message });
+  if (!interaction.replied && !interaction.deferred) {
+    await interaction.reply(payload).catch(() => {});
+    return;
+  }
+
+  if (interaction.deferred) {
+    await interaction.editReply(payload).catch(() => {});
+    return;
+  }
+
+  await interaction.followUp(payload).catch(() => {});
+}
+
+async function fallbackToManualMainSelection(interaction, mode = "full", error = null) {
+  const message = String(error?.message || error || "").trim();
+  if (message) {
+    console.warn(`character picker fallback (${mode}): ${message}`);
+  }
+
+  await interaction.showModal(buildManualMainSelectionModal(mode));
+}
+
+async function openCharacterPicker(interaction, mode = "full", method = "reply") {
+  try {
+    await replyWithCharacterPicker(interaction, mode, method);
+  } catch (error) {
+    try {
+      await fallbackToManualMainSelection(interaction, mode, error);
+    } catch (fallbackError) {
+      console.error(`openCharacterPicker failed (${mode}):`, fallbackError?.message || fallbackError || error);
+      const message = String(error?.message || fallbackError?.message || fallbackError || error || "неизвестная ошибка").trim();
+      await respondToOnboardError(interaction, `Не удалось открыть выбор мейнов: ${message.slice(0, 220)}`);
+    }
+  }
+}
+
+async function completeMainSelection(interaction, selectedEntries, options = {}) {
+  const isQuickSelection = options.mode === "quick";
+  const responseMethod = options.responseMethod === "update" ? "update" : "reply";
+  const selectedIds = selectedEntries.map((entry) => entry.id);
+
+  const pending = getPendingSubmissionForUser(interaction.user.id);
+  if (!isQuickSelection && pending) {
+    await interaction.reply(ephemeralPayload({ content: "У тебя уже есть pending-заявка. Новую создавать нельзя." }));
+    return;
+  }
+
+  if (!selectedIds.length || selectedIds.length > 2) {
+    await interaction.reply(ephemeralPayload({ content: "Нужно выбрать одного или двух мейнов." }));
+    return;
+  }
+
+  const member = await fetchMember(client, interaction.user.id);
+  if (!member) {
+    await interaction.reply(ephemeralPayload({ content: "Не удалось получить твой профиль на сервере." }));
+    return;
+  }
+
+  const appliedEntries = await applyMainSelection(
+    client,
+    member,
+    interaction.user,
+    selectedIds,
+    isQuickSelection ? "quick main selection" : "new main character selection"
+  );
+
+  if (isQuickSelection) {
+    const activeSubmitSession = getSubmitSession(interaction.user.id);
+    const updatedMainCharacterIds = appliedEntries.map((entry) => entry.id);
+    if (activeSubmitSession?.mainCharacterIds?.length) {
+      setSubmitSession(interaction.user.id, {
+        ...activeSubmitSession,
+        mainCharacterIds: updatedMainCharacterIds,
+      });
+    }
+
+    const syncedPending = await syncPendingSubmissionMainsForUser(client, interaction.user.id, appliedEntries);
+    const welcomeChannelId = getWelcomeChannelId();
+    const uploadTarget = welcomeChannelId ? `<#${welcomeChannelId}>` : "welcome-канал";
+    await interaction.reply(ephemeralPayload({
+      content: activeSubmitSession?.mainCharacterIds?.length
+        ? `Мейны обновлены: **${appliedEntries.map((entry) => entry.label).join(", ")}**. Текущая загрузка тоже обновлена, теперь просто отправь одним сообщением kills и скрин в ${uploadTarget}.`
+        : syncedPending
+          ? `Мейны обновлены: **${appliedEntries.map((entry) => entry.label).join(", ")}**. Pending-заявка тоже обновлена.`
+          : `Мейны обновлены: **${appliedEntries.map((entry) => entry.label).join(", ")}**.`,
+    }));
+    return;
+  }
+
+  setSubmitSession(interaction.user.id, { mainCharacterIds: appliedEntries.map((entry) => entry.id) });
+  clearMainDraft(interaction.user.id);
+  if (responseMethod === "update") {
+    await interaction.update(buildSubmitStepPayload(interaction.user.id));
+    return;
+  }
+
+  await interaction.reply(buildSubmitStepPayload(interaction.user.id));
+}
+
 function getCharacterById(characterId) {
   return getCharacterEntries().find((entry) => entry.id === characterId) || null;
 }
@@ -3469,9 +3656,10 @@ async function buildNonGgsCaptchaPayload(userId, noticeText = "", options = {}) 
 }
 
 function buildCharacterPickerPayload(mode = "full") {
-  const characterEntries = getCharacterEntries();
-  if (!characterEntries.length) {
-    return ephemeralPayload({ content: "Нет доступных персонажей. Проверь конфигурацию characters в bot.config.json." });
+  const characterEntries = getCharacterPickerEntries();
+  const validationError = getCharacterPickerValidationError(characterEntries);
+  if (validationError) {
+    throw new Error(validationError);
   }
 
   const isQuick = mode === "quick";
@@ -11426,58 +11614,66 @@ client.on("interactionCreate", async (interaction) => {
     }
 
     if (interaction.customId === "onboard_begin") {
-      clearNonGgsCaptchaSession(interaction.user.id);
-      const cooldownLeft = getSubmitCooldownLeftSeconds(interaction.user.id);
-      if (cooldownLeft > 0) {
-        await interaction.reply(ephemeralPayload({ content: `Подожди ещё ${cooldownLeft} сек. перед новой заявкой.` }));
-        return;
-      }
+      try {
+        clearNonGgsCaptchaSession(interaction.user.id);
+        const cooldownLeft = getSubmitCooldownLeftSeconds(interaction.user.id);
+        if (cooldownLeft > 0) {
+          await interaction.reply(ephemeralPayload({ content: `Подожди ещё ${cooldownLeft} сек. перед новой заявкой.` }));
+          return;
+        }
 
-      const pending = getPendingSubmissionForUser(interaction.user.id);
-      if (pending) {
-        await interaction.reply(ephemeralPayload({
-          content: `У тебя уже есть pending-заявка с kills ${pending.kills}. Дождись решения модератора.`,
-        }));
-        return;
-      }
-
-      const session = getSubmitSession(interaction.user.id);
-      if (session) {
-        const welcomeChannelId = getWelcomeChannelId();
-        if (!welcomeChannelId) {
+        const pending = getPendingSubmissionForUser(interaction.user.id);
+        if (pending) {
           await interaction.reply(ephemeralPayload({
-            content: "Ты уже на шаге подачи заявки. Welcome-канал пока не настроен, попроси модератора указать его через Onboarding Panel.",
+            content: `У тебя уже есть pending-заявка с kills ${pending.kills}. Дождись решения модератора.`,
           }));
           return;
         }
 
-        await interaction.reply(buildSubmitStepPayload(interaction.user.id, {
-          noticeText: `Ты уже на шаге загрузки. Просто отправь одним сообщением kills и скрин в <#${welcomeChannelId}>.`,
-        }));
-        return;
-      }
+        const session = getSubmitSession(interaction.user.id);
+        if (session) {
+          const welcomeChannelId = getWelcomeChannelId();
+          if (!welcomeChannelId) {
+            await interaction.reply(ephemeralPayload({
+              content: "Ты уже на шаге подачи заявки. Welcome-канал пока не настроен, попроси модератора указать его через Onboarding Panel.",
+            }));
+            return;
+          }
 
-      const draft = getMainDraft(interaction.user.id);
-      if (draft?.characterIds?.length) {
-        setSubmitSession(interaction.user.id, { mainCharacterIds: draft.characterIds });
-        clearMainDraft(interaction.user.id);
-        await interaction.reply(buildSubmitStepPayload(interaction.user.id));
-        return;
-      }
+          await interaction.reply(buildSubmitStepPayload(interaction.user.id, {
+            noticeText: `Ты уже на шаге загрузки. Просто отправь одним сообщением kills и скрин в <#${welcomeChannelId}>.`,
+          }));
+          return;
+        }
 
-      await interaction.reply(buildCharacterPickerPayload("full"));
+        const draft = getMainDraft(interaction.user.id);
+        if (draft?.characterIds?.length) {
+          setSubmitSession(interaction.user.id, { mainCharacterIds: draft.characterIds });
+          clearMainDraft(interaction.user.id);
+          await interaction.reply(buildSubmitStepPayload(interaction.user.id));
+          return;
+        }
+
+        await openCharacterPicker(interaction, "full");
+      } catch (error) {
+        console.error("onboard_begin failed:", error?.message || error);
+        await respondToOnboardError(
+          interaction,
+          `Не удалось открыть онбординг: ${String(error?.message || error || "неизвестная ошибка").slice(0, 220)}`
+        );
+      }
       return;
     }
 
     if (interaction.customId === "onboard_quick_mains") {
       clearNonGgsCaptchaSession(interaction.user.id);
-      await interaction.reply(buildCharacterPickerPayload("quick"));
+      await openCharacterPicker(interaction, "quick");
       return;
     }
 
     if (interaction.customId === "onboard_change_mains") {
       clearSubmitSession(interaction.user.id);
-      await interaction.update(buildCharacterPickerPayload("full"));
+      await openCharacterPicker(interaction, "full", "update");
       return;
     }
 
@@ -12106,56 +12302,30 @@ client.on("interactionCreate", async (interaction) => {
 
     const isQuickSelection = interaction.customId === "onboard_pick_characters_quick";
     const selectedIds = [...new Set((interaction.values || []).map(getCharacterIdFromSelectValue).filter(Boolean))];
+    const selectedEntries = getSelectedCharacterEntries(selectedIds);
 
-    const pending = getPendingSubmissionForUser(interaction.user.id);
-    if (!isQuickSelection && pending) {
-      await interaction.reply(ephemeralPayload({ content: "У тебя уже есть pending-заявка. Новую создавать нельзя." }));
-      return;
-    }
-
-    if (!selectedIds.length || selectedIds.length > 2) {
-      await interaction.reply(ephemeralPayload({ content: "Нужно выбрать одного или двух мейнов." }));
-      return;
-    }
-
-    const member = await fetchMember(client, interaction.user.id);
-    if (!member) {
-      await interaction.reply(ephemeralPayload({ content: "Не удалось получить твой профиль на сервере." }));
-      return;
-    }
-
-    const selectedEntries = await applyMainSelection(client, member, interaction.user, selectedIds, isQuickSelection ? "quick main selection" : "new main character selection");
-
-    if (isQuickSelection) {
-      const activeSubmitSession = getSubmitSession(interaction.user.id);
-      const updatedMainCharacterIds = selectedEntries.map((entry) => entry.id);
-      if (activeSubmitSession?.mainCharacterIds?.length) {
-        setSubmitSession(interaction.user.id, {
-          ...activeSubmitSession,
-          mainCharacterIds: updatedMainCharacterIds,
-        });
-      }
-
-      const syncedPending = await syncPendingSubmissionMainsForUser(client, interaction.user.id, selectedEntries);
-      const welcomeChannelId = getWelcomeChannelId();
-      const uploadTarget = welcomeChannelId ? `<#${welcomeChannelId}>` : "welcome-канал";
-      await interaction.reply(ephemeralPayload({
-        content: activeSubmitSession?.mainCharacterIds?.length
-          ? `Мейны обновлены: **${selectedEntries.map((entry) => entry.label).join(", ")}**. Текущая загрузка тоже обновлена, теперь просто отправь одним сообщением kills и скрин в ${uploadTarget}.`
-          : syncedPending
-            ? `Мейны обновлены: **${selectedEntries.map((entry) => entry.label).join(", ")}**. Pending-заявка тоже обновлена.`
-            : `Мейны обновлены: **${selectedEntries.map((entry) => entry.label).join(", ")}**.`,
-      }));
-      return;
-    }
-
-    setSubmitSession(interaction.user.id, { mainCharacterIds: selectedEntries.map((entry) => entry.id) });
-    clearMainDraft(interaction.user.id);
-    await interaction.update(buildSubmitStepPayload(interaction.user.id));
+    await completeMainSelection(interaction, selectedEntries, {
+      mode: isQuickSelection ? "quick" : "full",
+      responseMethod: isQuickSelection ? "reply" : "update",
+    });
     return;
   }
 
   if (interaction.isModalSubmit()) {
+    if (["onboard_manual_mains_modal", "onboard_manual_mains_quick_modal"].includes(interaction.customId)) {
+      const mode = interaction.customId === "onboard_manual_mains_quick_modal" ? "quick" : "full";
+      const mainsText = interaction.fields.getTextInputValue("mains");
+      const resolution = resolveCharacterSelectionFromText(mainsText);
+
+      if (resolution.error) {
+        await interaction.reply(ephemeralPayload({ content: resolution.error }));
+        return;
+      }
+
+      await completeMainSelection(interaction, resolution.entries, { mode });
+      return;
+    }
+
     // ── Combo guide edit modal ──
     if (interaction.customId?.startsWith("combo_edit_message:")) {
       if (!hasComboGuidePanelAccess(interaction.member)) {
