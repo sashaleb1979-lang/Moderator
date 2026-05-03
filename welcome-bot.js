@@ -4999,13 +4999,6 @@ function setLegacyTierlistMainIds(liveState, userId, mainIds) {
   user.mainId = normalized[0] || null;
   user.mainSelectPage = 0;
 
-  const draftVotes = getLegacyTierlistDraft(liveState.rawState, userId);
-  const finalVotes = getLegacyTierlistFinal(liveState.rawState, userId);
-  for (const mainId of normalized) {
-    if (draftVotes[mainId]) delete draftVotes[mainId];
-    if (finalVotes[mainId]) delete finalVotes[mainId];
-  }
-
   return normalized;
 }
 
@@ -5104,22 +5097,17 @@ function hasSubmittedLegacyTierlist(rawState, userId) {
 }
 
 function getLegacyTierlistPendingNewCharacterIds(liveState, userId) {
-  const user = getLegacyTierlistWizardUser(liveState.rawState, userId);
   const finalVotes = getLegacyTierlistFinal(liveState.rawState, userId);
-  const mainIds = new Set(getLegacyTierlistMainIds(user, liveState));
   return (liveState.characters || [])
     .map((entry) => entry.id)
-    .filter((characterId) => !mainIds.has(characterId))
     .filter((characterId) => !finalVotes[characterId]);
 }
 
 function getLegacyTierlistRateableEntries(liveState, userId) {
-  const user = getLegacyTierlistWizardUser(liveState.rawState, userId);
-  const mainIds = new Set(getLegacyTierlistMainIds(user, liveState));
   const finalVotes = getLegacyTierlistFinal(liveState.rawState, userId);
 
   return (liveState.characters || [])
-    .filter((entry) => entry?.id && !mainIds.has(entry.id))
+    .filter((entry) => entry?.id)
     .map((entry) => ({
       id: entry.id,
       name: entry.name || entry.id,
@@ -5168,7 +5156,6 @@ function setLegacyTierlistMain(liveState, userId, mainId) {
 
 function startLegacyTierlistWizard(liveState, userId, mode = "full", selectedIds = null) {
   const user = getLegacyTierlistWizardUser(liveState.rawState, userId);
-  const mainIds = new Set(getLegacyTierlistMainIds(user, liveState));
   liveState.rawState.draftVotes ||= {};
   liveState.rawState.draftVotes[userId] = {};
   user.wizMode = mode;
@@ -5176,11 +5163,11 @@ function startLegacyTierlistWizard(liveState, userId, mode = "full", selectedIds
     const allowedIds = new Set((liveState.characters || []).map((entry) => entry.id));
     user.wizQueue = [...new Set(selectedIds
       .map((value) => String(value || "").trim())
-      .filter((characterId) => characterId && allowedIds.has(characterId) && !mainIds.has(characterId)))];
+      .filter((characterId) => characterId && allowedIds.has(characterId)))];
   } else {
     user.wizQueue = mode === "new"
       ? getLegacyTierlistPendingNewCharacterIds(liveState, userId)
-      : (liveState.characters || []).map((entry) => entry.id).filter((characterId) => !mainIds.has(characterId));
+      : (liveState.characters || []).map((entry) => entry.id);
   }
   user.wizIndex = 0;
 }
@@ -5199,8 +5186,7 @@ function legacyTierlistWizardDone(rawState, userId) {
 }
 
 function setLegacyTierlistDraftTier(rawState, userId, characterId, tierKey) {
-  const user = getLegacyTierlistWizardUser(rawState, userId);
-  if (!characterId || getLegacyTierlistMainIds(user).includes(characterId)) return;
+  if (!characterId) return;
   if (!["S", "A", "B", "C", "D"].includes(tierKey)) return;
   const draftVotes = getLegacyTierlistDraft(rawState, userId);
   draftVotes[characterId] = tierKey;
@@ -5225,9 +5211,6 @@ function submitLegacyTierlistVotes(rawState, userId) {
 
   for (const characterId of queue) {
     finalVotes[characterId] = ["S", "A", "B", "C", "D"].includes(draftVotes[characterId]) ? draftVotes[characterId] : "B";
-  }
-  for (const mainId of getLegacyTierlistMainIds(user)) {
-    if (finalVotes[mainId]) delete finalVotes[mainId];
   }
 }
 
@@ -5325,7 +5308,7 @@ function buildLegacyTierlistStartEmbed(liveState, userId) {
       "Твои мейны подхватываются автоматически из ролей персонажей внутри Moderator.",
       "Оценивай персонажей по одному кнопками S A B C D.",
       mainIds.length
-        ? "Найденные мейны будут серыми и заблокированными в твоём тир-листе."
+        ? "Найденные мейны будут помечены меткой MAIN; их можно оценивать, но они не учитываются в общем тир-листе, пока остаются твоими текущими мейнами."
         : "Мейны не найдены — можешь оценивать всех персонажей.",
       hasFinal ? "Кнопка **Оценить точечно** откроет выбор нужных карточек и быструю дооценку только новых персонажей." : "После первой отправки откроется кнопка **Оценить точечно**: через неё можно будет вызывать только нужные карточки без полного сброса.",
     ].join("\n"))
@@ -5417,7 +5400,7 @@ async function buildLegacyTierlistWizardPayload(liveState, userId) {
   const done = Math.min(user.wizIndex || 0, total);
   const currentId = currentLegacyTierlistWizardChar(rawState, userId);
   const currentName = currentId ? (liveState.charById.get(currentId)?.name || currentId) : "—";
-  const lockedMain = formatLegacyTierlistMainSummary(liveState, user);
+  const mainSummary = formatLegacyTierlistMainSummary(liveState, user);
   const finished = legacyTierlistWizardDone(rawState, userId);
 
   const preview = await renderLegacyTierlistFromBuckets(liveState, {
@@ -5450,7 +5433,7 @@ async function buildLegacyTierlistWizardPayload(liveState, userId) {
             : "выбери тир для текущего персонажа кнопками S A B C D.")
     )
     .addFields(
-      { name: "Мейны", value: mainIds.length ? `⬛ **${lockedMain}** (locked)` : "не выбраны", inline: true },
+      { name: "Мейны", value: mainIds.length ? `⬛ **${mainSummary}** (MAIN не учитываются в общем тир-листе)` : "не выбраны", inline: true },
       { name: "Прогресс", value: `${done}/${total}`, inline: true },
       { name: "Сейчас", value: finished ? "—" : `**${currentName}**`, inline: false }
     );
@@ -5508,7 +5491,7 @@ function resolveLegacyTierlistInfluenceFromMember(member, rawState = null) {
     let best = influenceConfig.default;
     let bestRole = null;
     for (const tierKey of [1, 2, 3, 4, 5]) {
-      const roleId = String(appConfig?.roles?.killTierRoleIds?.[tierKey] || "").trim();
+      const roleId = getTierRoleId(tierKey);
       const multiplier = influenceConfig[tierKey];
       if (!roleId || !multiplier) continue;
       if (roles.has(roleId) && multiplier > best) {
@@ -5868,6 +5851,51 @@ async function backfillLegacyTierlistInfluenceForExistingVoters(client, { refres
   return { total: voterIds.length, changed };
 }
 
+async function backfillLegacyTierlistMainsForExistingMembers(client, { refresh = true } = {}) {
+  const liveState = getLiveLegacyTierlistState();
+  if (!liveState.ok) return { total: 0, changed: 0, skipped: true, error: liveState.error };
+
+  const trackedUserIds = new Set(Object.keys(liveState.rawState?.users || {}));
+  const managedCharacterRoleIds = getCharacterRoleIds();
+  if (trackedUserIds.size === 0 && managedCharacterRoleIds.length === 0) {
+    return { total: 0, changed: 0 };
+  }
+
+  const guild = await client.guilds.fetch(GUILD_ID);
+  const members = await guild.members.fetch().catch(() => null);
+  if (!members) return { total: 0, changed: 0, skipped: true, error: "Не удалось получить список участников guild." };
+
+  const candidateIds = new Set([...trackedUserIds]);
+  for (const member of members.values()) {
+    if (member.user?.bot) continue;
+    if (managedCharacterRoleIds.some((roleId) => member.roles.cache.has(roleId))) {
+      candidateIds.add(member.id);
+    }
+  }
+
+  let changed = 0;
+  let needsRefresh = false;
+  for (const userId of candidateIds) {
+    const member = members.get(userId) || null;
+    const result = syncLegacyTierlistMainsForMember(liveState, userId, member, db.profiles?.[userId]);
+    if (!result.changed) continue;
+
+    changed += 1;
+    if (hasSubmittedLegacyTierlist(liveState.rawState, userId)) {
+      needsRefresh = true;
+    }
+  }
+
+  if (changed > 0) {
+    saveLiveLegacyTierlistStateAndResync(liveState);
+    if (refresh && needsRefresh) {
+      await refreshLegacyTierlistPublicViews(client, { liveState }).catch(() => {});
+    }
+  }
+
+  return { total: candidateIds.size, changed, refreshed: needsRefresh && changed > 0 };
+}
+
 async function syncLegacyTierlistInfluenceForMember(client, member) {
   const liveState = getLiveLegacyTierlistState();
   if (!liveState.ok) return { changed: false, skipped: true, error: liveState.error };
@@ -5895,6 +5923,24 @@ async function syncLegacyTierlistInfluenceForMember(client, member) {
   }
 
   return { changed: true, hasVote, syncResult };
+}
+
+async function syncLiveLegacyTierlistMainsForMember(client, member, profile = null) {
+  const liveState = getLiveLegacyTierlistState();
+  if (!liveState.ok) return { changed: false, skipped: true, error: liveState.error };
+
+  const result = syncLegacyTierlistMainsForMember(liveState, member.id, member, profile || db.profiles?.[member.id]);
+  if (!result.changed) {
+    return { changed: false, mainIds: result.mainIds, hasVote: hasSubmittedLegacyTierlist(liveState.rawState, member.id) };
+  }
+
+  const hasVote = hasSubmittedLegacyTierlist(liveState.rawState, member.id);
+  const syncResult = saveLiveLegacyTierlistStateAndResync(liveState);
+  if (hasVote) {
+    await refreshLegacyTierlistPublicViews(client, { liveState }).catch(() => {});
+  }
+
+  return { changed: true, mainIds: result.mainIds, hasVote, syncResult };
 }
 
 function getLiveLegacyEloState() {
@@ -5954,6 +6000,13 @@ function buildLegacyEloReviewEmbed(submission, statusLabel, extraFields = []) {
   return embed;
 }
 
+function buildLegacyEloReviewChannelPayload(submission, statusLabel, components = []) {
+  return {
+    embeds: [buildLegacyEloReviewEmbed(submission, statusLabel)],
+    components,
+  };
+}
+
 async function postLegacyEloReviewRecord(client, submission, fileAttachment = null, statusLabel = "pending", extraFields = [], components = []) {
   const reviewChannelId = String(appConfig?.channels?.reviewChannelId || "").trim();
   if (!reviewChannelId) return null;
@@ -5973,6 +6026,13 @@ async function postLegacyEloReviewRecord(client, submission, fileAttachment = nu
   submission.reviewChannelId = sent.channel.id;
   submission.reviewMessageId = sent.id;
   return sent;
+}
+
+async function fetchLegacyEloReviewMessage(client, submission) {
+  if (!submission?.reviewChannelId || !submission?.reviewMessageId) return null;
+  const reviewChannel = await client.channels.fetch(submission.reviewChannelId).catch(() => null);
+  if (!reviewChannel?.isTextBased?.()) return null;
+  return reviewChannel.messages.fetch(submission.reviewMessageId).catch(() => null);
 }
 
 async function getLegacyEloApprovalProfileData(client, userId) {
@@ -7196,6 +7256,14 @@ client.once("clientReady", async () => {
     } catch (error) {
       console.error("Legacy Tierlist influence backfill failed:", error?.message || error);
     }
+    try {
+      const result = await backfillLegacyTierlistMainsForExistingMembers(client, { refresh: true });
+      if (result.total > 0) {
+        console.log(`[legacy-tierlist][mains] startup backfill: changed ${result.changed}/${result.total}`);
+      }
+    } catch (error) {
+      console.error("Legacy Tierlist mains backfill failed:", error?.message || error);
+    }
   }
   console.log(`Managed roles ready. Characters: ${generated.characterRoles}, tiers: ${generated.tierRoles}`);
   console.log("Welcome onboarding bot is ready");
@@ -7219,6 +7287,12 @@ client.on("guildMemberUpdate", async (_oldMember, newMember) => {
     await syncLegacyTierlistInfluenceForMember(client, newMember);
   } catch (error) {
     console.error("Legacy Tierlist influence sync failed:", error?.message || error);
+  }
+
+  try {
+    await syncLiveLegacyTierlistMainsForMember(client, newMember);
+  } catch (error) {
+    console.error("Legacy Tierlist mains sync failed:", error?.message || error);
   }
 });
 
@@ -10317,7 +10391,10 @@ client.on("interactionCreate", async (interaction) => {
         const expired = expireLegacyEloSubmission(liveState.rawDb, eloReviewSubmissionId, { reviewedAt: nowIso() });
         saveLegacyEloDbFile(liveState.resolvedPath, expired.db);
         const syncWarning = getLegacyEloResyncWarning();
-        await interaction.update(buildLegacyEloReviewPayload(eloReviewSubmissionId, `Заявка протухла и помечена expired.${syncWarning}`, false));
+        await interaction.update(buildLegacyEloReviewChannelPayload(expired.submission, "expired"));
+        if (syncWarning) {
+          await interaction.followUp(ephemeralPayload({ content: `Заявка протухла и помечена expired.${syncWarning}` })).catch(() => {});
+        }
         return;
       }
 
@@ -10348,7 +10425,10 @@ client.on("interactionCreate", async (interaction) => {
             ].join("\n")
           );
           await logLine(client, `ELO APPROVE: <@${submission.userId}> elo ${approved.submission.elo} -> tier ${approved.submission.tier} (id ${approved.submission.id}) by ${interaction.user.tag}`);
-          await interaction.update(buildLegacyEloReviewPayload(eloReviewSubmissionId, `Одобрено.${syncWarning}`, false));
+          await interaction.update(buildLegacyEloReviewChannelPayload(approved.submission, "approved"));
+          if (syncWarning) {
+            await interaction.followUp(ephemeralPayload({ content: `Одобрено.${syncWarning}` })).catch(() => {});
+          }
         } catch (error) {
           await interaction.reply(ephemeralPayload({ content: String(error?.message || error || "Не удалось одобрить ELO заявку.") }));
         }
@@ -12620,7 +12700,11 @@ client.on("interactionCreate", async (interaction) => {
         const expired = expireLegacyEloSubmission(liveState.rawDb, submissionId, { reviewedAt: nowIso() });
         saveLegacyEloDbFile(liveState.resolvedPath, expired.db);
         const syncWarning = getLegacyEloResyncWarning();
-        await interaction.reply(buildLegacyEloReviewPayload(submissionId, `Заявка протухла и помечена expired.${syncWarning}`));
+        const reviewMessage = await fetchLegacyEloReviewMessage(client, expired.submission);
+        if (reviewMessage) {
+          await reviewMessage.edit(buildLegacyEloReviewChannelPayload(expired.submission, "expired")).catch(() => {});
+        }
+        await interaction.reply(ephemeralPayload({ content: `Заявка протухла и помечена expired.${syncWarning}` }));
         return;
       }
 
@@ -12633,7 +12717,11 @@ client.on("interactionCreate", async (interaction) => {
         saveLegacyEloDbFile(liveState.resolvedPath, edited.db);
         const syncWarning = getLegacyEloResyncWarning();
         await logLine(client, `ELO EDIT: <@${submission.userId}> pending elo ${edited.submission.elo} -> tier ${edited.submission.tier} (id ${edited.submission.id}) by ${interaction.user.tag}`);
-        await interaction.reply(buildLegacyEloReviewPayload(submissionId, `ELO обновлено: ${edited.submission.elo} (тир ${edited.submission.tier}).${syncWarning}`));
+        const reviewMessage = await fetchLegacyEloReviewMessage(client, edited.submission);
+        if (reviewMessage) {
+          await reviewMessage.edit(buildLegacyEloReviewChannelPayload(edited.submission, "pending", [buildLegacyEloReviewButtons(edited.submission.id)])).catch(() => {});
+        }
+        await interaction.reply(ephemeralPayload({ content: `ELO обновлено: ${edited.submission.elo} (тир ${edited.submission.tier}).${syncWarning}` }));
       } catch (error) {
         await interaction.reply(ephemeralPayload({ content: String(error?.message || error || "Не удалось изменить ELO в заявке.") }));
       }
@@ -12664,6 +12752,18 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
+      if (isLegacyEloSubmissionExpired(submission, { pendingExpireHours: LEGACY_ELO_PENDING_EXPIRE_HOURS })) {
+        const expired = expireLegacyEloSubmission(liveState.rawDb, submissionId, { reviewedAt: nowIso() });
+        saveLegacyEloDbFile(liveState.resolvedPath, expired.db);
+        const syncWarning = getLegacyEloResyncWarning();
+        const reviewMessage = await fetchLegacyEloReviewMessage(client, expired.submission);
+        if (reviewMessage) {
+          await reviewMessage.edit(buildLegacyEloReviewChannelPayload(expired.submission, "expired")).catch(() => {});
+        }
+        await interaction.reply(ephemeralPayload({ content: `Заявка протухла и помечена expired.${syncWarning}` }));
+        return;
+      }
+
       const reason = String(interaction.fields.getTextInputValue("elo_review_reason") || "").trim().slice(0, 800);
       if (!reason) {
         await interaction.reply(ephemeralPayload({ content: "Нужна причина отказа." }));
@@ -12687,7 +12787,11 @@ client.on("interactionCreate", async (interaction) => {
         ].join("\n")
       );
       await logLine(client, `ELO REJECT: <@${submission.userId}> elo ${submission.elo} (id ${submission.id}) by ${interaction.user.tag} | reason: ${reason}`);
-      await interaction.reply(buildLegacyEloReviewPayload(submissionId, `Отклонено.${syncWarning}`));
+      const reviewMessage = await fetchLegacyEloReviewMessage(client, rejected.submission);
+      if (reviewMessage) {
+        await reviewMessage.edit(buildLegacyEloReviewChannelPayload(rejected.submission, "rejected")).catch(() => {});
+      }
+      await interaction.reply(ephemeralPayload({ content: `Отклонено.${syncWarning}` }));
       return;
     }
 

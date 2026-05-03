@@ -90,6 +90,69 @@ test("computeLegacyTierlistGlobalBuckets follows legacy averaging with stored in
   assert.equal(result.meta.gojo.votes, 2);
 });
 
+test("computeLegacyTierlistGlobalBuckets excludes only current main votes from the global result", () => {
+  const liveState = {
+    rawState: {
+      tiers: {},
+      users: {
+        user1: { mainIds: ["gojo"], influenceMultiplier: 2 },
+        user2: { influenceMultiplier: 1 },
+      },
+      finalVotes: {
+        user1: { gojo: "D", yuji: "S" },
+        user2: { gojo: "S" },
+      },
+    },
+    characters: [
+      { id: "gojo", name: "Gojo" },
+      { id: "yuji", name: "Yuji" },
+    ],
+    charById: new Map([
+      ["gojo", { id: "gojo", name: "Gojo" }],
+      ["yuji", { id: "yuji", name: "Yuji" }],
+    ]),
+  };
+
+  const result = computeLegacyTierlistGlobalBuckets(liveState);
+
+  assert.equal(result.votersCount, 2);
+  assert.equal(result.meta.gojo.votes, 1);
+  assert.equal(result.meta.yuji.votes, 1);
+  assert.deepEqual(result.buckets.S, ["yuji", "gojo"]);
+});
+
+test("computeLegacyTierlistGlobalBuckets reuses stored votes after mainIds change", () => {
+  const liveState = {
+    rawState: {
+      tiers: {},
+      users: {
+        user1: { mainIds: ["gojo"], influenceMultiplier: 1 },
+        user2: { influenceMultiplier: 1 },
+      },
+      finalVotes: {
+        user1: { gojo: "D" },
+        user2: { gojo: "S" },
+      },
+    },
+    characters: [
+      { id: "gojo", name: "Gojo" },
+    ],
+    charById: new Map([
+      ["gojo", { id: "gojo", name: "Gojo" }],
+    ]),
+  };
+
+  const beforeMainSwap = computeLegacyTierlistGlobalBuckets(liveState);
+  liveState.rawState.users.user1.mainIds = ["yuji"];
+  const afterMainSwap = computeLegacyTierlistGlobalBuckets(liveState);
+
+  assert.equal(beforeMainSwap.meta.gojo.votes, 1);
+  assert.equal(beforeMainSwap.votersCount, 1);
+  assert.equal(afterMainSwap.meta.gojo.votes, 2);
+  assert.equal(afterMainSwap.votersCount, 2);
+  assert.ok(afterMainSwap.meta.gojo.avg < beforeMainSwap.meta.gojo.avg);
+});
+
 test("buildLegacyTierlistBucketsFromVoteMap and summary embed follow legacy tier naming", () => {
   const liveState = {
     rawState: {
@@ -125,7 +188,7 @@ test("buildLegacyTierlistBucketsFromVoteMap and summary embed follow legacy tier
   assert.match(embed.data.fields[0].value, /Gojo/);
 });
 
-test("appendLegacyTierlistCharacterToActiveWizards appends for no-main users and skips targeted sessions", () => {
+test("appendLegacyTierlistCharacterToActiveWizards appends for active full/new sessions even when the character is a main", () => {
   const rawState = {
     users: {
       noMainFull: { wizMode: "full", wizQueue: ["gojo"], wizIndex: 0, mainIds: [] },
@@ -141,6 +204,6 @@ test("appendLegacyTierlistCharacterToActiveWizards appends for no-main users and
   assert.deepEqual(rawState.users.noMainFull.wizQueue, ["gojo", "sukuna"]);
   assert.deepEqual(rawState.users.noMainNew.wizQueue, ["yuji", "sukuna"]);
   assert.deepEqual(rawState.users.targeted.wizQueue, ["mahito"]);
-  assert.deepEqual(rawState.users.lockedMain.wizQueue, ["gojo"]);
+  assert.deepEqual(rawState.users.lockedMain.wizQueue, ["gojo", "sukuna"]);
   assert.deepEqual(rawState.users.finished.wizQueue, ["gojo"]);
 });

@@ -317,10 +317,8 @@ function appendLegacyTierlistCharacterToActiveWizards(rawState, characterId) {
   for (const userId of Object.keys(rawState?.users || {})) {
     const user = rawState.users[userId];
     const wizardMode = String(user?.wizMode || "").trim();
-    const mainIds = getLegacyTierlistUserMainIds(user);
     if (!["full", "new"].includes(wizardMode)) continue;
     if (!Array.isArray(user.wizQueue) || (user.wizIndex || 0) >= user.wizQueue.length) continue;
-    if (mainIds.includes(characterId)) continue;
     if (user.wizQueue.includes(characterId)) continue;
     user.wizQueue.push(characterId);
   }
@@ -500,6 +498,31 @@ function getStoredInfluenceMultiplier(liveState, userId) {
   return normalizePositiveNumber(liveState?.rawState?.users?.[userId]?.influenceMultiplier, 1);
 }
 
+function getStoredMainIds(liveState, userId) {
+  const rawUser = liveState?.rawState?.users?.[userId] || {};
+  const mainIds = Array.isArray(rawUser.mainIds) && rawUser.mainIds.length
+    ? rawUser.mainIds
+    : (rawUser.mainId ? [rawUser.mainId] : []);
+
+  return [...new Set(mainIds
+    .map((value) => cleanString(value, 200))
+    .filter(Boolean))].slice(0, 2);
+}
+
+function getEffectiveLegacyTierlistVote(liveState, userId, characterId) {
+  const storedVote = liveState?.rawState?.finalVotes?.[userId]?.[characterId];
+  if (!storedVote) return null;
+
+  const mainIds = getStoredMainIds(liveState, userId);
+  if (mainIds.includes(cleanString(characterId, 200))) return null;
+
+  return normalizeTierKey(storedVote);
+}
+
+function hasEffectiveLegacyTierlistVotes(liveState, userId, votes) {
+  return Object.keys(votes || {}).some((characterId) => Boolean(getEffectiveLegacyTierlistVote(liveState, userId, characterId)));
+}
+
 function voteWeight(tierKey) {
   const offset = Math.abs(LEGACY_TIER_OFFSETS[normalizeTierKey(tierKey)] || 0);
   return offset === 2 ? 5 : 1;
@@ -510,7 +533,8 @@ function computeLegacyTierlistCharacterAvgOffset(liveState, characterId) {
   let weightedSum = 1;
 
   for (const [userId, votes] of Object.entries(liveState?.rawState?.finalVotes || {})) {
-    const tierKey = votes?.[characterId];
+    void votes;
+    const tierKey = getEffectiveLegacyTierlistVote(liveState, userId, characterId);
     if (!tierKey) continue;
 
     const normalizedTierKey = normalizeTierKey(tierKey);
@@ -538,13 +562,13 @@ function computeLegacyTierlistGlobalBuckets(liveState) {
   const voters = new Set();
 
   for (const [userId, votes] of Object.entries(liveState?.rawState?.finalVotes || {})) {
-    if (votes && Object.keys(votes).length > 0) voters.add(userId);
+    if (hasEffectiveLegacyTierlistVotes(liveState, userId, votes)) voters.add(userId);
   }
 
   for (const character of liveState?.characters || []) {
     let votesCount = 0;
-    for (const votes of Object.values(liveState?.rawState?.finalVotes || {})) {
-      if (votes?.[character.id]) votesCount += 1;
+    for (const [userId] of Object.entries(liveState?.rawState?.finalVotes || {})) {
+      if (getEffectiveLegacyTierlistVote(liveState, userId, character.id)) votesCount += 1;
     }
 
     const avg = computeLegacyTierlistCharacterAvgOffset(liveState, character.id);
