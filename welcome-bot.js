@@ -1194,6 +1194,9 @@ async function cleanupOrphanCharacterRoles(client) {
 
   let guild = null;
   try { guild = await getGuild(client); } catch { guild = null; }
+  if (guild) {
+    try { await guild.members.fetch(); } catch { /* best-effort */ }
+  }
   let deletedRoles = 0;
   for (const orphanId of orphanIds) {
     const roleId = String(generated.characters[orphanId] || "").trim();
