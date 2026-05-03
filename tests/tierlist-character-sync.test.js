@@ -4,6 +4,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const {
+  buildLegacyTierlistClusterLookup,
   buildLegacyCharacterSyncIndex,
   getLegacyMainsBackfillDisposition,
   getLegacyTierlistClusterStatusNote,
@@ -88,4 +89,26 @@ test("cluster status note ignores unconfigured tierlist path but flags real fail
     getLegacyTierlistClusterStatusNote("Legacy Tierlist state не найден: C:/tierlist/state.json"),
     "_Кластеры tierlist временно недоступны._"
   );
+});
+
+test("cluster lookup keeps canonical bucket tiers for zero-vote characters", () => {
+  const lookup = buildLegacyTierlistClusterLookup({
+    rawState: {
+      tiers: {
+        B: { name: "Норма" },
+      },
+    },
+    buckets: {
+      B: [" crow_charmer "],
+    },
+    meta: {
+      crow_charmer: { avg: 0, votes: 0 },
+    },
+  });
+
+  assert.deepEqual(lookup.get("crow_charmer"), {
+    tierKey: "B",
+    name: "Норма",
+    avg: 0,
+  });
 });

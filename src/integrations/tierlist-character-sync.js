@@ -190,7 +190,28 @@ function getLegacyTierlistClusterStatusNote(errorMessage) {
   return "_Кластеры tierlist временно недоступны._";
 }
 
+function buildLegacyTierlistClusterLookup({ buckets = {}, meta = {}, rawState = {} } = {}) {
+  const clusterByLegacyId = new Map();
+
+  for (const tierKey of ["S", "A", "B", "C", "D"]) {
+    const tierName = cleanText(rawState?.tiers?.[tierKey]?.name || tierKey, 80) || tierKey;
+    for (const id of ensureArray(buckets?.[tierKey])) {
+      const legacyId = cleanText(id, 80);
+      if (!legacyId) continue;
+
+      clusterByLegacyId.set(legacyId, {
+        tierKey,
+        name: tierName,
+        avg: Number(meta?.[legacyId]?.avg) || 0,
+      });
+    }
+  }
+
+  return clusterByLegacyId;
+}
+
 module.exports = {
+  buildLegacyTierlistClusterLookup,
   buildLegacyCharacterSyncIndex,
   getLegacyMainsBackfillDisposition,
   getLegacyTierlistClusterStatusNote,

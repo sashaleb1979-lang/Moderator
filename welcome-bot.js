@@ -102,6 +102,7 @@ const {
   saveLegacyTierlistState,
 } = require("./src/integrations/tierlist-live");
 const {
+  buildLegacyTierlistClusterLookup,
   buildLegacyCharacterSyncIndex,
   getLegacyMainsBackfillDisposition,
   getLegacyTierlistClusterStatusNote,
@@ -1476,15 +1477,7 @@ function buildCharactersRankingEmbed(entries, liveContext) {
     if (live?.ok) {
       legacyCharacterIndex = buildLegacyCharacterSyncIndex(live.characters);
       const { buckets, meta } = computeLegacyTierlistGlobalBuckets(live);
-      for (const tierKey of ["S", "A", "B", "C", "D"]) {
-        const tierName = String(getTierState(live.rawState, tierKey)?.name || tierKey).trim();
-        for (const id of buckets[tierKey] || []) {
-          const votes = Number(meta?.[id]?.votes) || 0;
-          if (votes <= 0) continue;
-          const avg = Number(meta?.[id]?.avg) || 0;
-          clusterByLegacyId.set(String(id || "").trim(), { tierKey, name: tierName, avg });
-        }
-      }
+      clusterByLegacyId = buildLegacyTierlistClusterLookup({ buckets, meta, rawState: live.rawState });
       clusterRanking = Object.entries(meta || {})
         .map(([id, m]) => ({
           id: String(id),
