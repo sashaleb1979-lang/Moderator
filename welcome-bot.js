@@ -89,6 +89,7 @@ const {
   addLegacyTierlistCustomCharacter,
   buildLegacyTierlistSummaryEmbed,
   computeLegacyTierlistGlobalBuckets,
+  computeLegacyTierlistGlobalLayoutHash,
   getLegacyTierlistFontDebugInfo,
   getLegacyTierlistImageConfig,
   getLegacyTierlistUserTierCounts,
@@ -4841,6 +4842,18 @@ async function refreshLegacyTierlistDashboard(client, options = {}) {
   if (!message) {
     const ensured = await ensureLegacyTierlistDashboardMessage(client, liveState, channelId);
     return { ok: true, ensured: true, channelId: ensured.channelId, messageId: ensured.messageId, syncResult: ensured.syncResult, liveState };
+  }
+
+  // Skip costly PNG render + message.edit if the rendered layout has not changed.
+  if (!options.force) {
+    const { buckets } = computeLegacyTierlistGlobalBuckets(liveState);
+    const layoutHash = computeLegacyTierlistGlobalLayoutHash(liveState, buckets, LEGACY_TIERLIST_TITLE);
+    const stamp = liveState.rawState?.settings?.lastDashboardLayoutHash;
+    if (stamp && stamp === layoutHash) {
+      return { ok: true, ensured: false, channelId: channel.id, messageId: message.id, skipped: true, liveState };
+    }
+    liveState.rawState.settings ||= {};
+    liveState.rawState.settings.lastDashboardLayoutHash = layoutHash;
   }
 
   const payload = await buildLegacyTierlistDashboardPayload(liveState);

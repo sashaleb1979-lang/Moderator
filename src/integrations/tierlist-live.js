@@ -3,6 +3,7 @@
 const fs = require("fs");
 const http = require("http");
 const https = require("https");
+const crypto = require("crypto");
 const path = require("path");
 const { PassThrough } = require("stream");
 const { EmbedBuilder } = require("discord.js");
@@ -780,11 +781,60 @@ async function renderLegacyTierlistFromBuckets(liveState, options = {}) {
 
 async function renderLegacyTierlistGlobalPng(liveState, options = {}) {
   const { buckets, votersCount } = computeLegacyTierlistGlobalBuckets(liveState);
-  return renderLegacyTierlistFromBuckets(liveState, {
-    title: options.title || LEGACY_TIERLIST_TITLE,
+  const title = options.title || LEGACY_TIERLIST_TITLE;
+  const layoutHash = computeLegacyTierlistGlobalLayoutHash(liveState, buckets, title);
+
+  liveState.runtime ||= {};
+  const cached = liveState.runtime.lastGlobalPng;
+  if (cached && cached.hash === layoutHash && Buffer.isBuffer(cached.buffer)) {
+    return cached.buffer;
+  }
+
+  const buffer = await renderLegacyTierlistFromBuckets(liveState, {
+    title,
     footerText: `voters: ${votersCount}. updated: ${new Date().toLocaleString("ru-RU")}`,
     buckets,
   });
+
+  liveState.runtime.lastGlobalPng = { hash: layoutHash, buffer, votersCount, renderedAt: Date.now() };
+  return buffer;
+}
+
+function computeLegacyTierlistGlobalLayoutHash(liveState, buckets, title = LEGACY_TIERLIST_TITLE) {
+  const rawState = liveState?.rawState || {};
+  const cfg = getLegacyTierlistImageConfig(rawState);
+  const tiers = {};
+  for (const tierKey of LEGACY_TIER_ORDER) {
+    const tierState = getTierState(rawState, tierKey);
+    tiers[tierKey] = {
+      name: tierState?.name || tierKey,
+      color: tierState?.color || null,
+      ids: Array.from(buckets[tierKey] || []),
+    };
+  }
+  const customIds = [];
+  try {
+    if (liveState?.customCharactersDir && fs.existsSync(liveState.customCharactersDir)) {
+      for (const entry of fs.readdirSync(liveState.customCharactersDir)) {
+        if (entry.endsWith(".png")) customIds.push(entry);
+      }
+      customIds.sort();
+    }
+  } catch {}
+
+  const payload = JSON.stringify({
+    title,
+    image: { width: cfg.W, height: cfg.H, icon: cfg.ICON },
+    tiers,
+    customIds,
+  });
+  return crypto.createHash("sha1").update(payload).digest("hex");
+}
+
+function invalidateLegacyTierlistGlobalPngCache(liveState) {
+  if (liveState && liveState.runtime) {
+    liveState.runtime.lastGlobalPng = null;
+  }
 }
 
 async function renderLegacyTierlistUserPng(liveState, targetUserId, titleSuffix = "") {
@@ -859,10 +909,12 @@ module.exports = {
   buildLegacyTierlistSummaryEmbed,
   computeLegacyTierlistCharacterAvgOffset,
   computeLegacyTierlistGlobalBuckets,
+  computeLegacyTierlistGlobalLayoutHash,
   ensureLegacyTierlistStateShape,
   getLegacyTierlistFontDebugInfo,
   getLegacyTierlistImageConfig,
   getLegacyTierlistUserTierCounts,
+  invalidateLegacyTierlistGlobalPngCache,
   loadLegacyTierlistState,
   mergeLegacyTierlistCharacters,
   renderLegacyTierlistFromBuckets,
