@@ -843,18 +843,56 @@ function buildMyCardEmbed(userId) {
 
 function getApprovedTierlistEntries(options = {}) {
   const liveMainsByUserId = options?.liveMainsByUserId;
+  const characterEntries = getCharacterEntries();
+  const characterById = new Map(characterEntries.map((entry) => [entry.id, entry]));
+  const characterByLabel = new Map(characterEntries.map((entry) => [String(entry.label).toLowerCase(), entry]));
+  const buildFallbackMains = (profile) => {
+    const ids = Array.isArray(profile?.mainCharacterIds) ? profile.mainCharacterIds : [];
+    const labels = Array.isArray(profile?.mainCharacterLabels) ? profile.mainCharacterLabels : [];
+    const out = [];
+    const seen = new Set();
+    for (const rawId of ids) {
+      const id = String(rawId || "").trim();
+      if (!id || seen.has(id)) continue;
+      const entry = characterById.get(id);
+      if (entry) {
+        out.push({ id: entry.id, label: entry.label, roleId: entry.roleId });
+        seen.add(id);
+      } else {
+        out.push({ id, label: id, roleId: "" });
+        seen.add(id);
+      }
+    }
+    if (!out.length && labels.length) {
+      for (const label of labels) {
+        const key = String(label || "").toLowerCase();
+        if (!key) continue;
+        const entry = characterByLabel.get(key);
+        if (entry && !seen.has(entry.id)) {
+          out.push({ id: entry.id, label: entry.label, roleId: entry.roleId });
+          seen.add(entry.id);
+        } else if (!seen.has(key)) {
+          out.push({ id: key, label: String(label), roleId: "" });
+          seen.add(key);
+        }
+      }
+    }
+    return out;
+  };
   return Object.entries(db.profiles || {})
-    .map(([userId, profile]) => ({
-      userId,
-      profile,
-      approvedKills: parseTrackedStatNumber(profile?.approvedKills),
-      killTier: parseTrackedStatNumber(profile?.killTier),
-      displayName: getProfileDisplayName(userId, profile),
-      mains: liveMainsByUserId instanceof Map
-        ? (liveMainsByUserId.get(userId) || [])
-        : (Array.isArray(profile?.mainCharacterLabels) ? profile.mainCharacterLabels : []),
-      updatedAt: profile?.updatedAt || null,
-    }))
+    .map(([userId, profile]) => {
+      const liveMains = liveMainsByUserId instanceof Map ? liveMainsByUserId.get(userId) : null;
+      const mains = (Array.isArray(liveMains) && liveMains.length) ? liveMains : buildFallbackMains(profile);
+      return {
+        userId,
+        profile,
+        approvedKills: parseTrackedStatNumber(profile?.approvedKills),
+        killTier: parseTrackedStatNumber(profile?.killTier),
+        displayName: getProfileDisplayName(userId, profile),
+        mains,
+        updatedAt: profile?.updatedAt || null,
+      };
+    })
     .filter((entry) => Number.isFinite(entry.approvedKills) && entry.approvedKills >= 0 && Number.isFinite(entry.killTier) && entry.killTier >= 1)
     .sort((left, right) => {
       if (right.approvedKills !== left.approvedKills) return right.approvedKills - left.approvedKills;
@@ -916,68 +954,96 @@ function createTrackedLiveMemberEntry(userId, member) {
   };
 }
 
-async function getLiveCharacterStatsContext(client) {
-  const characterEntries = getCharacterEntries().filter((entry) => String(entry.roleId || "").trim());
-  if (!characterEntries.length) {
+let liveCharacterStatsContextCache = { at: 0, value: null, promise: null };
+const LIVE_CHARACTER_STATS_CACHE_TTL_MS = 60 * 1000;
+
+function invalidateLiveCharacterStatsContext() {
+  liveCharacterStatsContextCache = { at: 0, value: null, promise: null };
+}
+
+async function getLiveCharacterStatsContext(client, options = {}) {
+  const now = Date.now();
+  if (!options.force && liveCharacterStatsContextCache.value && (now - liveCharacterStatsContextCache.at) < LIVE_CHARACTER_STATS_CACHE_TTL_MS) {
+    return liveCharacterStatsContextCache.value;
+  }
+  if (liveCharacterStatsContextCache.promise) {
+    return liveCharacterStatsContextCache.promise;
+  }
+  const promise = (async () => {
+    const characterEntries = getCharacterEntries().filter((entry) => String(entry.roleId || "").trim());
+    if (!characterEntries.length) {
+      return {
+        liveMainsByUserId: new Map(),
+        trackedMemberStats: getTrackedMemberStats([]),
+        characterStats: [],
+      };
+    }
+
+    const guild = await getGuild(client);
+    if (!guild) {
+      throw new Error("Не удалось получить сервер для статистики ролей персонажей.");
+    }
+
+    // Use cache first; only force-fetch if cache looks empty (cold start).
+    if (guild.members.cache.size < 2) {
+      try { await guild.members.fetch(); } catch (error) { console.warn("guild.members.fetch failed:", error?.message || error); }
+    }
+
+    const characterStatsInputById = new Map(
+      characterEntries.map((entry) => [
+        entry.id,
+        {
+          main: entry.label,
+          roleId: entry.roleId,
+          roleHolderCount: 0,
+          rememberedMembers: [],
+        },
+      ])
+    );
+    const liveMainsByUserId = new Map();
+    const trackedMembersByUserId = new Map();
+
+    for (const member of guild.members.cache.values()) {
+      if (member.user?.bot) continue;
+
+      const memberCharacters = characterEntries.filter((entry) => member.roles.cache.has(entry.roleId));
+      if (!memberCharacters.length) continue;
+
+      const liveMains = memberCharacters
+        .map((entry) => ({ id: entry.id, label: entry.label, roleId: entry.roleId }))
+        .sort((left, right) => left.label.localeCompare(right.label, "ru"));
+      liveMainsByUserId.set(member.id, liveMains);
+
+      let trackedMember = trackedMembersByUserId.get(member.id);
+      if (!trackedMember) {
+        trackedMember = createTrackedLiveMemberEntry(member.id, member);
+        trackedMembersByUserId.set(member.id, trackedMember);
+      }
+
+      const remembered = hasTrackedProfileKills(trackedMember);
+      for (const character of memberCharacters) {
+        const stat = characterStatsInputById.get(character.id);
+        if (!stat) continue;
+        stat.roleHolderCount += 1;
+        if (remembered) stat.rememberedMembers.push(trackedMember);
+      }
+    }
+
     return {
-      liveMainsByUserId: new Map(),
-      trackedMemberStats: getTrackedMemberStats([]),
-      characterStats: [],
+      liveMainsByUserId,
+      trackedMemberStats: getTrackedMemberStats([...trackedMembersByUserId.values()]),
+      characterStats: getCharacterRoleStats([...characterStatsInputById.values()]),
     };
+  })();
+  liveCharacterStatsContextCache.promise = promise;
+  try {
+    const value = await promise;
+    liveCharacterStatsContextCache = { at: Date.now(), value, promise: null };
+    return value;
+  } catch (error) {
+    liveCharacterStatsContextCache = { at: 0, value: null, promise: null };
+    throw error;
   }
-
-  const guild = await getGuild(client);
-  if (!guild) {
-    throw new Error("Не удалось получить сервер для статистики ролей персонажей.");
-  }
-
-  await guild.members.fetch();
-
-  const characterStatsInputById = new Map(
-    characterEntries.map((entry) => [
-      entry.id,
-      {
-        main: entry.label,
-        roleId: entry.roleId,
-        roleHolderCount: 0,
-        rememberedMembers: [],
-      },
-    ])
-  );
-  const liveMainsByUserId = new Map();
-  const trackedMembersByUserId = new Map();
-
-  for (const member of guild.members.cache.values()) {
-    if (member.user?.bot) continue;
-
-    const memberCharacters = characterEntries.filter((entry) => member.roles.cache.has(entry.roleId));
-    if (!memberCharacters.length) continue;
-
-    const liveMains = memberCharacters
-      .map((entry) => ({ id: entry.id, label: entry.label, roleId: entry.roleId }))
-      .sort((left, right) => left.label.localeCompare(right.label, "ru"));
-    liveMainsByUserId.set(member.id, liveMains);
-
-    let trackedMember = trackedMembersByUserId.get(member.id);
-    if (!trackedMember) {
-      trackedMember = createTrackedLiveMemberEntry(member.id, member);
-      trackedMembersByUserId.set(member.id, trackedMember);
-    }
-
-    const remembered = hasTrackedProfileKills(trackedMember);
-    for (const character of memberCharacters) {
-      const stat = characterStatsInputById.get(character.id);
-      if (!stat) continue;
-      stat.roleHolderCount += 1;
-      if (remembered) stat.rememberedMembers.push(trackedMember);
-    }
-  }
-
-  return {
-    liveMainsByUserId,
-    trackedMemberStats: getTrackedMemberStats([...trackedMembersByUserId.values()]),
-    characterStats: getCharacterRoleStats([...characterStatsInputById.values()]),
-  };
 }
 
 function chunkTextLines(lines, maxLength = 3800, maxLines = 15) {
@@ -1057,38 +1123,48 @@ function buildStatsEmbedsFromContext(entries, liveContext) {
   const trackedStats = liveContext?.trackedMemberStats || getTrackedMemberStats([]);
   const presentation = getPresentation();
 
-  const summaryLines = [];
+  const lines = [];
   if (!entries.length && trackedStats.totalRoleHolders === 0) {
-    summaryLines.push("Пока нет подтверждённых игроков и нет участников с ролями персонажей.");
+    lines.push("Пока нет подтверждённых игроков и нет участников с ролями персонажей.");
   } else if (!entries.length) {
-    summaryLines.push("Подтверждённых игроков пока нет.");
+    lines.push("Подтверждённых игроков пока нет.");
   } else {
-    summaryLines.push(`Подтверждено: **${formatNumber(stats.totalVerified)}**`);
-  }
+    const totalKills = trackedStats.totalKills || entries.reduce((sum, e) => sum + (Number(e.approvedKills) || 0), 0);
+    const eligible = entries.filter((e) => Number.isFinite(e.approvedKills) && e.approvedKills > 0);
+    const sortedKills = eligible.map((e) => Number(e.approvedKills)).sort((a, b) => a - b);
+    const median = sortedKills.length ? sortedKills[Math.floor(sortedKills.length / 2)] : 0;
+    const avg = sortedKills.length ? Math.round(totalKills / sortedKills.length) : 0;
+    const tiers = trackedStats.totalsByTier || { 5: 0, 4: 0, 3: 0, 2: 0, 1: 0 };
+    const totalActive = tiers[5] + tiers[4] + tiers[3] + tiers[2] + tiers[1] || entries.length;
+    const pct = (n) => totalActive > 0 ? `${Math.round((n / totalActive) * 100)}%` : "0%";
 
-  summaryLines.push(
-    `Заявки pending: **${formatNumber(stats.pendingCount)}**`,
-    `Одобрено: **${formatNumber(stats.approvedCount)}** (${formatPercent(stats.approvalRate)})`,
-    `Отклонено: **${formatNumber(stats.rejectedCount)}** (${formatPercent(stats.rejectRate)})`,
-    `С ролью персонажа: **${formatNumber(trackedStats.totalRoleHolders)}**`,
-    `С ролью и kills: **${formatNumber(trackedStats.rememberedCount)}**`,
-    `Kills сумма: **${formatNumber(trackedStats.totalKills)}**`,
-    `Kills среднее: **${formatNumber(trackedStats.averageKills)}**`,
-    `Kills медиана: **${formatNumber(trackedStats.medianKills)}**`,
-    `Тиры T5/T4/T3/T2/T1: **${trackedStats.totalsByTier[5]} / ${trackedStats.totalsByTier[4]} / ${trackedStats.totalsByTier[3]} / ${trackedStats.totalsByTier[2]} / ${trackedStats.totalsByTier[1]}**`
-  );
+    lines.push(`👥 Активных игроков: **${formatNumber(entries.length)}**`);
+    lines.push(`🎭 С ролью персонажа: **${formatNumber(trackedStats.totalRoleHolders)}** • с kills: **${formatNumber(trackedStats.rememberedCount)}**`);
+    lines.push(`💀 Сумма kills: **${formatNumber(totalKills)}**`);
+    lines.push(`📊 Среднее: **${formatNumber(avg)}** • медиана: **${formatNumber(median)}**`);
+    lines.push("");
+    lines.push("**Распределение по тирам**");
+    lines.push(`🔴 T5: **${tiers[5]}** (${pct(tiers[5])}) • 🟠 T4: **${tiers[4]}** (${pct(tiers[4])})`);
+    lines.push(`🟡 T3: **${tiers[3]}** (${pct(tiers[3])}) • 🟢 T2: **${tiers[2]}** (${pct(tiers[2])}) • ⚪ T1: **${tiers[1]}** (${pct(tiers[1])})`);
 
-  if (stats.topEntry) {
-    summaryLines.push(`Лидер: **${stats.topEntry.displayName}** — **${formatNumber(stats.topEntry.approvedKills)}** kills`);
-  }
-  if (stats.bottomEntry) {
-    summaryLines.push(`Хвост: **${stats.bottomEntry.displayName}** — **${formatNumber(stats.bottomEntry.approvedKills)}** kills`);
+    if (stats.topEntry || stats.bottomEntry) {
+      lines.push("");
+    }
+    if (stats.topEntry) {
+      const mention = stats.topEntry.userId ? `<@${stats.topEntry.userId}>` : `**${stats.topEntry.displayName}**`;
+      lines.push(`🏆 Лидер: ${mention} — **${formatNumber(stats.topEntry.approvedKills)}** kills`);
+    }
+    if (stats.bottomEntry) {
+      const mention = stats.bottomEntry.userId ? `<@${stats.bottomEntry.userId}>` : `**${stats.bottomEntry.displayName}**`;
+      lines.push(`🌑 Хвост: ${mention} — **${formatNumber(stats.bottomEntry.approvedKills)}** kills`);
+    }
   }
 
   return [
     new EmbedBuilder()
-      .setTitle(presentation.tierlist.textTitle)
-      .setDescription(summaryLines.join("\n")),
+      .setTitle(`📋 ${presentation.tierlist.textTitle}`)
+      .setColor(0x5865F2)
+      .setDescription(lines.join("\n")),
     ...buildMainStatsEmbeds(liveContext?.characterStats || []),
   ];
 }
@@ -1269,21 +1345,19 @@ async function buildTierlistBoardPayload(client, options = {}) {
 }
 
 function buildCharactersRankingEmbed(entries, liveContext, eloRatings = {}) {
-  const characters = (liveContext?.characterStats || []);
-  if (!characters.length) return null;
+  const catalog = getCharacterEntries();
+  if (!catalog.length) return null;
 
-  // Aggregate mains by character id from entries (entries have entry.mains list with id).
   const mainsByCharId = new Map();
   for (const entry of entries) {
     for (const mainRef of entry.mains || []) {
-      const cid = String(mainRef.id || "").trim();
+      const cid = String(mainRef?.id || "").trim();
       if (!cid) continue;
       if (!mainsByCharId.has(cid)) mainsByCharId.set(cid, []);
       mainsByCharId.get(cid).push(entry);
     }
   }
 
-  // Char tier bonus from legacy character tierlist (S/A/B/C/D).
   let charTierByCharId = new Map();
   try {
     const live = getLiveLegacyTierlistState();
@@ -1305,8 +1379,8 @@ function buildCharactersRankingEmbed(entries, liveContext, eloRatings = {}) {
     return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
   };
 
-  const ranked = characters.map((stat) => {
-    const mainEntries = mainsByCharId.get(stat.id) || [];
+  const ranked = catalog.map((cat) => {
+    const mainEntries = mainsByCharId.get(cat.id) || [];
     const dist = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
     const killsList = [];
     const eloList = [];
@@ -1317,26 +1391,31 @@ function buildCharactersRankingEmbed(entries, liveContext, eloRatings = {}) {
       if (r && Number.isFinite(Number(r.tier))) eloList.push(Number(r.tier));
     }
     const base = (dist[5] * killWeightMap[5]) + (dist[4] * killWeightMap[4]) + (dist[3] * killWeightMap[3]) + (dist[2] * killWeightMap[2]) + (dist[1] * killWeightMap[1]);
-    const charTier = charTierByCharId.get(stat.id) || "";
+    const charTier = charTierByCharId.get(cat.id) || "";
     const charBonus = tierBonusMap[charTier] || 0;
 
     let eloMultiplier = 1.0;
     if (eloList.length >= 3) {
       const med = median(eloList);
-      if (med <= 2) eloMultiplier = 1.15;
-      else if (med <= 3) eloMultiplier = 1.05;
-      else if (med >= 5) eloMultiplier = 0.92;
+      // ELO tiers: lower number = higher skill (T1 best, T5 worst).
+      if (med <= 1.5) eloMultiplier = 1.20;
+      else if (med <= 2.5) eloMultiplier = 1.10;
+      else if (med <= 3.5) eloMultiplier = 1.00;
+      else if (med <= 4.5) eloMultiplier = 0.92;
+      else eloMultiplier = 0.85;
     }
 
     const score = Math.round((base + charBonus) * eloMultiplier);
     const avgKills = killsList.length ? Math.round(killsList.reduce((s, x) => s + x, 0) / killsList.length) : 0;
     const medKills = killsList.length ? Math.round(median(killsList)) : 0;
     const eloMed = eloList.length ? Math.round(median(eloList)) : null;
+    const highCount = dist[5] + dist[4];
+    const lowCount = dist[1] + dist[2];
 
     return {
-      id: stat.id,
-      label: stat.main,
-      roleId: stat.roleId,
+      id: cat.id,
+      label: cat.label,
+      roleId: cat.roleId,
       mainsCount: mainEntries.length,
       dist,
       avgKills,
@@ -1346,73 +1425,159 @@ function buildCharactersRankingEmbed(entries, liveContext, eloRatings = {}) {
       charTier,
       score,
       eloMultiplier,
+      highCount,
+      lowCount,
     };
   });
 
-  ranked.sort((a, b) => b.score - a.score);
+  const haveAnyMains = ranked.some((r) => r.mainsCount > 0);
+  if (!haveAnyMains && !ranked.some((r) => r.charTier)) return null;
 
-  const lines = ranked.slice(0, 25).map((r, idx) => {
+  ranked.sort((a, b) => b.score - a.score || b.mainsCount - a.mainsCount);
+
+  // Fun facts
+  const facts = [];
+  const populated = ranked.filter((r) => r.mainsCount > 0);
+  if (populated.length) {
+    const mostHigh = [...populated].sort((a, b) => b.highCount - a.highCount || b.mainsCount - a.mainsCount)[0];
+    const mostLow = [...populated].sort((a, b) => b.lowCount - a.lowCount || b.mainsCount - a.mainsCount)[0];
+    const mostPopular = [...populated].sort((a, b) => b.mainsCount - a.mainsCount)[0];
+    const leastPopular = [...populated].filter((r) => r.mainsCount > 0).sort((a, b) => a.mainsCount - b.mainsCount)[0];
+    const universal = [...populated].sort((a, b) => {
+      const spreadA = Object.values(a.dist).filter((v) => v > 0).length;
+      const spreadB = Object.values(b.dist).filter((v) => v > 0).length;
+      if (spreadB !== spreadA) return spreadB - spreadA;
+      return b.mainsCount - a.mainsCount;
+    })[0];
+
+    const ref = (r) => r.roleId ? formatRoleMention(r.roleId) : `**${r.label}**`;
+    if (mostHigh && mostHigh.highCount > 0) facts.push(`🏆 Больше всего хай-игроков: ${ref(mostHigh)} (T5+T4=${mostHigh.highCount})`);
+    if (mostLow && mostLow.lowCount > 0 && mostLow.id !== mostHigh?.id) facts.push(`🌑 Больше всего слабых: ${ref(mostLow)} (T1+T2=${mostLow.lowCount})`);
+    if (mostPopular) facts.push(`🔥 Самый популярный: ${ref(mostPopular)} (${mostPopular.mainsCount} мейнов)`);
+    if (leastPopular && leastPopular.id !== mostPopular?.id) facts.push(`🪶 Редкий мейн: ${ref(leastPopular)} (${leastPopular.mainsCount})`);
+    if (universal && Object.values(universal.dist).filter((v) => v > 0).length >= 3 && universal.id !== mostPopular?.id) {
+      facts.push(`🌐 Самый универсальный: ${ref(universal)}`);
+    }
+  }
+
+  // Build ranking lines: place + ref + tier + stats + score×mult.
+  const lines = ranked.map((r, idx) => {
     const place = idx + 1;
-    const tag = r.charTier ? `(${r.charTier})` : "";
+    const tag = r.charTier ? ` (${r.charTier})` : "";
     const ref = r.roleId ? formatRoleMention(r.roleId) : `**${r.label}**`;
-    const distText = `S:${r.dist[5]} A:${r.dist[4]} B:${r.dist[3]} C:${r.dist[2]} D:${r.dist[1]}`;
-    const eloPart = r.eloMed != null ? ` • ELO med T${r.eloMed} (n=${r.eloPlayers})` : "";
-    return `**#${place}** ${ref} ${tag} — score **${r.score}** ×${r.eloMultiplier.toFixed(2)} • мейнят: ${r.mainsCount} • ${distText} • ср/мед kills: ${r.avgKills}/${r.medKills}${eloPart}`;
+    const dist = `S:${r.dist[5]} A:${r.dist[4]} B:${r.dist[3]} C:${r.dist[2]} D:${r.dist[1]}`;
+    const eloPart = r.eloMed != null ? ` · ELO med **T${r.eloMed}** (n=${r.eloPlayers})` : "";
+    const killsPart = r.mainsCount ? ` · ср/мед kills **${formatNumber(r.avgKills)}/${formatNumber(r.medKills)}**` : "";
+    return `**#${place}** ${ref}${tag} — мейнов **${r.mainsCount}** [${dist}]${killsPart}${eloPart} · score **${r.score}** ×${r.eloMultiplier.toFixed(2)}`;
   });
 
+  // Embed description has 4096 char limit. Trim if needed.
+  let description = lines.join("\n");
+  if (description.length > 3500) {
+    let acc = "";
+    for (const line of lines) {
+      if ((acc.length + line.length + 1) > 3400) break;
+      acc += (acc ? "\n" : "") + line;
+    }
+    description = acc + `\n…ещё ${lines.length - acc.split("\n").length} персонажей`;
+  }
+  if (facts.length) description += `\n\n**Доп. факты**\n${facts.join("\n")}`;
+
   return new EmbedBuilder()
-    .setTitle("Персонажи — рейтинг и распределение мейнов")
+    .setTitle("🎭 Персонажи — рейтинг мейнов")
     .setColor(0x9C27B0)
-    .setDescription(lines.join("\n") || "Пока нет данных.");
+    .setDescription(description);
 }
 
 function buildRecentKillChangesEmbed() {
-  const submissions = Object.values(db.submissions || {})
+  const formatDateTime = (ts) => {
+    if (!ts) return "—";
+    const d = new Date(ts);
+    const dd = String(d.getDate()).padStart(2, "0");
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    const hh = String(d.getHours()).padStart(2, "0");
+    const mi = String(d.getMinutes()).padStart(2, "0");
+    return `${dd}.${mm} ${hh}:${mi}`;
+  };
+
+  const events = [];
+
+  // Kill changes from welcome-db submissions.
+  const killSubs = Object.values(db.submissions || {})
     .filter((s) => s && s.status === "approved" && s.userId && Number.isFinite(Number(s.kills)))
     .sort((a, b) => {
       const ta = Date.parse(a.reviewedAt || a.createdAt || 0) || 0;
       const tb = Date.parse(b.reviewedAt || b.createdAt || 0) || 0;
       return ta - tb;
     });
-
-  const perUserHistory = new Map();
-  const changes = [];
-  for (const s of submissions) {
-    const prevList = perUserHistory.get(s.userId) || [];
-    const previous = prevList.length ? prevList[prevList.length - 1] : null;
-    if (previous != null && previous !== s.kills) {
-      changes.push({
-        userId: s.userId,
-        from: previous,
-        to: Number(s.kills),
-        delta: Number(s.kills) - previous,
-        at: Date.parse(s.reviewedAt || s.createdAt || 0) || 0,
-      });
+  const perUserKills = new Map();
+  for (const s of killSubs) {
+    const prev = perUserKills.get(s.userId) ?? null;
+    const next = Number(s.kills);
+    const at = Date.parse(s.reviewedAt || s.createdAt || 0) || 0;
+    if (prev != null && prev !== next) {
+      events.push({ kind: "kills", userId: s.userId, from: prev, to: next, delta: next - prev, at });
+    } else if (prev == null) {
+      events.push({ kind: "kills_new", userId: s.userId, from: 0, to: next, delta: next, at });
     }
-    prevList.push(Number(s.kills));
-    perUserHistory.set(s.userId, prevList);
+    perUserKills.set(s.userId, next);
   }
 
-  if (!changes.length) return null;
+  // ELO changes from legacy ELO db submissions.
+  try {
+    const eloLive = getLiveLegacyEloState();
+    if (eloLive?.ok && eloLive.rawDb?.submissions) {
+      const eloSubs = Object.values(eloLive.rawDb.submissions)
+        .filter((s) => s && s.status === "approved" && s.userId && Number.isFinite(Number(s.elo)))
+        .sort((a, b) => {
+          const ta = Date.parse(a.reviewedAt || a.createdAt || 0) || 0;
+          const tb = Date.parse(b.reviewedAt || b.createdAt || 0) || 0;
+          return ta - tb;
+        });
+      const perUserElo = new Map();
+      for (const s of eloSubs) {
+        const prev = perUserElo.get(s.userId) ?? null;
+        const next = Number(s.elo);
+        const at = Date.parse(s.reviewedAt || s.createdAt || 0) || 0;
+        if (prev != null && prev !== next) {
+          events.push({ kind: "elo", userId: s.userId, from: prev, to: next, delta: next - prev, at, tier: Number(s.tier) || null });
+        } else if (prev == null) {
+          events.push({ kind: "elo_new", userId: s.userId, from: 0, to: next, delta: next, at, tier: Number(s.tier) || null });
+        }
+        perUserElo.set(s.userId, next);
+      }
+    }
+  } catch {}
 
-  const top = changes.sort((a, b) => b.at - a.at).slice(0, 5);
-  const fmt = (ts) => {
-    if (!ts) return "—";
-    const diffMs = Date.now() - ts;
-    const minutes = Math.round(diffMs / 60000);
-    if (minutes < 60) return `${minutes} мин назад`;
-    const hours = Math.round(minutes / 60);
-    if (hours < 48) return `${hours} ч назад`;
-    const days = Math.round(hours / 24);
-    return `${days} дн назад`;
-  };
+  if (!events.length) return null;
+
+  const top = events.sort((a, b) => b.at - a.at).slice(0, 5);
+
   const lines = top.map((c) => {
-    const sign = c.delta > 0 ? `+${c.delta}` : String(c.delta);
-    return `<@${c.userId}> — было **${formatNumber(c.from)}** → стало **${formatNumber(c.to)}** (Δ ${sign}) • ${fmt(c.at)}`;
+    const sign = c.delta > 0 ? `+${formatNumber(c.delta)}` : formatNumber(c.delta);
+    const when = formatDateTime(c.at);
+    const userTag = `<@${c.userId}>`;
+    if (c.kind === "kills") {
+      const emoji = c.delta > 0 ? "📈" : "📉";
+      return `${emoji} ${userTag} kills: **${formatNumber(c.from)} → ${formatNumber(c.to)}** (${sign}) · 🕒 ${when}`;
+    }
+    if (c.kind === "kills_new") {
+      return `🆕 ${userTag} новый kills: **${formatNumber(c.to)}** · 🕒 ${when}`;
+    }
+    if (c.kind === "elo") {
+      const emoji = c.delta > 0 ? "🆙" : "⬇️";
+      const tier = c.tier ? ` · T${c.tier}` : "";
+      return `${emoji} ${userTag} ELO: **${formatNumber(c.from)} → ${formatNumber(c.to)}** (${sign})${tier} · 🕒 ${when}`;
+    }
+    if (c.kind === "elo_new") {
+      const tier = c.tier ? ` · T${c.tier}` : "";
+      return `✨ ${userTag} новое ELO: **${formatNumber(c.to)}**${tier} · 🕒 ${when}`;
+    }
+    return `${userTag} · 🕒 ${when}`;
   });
 
   return new EmbedBuilder()
-    .setTitle("Топ-5 последних изменений килов")
+    .setTitle("⚡ Топ-5 последних изменений")
     .setColor(0x00897B)
     .setDescription(lines.join("\n"));
 }
@@ -3626,6 +3791,9 @@ function getTextTierlistPaginationState() {
 }
 
 async function refreshTextTierlistBoard(client, options = {}) {
+  if (options.forceRecreate || options.invalidateCache) {
+    invalidateLiveCharacterStatsContext();
+  }
   const state = getTextTierlistBoardState(db.config, appConfig.channels.tierlistChannelId || "");
   const channelId = getTextTierlistChannelId();
   if (!channelId || isPlaceholder(channelId)) return null;
