@@ -1156,8 +1156,32 @@ async function buildTierlistBoardPayload(client, options = {}) {
   const baseTitle = presentation.tierlist.textTitle || "Tier List";
   const tierColors = { 5: 0xE53935, 4: 0xFB8C00, 3: 0xFDD835, 2: 0x43A047, 1: 0x9E9E9E };
 
-  const pageEntries = entries.slice(pageIndex * PAGE_SIZE, pageIndex * PAGE_SIZE + PAGE_SIZE);
+  // ELO state for per-row links and ranking adjustments.
+  const eloLive = (() => { try { return getLiveLegacyEloState(); } catch { return { ok: false }; } })();
+  const eloRatings = (eloLive?.ok && eloLive.rawDb?.ratings) ? eloLive.rawDb.ratings : {};
+  const eloBoard = eloLive?.ok && eloLive.rawDb?.elo?.graphic
+    ? eloLive.rawDb.elo.graphic
+    : (eloLive?.ok && eloLive.rawDb?.graphic ? eloLive.rawDb.graphic : null);
+  const eloChannelId = String(eloBoard?.dashboardChannelId || "").trim();
+  const eloMessageId = String(eloBoard?.dashboardMessageId || "").trim();
+  const eloJumpUrl = (eloChannelId && eloMessageId && GUILD_ID)
+    ? `https://discord.com/channels/${GUILD_ID}/${eloChannelId}/${eloMessageId}`
+    : "";
 
+  const formatEloChip = (userId) => {
+    const rating = eloRatings[userId];
+    if (!rating) return "";
+    const eloVal = Number(rating.elo);
+    const tierVal = Number(rating.tier);
+    const parts = [];
+    if (Number.isFinite(tierVal) && tierVal >= 1) parts.push(`T${tierVal}`);
+    if (Number.isFinite(eloVal)) parts.push(String(eloVal));
+    if (!parts.length) return "";
+    const label = `ELO ${parts.join(" · ")}`;
+    return eloJumpUrl ? `[${label}](${eloJumpUrl})` : label;
+  };
+
+  const pageEntries = entries.slice(pageIndex * PAGE_SIZE, pageIndex * PAGE_SIZE + PAGE_SIZE);
   const dominantTier = (() => {
     if (!pageEntries.length) return 0;
     const tally = new Map();
@@ -1172,6 +1196,7 @@ async function buildTierlistBoardPayload(client, options = {}) {
 
   const embeds = [];
 
+  // Page 0 also has stats, mains plate and top-5 changes.
   if (pageIndex === 0 && entries.length) {
     const baseEmbeds = buildStatsEmbedsFromContext(entries, liveContext);
     if (baseEmbeds.length) {
@@ -1179,6 +1204,12 @@ async function buildTierlistBoardPayload(client, options = {}) {
       try { first.setColor(embedColor); } catch {}
       embeds.push(first);
     }
+
+    const mainsEmbed = buildCharactersRankingEmbed(entries, liveContext, eloRatings);
+    if (mainsEmbed) embeds.push(mainsEmbed);
+
+    const recentEmbed = buildRecentKillChangesEmbed();
+    if (recentEmbed) embeds.push(recentEmbed);
   }
 
   if (!entries.length) {
@@ -1192,8 +1223,10 @@ async function buildTierlistBoardPayload(client, options = {}) {
     const rankLines = pageEntries.map((entry, idx) => {
       const rank = pageIndex * PAGE_SIZE + idx + 1;
       const mention = entry.userId ? `<@${entry.userId}>` : (entry.displayName || "—");
-      const mainsText = previewText(formatCharacterReferenceList(entry.mains), 120);
-      return `**#${rank}** • T${entry.killTier} • ${mention} — ${formatNumber(entry.approvedKills)} kills • ${mainsText}`;
+      const mainsText = previewText(formatCharacterReferenceList(entry.mains), 100);
+      const eloChip = formatEloChip(entry.userId);
+      const eloPart = eloChip ? ` · ${eloChip}` : "";
+      return `**#${rank}** • T${entry.killTier} • ${mention} — ${formatNumber(entry.approvedKills)} kills • ${mainsText}${eloPart}`;
     });
 
     const rankEmbed = new EmbedBuilder()
@@ -1235,6 +1268,155 @@ async function buildTierlistBoardPayload(client, options = {}) {
   };
 }
 
+function buildCharactersRankingEmbed(entries, liveContext, eloRatings = {}) {
+  const characters = (liveContext?.characterStats || []);
+  if (!characters.length) return null;
+
+  // Aggregate mains by character id from entries (entries have entry.mains list with id).
+  const mainsByCharId = new Map();
+  for (const entry of entries) {
+    for (const mainRef of entry.mains || []) {
+      const cid = String(mainRef.id || "").trim();
+      if (!cid) continue;
+      if (!mainsByCharId.has(cid)) mainsByCharId.set(cid, []);
+      mainsByCharId.get(cid).push(entry);
+    }
+  }
+
+  // Char tier bonus from legacy character tierlist (S/A/B/C/D).
+  let charTierByCharId = new Map();
+  try {
+    const live = getLiveLegacyTierlistState();
+    if (live.ok) {
+      const { buckets } = computeLegacyTierlistGlobalBuckets(live);
+      for (const [tierKey, ids] of Object.entries(buckets)) {
+        for (const id of ids) charTierByCharId.set(id, tierKey);
+      }
+    }
+  } catch {}
+
+  const tierBonusMap = { S: 25, A: 15, B: 5, C: -5, D: -15 };
+  const killWeightMap = { 5: 5, 4: 3.5, 3: 2, 2: 1, 1: 0.4 };
+
+  const median = (arr) => {
+    if (!arr.length) return 0;
+    const sorted = [...arr].sort((a, b) => a - b);
+    const mid = Math.floor(sorted.length / 2);
+    return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+  };
+
+  const ranked = characters.map((stat) => {
+    const mainEntries = mainsByCharId.get(stat.id) || [];
+    const dist = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
+    const killsList = [];
+    const eloList = [];
+    for (const e of mainEntries) {
+      if (Number.isFinite(e.killTier) && dist[e.killTier] != null) dist[e.killTier] += 1;
+      if (Number.isFinite(e.approvedKills)) killsList.push(e.approvedKills);
+      const r = eloRatings[e.userId];
+      if (r && Number.isFinite(Number(r.tier))) eloList.push(Number(r.tier));
+    }
+    const base = (dist[5] * killWeightMap[5]) + (dist[4] * killWeightMap[4]) + (dist[3] * killWeightMap[3]) + (dist[2] * killWeightMap[2]) + (dist[1] * killWeightMap[1]);
+    const charTier = charTierByCharId.get(stat.id) || "";
+    const charBonus = tierBonusMap[charTier] || 0;
+
+    let eloMultiplier = 1.0;
+    if (eloList.length >= 3) {
+      const med = median(eloList);
+      if (med <= 2) eloMultiplier = 1.15;
+      else if (med <= 3) eloMultiplier = 1.05;
+      else if (med >= 5) eloMultiplier = 0.92;
+    }
+
+    const score = Math.round((base + charBonus) * eloMultiplier);
+    const avgKills = killsList.length ? Math.round(killsList.reduce((s, x) => s + x, 0) / killsList.length) : 0;
+    const medKills = killsList.length ? Math.round(median(killsList)) : 0;
+    const eloMed = eloList.length ? Math.round(median(eloList)) : null;
+
+    return {
+      id: stat.id,
+      label: stat.main,
+      roleId: stat.roleId,
+      mainsCount: mainEntries.length,
+      dist,
+      avgKills,
+      medKills,
+      eloMed,
+      eloPlayers: eloList.length,
+      charTier,
+      score,
+      eloMultiplier,
+    };
+  });
+
+  ranked.sort((a, b) => b.score - a.score);
+
+  const lines = ranked.slice(0, 25).map((r, idx) => {
+    const place = idx + 1;
+    const tag = r.charTier ? `(${r.charTier})` : "";
+    const ref = r.roleId ? formatRoleMention(r.roleId) : `**${r.label}**`;
+    const distText = `S:${r.dist[5]} A:${r.dist[4]} B:${r.dist[3]} C:${r.dist[2]} D:${r.dist[1]}`;
+    const eloPart = r.eloMed != null ? ` • ELO med T${r.eloMed} (n=${r.eloPlayers})` : "";
+    return `**#${place}** ${ref} ${tag} — score **${r.score}** ×${r.eloMultiplier.toFixed(2)} • мейнят: ${r.mainsCount} • ${distText} • ср/мед kills: ${r.avgKills}/${r.medKills}${eloPart}`;
+  });
+
+  return new EmbedBuilder()
+    .setTitle("Персонажи — рейтинг и распределение мейнов")
+    .setColor(0x9C27B0)
+    .setDescription(lines.join("\n") || "Пока нет данных.");
+}
+
+function buildRecentKillChangesEmbed() {
+  const submissions = Object.values(db.submissions || {})
+    .filter((s) => s && s.status === "approved" && s.userId && Number.isFinite(Number(s.kills)))
+    .sort((a, b) => {
+      const ta = Date.parse(a.reviewedAt || a.createdAt || 0) || 0;
+      const tb = Date.parse(b.reviewedAt || b.createdAt || 0) || 0;
+      return ta - tb;
+    });
+
+  const perUserHistory = new Map();
+  const changes = [];
+  for (const s of submissions) {
+    const prevList = perUserHistory.get(s.userId) || [];
+    const previous = prevList.length ? prevList[prevList.length - 1] : null;
+    if (previous != null && previous !== s.kills) {
+      changes.push({
+        userId: s.userId,
+        from: previous,
+        to: Number(s.kills),
+        delta: Number(s.kills) - previous,
+        at: Date.parse(s.reviewedAt || s.createdAt || 0) || 0,
+      });
+    }
+    prevList.push(Number(s.kills));
+    perUserHistory.set(s.userId, prevList);
+  }
+
+  if (!changes.length) return null;
+
+  const top = changes.sort((a, b) => b.at - a.at).slice(0, 5);
+  const fmt = (ts) => {
+    if (!ts) return "—";
+    const diffMs = Date.now() - ts;
+    const minutes = Math.round(diffMs / 60000);
+    if (minutes < 60) return `${minutes} мин назад`;
+    const hours = Math.round(minutes / 60);
+    if (hours < 48) return `${hours} ч назад`;
+    const days = Math.round(hours / 24);
+    return `${days} дн назад`;
+  };
+  const lines = top.map((c) => {
+    const sign = c.delta > 0 ? `+${c.delta}` : String(c.delta);
+    return `<@${c.userId}> — было **${formatNumber(c.from)}** → стало **${formatNumber(c.to)}** (Δ ${sign}) • ${fmt(c.at)}`;
+  });
+
+  return new EmbedBuilder()
+    .setTitle("Топ-5 последних изменений килов")
+    .setColor(0x00897B)
+    .setDescription(lines.join("\n"));
+}
+
 async function buildGraphicTierlistBoardPayload(client) {
   const entries = getApprovedTierlistEntries();
   const guild = await getGuild(client);
@@ -1272,6 +1454,20 @@ async function buildGraphicTierlistBoardPayload(client) {
       new ButtonBuilder().setCustomId("graphic_panel").setLabel("PNG панель").setStyle(ButtonStyle.Primary)
     ),
   ];
+
+  try {
+    const textBoard = getTextTierlistBoardState(db.config, appConfig.channels.tierlistChannelId || "");
+    const textChannelId = String(textBoard?.channelId || "").trim();
+    const textMessageId = String(textBoard?.messageId || "").trim();
+    if (textChannelId && textMessageId && GUILD_ID) {
+      const url = `https://discord.com/channels/${GUILD_ID}/${textChannelId}/${textMessageId}`;
+      components.push(
+        new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setStyle(ButtonStyle.Link).setLabel("Текстовый рейтинг и статистика").setURL(url)
+        )
+      );
+    }
+  } catch {}
 
   return {
     content: "",
@@ -4805,7 +5001,7 @@ function isLegacyTierlistLocked(rawUser) {
 }
 
 function buildLegacyTierlistDashboardComponents() {
-  const rows = [
+  return [
     new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId("start_rating").setLabel("Начать оценку").setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId("rate_new_characters").setLabel("Оценить точечно").setStyle(ButtonStyle.Success),
@@ -4813,22 +5009,6 @@ function buildLegacyTierlistDashboardComponents() {
       new ButtonBuilder().setCustomId("refresh_tierlist").setLabel("Обновить тир-лист").setStyle(ButtonStyle.Secondary)
     ),
   ];
-
-  try {
-    const textBoard = getTextTierlistBoardState(db.config, appConfig.channels.tierlistChannelId || "");
-    const channelId = String(textBoard?.channelId || "").trim();
-    const messageId = String(textBoard?.messageId || "").trim();
-    if (channelId && messageId && GUILD_ID) {
-      const url = `https://discord.com/channels/${GUILD_ID}/${channelId}/${messageId}`;
-      rows.push(
-        new ActionRowBuilder().addComponents(
-          new ButtonBuilder().setStyle(ButtonStyle.Link).setLabel("Текстовый рейтинг и статистика").setURL(url)
-        )
-      );
-    }
-  } catch {}
-
-  return rows;
 }
 
 async function buildLegacyTierlistDashboardPayload(liveState) {
@@ -9138,6 +9318,7 @@ client.on("interactionCreate", async (interaction) => {
 
     if (interaction.customId === "text_tierlist_first" || interaction.customId === "text_tierlist_prev" || interaction.customId === "text_tierlist_next") {
       try {
+        await interaction.deferUpdate().catch(() => {});
         const pagination = getTextTierlistPaginationState();
         const liveContext = await getLiveCharacterStatsContext(client);
         const total = getApprovedTierlistEntries({ liveMainsByUserId: liveContext.liveMainsByUserId }).length;
@@ -9153,11 +9334,18 @@ client.on("interactionCreate", async (interaction) => {
         saveDb();
 
         const payload = await buildTierlistBoardPayload(client, { page: nextPage });
-        await interaction.update(payload);
+        await interaction.editReply({
+          content: payload.content || "",
+          embeds: payload.embeds || [],
+          components: payload.components || [],
+          allowedMentions: payload.allowedMentions || { parse: [] },
+        });
       } catch (error) {
         console.error("text tierlist pagination error:", error?.message || error);
         if (!interaction.replied && !interaction.deferred) {
           await interaction.reply(ephemeralPayload({ content: "Не удалось обновить страницу тир-листа." })).catch(() => {});
+        } else {
+          await interaction.followUp(ephemeralPayload({ content: `Не удалось обновить страницу: ${error?.message || error}` })).catch(() => {});
         }
       }
       return;
