@@ -7014,6 +7014,33 @@ async function refreshLegacyEloGraphicBoard(client, options = {}) {
   };
 }
 
+async function clearLegacyEloGraphicBoard(client, liveState) {
+  if (!liveState?.ok) throw new Error("Legacy ELO db недоступна");
+
+  const graphicState = ensureLegacyEloGraphicState(liveState.rawDb);
+  let deletedMessageId = String(graphicState.dashboardMessageId || "").trim() || null;
+  const channelId = String(graphicState.dashboardChannelId || "").trim();
+
+  if (channelId) {
+    const channel = await client.channels.fetch(channelId).catch(() => null);
+    if (channel?.isTextBased?.()) {
+      const message = await fetchStoredBotMessage(channel, graphicState, "dashboardMessageId", client.user?.id);
+      if (message) {
+        deletedMessageId = message.id;
+        await message.delete().catch(() => {});
+      }
+    }
+  }
+
+  setLegacyEloGraphicDashboardChannel(liveState.rawDb, "");
+  const syncResult = saveLiveLegacyEloStateAndResync(liveState);
+  return {
+    ok: true,
+    deletedMessageId,
+    syncResult,
+  };
+}
+
 async function bumpLegacyEloGraphicBoard(client, options = {}) {
   const liveState = options.liveState || getLiveLegacyEloState();
   if (!liveState.ok) {
@@ -7056,12 +7083,23 @@ async function bumpLegacyEloGraphicBoard(client, options = {}) {
 
 async function persistLegacyEloGraphicMutation(client, liveState, options = {}) {
   if (options.refreshBoard) {
-    const refreshResult = await refreshLegacyEloGraphicBoard(client, { liveState });
-    if (refreshResult?.ok) {
+    try {
+      const refreshResult = await refreshLegacyEloGraphicBoard(client, { liveState });
+      if (refreshResult?.ok) {
+        return {
+          boardUpdated: true,
+          refreshResult,
+          syncResult: refreshResult.syncResult,
+          warning: "",
+        };
+      }
+    } catch (error) {
+      const syncResult = saveLiveLegacyEloStateAndResync(liveState);
       return {
-        boardUpdated: true,
-        refreshResult,
-        syncResult: refreshResult.syncResult,
+        boardUpdated: false,
+        refreshResult: null,
+        syncResult,
+        warning: ` PNG board не обновлён: ${String(error?.message || error || "неизвестная ошибка")}`,
       };
     }
   }
@@ -7071,6 +7109,7 @@ async function persistLegacyEloGraphicMutation(client, liveState, options = {}) 
     boardUpdated: false,
     refreshResult: null,
     syncResult,
+    warning: "",
   };
 }
 
@@ -7374,15 +7413,9 @@ async function performLegacyEloManualModset(client, liveState, targetUserId, raw
     reason: "legacy elo modset",
   });
 
-  let boardUpdated = false;
-  let syncResult = null;
-  const refreshResult = await refreshLegacyEloGraphicBoard(client, { liveState });
-  if (refreshResult?.ok) {
-    boardUpdated = true;
-    syncResult = refreshResult.syncResult;
-  } else {
-    syncResult = saveLiveLegacyEloStateAndResync(liveState);
-  }
+  const persisted = await persistLegacyEloGraphicMutation(client, liveState, { refreshBoard: true });
+  const boardUpdated = persisted.boardUpdated;
+  const syncResult = persisted.syncResult;
 
   const latestRating = liveState.rawDb?.ratings?.[targetUserId] || created.rating;
   const eloValue = latestRating?.elo ?? created.rating?.elo ?? "—";
@@ -7408,6 +7441,7 @@ async function performLegacyEloManualModset(client, liveState, targetUserId, raw
     proofUrl,
     boardUpdated,
     syncResult,
+    warning: persisted.warning,
   };
 }
 
@@ -7638,6 +7672,34 @@ async function ensureLegacyEloSubmitHubMessage(client, liveState, forcedChannelI
     ok: true,
     channelId,
     messageId: message.id,
+    syncResult,
+  };
+}
+
+async function clearLegacyEloSubmitHubMessage(client, liveState) {
+  if (!liveState?.ok) throw new Error("Legacy ELO state is unavailable");
+
+  const state = getLegacyEloSubmitPanelState(liveState.rawDb);
+  const previousChannelId = String(state.channelId || "").trim();
+  let deletedMessageId = String(state.messageId || "").trim() || null;
+
+  if (previousChannelId) {
+    const channel = await client.channels.fetch(previousChannelId).catch(() => null);
+    if (channel?.isTextBased?.()) {
+      const message = await fetchStoredBotMessage(channel, state, "messageId", client.user?.id);
+      if (message) {
+        deletedMessageId = message.id;
+        await message.delete().catch(() => {});
+      }
+    }
+  }
+
+  state.channelId = "";
+  state.messageId = "";
+  const syncResult = saveLiveLegacyEloStateAndResync(liveState);
+  return {
+    ok: true,
+    deletedMessageId,
     syncResult,
   };
 }
@@ -8189,7 +8251,7 @@ client.on("messageCreate", async (message) => {
           `Tier: ${modsetResult.tierValue}.`,
           `Review ID: ${modsetResult.created.submissionId}.`,
           `PNG: ${modsetResult.boardUpdated ? "обновлён" : "не настроен или пропущен"}.`,
-        ].join(" ") + getLegacyEloSyncStatusSuffix(modsetResult.syncResult),
+        ].join(" ") + getLegacyEloSyncStatusSuffix(modsetResult.syncResult) + (modsetResult.warning || ""),
         16000
       );
     } catch (error) {
@@ -11205,8 +11267,8 @@ client.on("interactionCreate", async (interaction) => {
             targetUserId: submission.userId,
             reason: "legacy elo approve",
           });
-          saveLegacyEloDbFile(liveState.resolvedPath, approved.db);
-          const syncWarning = getLegacyEloResyncWarning();
+          const persisted = await persistLegacyEloGraphicMutation(client, liveState, { refreshBoard: true });
+          const syncWarning = `${getLegacyEloSyncStatusSuffix(persisted.syncResult)}${persisted.warning}`;
           await dmUser(
             client,
             submission.userId,
@@ -13014,10 +13076,10 @@ client.on("interactionCreate", async (interaction) => {
           const result = await ensureLegacyEloSubmitHubMessage(client, liveState, submitChannelId);
           notes.push(`Submit Hub → ${formatChannelMention(result.channelId)} (msg ${result.messageId || "—"}).`);
         } else if (submitPanel.channelId) {
-          submitPanel.channelId = "";
-          submitPanel.messageId = "";
-          saveLiveLegacyEloStateAndResync(liveState);
-          notes.push("Submit Hub канал сброшен.");
+          const result = await clearLegacyEloSubmitHubMessage(client, liveState);
+          notes.push(result.deletedMessageId
+            ? `Submit Hub сброшен и старое сообщение удалено (${result.deletedMessageId}).`
+            : "Submit Hub канал сброшен.");
         }
       } catch (error) {
         notes.push(`Submit Hub ошибка: ${String(error?.message || error)}.`);
@@ -13031,10 +13093,12 @@ client.on("interactionCreate", async (interaction) => {
             ? `PNG board → ${formatChannelMention(result.channelId)}.`
             : "PNG board не удалось пересобрать.");
         } else {
-          const graphicState = db.config.integrations?.elo?.graphicBoard || {};
-          if (graphicState.channelId) {
-            setLegacyEloGraphicDashboardChannel(liveState.rawDb, "");
-            notes.push("PNG board канал сброшен.");
+          const graphicState = ensureLegacyEloGraphicState(liveState.rawDb);
+          if (graphicState.dashboardChannelId) {
+            const result = await clearLegacyEloGraphicBoard(client, liveState);
+            notes.push(result.deletedMessageId
+              ? `PNG board сброшен и старое сообщение удалено (${result.deletedMessageId}).`
+              : "PNG board канал сброшен.");
           }
         }
       } catch (error) {
@@ -13330,13 +13394,13 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
-      saveLegacyEloDbFile(liveState.resolvedPath, removed.db);
       await syncLegacyEloTierRoles(client, liveState.rawDb, {
         targetUserId: userId,
         reason: "legacy elo remove",
       });
       clearGraphicAvatarCacheForUser(userId);
-      const syncWarning = getLegacyEloResyncWarning();
+      const persisted = await persistLegacyEloGraphicMutation(client, liveState, { refreshBoard: true });
+      const syncWarning = `${getLegacyEloSyncStatusSuffix(persisted.syncResult)}${persisted.warning}`;
       await logLine(client, `ELO REMOVE: <@${userId}> removed from legacy rating by ${interaction.user.tag}`);
       await interaction.reply(buildDormantEloPanelPayload(
         `Удалил <@${userId}> из legacy ELO рейтинга. Mini-card link: ${removed.removedMiniCardId ? "да" : "нет"}. Legacy card link: ${removed.removedCardMessageId ? "да" : "нет"}.${syncWarning}`
@@ -13368,13 +13432,13 @@ client.on("interactionCreate", async (interaction) => {
       }
 
       const wiped = wipeLegacyEloRatings(liveState.rawDb, { mode });
-      saveLegacyEloDbFile(liveState.resolvedPath, wiped.db);
       await syncLegacyEloTierRoles(client, liveState.rawDb, {
         clearUserIds: wiped.removedUserIds,
         reason: `legacy elo wipe ${mode}`,
       });
       clearGraphicAvatarCache();
-      const syncWarning = getLegacyEloResyncWarning();
+      const persisted = await persistLegacyEloGraphicMutation(client, liveState, { refreshBoard: true });
+      const syncWarning = `${getLegacyEloSyncStatusSuffix(persisted.syncResult)}${persisted.warning}`;
       await logLine(client, `ELO WIPE_RATINGS (${mode}) by ${interaction.user.tag}`);
       await interaction.reply(buildDormantEloPanelPayload(
         [

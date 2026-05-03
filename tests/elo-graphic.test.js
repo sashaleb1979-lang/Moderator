@@ -86,11 +86,15 @@ test("legacy ELO graphic mutations update labels, colors, image config, and dash
   resetLegacyEloGraphicTierColor(rawDb, 5);
   resetAllLegacyEloGraphicTierColors(rawDb);
   resetLegacyEloGraphicImageOverrides(rawDb);
+  assert.equal(setLegacyEloGraphicDashboardChannel(rawDb, ""), true);
 
   assert.equal(rawDb.config.graphicTierlist.tierColors[5], "#ff6b6b");
   assert.equal(rawDb.config.graphicTierlist.image.width, null);
   assert.equal(rawDb.config.graphicTierlist.image.height, null);
   assert.equal(rawDb.config.graphicTierlist.image.icon, null);
+  assert.equal(rawDb.config.graphicTierlist.dashboardChannelId, "");
+  assert.equal(rawDb.config.graphicTierlist.dashboardMessageId, "");
+  assert.equal(rawDb.config.graphicTierlist.lastUpdated, null);
 });
 
 test("buildLegacyEloGraphicEntries sorts live ratings and status lines reflect the current graphic state", () => {

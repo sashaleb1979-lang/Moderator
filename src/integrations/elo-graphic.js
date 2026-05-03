@@ -239,8 +239,12 @@ function setLegacyEloTierLabels(rawDb = {}, nextLabels = {}) {
 
 function setLegacyEloGraphicDashboardChannel(rawDb = {}, channelId, options = {}) {
   const nextChannelId = cleanString(channelId, 40);
-  if (!nextChannelId) return false;
-  ensureLegacyEloGraphicState(rawDb, options).dashboardChannelId = nextChannelId;
+  const state = ensureLegacyEloGraphicState(rawDb, options);
+  state.dashboardChannelId = nextChannelId;
+  if (!nextChannelId) {
+    state.dashboardMessageId = "";
+    state.lastUpdated = null;
+  }
   return true;
 }
 
