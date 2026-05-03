@@ -730,31 +730,6 @@ function getTextTierlistChannelId() {
   return isPlaceholder(channelId) ? "" : channelId;
 }
 
-function getTextTierlistManagedMessageIds(state = null) {
-  const textState = state || getTextTierlistBoardState(db.config, appConfig.channels.tierlistChannelId || "");
-  return [...new Set([
-    String(textState?.messageIdSummary || "").trim(),
-    String(textState?.messageIdPages || "").trim(),
-    String(textState?.messageId || "").trim(),
-  ].filter(Boolean))];
-}
-
-function getTextTierlistSummaryMessageId(state = null) {
-  const textState = state || getTextTierlistBoardState(db.config, appConfig.channels.tierlistChannelId || "");
-  return String(textState?.messageIdSummary || textState?.messageId || textState?.messageIdPages || "").trim();
-}
-
-function clearTextTierlistBoardMessageIds(state) {
-  if (!state || typeof state !== "object") return;
-  state.messageId = "";
-  state.messageIdSummary = "";
-  state.messageIdPages = "";
-}
-
-function hasTextTierlistManagedMessages(state = null) {
-  return getTextTierlistManagedMessageIds(state).length > 0;
-}
-
 function getGraphicTierlistChannelId() {
   const channelId = String(getGraphicTierlistBoardState(db.config, appConfig.channels.tierlistChannelId || "").channelId || appConfig.channels.tierlistChannelId || "").trim();
   return isPlaceholder(channelId) ? "" : channelId;
@@ -791,6 +766,10 @@ function previewText(value, max = 180) {
   const text = String(value || "").replace(/\s+/g, " ").trim();
   if (text.length <= max) return text;
   return `${text.slice(0, Math.max(0, max - 1)).trimEnd()}…`;
+}
+
+function clampEmbedDescription(value, max = 3800) {
+  return previewText(value, max);
 }
 
 function formatRoleMention(roleId) {
@@ -1112,6 +1091,44 @@ function estimateEmbedTextLength(embed) {
   return total;
 }
 
+function estimateEmbedsTotalLength(embeds = []) {
+  return embeds.reduce((total, embed) => total + estimateEmbedTextLength(embed), 0);
+}
+
+function enforceEmbedBudget(embeds = [], maxTotal = 5800) {
+  if (!Array.isArray(embeds) || embeds.length === 0) return embeds;
+
+  let total = estimateEmbedsTotalLength(embeds);
+  if (total <= maxTotal) return embeds;
+
+  const trimOrder = embeds.length >= 4 ? [1, 2, 0, 3] : embeds.map((_, index) => index);
+  const minLengths = new Map([
+    [0, 280],
+    [1, 700],
+    [2, 220],
+    [3, 900],
+  ]);
+
+  for (const index of trimOrder) {
+    const embed = embeds[index];
+    if (!embed || typeof embed.toJSON !== "function") continue;
+
+    let description = String(embed.toJSON()?.description || "");
+    const minLength = minLengths.get(index) || 200;
+    while (total > maxTotal && description.length > minLength) {
+      const overflow = total - maxTotal;
+      const nextLength = Math.max(minLength, description.length - Math.max(overflow + 32, 120));
+      description = previewText(description, nextLength);
+      embed.setDescription(description);
+      total = estimateEmbedsTotalLength(embeds);
+    }
+
+    if (total <= maxTotal) break;
+  }
+
+  return embeds;
+}
+
 function buildMainStatsEmbeds(characterStats = []) {
   if (!characterStats.length) return [];
 
@@ -1189,7 +1206,7 @@ function buildStatsEmbedsFromContext(entries, liveContext) {
     new EmbedBuilder()
       .setTitle(`📋 ${presentation.tierlist.textTitle}`)
       .setColor(0x5865F2)
-      .setDescription(lines.join("\n")),
+      .setDescription(clampEmbedDescription(lines.join("\n"), 1400)),
     ...buildMainStatsEmbeds(liveContext?.characterStats || []),
   ];
 }
@@ -1244,15 +1261,10 @@ async function buildTierlistEmbeds(client) {
 }
 
 async function buildTierlistBoardPayload(client, options = {}) {
-  const { pagesPayload } = await buildTextTierlistPayloads(client, options);
-  return pagesPayload;
-}
-
-async function buildTextTierlistPayloads(client, options = {}) {
   const liveContext = await getLiveCharacterStatsContext(client);
   const entries = getApprovedTierlistEntries({ liveMainsByUserId: liveContext.liveMainsByUserId });
 
-  const PAGE_SIZE = 25;
+  const PAGE_SIZE = 20;
   const totalPages = Math.max(1, Math.ceil(entries.length / PAGE_SIZE));
   let pageIndex = Number.isFinite(Number(options.page)) ? Number(options.page) : 0;
   if (pageIndex < 0) pageIndex = 0;
@@ -1262,29 +1274,18 @@ async function buildTextTierlistPayloads(client, options = {}) {
   const baseTitle = presentation.tierlist.textTitle || "Tier List";
   const tierColors = { 5: 0xE53935, 4: 0xFB8C00, 3: 0xFDD835, 2: 0x43A047, 1: 0x9E9E9E };
 
-  // ELO state for per-row links and ranking adjustments.
+  // ELO state for main ranking adjustments.
   const eloLive = (() => { try { return getLiveLegacyEloState(); } catch { return { ok: false }; } })();
   const eloRatings = (eloLive?.ok && eloLive.rawDb?.ratings) ? eloLive.rawDb.ratings : {};
-  const eloBoard = eloLive?.ok && eloLive.rawDb?.elo?.graphic
-    ? eloLive.rawDb.elo.graphic
-    : (eloLive?.ok && eloLive.rawDb?.graphic ? eloLive.rawDb.graphic : null);
-  const eloChannelId = String(eloBoard?.dashboardChannelId || "").trim();
-  const eloMessageId = String(eloBoard?.dashboardMessageId || "").trim();
-  const eloJumpUrl = (eloChannelId && eloMessageId && GUILD_ID)
-    ? `https://discord.com/channels/${GUILD_ID}/${eloChannelId}/${eloMessageId}`
-    : "";
-
   const formatEloChip = (userId) => {
     const rating = eloRatings[userId];
     if (!rating) return "";
-    const eloVal = Number(rating.elo);
     const tierVal = Number(rating.tier);
+    const eloVal = Number(rating.elo);
     const parts = [];
     if (Number.isFinite(tierVal) && tierVal >= 1) parts.push(`T${tierVal}`);
-    if (Number.isFinite(eloVal)) parts.push(String(eloVal));
-    if (!parts.length) return "";
-    const label = `ELO ${parts.join(" · ")}`;
-    return eloJumpUrl ? `[${label}](${eloJumpUrl})` : label;
+    if (Number.isFinite(eloVal)) parts.push(formatNumber(eloVal));
+    return parts.length ? `ELO ${parts.join(" · ")}` : "";
   };
 
   const pageEntries = entries.slice(pageIndex * PAGE_SIZE, pageIndex * PAGE_SIZE + PAGE_SIZE);
@@ -1300,24 +1301,26 @@ async function buildTextTierlistPayloads(client, options = {}) {
   })();
   const embedColor = tierColors[dominantTier] || 0x5865F2;
 
-  const summaryEmbeds = [];
-  const pagesEmbeds = [];
+  const embeds = [];
 
-  const baseEmbeds = buildStatsEmbedsFromContext(entries, liveContext);
-  if (baseEmbeds.length) {
-    const first = baseEmbeds[0];
-    try { first.setColor(embedColor); } catch {}
-    summaryEmbeds.push(first);
+  // Page 0 also has stats, mains plate and top-5 changes.
+  if (pageIndex === 0 && entries.length) {
+    const baseEmbeds = buildStatsEmbedsFromContext(entries, liveContext);
+    if (baseEmbeds.length) {
+      const first = baseEmbeds[0];
+      try { first.setColor(embedColor); } catch {}
+      embeds.push(first);
+    }
+
+    const mainsEmbed = buildCharactersRankingEmbed(entries, liveContext, eloRatings);
+    if (mainsEmbed) embeds.push(mainsEmbed);
+
+    const recentEmbed = buildRecentKillChangesEmbed();
+    if (recentEmbed) embeds.push(recentEmbed);
   }
 
-  const mainsEmbed = buildCharactersRankingEmbed(entries, liveContext, eloRatings);
-  if (mainsEmbed) summaryEmbeds.push(mainsEmbed);
-
-  const recentEmbed = buildRecentKillChangesEmbed();
-  if (recentEmbed) pagesEmbeds.push(recentEmbed);
-
   if (!entries.length) {
-    pagesEmbeds.push(
+    embeds.push(
       new EmbedBuilder()
         .setTitle(baseTitle)
         .setColor(embedColor)
@@ -1327,18 +1330,18 @@ async function buildTextTierlistPayloads(client, options = {}) {
     const rankLines = pageEntries.map((entry, idx) => {
       const rank = pageIndex * PAGE_SIZE + idx + 1;
       const mention = entry.userId ? `<@${entry.userId}>` : (entry.displayName || "—");
-      const mainsText = previewText(formatCharacterReferenceList(entry.mains), 100);
-      const eloChip = formatEloChip(entry.userId);
-      const eloPart = eloChip ? ` · ${eloChip}` : "";
+      const mainsText = previewText(formatCharacterReferenceList(entry.mains), 44);
+      const eloText = formatEloChip(entry.userId);
+      const eloPart = eloText ? ` • ${eloText}` : "";
       return `**#${rank}** • T${entry.killTier} • ${mention} — ${formatNumber(entry.approvedKills)} kills • ${mainsText}${eloPart}`;
     });
 
     const rankEmbed = new EmbedBuilder()
       .setTitle(`${baseTitle} — стр. ${pageIndex + 1}/${totalPages}`)
       .setColor(embedColor)
-      .setDescription(rankLines.join("\n"))
+      .setDescription(clampEmbedDescription(rankLines.join("\n"), 3800))
       .setFooter({ text: `Всего участников: ${entries.length} • Страница ${pageIndex + 1} из ${totalPages}` });
-    pagesEmbeds.push(rankEmbed);
+    embeds.push(rankEmbed);
   }
 
   const components = [];
@@ -1364,19 +1367,13 @@ async function buildTextTierlistPayloads(client, options = {}) {
     );
   }
 
+  enforceEmbedBudget(embeds, 5800);
+
   return {
-    summaryPayload: {
-      content: "",
-      embeds: summaryEmbeds,
-      components: [],
-      allowedMentions: { parse: [] },
-    },
-    pagesPayload: {
-      content: "",
-      embeds: pagesEmbeds,
-      components,
-      allowedMentions: { parse: [] },
-    },
+    content: "",
+    embeds,
+    components,
+    allowedMentions: { parse: [] },
   };
 }
 
@@ -1518,6 +1515,7 @@ function buildCharactersRankingEmbed(entries, liveContext, eloRatings = {}) {
     description = acc + `\n…ещё ${lines.length - acc.split("\n").length} персонажей`;
   }
   if (facts.length) description += `\n\n**Доп. факты**\n${facts.join("\n")}`;
+  description = clampEmbedDescription(description, 3000);
 
   return new EmbedBuilder()
     .setTitle("🎭 Персонажи — рейтинг мейнов")
@@ -1615,7 +1613,7 @@ function buildRecentKillChangesEmbed() {
   return new EmbedBuilder()
     .setTitle("⚡ Топ-5 последних изменений")
     .setColor(0x00897B)
-    .setDescription(lines.join("\n"));
+    .setDescription(clampEmbedDescription(lines.join("\n"), 1000));
 }
 
 async function buildGraphicTierlistBoardPayload(client) {
@@ -1659,7 +1657,7 @@ async function buildGraphicTierlistBoardPayload(client) {
   try {
     const textBoard = getTextTierlistBoardState(db.config, appConfig.channels.tierlistChannelId || "");
     const textChannelId = String(textBoard?.channelId || "").trim();
-    const textMessageId = getTextTierlistSummaryMessageId(textBoard);
+    const textMessageId = String(textBoard?.messageId || "").trim();
     if (textChannelId && textMessageId && GUILD_ID) {
       const url = `https://discord.com/channels/${GUILD_ID}/${textChannelId}/${textMessageId}`;
       components.push(
@@ -3671,13 +3669,11 @@ async function refreshGraphicTierlistBoard(client, options = {}) {
     return null;
   }
 
-  if (options.forceRecreate && state.messageId) {
-    const existing = await channel.messages.fetch(state.messageId).catch(() => null);
-    if (existing) await existing.delete().catch(() => {});
-    state.messageId = "";
-  }
+  const staleMessage = options.forceRecreate && state.messageId
+    ? await channel.messages.fetch(state.messageId).catch(() => null)
+    : null;
 
-  let message = await fetchStoredBotMessage(channel, state, "messageId", client.user?.id);
+  let message = options.forceRecreate ? null : await fetchStoredBotMessage(channel, state, "messageId", client.user?.id);
   if (!message && !options.forceRecreate) {
     message = await findExistingGraphicTierlistMessage(channel);
     if (message && state.messageId !== message.id) {
@@ -3688,7 +3684,13 @@ async function refreshGraphicTierlistBoard(client, options = {}) {
 
   const payload = await buildGraphicTierlistBoardPayload(client);
   const created = !message;
-  if (!message) {
+  if (options.forceRecreate) {
+    message = await channel.send(payload);
+    if (staleMessage && staleMessage.id !== message.id) {
+      await staleMessage.delete().catch(() => {});
+    }
+    state.messageId = message.id;
+  } else if (!message) {
     message = await channel.send(payload);
     state.messageId = message.id;
   } else {
@@ -3710,8 +3712,6 @@ async function deleteManagedChannelMessage(client, channelId, messageId) {
   const channel = await client.channels.fetch(channelId).catch(() => null);
   if (!channel?.isTextBased()) return false;
   const message = await channel.messages.fetch(messageId).catch(() => null);
-  if (!message) return false;
-  if (client?.user?.id && message.author?.id !== client.user.id) return false;
   if (!message?.deletable) return false;
   await message.delete().catch(() => {});
   return true;
@@ -3769,40 +3769,27 @@ async function repostTextTierlistBoardToChannel(client, targetChannelId) {
   }
 
   const previousChannelId = getTextTierlistChannelId();
-  const previousState = {
-    channelId: String(state.channelId || "").trim(),
-    messageId: String(state.messageId || "").trim(),
-    messageIdSummary: String(state.messageIdSummary || "").trim(),
-    messageIdPages: String(state.messageIdPages || "").trim(),
-  };
-  const previousMessageIds = getTextTierlistManagedMessageIds(state);
+  const previousMessageId = state.messageId || "";
 
   state.channelId = nextChannelId;
-  clearTextTierlistBoardMessageIds(state);
+  state.messageId = "";
   saveDb();
 
   try {
-    const result = await refreshTextTierlistBoard(client, { forceRecreate: true });
-    const nextMessageIds = getTextTierlistManagedMessageIds(state);
+    const message = await refreshTextTierlistBoard(client, { forceRecreate: true });
 
-    for (const previousMessageId of previousMessageIds) {
-      if (!previousMessageId) continue;
-      if (previousChannelId === nextChannelId && nextMessageIds.includes(previousMessageId)) continue;
+    if (previousMessageId && (previousChannelId !== nextChannelId || previousMessageId !== message?.id)) {
       await deleteManagedChannelMessage(client, previousChannelId || nextChannelId, previousMessageId);
     }
 
     return {
       channelId: nextChannelId,
       previousChannelId,
-      messageId: result?.summaryMessage?.id || "",
-      messageIdSummary: result?.summaryMessage?.id || "",
-      messageIdPages: result?.pagesMessage?.id || "",
+      messageId: message?.id || "",
     };
   } catch (error) {
-    state.channelId = previousState.channelId;
-    state.messageId = previousState.messageId;
-    state.messageIdSummary = previousState.messageIdSummary;
-    state.messageIdPages = previousState.messageIdPages;
+    state.channelId = previousChannelId;
+    state.messageId = previousMessageId;
     saveDb();
     throw error;
   }
@@ -3855,6 +3842,19 @@ async function refreshTextTierlistBoard(client, options = {}) {
     return null;
   }
 
+  const staleMessage = options.forceRecreate && state.messageId
+    ? await channel.messages.fetch(state.messageId).catch(() => null)
+    : null;
+
+  let message = options.forceRecreate ? null : await fetchStoredBotMessage(channel, state, "messageId", client.user?.id);
+  if (!message && !options.forceRecreate) {
+    message = await findExistingTextTierlistMessage(channel);
+    if (message && state.messageId !== message.id) {
+      state.messageId = message.id;
+      saveDb();
+    }
+  }
+
   // Pagination state with 10-min auto-reset.
   const pagination = getTextTierlistPaginationState();
   const now = Date.now();
@@ -3865,50 +3865,23 @@ async function refreshTextTierlistBoard(client, options = {}) {
     pagination.page = 0;
   }
 
-  const botId = client.user?.id;
-  const legacySingleMessage = Boolean(String(state.messageId || "").trim() && !String(state.messageIdSummary || "").trim() && !String(state.messageIdPages || "").trim());
-  let summaryMessage = null;
-  let pagesMessage = null;
-  let recreate = Boolean(options.forceRecreate || legacySingleMessage);
-
-  if (!recreate) {
-    summaryMessage = await fetchStoredBotMessage(channel, state, "messageIdSummary", botId);
-    pagesMessage = await fetchStoredBotMessage(channel, state, "messageIdPages", botId);
-    if (!summaryMessage || !pagesMessage) recreate = true;
-  }
-
-  if (recreate) {
-    for (const key of ["messageIdSummary", "messageIdPages", "messageId"]) {
-      const existing = await fetchStoredBotMessage(channel, state, key, botId);
-      if (existing?.deletable) {
-        await existing.delete().catch(() => {});
-      }
+  const payload = await buildTierlistBoardPayload(client, { page: pagination.page });
+  if (options.forceRecreate) {
+    message = await channel.send(payload);
+    if (staleMessage && staleMessage.id !== message.id) {
+      await staleMessage.delete().catch(() => {});
     }
-    clearTextTierlistBoardMessageIds(state);
-    summaryMessage = null;
-    pagesMessage = null;
-  }
-
-  const { summaryPayload, pagesPayload } = await buildTextTierlistPayloads(client, { page: pagination.page });
-  if (!summaryMessage || !pagesMessage) {
-    summaryMessage = await channel.send(summaryPayload);
-    try {
-      pagesMessage = await channel.send(pagesPayload);
-    } catch (error) {
-      await summaryMessage.delete().catch(() => {});
-      throw error;
-    }
+    state.messageId = message.id;
+  } else if (!message) {
+    message = await channel.send(payload);
+    state.messageId = message.id;
   } else {
-    await summaryMessage.edit(summaryPayload);
-    await pagesMessage.edit(pagesPayload);
+    await message.edit(payload);
   }
 
   state.channelId = channelId;
-  state.messageId = "";
-  state.messageIdSummary = summaryMessage.id;
-  state.messageIdPages = pagesMessage.id;
   saveDb();
-  return { summaryMessage, pagesMessage };
+  return message;
 }
 
 async function ensureTextTierlistBoardMessage(client, options = {}) {
@@ -3981,7 +3954,7 @@ async function refreshAllTierlists(client) {
   }
 
   try {
-    await refreshTextTierlistBoard(client, { forceRecreate: !hadGraphicMessage && hasTextTierlistManagedMessages(textState) });
+    await refreshTextTierlistBoard(client, { forceRecreate: !hadGraphicMessage && Boolean(textState.messageId) });
     result.textOk = true;
   } catch (error) {
     result.textError = error;
@@ -9593,7 +9566,7 @@ client.on("interactionCreate", async (interaction) => {
         const pagination = getTextTierlistPaginationState();
         const liveContext = await getLiveCharacterStatsContext(client);
         const total = getApprovedTierlistEntries({ liveMainsByUserId: liveContext.liveMainsByUserId }).length;
-        const PAGE_SIZE = 25;
+        const PAGE_SIZE = 20;
         const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
         let nextPage = pagination.page;
         if (interaction.customId === "text_tierlist_first") nextPage = 0;
@@ -12286,7 +12259,7 @@ client.on("interactionCreate", async (interaction) => {
       const previousTextChannelId = String(textBoardState.channelId || "").trim();
       textBoardState.channelId = textTierlistChannelId;
       if (!textTierlistChannelId || previousTextChannelId !== textTierlistChannelId) {
-        clearTextTierlistBoardMessageIds(textBoardState);
+        textBoardState.messageId = "";
       }
 
       const graphicBoardState = getGraphicTierlistBoardState(db.config, appConfig.channels.tierlistChannelId || "");
