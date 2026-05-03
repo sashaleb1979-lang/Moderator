@@ -184,12 +184,15 @@ function ensureTierlistBoardState(dbConfig, defaultChannelId = "") {
   const legacyBoard = dbConfig.tierlistBoard && typeof dbConfig.tierlistBoard === "object" ? dbConfig.tierlistBoard : {};
   const legacyGraphic = dbConfig.graphicTierlist && typeof dbConfig.graphicTierlist === "object" ? dbConfig.graphicTierlist : {};
   const hasNestedState = legacyBoard.text && legacyBoard.graphic;
+  const legacyTextMessageId = cleanString(legacyBoard.textMessageId || legacyBoard.messageId);
 
   if (!hasNestedState) {
     dbConfig.tierlistBoard = {
       text: {
         channelId: cleanString(legacyBoard.channelId || defaultChannelId),
-        messageId: cleanString(legacyBoard.textMessageId || legacyBoard.messageId),
+        messageId: legacyTextMessageId,
+        messageIdSummary: "",
+        messageIdPages: "",
       },
       graphic: {
         channelId: cleanString(legacyBoard.graphicChannelId || legacyGraphic.dashboardChannelId || legacyBoard.channelId || defaultChannelId),
@@ -205,7 +208,9 @@ function ensureTierlistBoardState(dbConfig, defaultChannelId = "") {
   state.graphic ||= {};
 
   state.text.channelId ||= cleanString(defaultChannelId);
-  state.text.messageId ||= "";
+  state.text.messageId = cleanString(state.text.messageId || "");
+  state.text.messageIdSummary = cleanString(state.text.messageIdSummary || "");
+  state.text.messageIdPages = cleanString(state.text.messageIdPages || "");
   state.graphic.channelId ||= cleanString(defaultChannelId);
   state.graphic.messageId ||= "";
   if (state.graphic.lastUpdated === undefined) state.graphic.lastUpdated = null;

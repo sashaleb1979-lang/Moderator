@@ -88,6 +88,8 @@ test("migrates legacy tierlist and graphic config into unified presentation stat
   assert.deepEqual(dbConfig.tierlistBoard.text, {
     channelId: "text-channel",
     messageId: "text-message",
+    messageIdSummary: "",
+    messageIdPages: "",
   });
   assert.deepEqual(dbConfig.tierlistBoard.graphic, {
     channelId: "graphic-channel",
@@ -176,10 +178,14 @@ test("text and graphic board states stay separate after migration and direct upd
 
   graphicBoard.channelId = "graphic-moved";
   graphicBoard.messageId = "graphic-new";
+  textBoard.messageIdSummary = "text-summary";
+  textBoard.messageIdPages = "text-pages";
 
   assert.deepEqual(textBoard, {
     channelId: "text-home",
     messageId: "text-message",
+    messageIdSummary: "text-summary",
+    messageIdPages: "text-pages",
   });
   assert.deepEqual(graphicBoard, {
     channelId: "graphic-moved",
