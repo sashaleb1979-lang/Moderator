@@ -90,6 +90,7 @@ const {
   buildLegacyTierlistSummaryEmbed,
   computeLegacyTierlistGlobalBuckets,
   computeLegacyTierlistGlobalLayoutHash,
+  getTierState,
   getLegacyTierlistFontDebugInfo,
   getLegacyTierlistImageConfig,
   getLegacyTierlistUserTierCounts,
@@ -1375,7 +1376,7 @@ async function buildTextTierlistPayloads(client, options = {}) {
     summaryEmbeds.push(first);
   }
 
-  const mainsEmbed = buildCharactersRankingEmbed(entries, liveContext, eloRatings);
+  const mainsEmbed = buildCharactersRankingEmbed(entries, liveContext);
   if (mainsEmbed) summaryEmbeds.push(mainsEmbed);
 
   const recentEmbed = buildRecentKillChangesEmbed();
@@ -1445,24 +1446,37 @@ async function buildTextTierlistPayloads(client, options = {}) {
   };
 }
 
-function buildCharactersRankingEmbed(entries, liveContext, eloRatings = {}) {
+function buildCharactersRankingEmbed(entries, liveContext) {
+  void entries;
   const characterStats = Array.isArray(liveContext?.characterStats) ? liveContext.characterStats : [];
   if (!characterStats.length) return null;
 
   // Cluster info from legacy tierlist live state.
   const clusterByCharId = new Map();
+  const clusterByLabel = new Map();
   let clusterRanking = [];
+  const normalizeClusterLookupKey = (value) => String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[_\-]+/g, " ")
+    .replace(/\s+/g, " ");
   try {
     const live = getLiveLegacyTierlistState();
     if (live?.ok) {
       const { buckets, meta } = computeLegacyTierlistGlobalBuckets(live);
-      const tierNames = {};
       for (const tierKey of ["S", "A", "B", "C", "D"]) {
-        const tierState = live.rawState?.tiers?.[tierKey] || {};
-        tierNames[tierKey] = String(tierState.name || tierKey);
+        const tierName = String(getTierState(live.rawState, tierKey)?.name || tierKey).trim();
         for (const id of buckets[tierKey] || []) {
           const avg = Number(meta?.[id]?.avg) || 0;
-          clusterByCharId.set(String(id), { tierKey, name: tierNames[tierKey], avg });
+          const cluster = { tierKey, name: tierName, avg };
+          const normalizedId = String(id || "").trim();
+          clusterByCharId.set(normalizedId, cluster);
+
+          const liveLabelKey = normalizeClusterLookupKey(live.charById?.get(normalizedId)?.name);
+          if (liveLabelKey) clusterByLabel.set(liveLabelKey, cluster);
+
+          const metaLabelKey = normalizeClusterLookupKey(meta?.[id]?.name);
+          if (metaLabelKey) clusterByLabel.set(metaLabelKey, cluster);
         }
       }
       clusterRanking = Object.entries(meta || {})
@@ -1474,36 +1488,7 @@ function buildCharactersRankingEmbed(entries, liveContext, eloRatings = {}) {
 
   const items = characterStats.map((stat) => {
     const id = String(stat.id || "").trim();
-    const eloTiers = [];
-    let eloSum = 0;
-    let eloCount = 0;
-    for (const m of stat.rememberedMembers || []) {
-      const r = eloRatings?.[m.userId];
-      if (!r) continue;
-      const t = Number(r.tier);
-      if (Number.isFinite(t)) eloTiers.push(t);
-      const e = Number(r.elo);
-      if (Number.isFinite(e)) { eloSum += e; eloCount += 1; }
-    }
-    const eloMedTier = eloTiers.length ? Math.round(medianNumber(eloTiers)) : null;
-    const eloAvg = eloCount > 0 ? Math.round(eloSum / eloCount) : null;
-
-    // ELO multiplier: lower tier = stronger players. Active only when n>=3.
-    let eloMul = 1.0;
-    if (eloTiers.length >= 3) {
-      const med = medianNumber(eloTiers);
-      if (med <= 1.5) eloMul = 1.20;
-      else if (med <= 2.5) eloMul = 1.10;
-      else if (med <= 3.5) eloMul = 1.00;
-      else if (med <= 4.5) eloMul = 0.92;
-      else eloMul = 0.85;
-    }
-
-    const cluster = clusterByCharId.get(id) || null;
-    // Score = (медиана kills + бонус кластера) * eloMul, округляем до 1k.
-    const clusterBonus = cluster ? Math.round((cluster.avg || 0) * 200) : 0;
-    const baseScore = (stat.medianKills || 0) + clusterBonus;
-    const score = Math.max(0, Math.round(baseScore * eloMul));
+    const cluster = clusterByCharId.get(id) || clusterByLabel.get(normalizeClusterLookupKey(stat.main)) || null;
 
     return {
       id,
@@ -1518,22 +1503,17 @@ function buildCharactersRankingEmbed(entries, liveContext, eloRatings = {}) {
       highCount: stat.highCount || 0,
       lowCount: stat.lowCount || 0,
       cluster,
-      eloMedTier,
-      eloAvg,
-      eloMul,
-      eloPlayers: eloTiers.length,
-      score,
     };
   });
 
   const visible = items.filter((r) => r.mainsCount > 0);
   if (!visible.length) return null;
 
-  // Sort by mainsCount (user-required); tie-break by score then median.
+  // Sort by the visible people-count signal first, then by median and total kills.
   visible.sort((a, b) => {
     if (b.mainsCount !== a.mainsCount) return b.mainsCount - a.mainsCount;
-    if (b.score !== a.score) return b.score - a.score;
     if (b.medKills !== a.medKills) return b.medKills - a.medKills;
+    if (b.totalKills !== a.totalKills) return b.totalKills - a.totalKills;
     return String(a.main).localeCompare(String(b.main), "ru");
   });
 
@@ -1541,17 +1521,10 @@ function buildCharactersRankingEmbed(entries, liveContext, eloRatings = {}) {
 
   const lines = visible.map((r, idx) => {
     const place = idx + 1;
-    const parts = [`**#${place}** ${refOf(r)}`];
-    parts.push(`👥 **${r.mainsCount}**`);
-    parts.push(`⭐ **${formatKillsCompact(r.score)}**`);
+    const parts = [`#${place} ${refOf(r)}`];
+    parts.push(`👥 ${r.mainsCount}`);
+    parts.push(`🏷 ${r.cluster?.name || "—"}`);
     parts.push(`📊 ${formatKillsCompact(r.avgKills)}/${formatKillsCompact(r.medKills)}/${formatKillsCompact(r.totalKills)}`);
-    if (r.cluster?.name) {
-      parts.push(`🏷 **${r.cluster.name}**`);
-    }
-    if (r.eloAvg != null && r.eloPlayers >= 3) {
-      const tierTxt = r.eloMedTier ? ` · T${r.eloMedTier}` : "";
-      parts.push(`🎯 **${r.eloAvg}**${tierTxt}`);
-    }
     if (r.bestPlayer && r.bestPlayer.userId && r.bestPlayer.kills > 0) {
       parts.push(`🏆 <@${r.bestPlayer.userId}> (${formatKillsCompact(r.bestPlayer.kills)})`);
     }
@@ -1559,18 +1532,20 @@ function buildCharactersRankingEmbed(entries, liveContext, eloRatings = {}) {
   });
 
   const facts = buildCharacterFacts(visible, clusterRanking, refOf);
+  const legend = "**Что значит:** 👥 людей с мейном • 🏷 кластер • 📊 сред/мед/сумм • 🏆 самый высокий kills";
 
-  let description = lines.join("\n");
-  if (description.length > 3500) {
+  let body = lines.join("\n");
+  if (body.length > 3300) {
     let acc = "";
     let kept = 0;
     for (const line of lines) {
-      if ((acc.length + line.length + 1) > 3400) break;
+      if ((acc.length + line.length + 1) > 3200) break;
       acc += (acc ? "\n" : "") + line;
       kept += 1;
     }
-    description = acc + `\n…ещё ${lines.length - kept} персонажей`;
+    body = acc + `\n…ещё ${lines.length - kept} персонажей`;
   }
+  let description = `${legend}\n\n${body}`;
   if (facts.length) description += `\n\n**✨ Доп. факты**\n${facts.join("\n")}`;
 
   return new EmbedBuilder()
@@ -1603,34 +1578,21 @@ function buildCharacterFacts(items, clusterRanking, refOf) {
     return positions;
   };
 
-  // 1. Лучший ELO (1 + 2 место)
-  const eloPositions = topPositions(
-    items.filter((r) => r.eloAvg != null && r.eloPlayers >= 3),
-    (r) => r.eloAvg,
-    2
-  );
-  if (eloPositions.length) {
-    const txt = eloPositions
-      .map((p, idx) => `${idx + 1}. ${p.items.map(refOf).join(", ")} (${p.score})`)
-      .join(" · ");
-    lines.push(`🎯 Лучший ELO: ${txt}`);
-  }
-
-  // 2. Топ-3 по медиане kills
+  // 1. Топ-3 по медиане kills
   const medTop = topPositions(items.filter((r) => r.mainsCount > 0), (r) => r.medKills, 3);
   if (medTop.length) {
     const txt = medTop.map((p, idx) => `${idx + 1}. ${p.items.map(refOf).join(", ")} (${formatKillsRoundK(p.score)})`).join(" · ");
     lines.push(`📈 Топ медиана kills: ${txt}`);
   }
 
-  // 3. Низшая медиана kills (топ-3 снизу)
+  // 2. Низшая медиана kills (топ-3 снизу)
   const medBot = topPositions(items.filter((r) => r.mainsCount > 0), (r) => -r.medKills, 3);
   if (medBot.length) {
     const txt = medBot.map((p, idx) => `${idx + 1}. ${p.items.map(refOf).join(", ")} (${formatKillsRoundK(-p.score)})`).join(" · ");
     lines.push(`📉 Низшая медиана kills: ${txt}`);
   }
 
-  // 4. Топ кластера / Анскил (по cluster.avg)
+  // 3. Топ кластера / Анскил (по cluster.avg)
   if (clusterRanking.length >= 2) {
     const top = clusterRanking[0];
     const bot = clusterRanking[clusterRanking.length - 1];
@@ -1643,14 +1605,14 @@ function buildCharacterFacts(items, clusterRanking, refOf) {
     }
   }
 
-  // 5. Больше всего хай-игроков (абсолют)
+  // 4. Больше всего хай-игроков (абсолют)
   const highTop = topPositions(items.filter((r) => r.highCount > 0), (r) => r.highCount, 1);
   if (highTop.length) {
     const p = highTop[0];
     lines.push(`🔥 Хай-игроков больше всего: ${p.items.map(refOf).join(", ")} (${p.score})`);
   }
 
-  // 6. Лучший хай-рейт (T5+T4 / mainsCount)
+  // 5. Лучший хай-рейт (T5+T4 / mainsCount)
   const rateTop = topPositions(
     items.filter((r) => r.mainsCount >= 3),
     (r) => Math.round((r.highCount / r.mainsCount) * 100),
@@ -1661,21 +1623,21 @@ function buildCharacterFacts(items, clusterRanking, refOf) {
     lines.push(`⚡ Хай-рейт: ${txt}`);
   }
 
-  // 7. Самый популярный (1 + 2)
+  // 6. Самый популярный (1 + 2)
   const popTop = topPositions(items.filter((r) => r.mainsCount > 0), (r) => r.mainsCount, 2);
   if (popTop.length) {
     const txt = popTop.map((p, idx) => `${idx + 1}. ${p.items.map(refOf).join(", ")} (${p.score})`).join(" · ");
     lines.push(`💖 Популярный: ${txt}`);
   }
 
-  // 8. Самый редкий (1 + 2)
+  // 7. Самый редкий (1 + 2)
   const rareTop = topPositions(items.filter((r) => r.mainsCount > 0), (r) => -r.mainsCount, 2);
   if (rareTop.length) {
     const txt = rareTop.map((p, idx) => `${idx + 1}. ${p.items.map(refOf).join(", ")} (${-p.score})`).join(" · ");
     lines.push(`🪶 Редкий: ${txt}`);
   }
 
-  // 9. Tierlist лидер / аутсайдер
+  // 8. Tierlist лидер / аутсайдер
   const withCluster = items.filter((r) => r.cluster);
   if (withCluster.length >= 2) {
     const sorted = [...withCluster].sort((a, b) => (b.cluster.avg || 0) - (a.cluster.avg || 0));
