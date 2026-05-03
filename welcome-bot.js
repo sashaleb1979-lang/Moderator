@@ -1018,6 +1018,7 @@ async function getLiveCharacterStatsContext(client, options = {}) {
       characterEntries.map((entry) => [
         entry.id,
         {
+          id: entry.id,
           main: entry.label,
           roleId: entry.roleId,
           roleHolderCount: 0,
@@ -1095,6 +1096,126 @@ function chunkTextLines(lines, maxLength = 3800, maxLines = 15) {
   return chunks;
 }
 
+// Compact kills format: 6641 -> 6.6к, 252000 -> 252к, <100 -> raw number.
+function formatKillsCompact(value) {
+  const n = Math.max(0, Math.round(Number(value) || 0));
+  if (n < 100) return String(n);
+  if (n < 10000) {
+    const k = n / 1000;
+    return `${k.toFixed(1).replace(/\.0$/, "")}к`;
+  }
+  return `${Math.round(n / 1000)}к`;
+}
+
+// Round to 1k for facts: 6641 -> 7к, 124 -> 0к.
+function formatKillsRoundK(value) {
+  const n = Math.max(0, Math.round(Number(value) || 0));
+  return `${Math.round(n / 1000)}к`;
+}
+
+function formatDateOnly(timestamp) {
+  if (!timestamp) return "—";
+  const d = new Date(timestamp);
+  if (Number.isNaN(d.getTime())) return "—";
+  return `${String(d.getDate()).padStart(2, "0")}.${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function medianNumber(arr) {
+  const s = (Array.isArray(arr) ? arr : []).map(Number).filter((x) => Number.isFinite(x)).sort((a, b) => a - b);
+  if (!s.length) return 0;
+  const m = Math.floor(s.length / 2);
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+}
+
+const TIER_EMOJI_PALETTE = [
+  { emoji: "🔴", rgb: [221, 46, 68] },
+  { emoji: "🟠", rgb: [244, 144, 12] },
+  { emoji: "🟡", rgb: [253, 203, 88] },
+  { emoji: "🟢", rgb: [120, 177, 89] },
+  { emoji: "🔵", rgb: [85, 172, 238] },
+  { emoji: "🟣", rgb: [170, 142, 214] },
+  { emoji: "⚫", rgb: [49, 55, 61] },
+  { emoji: "⚪", rgb: [230, 231, 232] },
+  { emoji: "🟤", rgb: [193, 105, 79] },
+];
+
+function parseHexColorToRgb(hex) {
+  const h = String(hex || "").replace("#", "").trim();
+  if (!/^[0-9a-fA-F]{6}$/.test(h)) return null;
+  const n = parseInt(h, 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+
+function nearestTierEmoji(hexColor, fallback = "⚪") {
+  const rgb = parseHexColorToRgb(hexColor);
+  if (!rgb) return fallback;
+  let best = TIER_EMOJI_PALETTE[0];
+  let bestDist = Infinity;
+  for (const item of TIER_EMOJI_PALETTE) {
+    const dr = rgb[0] - item.rgb[0];
+    const dg = rgb[1] - item.rgb[1];
+    const db = rgb[2] - item.rgb[2];
+    const dist = dr * dr + dg * dg + db * db;
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = item;
+    }
+  }
+  return best.emoji;
+}
+
+async function getTierEmojiMap(client) {
+  const presentation = getPresentation();
+  const generated = getGeneratedRoleState();
+  let guild = null;
+  try { guild = await getGuild(client); } catch { guild = null; }
+  const out = {};
+  for (const tier of [1, 2, 3, 4, 5]) {
+    const key = String(tier);
+    let hex = "";
+    const roleId = String(appConfig.roles.killTierRoleIds?.[key] || generated.tiers?.[key] || "").trim();
+    if (roleId && guild) {
+      const role = guild.roles.cache.get(roleId) || await guild.roles.fetch(roleId).catch(() => null);
+      if (role && role.color) {
+        hex = `#${role.color.toString(16).padStart(6, "0")}`;
+      }
+    }
+    if (!hex) hex = String(presentation.tierlist.graphic.colors?.[tier] || DEFAULT_GRAPHIC_TIER_COLORS[tier] || "").trim();
+    out[tier] = nearestTierEmoji(hex);
+  }
+  return out;
+}
+
+async function cleanupOrphanCharacterRoles(client) {
+  const generated = getGeneratedRoleState();
+  const catalogIds = new Set(getCharacterCatalog().map((entry) => String(entry.id || "").trim()));
+  const orphanIds = Object.keys(generated.characters || {}).filter((id) => !catalogIds.has(String(id).trim()));
+  if (!orphanIds.length) return { removed: 0, deletedRoles: 0 };
+
+  let guild = null;
+  try { guild = await getGuild(client); } catch { guild = null; }
+  let deletedRoles = 0;
+  for (const orphanId of orphanIds) {
+    const roleId = String(generated.characters[orphanId] || "").trim();
+    delete generated.characters[orphanId];
+    if (!guild || !roleId) continue;
+    const role = await guild.roles.fetch(roleId).catch(() => null);
+    if (!role) continue;
+    const holders = role.members ? role.members.filter((m) => !m.user?.bot) : new Map();
+    if (holders.size === 0) {
+      try {
+        await role.delete("Orphan auto-character role cleanup");
+        deletedRoles += 1;
+      } catch (error) {
+        console.warn("Failed to delete orphan character role:", error?.message || error);
+      }
+    }
+  }
+  saveDb();
+  invalidateLiveCharacterStatsContext();
+  return { removed: orphanIds.length, deletedRoles };
+}
+
 function estimateEmbedTextLength(embed) {
   const data = typeof embed?.toJSON === "function" ? embed.toJSON() : (embed || {});
   let total = 0;
@@ -1112,14 +1233,15 @@ function estimateEmbedTextLength(embed) {
   return total;
 }
 
-function buildMainStatsEmbeds(characterStats = []) {
+function buildMainStatsEmbeds(characterStats = [], tierEmojis = null) {
   if (!characterStats.length) return [];
+  const em = tierEmojis || { 5: "🔴", 4: "🟠", 3: "🟡", 2: "🟢", 1: "⚪" };
 
   const popularityLines = characterStats.map((stat, index) =>
     `${index + 1}. ${stat.roleId ? formatRoleMention(stat.roleId) : `**${stat.main}**`} — с ролью: **${formatNumber(stat.roleHolderCount)}** • с kills: **${formatNumber(stat.rememberedCount)}** • сумма: **${formatNumber(stat.totalKills)}** • ср: **${formatNumber(stat.averageKills)}** • мед: **${formatNumber(stat.medianKills)}**`
   );
   const distributionLines = characterStats.map((stat) =>
-    `${stat.roleId ? formatRoleMention(stat.roleId) : `**${stat.main}**`} — тиры T5/T4/T3/T2/T1: **${stat.totalsByTier[5]} / ${stat.totalsByTier[4]} / ${stat.totalsByTier[3]} / ${stat.totalsByTier[2]} / ${stat.totalsByTier[1]}**`
+    `${stat.roleId ? formatRoleMention(stat.roleId) : `**${stat.main}**`} — ${em[5]}${stat.totalsByTier[5]} ${em[4]}${stat.totalsByTier[4]} ${em[3]}${stat.totalsByTier[3]} ${em[2]}${stat.totalsByTier[2]} ${em[1]}${stat.totalsByTier[1]}`
   );
 
   const embeds = [];
@@ -1143,10 +1265,11 @@ function buildMainStatsEmbeds(characterStats = []) {
   return embeds;
 }
 
-function buildStatsEmbedsFromContext(entries, liveContext) {
+function buildStatsEmbedsFromContext(entries, liveContext, tierEmojis = null) {
   const stats = getStatsSnapshot(entries);
   const trackedStats = liveContext?.trackedMemberStats || getTrackedMemberStats([]);
   const presentation = getPresentation();
+  const em = tierEmojis || { 5: "🔴", 4: "🟠", 3: "🟡", 2: "🟢", 1: "⚪" };
 
   const lines = [];
   if (!entries.length && trackedStats.totalRoleHolders === 0) {
@@ -1163,47 +1286,47 @@ function buildStatsEmbedsFromContext(entries, liveContext) {
     const totalActive = tiers[5] + tiers[4] + tiers[3] + tiers[2] + tiers[1] || entries.length;
     const pct = (n) => totalActive > 0 ? `${Math.round((n / totalActive) * 100)}%` : "0%";
 
-    lines.push(`👥 Активных игроков: **${formatNumber(entries.length)}**`);
-    lines.push(`🎭 С ролью персонажа: **${formatNumber(trackedStats.totalRoleHolders)}** • с kills: **${formatNumber(trackedStats.rememberedCount)}**`);
-    lines.push(`💀 Сумма kills: **${formatNumber(totalKills)}**`);
-    lines.push(`📊 Среднее: **${formatNumber(avg)}** • медиана: **${formatNumber(median)}**`);
+    lines.push(`Активных игроков: **${formatNumber(entries.length)}** · с ролью персонажа: **${formatNumber(trackedStats.totalRoleHolders)}** · с kills: **${formatNumber(trackedStats.rememberedCount)}**`);
+    lines.push(`Сумма kills: **${formatKillsCompact(totalKills)}** · среднее: **${formatKillsCompact(avg)}** · медиана: **${formatKillsCompact(median)}**`);
     lines.push("");
     lines.push("**Распределение по тирам**");
-    lines.push(`🔴 T5: **${tiers[5]}** (${pct(tiers[5])}) • 🟠 T4: **${tiers[4]}** (${pct(tiers[4])})`);
-    lines.push(`🟡 T3: **${tiers[3]}** (${pct(tiers[3])}) • 🟢 T2: **${tiers[2]}** (${pct(tiers[2])}) • ⚪ T1: **${tiers[1]}** (${pct(tiers[1])})`);
+    lines.push(`${em[5]} T5: **${tiers[5]}** (${pct(tiers[5])}) · ${em[4]} T4: **${tiers[4]}** (${pct(tiers[4])})`);
+    lines.push(`${em[3]} T3: **${tiers[3]}** (${pct(tiers[3])}) · ${em[2]} T2: **${tiers[2]}** (${pct(tiers[2])}) · ${em[1]} T1: **${tiers[1]}** (${pct(tiers[1])})`);
 
     if (stats.topEntry || stats.bottomEntry) {
       lines.push("");
     }
     if (stats.topEntry) {
       const mention = stats.topEntry.userId ? `<@${stats.topEntry.userId}>` : `**${stats.topEntry.displayName}**`;
-      lines.push(`🏆 Лидер: ${mention} — **${formatNumber(stats.topEntry.approvedKills)}** kills`);
+      lines.push(`Лидер: ${mention} — **${formatKillsCompact(stats.topEntry.approvedKills)}** kills`);
     }
     if (stats.bottomEntry) {
       const mention = stats.bottomEntry.userId ? `<@${stats.bottomEntry.userId}>` : `**${stats.bottomEntry.displayName}**`;
-      lines.push(`🌑 Хвост: ${mention} — **${formatNumber(stats.bottomEntry.approvedKills)}** kills`);
+      lines.push(`Хвост: ${mention} — **${formatKillsCompact(stats.bottomEntry.approvedKills)}** kills`);
     }
   }
 
   return [
     new EmbedBuilder()
-      .setTitle(`📋 ${presentation.tierlist.textTitle}`)
+      .setTitle(presentation.tierlist.textTitle)
       .setColor(0x5865F2)
       .setDescription(lines.join("\n")),
-    ...buildMainStatsEmbeds(liveContext?.characterStats || []),
+    ...buildMainStatsEmbeds(liveContext?.characterStats || [], em),
   ];
 }
 
 async function buildStatsEmbeds(client) {
   const liveContext = await getLiveCharacterStatsContext(client);
   const entries = getApprovedTierlistEntries({ liveMainsByUserId: liveContext.liveMainsByUserId });
-  return buildStatsEmbedsFromContext(entries, liveContext);
+  const tierEmojis = await getTierEmojiMap(client);
+  return buildStatsEmbedsFromContext(entries, liveContext, tierEmojis);
 }
 
 async function buildTierlistEmbeds(client) {
   const liveContext = await getLiveCharacterStatsContext(client);
   const entries = getApprovedTierlistEntries({ liveMainsByUserId: liveContext.liveMainsByUserId });
-  const embeds = [...buildStatsEmbedsFromContext(entries, liveContext)];
+  const tierEmojis = await getTierEmojiMap(client);
+  const embeds = [...buildStatsEmbedsFromContext(entries, liveContext, tierEmojis)];
 
   if (!entries.length) {
     return { embeds, flags: MessageFlags.Ephemeral };
@@ -1303,14 +1426,16 @@ async function buildTextTierlistPayloads(client, options = {}) {
   const summaryEmbeds = [];
   const pagesEmbeds = [];
 
-  const baseEmbeds = buildStatsEmbedsFromContext(entries, liveContext);
+  const tierEmojis = await getTierEmojiMap(client);
+
+  const baseEmbeds = buildStatsEmbedsFromContext(entries, liveContext, tierEmojis);
   if (baseEmbeds.length) {
     const first = baseEmbeds[0];
     try { first.setColor(embedColor); } catch {}
     summaryEmbeds.push(first);
   }
 
-  const mainsEmbed = buildCharactersRankingEmbed(entries, liveContext, eloRatings);
+  const mainsEmbed = buildCharactersRankingEmbed(entries, liveContext, eloRatings, tierEmojis);
   if (mainsEmbed) summaryEmbeds.push(mainsEmbed);
 
   const recentEmbed = buildRecentKillChangesEmbed();
@@ -1380,142 +1505,115 @@ async function buildTextTierlistPayloads(client, options = {}) {
   };
 }
 
-function buildCharactersRankingEmbed(entries, liveContext, eloRatings = {}) {
-  const catalog = getCharacterEntries();
-  if (!catalog.length) return null;
+function buildCharactersRankingEmbed(entries, liveContext, eloRatings = {}, tierEmojis = null) {
+  const characterStats = Array.isArray(liveContext?.characterStats) ? liveContext.characterStats : [];
+  if (!characterStats.length) return null;
+  const em = tierEmojis || { 5: "🔴", 4: "🟠", 3: "🟡", 2: "🟢", 1: "⚪" };
 
-  const mainsByCharId = new Map();
-  for (const entry of entries) {
-    for (const mainRef of entry.mains || []) {
-      const cid = String(mainRef?.id || "").trim();
-      if (!cid) continue;
-      if (!mainsByCharId.has(cid)) mainsByCharId.set(cid, []);
-      mainsByCharId.get(cid).push(entry);
-    }
-  }
-
-  let charTierByCharId = new Map();
+  // Cluster info from legacy tierlist live state.
+  const clusterByCharId = new Map();
+  let clusterRanking = [];
   try {
     const live = getLiveLegacyTierlistState();
-    if (live.ok) {
-      const { buckets } = computeLegacyTierlistGlobalBuckets(live);
-      for (const [tierKey, ids] of Object.entries(buckets)) {
-        for (const id of ids) charTierByCharId.set(id, tierKey);
+    if (live?.ok) {
+      const { buckets, meta } = computeLegacyTierlistGlobalBuckets(live);
+      const tierNames = {};
+      for (const tierKey of ["S", "A", "B", "C", "D"]) {
+        const tierState = live.rawState?.tiers?.[tierKey] || {};
+        tierNames[tierKey] = String(tierState.name || tierKey);
+        for (const id of buckets[tierKey] || []) {
+          const avg = Number(meta?.[id]?.avg) || 0;
+          clusterByCharId.set(String(id), { tierKey, name: tierNames[tierKey], avg });
+        }
       }
+      clusterRanking = Object.entries(meta || {})
+        .map(([id, m]) => ({ id: String(id), avg: Number(m?.avg) || 0, votes: Number(m?.votes) || 0 }))
+        .filter((x) => x.votes > 0)
+        .sort((a, b) => b.avg - a.avg);
     }
   } catch {}
 
-  const tierBonusMap = { S: 25, A: 15, B: 5, C: -5, D: -15 };
-  const killWeightMap = { 5: 5, 4: 3.5, 3: 2, 2: 1, 1: 0.4 };
-
-  const median = (arr) => {
-    if (!arr.length) return 0;
-    const sorted = [...arr].sort((a, b) => a - b);
-    const mid = Math.floor(sorted.length / 2);
-    return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
-  };
-
-  const ranked = catalog.map((cat) => {
-    const mainEntries = mainsByCharId.get(cat.id) || [];
-    const dist = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
-    const killsList = [];
-    const eloList = [];
-    for (const e of mainEntries) {
-      if (Number.isFinite(e.killTier) && dist[e.killTier] != null) dist[e.killTier] += 1;
-      if (Number.isFinite(e.approvedKills)) killsList.push(e.approvedKills);
-      const r = eloRatings[e.userId];
-      if (r && Number.isFinite(Number(r.tier))) eloList.push(Number(r.tier));
+  const items = characterStats.map((stat) => {
+    const id = String(stat.id || "").trim();
+    const eloTiers = [];
+    let eloSum = 0;
+    let eloCount = 0;
+    for (const m of stat.rememberedMembers || []) {
+      const r = eloRatings?.[m.userId];
+      if (!r) continue;
+      const t = Number(r.tier);
+      if (Number.isFinite(t)) eloTiers.push(t);
+      const e = Number(r.elo);
+      if (Number.isFinite(e)) { eloSum += e; eloCount += 1; }
     }
-    const base = (dist[5] * killWeightMap[5]) + (dist[4] * killWeightMap[4]) + (dist[3] * killWeightMap[3]) + (dist[2] * killWeightMap[2]) + (dist[1] * killWeightMap[1]);
-    const charTier = charTierByCharId.get(cat.id) || "";
-    const charBonus = tierBonusMap[charTier] || 0;
-
-    let eloMultiplier = 1.0;
-    if (eloList.length >= 3) {
-      const med = median(eloList);
-      // ELO tiers: lower number = higher skill (T1 best, T5 worst).
-      if (med <= 1.5) eloMultiplier = 1.20;
-      else if (med <= 2.5) eloMultiplier = 1.10;
-      else if (med <= 3.5) eloMultiplier = 1.00;
-      else if (med <= 4.5) eloMultiplier = 0.92;
-      else eloMultiplier = 0.85;
-    }
-
-    const score = Math.round((base + charBonus) * eloMultiplier);
-    const avgKills = killsList.length ? Math.round(killsList.reduce((s, x) => s + x, 0) / killsList.length) : 0;
-    const medKills = killsList.length ? Math.round(median(killsList)) : 0;
-    const eloMed = eloList.length ? Math.round(median(eloList)) : null;
-    const highCount = dist[5] + dist[4];
-    const lowCount = dist[1] + dist[2];
+    const eloMedTier = eloTiers.length ? Math.round(medianNumber(eloTiers)) : null;
+    const eloAvg = eloCount > 0 ? Math.round(eloSum / eloCount) : null;
 
     return {
-      id: cat.id,
-      label: cat.label,
-      roleId: cat.roleId,
-      mainsCount: mainEntries.length,
-      dist,
-      avgKills,
-      medKills,
-      eloMed,
-      eloPlayers: eloList.length,
-      charTier,
-      score,
-      eloMultiplier,
-      highCount,
-      lowCount,
+      id,
+      main: stat.main,
+      roleId: stat.roleId,
+      mainsCount: stat.rememberedCount || 0,
+      totalKills: stat.totalKills || 0,
+      avgKills: stat.averageKills || 0,
+      medKills: stat.medianKills || 0,
+      bestPlayer: stat.bestPlayer || null,
+      dist: stat.totalsByTier || { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 },
+      highCount: stat.highCount || 0,
+      lowCount: stat.lowCount || 0,
+      cluster: clusterByCharId.get(id) || null,
+      eloMedTier,
+      eloAvg,
+      eloPlayers: eloTiers.length,
     };
   });
 
-  const haveAnyMains = ranked.some((r) => r.mainsCount > 0);
-  if (!haveAnyMains && !ranked.some((r) => r.charTier)) return null;
+  const visible = items.filter((r) => r.mainsCount > 0 || r.cluster);
+  if (!visible.length) return null;
 
-  ranked.sort((a, b) => b.score - a.score || b.mainsCount - a.mainsCount);
-
-  // Fun facts
-  const facts = [];
-  const populated = ranked.filter((r) => r.mainsCount > 0);
-  if (populated.length) {
-    const mostHigh = [...populated].sort((a, b) => b.highCount - a.highCount || b.mainsCount - a.mainsCount)[0];
-    const mostLow = [...populated].sort((a, b) => b.lowCount - a.lowCount || b.mainsCount - a.mainsCount)[0];
-    const mostPopular = [...populated].sort((a, b) => b.mainsCount - a.mainsCount)[0];
-    const leastPopular = [...populated].filter((r) => r.mainsCount > 0).sort((a, b) => a.mainsCount - b.mainsCount)[0];
-    const universal = [...populated].sort((a, b) => {
-      const spreadA = Object.values(a.dist).filter((v) => v > 0).length;
-      const spreadB = Object.values(b.dist).filter((v) => v > 0).length;
-      if (spreadB !== spreadA) return spreadB - spreadA;
-      return b.mainsCount - a.mainsCount;
-    })[0];
-
-    const ref = (r) => r.roleId ? formatRoleMention(r.roleId) : `**${r.label}**`;
-    if (mostHigh && mostHigh.highCount > 0) facts.push(`🏆 Больше всего хай-игроков: ${ref(mostHigh)} (T5+T4=${mostHigh.highCount})`);
-    if (mostLow && mostLow.lowCount > 0 && mostLow.id !== mostHigh?.id) facts.push(`🌑 Больше всего слабых: ${ref(mostLow)} (T1+T2=${mostLow.lowCount})`);
-    if (mostPopular) facts.push(`🔥 Самый популярный: ${ref(mostPopular)} (${mostPopular.mainsCount} мейнов)`);
-    if (leastPopular && leastPopular.id !== mostPopular?.id) facts.push(`🪶 Редкий мейн: ${ref(leastPopular)} (${leastPopular.mainsCount})`);
-    if (universal && Object.values(universal.dist).filter((v) => v > 0).length >= 3 && universal.id !== mostPopular?.id) {
-      facts.push(`🌐 Самый универсальный: ${ref(universal)}`);
-    }
-  }
-
-  // Build ranking lines: place + ref + tier + stats + score×mult.
-  const lines = ranked.map((r, idx) => {
-    const place = idx + 1;
-    const tag = r.charTier ? ` (${r.charTier})` : "";
-    const ref = r.roleId ? formatRoleMention(r.roleId) : `**${r.label}**`;
-    const dist = `S:${r.dist[5]} A:${r.dist[4]} B:${r.dist[3]} C:${r.dist[2]} D:${r.dist[1]}`;
-    const eloPart = r.eloMed != null ? ` · ELO med **T${r.eloMed}** (n=${r.eloPlayers})` : "";
-    const killsPart = r.mainsCount ? ` · ср/мед kills **${formatNumber(r.avgKills)}/${formatNumber(r.medKills)}**` : "";
-    return `**#${place}** ${ref}${tag} — мейнов **${r.mainsCount}** [${dist}]${killsPart}${eloPart} · score **${r.score}** ×${r.eloMultiplier.toFixed(2)}`;
+  visible.sort((a, b) => {
+    if (b.medKills !== a.medKills) return b.medKills - a.medKills;
+    const ca = a.cluster?.avg || 0;
+    const cb = b.cluster?.avg || 0;
+    if (cb !== ca) return cb - ca;
+    if ((b.eloAvg || 0) !== (a.eloAvg || 0)) return (b.eloAvg || 0) - (a.eloAvg || 0);
+    return b.mainsCount - a.mainsCount;
   });
 
-  // Embed description has 4096 char limit. Trim if needed.
+  const refOf = (r) => r.roleId ? formatRoleMention(r.roleId) : `**${r.main}**`;
+
+  const lines = visible.map((r, idx) => {
+    const place = idx + 1;
+    const parts = [`**#${place}** ${refOf(r)}`];
+    parts.push(`мейнов **${r.mainsCount}**`);
+    if (r.mainsCount > 0) {
+      parts.push(`ср/мед/сум **${formatKillsCompact(r.avgKills)}/${formatKillsCompact(r.medKills)}/${formatKillsCompact(r.totalKills)}**`);
+    }
+    if (r.bestPlayer && r.bestPlayer.userId && r.bestPlayer.kills > 0) {
+      parts.push(`хай <@${r.bestPlayer.userId}> (${formatKillsCompact(r.bestPlayer.kills)})`);
+    }
+    if (r.cluster?.name) {
+      parts.push(`скил по тирлисту: **${r.cluster.name}**`);
+    }
+    if (r.eloAvg != null && r.eloPlayers >= 3) {
+      parts.push(`ELO **${r.eloAvg}**${r.eloMedTier ? ` · T${r.eloMedTier}` : ""}`);
+    }
+    parts.push(`${em[5]}${r.dist[5]} ${em[4]}${r.dist[4]} ${em[3]}${r.dist[3]} ${em[2]}${r.dist[2]} ${em[1]}${r.dist[1]}`);
+    return parts.join(" • ");
+  });
+
+  const facts = buildCharacterFacts(visible, clusterRanking, refOf);
+
   let description = lines.join("\n");
   if (description.length > 3500) {
     let acc = "";
+    let kept = 0;
     for (const line of lines) {
       if ((acc.length + line.length + 1) > 3400) break;
       acc += (acc ? "\n" : "") + line;
+      kept += 1;
     }
-    description = acc + `\n…ещё ${lines.length - acc.split("\n").length} персонажей`;
+    description = acc + `\n…ещё ${lines.length - kept} персонажей`;
   }
   if (facts.length) description += `\n\n**Доп. факты**\n${facts.join("\n")}`;
 
@@ -1525,20 +1623,118 @@ function buildCharactersRankingEmbed(entries, liveContext, eloRatings = {}) {
     .setDescription(description);
 }
 
-function buildRecentKillChangesEmbed() {
-  const formatDateTime = (ts) => {
-    if (!ts) return "—";
-    const d = new Date(ts);
-    const dd = String(d.getDate()).padStart(2, "0");
-    const mm = String(d.getMonth() + 1).padStart(2, "0");
-    const hh = String(d.getHours()).padStart(2, "0");
-    const mi = String(d.getMinutes()).padStart(2, "0");
-    return `${dd}.${mm} ${hh}:${mi}`;
+function buildCharacterFacts(items, clusterRanking, refOf) {
+  const byId = new Map(items.map((r) => [r.id, r]));
+  const lines = [];
+
+  // Returns top N positions with ties; each position = { score, items[] }.
+  const topPositions = (arr, scoreFn, takePositions) => {
+    const enriched = arr
+      .map((it) => ({ it, score: scoreFn(it) }))
+      .filter((x) => Number.isFinite(x.score));
+    if (!enriched.length) return [];
+    enriched.sort((a, b) => b.score - a.score);
+    const positions = [];
+    let i = 0;
+    while (positions.length < takePositions && i < enriched.length) {
+      const cur = enriched[i].score;
+      const tie = [];
+      while (i < enriched.length && enriched[i].score === cur) {
+        tie.push(enriched[i].it);
+        i += 1;
+      }
+      positions.push({ score: cur, items: tie });
+    }
+    return positions;
   };
 
-  const events = [];
+  // 1. Лучший средний ELO (1 + 2 место с ties)
+  const eloPositions = topPositions(
+    items.filter((r) => r.eloAvg != null && r.eloPlayers >= 3),
+    (r) => r.eloAvg,
+    2
+  );
+  if (eloPositions.length) {
+    const txt = eloPositions
+      .map((p, idx) => `${idx + 1}. ${p.items.map(refOf).join(", ")} (${p.score})`)
+      .join(" · ");
+    lines.push(`Лучший ELO: ${txt}`);
+  }
 
-  // Kill changes from welcome-db submissions.
+  // 2. Топ-3 по медиане kills
+  const medTop = topPositions(items.filter((r) => r.mainsCount > 0), (r) => r.medKills, 3);
+  if (medTop.length) {
+    const txt = medTop.map((p, idx) => `${idx + 1}. ${p.items.map(refOf).join(", ")} (${formatKillsRoundK(p.score)})`).join(" · ");
+    lines.push(`Топ медиана kills: ${txt}`);
+  }
+
+  // 3. Низшая медиана kills (топ-3 снизу)
+  const medBot = topPositions(items.filter((r) => r.mainsCount > 0), (r) => -r.medKills, 3);
+  if (medBot.length) {
+    const txt = medBot.map((p, idx) => `${idx + 1}. ${p.items.map(refOf).join(", ")} (${formatKillsRoundK(-p.score)})`).join(" · ");
+    lines.push(`Низшая медиана kills: ${txt}`);
+  }
+
+  // 4. Самый "хай" и "анскил" по кластеру (одна строка)
+  if (clusterRanking.length >= 2) {
+    const top = clusterRanking[0];
+    const bot = clusterRanking[clusterRanking.length - 1];
+    if (top.id !== bot.id) {
+      const topItem = byId.get(top.id);
+      const botItem = byId.get(bot.id);
+      const topTxt = topItem ? refOf(topItem) : `**${top.id}**`;
+      const botTxt = botItem ? refOf(botItem) : `**${bot.id}**`;
+      lines.push(`Топ кластера: ${topTxt} · Анскил: ${botTxt}`);
+    }
+  }
+
+  // 5. Больше всего хай-игроков (абсолют)
+  const highTop = topPositions(items.filter((r) => r.highCount > 0), (r) => r.highCount, 1);
+  if (highTop.length) {
+    const p = highTop[0];
+    lines.push(`Хай-игроков больше всего: ${p.items.map(refOf).join(", ")} (${p.score})`);
+  }
+
+  // 6. Лучший хай-рейт (T5+T4 / mainsCount), 1 + 2 место
+  const rateTop = topPositions(
+    items.filter((r) => r.mainsCount >= 3),
+    (r) => Math.round((r.highCount / r.mainsCount) * 100),
+    2
+  );
+  if (rateTop.length) {
+    const txt = rateTop.map((p, idx) => `${idx + 1}. ${p.items.map(refOf).join(", ")} (${p.score}%)`).join(" · ");
+    lines.push(`Хай-рейт: ${txt}`);
+  }
+
+  // 7. Самый популярный (1 + 2)
+  const popTop = topPositions(items.filter((r) => r.mainsCount > 0), (r) => r.mainsCount, 2);
+  if (popTop.length) {
+    const txt = popTop.map((p, idx) => `${idx + 1}. ${p.items.map(refOf).join(", ")} (${p.score})`).join(" · ");
+    lines.push(`Популярный: ${txt}`);
+  }
+
+  // 8. Самый редкий (1 + 2), исключая нулевых мейнов
+  const rareTop = topPositions(items.filter((r) => r.mainsCount > 0), (r) => -r.mainsCount, 2);
+  if (rareTop.length) {
+    const txt = rareTop.map((p, idx) => `${idx + 1}. ${p.items.map(refOf).join(", ")} (${-p.score})`).join(" · ");
+    lines.push(`Редкий: ${txt}`);
+  }
+
+  // 9. Лучший / худший в tierlist (cluster avg) — одна строка
+  const withCluster = items.filter((r) => r.cluster);
+  if (withCluster.length >= 2) {
+    const sorted = [...withCluster].sort((a, b) => (b.cluster.avg || 0) - (a.cluster.avg || 0));
+    const best = sorted[0];
+    const worst = sorted[sorted.length - 1];
+    if (best.id !== worst.id) {
+      lines.push(`Tierlist лидер: ${refOf(best)} (${best.cluster.name}) · Аутсайдер: ${refOf(worst)} (${worst.cluster.name})`);
+    }
+  }
+
+  return lines;
+}
+
+function buildRecentKillChangesEmbed() {
   const killSubs = Object.values(db.submissions || {})
     .filter((s) => s && s.status === "approved" && s.userId && Number.isFinite(Number(s.kills)))
     .sort((a, b) => {
@@ -1546,74 +1742,39 @@ function buildRecentKillChangesEmbed() {
       const tb = Date.parse(b.reviewedAt || b.createdAt || 0) || 0;
       return ta - tb;
     });
-  const perUserKills = new Map();
+
+  // Track last upgrade pair per user (previous current → newest current).
+  const lastByUser = new Map();
   for (const s of killSubs) {
-    const prev = perUserKills.get(s.userId) ?? null;
     const next = Number(s.kills);
     const at = Date.parse(s.reviewedAt || s.createdAt || 0) || 0;
-    if (prev != null && prev !== next) {
-      events.push({ kind: "kills", userId: s.userId, from: prev, to: next, delta: next - prev, at });
-    } else if (prev == null) {
-      events.push({ kind: "kills_new", userId: s.userId, from: 0, to: next, delta: next, at });
+    const prev = lastByUser.get(s.userId);
+    if (!prev) {
+      lastByUser.set(s.userId, { prev: null, prevAt: 0, current: next, currentAt: at });
+    } else {
+      lastByUser.set(s.userId, { prev: prev.current, prevAt: prev.currentAt, current: next, currentAt: at });
     }
-    perUserKills.set(s.userId, next);
   }
 
-  // ELO changes from legacy ELO db submissions.
-  try {
-    const eloLive = getLiveLegacyEloState();
-    if (eloLive?.ok && eloLive.rawDb?.submissions) {
-      const eloSubs = Object.values(eloLive.rawDb.submissions)
-        .filter((s) => s && s.status === "approved" && s.userId && Number.isFinite(Number(s.elo)))
-        .sort((a, b) => {
-          const ta = Date.parse(a.reviewedAt || a.createdAt || 0) || 0;
-          const tb = Date.parse(b.reviewedAt || b.createdAt || 0) || 0;
-          return ta - tb;
-        });
-      const perUserElo = new Map();
-      for (const s of eloSubs) {
-        const prev = perUserElo.get(s.userId) ?? null;
-        const next = Number(s.elo);
-        const at = Date.parse(s.reviewedAt || s.createdAt || 0) || 0;
-        if (prev != null && prev !== next) {
-          events.push({ kind: "elo", userId: s.userId, from: prev, to: next, delta: next - prev, at, tier: Number(s.tier) || null });
-        } else if (prev == null) {
-          events.push({ kind: "elo_new", userId: s.userId, from: 0, to: next, delta: next, at, tier: Number(s.tier) || null });
-        }
-        perUserElo.set(s.userId, next);
-      }
-    }
-  } catch {}
+  const upgrades = [];
+  for (const [userId, rec] of lastByUser) {
+    if (rec.prev == null) continue;
+    if (!(rec.current > rec.prev)) continue;
+    upgrades.push({ userId, from: rec.prev, to: rec.current, fromAt: rec.prevAt, toAt: rec.currentAt });
+  }
+  if (!upgrades.length) return null;
 
-  if (!events.length) return null;
-
-  const top = events.sort((a, b) => b.at - a.at).slice(0, 5);
+  upgrades.sort((a, b) => b.toAt - a.toAt);
+  const top = upgrades.slice(0, 5);
 
   const lines = top.map((c) => {
-    const sign = c.delta > 0 ? `+${formatNumber(c.delta)}` : formatNumber(c.delta);
-    const when = formatDateTime(c.at);
-    const userTag = `<@${c.userId}>`;
-    if (c.kind === "kills") {
-      const emoji = c.delta > 0 ? "📈" : "📉";
-      return `${emoji} ${userTag} kills: **${formatNumber(c.from)} → ${formatNumber(c.to)}** (${sign}) · 🕒 ${when}`;
-    }
-    if (c.kind === "kills_new") {
-      return `🆕 ${userTag} новый kills: **${formatNumber(c.to)}** · 🕒 ${when}`;
-    }
-    if (c.kind === "elo") {
-      const emoji = c.delta > 0 ? "🆙" : "⬇️";
-      const tier = c.tier ? ` · T${c.tier}` : "";
-      return `${emoji} ${userTag} ELO: **${formatNumber(c.from)} → ${formatNumber(c.to)}** (${sign})${tier} · 🕒 ${when}`;
-    }
-    if (c.kind === "elo_new") {
-      const tier = c.tier ? ` · T${c.tier}` : "";
-      return `✨ ${userTag} новое ELO: **${formatNumber(c.to)}**${tier} · 🕒 ${when}`;
-    }
-    return `${userTag} · 🕒 ${when}`;
+    const delta = c.to - c.from;
+    const pct = c.from > 0 ? Math.round((delta / c.from) * 100) : 100;
+    return `<@${c.userId}> · **${formatKillsCompact(c.from)}** ${formatDateOnly(c.fromAt)} → **${formatKillsCompact(c.to)}** ${formatDateOnly(c.toAt)} | +${formatKillsCompact(delta)} (+${pct}%)`;
   });
 
   return new EmbedBuilder()
-    .setTitle("⚡ Топ-5 последних изменений")
+    .setTitle("⚡ Топ-5 апгрейдов kills")
     .setColor(0x00897B)
     .setDescription(lines.join("\n"));
 }
@@ -1959,6 +2120,13 @@ async function ensureManagedRoles(client) {
   }
 
   if (changed) saveDb();
+
+  try {
+    await cleanupOrphanCharacterRoles(client);
+  } catch (error) {
+    console.warn("cleanupOrphanCharacterRoles failed:", error?.message || error);
+  }
+
   return { characterRoles: createdCharacterRoles, tierRoles: createdTierRoles };
 }
 
@@ -3168,6 +3336,7 @@ async function purgeUserProfile(client, userId, moderatorTag) {
   clearNonGgsCaptchaSession(userKey);
 
   saveDb();
+  invalidateLiveCharacterStatsContext();
 
   await logLine(
     client,
@@ -10312,7 +10481,20 @@ client.on("interactionCreate", async (interaction) => {
 
         await interaction.deferUpdate();
         const syncResult = saveLiveLegacyTierlistStateAndResync(liveState);
+        if (mode === "full") {
+          try {
+            await purgeUserProfile(client, targetId, interaction.user.tag);
+          } catch (error) {
+            console.warn("purgeUserProfile (panel full delete) failed:", error?.message || error);
+          }
+        }
+        invalidateLiveCharacterStatsContext();
         await refreshLegacyTierlistPublicViews(client, { liveState });
+        if (mode === "full") {
+          try { await refreshAllTierlists(client); } catch (error) {
+            console.warn("refreshAllTierlists (panel full delete) failed:", error?.message || error);
+          }
+        }
         await interaction.editReply(buildLegacyTierlistModPanelPayload(liveState, userId, `Удаление выполнено.${getLegacyTierlistSyncStatusSuffix(syncResult)}`));
         return;
       }

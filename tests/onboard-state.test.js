@@ -325,6 +325,7 @@ test("character role stats separate live holders from remembered kills", () => {
 
   const yuji = characterStats.find((entry) => entry.main === "Юджи");
   assert.deepEqual(yuji, {
+    id: "",
     main: "Юджи",
     roleId: "role-yuji",
     roleHolderCount: 28,
@@ -333,6 +334,9 @@ test("character role stats separate live holders from remembered kills", () => {
     averageKills: 2000,
     medianKills: 2000,
     totalsByTier: { 1: 0, 2: 1, 3: 1, 4: 0, 5: 0 },
+    bestPlayer: { userId: "2", displayName: "", kills: 3000, tier: 3 },
+    highCount: 0,
+    lowCount: 1,
   });
 
   const nobara = characterStats.find((entry) => entry.main === "Нобара");

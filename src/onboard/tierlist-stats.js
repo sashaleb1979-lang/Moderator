@@ -132,9 +132,11 @@ function getTrackedMemberStats(entries = []) {
   };
 }
 
-function getCharacterRoleStats(entries = []) {
+function getCharacterRoleStats(entries = [], options = {}) {
+  const includeEmpty = Boolean(options?.includeEmpty);
   return entries
     .map((entry) => {
+      const id = String(entry?.id || "").trim();
       const main = String(entry?.main || "").trim();
       const roleId = String(entry?.roleId || "").trim();
       const rememberedMembers = Array.isArray(entry?.rememberedMembers)
@@ -145,12 +147,26 @@ function getCharacterRoleStats(entries = []) {
       const totalKills = rememberedMembers.reduce((sum, member) => sum + normalizeKills(member.approvedKills), 0);
       const totalsByTier = createTierTotals();
 
+      let bestPlayer = null;
       for (const member of rememberedMembers) {
         const tier = Number(member.killTier);
         if (totalsByTier[tier] !== undefined) totalsByTier[tier] += 1;
+        const kills = normalizeKills(member.approvedKills);
+        if (!bestPlayer || kills > bestPlayer.kills) {
+          bestPlayer = {
+            userId: String(member.userId || "").trim(),
+            displayName: String(member.displayName || "").trim(),
+            kills,
+            tier: Number.isFinite(tier) ? tier : null,
+          };
+        }
       }
 
+      const highCount = (totalsByTier[5] || 0) + (totalsByTier[4] || 0);
+      const lowCount = (totalsByTier[1] || 0) + (totalsByTier[2] || 0);
+
       return {
+        id,
         main,
         roleId,
         roleHolderCount,
@@ -159,9 +175,12 @@ function getCharacterRoleStats(entries = []) {
         averageKills: rememberedCount ? Math.round(totalKills / rememberedCount) : 0,
         medianKills: getMedianNumber(rememberedMembers.map((member) => member.approvedKills)),
         totalsByTier,
+        bestPlayer,
+        highCount,
+        lowCount,
       };
     })
-    .filter((entry) => entry.main && entry.roleHolderCount > 0)
+    .filter((entry) => entry.main && (includeEmpty || entry.roleHolderCount > 0))
     .sort((left, right) => {
       if (right.roleHolderCount !== left.roleHolderCount) return right.roleHolderCount - left.roleHolderCount;
       if (right.rememberedCount !== left.rememberedCount) return right.rememberedCount - left.rememberedCount;
