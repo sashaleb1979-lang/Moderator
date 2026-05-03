@@ -170,8 +170,30 @@ function resolveLegacyMainIdsFromRuntimeEntries({ runtimeEntries = [], profileMa
   };
 }
 
+function getLegacyMainsBackfillDisposition({ member = null, isTrackedUser = false } = {}) {
+  if (!member && isTrackedUser) {
+    return {
+      shouldSync: false,
+      skippedReason: "missing_member",
+    };
+  }
+
+  return {
+    shouldSync: true,
+    skippedReason: "",
+  };
+}
+
+function getLegacyTierlistClusterStatusNote(errorMessage) {
+  const text = cleanText(errorMessage, 500);
+  if (!text || text.includes("sourcePath не задан")) return "";
+  return "_Кластеры tierlist временно недоступны._";
+}
+
 module.exports = {
   buildLegacyCharacterSyncIndex,
+  getLegacyMainsBackfillDisposition,
+  getLegacyTierlistClusterStatusNote,
   resolveLegacyCharacterIdsFromValues,
   resolveLegacyCharacterMatch,
   resolveLegacyMainIdsFromRuntimeEntries,

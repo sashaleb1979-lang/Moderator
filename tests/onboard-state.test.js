@@ -348,6 +348,35 @@ test("character role stats separate live holders from remembered kills", () => {
   assert.deepEqual(nobara.totalsByTier, { 1: 1, 2: 1, 3: 1, 4: 0, 5: 0 });
 });
 
+test("character role stats keep role holder count as the primary popularity signal", () => {
+  const characterStats = getCharacterRoleStats([
+    {
+      main: "Юджи",
+      roleId: "role-yuji",
+      roleHolderCount: 50,
+      rememberedMembers: [
+        { userId: "1", approvedKills: 1000, killTier: 2 },
+      ],
+    },
+    {
+      main: "Мегуми",
+      roleId: "role-megumi",
+      roleHolderCount: 10,
+      rememberedMembers: [
+        { userId: "2", approvedKills: 5000, killTier: 4 },
+        { userId: "3", approvedKills: 3000, killTier: 3 },
+        { userId: "4", approvedKills: 8000, killTier: 4 },
+      ],
+    },
+  ]);
+
+  assert.deepEqual(characterStats.map((entry) => entry.main), ["Юджи", "Мегуми"]);
+  assert.equal(characterStats[0].roleHolderCount, 50);
+  assert.equal(characterStats[0].rememberedCount, 1);
+  assert.equal(characterStats[1].roleHolderCount, 10);
+  assert.equal(characterStats[1].rememberedCount, 3);
+});
+
 test("non-JJS captcha switches to practice mode when the member already has access", () => {
   assert.deepEqual(
     resolveNonJjsCaptchaMode({

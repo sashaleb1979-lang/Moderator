@@ -5,6 +5,8 @@ const assert = require("node:assert/strict");
 
 const {
   buildLegacyCharacterSyncIndex,
+  getLegacyMainsBackfillDisposition,
+  getLegacyTierlistClusterStatusNote,
   resolveLegacyCharacterMatch,
   resolveLegacyMainIdsFromRuntimeEntries,
 } = require("../src/integrations/tierlist-character-sync");
@@ -60,4 +62,30 @@ test("character sync resolver falls back to valid profile ids when runtime roles
   assert.deepEqual(result.unmatched, [
     { runtimeId: "placeholder", label: "Placeholder Role", roleId: "role-placeholder" },
   ]);
+});
+
+test("legacy mains backfill keeps tracked users when member snapshot is missing", () => {
+  assert.deepEqual(
+    getLegacyMainsBackfillDisposition({ member: null, isTrackedUser: true }),
+    { shouldSync: false, skippedReason: "missing_member" }
+  );
+
+  assert.deepEqual(
+    getLegacyMainsBackfillDisposition({ member: null, isTrackedUser: false }),
+    { shouldSync: true, skippedReason: "" }
+  );
+
+  assert.deepEqual(
+    getLegacyMainsBackfillDisposition({ member: { id: "user-1" }, isTrackedUser: true }),
+    { shouldSync: true, skippedReason: "" }
+  );
+});
+
+test("cluster status note ignores unconfigured tierlist path but flags real failures", () => {
+  assert.equal(getLegacyTierlistClusterStatusNote("Legacy Tierlist sourcePath не задан."), "");
+  assert.equal(getLegacyTierlistClusterStatusNote("  Legacy Tierlist sourcePath не задан.  "), "");
+  assert.equal(
+    getLegacyTierlistClusterStatusNote("Legacy Tierlist state не найден: C:/tierlist/state.json"),
+    "_Кластеры tierlist временно недоступны._"
+  );
 });
