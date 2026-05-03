@@ -3446,6 +3446,23 @@ function buildCharacterPickerPayload(mode = "full") {
   };
 }
 
+function buildOnboardKillsModal(suggestedKills = null) {
+  const modal = new ModalBuilder().setCustomId("onboard_kills_modal").setTitle("Указать kills");
+  const input = new TextInputBuilder()
+    .setCustomId("kills")
+    .setLabel("Точное количество kills")
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true)
+    .setPlaceholder("Например 3120");
+
+  if (Number.isSafeInteger(suggestedKills)) {
+    input.setValue(String(suggestedKills));
+  }
+
+  modal.addComponents(new ActionRowBuilder().addComponents(input));
+  return modal;
+}
+
 function buildSubmitStepPayload(userId, options = {}) {
   const session = getSubmitSession(userId);
   const mainCharacterIds = Array.isArray(options.mainCharacterIds) && options.mainCharacterIds.length
@@ -3459,7 +3476,11 @@ function buildSubmitStepPayload(userId, options = {}) {
   const selectedLabels = selectedEntries.length
     ? selectedEntries.map((entry) => entry.label)
     : mainCharacterIds.map((value) => String(value || "").trim()).filter(Boolean);
-  const suggestedKills = Number.isSafeInteger(options.suggestedKills) ? options.suggestedKills : null;
+  const suggestedKills = Number.isSafeInteger(options.suggestedKills)
+    ? options.suggestedKills
+    : Number.isSafeInteger(session?.suggestedKills)
+      ? session.suggestedKills
+      : null;
   const lines = [
     `Выбрано: **${selectedLabels.join(", ")}**`,
     "",
@@ -3486,6 +3507,10 @@ function buildSubmitStepPayload(userId, options = {}) {
     embeds: [embed],
     components: [
       new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId("onboard_open_kills_modal")
+          .setLabel(suggestedKills ? "Изменить kills" : "Ввести kills")
+          .setStyle(ButtonStyle.Primary),
         new ButtonBuilder().setCustomId("onboard_change_mains").setLabel("Выбрать заново").setStyle(ButtonStyle.Secondary),
         new ButtonBuilder().setCustomId("onboard_cancel").setLabel("Отмена").setStyle(ButtonStyle.Secondary)
       ),
@@ -11303,10 +11328,15 @@ client.on("interactionCreate", async (interaction) => {
       const session = getSubmitSession(interaction.user.id);
       if (session) {
         const welcomeChannelId = getWelcomeChannelId();
-        await interaction.reply(ephemeralPayload({
-          content: welcomeChannelId
-            ? `Ты уже на шаге подачи заявки. Отправь в <#${welcomeChannelId}> одно сообщение: число kills в тексте и скрин во вложении.`
-            : "Ты уже на шаге подачи заявки. Welcome-канал пока не настроен, попроси модератора указать его через Onboarding Panel.",
+        if (!welcomeChannelId) {
+          await interaction.reply(ephemeralPayload({
+            content: "Ты уже на шаге подачи заявки. Welcome-канал пока не настроен, попроси модератора указать его через Onboarding Panel.",
+          }));
+          return;
+        }
+
+        await interaction.reply(buildSubmitStepPayload(interaction.user.id, {
+          noticeText: `Ты уже на шаге подачи заявки. Отправь в <#${welcomeChannelId}> одно сообщение или поменяй kills кнопкой ниже.`,
         }));
         return;
       }
@@ -11344,22 +11374,18 @@ client.on("interactionCreate", async (interaction) => {
       }
 
       const session = getSubmitSession(interaction.user.id);
-      if (session) {
-        await interaction.update(buildSubmitStepPayload(interaction.user.id));
+      if (session?.mainCharacterIds?.length) {
+        await interaction.showModal(buildOnboardKillsModal(session.suggestedKills));
         return;
       }
 
       const draft = getMainDraft(interaction.user.id);
-      if (!draft) {
+      if (!draft?.characterIds?.length) {
         await interaction.reply(ephemeralPayload({ content: "Сессия выбора мейнов истекла. Нажми кнопку заново." }));
         return;
       }
 
-      setSubmitSession(interaction.user.id, { mainCharacterIds: draft.characterIds });
-      clearMainDraft(interaction.user.id);
-      await interaction.update(buildSubmitStepPayload(interaction.user.id, {
-        noticeText: "Отдельный шаг с вводом kills больше не нужен.",
-      }));
+      await interaction.showModal(buildOnboardKillsModal());
       return;
     }
 
@@ -13434,8 +13460,13 @@ client.on("interactionCreate", async (interaction) => {
     }
 
     if (interaction.customId === "onboard_kills_modal") {
+      const session = getSubmitSession(interaction.user.id);
       const draft = getMainDraft(interaction.user.id);
-      if (!draft) {
+      const mainCharacterIds = Array.isArray(session?.mainCharacterIds) && session.mainCharacterIds.length
+        ? session.mainCharacterIds
+        : draft?.characterIds;
+
+      if (!mainCharacterIds?.length) {
         await interaction.reply(ephemeralPayload({ content: "Сессия выбора мейнов истекла. Нажми кнопку заново." }));
         return;
       }
@@ -13453,11 +13484,14 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
-      setSubmitSession(interaction.user.id, { mainCharacterIds: draft.characterIds });
+      setSubmitSession(interaction.user.id, {
+        mainCharacterIds,
+        suggestedKills: kills,
+      });
       clearMainDraft(interaction.user.id);
 
       await interaction.reply(buildSubmitStepPayload(interaction.user.id, {
-        noticeText: "Отдельный шаг с модалкой больше не используется. Теперь бот принимает только одно сообщение с kills и со скрином.",
+        noticeText: "Запомнил kills для этого шага. Теперь отправь одно сообщение с этим числом и скрином.",
         suggestedKills: kills,
       }));
       return;
