@@ -9,6 +9,7 @@ const path = require("node:path");
 const {
   createDbStore,
   createDefaultDbState,
+  getResolvedIntegrationSourcePathFromState,
   loadJsonFile,
   saveJsonFile,
 } = require("../src/db/store");
@@ -69,6 +70,24 @@ test("loadJsonFile returns fallback when file is missing and saveJsonFile writes
   saveJsonFile(filePath, { answer: 42 });
   assert.deepEqual(JSON.parse(fs.readFileSync(filePath, "utf8")), { answer: 42 });
   assert.deepEqual(fs.readdirSync(path.dirname(filePath)), ["db.json"]);
+});
+
+test("getResolvedIntegrationSourcePathFromState prefers persisted SoT sourcePath over compat shadow", () => {
+  const db = {
+    config: {
+      integrations: {
+        elo: { sourcePath: "legacy/elo-stale.json" },
+      },
+    },
+    sot: {
+      integrations: {
+        elo: { sourcePath: "sot/elo-preferred.json" },
+      },
+    },
+  };
+
+  assert.equal(getResolvedIntegrationSourcePathFromState(db, "elo"), "sot/elo-preferred.json");
+  assert.equal(getResolvedIntegrationSourcePathFromState(db, "tierlist"), "");
 });
 
 test("createDefaultDbState seeds expected onboarding defaults", () => {
@@ -202,6 +221,46 @@ test("createDbStore.load keeps stored config.characters normalized without mergi
   assert.deepEqual(calls.tierlist.options.characterCatalog, [{ id: "gojo", label: "Годжо" }]);
 });
 
+test("createDbStore.load prefers persisted SoT integration sourcePath over stale compat shadow", () => {
+  const dbPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "moderator-db-load-sot-path-")), "welcome-db.json");
+  fs.writeFileSync(dbPath, JSON.stringify({
+    config: {
+      integrations: {
+        elo: { sourcePath: "legacy/elo-stale.json" },
+        tierlist: { sourcePath: "legacy/tierlist-stale.json" },
+      },
+    },
+    sot: {
+      integrations: {
+        elo: { sourcePath: "sot/elo-preferred.json" },
+        tierlist: { sourcePath: "sot/tierlist-preferred.json" },
+      },
+    },
+  }, null, 2), "utf8");
+
+  const calls = {
+    elo: null,
+    tierlist: null,
+  };
+
+  const store = createDbStore(createDeps({
+    dbPath,
+    importDormantEloSyncFromFile: (_db, options) => {
+      calls.elo = options;
+      return { mutated: false, error: null };
+    },
+    importDormantTierlistSyncFromFile: (_db, options) => {
+      calls.tierlist = options;
+      return { mutated: false, error: null };
+    },
+  }));
+
+  store.load();
+
+  assert.equal(calls.elo.sourcePath, "sot/elo-preferred.json");
+  assert.equal(calls.tierlist.sourcePath, "sot/tierlist-preferred.json");
+});
+
 test("createDbStore.save strips transient load flag and persists normalized integrations", () => {
   let sotCalls = 0;
   let dualWriteCalls = 0;
@@ -249,6 +308,34 @@ test("createDbStore.save strips transient load flag and persists normalized inte
   assert.equal(written.sot.sotVersion, 1);
   assert.equal(written.sot.channels.review.value, "review-channel");
   assert.deepEqual(result.dualWriteState.writtenSlots, ["review"]);
+});
+
+test("createDbStore.save preserves runtime state when disk write fails", () => {
+  const blockedPath = fs.mkdtempSync(path.join(os.tmpdir(), "moderator-db-save-fail-"));
+  const deps = createDeps({
+    dbPath: blockedPath,
+    dualWriteSotState: (db) => {
+      db.sot = {
+        ...(db.sot || {}),
+        channels: {
+          review: { value: "review-channel", source: "manual", verifiedAt: null },
+        },
+      };
+      return { mutated: true, writtenSlots: ["review"] };
+    },
+  });
+  const store = createDbStore(deps);
+  const db = createDefaultDbState({
+    appConfig: deps.appConfig,
+    createDefaultIntegrationState: deps.createDefaultIntegrationState,
+    createOnboardModeState: deps.createOnboardModeState,
+    normalizeCharacterCatalog: deps.normalizeCharacterCatalog,
+  });
+  db.__needsSaveAfterLoad = true;
+
+  assert.throws(() => store.save(db));
+  assert.equal(db.__needsSaveAfterLoad, true);
+  assert.equal(Boolean(db.sot?.channels?.review), false);
 });
 
 test("createDbStore.save normalizes legacy text tierlist messageId before persist", () => {

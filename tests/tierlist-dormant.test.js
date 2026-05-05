@@ -160,3 +160,41 @@ test("clearDormantTierlistSync clears projected tierlist domains and resets inte
   assert.equal(db.profiles.user1.domains.tierlist.mainId, null);
   assert.equal(db.profiles.user1.summary.tierlist.hasSubmission, false);
 });
+
+test("applyDormantTierlistSync preserves resolver-backed integration fields over stale legacy shadow", () => {
+  const db = {
+    config: {
+      integrations: {
+        tierlist: {
+          mode: "legacy-stale",
+        },
+      },
+    },
+    sot: {
+      integrations: {
+        tierlist: {
+          mode: "native-manual",
+        },
+      },
+    },
+    profiles: {},
+  };
+
+  applyDormantTierlistSync(db, {
+    settings: {
+      channelId: "111",
+      dashboardMessageId: "222",
+      summaryChannelId: "333",
+      summaryMessageId: "444",
+    },
+    users: {},
+    finalVotes: {},
+  }, {
+    sourcePath: "./tierlist/data/state.json",
+    syncedAt: "2026-05-01T13:00:00.000Z",
+    characterCatalog: [],
+  });
+
+  assert.equal(db.sot.integrations.tierlist.mode, "native-manual");
+  assert.equal(db.config.integrations.tierlist.mode, "native-manual");
+});

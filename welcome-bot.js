@@ -660,6 +660,28 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+function cloneJsonValue(value) {
+  return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
+}
+
+function restoreRecordValue(container, key, previousValue, hadValue) {
+  if (!container || typeof container !== "object") return;
+  if (hadValue) {
+    container[key] = cloneJsonValue(previousValue);
+    return;
+  }
+  delete container[key];
+}
+
+function formatRuntimeError(error) {
+  return String(error?.message || error || "неизвестная ошибка").trim() || "неизвестная ошибка";
+}
+
+function isDiscordMissingResourceError(error) {
+  const code = Number(error?.code || 0);
+  return code === 10003 || code === 10008;
+}
+
 function makeId() {
   return (Date.now().toString(36) + Math.random().toString(36).slice(2, 10)).toUpperCase();
 }
@@ -1000,7 +1022,6 @@ function getSubmitCooldownLeftSeconds(userId) {
 function setSubmitCooldown(userId) {
   db.cooldowns ||= {};
   db.cooldowns[userId] = Date.now();
-  saveDb();
 }
 
 function buildMyCardEmbed(userId) {
@@ -3954,21 +3975,71 @@ function getNonJjsCaptchaStartText(modeState) {
   return "Пройди 2 этапа. В каждой картинке нужно нажать номер лишнего персонажа.";
 }
 
+function getRolePoolSnapshot(member, roleIds) {
+  if (!member?.roles?.cache || !Array.isArray(roleIds)) return [];
+  return roleIds.filter((roleId) => roleId && member.roles.cache.has(roleId));
+}
+
+async function restoreRolePoolSnapshot(client, userId, roleIds, previousRoleIds, reason = "role rollback") {
+  const member = await fetchMember(client, userId);
+  if (!member) return false;
+
+  const previousSet = new Set((previousRoleIds || []).map((value) => String(value || "").trim()).filter(Boolean));
+  for (const roleId of roleIds) {
+    if (!roleId) continue;
+    const hasRole = member.roles.cache.has(roleId);
+    if (hasRole && !previousSet.has(roleId)) {
+      try {
+        await member.roles.remove(roleId, reason);
+      } catch (error) {
+        throw new Error(`Не удалось откатить роль ${roleId} у ${userId}: ${formatRuntimeError(error)}`);
+      }
+      continue;
+    }
+    if (!hasRole && previousSet.has(roleId)) {
+      try {
+        await member.roles.add(roleId, reason);
+      } catch (error) {
+        throw new Error(`Не удалось восстановить роль ${roleId} у ${userId}: ${formatRuntimeError(error)}`);
+      }
+    }
+  }
+
+  return true;
+}
+
 async function ensureSingleTierRole(client, userId, targetTier, reason = "kill tier sync") {
   const member = await fetchMember(client, userId);
   if (!member) return;
 
   const targetRoleId = getTierRoleId(targetTier);
-  const allTierRoleIds = getAllTierRoleIds();
-
-  for (const roleId of allTierRoleIds) {
-    if (roleId !== targetRoleId && member.roles.cache.has(roleId)) {
-      await member.roles.remove(roleId, reason).catch(() => {});
-    }
+  if (!targetRoleId) {
+    throw new Error(`Не настроена tier-роль для kill tier ${targetTier}.`);
   }
+  const allTierRoleIds = getAllTierRoleIds();
+  const snapshot = getRolePoolSnapshot(member, allTierRoleIds);
 
-  if (targetRoleId && !member.roles.cache.has(targetRoleId)) {
-    await member.roles.add(targetRoleId, reason).catch(() => {});
+  try {
+    for (const roleId of allTierRoleIds) {
+      if (roleId !== targetRoleId && member.roles.cache.has(roleId)) {
+        try {
+          await member.roles.remove(roleId, reason);
+        } catch (error) {
+          throw new Error(`Не удалось снять tier-роль ${roleId} у ${userId}: ${formatRuntimeError(error)}`);
+        }
+      }
+    }
+
+    if (!member.roles.cache.has(targetRoleId)) {
+      try {
+        await member.roles.add(targetRoleId, reason);
+      } catch (error) {
+        throw new Error(`Не удалось выдать tier-роль ${targetRoleId} пользователю ${userId}: ${formatRuntimeError(error)}`);
+      }
+    }
+  } catch (error) {
+    await restoreRolePoolSnapshot(client, userId, allTierRoleIds, snapshot, `${reason} rollback`);
+    throw error;
   }
 }
 
@@ -3976,14 +4047,33 @@ async function ensureSingleRoleInPool(client, userId, targetRoleId, roleIds, rea
   const member = await fetchMember(client, userId);
   if (!member) return;
 
-  for (const roleId of roleIds) {
-    if (roleId !== targetRoleId && member.roles.cache.has(roleId)) {
-      await member.roles.remove(roleId, reason).catch(() => {});
-    }
+  if (!targetRoleId) {
+    throw new Error(`Не настроена целевая роль для пула ролей пользователя ${userId}.`);
   }
 
-  if (targetRoleId && !member.roles.cache.has(targetRoleId)) {
-    await member.roles.add(targetRoleId, reason).catch(() => {});
+  const snapshot = getRolePoolSnapshot(member, roleIds);
+
+  try {
+    for (const roleId of roleIds) {
+      if (roleId !== targetRoleId && member.roles.cache.has(roleId)) {
+        try {
+          await member.roles.remove(roleId, reason);
+        } catch (error) {
+          throw new Error(`Не удалось снять роль ${roleId} у ${userId}: ${formatRuntimeError(error)}`);
+        }
+      }
+    }
+
+    if (!member.roles.cache.has(targetRoleId)) {
+      try {
+        await member.roles.add(targetRoleId, reason);
+      } catch (error) {
+        throw new Error(`Не удалось выдать роль ${targetRoleId} пользователю ${userId}: ${formatRuntimeError(error)}`);
+      }
+    }
+  } catch (error) {
+    await restoreRolePoolSnapshot(client, userId, roleIds, snapshot, `${reason} rollback`);
+    throw error;
   }
 }
 
@@ -3995,13 +4085,25 @@ async function clearRolePool(client, userId, roleIds, reason = "clear role pool"
   const member = await fetchMember(client, userId);
   if (!member) return false;
 
-  for (const roleId of roleIds) {
-    if (member.roles.cache.has(roleId)) {
-      await member.roles.remove(roleId, reason).catch(() => {});
+  const snapshot = getRolePoolSnapshot(member, roleIds);
+  let removed = false;
+  try {
+    for (const roleId of roleIds) {
+      if (member.roles.cache.has(roleId)) {
+        try {
+          await member.roles.remove(roleId, reason);
+        } catch (error) {
+          throw new Error(`Не удалось снять роль ${roleId} у ${userId}: ${formatRuntimeError(error)}`);
+        }
+        removed = true;
+      }
     }
+  } catch (error) {
+    await restoreRolePoolSnapshot(client, userId, roleIds, snapshot, `${reason} rollback`);
+    throw error;
   }
 
-  return true;
+  return removed;
 }
 
 async function grantAccessRole(client, userId, reason = "welcome application submitted") {
@@ -4015,14 +4117,32 @@ async function grantAccessRole(client, userId, reason = "welcome application sub
   }
 
   const targetRoleId = getGrantedAccessRoleIdForMode(mode);
-  for (const roleId of getManagedStartAccessRoleIds()) {
-    if (roleId !== targetRoleId && member.roles.cache.has(roleId)) {
-      await member.roles.remove(roleId, reason).catch(() => {});
-    }
+  if (!targetRoleId) {
+    throw new Error("Не настроена роль стартового доступа для текущего режима.");
   }
+  const managedRoleIds = getManagedStartAccessRoleIds();
+  const snapshot = getRolePoolSnapshot(member, managedRoleIds);
+  try {
+    for (const roleId of managedRoleIds) {
+      if (roleId !== targetRoleId && member.roles.cache.has(roleId)) {
+        try {
+          await member.roles.remove(roleId, reason);
+        } catch (error) {
+          throw new Error(`Не удалось снять стартовую роль ${roleId} у ${userId}: ${formatRuntimeError(error)}`);
+        }
+      }
+    }
 
-  if (!member.roles.cache.has(targetRoleId)) {
-    await member.roles.add(targetRoleId, reason).catch(() => {});
+    if (!member.roles.cache.has(targetRoleId)) {
+      try {
+        await member.roles.add(targetRoleId, reason);
+      } catch (error) {
+        throw new Error(`Не удалось выдать стартовую роль ${targetRoleId} пользователю ${userId}: ${formatRuntimeError(error)}`);
+      }
+    }
+  } catch (error) {
+    await restoreRolePoolSnapshot(client, userId, managedRoleIds, snapshot, `${reason} rollback`);
+    throw error;
   }
   return true;
 }
@@ -4050,7 +4170,11 @@ async function revokeAccessRole(client, userId, reason = "profile purge") {
   let removed = false;
   for (const roleId of getManagedStartAccessRoleIds()) {
     if (!roleId || !member.roles.cache.has(roleId)) continue;
-    await member.roles.remove(roleId, reason).catch(() => {});
+    try {
+      await member.roles.remove(roleId, reason);
+    } catch (error) {
+      throw new Error(`Не удалось снять стартовую роль ${roleId} у ${userId}: ${formatRuntimeError(error)}`);
+    }
     removed = true;
   }
 
@@ -4064,7 +4188,11 @@ async function revokeNonGgsAccessRole(client, userId, reason = "profile purge") 
   const roleId = getNonJjsAccessRoleId();
   if (!roleId || !member.roles.cache.has(roleId)) return false;
 
-  await member.roles.remove(roleId, reason).catch(() => {});
+  try {
+    await member.roles.remove(roleId, reason);
+  } catch (error) {
+    throw new Error(`Не удалось снять non-JJS роль ${roleId} у ${userId}: ${formatRuntimeError(error)}`);
+  }
   return true;
 }
 
@@ -4078,13 +4206,19 @@ async function clearManagedCharacterRoles(client, userId, reason = "profile purg
 
 async function deleteSubmissionReviewMessages(client, submissions) {
   let deleted = 0;
+  let missing = 0;
   for (const submission of submissions) {
-    const reviewMessage = await fetchReviewMessage(client, submission);
-    if (!reviewMessage) continue;
-    await reviewMessage.delete().catch(() => {});
+    const result = await deleteTrackedMessage(
+      client,
+      submission?.reviewChannelId,
+      submission?.reviewMessageId,
+      `review-сообщение ${submission?.id || "submission"}`
+    );
+    if (!result.deleted) continue;
     deleted += 1;
+    if (result.missing) missing += 1;
   }
-  return deleted;
+  return { deleted, missing };
 }
 
 async function purgeUserProfile(client, userId, moderatorTag) {
@@ -4131,13 +4265,14 @@ async function purgeUserProfile(client, userId, moderatorTag) {
 
   await logLine(
     client,
-    `DELETE_PROFILE: <@${userKey}> by ${moderatorTag}. profile=${hadProfile ? 1 : 0}, submissions=${submissions.length}, cooldown=${hadCooldown ? 1 : 0}, reviewMessages=${removedReviewMessages}`
+    `DELETE_PROFILE: <@${userKey}> by ${moderatorTag}. profile=${hadProfile ? 1 : 0}, submissions=${submissions.length}, cooldown=${hadCooldown ? 1 : 0}, reviewMessages=${removedReviewMessages.deleted}, missingReviewMessages=${removedReviewMessages.missing}`
   );
 
   return {
     hadProfile,
     deletedSubmissions: submissions.length,
-    removedReviewMessages,
+    removedReviewMessages: removedReviewMessages.deleted,
+    missingReviewMessages: removedReviewMessages.missing,
     hadCooldown,
     hadMainDraft,
     hadSubmitSession,
@@ -5172,6 +5307,53 @@ async function fetchReviewMessage(client, submission) {
   return channel.messages.fetch(submission.reviewMessageId).catch(() => null);
 }
 
+async function fetchTrackedTextMessage(client, channelId, messageId) {
+  const normalizedChannelId = String(channelId || "").trim();
+  const normalizedMessageId = String(messageId || "").trim();
+  if (!normalizedChannelId || !normalizedMessageId) {
+    return { message: null, missing: true };
+  }
+
+  let channel = null;
+  try {
+    channel = await client.channels.fetch(normalizedChannelId);
+  } catch (error) {
+    if (isDiscordMissingResourceError(error)) return { message: null, missing: true };
+    throw new Error(`Не удалось получить канал ${normalizedChannelId}: ${formatRuntimeError(error)}`);
+  }
+
+  if (!channel?.isTextBased?.()) {
+    return { message: null, missing: true };
+  }
+
+  try {
+    return {
+      message: await channel.messages.fetch(normalizedMessageId),
+      missing: false,
+    };
+  } catch (error) {
+    if (isDiscordMissingResourceError(error)) return { message: null, missing: true };
+    throw new Error(`Не удалось получить сообщение ${normalizedMessageId}: ${formatRuntimeError(error)}`);
+  }
+}
+
+async function deleteTrackedMessage(client, channelId, messageId, label = "сообщение") {
+  const { message, missing } = await fetchTrackedTextMessage(client, channelId, messageId);
+  if (!message) {
+    return { deleted: Boolean(missing), missing: Boolean(missing) };
+  }
+
+  try {
+    await message.delete();
+    return { deleted: true, missing: false };
+  } catch (error) {
+    if (isDiscordMissingResourceError(error)) {
+      return { deleted: true, missing: true };
+    }
+    throw new Error(`Не удалось удалить ${label}: ${formatRuntimeError(error)}`);
+  }
+}
+
 async function postReviewRecord(client, submission, fileAttachment = null, statusLabel = "pending", extraFields = [], components = []) {
   const reviewChannelId = getResolvedChannelId("review");
   if (!reviewChannelId || isPlaceholder(reviewChannelId)) {
@@ -5236,19 +5418,6 @@ async function createPendingSubmissionFromAttachment(client, input) {
     reviewAttachmentUrl: "",
   };
 
-  db.submissions[submissionId] = submission;
-
-  const profile = getProfile(input.user.id);
-  profile.mainCharacterIds = submission.mainCharacterIds;
-  refreshDerivedProfileMainFields(profile);
-  profile.displayName = submission.displayName;
-  profile.username = submission.username;
-  profile.lastSubmissionId = submission.id;
-  profile.lastSubmissionStatus = "pending";
-  profile.updatedAt = nowIso();
-  setSubmitCooldown(input.user.id);
-  saveDb();
-
   const reviewMessage = await postReviewRecord(client, submission, reviewAttachment, "pending", [], [buildReviewButtons(submissionId)]);
   const attachmentUrl = reviewMessage.attachments.first()?.url || "";
   if (attachmentUrl) {
@@ -5256,10 +5425,44 @@ async function createPendingSubmissionFromAttachment(client, input) {
     if (!submission.reviewImage || submission.reviewImage.startsWith("attachment://")) {
       submission.reviewImage = attachmentUrl;
     }
-    saveDb();
   }
 
-  await refreshTierlistBoard(client);
+  const hadProfile = Boolean(db.profiles?.[input.user.id]);
+  const previousProfile = cloneJsonValue(db.profiles?.[input.user.id]);
+  const hadCooldown = Object.prototype.hasOwnProperty.call(db.cooldowns || {}, input.user.id);
+  const previousCooldown = hadCooldown ? db.cooldowns[input.user.id] : undefined;
+
+  try {
+    db.submissions[submissionId] = submission;
+
+    const profile = getProfile(input.user.id);
+    profile.mainCharacterIds = submission.mainCharacterIds;
+    refreshDerivedProfileMainFields(profile);
+    profile.displayName = submission.displayName;
+    profile.username = submission.username;
+    profile.lastSubmissionId = submission.id;
+    profile.lastSubmissionStatus = "pending";
+    profile.updatedAt = nowIso();
+    setSubmitCooldown(input.user.id);
+    saveDb();
+  } catch (error) {
+    delete db.submissions[submissionId];
+    restoreRecordValue(db.profiles, input.user.id, previousProfile, hadProfile);
+    restoreRecordValue(db.cooldowns, input.user.id, previousCooldown, hadCooldown);
+    await deleteTrackedMessage(
+      client,
+      reviewMessage.channel?.id || submission.reviewChannelId,
+      reviewMessage.id || submission.reviewMessageId,
+      `review-сообщение ${submissionId}`
+    ).catch((deleteError) => {
+      console.warn(`Submit rollback message cleanup failed for ${submissionId}: ${formatRuntimeError(deleteError)}`);
+    });
+    throw error;
+  }
+
+  await refreshTierlistBoard(client).catch((error) => {
+    console.warn(`Tierlist refresh after submit failed: ${formatRuntimeError(error)}`);
+  });
 
   return submission;
 }
@@ -5307,12 +5510,17 @@ async function approveSubmission(client, submission, moderatorTag) {
   const tier = killTierFor(submission.kills);
   if (!tier) throw new Error("Не удалось вычислить tier по kills");
 
+  await ensureSingleTierRole(client, submission.userId, tier, "approved welcome submission");
+
+  const profile = getProfile(submission.userId);
+  const previousSubmission = cloneJsonValue(submission);
+  const previousProfile = cloneJsonValue(profile);
+
   submission.derivedTier = tier;
   submission.status = "approved";
   submission.reviewedAt = nowIso();
   submission.reviewedBy = moderatorTag;
 
-  const profile = getProfile(submission.userId);
   profile.mainCharacterIds = submission.mainCharacterIds;
   refreshDerivedProfileMainFields(profile);
   profile.displayName = submission.displayName;
@@ -5323,16 +5531,23 @@ async function approveSubmission(client, submission, moderatorTag) {
   profile.lastSubmissionStatus = "approved";
   profile.lastReviewedAt = submission.reviewedAt;
   profile.updatedAt = nowIso();
-  saveDb();
 
-  await ensureSingleTierRole(client, submission.userId, tier, "approved welcome submission");
+  try {
+    saveDb();
+  } catch (error) {
+    restoreRecordValue(db.submissions, submission.id, previousSubmission, true);
+    restoreRecordValue(db.profiles, submission.userId, previousProfile, true);
+    throw error;
+  }
 
   const reviewMessage = await fetchReviewMessage(client, submission);
   if (reviewMessage) {
     await reviewMessage.edit({
       embeds: [buildReviewEmbed(submission, "approved")],
       components: [],
-    }).catch(() => {});
+    }).catch((error) => {
+      console.warn(`Approve review message update failed for ${submission.id}: ${formatRuntimeError(error)}`);
+    });
   }
 
   await dmUser(
@@ -5343,32 +5558,49 @@ async function approveSubmission(client, submission, moderatorTag) {
       `Kills: ${submission.kills}`,
       `Tier: ${submission.derivedTier} (${formatTierLabel(submission.derivedTier)})`,
     ].join("\n")
-  );
+  ).catch((error) => {
+    console.warn(`Approve DM failed for ${submission.userId}: ${formatRuntimeError(error)}`);
+  });
 
-  await logLine(client, `APPROVE: <@${submission.userId}> kills ${submission.kills} -> tier ${submission.derivedTier} by ${moderatorTag}`);
-  await refreshTierlistBoard(client);
-  saveDb();
+  await logLine(client, `APPROVE: <@${submission.userId}> kills ${submission.kills} -> tier ${submission.derivedTier} by ${moderatorTag}`).catch((error) => {
+    console.warn(`Approve log failed for ${submission.id}: ${formatRuntimeError(error)}`);
+  });
+  await refreshTierlistBoard(client).catch((error) => {
+    console.warn(`Tierlist refresh after approve failed for ${submission.id}: ${formatRuntimeError(error)}`);
+  });
 }
 
 async function rejectSubmission(client, submission, moderatorTag, reason) {
+  const previousSubmission = cloneJsonValue(submission);
+  const profile = getProfile(submission.userId);
+  const previousProfile = cloneJsonValue(profile);
+
   submission.status = "rejected";
   submission.reviewedAt = nowIso();
   submission.reviewedBy = moderatorTag;
   submission.rejectReason = reason;
 
-  const profile = getProfile(submission.userId);
   profile.lastSubmissionId = submission.id;
   profile.lastSubmissionStatus = "rejected";
   profile.lastReviewedAt = submission.reviewedAt;
   profile.updatedAt = nowIso();
-  saveDb();
+
+  try {
+    saveDb();
+  } catch (error) {
+    restoreRecordValue(db.submissions, submission.id, previousSubmission, true);
+    restoreRecordValue(db.profiles, submission.userId, previousProfile, true);
+    throw error;
+  }
 
   const reviewMessage = await fetchReviewMessage(client, submission);
   if (reviewMessage) {
     await reviewMessage.edit({
       embeds: [buildReviewEmbed(submission, "rejected", [{ name: "Причина", value: reason, inline: false }])],
       components: [],
-    }).catch(() => {});
+    }).catch((error) => {
+      console.warn(`Reject review message update failed for ${submission.id}: ${formatRuntimeError(error)}`);
+    });
   }
 
   await dmUser(
@@ -5379,11 +5611,16 @@ async function rejectSubmission(client, submission, moderatorTag, reason) {
       `Причина: ${reason}`,
       `Kills: ${submission.kills}`,
     ].join("\n")
-  );
+  ).catch((error) => {
+    console.warn(`Reject DM failed for ${submission.userId}: ${formatRuntimeError(error)}`);
+  });
 
-  await logLine(client, `REJECT: <@${submission.userId}> kills ${submission.kills} by ${moderatorTag} | reason: ${reason}`);
-  await refreshTierlistBoard(client);
-  saveDb();
+  await logLine(client, `REJECT: <@${submission.userId}> kills ${submission.kills} by ${moderatorTag} | reason: ${reason}`).catch((error) => {
+    console.warn(`Reject log failed for ${submission.id}: ${formatRuntimeError(error)}`);
+  });
+  await refreshTierlistBoard(client).catch((error) => {
+    console.warn(`Tierlist refresh after reject failed for ${submission.id}: ${formatRuntimeError(error)}`);
+  });
 }
 
 async function updateSubmissionKills(client, submission, kills, moderatorTag) {
@@ -5440,9 +5677,6 @@ async function createManualApprovedRecord(client, targetUser, screenshotAttachme
     manual: true,
   };
 
-  db.submissions[submission.id] = submission;
-  saveDb();
-
   const reviewMessage = await postReviewRecord(
     client,
     submission,
@@ -5460,8 +5694,21 @@ async function createManualApprovedRecord(client, targetUser, screenshotAttachme
     }
   }
 
-  await approveSubmission(client, submission, moderatorTag);
-  saveDb();
+  db.submissions[submission.id] = submission;
+  try {
+    await approveSubmission(client, submission, moderatorTag);
+  } catch (error) {
+    delete db.submissions[submission.id];
+    await deleteTrackedMessage(
+      client,
+      reviewMessage.channel?.id || submission.reviewChannelId,
+      reviewMessage.id || submission.reviewMessageId,
+      `review-сообщение ${submission.id}`
+    ).catch((deleteError) => {
+      console.warn(`Manual approve rollback message cleanup failed for ${submission.id}: ${formatRuntimeError(deleteError)}`);
+    });
+    throw error;
+  }
   return submission;
 }
 
@@ -5878,11 +6125,12 @@ async function deleteRoleGrantMessage(client, record, reason = "") {
   const actualRecord = registry[record.id];
   if (!actualRecord) return false;
 
-  const channel = await client.channels.fetch(actualRecord.channelId).catch(() => null);
-  const message = channel?.messages?.fetch ? await channel.messages.fetch(actualRecord.messageId).catch(() => null) : null;
-  if (message) {
-    await message.delete().catch(() => {});
-  }
+  await deleteTrackedMessage(
+    client,
+    actualRecord.channelId,
+    actualRecord.messageId,
+    `role grant message ${actualRecord.messageId}`
+  );
 
   delete registry[actualRecord.id];
   // Caller is responsible for saveDb()
@@ -9707,19 +9955,32 @@ client.once("clientReady", async () => {
   console.log(`Logged in as ${client.user.tag}`);
   console.log(`Data root: ${DATA_ROOT}`);
   console.log(`DB path: ${DB_PATH}`);
-  const { generated } = await runClientReadyCore(client, {
-    ensureManagedRoles,
-    runSotStartupAlerts: (currentClient) => runSotStartupAlerts(currentClient, {
-      maybeLogSotCharacterHealthAlert,
-      maybeLogSotDriftAlert,
+  let generated = {
+    characterRoles: 0,
+    resolvedCharacters: 0,
+    recoveredCharacters: 0,
+    ambiguousCharacters: 0,
+    unresolvedCharacters: 0,
+    tierRoles: 0,
+  };
+
+  try {
+    ({ generated } = await runClientReadyCore(client, {
+      ensureManagedRoles,
+      runSotStartupAlerts: (currentClient) => runSotStartupAlerts(currentClient, {
+        maybeLogSotCharacterHealthAlert,
+        maybeLogSotDriftAlert,
+        logError: (...args) => console.error(...args),
+      }),
+      registerGuildCommands,
+      syncApprovedTierRoles,
+      refreshWelcomePanel,
+      refreshAllTierlists,
       logError: (...args) => console.error(...args),
-    }),
-    registerGuildCommands,
-    syncApprovedTierRoles,
-    refreshWelcomePanel,
-    refreshAllTierlists,
-    logError: (...args) => console.error(...args),
-  });
+    }));
+  } catch (error) {
+    console.error("Client ready core failed:", error?.message || error);
+  }
 
   const legacyEloState = getLiveLegacyEloState();
   if (legacyEloState.ok) {
@@ -10074,39 +10335,76 @@ client.on("messageCreate", async (message) => {
     return;
   }
 
-  try {
-    const existingProfile = db.profiles?.[message.author.id] || null;
-    const isKillsUpdate = hasTrackedProfileKills(existingProfile);
+  const accessRoleIds = getManagedStartAccessRoleIds();
+  const previousProfile = cloneJsonValue(db.profiles?.[message.author.id]);
+  const hadProfile = Boolean(db.profiles?.[message.author.id]);
+  const hadCooldown = Object.prototype.hasOwnProperty.call(db.cooldowns || {}, message.author.id);
+  const previousCooldown = hadCooldown ? db.cooldowns[message.author.id] : undefined;
+  const accessMember = await fetchMember(client, message.author.id);
+  const previousAccessRoleIds = getRolePoolSnapshot(accessMember, accessRoleIds);
+  const existingProfile = db.profiles?.[message.author.id] || null;
+  const isKillsUpdate = hasTrackedProfileKills(existingProfile);
+  let submission = null;
 
-    await createPendingSubmissionFromAttachment(client, {
+  try {
+    await grantAccessRole(client, message.author.id, "newcomer application submitted");
+
+    const profile = getProfile(message.author.id);
+    profile.accessGrantedAt = profile.accessGrantedAt || nowIso();
+
+    submission = await createPendingSubmissionFromAttachment(client, {
       user: message.author,
       member: message.member,
       mainCharacterIds: session.mainCharacterIds,
       kills: effectiveKills,
       screenshotUrl: attachment.url,
     });
-
-    await grantAccessRole(client, message.author.id, "newcomer application submitted");
-
-    const profile = getProfile(message.author.id);
-    profile.accessGrantedAt = profile.accessGrantedAt || nowIso();
-    profile.updatedAt = nowIso();
-    saveDb();
-
-    clearSubmitSession(message.author.id);
-    const reply = await message.reply(
-      isKillsUpdate
-        ? "Обновление kills отправлено модераторам. Текущие kills и tier изменятся после проверки."
-        : "Заявка отправлена модераторам. Стартовая роль уже выдана, kill-tier прилетит после проверки."
-    ).catch(() => null);
-    if (reply) scheduleDeleteMessage(reply);
-
-    await logLine(client, `SUBMIT: <@${message.author.id}> kills ${killsResult.kills} mains=${session.mainCharacterIds.join(",")}`);
   } catch (error) {
-    clearSubmitSession(message.author.id);
+    if (submission?.id) {
+      delete db.submissions[submission.id];
+      restoreRecordValue(db.profiles, message.author.id, previousProfile, hadProfile);
+      restoreRecordValue(db.cooldowns, message.author.id, previousCooldown, hadCooldown);
+      saveDb();
+      await deleteTrackedMessage(
+        client,
+        submission.reviewChannelId,
+        submission.reviewMessageId,
+        `review-сообщение ${submission.id}`
+      ).catch((deleteError) => {
+        console.warn(`Submit outer rollback message cleanup failed for ${submission.id}: ${formatRuntimeError(deleteError)}`);
+      });
+    } else {
+      restoreRecordValue(db.profiles, message.author.id, previousProfile, hadProfile);
+      restoreRecordValue(db.cooldowns, message.author.id, previousCooldown, hadCooldown);
+    }
+
+    await restoreRolePoolSnapshot(
+      client,
+      message.author.id,
+      accessRoleIds,
+      previousAccessRoleIds,
+      "submit rollback"
+    ).catch((restoreError) => {
+      console.error(`Submit access-role rollback failed for ${message.author.id}: ${formatRuntimeError(restoreError)}`);
+    });
+
     const reply = await message.reply(String(error?.message || error || "Не удалось отправить заявку.")).catch(() => null);
     if (reply) scheduleDeleteMessage(reply, 16000);
+    await message.delete().catch(() => {});
+    return;
   }
+
+  clearSubmitSession(message.author.id);
+  const reply = await message.reply(
+    isKillsUpdate
+      ? "Обновление kills отправлено модераторам. Текущие kills и tier изменятся после проверки."
+      : "Заявка отправлена модераторам. Стартовая роль уже выдана, kill-tier прилетит после проверки."
+  ).catch(() => null);
+  if (reply) scheduleDeleteMessage(reply);
+
+  await logLine(client, `SUBMIT: <@${message.author.id}> kills ${killsResult.kills} mains=${session.mainCharacterIds.join(",")}`).catch((error) => {
+    console.warn(`Submit log failed for ${message.author.id}: ${formatRuntimeError(error)}`);
+  });
 
   await message.delete().catch(() => {});
 });
@@ -10344,16 +10642,39 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
-      await supersedePendingSubmissionsForUser(client, target.id, interaction.user.tag);
-      await createManualApprovedRecord(client, target, screenshot, kills, interaction.user.tag);
+      const accessRoleIds = getManagedStartAccessRoleIds();
+      const previousProfile = cloneJsonValue(db.profiles?.[target.id]);
+      const hadProfile = Boolean(db.profiles?.[target.id]);
+      const accessMember = await fetchMember(client, target.id);
+      const previousAccessRoleIds = getRolePoolSnapshot(accessMember, accessRoleIds);
 
-      const profile = getProfile(target.id);
-      profile.displayName = getProfileDisplayName(target.id, profile);
-      profile.username = target.username;
-      profile.accessGrantedAt = profile.accessGrantedAt || nowIso();
-      saveDb();
+      try {
+        await grantAccessRole(client, target.id, "manual moderator setup");
 
-      await grantAccessRole(client, target.id, "manual moderator setup");
+        const profile = getProfile(target.id);
+        profile.displayName = getProfileDisplayName(target.id, profile);
+        profile.username = target.username;
+        profile.accessGrantedAt = profile.accessGrantedAt || nowIso();
+
+        await createManualApprovedRecord(client, target, screenshot, kills, interaction.user.tag);
+      } catch (error) {
+        restoreRecordValue(db.profiles, target.id, previousProfile, hadProfile);
+        await restoreRolePoolSnapshot(
+          client,
+          target.id,
+          accessRoleIds,
+          previousAccessRoleIds,
+          "manual approve rollback"
+        ).catch((restoreError) => {
+          console.error(`Manual approve access-role rollback failed for ${target.id}: ${formatRuntimeError(restoreError)}`);
+        });
+        await interaction.editReply(String(error?.message || error || "Не удалось вручную одобрить профиль."));
+        return;
+      }
+
+      await supersedePendingSubmissionsForUser(client, target.id, interaction.user.tag).catch((error) => {
+        console.warn(`Manual approve supersede warning for ${target.id}: ${formatRuntimeError(error)}`);
+      });
 
       await interaction.editReply(`Готово. <@${target.id}> теперь имеет kills ${kills} и tier ${killTierFor(kills)}.`);
       return;
@@ -10380,7 +10701,7 @@ client.on("interactionCreate", async (interaction) => {
       const refreshText = buildTierlistRefreshReply(refreshed);
       await interaction.editReply([
         `Профиль <@${targetId}> полностью удалён.`,
-        `Удалено заявок: ${result.deletedSubmissions}. Удалено review-сообщений: ${result.removedReviewMessages}.`,
+        `Удалено заявок: ${result.deletedSubmissions}. Удалено review-сообщений: ${result.removedReviewMessages}. Отсутствовали в Discord: ${result.missingReviewMessages}.`,
         `Очищено: профиль ${result.hadProfile ? "да" : "нет"}, cooldown ${result.hadCooldown ? "да" : "нет"}, main-draft ${result.hadMainDraft ? "да" : "нет"}, submit-session ${result.hadSubmitSession ? "да" : "нет"}, non-JJS session ${result.hadNonGgsSession ? "да" : "нет"}.`,
         `Снятие ролей: tier ${result.rolesCleared.tier ? "да" : "нет"}, access ${result.rolesCleared.access ? "да" : "нет"}, non-JJS ${result.rolesCleared.nonGgs ? "да" : "нет"}, character ${result.rolesCleared.characters ? "да" : "нет"}.`,
         refreshText,

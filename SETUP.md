@@ -332,7 +332,8 @@ Access-role и moderator-role бот сам не создаёт, потому ч
 5. В legacy Channels modal пустое поле теперь означает честный clear соответствующего channel slot: welcome одновременно сбрасывает welcome и nonGgs pair, text/graphic tierlist очищают ещё и tracked message ids, log/review очищают только channel binding.
 6. Если нужно руками переназначить panel surface, используй Manual panel внутри SoT report. Поддержанные слоты: welcome, nonGgs, eloSubmit, eloGraphic, tierlistDashboard, tierlistSummary.
 7. Если в Manual panel отправить пустой channelId, reset теперь честный: welcome и nonGgs возвращаются в свой fallback/default publish path, а integration-панели eloSubmit, eloGraphic, tierlistDashboard и tierlistSummary удаляют текущий managed message и очищают live snapshot до следующей явной настройки.
-8. Если включён LOG_CHANNEL_ID, проверь, что туда не прилетел throttled alert по unresolved characters или другим SoT проблемам сразу после старта.
+8. Для integration panel slots channel section и integration section в `/onboard sotreport` теперь должны сходиться по `eloSubmit` / `eloGraphic` / `tierlistDashboard` / `tierlistSummary`. Если после Verify now они расходятся, считай это кодовым багом, а не нормальным operator drift.
+9. Если включён LOG_CHANNEL_ID, проверь, что туда не прилетел throttled alert по unresolved characters или другим SoT проблемам сразу после старта.
 
 Практический порядок operator-response после рестарта:
 
@@ -384,6 +385,8 @@ node --test tests/elo-role-grant-toggle.test.js
 Если менялся integration source path, dormant import или panel snapshot surface, добавь ещё:
 
 ```bash
+node --test tests/db-store.test.js
+node --test tests/sot-diagnostics.test.js
 node --test tests/native-integrations.test.js
 node --test tests/elo-dormant.test.js
 node --test tests/elo-role-grant-toggle.test.js

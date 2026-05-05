@@ -3,6 +3,17 @@
 const fs = require("node:fs");
 const path = require("node:path");
 
+function cloneValue(value) {
+  return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
+}
+
+function replaceObjectContents(target, source) {
+  for (const key of Object.keys(target || {})) {
+    delete target[key];
+  }
+  Object.assign(target, cloneValue(source) || {});
+}
+
 function loadJsonFile(filePath, fallbackValue) {
   try {
     if (!fs.existsSync(filePath)) return fallbackValue;
@@ -26,6 +37,16 @@ function saveJsonFile(filePath, value) {
     }
     throw error;
   }
+}
+
+function getResolvedIntegrationSourcePathFromState(db = {}, slot = "") {
+  const normalizedSlot = String(slot || "").trim();
+  if (!normalizedSlot) return "";
+
+  const persistedValue = String(db?.sot?.integrations?.[normalizedSlot]?.sourcePath || "").trim();
+  if (persistedValue) return persistedValue;
+
+  return String(db?.config?.integrations?.[normalizedSlot]?.sourcePath || "").trim();
 }
 
 function createDefaultDbState({
@@ -134,7 +155,7 @@ function createDbStore({
     }
     db.config.characters = normalizedStoredCharacters;
     const dormantEloImport = importDormantEloSyncFromFile(db, {
-      sourcePath: db.config.integrations?.elo?.sourcePath,
+      sourcePath: getResolvedIntegrationSourcePathFromState(db, "elo"),
       baseDir: dataRoot,
       syncedAt: new Date().toISOString(),
     });
@@ -142,7 +163,7 @@ function createDbStore({
       console.warn(`dormant ELO import skipped: ${dormantEloImport.error}`);
     }
     const dormantTierlistImport = importDormantTierlistSyncFromFile(db, {
-      sourcePath: db.config.integrations?.tierlist?.sourcePath,
+      sourcePath: getResolvedIntegrationSourcePathFromState(db, "tierlist"),
       baseDir: dataRoot,
       syncedAt: new Date().toISOString(),
       characterCatalog: (runtimeCharacters.length ? runtimeCharacters : normalizedStoredCharacters)
@@ -167,20 +188,30 @@ function createDbStore({
   }
 
   function save(db) {
-    syncSharedProfiles(db);
-    ensurePresentationConfig(db.config, {
+    const workingDb = cloneValue(db) || {};
+
+    syncSharedProfiles(workingDb);
+    ensurePresentationConfig(workingDb.config, {
       defaults: createPresentationDefaults(fileConfig, { defaultGraphicTierColors }),
       defaultWelcomeChannelId: appConfig.channels.welcomeChannelId,
       defaultTextTierlistChannelId: appConfig.channels.tierlistChannelId || "",
       defaultGraphicTierColors,
     });
-    db.config.integrations = normalizeIntegrationState(db.config.integrations).integrations;
+    workingDb.config.integrations = normalizeIntegrationState(workingDb.config.integrations).integrations;
     const dualWriteState = typeof dualWriteSotState === "function"
-      ? dualWriteSotState(db)
+      ? dualWriteSotState(workingDb)
       : { mutated: false, writtenSlots: [] };
-    if (typeof syncSotState === "function") syncSotState(db);
-    delete db.__needsSaveAfterLoad;
-    saveJsonFile(dbPath, db);
+    if (typeof syncSotState === "function") syncSotState(workingDb);
+    delete workingDb.__needsSaveAfterLoad;
+
+    try {
+      saveJsonFile(dbPath, workingDb);
+    } catch (error) {
+      db.__needsSaveAfterLoad = true;
+      throw error;
+    }
+
+    replaceObjectContents(db, workingDb);
 
     return {
       db,
@@ -198,6 +229,7 @@ function createDbStore({
 module.exports = {
   createDbStore,
   createDefaultDbState,
+  getResolvedIntegrationSourcePathFromState,
   loadJsonFile,
   saveJsonFile,
 };

@@ -244,10 +244,27 @@ function diagnosePanels({ db = {}, appConfig = {} } = {}) {
   };
 }
 
+function normalizeIntegrationPanelSnapshot(snapshot = {}) {
+  const channelId = cleanString(snapshot?.channelId, 80);
+  const messageId = cleanString(snapshot?.messageId, 80);
+
+  return {
+    channelId,
+    messageId,
+    lastUpdated: cleanString(snapshot?.lastUpdated, 80) || null,
+    tracked: Boolean(channelId || messageId),
+  };
+}
+
 function diagnoseIntegrations({ db = {}, appConfig = {} } = {}) {
   const integrations = resolveAllIntegrationRecords({ db, appConfig });
   const entries = ["elo", "tierlist"].map((slot) => {
     const integration = integrations[slot] && typeof integrations[slot] === "object" ? integrations[slot] : {};
+    const submitPanel = normalizeIntegrationPanelSnapshot(integration.submitPanel);
+    const graphicBoard = normalizeIntegrationPanelSnapshot(integration.graphicBoard);
+    const dashboard = normalizeIntegrationPanelSnapshot(integration.dashboard);
+    const summary = normalizeIntegrationPanelSnapshot(integration.summary);
+
     return {
       slot,
       status: cleanString(integration.status, 40) || "not_started",
@@ -256,10 +273,22 @@ function diagnoseIntegrations({ db = {}, appConfig = {} } = {}) {
       lastImportAt: cleanString(integration.lastImportAt, 80) || null,
       lastSyncAt: cleanString(integration.lastSyncAt, 80) || null,
       roleGrantEnabled: integration.roleGrantEnabled !== false,
+      submitPanel,
+      graphicBoard,
+      dashboard,
+      summary,
     };
   });
 
-  return { entries };
+  return {
+    entries,
+    trackedPanelCount: entries.reduce((total, entry) => total + [
+      entry.submitPanel,
+      entry.graphicBoard,
+      entry.dashboard,
+      entry.summary,
+    ].filter((snapshot) => snapshot?.tracked).length, 0),
+  };
 }
 
 function diagnoseSotState({
@@ -304,6 +333,7 @@ function diagnoseSotState({
       unresolvedCharacters: characters.unresolvedCount,
       recoveredCharacters: characters.recoveredCount,
       trackedPanels: panels.trackedCount,
+      trackedIntegrationPanels: integrations.trackedPanelCount,
     },
   };
 }

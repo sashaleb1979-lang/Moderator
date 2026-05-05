@@ -1,6 +1,7 @@
 "use strict";
 
 const { CHANNEL_SLOTS, createRecord } = require("../schema");
+const { resolveIntegrationRecord } = require("./integrations");
 const { selectPreferredRecord } = require("./priority");
 
 function cleanString(value, limit = 200) {
@@ -67,15 +68,42 @@ function getLegacyChannelRecord(slot, dbConfig = {}, appChannels = {}) {
   return createRecord(legacyValue, source);
 }
 
+function getResolvedIntegrationChannelRecord(slot, { db = {}, appConfig = {} } = {}) {
+  let channelId = "";
+
+  switch (slot) {
+    case "eloSubmit":
+      channelId = cleanString(resolveIntegrationRecord({ slot: "elo", db, appConfig })?.submitPanel?.channelId, 80);
+      break;
+    case "eloGraphic":
+      channelId = cleanString(resolveIntegrationRecord({ slot: "elo", db, appConfig })?.graphicBoard?.channelId, 80);
+      break;
+    case "tierlistDashboard":
+      channelId = cleanString(resolveIntegrationRecord({ slot: "tierlist", db, appConfig })?.dashboard?.channelId, 80);
+      break;
+    case "tierlistSummary":
+      channelId = cleanString(resolveIntegrationRecord({ slot: "tierlist", db, appConfig })?.summary?.channelId, 80);
+      break;
+    default:
+      channelId = "";
+      break;
+  }
+
+  return channelId ? createRecord(channelId, "manual") : null;
+}
+
 function resolveChannelRecord({ slot, db = {}, appConfig = {} } = {}) {
   if (!CHANNEL_SLOTS.includes(slot)) return null;
 
   const dbConfig = getDbConfig(db);
   const appChannels = getAppChannels(appConfig);
+  const legacyChannelRecord = ["eloSubmit", "eloGraphic", "tierlistDashboard", "tierlistSummary"].includes(slot)
+    ? getResolvedIntegrationChannelRecord(slot, { db, appConfig })
+    : getLegacyChannelRecord(slot, dbConfig, appChannels);
 
   return selectPreferredRecord([
     db?.sot?.channels?.[slot],
-    getLegacyChannelRecord(slot, dbConfig, appChannels),
+    legacyChannelRecord,
     createRecord(getConfiguredChannelValue(slot, appChannels), "configured"),
   ], "configured");
 }
@@ -93,6 +121,7 @@ module.exports = {
   getConfiguredChannelValue,
   getLegacyChannelRecord,
   getLegacyChannelValue,
+  getResolvedIntegrationChannelRecord,
   resolveAllChannelRecords,
   resolveChannelRecord,
 };

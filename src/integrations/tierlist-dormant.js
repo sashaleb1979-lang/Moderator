@@ -5,6 +5,7 @@ const path = require("path");
 
 const { ensureSharedProfile, normalizeIntegrationState } = require("./shared-profile");
 const { writeNativeIntegrationSnapshot } = require("../sot/native-integrations");
+const { resolveIntegrationRecord } = require("../sot/resolver/integrations");
 
 function cleanString(value, limit = 2000) {
   return String(value || "").trim().slice(0, Math.max(0, Number(limit) || 0));
@@ -160,11 +161,12 @@ function applyDormantTierlistSync(db, legacyTierlistState, options = {}) {
   const normalizedIntegrations = normalizeIntegrationState(db.config.integrations);
   db.config.integrations = normalizedIntegrations.integrations;
   db.profiles ||= {};
+  const currentIntegration = resolveIntegrationRecord({ slot: "tierlist", db });
 
   const tierlistState = {
-    ...db.config.integrations.tierlist,
-    sourcePath: sourcePath || db.config.integrations.tierlist.sourcePath || "",
-    status: sourcePath || userIds.size ? "in_progress" : db.config.integrations.tierlist.status,
+    ...currentIntegration,
+    sourcePath: sourcePath || currentIntegration.sourcePath || "",
+    status: sourcePath || userIds.size ? "in_progress" : currentIntegration.status,
     lastImportAt: syncedAt,
     lastSyncAt: syncedAt,
     dashboard: { ...normalized.settings.dashboard },
@@ -242,11 +244,12 @@ function clearDormantTierlistSync(db, options = {}) {
   const normalizedIntegrations = normalizeIntegrationState(db.config.integrations);
   db.config.integrations = normalizedIntegrations.integrations;
   db.profiles ||= {};
+  const currentIntegration = resolveIntegrationRecord({ slot: "tierlist", db });
 
   const tierlistState = {
-    ...db.config.integrations.tierlist,
+    ...currentIntegration,
     sourcePath,
-    status: sourcePath ? db.config.integrations.tierlist.status : "not_started",
+    status: sourcePath ? currentIntegration.status : "not_started",
     lastSyncAt: syncedAt,
   };
 

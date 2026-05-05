@@ -117,5 +117,10 @@ test("diagnoseSotState exposes panel and integration snapshots from legacy-backe
   assert.equal(report.panels.entries.find((entry) => entry.slot === "welcome").channelId, "welcome-channel");
   assert.equal(report.integrations.entries.find((entry) => entry.slot === "elo").status, "ready");
   assert.equal(report.integrations.entries.find((entry) => entry.slot === "elo").sourcePath, "elo/db.json");
+  assert.equal(report.integrations.entries.find((entry) => entry.slot === "elo").submitPanel.channelId, "elo-submit-channel");
+  assert.equal(report.integrations.entries.find((entry) => entry.slot === "elo").submitPanel.messageId, "elo-submit-message");
+  assert.equal(report.integrations.entries.find((entry) => entry.slot === "tierlist").dashboard.channelId, "tierlist-dashboard-channel");
+  assert.equal(report.integrations.entries.find((entry) => entry.slot === "tierlist").dashboard.messageId, "tierlist-dashboard-message");
   assert.equal(report.summary.trackedPanels >= 3, true);
+  assert.equal(report.summary.trackedIntegrationPanels >= 2, true);
 });

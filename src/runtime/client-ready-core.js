@@ -32,7 +32,10 @@ async function runClientReadyCore(client, options = {}) {
   const generated = await ensureManagedRoles(client);
   await runSotStartupAlerts(client);
   await registerGuildCommands(client);
-  await Promise.resolve(syncApprovedTierRoles(client)).catch(() => 0);
+  await Promise.resolve(syncApprovedTierRoles(client)).catch((error) => {
+    logError("Tier role sync failed:", formatErrorText(error));
+    return 0;
+  });
   await Promise.resolve(refreshWelcomePanel(client)).catch((error) => {
     logError("Welcome panel refresh failed:", formatErrorText(error));
   });

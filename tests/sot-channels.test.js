@@ -101,6 +101,35 @@ test("resolveChannelRecord falls back to configured values when legacy state is 
   });
 });
 
+test("resolveChannelRecord prefers resolver-backed integration panel channels over stale compat shadow", () => {
+  const result = resolveChannelRecord({
+    slot: "eloSubmit",
+    db: {
+      config: {
+        integrations: {
+          elo: {
+            submitPanel: { channelId: "elo-submit-stale" },
+          },
+        },
+      },
+      sot: {
+        integrations: {
+          elo: {
+            submitPanel: { channelId: "elo-submit-sot" },
+          },
+        },
+      },
+    },
+    appConfig: {},
+  });
+
+  assert.deepEqual(result, {
+    value: "elo-submit-sot",
+    source: "manual",
+    verifiedAt: null,
+  });
+});
+
 test("resolveAllChannelRecords returns every configured slot", () => {
   const result = resolveAllChannelRecords(createContext());
 

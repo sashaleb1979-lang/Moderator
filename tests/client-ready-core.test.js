@@ -46,8 +46,9 @@ test("runClientReadyCore preserves startup order for the core prelude", async ()
   assert.deepEqual(result, { generated: { resolvedCharacters: 3 } });
 });
 
-test("runClientReadyCore ignores syncApprovedTierRoles failures and continues", async () => {
+test("runClientReadyCore logs syncApprovedTierRoles failures and continues", async () => {
   const calls = [];
+  const errors = [];
 
   await runClientReadyCore({ id: "client" }, {
     async ensureManagedRoles() {
@@ -70,6 +71,7 @@ test("runClientReadyCore ignores syncApprovedTierRoles failures and continues", 
     async refreshAllTierlists() {
       calls.push("refreshAllTierlists");
     },
+    logError: (...args) => errors.push(args.join(" ")),
   });
 
   assert.deepEqual(calls, [
@@ -80,6 +82,7 @@ test("runClientReadyCore ignores syncApprovedTierRoles failures and continues", 
     "refreshWelcomePanel",
     "refreshAllTierlists",
   ]);
+  assert.deepEqual(errors, ["Tier role sync failed: tier sync failed"]);
 });
 
 test("runClientReadyCore logs welcome refresh failures and still refreshes tierlists", async () => {

@@ -200,3 +200,42 @@ test("clearDormantEloSync resets integration state and removes stale elo project
   assert.equal(db.profiles.user1.domains.elo.currentElo, null);
   assert.equal(db.profiles.user1.summary.elo.hasRating, false);
 });
+
+test("applyDormantEloSync preserves resolver-backed integration fields over stale legacy shadow", () => {
+  const db = {
+    config: {
+      integrations: {
+        elo: {
+          mode: "legacy-stale",
+          roleGrantEnabled: true,
+        },
+      },
+    },
+    sot: {
+      integrations: {
+        elo: {
+          mode: "native-manual",
+          roleGrantEnabled: false,
+        },
+      },
+    },
+    profiles: {},
+  };
+
+  applyDormantEloSync(db, {
+    config: {
+      submitPanel: { channelId: "submit-1", messageId: "submit-msg" },
+      graphicTierlist: { dashboardChannelId: "graphic-1", dashboardMessageId: "graphic-msg" },
+    },
+    ratings: {},
+    submissions: {},
+  }, {
+    sourcePath: "legacy/elo-db.json",
+    syncedAt: "2026-05-01T16:30:00.000Z",
+  });
+
+  assert.equal(db.sot.integrations.elo.mode, "native-manual");
+  assert.equal(db.sot.integrations.elo.roleGrantEnabled, false);
+  assert.equal(db.config.integrations.elo.mode, "native-manual");
+  assert.equal(db.config.integrations.elo.roleGrantEnabled, false);
+});
