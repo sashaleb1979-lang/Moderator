@@ -4,6 +4,7 @@ const { ROLE_PANEL_COMMAND_NAME } = require("../role-panel");
 
 const ONBOARD_SUBCOMMAND_NAMES = [
   "panel",
+  "sotreport",
   "welcomeedit",
   "movegraphic",
   "movetext",
@@ -23,6 +24,9 @@ function buildCommands() {
       .setDescription("Welcome bot commands")
       .addSubcommand((subcommand) =>
         subcommand.setName("panel").setDescription("Открыть модераторскую панель управления")
+      )
+      .addSubcommand((subcommand) =>
+        subcommand.setName("sotreport").setDescription("Показать ground-truth отчёт по текущим источникам данных")
       )
       .addSubcommand((subcommand) =>
         subcommand.setName("welcomeedit").setDescription("Открыть редактор welcome и tier-листа")

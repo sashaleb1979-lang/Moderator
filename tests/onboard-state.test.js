@@ -40,6 +40,7 @@ const {
   createPresentationDefaults,
   ensurePresentationConfig,
   getGraphicTierlistBoardState,
+  getNonGgsPanelState,
   getTextTierlistBoardState,
   getTierLabel,
   resolvePresentation,
@@ -87,8 +88,7 @@ test("migrates legacy tierlist and graphic config into unified presentation stat
   assert.equal(result.mutated, true);
   assert.deepEqual(dbConfig.tierlistBoard.text, {
     channelId: "text-channel",
-    messageId: "text-message",
-    messageIdSummary: "",
+    messageIdSummary: "text-message",
     messageIdPages: "",
   });
   assert.deepEqual(dbConfig.tierlistBoard.graphic, {
@@ -183,7 +183,6 @@ test("text and graphic board states stay separate after migration and direct upd
 
   assert.deepEqual(textBoard, {
     channelId: "text-home",
-    messageId: "text-message",
     messageIdSummary: "text-summary",
     messageIdPages: "text-pages",
   });
@@ -191,6 +190,148 @@ test("text and graphic board states stay separate after migration and direct upd
     channelId: "graphic-moved",
     messageId: "graphic-new",
     lastUpdated: null,
+  });
+});
+
+test("getNonGgsPanelState keeps its own channel instead of mirroring welcome panel state on read", () => {
+  const dbConfig = {
+    welcomePanel: {
+      channelId: "welcome-home",
+      messageId: "welcome-message",
+    },
+    nonGgsPanel: {
+      channelId: "captcha-home",
+      messageId: "captcha-message",
+    },
+  };
+
+  const state = getNonGgsPanelState(dbConfig, "welcome-fallback", "welcome-home");
+
+  assert.deepEqual(state, {
+    channelId: "captcha-home",
+    messageId: "captcha-message",
+  });
+  assert.equal(dbConfig.nonGgsPanel.channelId, "captcha-home");
+});
+
+test("getNonGgsPanelState falls back to the welcome channel only when nonGgs state is missing", () => {
+  const dbConfig = {
+    welcomePanel: {
+      channelId: "welcome-home",
+      messageId: "welcome-message",
+    },
+  };
+
+  const state = getNonGgsPanelState(dbConfig, "welcome-fallback", "welcome-home");
+
+  assert.deepEqual(state, {
+    channelId: "welcome-home",
+    messageId: "",
+  });
+});
+
+test("ensurePresentationConfig migrates nested text board legacy messageId into summary and deletes the old key", () => {
+  const dbConfig = {
+    tierlistBoard: {
+      text: {
+        channelId: "text-home",
+        messageId: "legacy-summary",
+      },
+      graphic: {
+        channelId: "graphic-home",
+        messageId: "graphic-message",
+      },
+    },
+  };
+
+  const result = ensurePresentationConfig(dbConfig, {
+    defaults: createPresentationDefaults({}, { defaultGraphicTierColors: DEFAULT_GRAPHIC_TIER_COLORS }),
+    defaultWelcomeChannelId: "welcome-home",
+    defaultTextTierlistChannelId: "text-home",
+    defaultGraphicTierColors: DEFAULT_GRAPHIC_TIER_COLORS,
+  });
+
+  assert.equal(result.mutated, true);
+  assert.deepEqual(dbConfig.tierlistBoard.text, {
+    channelId: "text-home",
+    messageIdSummary: "legacy-summary",
+    messageIdPages: "",
+  });
+  assert.equal("messageId" in dbConfig.tierlistBoard.text, false);
+});
+
+test("ensurePresentationConfig clears stale nested text board messageId once split-layout ids exist", () => {
+  const dbConfig = {
+    tierlistBoard: {
+      text: {
+        channelId: "text-home",
+        messageId: "stale-main",
+        messageIdSummary: "text-summary",
+        messageIdPages: "text-pages",
+      },
+      graphic: {
+        channelId: "graphic-home",
+        messageId: "graphic-message",
+      },
+    },
+  };
+
+  const result = ensurePresentationConfig(dbConfig, {
+    defaults: createPresentationDefaults({}, { defaultGraphicTierColors: DEFAULT_GRAPHIC_TIER_COLORS }),
+    defaultWelcomeChannelId: "welcome-home",
+    defaultTextTierlistChannelId: "text-home",
+    defaultGraphicTierColors: DEFAULT_GRAPHIC_TIER_COLORS,
+  });
+
+  assert.equal(result.mutated, true);
+  assert.deepEqual(dbConfig.tierlistBoard.text, {
+    channelId: "text-home",
+    messageIdSummary: "text-summary",
+    messageIdPages: "text-pages",
+  });
+  assert.equal("messageId" in dbConfig.tierlistBoard.text, false);
+});
+
+test("ensurePresentationConfig canonicalizes legacy nonJjsUi into presentation.nonGgs and deletes legacy keys", () => {
+  const dbConfig = {
+    nonJjsUi: {
+      title: "Captcha title",
+      description: "Captcha text",
+      buttonLabel: "Start captcha",
+    },
+  };
+
+  const result = ensurePresentationConfig(dbConfig, {
+    defaults: createPresentationDefaults({}, { defaultGraphicTierColors: DEFAULT_GRAPHIC_TIER_COLORS }),
+    defaultWelcomeChannelId: "welcome-home",
+    defaultTextTierlistChannelId: "text-home",
+    defaultGraphicTierColors: DEFAULT_GRAPHIC_TIER_COLORS,
+  });
+
+  assert.equal(result.mutated, true);
+  assert.deepEqual(dbConfig.presentation.nonGgs, {
+    title: "Captcha title",
+    description: "Captcha text",
+    buttonLabel: "Start captcha",
+  });
+  assert.equal("nonJjsUi" in dbConfig, false);
+});
+
+test("presentation resolution exposes canonical nonGgs content from presentation overrides", () => {
+  const resolved = resolvePresentation({
+    presentation: {
+      nonGgs: {
+        title: "Canonical title",
+        description: "Canonical description",
+        buttonLabel: "Canonical button",
+      },
+    },
+  }, {}, { defaultGraphicTierColors: DEFAULT_GRAPHIC_TIER_COLORS });
+
+  assert.deepEqual(resolved.nonGgs, {
+    title: "Canonical title",
+    description: "Canonical description",
+    buttonLabel: "Canonical button",
   });
 });
 
@@ -433,6 +574,7 @@ test("command builder includes new admin refresh and editor subcommands", () => 
       "movetext",
       "panel",
       "removetier",
+      "sotreport",
       "welcomeedit",
     ].sort()
   );
@@ -441,6 +583,8 @@ test("command builder includes new admin refresh and editor subcommands", () => 
 test("command builder registers onboard and rolepanel top-level commands", () => {
   assert.deepEqual([...TOP_LEVEL_COMMAND_NAMES].sort(), ["onboard", ROLE_PANEL_COMMAND_NAME].sort());
   assert.deepEqual(buildCommands().map((command) => command.name).sort(), ["onboard", ROLE_PANEL_COMMAND_NAME].sort());
+  const onboardCommand = buildCommands().find((command) => command.name === "onboard");
+  assert.equal(onboardCommand.options.some((option) => option.type === 1 && option.name === "sotreport"), true);
 });
 
 test("role panel draft normalization applies defaults and validation rules", () => {

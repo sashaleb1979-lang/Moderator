@@ -1,5 +1,7 @@
 "use strict";
 
+const { resolveIntegrationRecord } = require("../sot/resolver/integrations");
+
 function cleanString(value, limit = 2000) {
   return String(value || "").trim().slice(0, Math.max(0, Number(limit) || 0));
 }
@@ -46,8 +48,12 @@ function getDormantTierlistEntries(db = {}) {
     .filter((entry) => entry.mainId || entry.submittedAt || entry.influenceMultiplier !== 1 || entry.influenceRoleId);
 }
 
-function getDormantTierlistPanelSnapshot(db = {}) {
-  const integrations = db?.config?.integrations?.tierlist || {};
+function getDormantTierlistPanelSnapshot(db = {}, options = {}) {
+  const integrations = resolveIntegrationRecord({
+    slot: "tierlist",
+    db,
+    appConfig: options.appConfig || {},
+  });
   const entries = getDormantTierlistEntries(db)
     .sort((left, right) => {
       if (getSortKey(right.submittedAt) !== getSortKey(left.submittedAt)) {

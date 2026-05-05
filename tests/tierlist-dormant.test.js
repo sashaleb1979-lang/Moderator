@@ -107,6 +107,8 @@ test("applyDormantTierlistSync projects legacy tierlist state into shared profil
   assert.equal(db.config.integrations.tierlist.sourcePath, "./tierlist/data/state.json");
   assert.equal(db.config.integrations.tierlist.dashboard.channelId, "111");
   assert.equal(db.config.integrations.tierlist.summary.messageId, "444");
+  assert.equal(db.sot.integrations.tierlist.sourcePath, "./tierlist/data/state.json");
+  assert.equal(db.sot.integrations.tierlist.dashboard.channelId, "111");
   assert.equal(db.profiles.user1.domains.tierlist.mainId, "gojo");
   assert.equal(db.profiles.user1.domains.tierlist.mainName, "Gojo Satoru");
   assert.equal(db.profiles.user1.domains.tierlist.submittedAt, "2026-05-01T11:00:00.000Z");
@@ -153,6 +155,8 @@ test("clearDormantTierlistSync clears projected tierlist domains and resets inte
   assert.equal(db.config.integrations.tierlist.lastImportAt, null);
   assert.equal(db.config.integrations.tierlist.dashboard.channelId, "");
   assert.equal(db.config.integrations.tierlist.summary.messageId, "");
+  assert.equal(db.sot.integrations.tierlist.status, "not_started");
+  assert.equal(db.sot.integrations.tierlist.sourcePath, "");
   assert.equal(db.profiles.user1.domains.tierlist.mainId, null);
   assert.equal(db.profiles.user1.summary.tierlist.hasSubmission, false);
 });

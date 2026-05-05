@@ -4,6 +4,7 @@ const fs = require("fs");
 const path = require("path");
 
 const { ensureSharedProfile, normalizeIntegrationState } = require("./shared-profile");
+const { writeNativeIntegrationSnapshot } = require("../sot/native-integrations");
 
 function cleanString(value, limit = 2000) {
   return String(value || "").trim().slice(0, Math.max(0, Number(limit) || 0));
@@ -162,17 +163,20 @@ function applyDormantEloSync(db, legacyEloDb, options = {}) {
   db.config.integrations = normalizedIntegrations.integrations;
   db.profiles ||= {};
 
-  const eloState = db.config.integrations.elo;
-  eloState.sourcePath = sourcePath || eloState.sourcePath || "";
-  eloState.status = sourcePath || userIds.size ? "in_progress" : eloState.status;
-  eloState.lastImportAt = syncedAt;
-  eloState.lastSyncAt = syncedAt;
-  eloState.submitPanel = { ...normalized.config.submitPanel };
-  eloState.graphicBoard = {
-    channelId: normalized.config.graphicTierlist.dashboardChannelId,
-    messageId: normalized.config.graphicTierlist.dashboardMessageId,
-    lastUpdated: normalized.config.graphicTierlist.lastUpdated,
+  const eloState = {
+    ...db.config.integrations.elo,
+    sourcePath: sourcePath || db.config.integrations.elo.sourcePath || "",
+    status: sourcePath || userIds.size ? "in_progress" : db.config.integrations.elo.status,
+    lastImportAt: syncedAt,
+    lastSyncAt: syncedAt,
+    submitPanel: { ...normalized.config.submitPanel },
+    graphicBoard: {
+      channelId: normalized.config.graphicTierlist.dashboardChannelId,
+      messageId: normalized.config.graphicTierlist.dashboardMessageId,
+      lastUpdated: normalized.config.graphicTierlist.lastUpdated,
+    },
   };
+  writeNativeIntegrationSnapshot(db, { slot: "elo", patch: eloState });
 
   let mutated = normalizedIntegrations.mutated;
   let syncedProfiles = 0;
@@ -238,16 +242,20 @@ function clearDormantEloSync(db, options = {}) {
   db.config.integrations = normalizedIntegrations.integrations;
   db.profiles ||= {};
 
-  const eloState = db.config.integrations.elo;
-  eloState.sourcePath = sourcePath;
-  eloState.status = sourcePath ? eloState.status : "not_started";
-  eloState.lastSyncAt = syncedAt;
+  const eloState = {
+    ...db.config.integrations.elo,
+    sourcePath,
+    status: sourcePath ? db.config.integrations.elo.status : "not_started",
+    lastSyncAt: syncedAt,
+  };
 
   if (!sourcePath) {
     eloState.lastImportAt = null;
     eloState.submitPanel = { channelId: "", messageId: "" };
     eloState.graphicBoard = { channelId: "", messageId: "", lastUpdated: null };
   }
+
+  writeNativeIntegrationSnapshot(db, { slot: "elo", patch: eloState });
 
   let mutated = normalizedIntegrations.mutated;
   let clearedProfiles = 0;

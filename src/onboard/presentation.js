@@ -125,6 +125,20 @@ function normalizeGraphicImage(value, fallback) {
   return out;
 }
 
+function normalizeNonGgsPresentation(value, fallback = {}) {
+  const source = value && typeof value === "object" ? value : {};
+  const base = fallback && typeof fallback === "object" ? fallback : {};
+  const next = { ...base };
+
+  for (const key of ["title", "description", "buttonLabel"]) {
+    const text = cleanString(source[key]);
+    if (!text) continue;
+    next[key] = text;
+  }
+
+  return next;
+}
+
 function createPresentationDefaults(fileConfig = {}, options = {}) {
   const graphicColors = {
     ...HARD_DEFAULT_GRAPHIC_TIER_COLORS,
@@ -173,10 +187,39 @@ function createPresentationDefaults(fileConfig = {}, options = {}) {
 }
 
 function ensureWelcomePanelState(dbConfig, defaultChannelId = "") {
-  dbConfig.welcomePanel ||= { channelId: cleanString(defaultChannelId), messageId: "" };
-  dbConfig.welcomePanel.channelId ||= cleanString(defaultChannelId);
-  dbConfig.welcomePanel.messageId ||= "";
-  return dbConfig.welcomePanel;
+  const fallbackChannelId = cleanString(defaultChannelId);
+  const previousChannelId = cleanString(dbConfig?.welcomePanel?.channelId);
+  const previousMessageId = cleanString(dbConfig?.welcomePanel?.messageId);
+
+  dbConfig.welcomePanel ||= { channelId: fallbackChannelId, messageId: "" };
+
+  const nextChannelId = previousChannelId || fallbackChannelId;
+  const nextMessageId = previousMessageId;
+  dbConfig.welcomePanel.channelId = nextChannelId;
+  dbConfig.welcomePanel.messageId = nextMessageId;
+
+  return {
+    state: dbConfig.welcomePanel,
+    migrated: previousChannelId !== nextChannelId || previousMessageId !== nextMessageId,
+  };
+}
+
+function ensureNonGgsPanelState(dbConfig, defaultChannelId = "", fallbackChannelId = "") {
+  const fallback = cleanString(fallbackChannelId || defaultChannelId);
+  const previousChannelId = cleanString(dbConfig?.nonGgsPanel?.channelId);
+  const previousMessageId = cleanString(dbConfig?.nonGgsPanel?.messageId);
+
+  dbConfig.nonGgsPanel ||= { channelId: fallback, messageId: "" };
+
+  const nextChannelId = previousChannelId || fallback;
+  const nextMessageId = previousMessageId;
+  dbConfig.nonGgsPanel.channelId = nextChannelId;
+  dbConfig.nonGgsPanel.messageId = nextMessageId;
+
+  return {
+    state: dbConfig.nonGgsPanel,
+    migrated: previousChannelId !== nextChannelId || previousMessageId !== nextMessageId,
+  };
 }
 
 function ensureTierlistBoardState(dbConfig, defaultChannelId = "") {
@@ -189,8 +232,7 @@ function ensureTierlistBoardState(dbConfig, defaultChannelId = "") {
     dbConfig.tierlistBoard = {
       text: {
         channelId: cleanString(legacyBoard.channelId || defaultChannelId),
-        messageId: legacyTextMessageId,
-        messageIdSummary: "",
+        messageIdSummary: legacyTextMessageId,
         messageIdPages: "",
       },
       graphic: {
@@ -205,23 +247,51 @@ function ensureTierlistBoardState(dbConfig, defaultChannelId = "") {
   const state = legacyBoard;
   state.text ||= {};
   state.graphic ||= {};
+  let migrated = false;
 
-  state.text.channelId ||= cleanString(defaultChannelId);
-  state.text.messageId = cleanString(state.text.messageId || "");
-  state.text.messageIdSummary = cleanString(state.text.messageIdSummary || "");
-  state.text.messageIdPages = cleanString(state.text.messageIdPages || "");
-  state.graphic.channelId ||= cleanString(defaultChannelId);
-  state.graphic.messageId ||= "";
-  if (state.graphic.lastUpdated === undefined) state.graphic.lastUpdated = null;
+  const nextTextChannelId = cleanString(state.text.channelId || defaultChannelId);
+  if (state.text.channelId !== nextTextChannelId) migrated = true;
+  state.text.channelId = nextTextChannelId;
 
-  return { state, migrated: false };
+  const legacyNestedMessageId = cleanString(state.text.messageId || "");
+  const nextSummaryMessageId = cleanString(state.text.messageIdSummary || "") || legacyNestedMessageId;
+  const nextPagesMessageId = cleanString(state.text.messageIdPages || "");
+
+  if (state.text.messageIdSummary !== nextSummaryMessageId) migrated = true;
+  state.text.messageIdSummary = nextSummaryMessageId;
+  if (state.text.messageIdPages !== nextPagesMessageId) migrated = true;
+  state.text.messageIdPages = nextPagesMessageId;
+  if (Object.prototype.hasOwnProperty.call(state.text, "messageId")) {
+    delete state.text.messageId;
+    migrated = true;
+  }
+
+  const nextGraphicChannelId = cleanString(state.graphic.channelId || defaultChannelId);
+  if (state.graphic.channelId !== nextGraphicChannelId) migrated = true;
+  state.graphic.channelId = nextGraphicChannelId;
+  const nextGraphicMessageId = cleanString(state.graphic.messageId || "");
+  if (state.graphic.messageId !== nextGraphicMessageId) migrated = true;
+  state.graphic.messageId = nextGraphicMessageId;
+  if (state.graphic.lastUpdated === undefined) {
+    state.graphic.lastUpdated = null;
+    migrated = true;
+  }
+
+  return { state, migrated };
 }
 
 function ensurePresentationConfig(dbConfig, options = {}) {
   let mutated = false;
   const defaults = options.defaults || createPresentationDefaults({}, options);
 
-  ensureWelcomePanelState(dbConfig, options.defaultWelcomeChannelId || "");
+  const welcomePanelResult = ensureWelcomePanelState(dbConfig, options.defaultWelcomeChannelId || "");
+  if (welcomePanelResult.migrated) mutated = true;
+  const nonGgsPanelResult = ensureNonGgsPanelState(
+    dbConfig,
+    options.defaultWelcomeChannelId || "",
+    welcomePanelResult.state.channelId || options.defaultWelcomeChannelId || ""
+  );
+  if (nonGgsPanelResult.migrated) mutated = true;
   const boardResult = ensureTierlistBoardState(dbConfig, options.defaultTextTierlistChannelId || "");
   if (boardResult.migrated) mutated = true;
 
@@ -235,9 +305,15 @@ function ensurePresentationConfig(dbConfig, options = {}) {
   dbConfig.presentation.tierlist.graphic.image ||= {};
   dbConfig.presentation.tierlist.graphic.colors ||= {};
   dbConfig.presentation.tierlist.graphic.panel ||= { selectedTier: 5 };
+  dbConfig.presentation.nonGgs ||= {};
 
   const presentation = dbConfig.presentation;
   const legacyGraphic = dbConfig.graphicTierlist && typeof dbConfig.graphicTierlist === "object" ? dbConfig.graphicTierlist : {};
+  const legacyNonGgs = dbConfig.nonJjsUi && typeof dbConfig.nonJjsUi === "object"
+    ? dbConfig.nonJjsUi
+    : dbConfig.nonGgsUi && typeof dbConfig.nonGgsUi === "object"
+      ? dbConfig.nonGgsUi
+      : {};
 
   if (legacyGraphic.title && presentation.tierlist.graphicTitle === undefined) {
     presentation.tierlist.graphicTitle = cleanString(legacyGraphic.title);
@@ -275,6 +351,20 @@ function ensurePresentationConfig(dbConfig, options = {}) {
     mutated = true;
   }
 
+  const nextNonGgs = normalizeNonGgsPresentation(legacyNonGgs, normalizeNonGgsPresentation(presentation.nonGgs));
+  if (JSON.stringify(presentation.nonGgs) !== JSON.stringify(nextNonGgs)) {
+    presentation.nonGgs = nextNonGgs;
+    mutated = true;
+  }
+  if (dbConfig.nonJjsUi !== undefined) {
+    delete dbConfig.nonJjsUi;
+    mutated = true;
+  }
+  if (dbConfig.nonGgsUi !== undefined) {
+    delete dbConfig.nonGgsUi;
+    mutated = true;
+  }
+
   return { mutated, presentation };
 }
 
@@ -284,6 +374,12 @@ function resolvePresentation(dbConfig = {}, fileConfig = {}, options = {}) {
   const welcome = overrides.welcome && typeof overrides.welcome === "object" ? overrides.welcome : {};
   const tierlist = overrides.tierlist && typeof overrides.tierlist === "object" ? overrides.tierlist : {};
   const graphic = tierlist.graphic && typeof tierlist.graphic === "object" ? tierlist.graphic : {};
+  const nonGgs = overrides.nonGgs && typeof overrides.nonGgs === "object" ? overrides.nonGgs : {};
+  const legacyNonGgs = dbConfig.nonJjsUi && typeof dbConfig.nonJjsUi === "object"
+    ? dbConfig.nonJjsUi
+    : dbConfig.nonGgsUi && typeof dbConfig.nonGgsUi === "object"
+      ? dbConfig.nonGgsUi
+      : {};
 
   return {
     welcome: {
@@ -309,12 +405,20 @@ function resolvePresentation(dbConfig = {}, fileConfig = {}, options = {}) {
         },
       },
     },
+    nonGgs: {
+      title: firstNonEmpty(nonGgs.title, legacyNonGgs.title),
+      description: firstNonEmpty(nonGgs.description, legacyNonGgs.description),
+      buttonLabel: firstNonEmpty(nonGgs.buttonLabel, legacyNonGgs.buttonLabel),
+    },
   };
 }
 
 function getWelcomePanelState(dbConfig, defaultChannelId = "") {
-  ensureWelcomePanelState(dbConfig, defaultChannelId);
-  return dbConfig.welcomePanel;
+  return ensureWelcomePanelState(dbConfig, defaultChannelId).state;
+}
+
+function getNonGgsPanelState(dbConfig, defaultChannelId = "", fallbackChannelId = "") {
+  return ensureNonGgsPanelState(dbConfig, defaultChannelId, fallbackChannelId).state;
 }
 
 function getTextTierlistBoardState(dbConfig, defaultChannelId = "") {
@@ -336,6 +440,7 @@ module.exports = {
   createPresentationDefaults,
   ensurePresentationConfig,
   getGraphicTierlistBoardState,
+  getNonGgsPanelState,
   getTextTierlistBoardState,
   getTierLabel,
   getWelcomePanelState,

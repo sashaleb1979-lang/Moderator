@@ -12,6 +12,7 @@ const {
   buildLegacyTierlistBucketsFromVoteMap,
   buildLegacyTierlistSummaryEmbed,
   computeLegacyTierlistGlobalBuckets,
+  listLegacyTierlistCustomCharacterIds,
   loadLegacyTierlistState,
   mergeLegacyTierlistCharacters,
 } = require("../src/integrations/tierlist-live");
@@ -56,6 +57,21 @@ test("loadLegacyTierlistState reads legacy state and merges custom characters", 
   assert.equal(liveState.characters.length, 2);
   assert.equal(liveState.charById.get("mahito").name, "Mahito");
   assert.equal(liveState.rawState.settings.summaryMessageId, null);
+});
+
+test("listLegacyTierlistCustomCharacterIds returns only ids persisted in the legacy custom domain", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "moderator-tierlist-custom-ids-"));
+  const customCharactersPath = path.join(tempDir, "characters.custom.json");
+
+  fs.writeFileSync(customCharactersPath, JSON.stringify([
+    { id: "mahito", name: "Mahito", enabled: true },
+    { id: "yorozu", name: "Yorozu", enabled: false },
+    { id: "", name: "Broken" },
+  ], null, 2), "utf8");
+
+  const ids = listLegacyTierlistCustomCharacterIds({ customCharactersPath });
+
+  assert.deepEqual(ids, ["mahito", "yorozu"]);
 });
 
 test("computeLegacyTierlistGlobalBuckets follows legacy averaging with stored influence multipliers", () => {

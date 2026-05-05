@@ -4,6 +4,7 @@ const fs = require("fs");
 const path = require("path");
 
 const { ensureSharedProfile, normalizeIntegrationState } = require("./shared-profile");
+const { writeNativeIntegrationSnapshot } = require("../sot/native-integrations");
 
 function cleanString(value, limit = 2000) {
   return String(value || "").trim().slice(0, Math.max(0, Number(limit) || 0));
@@ -160,13 +161,16 @@ function applyDormantTierlistSync(db, legacyTierlistState, options = {}) {
   db.config.integrations = normalizedIntegrations.integrations;
   db.profiles ||= {};
 
-  const tierlistState = db.config.integrations.tierlist;
-  tierlistState.sourcePath = sourcePath || tierlistState.sourcePath || "";
-  tierlistState.status = sourcePath || userIds.size ? "in_progress" : tierlistState.status;
-  tierlistState.lastImportAt = syncedAt;
-  tierlistState.lastSyncAt = syncedAt;
-  tierlistState.dashboard = { ...normalized.settings.dashboard };
-  tierlistState.summary = { ...normalized.settings.summary };
+  const tierlistState = {
+    ...db.config.integrations.tierlist,
+    sourcePath: sourcePath || db.config.integrations.tierlist.sourcePath || "",
+    status: sourcePath || userIds.size ? "in_progress" : db.config.integrations.tierlist.status,
+    lastImportAt: syncedAt,
+    lastSyncAt: syncedAt,
+    dashboard: { ...normalized.settings.dashboard },
+    summary: { ...normalized.settings.summary },
+  };
+  writeNativeIntegrationSnapshot(db, { slot: "tierlist", patch: tierlistState });
 
   let mutated = normalizedIntegrations.mutated;
   let syncedProfiles = 0;
@@ -239,16 +243,20 @@ function clearDormantTierlistSync(db, options = {}) {
   db.config.integrations = normalizedIntegrations.integrations;
   db.profiles ||= {};
 
-  const tierlistState = db.config.integrations.tierlist;
-  tierlistState.sourcePath = sourcePath;
-  tierlistState.status = sourcePath ? tierlistState.status : "not_started";
-  tierlistState.lastSyncAt = syncedAt;
+  const tierlistState = {
+    ...db.config.integrations.tierlist,
+    sourcePath,
+    status: sourcePath ? db.config.integrations.tierlist.status : "not_started",
+    lastSyncAt: syncedAt,
+  };
 
   if (!sourcePath) {
     tierlistState.lastImportAt = null;
     tierlistState.dashboard = { channelId: "", messageId: "", lastUpdated: null };
     tierlistState.summary = { channelId: "", messageId: "", lastUpdated: null };
   }
+
+  writeNativeIntegrationSnapshot(db, { slot: "tierlist", patch: tierlistState });
 
   let mutated = normalizedIntegrations.mutated;
   let clearedProfiles = 0;

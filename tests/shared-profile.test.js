@@ -6,6 +6,7 @@ const assert = require("node:assert/strict");
 const {
   INTEGRATION_MODE_DORMANT,
   SHARED_PROFILE_VERSION,
+  deriveProfileMainView,
   ensureSharedProfile,
   normalizeIntegrationState,
   syncSharedProfiles,
@@ -30,6 +31,9 @@ test("ensureSharedProfile migrates onboarding fields into domains and summary", 
   assert.equal(result.profile.sharedProfileVersion, SHARED_PROFILE_VERSION);
   assert.deepEqual(result.profile.mainCharacterIds, ["honored_one", "vessel"]);
   assert.deepEqual(result.profile.domains.onboarding.mainCharacterIds, ["honored_one", "vessel"]);
+  assert.deepEqual(result.profile.domains.onboarding.raw.mainCharacterIds, ["honored_one", "honored_one", "vessel"]);
+  assert.deepEqual(result.profile.domains.onboarding.raw.mainCharacterLabels, ["Honored One", "Vessel"]);
+  assert.deepEqual(result.profile.domains.onboarding.raw.characterRoleIds, ["10", "20", "20"]);
   assert.deepEqual(result.profile.domains.onboarding.characterRoleIds, ["10", "20"]);
   assert.equal(result.profile.domains.onboarding.approvedKills, 3120);
   assert.equal(result.profile.domains.onboarding.killTier, 3);
@@ -38,6 +42,27 @@ test("ensureSharedProfile migrates onboarding fields into domains and summary", 
   assert.equal(result.profile.summary.onboarding.mainsCount, 2);
   assert.equal(result.profile.summary.elo.hasRating, false);
   assert.equal(result.profile.summary.tierlist.hasSubmission, false);
+});
+
+test("ensureSharedProfile keeps the first raw onboarding snapshot immutable across later syncs", () => {
+  const first = ensureSharedProfile({
+    userId: "100",
+    mainCharacterIds: ["honored_one", "honored_one", "vessel"],
+    mainCharacterLabels: ["Honored One", "Vessel"],
+    characterRoleIds: ["10", "20", "20"],
+  }, "100").profile;
+
+  first.mainCharacterIds = ["vessel"];
+  first.mainCharacterLabels = ["Vessel"];
+  first.characterRoleIds = ["99"];
+
+  const second = ensureSharedProfile(first, "100").profile;
+
+  assert.deepEqual(second.mainCharacterIds, ["vessel"]);
+  assert.deepEqual(second.characterRoleIds, ["99"]);
+  assert.deepEqual(second.domains.onboarding.raw.mainCharacterIds, ["honored_one", "honored_one", "vessel"]);
+  assert.deepEqual(second.domains.onboarding.raw.mainCharacterLabels, ["Honored One", "Vessel"]);
+  assert.deepEqual(second.domains.onboarding.raw.characterRoleIds, ["10", "20", "20"]);
 });
 
 test("syncSharedProfiles backfills missing shared state and keeps onboarding snapshot synced", () => {
@@ -69,6 +94,47 @@ test("syncSharedProfiles backfills missing shared state and keeps onboarding sna
   assert.equal(db.profiles["100"].domains.onboarding.approvedKills, 7000);
   assert.equal(db.profiles["100"].domains.onboarding.killTier, 4);
   assert.equal(db.profiles["100"].summary.onboarding.mainsCount, 2);
+});
+
+test("deriveProfileMainView recalculates labels and role ids from current character entries", () => {
+  const derived = deriveProfileMainView({
+    mainCharacterIds: ["honored_one", "vessel"],
+    mainCharacterLabels: ["Old Gojo", "Old Yuji"],
+    characterRoleIds: ["stale-gojo", "stale-yuji"],
+    domains: {
+      onboarding: {
+        raw: {
+          mainCharacterLabels: ["Raw Gojo", "Raw Yuji"],
+        },
+      },
+    },
+  }, [
+    { id: "honored_one", label: "Gojo Satoru", roleId: "role-gojo" },
+    { id: "vessel", label: "Yuji Itadori", roleId: "role-yuji" },
+  ]);
+
+  assert.deepEqual(derived.mainCharacterIds, ["honored_one", "vessel"]);
+  assert.deepEqual(derived.mainCharacterLabels, ["Gojo Satoru", "Yuji Itadori"]);
+  assert.deepEqual(derived.characterRoleIds, ["role-gojo", "role-yuji"]);
+});
+
+test("deriveProfileMainView keeps label fallback for missing entries but drops stale role ids", () => {
+  const derived = deriveProfileMainView({
+    mainCharacterIds: ["archived_main"],
+    mainCharacterLabels: ["Archived Main"],
+    characterRoleIds: ["stale-role"],
+    domains: {
+      onboarding: {
+        raw: {
+          mainCharacterLabels: ["Raw Archived Main"],
+        },
+      },
+    },
+  }, []);
+
+  assert.deepEqual(derived.mainCharacterIds, ["archived_main"]);
+  assert.deepEqual(derived.mainCharacterLabels, ["Archived Main"]);
+  assert.deepEqual(derived.characterRoleIds, []);
 });
 
 test("normalizeIntegrationState creates dormant elo and tierlist scaffolding", () => {

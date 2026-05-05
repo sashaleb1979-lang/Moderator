@@ -4,6 +4,64 @@ const fs = require("fs");
 const path = require("path");
 const https = require("https");
 const http = require("http");
+const { createDbStore, loadJsonFile } = require("./src/db/store");
+const {
+  getChannelValue: getSotChannelValue,
+  getKillTierRole: getSotKillTierRole,
+  getLegacyEloTierRole: getSotLegacyEloTierRole,
+  getRole: getSotRole,
+  listCharacters: listSotCharacters,
+  getIntegration: getSotIntegration,
+  getInfluence: getSotInfluence,
+  getLegacyInfluenceConfig: getSotLegacyInfluenceConfig,
+  getPanel: getSotPanel,
+  getPresentation: getSotPresentation,
+} = require("./src/sot");
+const {
+  createGuildSnapshot: createSotGuildSnapshot,
+  diagnoseChannels: diagnoseSotChannels,
+  diagnoseIntegrations: diagnoseSotIntegrations,
+  diagnosePanels: diagnoseSotPanels,
+  diagnoseRoles: diagnoseSotRoles,
+} = require("./src/sot/diagnostics");
+const {
+  buildConfiguredCharacterCatalogView,
+  clearNativeCharacterRecord,
+  writeNativeCharacterRecord,
+} = require("./src/sot/native-characters");
+const {
+  clearNativeRoleRecord,
+  normalizeRoleSlot: normalizeNativeRoleSlot,
+  writeNativeRoleRecord,
+} = require("./src/sot/native-roles");
+const {
+  clearNativeIntegrationSourcePath,
+  writeNativeIntegrationRoleGrantEnabled,
+  writeNativeIntegrationSourcePath,
+} = require("./src/sot/native-integrations");
+const {
+  clearNativePanelRecord,
+  normalizePanelSlot: normalizeNativePanelSlot,
+  writeNativePanelRecord,
+} = require("./src/sot/native-panels");
+const { getCharacterAliasNames } = require("./src/sot/character-aliases");
+const { compareSotVsLegacy, summarizeCompareMismatches } = require("./src/sot/legacy-bridge/compare");
+const {
+  handleSotReportButtonInteraction,
+  handleSotReportModalOpenInteraction,
+  handleSotReportModalSubmitInteraction,
+} = require("./src/sot/report-operator");
+const { getSotReportIntegrationSnapshots } = require("./src/sot/report-integrations");
+const { resolveAllCharacterRecords } = require("./src/sot/resolver/characters");
+const { runSotStartupAlerts, scheduleSotAlertTicks } = require("./src/sot/runtime-alerts");
+const { runClientReadyCore, scheduleClientReadyIntervals } = require("./src/runtime/client-ready-core");
+const {
+  syncLegacyGraphicTierlistBoardSnapshot,
+  syncLegacyPanelSnapshot,
+  syncLegacyTextTierlistBoardSnapshot,
+} = require("./src/sot/legacy-bridge/panels");
+const { syncLegacyCharacterWrites, syncLegacyChannelWrites, syncLegacyInfluenceWrites, syncLegacyIntegrationWrites, syncLegacyPanelWrites, syncLegacyPresentationWrites, syncLegacyRoleWrites } = require("./src/sot/legacy-bridge/write");
+const { syncSotShadowState: syncShadowSotState } = require("./src/sot/loader");
 const {
   renderGraphicTierlistPng,
   setAvatarCacheDir,
@@ -65,13 +123,24 @@ const {
   createPresentationDefaults,
   ensurePresentationConfig,
   getGraphicTierlistBoardState,
+  getNonGgsPanelState: readNonGgsPanelState,
   getTextTierlistBoardState,
   getTierLabel,
   getWelcomePanelState: readWelcomePanelState,
   resolvePresentation,
 } = require("./src/onboard/presentation");
 const {
+  applyChannelLink: applyManagedChannelLink,
+  applyChannelOverrideBatch: applyManagedChannelOverrideBatch,
+  ChannelOverrideBatchError,
+  clearChannelLink: clearManagedChannelLink,
+  getChangedChannelOverrides: getManagedChannelOverrideChanges,
+  getChannelSlotLabel: getManagedChannelSlotLabel,
+  normalizeChannelSlot: normalizeManagedChannelSlot,
+} = require("./src/onboard/channel-owner");
+const {
   createDefaultIntegrationState,
+  deriveProfileMainView,
   ensureSharedProfile,
   normalizeIntegrationState,
   syncSharedProfiles,
@@ -79,7 +148,6 @@ const {
 const {
   buildHistoricalManagedCharacterRoleIds,
   buildManagedCharacterRoleRecoveryPlan,
-  buildManagedCharacterEntries,
   normalizeManagedCharacterCatalog,
 } = require("./src/integrations/character-role-catalog");
 const {
@@ -100,6 +168,7 @@ const {
   getLegacyTierlistFontDebugInfo,
   getLegacyTierlistImageConfig,
   getLegacyTierlistUserTierCounts,
+  listLegacyTierlistCustomCharacterIds,
   loadLegacyTierlistState,
   renderLegacyTierlistFromBuckets,
   renderLegacyTierlistGlobalPng,
@@ -115,6 +184,11 @@ const {
   resolveLegacyCharacterMatch,
   resolveLegacyMainIdsFromRuntimeEntries,
 } = require("./src/integrations/tierlist-character-sync");
+const {
+  describeRoleSyncFailures,
+  RoleSyncError,
+  syncMemberCharacterRoles,
+} = require("./src/onboard/character-role-sync");
 const {
   attachLegacyEloReviewRecord,
   LEGACY_ELO_PENDING_EXPIRE_HOURS,
@@ -184,8 +258,6 @@ try {
         assetDir: path.resolve(String(assetDir || ".")),
         skillful: [],
         outliers: [],
-        missingSkillfulSlots: [1, 2, 3, 4, 5],
-        missingOutlierSlots: [6, 7, 8, 9, 10],
       };
     },
     renderCaptchaPng() {
@@ -193,27 +265,6 @@ try {
     },
   };
 }
-const {
-  createCaptchaChallenge,
-  loadCaptchaCatalog,
-  renderCaptchaPng,
-} = nonGgsCaptchaModule;
-
-const {
-  Client,
-  GatewayIntentBits,
-  PermissionsBitField,
-  EmbedBuilder,
-  AttachmentBuilder,
-  ActionRowBuilder,
-  ButtonBuilder,
-  ButtonStyle,
-  StringSelectMenuBuilder,
-  ModalBuilder,
-  TextInputBuilder,
-  TextInputStyle,
-  MessageFlags,
-} = require("discord.js");
 
 const PROJECT_ROOT = __dirname;
 
@@ -254,6 +305,10 @@ const NON_GGS_CAPTCHA_STAGES = 2;
 const LEGACY_TIERLIST_SUMMARY_REFRESH_MS = 20 * 60 * 1000;
 const LEGACY_TIERLIST_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 const LEGACY_TIERLIST_MAIN_SELECT_PAGE_SIZE = 25;
+const SOT_CHARACTER_ALERT_STALE_HOURS = 24;
+const SOT_CHARACTER_ALERT_PERIODIC_MS = 60 * 60 * 1000;
+const SOT_CHARACTER_ALERT_REPEAT_MS = 6 * 60 * 60 * 1000;
+const SOT_DRIFT_ALERT_REPEAT_MS = 6 * 60 * 60 * 1000;
 const LEGACY_TIERLIST_ROLE_INFLUENCE = {
   1: 2.0,
   2: 2.5,
@@ -291,27 +346,6 @@ const LEGACY_TIERLIST_PANEL_BUTTON_IDS = new Set([
   "panel_confirm_wipe_votes_all",
   "panel_cancel_wipe_votes_all",
 ]);
-const MANAGED_CHARACTER_ROLE_NAME_ALIASES = {
-  honored_one: ["Годжо"],
-  vessel: ["Юджи"],
-  restless_gambler: ["Хакари"],
-  ten_shadows: ["Мегуми"],
-  perfection: ["Махито"],
-  blood_manipulator: ["Чосо"],
-  switcher: ["Тодо"],
-  defense_attorney: ["Хигурума", "Хигурама"],
-  cursed_partners: ["Юта", "Юта Оккоцу"],
-  head_of_the_hei: ["Наоя", "Наобито"],
-  puppet_master: ["Мехамару"],
-  salaryman: ["Нанами"],
-  locust_guy: ["Локуст Гай", "Локуст"],
-  star_rage: ["Юки"],
-  aspiring_mangaka: ["Чарльз", "Шарль"],
-  lucky_coward: ["Харута"],
-  disaster_plants: ["Ханами"],
-  crow_charmer: ["Мэй Мэй", "Мей Мей", "Мэй-Мэй", "Меи Меи"],
-  ryu: ["Рю", "Рю Ишигори"],
-};
 const NON_CHARACTER_ROLE_NAME_PATTERNS = [
   /^\d+\s*-\s*\d+к$/i,
   /^\d+к\+$/i,
@@ -329,25 +363,15 @@ const rolePanelDrafts = new Map();
 const roleCleanupSelections = new Map();
 const roleRecordSelections = new Map();
 const rolePanelPickers = new Map();
+let lastSotCharacterAlertSignature = "";
+let lastSotCharacterAlertAt = 0;
+let lastSotDriftAlertSignature = "";
+let lastSotDriftAlertAt = 0;
 
 function envText(name, fallback = "") {
   const raw = process.env[name];
   if (raw === undefined || raw === null) return String(fallback || "").trim();
   return String(raw).trim();
-}
-
-function loadJsonFile(filePath, fallbackValue) {
-  try {
-    if (!fs.existsSync(filePath)) return fallbackValue;
-    return JSON.parse(fs.readFileSync(filePath, "utf8"));
-  } catch (error) {
-    throw new Error(`Не удалось прочитать JSON из ${filePath}: ${error.message}`);
-  }
-}
-
-function saveJsonFile(filePath, value) {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, JSON.stringify(value, null, 2), "utf8");
 }
 
 function isPlaceholder(value) {
@@ -382,7 +406,7 @@ function buildRuntimeConfig(fileConfig = {}) {
       moderatorRoleId: envText("MODERATOR_ROLE_ID", fileConfig?.roles?.moderatorRoleId || ""),
       accessRoleId: envText("ACCESS_ROLE_ID", fileConfig?.roles?.accessRoleId || ""),
       wartimeAccessRoleId: envText("WARTIME_ACCESS_ROLE_ID", fileConfig?.roles?.wartimeAccessRoleId || ""),
-      nonGgsAccessRoleId: envText(
+      nonJjsAccessRoleId: envText(
         "NON_JJS_ACCESS_ROLE_ID",
         envText("NON_GGS_ACCESS_ROLE_ID", fileConfig?.roles?.nonJjsAccessRoleId || fileConfig?.roles?.nonGgsAccessRoleId || "")
       ),
@@ -476,37 +500,6 @@ function normalizeCharacterCatalog(value, fallback = []) {
   return out;
 }
 
-function mergeCharacterCatalog(primary, fallback = []) {
-  const merged = new Map();
-
-  for (const entry of normalizeCharacterCatalog(fallback)) {
-    merged.set(entry.id, { ...entry });
-  }
-
-  for (const entry of normalizeCharacterCatalog(primary)) {
-    const previous = merged.get(entry.id) || {};
-    merged.set(entry.id, {
-      id: entry.id,
-      label: entry.label || previous.label || entry.id,
-      roleId: entry.roleId || previous.roleId || "",
-    });
-  }
-
-  return [...merged.values()];
-}
-
-function sameCharacterCatalog(left, right) {
-  const a = normalizeCharacterCatalog(left);
-  const b = normalizeCharacterCatalog(right);
-  if (a.length !== b.length) return false;
-  for (let index = 0; index < a.length; index += 1) {
-    if (a[index].id !== b[index].id) return false;
-    if (a[index].label !== b[index].label) return false;
-    if (a[index].roleId !== b[index].roleId) return false;
-  }
-  return true;
-}
-
 function validateRuntimeConfig(config) {
   const errors = [];
 
@@ -553,110 +546,112 @@ const fileConfig = loadJsonFile(CONFIG_PATH, {});
 const appConfig = buildRuntimeConfig(fileConfig);
 validateRuntimeConfig(appConfig);
 
-function loadDb() {
-  const fallback = {
-    config: {
-      welcomePanel: {
-        channelId: appConfig.channels.welcomeChannelId,
-        messageId: "",
-      },
-      nonGgsPanel: {
-        channelId: appConfig.channels.welcomeChannelId,
-        messageId: "",
-      },
-      tierlistBoard: {
-        text: {
-          channelId: appConfig.channels.tierlistChannelId || "",
-          messageId: "",
+function buildSotLegacyOptions(currentDb) {
+  const liveTierlistState = getLiveLegacyTierlistState(currentDb);
+  const legacyTierlistCustomCharacterIds = liveTierlistState.ok
+    ? listLegacyTierlistCustomCharacterIds(liveTierlistState)
+    : [];
+  return {
+    appConfig,
+    legacyTierlistCustomCharacterIds,
+    presentation: resolvePresentation(currentDb?.config || {}, fileConfig, { defaultGraphicTierColors: DEFAULT_GRAPHIC_TIER_COLORS }),
+    nonGgsPresentation: currentDb?.config?.presentation?.nonGgs || currentDb?.config?.nonJjsUi || currentDb?.config?.nonGgsUi || {},
+    influence: liveTierlistState.ok
+      ? buildLegacyTierlistInfluenceConfig(liveTierlistState.rawState)
+      : {
+          default: 1,
+          tiers: LEGACY_TIERLIST_ROLE_INFLUENCE,
         },
-        graphic: {
-          channelId: appConfig.channels.tierlistChannelId || "",
-          messageId: "",
-          lastUpdated: null,
-        },
-      },
-      generatedRoles: {
-        characters: {},
-        characterLabels: {},
-        tiers: {},
-      },
-      integrations: createDefaultIntegrationState(),
-      onboardMode: createOnboardModeState(),
-      characters: normalizeCharacterCatalog(appConfig.characters),
-    },
-    profiles: {},
-    submissions: {},
   };
+}
 
-  const db = loadJsonFile(DB_PATH, fallback);
-  db.config ||= {};
-  const migrated = ensurePresentationConfig(db.config, {
-    defaults: createPresentationDefaults(fileConfig, { defaultGraphicTierColors: DEFAULT_GRAPHIC_TIER_COLORS }),
-    defaultWelcomeChannelId: appConfig.channels.welcomeChannelId,
-    defaultTextTierlistChannelId: appConfig.channels.tierlistChannelId || "",
-    defaultGraphicTierColors: DEFAULT_GRAPHIC_TIER_COLORS,
+function syncSotShadowState(currentDb) {
+  return syncShadowSotState(currentDb, buildSotLegacyOptions(currentDb));
+}
+
+function syncSotCoreDualWrite(currentDb) {
+  const legacyOptions = buildSotLegacyOptions(currentDb);
+  const channelState = syncLegacyChannelWrites(currentDb, { appConfig: legacyOptions.appConfig });
+  const roleState = syncLegacyRoleWrites(currentDb, { appConfig: legacyOptions.appConfig });
+  const characterState = syncLegacyCharacterWrites(currentDb, {
+    appConfig: legacyOptions.appConfig,
+    excludedCharacterIds: legacyOptions.legacyTierlistCustomCharacterIds,
   });
-  db.profiles ||= {};
-  db.submissions ||= {};
-  db.cooldowns ||= {};
-  const roleGrantRegistry = normalizeRoleGrantRegistry(db.roleGrantMessages);
-  db.roleGrantMessages = roleGrantRegistry.registry;
-  db.config.notificationChannelId = String(db.config.notificationChannelId || "").trim();
-  db.config.reviewChannelId = String(db.config.reviewChannelId || "").trim();
-  const normalizedOnboardMode = createOnboardModeState(db.config.onboardMode);
-  const onboardModeChanged = JSON.stringify(normalizedOnboardMode) !== JSON.stringify(db.config.onboardMode || null);
-  db.config.onboardMode = normalizedOnboardMode;
-  const normalizedIntegrations = normalizeIntegrationState(db.config.integrations);
-  const integrationsChanged = normalizedIntegrations.mutated;
-  db.config.integrations = normalizedIntegrations.integrations;
-  const mergedCharacters = mergeCharacterCatalog(db.config.characters, appConfig.characters);
-  const charactersChanged = !sameCharacterCatalog(db.config.characters, mergedCharacters);
-  const comboGuideEditorRoleIds = normalizeComboGuideEditorRoleIds(db.comboGuide?.editorRoleIds);
-  const comboGuideEditorRoleIdsChanged = Boolean(db.comboGuide && typeof db.comboGuide === "object") && (
-    !Array.isArray(db.comboGuide.editorRoleIds)
-    || JSON.stringify(comboGuideEditorRoleIds) !== JSON.stringify(db.comboGuide.editorRoleIds)
-  );
-  if (db.comboGuide && typeof db.comboGuide === "object") {
-    db.comboGuide.editorRoleIds = comboGuideEditorRoleIds;
-  }
-  db.config.characters = mergedCharacters;
-  const dormantEloImport = importDormantEloSyncFromFile(db, {
-    sourcePath: db.config.integrations?.elo?.sourcePath,
-    baseDir: DATA_ROOT,
-    syncedAt: new Date().toISOString(),
+  const panelState = syncLegacyPanelWrites(currentDb);
+  const integrationState = syncLegacyIntegrationWrites(currentDb);
+  const presentationState = syncLegacyPresentationWrites(currentDb, legacyOptions);
+  const influenceState = syncLegacyInfluenceWrites(currentDb, legacyOptions);
+
+  return {
+    mutated: Boolean(channelState.mutated || roleState.mutated || characterState.mutated || panelState.mutated || integrationState.mutated || presentationState.mutated || influenceState.mutated),
+    writtenSlots: [
+      ...channelState.writtenSlots.map((slot) => `channels.${slot}`),
+      ...roleState.writtenSlots.map((slot) => `roles.${slot}`),
+      ...characterState.writtenSlots.map((slot) => `characters.${slot}`),
+      ...panelState.writtenSlots.map((slot) => `panels.${slot}`),
+      ...integrationState.writtenSlots.map((slot) => `integrations.${slot}`),
+      ...presentationState.writtenSlots.map((slot) => `presentation.${slot}`),
+      ...influenceState.writtenSlots.map((slot) => `influence.${slot}`),
+    ],
+    channelState,
+    characterState,
+    influenceState,
+    integrationState,
+    panelState,
+    presentationState,
+    roleState,
+  };
+}
+
+function logSotDrift(currentDb, reason = "save") {
+  const mismatches = compareSotVsLegacy({
+    db: currentDb,
+    ...buildSotLegacyOptions(currentDb),
   });
-  if (dormantEloImport.error) {
-    console.warn(`dormant ELO import skipped: ${dormantEloImport.error}`);
-  }
-  const dormantTierlistImport = importDormantTierlistSyncFromFile(db, {
-    sourcePath: db.config.integrations?.tierlist?.sourcePath,
-    baseDir: DATA_ROOT,
-    syncedAt: new Date().toISOString(),
-    characterCatalog: mergedCharacters.map((entry) => ({ id: entry.id, label: entry.label })),
-  });
-  if (dormantTierlistImport.error) {
-    console.warn(`dormant Tierlist import skipped: ${dormantTierlistImport.error}`);
-  }
-  const sharedProfiles = syncSharedProfiles(db);
-  db.__needsSaveAfterLoad = migrated.mutated
-    || charactersChanged
-    || roleGrantRegistry.mutated
-    || comboGuideEditorRoleIdsChanged
-    || onboardModeChanged
-    || integrationsChanged
-    || Boolean(dormantEloImport.mutated)
-    || Boolean(dormantTierlistImport.mutated)
-    || sharedProfiles.mutated;
-  return db;
+  if (!mismatches.length) return mismatches;
+
+  const summary = summarizeCompareMismatches(mismatches, { limit: 5 });
+  const domainSummary = Object.entries(summary.countsByDomain)
+    .map(([domain, count]) => `${domain}=${count}`)
+    .join(" ");
+  const preview = summary.preview.join(", ");
+  console.warn(`[sot] drift after ${reason}: total=${summary.total} ${domainSummary}${preview ? ` ${preview}` : ""}`);
+  return mismatches;
+}
+
+const dbStore = createDbStore({
+  dbPath: DB_PATH,
+  dataRoot: DATA_ROOT,
+  appConfig,
+  fileConfig,
+  defaultGraphicTierColors: DEFAULT_GRAPHIC_TIER_COLORS,
+  normalizeCharacterCatalog,
+  createDefaultIntegrationState,
+  createOnboardModeState,
+  ensurePresentationConfig,
+  createPresentationDefaults,
+  normalizeRoleGrantRegistry,
+  normalizeIntegrationState,
+  normalizeComboGuideEditorRoleIds,
+  importDormantEloSyncFromFile,
+  importDormantTierlistSyncFromFile,
+  syncSharedProfiles,
+  dualWriteSotState: syncSotCoreDualWrite,
+  syncSotState: syncSotShadowState,
+});
+
+function loadDb() {
+  return dbStore.load();
 }
 
 const db = loadDb();
 
+logSotDrift(db, "startup-load");
+
 function saveDb() {
-  delete db.__needsSaveAfterLoad;
-  syncSharedProfiles(db);
-  db.config.integrations = normalizeIntegrationState(db.config.integrations).integrations;
-  saveJsonFile(DB_PATH, db);
+  const result = dbStore.save(db);
+  logSotDrift(db, "save");
+  return result;
 }
 
 if (db.__needsSaveAfterLoad) saveDb();
@@ -700,7 +695,11 @@ function killTierFor(kills) {
 }
 
 function getPresentation() {
-  return resolvePresentation(db.config, fileConfig, { defaultGraphicTierColors: DEFAULT_GRAPHIC_TIER_COLORS });
+  return {
+    welcome: getSotPresentation("welcome", { db, appConfig }),
+    tierlist: getSotPresentation("tierlist", { db, appConfig }),
+    nonGgs: getSotPresentation("nonGgs", { db, appConfig }),
+  };
 }
 
 function formatTierLabel(tier) {
@@ -734,25 +733,67 @@ function getGeneratedRoleState() {
   return db.config.generatedRoles;
 }
 
-function getHistoricalManagedCharacterRoleIds() {
+function getDiagnosticHistoricalManagedCharacterRoleIds(managedCharacters = getConfiguredManagedCharacterCatalog()) {
   return buildHistoricalManagedCharacterRoleIds({
-    managedCharacters: getManagedCharacterCatalog(),
+    managedCharacters,
     profiles: db.profiles,
     submissions: db.submissions,
   });
 }
 
-function getManagedCharacterCatalog() {
+function getLegacyReportManagedCharacterCatalog() {
   const generatedRoles = getGeneratedRoleState();
-  return normalizeManagedCharacterCatalog(appConfig.characters).map((entry) => ({
-    ...entry,
-    label: String(generatedRoles.characterLabels?.[entry.id] || entry.label || "").trim() || entry.label,
-  }));
+
+  return getConfiguredManagedCharacterCatalog().map((entry) => {
+    const aliasNames = getCharacterAliasNames(entry.id);
+    return {
+      ...entry,
+      label: String(generatedRoles.characterLabels?.[entry.id] || entry.label || "").trim() || entry.label,
+      evidence: aliasNames.length ? { aliasNames } : undefined,
+    };
+  });
+}
+
+function getManagedCharacterCatalog() {
+  const excludedCharacterIds = getLegacyTierlistCustomCharacterIds(db);
+  const resolvedRecords = listSotCharacters({
+    db,
+    appConfig,
+    excludedCharacterIds,
+    includeUnresolved: true,
+  });
+
+  return buildConfiguredCharacterCatalogView({
+    configuredCharacters: appConfig.characters,
+    resolvedRecords,
+    excludedCharacterIds,
+  });
+}
+
+function getConfiguredManagedCharacterCatalog() {
+  return normalizeManagedCharacterCatalog(appConfig.characters);
+}
+
+function getManagedCharacterRoleIdMap(entries = getManagedCharacterCatalog()) {
+  return Object.fromEntries(
+    (Array.isArray(entries) ? entries : [])
+      .map((entry) => [String(entry?.id || "").trim(), String(entry?.roleId || "").trim()])
+      .filter(([characterId, roleId]) => characterId && roleId)
+  );
+}
+
+function getLegacyTierlistCustomCharacterIds(currentDb = db) {
+  const liveState = getLiveLegacyTierlistState(currentDb);
+  if (!liveState.ok) return [];
+  return listLegacyTierlistCustomCharacterIds(liveState);
 }
 
 function getCharacterCatalog() {
-  db.config.characters = mergeCharacterCatalog(db.config.characters, appConfig.characters);
-  return db.config.characters;
+  return getManagedCharacterCatalog().map((entry) => ({
+    id: String(entry?.id || "").trim(),
+    label: String(entry?.label || entry?.id || "").trim(),
+    roleId: String(entry?.roleId || "").trim(),
+  }));
 }
 
 function getLegacyTierlistBaseCharacterCatalog() {
@@ -762,40 +803,27 @@ function getLegacyTierlistBaseCharacterCatalog() {
   }));
 }
 
-function getNotificationChannelId() {
-  const configured = String(db.config.notificationChannelId || "").trim();
-  return configured || String(appConfig.channels.logChannelId || "").trim();
-}
-
-function getWelcomeChannelId() {
-  const channelId = String(getWelcomePanelState().channelId || appConfig.channels.welcomeChannelId || "").trim();
-  return isPlaceholder(channelId) ? "" : channelId;
-}
-
-function getReviewChannelId() {
-  const configured = String(db.config.reviewChannelId || "").trim();
-  const fallback = String(appConfig.channels.reviewChannelId || "").trim();
-  const channelId = configured || fallback;
-  return isPlaceholder(channelId) ? "" : channelId;
-}
-
-function getTextTierlistChannelId() {
-  const channelId = String(getTextTierlistBoardState(db.config, appConfig.channels.tierlistChannelId || "").channelId || appConfig.channels.tierlistChannelId || "").trim();
+function getResolvedChannelId(slot) {
+  const channelId = getSotChannelValue(slot, { db, appConfig });
   return isPlaceholder(channelId) ? "" : channelId;
 }
 
 function getTextTierlistManagedMessageIds(state = null) {
-  const textState = state || getTextTierlistBoardState(db.config, appConfig.channels.tierlistChannelId || "");
+  const textState = state || getResolvedTextTierlistBoardSnapshot();
+  const hasSplitLayout = Boolean(
+    String(textState?.messageIdSummary || "").trim()
+    || String(textState?.messageIdPages || "").trim()
+  );
   return [...new Set([
     String(textState?.messageIdSummary || "").trim(),
     String(textState?.messageIdPages || "").trim(),
-    String(textState?.messageId || "").trim(),
+    hasSplitLayout ? "" : String(textState?.messageId || "").trim(),
   ].filter(Boolean))];
 }
 
 function getTextTierlistSummaryMessageId(state = null) {
-  const textState = state || getTextTierlistBoardState(db.config, appConfig.channels.tierlistChannelId || "");
-  return String(textState?.messageIdSummary || textState?.messageId || textState?.messageIdPages || "").trim();
+  const textState = state || getResolvedTextTierlistBoardSnapshot();
+  return String(textState?.messageIdSummary || textState?.messageIdPages || textState?.messageId || "").trim();
 }
 
 function clearTextTierlistBoardMessageIds(state) {
@@ -809,21 +837,109 @@ function hasTextTierlistManagedMessages(state = null) {
   return getTextTierlistManagedMessageIds(state).length > 0;
 }
 
-function getGraphicTierlistChannelId() {
-  const channelId = String(getGraphicTierlistBoardState(db.config, appConfig.channels.tierlistChannelId || "").channelId || appConfig.channels.tierlistChannelId || "").trim();
-  return isPlaceholder(channelId) ? "" : channelId;
+function getResolvedPanelRecord(slot) {
+  return getSotPanel(slot, { db, appConfig }) || null;
+}
+
+function getPanelRecordValue(record, messageSlot = "main") {
+  return String(record?.messageIds?.[messageSlot]?.value || "").trim();
+}
+
+function getResolvedWelcomePanelSnapshot() {
+  const record = getResolvedPanelRecord("welcome");
+  return {
+    channelId: String(record?.channelId?.value || "").trim(),
+    messageId: getPanelRecordValue(record),
+    lastUpdated: record?.lastUpdated || null,
+  };
+}
+
+function getResolvedNonGgsPanelSnapshot() {
+  const record = getResolvedPanelRecord("nonGgs");
+  return {
+    channelId: String(record?.channelId?.value || "").trim(),
+    messageId: getPanelRecordValue(record),
+    lastUpdated: record?.lastUpdated || null,
+  };
+}
+
+function getResolvedEloSubmitPanelSnapshot() {
+  const record = getResolvedPanelRecord("eloSubmit");
+  return {
+    channelId: String(record?.channelId?.value || "").trim(),
+    messageId: getPanelRecordValue(record),
+    lastUpdated: record?.lastUpdated || null,
+  };
+}
+
+function getResolvedEloGraphicPanelSnapshot() {
+  const record = getResolvedPanelRecord("eloGraphic");
+  return {
+    channelId: String(record?.channelId?.value || "").trim(),
+    messageId: getPanelRecordValue(record),
+    lastUpdated: record?.lastUpdated || null,
+  };
+}
+
+function getResolvedLegacyTierlistDashboardSnapshot() {
+  const record = getResolvedPanelRecord("tierlistDashboard");
+  return {
+    channelId: String(record?.channelId?.value || "").trim(),
+    messageId: getPanelRecordValue(record),
+    lastUpdated: record?.lastUpdated || null,
+  };
+}
+
+function getResolvedLegacyTierlistSummarySnapshot() {
+  const record = getResolvedPanelRecord("tierlistSummary");
+  return {
+    channelId: String(record?.channelId?.value || "").trim(),
+    messageId: getPanelRecordValue(record),
+    lastUpdated: record?.lastUpdated || null,
+  };
+}
+
+function getResolvedTextTierlistBoardSnapshot() {
+  const record = getResolvedPanelRecord("tierlistText");
+  const mainMessageId = getPanelRecordValue(record, "main");
+  const summaryMessageId = getPanelRecordValue(record, "summary");
+  const pagesMessageId = getPanelRecordValue(record, "pages");
+  const hasSplitLayout = Boolean(summaryMessageId || pagesMessageId);
+  return {
+    channelId: String(record?.channelId?.value || "").trim(),
+    messageId: hasSplitLayout ? "" : mainMessageId,
+    messageIdSummary: summaryMessageId,
+    messageIdPages: pagesMessageId,
+    lastUpdated: record?.lastUpdated || null,
+  };
+}
+
+function getResolvedGraphicTierlistBoardSnapshot() {
+  const record = getResolvedPanelRecord("tierlistGraphic");
+  return {
+    channelId: String(record?.channelId?.value || "").trim(),
+    messageId: getPanelRecordValue(record),
+    lastUpdated: record?.lastUpdated || null,
+  };
+}
+
+function getResolvedIntegrationRecord(slot, currentDb = db) {
+  return getSotIntegration(slot, { db: currentDb, appConfig }) || {};
+}
+
+function getResolvedIntegrationSourcePath(slot, currentDb = db) {
+  return String(getResolvedIntegrationRecord(slot, currentDb).sourcePath || "").trim();
 }
 
 function getNonJjsUiConfig() {
-  db.config.nonJjsUi ||= {};
+  const nonJjsPresentation = getPresentation().nonGgs || {};
   return {
-    title: String(db.config.nonJjsUi.title || appConfig.ui.nonGgsTitle || "Я не играю в JJS").trim(),
+    title: String(nonJjsPresentation.title || "Я не играю в JJS").trim(),
     description: String(
-      db.config.nonJjsUi.description ||
-      appConfig.ui.nonGgsDescription ||
+      nonJjsPresentation.description ||
       "Если ты не играешь в JJS, нажми кнопку ниже. Бот запустит 2 этапа капчи и после успешного прохождения выдаст отдельную роль доступа."
     ).trim(),
-    buttonLabel: String(db.config.nonJjsUi.buttonLabel || appConfig.ui.nonGgsButtonLabel || "Я не играю в JJS").trim(),
+    buttonLabel: String(nonJjsPresentation.buttonLabel || "Я не играю в JJS").trim(),
   };
 }
 
@@ -888,7 +1004,7 @@ function setSubmitCooldown(userId) {
 }
 
 function buildMyCardEmbed(userId) {
-  const profile = db.profiles?.[userId];
+  const profile = db.profiles?.[userId] ? getProfile(userId) : null;
   const pending = getPendingSubmissionForUser(userId);
   const displayName = getProfileDisplayName(userId);
 
@@ -926,8 +1042,9 @@ function getApprovedTierlistEntries(options = {}) {
   const characterById = new Map(characterEntries.map((entry) => [entry.id, entry]));
   const characterByLabel = new Map(characterEntries.map((entry) => [String(entry.label).toLowerCase(), entry]));
   const buildFallbackMains = (profile) => {
-    const ids = Array.isArray(profile?.mainCharacterIds) ? profile.mainCharacterIds : [];
-    const labels = Array.isArray(profile?.mainCharacterLabels) ? profile.mainCharacterLabels : [];
+    const derivedProfileMains = deriveProfileMainView(profile, characterEntries);
+    const ids = derivedProfileMains.mainCharacterIds;
+    const labels = derivedProfileMains.mainCharacterLabels;
     const out = [];
     const seen = new Set();
     for (const rawId of ids) {
@@ -1049,15 +1166,6 @@ async function getLiveCharacterStatsContext(client, options = {}) {
     return liveCharacterStatsContextCache.promise;
   }
   const promise = (async () => {
-    const characterEntries = getCharacterEntries().filter((entry) => String(entry.roleId || "").trim());
-    if (!characterEntries.length) {
-      return {
-        liveMainsByUserId: new Map(),
-        trackedMemberStats: getTrackedMemberStats([]),
-        characterStats: [],
-      };
-    }
-
     const guild = await getGuild(client);
     if (!guild) {
       throw new Error("Не удалось получить сервер для статистики ролей персонажей.");
@@ -1066,6 +1174,15 @@ async function getLiveCharacterStatsContext(client, options = {}) {
     // Use cache first; only force-fetch if cache looks empty (cold start).
     if (guild.members.cache.size < 2) {
       try { await guild.members.fetch(); } catch (error) { console.warn("guild.members.fetch failed:", error?.message || error); }
+    }
+
+    const characterEntries = getCharacterEntries().filter((entry) => isLiveCharacterEntry(entry));
+    if (!characterEntries.length) {
+      return {
+        liveMainsByUserId: new Map(),
+        trackedMemberStats: getTrackedMemberStats([]),
+        characterStats: [],
+      };
     }
 
     const characterStatsInputById = new Map(
@@ -1190,6 +1307,9 @@ async function cleanupOrphanCharacterRoles(client) {
   void client;
   for (const orphanId of orphanIds) {
     delete generated.characters[orphanId];
+    if (generated.characterLabels?.[orphanId]) {
+      delete generated.characterLabels[orphanId];
+    }
   }
   saveDb();
   invalidateLiveCharacterStatsContext();
@@ -1493,7 +1613,7 @@ function buildCharactersRankingEmbed(entries, liveContext) {
       .filter((entry) => String(entry.roleId || "").trim())
       .map((entry) => [String(entry.roleId || "").trim(), entry])
   );
-  const clusterByLegacyId = new Map();
+  let clusterByLegacyId = new Map();
   let clusterRanking = [];
   let legacyCharacterIndex = null;
   let clusterStatusNote = "";
@@ -1813,7 +1933,7 @@ async function buildGraphicTierlistBoardPayload(client) {
   ];
 
   try {
-    const textBoard = getTextTierlistBoardState(db.config, appConfig.channels.tierlistChannelId || "");
+    const textBoard = getResolvedTextTierlistBoardSnapshot();
     const textChannelId = String(textBoard?.channelId || "").trim();
     const textMessageId = getTextTierlistSummaryMessageId(textBoard);
     if (textChannelId && textMessageId && GUILD_ID) {
@@ -1907,7 +2027,7 @@ function buildGraphicPanelPayload(statusText = "", includeFlags = true) {
 }
 
 function buildGraphicStatusLines() {
-  const graphicBoard = getGraphicTierlistBoardState(db.config, appConfig.channels.tierlistChannelId || "");
+  const graphicBoard = getResolvedGraphicTierlistBoardSnapshot();
   const cfg = getGraphicImageConfig();
   const presentation = getPresentation();
   const selectedTier = Number(presentation.tierlist.graphic.panel.selectedTier) || 5;
@@ -2033,12 +2153,49 @@ async function downloadToBuffer(url, timeoutMs = 15000) {
   });
 }
 
+function getCachedVerifiedCharacterRoleIds() {
+  const roleCache = guildCache?.roles?.cache;
+  if (!roleCache || typeof roleCache.keys !== "function") return null;
+
+  return new Set([...roleCache.keys()].map((roleId) => String(roleId || "").trim()).filter(Boolean));
+}
+
+function hasCachedCharacterRoleSnapshot() {
+  const verifiedRoleIds = getCachedVerifiedCharacterRoleIds();
+  return verifiedRoleIds instanceof Set && verifiedRoleIds.size > 0;
+}
+
+function mapSotCharacterRecordToEntry(record) {
+  return {
+    id: String(record?.id || "").trim(),
+    label: String(record?.label || record?.englishLabel || record?.id || "").trim(),
+    roleId: String(record?.roleId || record?.value || "").trim(),
+    source: String(record?.source || "").trim(),
+    verifiedAt: String(record?.verifiedAt || "").trim(),
+    evidence: record?.evidence,
+  };
+}
+
+function isLiveCharacterEntry(entry) {
+  const roleId = String(entry?.roleId || "").trim();
+  if (!roleId) return false;
+  if (!hasCachedCharacterRoleSnapshot()) return true;
+  return Boolean(String(entry?.verifiedAt || "").trim());
+}
+
 function getCharacterEntries() {
-  return buildManagedCharacterEntries({
-    managedCharacters: getManagedCharacterCatalog(),
-    historicalRoleIds: getHistoricalManagedCharacterRoleIds(),
-    generatedRoleIds: getGeneratedRoleState().characters,
-  });
+  const verifiedRoleIds = getCachedVerifiedCharacterRoleIds();
+  const verifiedSnapshot = verifiedRoleIds instanceof Set && verifiedRoleIds.size > 0 ? verifiedRoleIds : null;
+  const verifiedAt = verifiedSnapshot ? new Date().toISOString() : undefined;
+
+  return listSotCharacters({
+    db,
+    appConfig,
+    excludedCharacterIds: getLegacyTierlistCustomCharacterIds(db),
+    includeUnresolved: true,
+    verifiedRoleIds: verifiedSnapshot || undefined,
+    verifiedAt,
+  }).map(mapSotCharacterRecordToEntry);
 }
 
 function getCharacterPickerEntries() {
@@ -2198,12 +2355,12 @@ async function completeMainSelection(interaction, selectedEntries, options = {})
   }
 
   let resolvedEntries = getSelectedCharacterEntries(selectedIds);
-  if (resolvedEntries.some((entry) => !String(entry.roleId || "").trim())) {
+  if (resolvedEntries.some((entry) => !isLiveCharacterEntry(entry))) {
     await ensureManagedRoles(client).catch(() => null);
     resolvedEntries = getSelectedCharacterEntries(selectedIds);
   }
 
-  const unresolvedEntries = resolvedEntries.filter((entry) => !String(entry.roleId || "").trim());
+  const unresolvedEntries = resolvedEntries.filter((entry) => !isLiveCharacterEntry(entry));
   if (unresolvedEntries.length) {
     await respondToOnboardError(
       interaction,
@@ -2212,13 +2369,31 @@ async function completeMainSelection(interaction, selectedEntries, options = {})
     return;
   }
 
-  const appliedEntries = await applyMainSelection(
-    client,
-    member,
-    interaction.user,
-    selectedIds,
-    isQuickSelection ? "quick main selection" : "new main character selection"
-  );
+  let appliedEntries;
+  try {
+    appliedEntries = await applyMainSelection(
+      client,
+      member,
+      interaction.user,
+      selectedIds,
+      isQuickSelection ? "quick main selection" : "new main character selection"
+    );
+  } catch (error) {
+    if (error instanceof RoleSyncError) {
+      console.warn(`[character-role-sync] failed for ${interaction.user.id}: ${describeRoleSyncFailures(error.failures)}`);
+      const failedRoleMentions = [...new Set((error.failures || [])
+        .map((failure) => String(failure?.roleId || "").trim())
+        .filter(Boolean))]
+        .map((roleId) => formatRoleMention(roleId));
+      const failedRoleText = failedRoleMentions.length ? ` (${failedRoleMentions.join(", ")})` : "";
+      await respondToOnboardError(
+        interaction,
+        `Не удалось синхронизировать роли мейнов${failedRoleText}. Попроси модератора проверить права бота и нажать «Синк ролей».`
+      );
+      return;
+    }
+    throw error;
+  }
 
   if (isQuickSelection) {
     const activeSubmitSession = getSubmitSession(interaction.user.id);
@@ -2231,7 +2406,7 @@ async function completeMainSelection(interaction, selectedEntries, options = {})
     }
 
     const syncedPending = await syncPendingSubmissionMainsForUser(client, interaction.user.id, appliedEntries);
-    const welcomeChannelId = getWelcomeChannelId();
+    const welcomeChannelId = getResolvedChannelId("welcome");
     const uploadTarget = welcomeChannelId ? `<#${welcomeChannelId}>` : "welcome-канал";
     clearMainsPickerSession(interaction.user.id);
     const content = activeSubmitSession?.mainCharacterIds?.length
@@ -2269,20 +2444,70 @@ function getCharacterById(characterId) {
 }
 
 function getCharacterRoleIds() {
-  return getCharacterEntries().map((entry) => entry.roleId).filter(Boolean);
+  return getCharacterEntries().filter((entry) => isLiveCharacterEntry(entry)).map((entry) => entry.roleId).filter(Boolean);
 }
 
 function getSelectedCharacterEntries(characterIds) {
   return characterIds.map((characterId) => getCharacterById(characterId)).filter(Boolean);
 }
 
+function getDerivedProfileMainFields(profile) {
+  return deriveProfileMainView(profile, getCharacterEntries());
+}
+
+function refreshDerivedProfileMainFields(profile) {
+  if (!profile || typeof profile !== "object") return profile;
+
+  const derived = getDerivedProfileMainFields(profile);
+  profile.mainCharacterIds = derived.mainCharacterIds;
+  profile.mainCharacterLabels = derived.mainCharacterLabels;
+  profile.characterRoleIds = derived.characterRoleIds;
+
+  if (profile.domains?.onboarding && typeof profile.domains.onboarding === "object") {
+    profile.domains.onboarding.mainCharacterIds = [...derived.mainCharacterIds];
+    profile.domains.onboarding.mainCharacterLabels = [...derived.mainCharacterLabels];
+    profile.domains.onboarding.characterRoleIds = [...derived.characterRoleIds];
+  }
+
+  return profile;
+}
+
 function getManagedCharacterRoleNameCandidates(entry) {
-  const characterId = String(entry?.id || "").trim();
+  const aliasNames = Array.isArray(entry?.evidence?.aliasNames) ? entry.evidence.aliasNames : [];
   return [...new Set([
     String(entry?.label || "").trim(),
-    ...((Array.isArray(MANAGED_CHARACTER_ROLE_NAME_ALIASES[characterId]) ? MANAGED_CHARACTER_ROLE_NAME_ALIASES[characterId] : [])
-      .map((value) => String(value || "").trim())),
+    ...aliasNames.map((value) => String(value || "").trim()),
   ].filter(Boolean))];
+}
+
+function buildNativeCharacterRecoveryEvidence(analysis) {
+  if (!analysis?.best && !analysis?.second) return undefined;
+
+  const candidates = [];
+  if (analysis.best?.roleId) {
+    candidates.push({
+      roleId: analysis.best.roleId,
+      roleName: analysis.best.roleName,
+      overlap: Number(analysis.best.overlap || 0),
+    });
+  }
+  if (analysis.second?.roleId) {
+    candidates.push({
+      roleId: analysis.second.roleId,
+      roleName: analysis.second.roleName,
+      overlap: Number(analysis.second.overlap || 0),
+    });
+  }
+
+  return {
+    overlap: Number(analysis.best?.overlap || 0),
+    coverage: Number(analysis.best?.coverage || 0),
+    roleShare: Number(analysis.best?.roleShare || 0),
+    holderCount: Number(analysis.best?.holderCount || 0),
+    exactName: Boolean(analysis.best?.exactName),
+    preferredMatch: Boolean(analysis.best?.preferredMatch),
+    candidates,
+  };
 }
 
 function isManagedCharacterRoleNameCandidate(roleName) {
@@ -2294,10 +2519,10 @@ function isManagedCharacterRoleNameCandidate(roleName) {
 function getManagedCharacterRecoveryExcludedRoleIds(guild) {
   return new Set([
     String(guild?.id || "").trim(),
-    String(appConfig.roles.moderatorRoleId || "").trim(),
+    getModeratorRoleId(),
     getNormalAccessRoleId(),
     getWartimeAccessRoleId(),
-    getNonGgsAccessRoleId(),
+    getNonJjsAccessRoleId(),
     ...getAllTierRoleIds(),
     ...getAllLegacyEloTierRoleIds(),
   ].filter(Boolean));
@@ -2373,24 +2598,27 @@ async function reconcileCharacterRolesFromGuild(guild) {
   await guild.roles.fetch().catch(() => null);
   try { await guild.members.fetch(); } catch { /* best-effort */ }
 
-  const generatedRoles = getGeneratedRoleState();
-  const historicalRoleIds = getHistoricalManagedCharacterRoleIds();
+  const managedCharacters = getManagedCharacterCatalog();
+  const configuredCharacterMap = new Map(getConfiguredManagedCharacterCatalog().map((entry) => [entry.id, entry]));
+  const currentRoleIds = getManagedCharacterRoleIdMap(managedCharacters);
   const recoveryPlan = buildManagedCharacterRoleRecoveryPlan({
-    managedCharacters: getManagedCharacterCatalog(),
+    managedCharacters,
     profiles: db.profiles,
     submissions: db.submissions,
     guildRoles: buildGuildCharacterRoleCandidates(guild),
-    historicalRoleIds,
-    generatedRoleIds: generatedRoles.characters,
+    generatedRoleIds: currentRoleIds,
   });
   let changed = false;
   let resolved = 0;
   let duplicateCandidates = 0;
 
-  for (const entry of getManagedCharacterCatalog()) {
+  for (const entry of managedCharacters) {
     const characterId = String(entry.id || "").trim();
     const roleNames = getManagedCharacterRoleNameCandidates(entry);
     const roleName = roleNames[0] || "";
+    const configuredRoleId = String(configuredCharacterMap.get(characterId)?.roleId || "").trim();
+    const currentRoleId = String(currentRoleIds[characterId] || "").trim();
+    const analysis = recoveryPlan.analysisByCharacterId?.[characterId] || null;
     if (!characterId || !roleName) continue;
 
     for (const candidateName of roleNames) {
@@ -2402,33 +2630,41 @@ async function reconcileCharacterRolesFromGuild(guild) {
       guild,
       roleNames,
       [
-        entry.roleId,
+        currentRoleId,
+        configuredRoleId,
         recoveryPlan.recoveredRoleIds[characterId],
-        historicalRoleIds[characterId],
-        generatedRoles.characters[characterId],
       ],
       { createIfMissing: false }
     );
     if (!role) {
-      if (generatedRoles.characters[characterId]) {
-        delete generatedRoles.characters[characterId];
-        changed = true;
-      }
-      if (generatedRoles.characterLabels[characterId]) {
-        delete generatedRoles.characterLabels[characterId];
-        changed = true;
-      }
+      const clearResult = clearNativeCharacterRecord(db, {
+        characterId,
+        label: entry.label,
+        englishLabel: configuredCharacterMap.get(characterId)?.label || entry.englishLabel || entry.label || characterId,
+        source: "default",
+        evidence: buildNativeCharacterRecoveryEvidence(analysis),
+      });
+      if (clearResult.mutated) changed = true;
       continue;
     }
 
-    if (generatedRoles.characters[characterId] !== role.id) {
-      generatedRoles.characters[characterId] = role.id;
-      changed = true;
-    }
-    if (generatedRoles.characterLabels[characterId] !== role.name) {
-      generatedRoles.characterLabels[characterId] = role.name;
-      changed = true;
-    }
+    const nextSource = configuredRoleId && role.id === configuredRoleId
+      ? "configured"
+      : String(recoveryPlan.recoveredRoleIds?.[characterId] || "").trim() === role.id
+        ? "recovered"
+        : currentRoleId && role.id === currentRoleId && String(entry.source || "").trim() && String(entry.source || "").trim() !== "default"
+          ? String(entry.source || "").trim()
+          : "discovered";
+    const writeResult = writeNativeCharacterRecord(db, {
+      characterId,
+      label: role.name,
+      englishLabel: configuredCharacterMap.get(characterId)?.label || entry.englishLabel || entry.label || characterId,
+      roleId: role.id,
+      source: nextSource,
+      verifiedAt: nowIso(),
+      evidence: nextSource === "recovered" ? buildNativeCharacterRecoveryEvidence(analysis) : undefined,
+    });
+    if (writeResult.mutated) changed = true;
     resolved += 1;
   }
 
@@ -2459,8 +2695,8 @@ async function ensureManagedRoles(client) {
     };
   }
 
-  const generatedRoles = getGeneratedRoleState();
-  const historicalRoleIds = getHistoricalManagedCharacterRoleIds();
+  const managedCharacters = getManagedCharacterCatalog();
+  const configuredCharacterMap = new Map(getConfiguredManagedCharacterCatalog().map((entry) => [entry.id, entry]));
   let createdCharacterRoles = 0;
   let createdTierRoles = 0;
   let changed = false;
@@ -2483,30 +2719,39 @@ async function ensureManagedRoles(client) {
     console.warn("reconcileCharacterRolesFromGuild failed:", error?.message || error);
   }
 
-  for (const entry of getManagedCharacterCatalog()) {
+  for (const entry of managedCharacters) {
     const characterId = String(entry.id || "").trim();
     const roleNames = getManagedCharacterRoleNameCandidates(entry);
     const roleName = roleNames[0] || "";
+    const configuredRoleId = String(configuredCharacterMap.get(characterId)?.roleId || "").trim();
+    const currentRoleId = String(entry.roleId || "").trim();
     if (!characterId || !roleName) continue;
 
     const role = await ensureRoleByName(
       guild,
       roleNames,
-      [entry.roleId, historicalRoleIds[characterId], generatedRoles.characters[characterId]],
+      [currentRoleId, configuredRoleId, reconcile.recoveredRoleIds[characterId]],
       { createIfMissing: false }
     );
     if (!role) continue;
 
-    if (generatedRoles.characters[characterId] !== role.id) {
-      generatedRoles.characters[characterId] = role.id;
-      changed = true;
-    }
-    if (generatedRoles.characterLabels[characterId] !== role.name) {
-      generatedRoles.characterLabels[characterId] = role.name;
-      changed = true;
-    }
+    const nextSource = configuredRoleId && role.id === configuredRoleId
+      ? "configured"
+      : currentRoleId && role.id === currentRoleId && String(entry.source || "").trim() && String(entry.source || "").trim() !== "default"
+        ? String(entry.source || "").trim()
+        : "discovered";
+    const writeResult = writeNativeCharacterRecord(db, {
+      characterId,
+      label: role.name,
+      englishLabel: configuredCharacterMap.get(characterId)?.label || entry.englishLabel || entry.label || characterId,
+      roleId: role.id,
+      source: nextSource,
+      verifiedAt: nowIso(),
+    });
+    if (writeResult.mutated) changed = true;
   }
 
+  const generatedRoles = getGeneratedRoleState();
   for (const tier of [1, 2, 3, 4, 5]) {
     const tierKey = String(tier);
     const roleName = formatTierLabel(tier);
@@ -2525,11 +2770,10 @@ async function ensureManagedRoles(client) {
     invalidateLiveCharacterStatsContext();
   }
 
-  try {
-    await cleanupOrphanCharacterRoles(client);
-  } catch (error) {
-    console.warn("cleanupOrphanCharacterRoles failed:", error?.message || error);
-  }
+  // Phase 4.4: destructive orphan cleanup перенесён в moderator-only flow.
+  // `cleanupOrphanCharacterRoles` остаётся как функция для явного клика, но
+  // больше не вызывается автоматически из reconcile/ensureManagedRoles.
+  void client;
 
   return {
     characterRoles: createdCharacterRoles,
@@ -2550,8 +2794,7 @@ async function applyMainSelection(client, member, user, selectedCharacterIds, re
   profile.displayName = member.displayName || user.username;
   profile.username = user.username;
   profile.mainCharacterIds = selectedEntries.map((entry) => entry.id);
-  profile.mainCharacterLabels = selectedEntries.map((entry) => entry.label);
-  profile.characterRoleIds = selectedEntries.map((entry) => entry.roleId);
+  refreshDerivedProfileMainFields(profile);
   profile.updatedAt = nowIso();
   saveDb();
 
@@ -2583,13 +2826,11 @@ function getWelcomePanelState() {
 }
 
 function getNonGgsPanelState() {
-  db.config.nonGgsPanel ||= {
-    channelId: appConfig.channels.welcomeChannelId,
-    messageId: "",
-  };
-  db.config.nonGgsPanel.channelId = getWelcomePanelState().channelId || appConfig.channels.welcomeChannelId;
-  db.config.nonGgsPanel.messageId = String(db.config.nonGgsPanel.messageId || "").trim();
-  return db.config.nonGgsPanel;
+  return readNonGgsPanelState(
+    db.config,
+    appConfig.channels.welcomeChannelId,
+    getWelcomePanelState().channelId || appConfig.channels.welcomeChannelId
+  );
 }
 
 function getGraphicTierlistConfig() {
@@ -2631,7 +2872,7 @@ function previewGraphicMessageText(maxLen = 170) {
 
 function getProfile(userId) {
   const ensured = ensureSharedProfile(db.profiles[userId], userId);
-  db.profiles[userId] = ensured.profile;
+  db.profiles[userId] = refreshDerivedProfileMainFields(ensured.profile);
   return db.profiles[userId];
 }
 
@@ -3416,7 +3657,7 @@ async function getGuild(client) {
 function isModerator(member) {
   if (!member) return false;
   if (member.permissions?.has?.(PermissionsBitField.Flags.Administrator)) return true;
-  return member.roles?.cache?.has?.(appConfig.roles.moderatorRoleId) || false;
+  return member.roles?.cache?.has?.(getModeratorRoleId()) || false;
 }
 
 function getComboGuideEditorRoleIds(guideState = db.comboGuide) {
@@ -3448,7 +3689,7 @@ function buildComboPanelForMember(member, statusText = "") {
 }
 
 async function logLine(client, text) {
-  const logChannelId = getNotificationChannelId();
+  const logChannelId = getResolvedChannelId("log");
   if (!logChannelId) return;
   const channel = await client.channels.fetch(logChannelId).catch(() => null);
   if (channel?.isTextBased()) await channel.send(text).catch(() => {});
@@ -3467,7 +3708,7 @@ function hasApprovedTierProfile(userId) {
 
 function getMissingTierlistText() {
   const base = String(appConfig.reminders?.missingTierlistText || "").trim() || "Враг народа избегает получения роли!!! Не будь врагом!!! Стань товарищем!!!";
-  const welcomeChannelId = getWelcomeChannelId();
+  const welcomeChannelId = getResolvedChannelId("welcome");
   return [
     base,
     welcomeChannelId ? `Получить роль и отправить заявку можно тут: <#${welcomeChannelId}>` : "Канал welcome пока не настроен.",
@@ -3586,28 +3827,16 @@ async function syncProfileNamesFromDiscord(client) {
 
 async function syncManagedCharacterRoles(member, selectedCharacterIds, reason = "main character sync") {
   const selectedEntries = getSelectedCharacterEntries(selectedCharacterIds);
-  const selectedRoleIds = new Set(selectedEntries.map((entry) => entry.roleId).filter(Boolean));
-  const allManagedRoleIds = getCharacterRoleIds();
-
-  for (const roleId of allManagedRoleIds) {
-    if (member.roles.cache.has(roleId) && !selectedRoleIds.has(roleId)) {
-      await member.roles.remove(roleId, reason).catch(() => {});
-    }
-  }
-
-  for (const roleId of selectedRoleIds) {
-    if (!member.roles.cache.has(roleId)) {
-      await member.roles.add(roleId, reason).catch(() => {});
-    }
-  }
-
-  return selectedEntries;
+  return syncMemberCharacterRoles({
+    member,
+    selectedEntries,
+    allManagedRoleIds: getCharacterRoleIds(),
+    reason,
+  });
 }
 
 function getTierRoleId(tier) {
-  const tierKey = String(tier);
-  const generatedRoles = getGeneratedRoleState();
-  return String(appConfig.roles.killTierRoleIds?.[tierKey] || generatedRoles.tiers?.[tierKey] || "").trim();
+  return getSotKillTierRole(tier, { db, appConfig })?.value || "";
 }
 
 function getAllTierRoleIds() {
@@ -3615,8 +3844,7 @@ function getAllTierRoleIds() {
 }
 
 function getLegacyEloTierRoleId(tier) {
-  const tierKey = String(tier);
-  return String(appConfig.roles.legacyEloTierRoleIds?.[tierKey] || "").trim();
+  return getSotLegacyEloTierRole(tier, { db, appConfig })?.value || "";
 }
 
 function getAllLegacyEloTierRoleIds() {
@@ -3624,15 +3852,19 @@ function getAllLegacyEloTierRoleIds() {
 }
 
 function getNormalAccessRoleId() {
-  return String(appConfig.roles.accessRoleId || "").trim();
+  return getSotRole("accessNormal", { db, appConfig })?.value || "";
 }
 
 function getWartimeAccessRoleId() {
-  return String(appConfig.roles.wartimeAccessRoleId || "").trim();
+  return getSotRole("accessWartime", { db, appConfig })?.value || "";
 }
 
-function getNonGgsAccessRoleId() {
-  return String(appConfig.roles.nonGgsAccessRoleId || "").trim();
+function getNonJjsAccessRoleId() {
+  return getSotRole("accessNonJjs", { db, appConfig })?.value || "";
+}
+
+function getModeratorRoleId() {
+  return getSotRole("moderator", { db, appConfig })?.value || "";
 }
 
 function getOnboardModeState() {
@@ -3706,7 +3938,7 @@ function memberHasTierRole(member) {
 }
 
 function getNonJjsCaptchaModeForMember(member) {
-  const nonJjsRoleId = getNonGgsAccessRoleId();
+  const nonJjsRoleId = getNonJjsAccessRoleId();
 
   return resolveNonJjsCaptchaMode({
     hasTierRole: memberHasTierRole(member),
@@ -3799,7 +4031,7 @@ async function grantNonGgsAccessRole(client, userId, reason = "non-JJS captcha p
   const member = await fetchMember(client, userId);
   if (!member) return false;
 
-  const roleId = getNonGgsAccessRoleId();
+  const roleId = getNonJjsAccessRoleId();
   if (!roleId) {
     throw new Error("NON_JJS_ACCESS_ROLE_ID не настроен. Укажи отдельную роль для доступа без JJS.");
   }
@@ -3829,7 +4061,7 @@ async function revokeNonGgsAccessRole(client, userId, reason = "profile purge") 
   const member = await fetchMember(client, userId);
   if (!member) return false;
 
-  const roleId = getNonGgsAccessRoleId();
+  const roleId = getNonJjsAccessRoleId();
   if (!roleId || !member.roles.cache.has(roleId)) return false;
 
   await member.roles.remove(roleId, reason).catch(() => {});
@@ -3995,9 +4227,9 @@ function createNonGgsCaptchaSession(previousChallenge = null, stage = 1, options
 }
 
 function getNonGgsCaptchaStatusLines() {
-  const panel = getNonGgsPanelState();
+  const panel = getResolvedNonGgsPanelSnapshot();
   const catalog = buildNonGgsCaptchaCatalog();
-  const roleId = getNonGgsAccessRoleId();
+  const roleId = getNonJjsAccessRoleId();
   const foundSkillful = catalog.skillful.map((entry) => entry.slot).join(", ") || "—";
   const foundOutliers = catalog.outliers.map((entry) => entry.slot).join(", ") || "—";
   const missingSkillful = catalog.missingSkillfulSlots.join(", ") || "—";
@@ -4105,7 +4337,7 @@ function buildSubmitStepPayload(userId, options = {}) {
   const selectedLabels = selectedEntries.length
     ? selectedEntries.map((entry) => entry.label)
     : mainCharacterIds.map((value) => String(value || "").trim()).filter(Boolean);
-  const welcomeChannelId = getWelcomeChannelId();
+  const welcomeChannelId = getResolvedChannelId("welcome");
   const uploadTarget = welcomeChannelId ? `<#${welcomeChannelId}>` : "welcome-канал";
 
   const lines = [];
@@ -4348,15 +4580,26 @@ async function upsertManagedPanelMessage(channel, state, payload, findExisting, 
 }
 
 async function refreshWelcomePanel(client) {
-  const panelState = getWelcomePanelState();
-  const nonGgsPanelState = getNonGgsPanelState();
+  const panelState = syncLegacyPanelSnapshot(getWelcomePanelState(), getResolvedWelcomePanelSnapshot());
+  const legacyNonGgsPanelState = getNonGgsPanelState();
+  const previousNonGgsChannelId = String(legacyNonGgsPanelState.channelId || "").trim();
+  const previousNonGgsMessageId = String(legacyNonGgsPanelState.messageId || "").trim();
+  const nonGgsPanelState = syncLegacyPanelSnapshot(legacyNonGgsPanelState, getResolvedNonGgsPanelSnapshot());
   if (!panelState.channelId || isPlaceholder(panelState.channelId)) {
     console.warn("welcomeChannelId не задан, пропускаем refreshWelcomePanel");
     return null;
   }
-  const channel = await client.channels.fetch(panelState.channelId).catch(() => null);
-  if (!channel?.isTextBased()) {
+  const welcomeChannel = await client.channels.fetch(panelState.channelId).catch(() => null);
+  if (!welcomeChannel?.isTextBased()) {
     throw new Error("welcomeChannelId не указывает на текстовый канал");
+  }
+
+  const nonGgsChannelId = String(nonGgsPanelState.channelId || panelState.channelId).trim() || welcomeChannel.id;
+  const nonGgsChannel = nonGgsChannelId === welcomeChannel.id
+    ? welcomeChannel
+    : await client.channels.fetch(nonGgsChannelId).catch(() => null);
+  if (!nonGgsChannel?.isTextBased()) {
+    throw new Error("nonGgsPanel.channelId не указывает на текстовый канал");
   }
 
   const welcomePayload = {
@@ -4366,10 +4609,19 @@ async function refreshWelcomePanel(client) {
   const nonGgsPayload = buildNonGgsPanelPayload();
 
   const botId = client.user?.id;
-  const welcomeMessage = await upsertManagedPanelMessage(channel, panelState, welcomePayload, findExistingWelcomePanelMessage, botId);
-  const nonGgsMessage = await upsertManagedPanelMessage(channel, nonGgsPanelState, nonGgsPayload, findExistingNonGgsPanelMessage, botId);
+  const welcomeMessage = await upsertManagedPanelMessage(welcomeChannel, panelState, welcomePayload, findExistingWelcomePanelMessage, botId);
+  const nonGgsMessage = await upsertManagedPanelMessage(nonGgsChannel, nonGgsPanelState, nonGgsPayload, findExistingNonGgsPanelMessage, botId);
 
-  await cleanupWelcomeChannelMessages(channel, [welcomeMessage.id, nonGgsMessage.id]);
+  if (previousNonGgsMessageId && (previousNonGgsChannelId !== nonGgsMessage.channel.id || previousNonGgsMessageId !== nonGgsMessage.id)) {
+    await deleteManagedChannelMessage(client, previousNonGgsChannelId || nonGgsMessage.channel.id, previousNonGgsMessageId);
+  }
+
+  if (welcomeChannel.id === nonGgsChannel.id) {
+    await cleanupWelcomeChannelMessages(welcomeChannel, [welcomeMessage.id, nonGgsMessage.id]);
+  } else {
+    await cleanupWelcomeChannelMessages(welcomeChannel, [welcomeMessage.id]);
+    await cleanupWelcomeChannelMessages(nonGgsChannel, [nonGgsMessage.id]);
+  }
   saveDb();
   return { welcomeMessage, nonGgsMessage };
 }
@@ -4378,9 +4630,37 @@ async function ensureWelcomePanel(client) {
   return refreshWelcomePanel(client);
 }
 
+async function clearWelcomeManagedPanel(client, slot) {
+  const normalizedSlot = String(slot || "").trim();
+  const panelState = normalizedSlot === "nonGgs" ? getNonGgsPanelState() : getWelcomePanelState();
+  const previousChannelId = String(panelState.channelId || "").trim();
+  const previousMessageId = String(panelState.messageId || "").trim();
+
+  panelState.channelId = "";
+  panelState.messageId = "";
+
+  const refreshResult = await refreshWelcomePanel(client);
+  const nextMessage = normalizedSlot === "nonGgs"
+    ? refreshResult?.nonGgsMessage || null
+    : refreshResult?.welcomeMessage || null;
+
+  if (previousMessageId && (!nextMessage || previousChannelId !== nextMessage.channel.id || previousMessageId !== nextMessage.id)) {
+    await deleteManagedChannelMessage(client, previousChannelId || nextMessage?.channel?.id || "", previousMessageId);
+  }
+
+  return {
+    ok: true,
+    channelId: nextMessage?.channel?.id || "",
+    messageId: nextMessage?.id || "",
+  };
+}
+
 async function refreshGraphicTierlistBoard(client, options = {}) {
-  const state = getGraphicTierlistBoardState(db.config, appConfig.channels.tierlistChannelId || "");
-  const channelId = getGraphicTierlistChannelId();
+  const state = syncLegacyGraphicTierlistBoardSnapshot(
+    getGraphicTierlistBoardState(db.config, appConfig.channels.tierlistChannelId || ""),
+    getResolvedGraphicTierlistBoardSnapshot()
+  );
+  const channelId = String(state.channelId || "").trim();
   if (!channelId || isPlaceholder(channelId)) return null;
 
   const channel = await client.channels.fetch(channelId).catch(() => null);
@@ -4436,7 +4716,10 @@ async function deleteManagedChannelMessage(client, channelId, messageId) {
 }
 
 async function repostGraphicTierlistBoardToChannel(client, targetChannelId) {
-  const state = getGraphicTierlistBoardState(db.config, appConfig.channels.tierlistChannelId || "");
+  const state = syncLegacyGraphicTierlistBoardSnapshot(
+    getGraphicTierlistBoardState(db.config, appConfig.channels.tierlistChannelId || ""),
+    getResolvedGraphicTierlistBoardSnapshot()
+  );
   const nextChannelId = String(targetChannelId || "").trim();
   if (!nextChannelId || isPlaceholder(nextChannelId)) {
     throw new Error("Нужно указать текстовый канал для графического тир-листа.");
@@ -4447,7 +4730,7 @@ async function repostGraphicTierlistBoardToChannel(client, targetChannelId) {
     throw new Error("Указанный канал не является текстовым.");
   }
 
-  const previousChannelId = getGraphicTierlistChannelId();
+  const previousChannelId = String(state.channelId || "").trim();
   const previousMessageId = state.messageId || "";
 
   state.channelId = nextChannelId;
@@ -4475,7 +4758,10 @@ async function repostGraphicTierlistBoardToChannel(client, targetChannelId) {
 }
 
 async function repostTextTierlistBoardToChannel(client, targetChannelId) {
-  const state = getTextTierlistBoardState(db.config, appConfig.channels.tierlistChannelId || "");
+  const state = syncLegacyTextTierlistBoardSnapshot(
+    getTextTierlistBoardState(db.config, appConfig.channels.tierlistChannelId || ""),
+    getResolvedTextTierlistBoardSnapshot()
+  );
   const nextChannelId = String(targetChannelId || "").trim();
   if (!nextChannelId || isPlaceholder(nextChannelId)) {
     throw new Error("Нужно указать текстовый канал для текстового тир-листа.");
@@ -4486,7 +4772,7 @@ async function repostTextTierlistBoardToChannel(client, targetChannelId) {
     throw new Error("Указанный канал не является текстовым.");
   }
 
-  const previousChannelId = getTextTierlistChannelId();
+  const previousChannelId = String(state.channelId || "").trim();
   const previousState = {
     channelId: String(state.channelId || "").trim(),
     messageId: String(state.messageId || "").trim(),
@@ -4537,7 +4823,7 @@ async function moveNotificationChannel(client, targetChannelId) {
     throw new Error("Указанный канал не является текстовым.");
   }
 
-  const previousChannelId = getNotificationChannelId();
+  const previousChannelId = getResolvedChannelId("log");
   db.config.notificationChannelId = nextChannelId;
   saveDb();
 
@@ -4546,6 +4832,132 @@ async function moveNotificationChannel(client, targetChannelId) {
     channelId: nextChannelId,
     previousChannelId,
   };
+}
+
+function normalizeSotReportChannelSlot(value) {
+  return normalizeManagedChannelSlot(value);
+}
+
+function getSotReportChannelSlotLabel(slot) {
+  return getManagedChannelSlotLabel(slot);
+}
+
+function clearGroundTruthReportChannel(slot) {
+  return clearManagedChannelLink(slot, {
+    clearTextTierlistBoardMessageIds,
+    deleteManagedChannelMessage: (channelId, messageId) => deleteManagedChannelMessage(client, channelId, messageId),
+    formatChannelMention,
+    getGraphicTierlistBoardState: () => getGraphicTierlistBoardState(db.config, appConfig.channels.tierlistChannelId || ""),
+    getNonGgsPanelState,
+    getResolvedChannelId,
+    getResolvedGraphicTierlistBoardSnapshot,
+    getResolvedNonGgsPanelSnapshot,
+    getResolvedTextTierlistBoardSnapshot,
+    getResolvedWelcomePanelSnapshot,
+    getTextTierlistBoardState: () => getTextTierlistBoardState(db.config, appConfig.channels.tierlistChannelId || ""),
+    getWelcomePanelState,
+    saveDb,
+    setNotificationChannelId: (channelId) => {
+      db.config.notificationChannelId = String(channelId || "").trim();
+    },
+    setReviewChannelId: (channelId) => {
+      db.config.reviewChannelId = String(channelId || "").trim();
+    },
+    syncLegacyGraphicTierlistBoardSnapshot,
+    syncLegacyPanelSnapshot,
+    syncLegacyTextTierlistBoardSnapshot,
+  });
+}
+
+async function applyGroundTruthReportChannelLink(client, slot, targetChannelId, { allowClear = false } = {}) {
+  return applyManagedChannelLink({
+    slot,
+    targetChannelId,
+    allowClear,
+    isPlaceholder,
+    clearChannel: (normalizedSlot) => clearGroundTruthReportChannel(normalizedSlot),
+    linkChannel: (normalizedSlot, nextChannelId) => linkGroundTruthReportChannel(client, normalizedSlot, nextChannelId),
+  });
+}
+
+async function linkGroundTruthReportChannel(client, slot, targetChannelId) {
+  const normalizedSlot = normalizeSotReportChannelSlot(slot);
+  if (!normalizedSlot) {
+    throw new Error("Неизвестный channel slot. Используй welcome / review / tierlistText / tierlistGraphic / log.");
+  }
+
+  const nextChannelId = String(targetChannelId || "").trim();
+  if (!nextChannelId || isPlaceholder(nextChannelId)) {
+    throw new Error("Нужно указать текстовый канал.");
+  }
+
+  const targetChannel = await client.channels.fetch(nextChannelId).catch(() => null);
+  if (!targetChannel?.isTextBased()) {
+    throw new Error("Указанный канал не является текстовым.");
+  }
+
+  if (normalizedSlot === "welcome") {
+    const welcomePanelState = syncLegacyPanelSnapshot(getWelcomePanelState(), getResolvedWelcomePanelSnapshot());
+    const nonGgsPanelState = syncLegacyPanelSnapshot(getNonGgsPanelState(), getResolvedNonGgsPanelSnapshot());
+    const previousWelcomeState = {
+      channelId: String(welcomePanelState.channelId || "").trim(),
+      messageId: String(welcomePanelState.messageId || "").trim(),
+    };
+    const previousNonGgsState = {
+      channelId: String(nonGgsPanelState.channelId || "").trim(),
+      messageId: String(nonGgsPanelState.messageId || "").trim(),
+    };
+
+    welcomePanelState.channelId = nextChannelId;
+    welcomePanelState.messageId = "";
+    nonGgsPanelState.channelId = nextChannelId;
+    nonGgsPanelState.messageId = "";
+    saveDb();
+
+    try {
+      await refreshWelcomePanel(client);
+    } catch (error) {
+      welcomePanelState.channelId = previousWelcomeState.channelId;
+      welcomePanelState.messageId = previousWelcomeState.messageId;
+      nonGgsPanelState.channelId = previousNonGgsState.channelId;
+      nonGgsPanelState.messageId = previousNonGgsState.messageId;
+      saveDb();
+      throw error;
+    }
+
+    return `${getSotReportChannelSlotLabel(normalizedSlot)} и non-JJS panel перенесены в ${formatChannelMention(nextChannelId)}.`;
+  }
+
+  if (normalizedSlot === "review") {
+    const previousChannelId = getResolvedChannelId("review");
+    db.config.reviewChannelId = nextChannelId;
+    saveDb();
+    return previousChannelId && previousChannelId !== nextChannelId
+      ? `${getSotReportChannelSlotLabel(normalizedSlot)} channel перенесён в ${formatChannelMention(nextChannelId)}. Было: ${formatChannelMention(previousChannelId)}.`
+      : `${getSotReportChannelSlotLabel(normalizedSlot)} channel теперь ${formatChannelMention(nextChannelId)}.`;
+  }
+
+  if (normalizedSlot === "tierlistText") {
+    const result = await repostTextTierlistBoardToChannel(client, nextChannelId);
+    const movedText = result.previousChannelId && result.previousChannelId !== nextChannelId
+      ? ` Было: ${formatChannelMention(result.previousChannelId)}.`
+      : "";
+    return `${getSotReportChannelSlotLabel(normalizedSlot)} перенесён в ${formatChannelMention(nextChannelId)}.${movedText}`;
+  }
+
+  if (normalizedSlot === "tierlistGraphic") {
+    const result = await repostGraphicTierlistBoardToChannel(client, nextChannelId);
+    const movedText = result.previousChannelId && result.previousChannelId !== nextChannelId
+      ? ` Было: ${formatChannelMention(result.previousChannelId)}.`
+      : "";
+    return `${getSotReportChannelSlotLabel(normalizedSlot)} перенесён в ${formatChannelMention(nextChannelId)}.${movedText}`;
+  }
+
+  const result = await moveNotificationChannel(client, nextChannelId);
+  const movedText = result.previousChannelId && result.previousChannelId !== nextChannelId
+    ? ` Было: ${formatChannelMention(result.previousChannelId)}.`
+    : "";
+  return `${getSotReportChannelSlotLabel(normalizedSlot)} channel перенесён в ${formatChannelMention(nextChannelId)}.${movedText}`;
 }
 
 function getTextTierlistPaginationState() {
@@ -4563,8 +4975,11 @@ async function refreshTextTierlistBoard(client, options = {}) {
   if (options.forceRecreate || options.invalidateCache) {
     invalidateLiveCharacterStatsContext();
   }
-  const state = getTextTierlistBoardState(db.config, appConfig.channels.tierlistChannelId || "");
-  const channelId = getTextTierlistChannelId();
+  const state = syncLegacyTextTierlistBoardSnapshot(
+    getTextTierlistBoardState(db.config, appConfig.channels.tierlistChannelId || ""),
+    getResolvedTextTierlistBoardSnapshot()
+  );
+  const channelId = String(state.channelId || "").trim();
   if (!channelId || isPlaceholder(channelId)) return null;
 
   const channel = await client.channels.fetch(channelId).catch(() => null);
@@ -4680,8 +5095,8 @@ function buildTierlistResendReply(result) {
 }
 
 async function refreshAllTierlists(client) {
-  const graphicState = getGraphicTierlistBoardState(db.config, appConfig.channels.tierlistChannelId || "");
-  const textState = getTextTierlistBoardState(db.config, appConfig.channels.tierlistChannelId || "");
+  const graphicState = getResolvedGraphicTierlistBoardSnapshot();
+  const textState = getResolvedTextTierlistBoardSnapshot();
   const hadGraphicMessage = Boolean(graphicState.messageId);
   const result = {
     graphicOk: false,
@@ -4758,7 +5173,7 @@ async function fetchReviewMessage(client, submission) {
 }
 
 async function postReviewRecord(client, submission, fileAttachment = null, statusLabel = "pending", extraFields = [], components = []) {
-  const reviewChannelId = getReviewChannelId();
+  const reviewChannelId = getResolvedChannelId("review");
   if (!reviewChannelId || isPlaceholder(reviewChannelId)) {
     throw new Error("reviewChannelId не задан. Открой мод-панель и настрой каналы.");
   }
@@ -4825,8 +5240,7 @@ async function createPendingSubmissionFromAttachment(client, input) {
 
   const profile = getProfile(input.user.id);
   profile.mainCharacterIds = submission.mainCharacterIds;
-  profile.mainCharacterLabels = submission.mainCharacterLabels;
-  profile.characterRoleIds = submission.mainRoleIds;
+  refreshDerivedProfileMainFields(profile);
   profile.displayName = submission.displayName;
   profile.username = submission.username;
   profile.lastSubmissionId = submission.id;
@@ -4900,8 +5314,7 @@ async function approveSubmission(client, submission, moderatorTag) {
 
   const profile = getProfile(submission.userId);
   profile.mainCharacterIds = submission.mainCharacterIds;
-  profile.mainCharacterLabels = submission.mainCharacterLabels;
-  profile.characterRoleIds = submission.mainRoleIds;
+  refreshDerivedProfileMainFields(profile);
   profile.displayName = submission.displayName;
   profile.username = submission.username;
   profile.approvedKills = submission.kills;
@@ -5783,11 +6196,11 @@ function buildModeratorPanelPayload(statusText = "", includeFlags = true) {
       {
         name: "Каналы",
         value: [
-          `Welcome: ${formatChannelMention(getWelcomeChannelId())}`,
-          `Review: ${formatChannelMention(getReviewChannelId())}`,
-          `Text tierlist: ${formatChannelMention(getTextTierlistChannelId())}`,
-          `Graphic tierlist: ${formatChannelMention(getGraphicTierlistChannelId())}`,
-          `Notice/log: ${formatChannelMention(getNotificationChannelId())}`,
+          `Welcome: ${formatChannelMention(getResolvedChannelId("welcome"))}`,
+          `Review: ${formatChannelMention(getResolvedChannelId("review"))}`,
+          `Text tierlist: ${formatChannelMention(getResolvedChannelId("tierlistText"))}`,
+          `Graphic tierlist: ${formatChannelMention(getResolvedChannelId("tierlistGraphic"))}`,
+          `Notice/log: ${formatChannelMention(getResolvedChannelId("log"))}`,
           "_ELO‑каналы — внутри ELO Panel; tierlist dashboard/summary — внутри Tierlist Panel._",
         ].join("\n"),
         inline: false,
@@ -5831,7 +6244,9 @@ function buildModeratorPanelPayload(statusText = "", includeFlags = true) {
           .setDisabled(currentMode === ONBOARD_ACCESS_MODES.APOCALYPSE)
       ),
       new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId("panel_add_character").setLabel("Добавить персонажа").setStyle(ButtonStyle.Success)
+        new ButtonBuilder().setCustomId("panel_add_character").setLabel("Добавить персонажа").setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId("panel_sot_report").setLabel("SoT Report").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("panel_cleanup_orphan_characters").setLabel("Очистить orphan").setStyle(ButtonStyle.Danger)
       ),
       new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId("welcome_editor").setLabel("Редактор UI").setStyle(ButtonStyle.Secondary),
@@ -5870,6 +6285,459 @@ function buildModeratorApocalypseConfirmPayload(statusText = "", includeFlags = 
   return includeFlags ? ephemeralPayload(payload) : payload;
 }
 
+function formatSotReportSource(source) {
+  const normalized = String(source || "").trim();
+  return normalized || "missing";
+}
+
+function formatSotReportStatus(status) {
+  const normalized = String(status || "").trim();
+  return normalized || "unknown";
+}
+
+function buildSotReportLine(label, valueText, source, status, note = "") {
+  const suffix = String(note || "").trim();
+  return `• ${label}: ${valueText || "—"} [${formatSotReportSource(source)}; ${formatSotReportStatus(status)}]${suffix ? ` — ${suffix}` : ""}`;
+}
+
+function hasSotReportGuildChannel(guild, channelId) {
+  const id = String(channelId || "").trim();
+  if (!id) return null;
+  if (!guild) return null;
+  return guild.channels.cache.has(id);
+}
+
+function hasSotReportGuildRole(guild, roleId) {
+  const id = String(roleId || "").trim();
+  if (!id) return null;
+  if (!guild) return null;
+  return guild.roles.cache.has(id);
+}
+
+function getResolvedSotReportIntegrationState() {
+  return getSotReportIntegrationSnapshots({ db, appConfig });
+}
+
+const SOT_REPORT_CHANNEL_LABELS = {
+  welcome: "Welcome",
+  review: "Review",
+  tierlistText: "Text tierlist",
+  tierlistGraphic: "Graphic tierlist",
+  log: "Notice/log",
+  eloSubmit: "ELO submit",
+  eloGraphic: "ELO graphic",
+  tierlistDashboard: "Tierlist dashboard",
+  tierlistSummary: "Tierlist summary",
+};
+
+const SOT_REPORT_ROLE_LABELS = {
+  moderator: "Moderator",
+  accessNormal: "Access normal",
+  accessWartime: "Access wartime",
+  accessNonJjs: "Access nonJJS",
+  "killTier.1": "Kill tier 1",
+  "killTier.2": "Kill tier 2",
+  "killTier.3": "Kill tier 3",
+  "killTier.4": "Kill tier 4",
+  "killTier.5": "Kill tier 5",
+  "legacyEloTier.1": "Legacy ELO tier 1",
+  "legacyEloTier.2": "Legacy ELO tier 2",
+  "legacyEloTier.3": "Legacy ELO tier 3",
+  "legacyEloTier.4": "Legacy ELO tier 4",
+};
+
+function getSotReportLineStatus(status) {
+  if (status === "ok") return "OK";
+  if (status === "stale") return "MISSING";
+  if (status === "missing") return "missing";
+  return "unverified";
+}
+
+function getResolvedSotReportDiagnostics(guild) {
+  const snapshot = createSotGuildSnapshot({
+    channelIds: guild?.channels?.cache ? [...guild.channels.cache.keys()] : [],
+    roleIds: guild?.roles?.cache ? [...guild.roles.cache.keys()] : [],
+    verifiedAt: guild ? nowIso() : null,
+  });
+
+  return {
+    channels: diagnoseSotChannels({ db, appConfig, snapshot }),
+    roles: diagnoseSotRoles({ db, appConfig, snapshot }),
+    panels: diagnoseSotPanels({ db, appConfig }),
+    integrations: diagnoseSotIntegrations({ db, appConfig }),
+  };
+}
+
+function getSotReportChannelDiagnostics(guild, resolvedDiagnostics = getResolvedSotReportDiagnostics(guild)) {
+  const entriesBySlot = new Map((resolvedDiagnostics?.channels?.entries || []).map((entry) => [entry.slot, entry]));
+
+  return Object.keys(SOT_REPORT_CHANNEL_LABELS).map((slot) => {
+    const entry = entriesBySlot.get(slot) || { value: "", source: "missing", status: "missing" };
+    const exists = entry.status === "ok" ? true : entry.status === "stale" ? false : null;
+
+    return {
+      label: SOT_REPORT_CHANNEL_LABELS[slot],
+      id: String(entry.value || "").trim(),
+      source: String(entry.source || "").trim() || (entry.value ? "resolved" : "missing"),
+      exists,
+      line: buildSotReportLine(
+        SOT_REPORT_CHANNEL_LABELS[slot],
+        formatChannelMention(entry.value),
+        String(entry.source || "").trim() || (entry.value ? "resolved" : "missing"),
+        getSotReportLineStatus(entry.status)
+      ),
+    };
+  });
+}
+
+function getSotReportRoleDiagnostics(guild, resolvedDiagnostics = getResolvedSotReportDiagnostics(guild)) {
+  const entriesBySlot = new Map((resolvedDiagnostics?.roles?.entries || []).map((entry) => [entry.slot, entry]));
+
+  return Object.keys(SOT_REPORT_ROLE_LABELS).map((slot) => {
+    const entry = entriesBySlot.get(slot) || { value: "", source: "missing", status: "missing" };
+    const exists = entry.status === "ok" ? true : entry.status === "stale" ? false : null;
+
+    return {
+      label: SOT_REPORT_ROLE_LABELS[slot],
+      id: String(entry.value || "").trim(),
+      source: String(entry.source || "").trim() || (entry.value ? "resolved" : "missing"),
+      exists,
+      line: buildSotReportLine(
+        SOT_REPORT_ROLE_LABELS[slot],
+        formatRoleMention(entry.value),
+        String(entry.source || "").trim() || (entry.value ? "resolved" : "missing"),
+        getSotReportLineStatus(entry.status)
+      ),
+    };
+  });
+}
+
+function getSotReportPanelDiagnostics(guild, resolvedDiagnostics = getResolvedSotReportDiagnostics(guild)) {
+  void guild;
+  const entriesBySlot = new Map((resolvedDiagnostics?.panels?.entries || []).map((entry) => [entry.slot, entry]));
+  const welcomePanelState = entriesBySlot.get("welcome") || { channelId: "", messageIds: {} };
+  const nonGgsPanelState = entriesBySlot.get("nonGgs") || { channelId: "", messageIds: {} };
+  const textState = entriesBySlot.get("tierlistText") || { channelId: "", messageIds: {} };
+  const graphicState = entriesBySlot.get("tierlistGraphic") || { channelId: "", messageIds: {}, lastUpdated: null };
+  const eloSubmitState = entriesBySlot.get("eloSubmit") || { channelId: "", messageIds: {} };
+  const eloGraphicState = entriesBySlot.get("eloGraphic") || { channelId: "", messageIds: {}, lastUpdated: null };
+  const tierlistDashboardState = entriesBySlot.get("tierlistDashboard") || { channelId: "", messageIds: {} };
+  const tierlistSummaryState = entriesBySlot.get("tierlistSummary") || { channelId: "", messageIds: {} };
+  const panelLines = [
+    `• Welcome panel: ch ${formatChannelMention(welcomePanelState.channelId)} / msg ${previewFieldText(welcomePanelState.messageIds?.main || "—", 60)}`,
+    `• Non-JJS panel: ch ${formatChannelMention(nonGgsPanelState.channelId)} / msg ${previewFieldText(nonGgsPanelState.messageIds?.main || "—", 60)}`,
+    `• Text tierlist: ch ${formatChannelMention(textState.channelId)} / summary ${previewFieldText(textState.messageIds?.summary || textState.messageIds?.main || "—", 60)} / pages ${previewFieldText(textState.messageIds?.pages || "—", 60)}`,
+    `• Graphic tierlist: ch ${formatChannelMention(graphicState.channelId)} / msg ${previewFieldText(graphicState.messageIds?.main || "—", 60)} / updated ${formatDateTime(graphicState.lastUpdated)}`,
+    `• ELO submit: ch ${formatChannelMention(eloSubmitState.channelId)} / msg ${previewFieldText(eloSubmitState.messageIds?.main || "—", 60)}`,
+    `• ELO graphic: ch ${formatChannelMention(eloGraphicState.channelId)} / msg ${previewFieldText(eloGraphicState.messageIds?.main || "—", 60)} / updated ${formatDateTime(eloGraphicState.lastUpdated)}`,
+    `• Tierlist dashboard: ch ${formatChannelMention(tierlistDashboardState.channelId)} / msg ${previewFieldText(tierlistDashboardState.messageIds?.main || "—", 60)}`,
+    `• Tierlist summary: ch ${formatChannelMention(tierlistSummaryState.channelId)} / msg ${previewFieldText(tierlistSummaryState.messageIds?.main || "—", 60)}`,
+  ];
+
+  return {
+    lines: panelLines,
+    trackedCount: resolvedDiagnostics?.panels?.trackedCount || panelLines.length,
+  };
+}
+
+function getSotReportIntegrationDiagnostics() {
+  const integrations = getResolvedSotReportIntegrationState();
+  const elo = integrations.elo;
+  const tierlist = integrations.tierlist;
+
+  return {
+    lines: [
+      `• ELO: status ${previewFieldText(elo.status || "not_started", 40)} / mode ${previewFieldText(elo.mode || "—", 40)} / grant ${elo.roleGrantEnabled === false ? "off" : "on"} / import ${formatDateTime(elo.lastImportAt)} / sync ${formatDateTime(elo.lastSyncAt)} / path ${previewFieldText(elo.sourcePath || "—", 140)}`,
+      `• Tierlist: status ${previewFieldText(tierlist.status || "not_started", 40)} / mode ${previewFieldText(tierlist.mode || "—", 40)} / import ${formatDateTime(tierlist.lastImportAt)} / sync ${formatDateTime(tierlist.lastSyncAt)} / path ${previewFieldText(tierlist.sourcePath || "—", 140)}`,
+    ],
+  };
+}
+
+function getSotReportCharacterSource(entry, currentRoleId, historicalRoleIds, generatedRoleIds, recoveryPlan) {
+  if (String(entry?.source || "").trim()) return String(entry.source).trim();
+
+  const configuredRoleId = String(entry?.roleId || "").trim();
+  const historicalRoleId = String(historicalRoleIds?.[entry.id] || "").trim();
+  const generatedRoleId = String(generatedRoleIds?.[entry.id] || "").trim();
+  const recoveredRoleId = String(recoveryPlan?.recoveredRoleIds?.[entry.id] || "").trim();
+
+  if (configuredRoleId && currentRoleId === configuredRoleId) return "configured";
+  if (historicalRoleId && currentRoleId === historicalRoleId) return "historical";
+  if (generatedRoleId && currentRoleId === generatedRoleId) return "generated";
+  if (recoveredRoleId && currentRoleId === recoveredRoleId) return "recovered";
+  return currentRoleId ? "runtime" : "missing";
+}
+
+function getSotReportCharacterDiagnostics(guild) {
+  const managedCharacters = getLegacyReportManagedCharacterCatalog();
+  const historicalRoleIds = getDiagnosticHistoricalManagedCharacterRoleIds(getConfiguredManagedCharacterCatalog());
+  const generatedRoleIds = getGeneratedRoleState().characters || {};
+  const guildRoles = guild ? buildGuildCharacterRoleCandidates(guild) : [];
+  const recoveryPlan = buildManagedCharacterRoleRecoveryPlan({
+    managedCharacters,
+    profiles: db.profiles,
+    submissions: db.submissions,
+    guildRoles,
+    historicalRoleIds,
+    generatedRoleIds,
+  });
+  const characterEntries = Object.values(resolveAllCharacterRecords({
+    db,
+    appConfig,
+    managedCharacters,
+    profiles: db.profiles,
+    submissions: db.submissions,
+    guildRoles,
+    verifiedRoleIds: guild?.roles?.cache ? [...guild.roles.cache.keys()] : [],
+    recoveryPlan,
+  }));
+  const entryById = new Map(characterEntries.map((entry) => [entry.id, entry]));
+  const ambiguousById = new Map(recoveryPlan.ambiguous.map((entry) => [entry.characterId, entry]));
+  const unresolvedById = new Map(recoveryPlan.unresolved.map((entry) => [entry.characterId, entry]));
+  const bindingLines = [];
+  const attentionLines = [];
+  let runtimeBound = 0;
+  let staleCount = 0;
+  let staleVerificationCount = 0;
+
+  for (const entry of managedCharacters) {
+    const currentEntry = entryById.get(entry.id) || { roleId: "" };
+    const currentRoleId = String(currentEntry.roleId || "").trim();
+    const ambiguous = ambiguousById.get(entry.id) || null;
+    const unresolved = unresolvedById.get(entry.id) || null;
+    const recoveredRoleId = String(recoveryPlan.recoveredRoleIds?.[entry.id] || "").trim();
+    const source = getSotReportCharacterSource(currentEntry, currentRoleId, historicalRoleIds, generatedRoleIds, recoveryPlan);
+    const exists = currentRoleId ? hasSotReportGuildRole(guild, currentRoleId) : null;
+    const verificationAgeHours = currentRoleId ? hoursSince(currentEntry.verifiedAt) : 0;
+    const staleVerification = currentRoleId && exists !== false && verificationAgeHours > SOT_CHARACTER_ALERT_STALE_HOURS;
+
+    if (currentRoleId) runtimeBound += 1;
+    if (currentRoleId && exists === false) staleCount += 1;
+    if (staleVerification) staleVerificationCount += 1;
+
+    let status = !currentRoleId ? "missing" : exists === false ? "stale" : exists === true ? "OK" : "unverified";
+    let note = "";
+    if (unresolved) {
+      status = "unresolved";
+      note = `evidence ${unresolved.evidenceCount}; aliases ${previewText(getManagedCharacterRoleNameCandidates(entry).join(", "), 120)}`;
+    } else if (ambiguous) {
+      status = "ambiguous";
+      note = `best ${formatRoleMention(ambiguous.bestRoleId)} (${ambiguous.bestOverlap}), second ${formatRoleMention(ambiguous.secondRoleId)} (${ambiguous.secondOverlap}), evidence ${ambiguous.evidenceCount}`;
+    } else if (recoveredRoleId && recoveredRoleId !== currentRoleId) {
+      note = `recovery suggests ${formatRoleMention(recoveredRoleId)} (${previewText(recoveryPlan.recoveredRoleLabels?.[entry.id] || recoveredRoleId, 60)})`;
+    } else if (staleVerification) {
+      note = `verification stale ${Number.isFinite(verificationAgeHours) ? Math.floor(verificationAgeHours) : `${SOT_CHARACTER_ALERT_STALE_HOURS}+`}h`;
+    }
+
+    const line = buildSotReportLine(
+      entry.label,
+      currentRoleId ? formatRoleMention(currentRoleId) : "—",
+      source,
+      status,
+      note
+    );
+
+    bindingLines.push(line);
+    if (["stale", "unresolved", "ambiguous"].includes(status) || note) {
+      attentionLines.push(line);
+    }
+  }
+
+  return {
+    total: managedCharacters.length,
+    runtimeBound,
+    recoveredCount: Object.keys(recoveryPlan.recoveredRoleIds || {}).length,
+    ambiguousCount: recoveryPlan.ambiguous.length,
+    unresolvedCount: recoveryPlan.unresolved.length,
+    staleCount,
+    staleVerificationCount,
+    attentionLines,
+    bindingLines,
+  };
+}
+
+async function maybeLogSotCharacterHealthAlert(client, reason = "sync") {
+  const guild = await getGuild(client);
+  if (!guild) return null;
+
+  await guild.roles.fetch().catch(() => null);
+  try {
+    if (guild.members.cache.size < 2) await guild.members.fetch();
+  } catch {
+    // Best-effort hydration: role existence checks still work off the role cache.
+  }
+
+  const diagnostics = getSotReportCharacterDiagnostics(guild);
+  const issueParts = [];
+  if (diagnostics.unresolvedCount) issueParts.push(`unresolved=${diagnostics.unresolvedCount}`);
+  if (diagnostics.ambiguousCount) issueParts.push(`ambiguous=${diagnostics.ambiguousCount}`);
+  if (diagnostics.staleCount) issueParts.push(`staleRole=${diagnostics.staleCount}`);
+  if (diagnostics.staleVerificationCount) {
+    issueParts.push(`staleVerification>${SOT_CHARACTER_ALERT_STALE_HOURS}h=${diagnostics.staleVerificationCount}`);
+  }
+
+  if (!issueParts.length) {
+    lastSotCharacterAlertSignature = "";
+    lastSotCharacterAlertAt = 0;
+    return { sent: false, diagnostics };
+  }
+
+  const attentionPreview = previewText(diagnostics.attentionLines.slice(0, 3).join(" | "), 400);
+  const signature = `${issueParts.join(",")}|${attentionPreview}`;
+  const now = Date.now();
+  if (signature === lastSotCharacterAlertSignature && now - lastSotCharacterAlertAt < SOT_CHARACTER_ALERT_REPEAT_MS) {
+    return { sent: false, suppressed: true, diagnostics };
+  }
+
+  lastSotCharacterAlertSignature = signature;
+  lastSotCharacterAlertAt = now;
+  const previewSuffix = attentionPreview ? ` details=${attentionPreview}` : "";
+  await logLine(client, `SOT_CHARACTER_ALERT[${reason}]: ${issueParts.join(", ")}.${previewSuffix}`);
+  return { sent: true, diagnostics };
+}
+
+async function maybeLogSotDriftAlert(client, reason = "sync") {
+  const mismatches = compareSotVsLegacy({
+    db,
+    ...buildSotLegacyOptions(db),
+  });
+
+  if (!mismatches.length) {
+    lastSotDriftAlertSignature = "";
+    lastSotDriftAlertAt = 0;
+    return { sent: false, mismatches };
+  }
+
+  const summary = summarizeCompareMismatches(mismatches, { limit: 5 });
+  const domainSummary = Object.entries(summary.countsByDomain)
+    .map(([domain, count]) => `${domain}=${count}`)
+    .join(", ");
+  const preview = previewText(summary.preview.join(" | "), 400);
+  const signature = `${summary.total}|${domainSummary}|${preview}`;
+  const now = Date.now();
+
+  if (signature === lastSotDriftAlertSignature && now - lastSotDriftAlertAt < SOT_DRIFT_ALERT_REPEAT_MS) {
+    return { sent: false, suppressed: true, mismatches, summary };
+  }
+
+  lastSotDriftAlertSignature = signature;
+  lastSotDriftAlertAt = now;
+  const previewSuffix = preview ? ` details=${preview}` : "";
+  await logLine(client, `SOT_DRIFT_ALERT[${reason}]: total=${summary.total}; ${domainSummary}.${previewSuffix}`);
+  return { sent: true, mismatches, summary };
+}
+
+async function buildGroundTruthSotReportPayload(client, statusText = "", includeFlags = true) {
+  const guild = await getGuild(client).catch(() => null);
+  if (guild) {
+    await guild.roles.fetch().catch(() => null);
+    await guild.channels.fetch().catch(() => null);
+    try {
+      if (guild.members.cache.size < 2) await guild.members.fetch();
+    } catch {
+      // best-effort diagnostic; character recovery will still run on cache
+    }
+  }
+
+  const resolvedDiagnostics = getResolvedSotReportDiagnostics(guild);
+  const channelDiagnostics = getSotReportChannelDiagnostics(guild, resolvedDiagnostics);
+  const roleDiagnostics = getSotReportRoleDiagnostics(guild, resolvedDiagnostics);
+  const panelDiagnostics = getSotReportPanelDiagnostics(guild, resolvedDiagnostics);
+  const integrationDiagnostics = getSotReportIntegrationDiagnostics();
+  const characterDiagnostics = getSotReportCharacterDiagnostics(guild);
+
+  const channelConfiguredCount = channelDiagnostics.filter((entry) => entry.id).length;
+  const channelLiveCount = channelDiagnostics.filter((entry) => entry.exists === true).length;
+  const roleConfiguredCount = roleDiagnostics.filter((entry) => entry.id).length;
+  const roleLiveCount = roleDiagnostics.filter((entry) => entry.exists === true).length;
+  const statusLines = [
+    "Ground-truth отчёт построен по текущим legacy code-path и db.config. Новый SoT facade здесь не используется.",
+    `Guild: **${guild?.name || "не удалось получить"}**`,
+    `Каналы: **${channelLiveCount}/${channelConfiguredCount}** live`,
+    `Роли: **${roleLiveCount}/${roleConfiguredCount}** live`,
+    `Персонажи: bound **${characterDiagnostics.runtimeBound}/${characterDiagnostics.total}**, stale **${characterDiagnostics.staleCount}**, stale verification **${characterDiagnostics.staleVerificationCount}**, ambiguous **${characterDiagnostics.ambiguousCount}**, unresolved **${characterDiagnostics.unresolvedCount}**, recovery candidates **${characterDiagnostics.recoveredCount}**`,
+    `Панели tracked: **${panelDiagnostics.trackedCount}**`,
+  ];
+
+  const overviewEmbed = new EmbedBuilder()
+    .setTitle("SoT Ground Truth")
+    .setDescription(statusLines.join("\n"))
+    .addFields({
+      name: "Легенда",
+      value: "source: configured / manual / panel / generated / historical / recovered / integration. status: OK / MISSING / stale / ambiguous / unresolved.",
+      inline: false,
+    });
+
+  if (statusText) {
+    overviewEmbed.addFields({ name: "Последнее действие", value: statusText, inline: false });
+  }
+
+  const infraEmbed = new EmbedBuilder()
+    .setTitle("SoT Ground Truth: Channels & Roles")
+    .addFields(
+      { name: "Channels", value: previewFieldText(channelDiagnostics.map((entry) => entry.line).join("\n")), inline: false },
+      { name: "Roles", value: previewFieldText(roleDiagnostics.map((entry) => entry.line).join("\n")), inline: false }
+    );
+
+  const stateEmbed = new EmbedBuilder()
+    .setTitle("SoT Ground Truth: Panels & Integrations")
+    .addFields(
+      { name: "Panels", value: previewFieldText(panelDiagnostics.lines.join("\n")), inline: false },
+      { name: "Integrations", value: previewFieldText(integrationDiagnostics.lines.join("\n")), inline: false }
+    );
+
+  const embeds = [overviewEmbed, infraEmbed, stateEmbed];
+  const attentionChunks = chunkTextLines(
+    characterDiagnostics.attentionLines.length ? characterDiagnostics.attentionLines : ["• Критичных расхождений по персонажам не найдено."],
+    1024,
+    8
+  );
+  attentionChunks.forEach((chunk, index) => {
+    embeds.push(
+      new EmbedBuilder()
+        .setTitle(index === 0 ? "SoT Ground Truth: Characters / Attention" : `SoT Ground Truth: Characters / Attention ${index + 1}`)
+        .setDescription(chunk)
+    );
+  });
+
+  const bindingChunks = chunkTextLines(characterDiagnostics.bindingLines, 1024, 8);
+  bindingChunks.forEach((chunk, index) => {
+    embeds.push(
+      new EmbedBuilder()
+        .setTitle(index === 0 ? "SoT Ground Truth: Characters / All Bindings" : `SoT Ground Truth: Characters / All Bindings ${index + 1}`)
+        .setDescription(chunk)
+    );
+  });
+
+  const reportButtons = [
+    new ButtonBuilder().setCustomId("sot_report_verify_now").setLabel("Проверить заново").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId("sot_report_recover_characters").setLabel("Восстановить биндинги").setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId("sot_report_manual_character").setLabel("Ручной bind").setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId("sot_report_link_channel").setLabel("Link channel").setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId("sot_report_cleanup_orphans").setLabel("Очистить orphan").setStyle(ButtonStyle.Danger),
+  ];
+
+  const reportAdvancedButtons = [
+    new ButtonBuilder().setCustomId("sot_report_manual_role").setLabel("Manual role").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId("sot_report_manual_panel").setLabel("Manual panel").setStyle(ButtonStyle.Secondary),
+  ];
+
+  const payload = {
+    embeds,
+    components: [
+      new ActionRowBuilder().addComponents(...reportButtons),
+      new ActionRowBuilder().addComponents(...reportAdvancedButtons),
+    ],
+  };
+
+  return includeFlags ? ephemeralPayload(payload) : payload;
+}
+
+async function replyWithGroundTruthSotReport(interaction, client, statusText = "") {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  await interaction.editReply(await buildGroundTruthSotReportPayload(client, statusText, false));
+}
+
 function getDormantEloImportStatusText(result) {
   if (result?.error) return `Не удалось прочитать legacy ELO базу: ${result.error}`;
   if (!result?.sourcePath) return "ELO sourcePath не задан. Укажи путь к legacy db.json в панели ниже.";
@@ -5884,7 +6752,7 @@ function getDormantEloImportStatusText(result) {
 
 function refreshDormantEloImport() {
   const result = importDormantEloSyncFromFile(db, {
-    sourcePath: db.config.integrations?.elo?.sourcePath,
+    sourcePath: getResolvedIntegrationSourcePath("elo"),
     baseDir: DATA_ROOT,
     syncedAt: nowIso(),
   });
@@ -5906,7 +6774,7 @@ function getDormantTierlistImportStatusText(result) {
 
 function refreshDormantTierlistImport() {
   const result = importDormantTierlistSyncFromFile(db, {
-    sourcePath: db.config.integrations?.tierlist?.sourcePath,
+    sourcePath: getResolvedIntegrationSourcePath("tierlist"),
     baseDir: DATA_ROOT,
     syncedAt: nowIso(),
     characterCatalog: getCharacterCatalog().map((entry) => ({ id: entry.id, label: entry.label })),
@@ -5915,9 +6783,9 @@ function refreshDormantTierlistImport() {
   return result;
 }
 
-function getLiveLegacyTierlistState() {
+function getLiveLegacyTierlistState(currentDb = db) {
   return loadLegacyTierlistState({
-    sourcePath: db.config.integrations?.tierlist?.sourcePath,
+    sourcePath: getResolvedIntegrationSourcePath("tierlist", currentDb),
     baseDir: DATA_ROOT,
     baseCharacterCatalog: getLegacyTierlistBaseCharacterCatalog(),
     baseCharacterAssetsDir: CHARACTERS_ASSET_DIR,
@@ -5942,6 +6810,10 @@ function saveLiveLegacyTierlistStateAndResync(liveState) {
 
 function getLegacyTierlistSyncStatusSuffix(syncResult) {
   return syncResult?.error ? ` Синхронизация shared профилей не удалась: ${syncResult.error}` : "";
+}
+
+function isLegacyTierlistDashboardDisabled(rawState) {
+  return rawState?.settings?.dashboardDisabled === true;
 }
 
 function parseLegacyTierlistTimestamp(value) {
@@ -5991,7 +6863,14 @@ async function ensureLegacyTierlistDashboardMessage(client, liveState, forcedCha
 
   const rawState = liveState.rawState;
   rawState.settings ||= {};
-  const channelId = String(forcedChannelId || rawState.settings.channelId || appConfig.channels.tierlistChannelId || "").trim();
+  const resolvedSnapshot = getResolvedLegacyTierlistDashboardSnapshot();
+  const channelId = String(
+    forcedChannelId
+    || resolvedSnapshot.channelId
+    || rawState.settings.channelId
+    || (isLegacyTierlistDashboardDisabled(rawState) ? "" : appConfig.channels.tierlistChannelId)
+    || ""
+  ).trim();
   if (!channelId) throw new Error("Не задан dashboard channel для legacy Tierlist.");
 
   const previousChannelId = String(rawState.settings.channelId || "").trim();
@@ -6023,6 +6902,7 @@ async function ensureLegacyTierlistDashboardMessage(client, liveState, forcedCha
   rawState.settings.channelId = channel.id;
   rawState.settings.dashboardMessageId = message.id;
   rawState.settings.lastUpdated = Date.now();
+  rawState.settings.dashboardDisabled = false;
   const syncResult = saveLiveLegacyTierlistStateAndResync(liveState);
   return { ok: true, channelId: channel.id, messageId: message.id, syncResult };
 }
@@ -6033,7 +6913,13 @@ async function refreshLegacyTierlistDashboard(client, options = {}) {
     throw new Error(liveState.error || "Legacy Tierlist state недоступен");
   }
 
-  const channelId = String(options.channelId || liveState.rawState?.settings?.channelId || appConfig.channels.tierlistChannelId || "").trim();
+  const channelId = String(
+    options.channelId
+    || getResolvedLegacyTierlistDashboardSnapshot().channelId
+    || liveState.rawState?.settings?.channelId
+    || (isLegacyTierlistDashboardDisabled(liveState.rawState) ? "" : appConfig.channels.tierlistChannelId)
+    || ""
+  ).trim();
   if (!channelId) {
     return { ok: false, reason: "not_configured", liveState };
   }
@@ -6061,9 +6947,47 @@ async function refreshLegacyTierlistDashboard(client, options = {}) {
 
   const payload = await buildLegacyTierlistDashboardPayload(liveState);
   await message.edit({ ...payload, attachments: [] });
+  liveState.rawState.settings ||= {};
+  liveState.rawState.settings.dashboardDisabled = false;
   liveState.rawState.settings.lastUpdated = Date.now();
   const syncResult = saveLiveLegacyTierlistStateAndResync(liveState);
   return { ok: true, ensured: false, channelId: channel.id, messageId: message.id, syncResult, liveState };
+}
+
+async function clearLegacyTierlistDashboardMessage(client, liveState) {
+  if (!liveState?.ok) {
+    throw new Error(liveState?.error || "Legacy Tierlist state недоступен");
+  }
+
+  const rawState = liveState.rawState;
+  rawState.settings ||= {};
+
+  const previousChannelId = String(rawState.settings.channelId || "").trim();
+  let deletedMessageId = String(rawState.settings.dashboardMessageId || "").trim() || null;
+
+  if (previousChannelId) {
+    const channel = await client.channels.fetch(previousChannelId).catch(() => null);
+    if (channel?.isTextBased?.()) {
+      const message = await fetchStoredBotMessage(channel, rawState.settings, "dashboardMessageId", client.user?.id);
+      if (message) {
+        deletedMessageId = message.id;
+        await message.delete().catch(() => {});
+      }
+    }
+  }
+
+  rawState.settings.channelId = "";
+  rawState.settings.dashboardMessageId = "";
+  rawState.settings.lastUpdated = null;
+  rawState.settings.lastDashboardLayoutHash = null;
+  rawState.settings.dashboardDisabled = true;
+  const syncResult = saveLiveLegacyTierlistStateAndResync(liveState);
+
+  return {
+    ok: true,
+    deletedMessageId,
+    syncResult,
+  };
 }
 
 async function ensureLegacyTierlistSummaryMessage(client, liveState, forcedChannelId = null) {
@@ -6073,7 +6997,8 @@ async function ensureLegacyTierlistSummaryMessage(client, liveState, forcedChann
 
   const rawState = liveState.rawState;
   rawState.settings ||= {};
-  const channelId = String(forcedChannelId || rawState.settings.summaryChannelId || "").trim();
+  const resolvedSnapshot = getResolvedLegacyTierlistSummarySnapshot();
+  const channelId = String(forcedChannelId || resolvedSnapshot.channelId || rawState.settings.summaryChannelId || "").trim();
   if (!channelId) throw new Error("Не задан summary channel для legacy Tierlist.");
 
   const previousChannelId = String(rawState.settings.summaryChannelId || "").trim();
@@ -6115,7 +7040,7 @@ async function refreshLegacyTierlistSummaryMessage(client, options = {}) {
     throw new Error(liveState.error || "Legacy Tierlist state недоступен");
   }
 
-  const channelId = String(options.channelId || liveState.rawState?.settings?.summaryChannelId || "").trim();
+  const channelId = String(options.channelId || getResolvedLegacyTierlistSummarySnapshot().channelId || liveState.rawState?.settings?.summaryChannelId || "").trim();
   if (!channelId) {
     return { ok: false, reason: "not_configured", liveState };
   }
@@ -6133,6 +7058,40 @@ async function refreshLegacyTierlistSummaryMessage(client, options = {}) {
   liveState.rawState.settings.summaryLastUpdated = Date.now();
   const syncResult = saveLiveLegacyTierlistStateAndResync(liveState);
   return { ok: true, ensured: false, channelId: channel.id, messageId: message.id, syncResult, liveState };
+}
+
+async function clearLegacyTierlistSummaryMessage(client, liveState) {
+  if (!liveState?.ok) {
+    throw new Error(liveState?.error || "Legacy Tierlist state недоступен");
+  }
+
+  const rawState = liveState.rawState;
+  rawState.settings ||= {};
+
+  const previousChannelId = String(rawState.settings.summaryChannelId || "").trim();
+  let deletedMessageId = String(rawState.settings.summaryMessageId || "").trim() || null;
+
+  if (previousChannelId) {
+    const channel = await client.channels.fetch(previousChannelId).catch(() => null);
+    if (channel?.isTextBased?.()) {
+      const message = await fetchStoredBotMessage(channel, rawState.settings, "summaryMessageId", client.user?.id);
+      if (message) {
+        deletedMessageId = message.id;
+        await message.delete().catch(() => {});
+      }
+    }
+  }
+
+  rawState.settings.summaryChannelId = "";
+  rawState.settings.summaryMessageId = "";
+  rawState.settings.summaryLastUpdated = null;
+  const syncResult = saveLiveLegacyTierlistStateAndResync(liveState);
+
+  return {
+    ok: true,
+    deletedMessageId,
+    syncResult,
+  };
 }
 
 async function refreshLegacyTierlistPublicViews(client, options = {}) {
@@ -6175,9 +7134,6 @@ async function submitAddCharacterUnified(client, { name, idHint = "", imageUrl =
   if (!characterId) throw new Error("Не удалось получить id. Укажи id латиницей или дай имя попроще.");
 
   const characterCatalog = getCharacterCatalog();
-  if (characterCatalog.length >= 25 && !characterCatalog.some((c) => String(c.id).trim() === characterId)) {
-    throw new Error("Лимит персонажей для select menu достигнут (25).");
-  }
   if (characterCatalog.some((c) => String(c.id).trim() === characterId)) {
     throw new Error(`Персонаж с ID «${characterId}» уже существует.`);
   }
@@ -6197,8 +7153,6 @@ async function submitAddCharacterUnified(client, { name, idHint = "", imageUrl =
     imageUrl: trimmedUrl,
   });
 
-  const nextCharacter = { id: characterId, label: trimmedName, roleId: "" };
-  characterCatalog.push(nextCharacter);
   const roleNote = " Custom персонаж добавлен только в legacy tierlist и не участвует в onboarding-ролях.";
 
   saveDb();
@@ -6734,21 +7688,19 @@ async function buildLegacyTierlistWizardPayload(liveState, userId) {
   };
 }
 
-function normalizeLegacyTierlistInfluenceValue(value, fallback) {
-  const amount = Number(value);
-  return Number.isFinite(amount) && amount > 0 ? amount : fallback;
+function buildLegacyTierlistInfluenceConfig(rawState) {
+  return getSotLegacyInfluenceConfig({ influence: rawState?.settings?.roleInfluence || null });
 }
 
-function getLegacyTierlistInfluenceConfig(rawState) {
-  const stored = rawState?.settings?.roleInfluence || {};
-  return {
-    default: normalizeLegacyTierlistInfluenceValue(stored.default, 1),
-    1: normalizeLegacyTierlistInfluenceValue(stored[1], LEGACY_TIERLIST_ROLE_INFLUENCE[1]),
-    2: normalizeLegacyTierlistInfluenceValue(stored[2], LEGACY_TIERLIST_ROLE_INFLUENCE[2]),
-    3: normalizeLegacyTierlistInfluenceValue(stored[3], LEGACY_TIERLIST_ROLE_INFLUENCE[3]),
-    4: normalizeLegacyTierlistInfluenceValue(stored[4], LEGACY_TIERLIST_ROLE_INFLUENCE[4]),
-    5: normalizeLegacyTierlistInfluenceValue(stored[5], LEGACY_TIERLIST_ROLE_INFLUENCE[5]),
-  };
+function getLegacyTierlistInfluenceConfig(rawState = null, currentDb = db) {
+  const rawInfluence = rawState?.settings?.roleInfluence;
+  if (rawInfluence && typeof rawInfluence === "object" && !Array.isArray(rawInfluence) && Object.keys(rawInfluence).length > 0) {
+    return getSotLegacyInfluenceConfig({ influence: rawInfluence });
+  }
+  if (currentDb?.sot?.influence && typeof currentDb.sot.influence === "object" && !Array.isArray(currentDb.sot.influence)) {
+    return getSotLegacyInfluenceConfig({ db: currentDb });
+  }
+  return buildLegacyTierlistInfluenceConfig(rawState);
 }
 
 function formatLegacyTierlistInfluenceSummary(rawState) {
@@ -7312,9 +8264,9 @@ async function syncLiveLegacyTierlistMainsForMember(client, member, profile = nu
   };
 }
 
-function getLiveLegacyEloState() {
+function getLiveLegacyEloState(currentDb = db) {
   return loadLegacyEloDbFile({
-    sourcePath: db.config.integrations?.elo?.sourcePath,
+    sourcePath: getResolvedIntegrationSourcePath("elo", currentDb),
     baseDir: DATA_ROOT,
   });
 }
@@ -7580,8 +8532,9 @@ async function refreshLegacyEloGraphicBoard(client, options = {}) {
   }
 
   const graphicState = ensureLegacyEloGraphicState(liveState.rawDb);
+  const resolvedSnapshot = getResolvedEloGraphicPanelSnapshot();
   const forcedChannelId = String(options.channelId || "").trim();
-  const channelId = forcedChannelId || String(graphicState.dashboardChannelId || "").trim();
+  const channelId = forcedChannelId || resolvedSnapshot.channelId || String(graphicState.dashboardChannelId || "").trim();
   if (!channelId) {
     return { ok: false, reason: "not_configured", liveState };
   }
@@ -7940,6 +8893,15 @@ function parseRequestedUserId(value, fallbackUserId = "") {
   return /^\d{5,25}$/.test(candidate) ? candidate : "";
 }
 
+function parseRequestedRoleId(value, fallbackRoleId = "") {
+  const text = String(value || "").trim();
+  if (!text) return String(fallbackRoleId || "").trim();
+
+  const mentionMatch = text.match(/^<@&(\d+)>$/);
+  const candidate = mentionMatch ? mentionMatch[1] : text.replace(/\s+/g, "");
+  return /^\d{5,25}$/.test(candidate) ? candidate : "";
+}
+
 function isLikelyImageUrl(value) {
   const text = String(value || "").trim();
   if (!text) return false;
@@ -8224,7 +9186,7 @@ async function buildLegacyEloMyCardPayload(client, userId) {
   }
 
   if (session) {
-    return buildLegacyEloSubmitAwaitPayload(session.channelId || getLegacyEloSubmitPanelState(liveState.rawDb).channelId || "");
+    return buildLegacyEloSubmitAwaitPayload(session.channelId || getResolvedEloSubmitPanelSnapshot().channelId || getLegacyEloSubmitPanelState(liveState.rawDb).channelId || "");
   }
 
   return ephemeralPayload({ content: "Тебя пока нет в ELO тир-листе и активной заявки тоже нет." });
@@ -8234,7 +9196,8 @@ async function ensureLegacyEloSubmitHubMessage(client, liveState, forcedChannelI
   if (!liveState?.ok) throw new Error("Legacy ELO state is unavailable");
 
   const state = getLegacyEloSubmitPanelState(liveState.rawDb);
-  const channelId = String(forcedChannelId || state.channelId || "").trim();
+  const resolvedSnapshot = getResolvedEloSubmitPanelSnapshot();
+  const channelId = String(forcedChannelId || resolvedSnapshot.channelId || state.channelId || "").trim();
   if (!channelId) throw new Error("Не задан submit channel для legacy ELO.");
 
   const previousChannelId = String(state.channelId || "").trim();
@@ -8510,14 +9473,12 @@ function getLegacyEloTierRoleTarget(rawDb, userId) {
   return Number.isInteger(tier) && tier >= 1 && tier <= 5 ? tier : null;
 }
 
-function isLegacyEloRoleGrantEnabled() {
-  return db.config.integrations?.elo?.roleGrantEnabled !== false;
+function isLegacyEloRoleGrantEnabled(currentDb = db) {
+  return getResolvedIntegrationRecord("elo", currentDb).roleGrantEnabled !== false;
 }
 
 function setLegacyEloRoleGrantEnabled(value) {
-  db.config.integrations ||= {};
-  db.config.integrations.elo ||= {};
-  db.config.integrations.elo.roleGrantEnabled = Boolean(value);
+  writeNativeIntegrationRoleGrantEnabled(db, { slot: "elo", value });
 }
 
 async function revokeAllLegacyEloTierRoles(client, options = {}) {
@@ -8619,6 +9580,112 @@ async function syncApprovedTierRoles(client, targetUserId = null) {
   return synced;
 }
 
+async function applyManualPanelOverride(client, slot, channelId = "") {
+  const normalizedSlot = String(slot || "").trim();
+  if (["welcome", "nonGgs"].includes(normalizedSlot)) {
+    if (channelId) {
+      return refreshWelcomePanel(client);
+    }
+    return clearWelcomeManagedPanel(client, normalizedSlot);
+  }
+
+  if (normalizedSlot === "eloSubmit") {
+    const liveState = getLiveLegacyEloState();
+    if (!liveState.ok) {
+      throw new Error("Legacy ELO state is unavailable");
+    }
+
+    if (channelId) {
+      return ensureLegacyEloSubmitHubMessage(client, liveState, channelId);
+    }
+    return clearLegacyEloSubmitHubMessage(client, liveState);
+  }
+
+  if (normalizedSlot === "eloGraphic") {
+    const liveState = getLiveLegacyEloState();
+    if (!liveState.ok) {
+      throw new Error(liveState.error || "Legacy ELO db недоступна");
+    }
+
+    if (channelId) {
+      return refreshLegacyEloGraphicBoard(client, { liveState, channelId });
+    }
+    return clearLegacyEloGraphicBoard(client, liveState);
+  }
+
+  if (["tierlistDashboard", "tierlistSummary"].includes(normalizedSlot)) {
+    const liveState = getLiveLegacyTierlistState();
+    if (!liveState.ok) {
+      throw new Error(liveState.error || "Legacy Tierlist state недоступен");
+    }
+
+    if (normalizedSlot === "tierlistDashboard") {
+      if (channelId) {
+        return ensureLegacyTierlistDashboardMessage(client, liveState, channelId);
+      }
+      return clearLegacyTierlistDashboardMessage(client, liveState);
+    }
+
+    if (channelId) {
+      return ensureLegacyTierlistSummaryMessage(client, liveState, channelId);
+    }
+    return clearLegacyTierlistSummaryMessage(client, liveState);
+  }
+
+  throw new Error("Panel override для этого slot пока не поддержан.");
+}
+
+async function writeAndApplyNativePanelOverride(client, slot, channelId = "") {
+  const slotInfo = normalizeNativePanelSlot(slot);
+  if (!slotInfo) {
+    throw new Error("Неизвестный panel slot.");
+  }
+
+  if (!channelId) {
+    const writeResult = clearNativePanelRecord(db, { slot: slotInfo.canonical });
+    if (writeResult.mutated) saveDb();
+    const applyResult = await applyManualPanelOverride(client, slotInfo.canonical, "");
+    return {
+      slotInfo,
+      channel: null,
+      writeResult,
+      applyResult,
+      cleared: true,
+    };
+  }
+
+  const guild = await getGuild(client).catch(() => null);
+  if (!guild) {
+    throw new Error("Не удалось получить guild для проверки канала.");
+  }
+
+  await guild.channels.fetch().catch(() => null);
+  const channel = guild.channels.cache.get(channelId) || await guild.channels.fetch(channelId).catch(() => null);
+  if (!channel?.isTextBased()) {
+    throw new Error("Указанный канал не является текстовым.");
+  }
+
+  const writeResult = writeNativePanelRecord(db, {
+    slot: slotInfo.canonical,
+    channelId: channel.id,
+    source: "manual",
+    lastUpdated: nowIso(),
+    evidence: {
+      manualOverride: true,
+      channelName: channel.name,
+    },
+  });
+  if (writeResult.mutated) saveDb();
+  const applyResult = await applyManualPanelOverride(client, slotInfo.canonical, channel.id);
+  return {
+    slotInfo,
+    channel,
+    writeResult,
+    applyResult,
+    cleared: false,
+  };
+}
+
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -8640,19 +9707,32 @@ client.once("clientReady", async () => {
   console.log(`Logged in as ${client.user.tag}`);
   console.log(`Data root: ${DATA_ROOT}`);
   console.log(`DB path: ${DB_PATH}`);
-  const generated = await ensureManagedRoles(client);
-  await registerGuildCommands(client);
-  await syncApprovedTierRoles(client).catch(() => 0);
-  await refreshWelcomePanel(client).catch((error) => {
-    console.error("Welcome panel refresh failed:", error?.message || error);
+  const { generated } = await runClientReadyCore(client, {
+    ensureManagedRoles,
+    runSotStartupAlerts: (currentClient) => runSotStartupAlerts(currentClient, {
+      maybeLogSotCharacterHealthAlert,
+      maybeLogSotDriftAlert,
+      logError: (...args) => console.error(...args),
+    }),
+    registerGuildCommands,
+    syncApprovedTierRoles,
+    refreshWelcomePanel,
+    refreshAllTierlists,
+    logError: (...args) => console.error(...args),
   });
-  await refreshAllTierlists(client);
+
   const legacyEloState = getLiveLegacyEloState();
   if (legacyEloState.ok) {
-    const submitChannelId = String(getLegacyEloSubmitPanelState(legacyEloState.rawDb).channelId || "").trim();
+    const submitChannelId = String(getResolvedEloSubmitPanelSnapshot().channelId || getLegacyEloSubmitPanelState(legacyEloState.rawDb).channelId || "").trim();
+    const graphicChannelId = String(getResolvedEloGraphicPanelSnapshot().channelId || ensureLegacyEloGraphicState(legacyEloState.rawDb).dashboardChannelId || "").trim();
     if (submitChannelId) {
       await ensureLegacyEloSubmitHubMessage(client, legacyEloState, submitChannelId).catch((error) => {
         console.error("Legacy ELO submit hub setup failed:", error?.message || error);
+      });
+    }
+    if (graphicChannelId) {
+      await refreshLegacyEloGraphicBoard(client, { liveState: legacyEloState, channelId: graphicChannelId }).catch((error) => {
+        console.error("Legacy ELO graphic board setup failed:", error?.message || error);
       });
     }
 
@@ -8665,10 +9745,16 @@ client.once("clientReady", async () => {
       console.error("Legacy ELO tier role sync failed:", error?.message || error);
     }
   }
+
   const legacyTierlistState = getLiveLegacyTierlistState();
   if (legacyTierlistState.ok) {
-    const dashboardChannelId = String(legacyTierlistState.rawState?.settings?.channelId || appConfig.channels.tierlistChannelId || "").trim();
-    const summaryChannelId = String(legacyTierlistState.rawState?.settings?.summaryChannelId || "").trim();
+    const dashboardChannelId = String(
+      getResolvedLegacyTierlistDashboardSnapshot().channelId
+      || legacyTierlistState.rawState?.settings?.channelId
+      || (isLegacyTierlistDashboardDisabled(legacyTierlistState.rawState) ? "" : appConfig.channels.tierlistChannelId)
+      || ""
+    ).trim();
+    const summaryChannelId = String(getResolvedLegacyTierlistSummarySnapshot().channelId || legacyTierlistState.rawState?.settings?.summaryChannelId || "").trim();
     if (dashboardChannelId) {
       await ensureLegacyTierlistDashboardMessage(client, legacyTierlistState, dashboardChannelId).catch((error) => {
         console.error("Legacy Tierlist dashboard setup failed:", error?.message || error);
@@ -8710,16 +9796,21 @@ client.once("clientReady", async () => {
   console.log(`Managed roles ready. Characters: ${generated.characterRoles}, resolved: ${generated.resolvedCharacters}, recovered: ${generated.recoveredCharacters}, ambiguous: ${generated.ambiguousCharacters}, unresolved: ${generated.unresolvedCharacters}, tiers: ${generated.tierRoles}`);
   console.log("Welcome onboarding bot is ready");
 
-  setInterval(() => runAutoResendTick(client).catch((err) => console.error("Auto-resend tick error:", err)), ROLE_PANEL_AUTO_RESEND_TICK_MS);
-  setInterval(() => {
-    const tierlistSourcePath = String(db.config.integrations?.tierlist?.sourcePath || "").trim();
-    if (!tierlistSourcePath) return;
-
-    refreshLegacyTierlistSummaryMessage(client).catch((error) => {
-      const text = String(error?.message || error || "").trim();
-      if (text) console.error("Legacy Tierlist summary refresh failed:", text);
-    });
-  }, LEGACY_TIERLIST_SUMMARY_REFRESH_MS);
+  scheduleClientReadyIntervals(client, {
+    runAutoResendTick,
+    autoResendTickMs: ROLE_PANEL_AUTO_RESEND_TICK_MS,
+    scheduleSotAlertTicks: (currentClient) => scheduleSotAlertTicks(currentClient, {
+      maybeLogSotCharacterHealthAlert,
+      maybeLogSotDriftAlert,
+      characterPeriodicMs: SOT_CHARACTER_ALERT_PERIODIC_MS,
+      driftPeriodicMs: SOT_CHARACTER_ALERT_PERIODIC_MS,
+      logError: (...args) => console.error(...args),
+    }),
+    getResolvedIntegrationSourcePath,
+    refreshLegacyTierlistSummaryMessage,
+    legacyTierlistSummaryRefreshMs: LEGACY_TIERLIST_SUMMARY_REFRESH_MS,
+    logError: (...args) => console.error(...args),
+  });
 });
 
 client.on("guildMemberUpdate", async (_oldMember, newMember) => {
@@ -8773,7 +9864,7 @@ client.on("guildMemberAdd", async (member) => {
   }
 
   const nonJjsUi = getNonJjsUiConfig();
-  const welcomeChannelId = getWelcomeChannelId();
+  const welcomeChannelId = getResolvedChannelId("welcome");
   const text = [
     `Добро пожаловать на сервер ${member.guild.name}.`,
     welcomeChannelId
@@ -8789,7 +9880,7 @@ client.on("messageCreate", async (message) => {
   if (message.guildId !== GUILD_ID) return;
   const legacyEloState = getLiveLegacyEloState();
   const legacyEloSubmitChannelId = legacyEloState.ok
-    ? String(getLegacyEloSubmitPanelState(legacyEloState.rawDb).channelId || "").trim()
+    ? String(getResolvedEloSubmitPanelSnapshot().channelId || getLegacyEloSubmitPanelState(legacyEloState.rawDb).channelId || "").trim()
     : "";
 
   const legacyEloManualModsetSession = getLegacyEloManualModsetSession(message.author.id);
@@ -8938,7 +10029,7 @@ client.on("messageCreate", async (message) => {
     return;
   }
 
-  if (message.channelId !== getWelcomeChannelId()) return;
+  if (message.channelId !== getResolvedChannelId("welcome")) return;
 
   const session = getSubmitSession(message.author.id);
   if (!session) {
@@ -9162,6 +10253,11 @@ client.on("interactionCreate", async (interaction) => {
 
     if (subcommand === "panel") {
       await interaction.reply(buildModeratorPanelPayload());
+      return;
+    }
+
+    if (subcommand === "sotreport") {
+      await replyWithGroundTruthSotReport(interaction, client);
       return;
     }
 
@@ -10160,6 +11256,28 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
+    if (await handleSotReportButtonInteraction({
+      interaction,
+      client,
+      isModerator,
+      replyNoPermission: () => interaction.reply(ephemeralPayload({ content: "Нет прав." })),
+      replyWithGroundTruthSotReport,
+      ensureManagedRoles,
+      maybeLogSotCharacterHealthAlert,
+      cleanupOrphanCharacterRoles,
+      buildGroundTruthSotReportPayload,
+    })) {
+      return;
+    }
+
+    if (await handleSotReportModalOpenInteraction({
+      interaction,
+      isModerator,
+      replyNoPermission: () => interaction.reply(ephemeralPayload({ content: "Нет прав." })),
+    })) {
+      return;
+    }
+
     if (interaction.customId === "welcome_editor") {
       if (!isModerator(interaction.member)) {
         await interaction.reply(ephemeralPayload({ content: "Нет прав. Только модераторы могут редактировать." }));
@@ -10183,7 +11301,7 @@ client.on("interactionCreate", async (interaction) => {
         .setRequired(false)
         .setMaxLength(40)
         .setPlaceholder("#channel или 123456789012345678")
-        .setValue(String(getWelcomeChannelId()).slice(0, 40));
+        .setValue(String(getResolvedChannelId("welcome")).slice(0, 40));
       const reviewInput = new TextInputBuilder()
         .setCustomId("panel_channel_review")
         .setLabel("Review канал")
@@ -10191,7 +11309,7 @@ client.on("interactionCreate", async (interaction) => {
         .setRequired(false)
         .setMaxLength(40)
         .setPlaceholder("#channel или 123456789012345678")
-        .setValue(String(getReviewChannelId()).slice(0, 40));
+        .setValue(String(getResolvedChannelId("review")).slice(0, 40));
       const textTierlistInput = new TextInputBuilder()
         .setCustomId("panel_channel_text_tierlist")
         .setLabel("Text tierlist канал")
@@ -10199,7 +11317,7 @@ client.on("interactionCreate", async (interaction) => {
         .setRequired(false)
         .setMaxLength(40)
         .setPlaceholder("#channel или 123456789012345678")
-        .setValue(String(getTextTierlistChannelId()).slice(0, 40));
+        .setValue(String(getResolvedChannelId("tierlistText")).slice(0, 40));
       const graphicTierlistInput = new TextInputBuilder()
         .setCustomId("panel_channel_graphic_tierlist")
         .setLabel("Graphic tierlist канал")
@@ -10207,7 +11325,7 @@ client.on("interactionCreate", async (interaction) => {
         .setRequired(false)
         .setMaxLength(40)
         .setPlaceholder("#channel или 123456789012345678")
-        .setValue(String(getGraphicTierlistChannelId()).slice(0, 40));
+        .setValue(String(getResolvedChannelId("tierlistGraphic")).slice(0, 40));
       const noticesInput = new TextInputBuilder()
         .setCustomId("panel_channel_notices")
         .setLabel("Notice/log канал")
@@ -10215,7 +11333,7 @@ client.on("interactionCreate", async (interaction) => {
         .setRequired(false)
         .setMaxLength(40)
         .setPlaceholder("#channel или 123456789012345678")
-        .setValue(String(getNotificationChannelId()).slice(0, 40));
+        .setValue(String(getResolvedChannelId("log")).slice(0, 40));
 
       modal.addComponents(
         new ActionRowBuilder().addComponents(welcomeInput),
@@ -10546,7 +11664,7 @@ client.on("interactionCreate", async (interaction) => {
         .setRequired(false)
         .setMaxLength(500)
         .setPlaceholder("tierlist/data/state.json или C:\\path\\to\\tierlist\\state.json")
-        .setValue(String(db.config.integrations?.tierlist?.sourcePath || "").slice(0, 500));
+        .setValue(getResolvedIntegrationSourcePath("tierlist").slice(0, 500));
 
       modal.addComponents(new ActionRowBuilder().addComponents(input));
       await interaction.showModal(modal);
@@ -10580,6 +11698,7 @@ client.on("interactionCreate", async (interaction) => {
       }
 
       const liveState = getLiveLegacyTierlistState();
+      const tierlistIntegration = getResolvedIntegrationRecord("tierlist");
       const isDashboard = interaction.customId === "tierlist_panel_setup_dashboard";
       const modal = new ModalBuilder()
         .setCustomId(isDashboard ? "tierlist_panel_dashboard_setup_modal" : "tierlist_panel_summary_setup_modal")
@@ -10594,8 +11713,8 @@ client.on("interactionCreate", async (interaction) => {
         .setValue(
           String(
             isDashboard
-              ? liveState?.rawState?.settings?.channelId || db.config.integrations?.tierlist?.dashboard?.channelId || ""
-              : liveState?.rawState?.settings?.summaryChannelId || db.config.integrations?.tierlist?.summary?.channelId || ""
+              ? liveState?.rawState?.settings?.channelId || tierlistIntegration.dashboard?.channelId || ""
+              : liveState?.rawState?.settings?.summaryChannelId || tierlistIntegration.summary?.channelId || ""
           ).slice(0, 80)
         );
 
@@ -10611,6 +11730,7 @@ client.on("interactionCreate", async (interaction) => {
       }
 
       const liveState = getLiveLegacyTierlistState();
+  const tierlistIntegration = getResolvedIntegrationRecord("tierlist");
       const modal = new ModalBuilder().setCustomId("tierlist_panel_channels_modal").setTitle("Каналы Tierlist");
 
       const dashboardInput = new TextInputBuilder()
@@ -10623,7 +11743,7 @@ client.on("interactionCreate", async (interaction) => {
         .setValue(
           String(
             liveState?.rawState?.settings?.channelId ||
-            db.config.integrations?.tierlist?.dashboard?.channelId || ""
+            tierlistIntegration.dashboard?.channelId || ""
           ).slice(0, 80)
         );
 
@@ -10637,7 +11757,7 @@ client.on("interactionCreate", async (interaction) => {
         .setValue(
           String(
             liveState?.rawState?.settings?.summaryChannelId ||
-            db.config.integrations?.tierlist?.summary?.channelId || ""
+            tierlistIntegration.summary?.channelId || ""
           ).slice(0, 80)
         );
 
@@ -11548,7 +12668,7 @@ client.on("interactionCreate", async (interaction) => {
         .setRequired(false)
         .setMaxLength(500)
         .setPlaceholder("elo-db.json или C:\\path\\to\\elo\\db.json")
-        .setValue(String(db.config.integrations?.elo?.sourcePath || "").slice(0, 500));
+        .setValue(getResolvedIntegrationSourcePath("elo").slice(0, 500));
 
       modal.addComponents(new ActionRowBuilder().addComponents(input));
       await interaction.showModal(modal);
@@ -11678,7 +12798,7 @@ client.on("interactionCreate", async (interaction) => {
       }
 
       const submitPanel = getLegacyEloSubmitPanelState(liveState.rawDb);
-      const graphicState = db.config.integrations?.elo?.graphicBoard || {};
+      const graphicState = getResolvedIntegrationRecord("elo").graphicBoard || {};
       const modal = new ModalBuilder().setCustomId("elo_panel_channels_modal").setTitle("Каналы ELO");
 
       const submitInput = new TextInputBuilder()
@@ -12001,6 +13121,7 @@ client.on("interactionCreate", async (interaction) => {
       "panel_refresh_welcome",
       "panel_refresh_tierlists",
       "panel_sync_roles",
+      "panel_cleanup_orphan_characters",
       "panel_remind_missing",
       "panel_refresh_summary",
       "panel_mode_normal",
@@ -12022,8 +13143,14 @@ client.on("interactionCreate", async (interaction) => {
         statusText = "Graphic-board и текстовый тир-лист обновлены.";
       } else if (interaction.customId === "panel_sync_roles") {
         const managed = await ensureManagedRoles(client);
+        await maybeLogSotCharacterHealthAlert(client, "panel-sync-roles");
         const synced = await syncApprovedTierRoles(client);
         statusText = `Роли пересинхронизированы. Tier-профилей: ${synced}. Персонажи: resolved ${managed.resolvedCharacters}, recovered ${managed.recoveredCharacters}, ambiguous ${managed.ambiguousCharacters}, unresolved ${managed.unresolvedCharacters}.`;
+      } else if (interaction.customId === "panel_cleanup_orphan_characters") {
+        const result = await cleanupOrphanCharacterRoles(client);
+        statusText = result.removed
+          ? `Legacy orphan character bindings очищены: ${result.removed}.`
+          : "Legacy orphan character bindings не найдены.";
       } else if (interaction.customId === "panel_remind_missing") {
         const result = await sendMissingTierlistReminder(client);
         statusText = `DM-рассылка завершена. Всего: ${result.total}, отправлено: ${result.sent}, не доставлено: ${result.failed}.`;
@@ -12066,7 +13193,7 @@ client.on("interactionCreate", async (interaction) => {
 
       const captchaMode = getNonJjsCaptchaModeForMember(member);
 
-      if (captchaMode.mode !== "practice" && !getNonGgsAccessRoleId()) {
+      if (captchaMode.mode !== "practice" && !getNonJjsAccessRoleId()) {
         await interaction.reply(ephemeralPayload({
           content: "Отдельная роль для доступа без JJS ещё не настроена. Заполни `NON_JJS_ACCESS_ROLE_ID`, затем попробуй снова.",
         }));
@@ -12122,7 +13249,7 @@ client.on("interactionCreate", async (interaction) => {
 
         const session = getSubmitSession(interaction.user.id);
         if (session) {
-          const welcomeChannelId = getWelcomeChannelId();
+          const welcomeChannelId = getResolvedChannelId("welcome");
           if (!welcomeChannelId) {
             await interaction.reply(ephemeralPayload({
               content: "Ты уже на шаге подачи заявки. Welcome-канал пока не настроен, попроси модератора указать его через Onboarding Panel.",
@@ -12822,6 +13949,38 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
+    if (await handleSotReportModalSubmitInteraction({
+      interaction,
+      client,
+      isModerator,
+      replyNoPermission: () => interaction.reply(ephemeralPayload({ content: "Нет прав." })),
+      replyError: (_interaction, text) => interaction.reply(ephemeralPayload({ content: text })),
+      replyWithGroundTruthSotReport,
+      parseRequestedRoleId,
+      parseRequestedChannelId,
+      normalizeSotReportChannelSlot,
+      normalizeNativeRoleSlot,
+      getConfiguredManagedCharacterCatalog,
+      getManagedCharacterCatalog,
+      clearNativeCharacterRecord: (options) => clearNativeCharacterRecord(db, options),
+      writeNativeCharacterRecord: (options) => writeNativeCharacterRecord(db, options),
+      getGuild,
+      getManagedCharacterRecoveryExcludedRoleIds,
+      nowIso,
+      saveDb,
+      invalidateLiveCharacterStatsContext,
+      formatRoleMention,
+      formatChannelMention,
+      previewText,
+      normalizeNativePanelSlot,
+      writeAndApplyNativePanelOverride,
+      applyGroundTruthReportChannelLink,
+      clearNativeRoleRecord: (options) => clearNativeRoleRecord(db, options),
+      writeNativeRoleRecord: (options) => writeNativeRoleRecord(db, options),
+    })) {
+      return;
+    }
+
     // ── Combo guide edit modal ──
     if (interaction.customId?.startsWith("combo_edit_message:")) {
       if (!hasComboGuidePanelAccess(interaction.member)) {
@@ -13114,10 +14273,13 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
       await applyUiMutation(client, "welcome", () => {
-        db.config.nonJjsUi ||= {};
-        db.config.nonJjsUi.title = title;
-        db.config.nonJjsUi.description = description;
-        db.config.nonJjsUi.buttonLabel = buttonLabel;
+        db.config.presentation ||= {};
+        db.config.presentation.nonGgs ||= {};
+        db.config.presentation.nonGgs.title = title;
+        db.config.presentation.nonGgs.description = description;
+        db.config.presentation.nonGgs.buttonLabel = buttonLabel;
+        delete db.config.nonJjsUi;
+        delete db.config.nonGgsUi;
       });
       await interaction.reply(buildWelcomeEditorPayload("JJS-блок обновлён."));
       return;
@@ -13179,13 +14341,24 @@ client.on("interactionCreate", async (interaction) => {
       const graphicTierlistChannelId = parseRequestedChannelId(interaction.fields.getTextInputValue("panel_channel_graphic_tierlist"), "");
       const noticesChannelId = parseRequestedChannelId(interaction.fields.getTextInputValue("panel_channel_notices"), "");
 
-      for (const [label, channelId] of [
-        ["Welcome", welcomeChannelId],
-        ["Review", reviewChannelId],
-        ["Text tierlist", textTierlistChannelId],
-        ["Graphic tierlist", graphicTierlistChannelId],
-        ["Notice/log", noticesChannelId],
-      ]) {
+      const channelOverrides = [
+        { slot: "welcome", label: "Welcome", channelId: welcomeChannelId },
+        { slot: "review", label: "Review", channelId: reviewChannelId },
+        { slot: "tierlistText", label: "Text tierlist", channelId: textTierlistChannelId },
+        { slot: "tierlistGraphic", label: "Graphic tierlist", channelId: graphicTierlistChannelId },
+        { slot: "log", label: "Notice/log", channelId: noticesChannelId },
+      ];
+      const changedChannelOverrides = getManagedChannelOverrideChanges(
+        channelOverrides,
+        (slot) => getResolvedChannelId(slot)
+      );
+
+      if (!changedChannelOverrides.length) {
+        await interaction.editReply(buildModeratorPanelPayload("Изменений по каналам нет.", false));
+        return;
+      }
+
+      for (const { label, channelId } of changedChannelOverrides) {
         if (!channelId) continue;
         const channel = await client.channels.fetch(channelId).catch(() => null);
         if (!channel?.isTextBased?.()) {
@@ -13194,59 +14367,32 @@ client.on("interactionCreate", async (interaction) => {
         }
       }
 
-      const welcomePanel = getWelcomePanelState();
-      welcomePanel.channelId = welcomeChannelId;
-      if (!welcomeChannelId) {
-        welcomePanel.messageId = "";
-        db.config.nonGgsPanel ||= { channelId: "", messageId: "" };
-        db.config.nonGgsPanel.channelId = "";
-        db.config.nonGgsPanel.messageId = "";
+      let batchResult;
+      try {
+        batchResult = await applyManagedChannelOverrideBatch({
+          channelOverrides: changedChannelOverrides,
+          getCurrentChannelId: (slot) => getResolvedChannelId(slot),
+          applyChannelOverride: (slot, channelId, options) => applyGroundTruthReportChannelLink(client, slot, channelId, {
+            allowClear: options?.allowClear !== false,
+          }),
+        });
+      } catch (error) {
+        const appliedText = error instanceof ChannelOverrideBatchError && error.appliedOverrides.length
+          ? ` Применённые изменения откатили: ${error.appliedOverrides.map((entry) => entry.label || getManagedChannelSlotLabel(entry.slot)).join(", ")}.`
+          : "";
+        const rollbackText = error instanceof ChannelOverrideBatchError && error.rollbackFailures.length
+          ? ` Откат не удался для: ${error.rollbackFailures.map((entry) => entry.label || getManagedChannelSlotLabel(entry.slot)).join(", ")}.`
+          : "";
+        await interaction.editReply({
+          content: `${String(error?.message || error || "Не удалось сохранить каналы.")}${appliedText}${rollbackText}`,
+          embeds: [],
+          components: [],
+        });
+        return;
       }
 
-      db.config.reviewChannelId = reviewChannelId;
-
-      const textBoardState = getTextTierlistBoardState(db.config, appConfig.channels.tierlistChannelId || "");
-      const previousTextChannelId = String(textBoardState.channelId || "").trim();
-      textBoardState.channelId = textTierlistChannelId;
-      if (!textTierlistChannelId || previousTextChannelId !== textTierlistChannelId) {
-        clearTextTierlistBoardMessageIds(textBoardState);
-      }
-
-      const graphicBoardState = getGraphicTierlistBoardState(db.config, appConfig.channels.tierlistChannelId || "");
-      const previousGraphicChannelId = String(graphicBoardState.channelId || "").trim();
-      graphicBoardState.channelId = graphicTierlistChannelId;
-      if (!graphicTierlistChannelId || previousGraphicChannelId !== graphicTierlistChannelId) {
-        graphicBoardState.messageId = "";
-      }
-
-      db.config.notificationChannelId = noticesChannelId;
-      saveDb();
-
-      let statusText = "Каналы сохранены.";
-      const refreshNotes = [];
-
-      if (welcomeChannelId) {
-        try {
-          const result = await refreshWelcomePanel(client);
-          if (result?.welcomeMessage?.id) {
-            refreshNotes.push(`welcome обновлён в <#${welcomeChannelId}>`);
-          }
-        } catch (error) {
-          refreshNotes.push(`welcome не обновился: ${String(error?.message || error)}`);
-        }
-      }
-
-      const tierlistResult = await refreshAllTierlists(client);
-      if (tierlistResult.graphicError) {
-        refreshNotes.push(`graphic tierlist: ${String(tierlistResult.graphicError?.message || tierlistResult.graphicError)}`);
-      }
-      if (tierlistResult.textError) {
-        refreshNotes.push(`text tierlist: ${String(tierlistResult.textError?.message || tierlistResult.textError)}`);
-      }
-
-      if (refreshNotes.length) {
-        statusText = `${statusText} ${refreshNotes.join("; ")}`;
-      }
+      let statusText = batchResult.statusNotes.length ? `${batchResult.statusNotes.join(" ")} ` : "";
+      statusText += "Каналы сохранены.";
 
       await interaction.editReply(buildModeratorPanelPayload(statusText, false));
       return;
@@ -13286,15 +14432,15 @@ client.on("interactionCreate", async (interaction) => {
       }
 
       const sourcePath = interaction.fields.getTextInputValue("elo_source_path").trim();
-      db.config.integrations = normalizeIntegrationState(db.config.integrations).integrations;
 
       let statusText = "";
       if (!sourcePath) {
+        clearNativeIntegrationSourcePath(db, { slot: "elo" });
         const cleared = clearDormantEloSync(db, { syncedAt: nowIso(), sourcePath: "" });
         saveDb();
         statusText = `ELO sourcePath очищен. Снято проекций: ${cleared.clearedProfiles}.`;
       } else {
-        db.config.integrations.elo.sourcePath = sourcePath;
+        writeNativeIntegrationSourcePath(db, { slot: "elo", sourcePath });
         saveDb();
         const result = refreshDormantEloImport();
         statusText = getDormantEloImportStatusText(result);
@@ -13318,15 +14464,15 @@ client.on("interactionCreate", async (interaction) => {
       }
 
       const sourcePath = interaction.fields.getTextInputValue("tierlist_source_path").trim();
-      db.config.integrations = normalizeIntegrationState(db.config.integrations).integrations;
 
       let statusText = "";
       if (!sourcePath) {
+        clearNativeIntegrationSourcePath(db, { slot: "tierlist" });
         const cleared = clearDormantTierlistSync(db, { syncedAt: nowIso(), sourcePath: "" });
         saveDb();
         statusText = `Tierlist sourcePath очищен. Снято проекций: ${cleared.clearedProfiles}.`;
       } else {
-        db.config.integrations.tierlist.sourcePath = sourcePath;
+        writeNativeIntegrationSourcePath(db, { slot: "tierlist", sourcePath });
         saveDb();
         const result = refreshDormantTierlistImport();
         statusText = getDormantTierlistImportStatusText(result);
@@ -13578,12 +14724,14 @@ client.on("interactionCreate", async (interaction) => {
       }
 
       try {
-        const result = isDashboard
-          ? await ensureLegacyTierlistDashboardMessage(client, liveState, channelId)
-          : await ensureLegacyTierlistSummaryMessage(client, liveState, channelId);
+        const result = await writeAndApplyNativePanelOverride(
+          client,
+          isDashboard ? "tierlistDashboard" : "tierlistSummary",
+          channelId
+        );
 
         await interaction.reply(buildDormantTierlistPanelPayload(
-          `${isDashboard ? "Legacy Tierlist dashboard" : "Legacy Tierlist summary"} создан/обновлён в ${formatChannelMention(result.channelId)}. Message ID: ${result.messageId || "—"}.${getLegacyTierlistSyncStatusSuffix(result.syncResult)}`
+          `${isDashboard ? "Legacy Tierlist dashboard" : "Legacy Tierlist summary"} создан/обновлён в ${formatChannelMention(result.channel?.id || channelId)}.`
         ));
       } catch (error) {
         await interaction.reply(ephemeralPayload({ content: String(error?.message || error || "Не удалось настроить legacy Tierlist public view.") }));
@@ -13624,8 +14772,8 @@ client.on("interactionCreate", async (interaction) => {
 
       if (dashboardChannelId) {
         try {
-          const result = await ensureLegacyTierlistDashboardMessage(client, liveState, dashboardChannelId);
-          notes.push(`Dashboard → ${formatChannelMention(result.channelId)} (msg ${result.messageId || "—"}).`);
+          const result = await writeAndApplyNativePanelOverride(client, "tierlistDashboard", dashboardChannelId);
+          notes.push(`Dashboard → ${formatChannelMention(result.channel?.id || dashboardChannelId)}.`);
         } catch (error) {
           notes.push(`Dashboard ошибка: ${String(error?.message || error)}.`);
         }
@@ -13633,8 +14781,8 @@ client.on("interactionCreate", async (interaction) => {
 
       if (summaryChannelId) {
         try {
-          const result = await ensureLegacyTierlistSummaryMessage(client, liveState, summaryChannelId);
-          notes.push(`Summary → ${formatChannelMention(result.channelId)} (msg ${result.messageId || "—"}).`);
+          const result = await writeAndApplyNativePanelOverride(client, "tierlistSummary", summaryChannelId);
+          notes.push(`Summary → ${formatChannelMention(result.channel?.id || summaryChannelId)}.`);
         } catch (error) {
           notes.push(`Summary ошибка: ${String(error?.message || error)}.`);
         }
@@ -13771,12 +14919,12 @@ client.on("interactionCreate", async (interaction) => {
       try {
         const submitPanel = getLegacyEloSubmitPanelState(liveState.rawDb);
         if (submitChannelId) {
-          const result = await ensureLegacyEloSubmitHubMessage(client, liveState, submitChannelId);
-          notes.push(`Submit Hub → ${formatChannelMention(result.channelId)} (msg ${result.messageId || "—"}).`);
+          const result = await writeAndApplyNativePanelOverride(client, "eloSubmit", submitChannelId);
+          notes.push(`Submit Hub → ${formatChannelMention(result.channel?.id || submitChannelId)}.`);
         } else if (submitPanel.channelId) {
-          const result = await clearLegacyEloSubmitHubMessage(client, liveState);
-          notes.push(result.deletedMessageId
-            ? `Submit Hub сброшен и старое сообщение удалено (${result.deletedMessageId}).`
+          const result = await writeAndApplyNativePanelOverride(client, "eloSubmit", "");
+          notes.push(result.applyResult?.deletedMessageId
+            ? `Submit Hub сброшен и старое сообщение удалено (${result.applyResult.deletedMessageId}).`
             : "Submit Hub канал сброшен.");
         }
       } catch (error) {
@@ -13785,17 +14933,14 @@ client.on("interactionCreate", async (interaction) => {
 
       try {
         if (graphicChannelId) {
-          setLegacyEloGraphicDashboardChannel(liveState.rawDb, graphicChannelId);
-          const result = await refreshLegacyEloGraphicBoard(client, { liveState, channelId: graphicChannelId });
-          notes.push(result.ok
-            ? `PNG board → ${formatChannelMention(result.channelId)}.`
-            : "PNG board не удалось пересобрать.");
+          const result = await writeAndApplyNativePanelOverride(client, "eloGraphic", graphicChannelId);
+          notes.push(`PNG board → ${formatChannelMention(result.channel?.id || graphicChannelId)}.`);
         } else {
           const graphicState = ensureLegacyEloGraphicState(liveState.rawDb);
           if (graphicState.dashboardChannelId) {
-            const result = await clearLegacyEloGraphicBoard(client, liveState);
-            notes.push(result.deletedMessageId
-              ? `PNG board сброшен и старое сообщение удалено (${result.deletedMessageId}).`
+            const result = await writeAndApplyNativePanelOverride(client, "eloGraphic", "");
+            notes.push(result.applyResult?.deletedMessageId
+              ? `PNG board сброшен и старое сообщение удалено (${result.applyResult.deletedMessageId}).`
               : "PNG board канал сброшен.");
           }
         }
@@ -13827,9 +14972,9 @@ client.on("interactionCreate", async (interaction) => {
       }
 
       try {
-        const result = await ensureLegacyEloSubmitHubMessage(client, liveState, channelId);
+        const result = await writeAndApplyNativePanelOverride(client, "eloSubmit", channelId);
         await interaction.reply(buildDormantEloPanelPayload(
-          `Legacy ELO submit hub создан/обновлён в ${formatChannelMention(result.channelId)}. Message ID: ${result.messageId || "—"}.${getLegacyEloSyncStatusSuffix(result.syncResult)}`
+          `Legacy ELO submit hub создан/обновлён в ${formatChannelMention(result.channel?.id || channelId)}.`
         ));
       } catch (error) {
         await interaction.reply(ephemeralPayload({ content: String(error?.message || error || "Не удалось настроить legacy ELO submit hub.") }));
@@ -13880,11 +15025,8 @@ client.on("interactionCreate", async (interaction) => {
       }
 
       try {
-        setLegacyEloGraphicDashboardChannel(liveState.rawDb, channelId);
-        const result = await refreshLegacyEloGraphicBoard(client, { liveState, channelId });
-        const status = result.ok
-          ? `Legacy ELO PNG создан/обновлён в ${formatChannelMention(result.channelId)}.${getLegacyEloSyncStatusSuffix(result.syncResult)}`
-          : "Не удалось настроить legacy ELO PNG канал.";
+        const result = await writeAndApplyNativePanelOverride(client, "eloGraphic", channelId);
+        const status = `Legacy ELO PNG создан/обновлён в ${formatChannelMention(result.channel?.id || channelId)}.`;
         await interaction.reply(buildLegacyEloGraphicPanelPayload(liveState.rawDb, status));
       } catch (error) {
         await interaction.reply(ephemeralPayload({ content: String(error?.message || error || "Не удалось настроить legacy ELO PNG канал.") }));

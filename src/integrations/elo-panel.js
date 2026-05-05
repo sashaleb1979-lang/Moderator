@@ -1,5 +1,7 @@
 "use strict";
 
+const { resolveIntegrationRecord } = require("../sot/resolver/integrations");
+
 function cleanString(value, limit = 2000) {
   return String(value || "").trim().slice(0, Math.max(0, Number(limit) || 0));
 }
@@ -46,8 +48,12 @@ function getDormantEloEntries(db = {}) {
     .filter((entry) => entry.currentElo !== null || entry.lastSubmissionStatus);
 }
 
-function getDormantEloPanelSnapshot(db = {}) {
-  const integrations = db?.config?.integrations?.elo || {};
+function getDormantEloPanelSnapshot(db = {}, options = {}) {
+  const integrations = resolveIntegrationRecord({
+    slot: "elo",
+    db,
+    appConfig: options.appConfig || {},
+  });
   const entries = getDormantEloEntries(db)
     .filter((entry) => entry.currentElo !== null || entry.lastSubmissionStatus)
     .sort((left, right) => {

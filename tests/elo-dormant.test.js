@@ -108,6 +108,8 @@ test("applyDormantEloSync projects ratings and latest submissions into shared pr
   assert.equal(db.config.integrations.elo.submitPanel.channelId, "submit-1");
   assert.equal(db.config.integrations.elo.graphicBoard.messageId, "graphic-msg");
   assert.equal(db.config.integrations.elo.lastImportAt, "2026-05-01T16:30:00.000Z");
+  assert.equal(db.sot.integrations.elo.status, "in_progress");
+  assert.equal(db.sot.integrations.elo.submitPanel.channelId, "submit-1");
 
   assert.equal(db.profiles.user1.displayName, "Existing Name");
   assert.equal(db.profiles.user1.domains.elo.currentElo, 110);
@@ -193,6 +195,8 @@ test("clearDormantEloSync resets integration state and removes stale elo project
   assert.equal(db.config.integrations.elo.status, "not_started");
   assert.equal(db.config.integrations.elo.lastImportAt, null);
   assert.equal(db.config.integrations.elo.submitPanel.channelId, "");
+  assert.equal(db.sot.integrations.elo.sourcePath, "");
+  assert.equal(db.sot.integrations.elo.status, "not_started");
   assert.equal(db.profiles.user1.domains.elo.currentElo, null);
   assert.equal(db.profiles.user1.summary.elo.hasRating, false);
 });

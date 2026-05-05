@@ -19,6 +19,29 @@ function normalizeStringArray(value, limit = 50, itemLimit = 120) {
   return [...new Set(value.map((entry) => cleanString(entry, itemLimit)).filter(Boolean))].slice(0, limit);
 }
 
+function captureRawStringArray(value, limit = 50, itemLimit = 120) {
+  if (!Array.isArray(value)) return [];
+  return value.map((entry) => cleanString(entry, itemLimit)).filter(Boolean).slice(0, limit);
+}
+
+function normalizeOnboardingRawSnapshot(source = {}, existingRaw = {}) {
+  const persisted = existingRaw && typeof existingRaw === "object" && !Array.isArray(existingRaw)
+    ? existingRaw
+    : {};
+
+  return {
+    mainCharacterIds: Array.isArray(persisted.mainCharacterIds)
+      ? captureRawStringArray(persisted.mainCharacterIds, 20, 80)
+      : captureRawStringArray(source.mainCharacterIds, 20, 80),
+    mainCharacterLabels: Array.isArray(persisted.mainCharacterLabels)
+      ? captureRawStringArray(persisted.mainCharacterLabels, 20, 120)
+      : captureRawStringArray(source.mainCharacterLabels, 20, 120),
+    characterRoleIds: Array.isArray(persisted.characterRoleIds)
+      ? captureRawStringArray(persisted.characterRoleIds, 40, 40)
+      : captureRawStringArray(source.characterRoleIds, 40, 40),
+  };
+}
+
 function normalizeNullableInteger(value, options = {}) {
   if (value === null || value === undefined || value === "") return null;
   const amount = Number(value);
@@ -35,6 +58,7 @@ function normalizePositiveNumber(value, fallback = 1) {
 }
 
 function normalizeOnboardingDomainState(profile = {}) {
+  const raw = normalizeOnboardingRawSnapshot(profile, profile?.domains?.onboarding?.raw);
   return {
     mainCharacterIds: normalizeStringArray(profile.mainCharacterIds, 10, 80),
     mainCharacterLabels: normalizeStringArray(profile.mainCharacterLabels, 10, 120),
@@ -48,6 +72,7 @@ function normalizeOnboardingDomainState(profile = {}) {
     lastSubmissionId: normalizeNullableString(profile.lastSubmissionId, 80),
     lastSubmissionStatus: normalizeNullableString(profile.lastSubmissionStatus, 40),
     lastReviewedAt: normalizeNullableString(profile.lastReviewedAt, 80),
+    raw,
   };
 }
 
@@ -251,7 +276,45 @@ function normalizeIntegrationState(value = {}) {
   };
 }
 
+function deriveProfileMainView(profile = {}, characterEntries = []) {
+  const source = profile && typeof profile === "object" ? profile : {};
+  const mainCharacterIds = normalizeStringArray(source.mainCharacterIds, 10, 80);
+  const storedLabels = normalizeStringArray(source.mainCharacterLabels, 10, 120);
+  const rawLabels = Array.isArray(source?.domains?.onboarding?.raw?.mainCharacterLabels)
+    ? captureRawStringArray(source.domains.onboarding.raw.mainCharacterLabels, 20, 120)
+    : [];
+  const entriesById = new Map(
+    (Array.isArray(characterEntries) ? characterEntries : [])
+      .map((entry) => {
+        const id = cleanString(entry?.id, 80);
+        if (!id) return null;
+        return [id, {
+          label: cleanString(entry?.label, 120),
+          roleId: cleanString(entry?.roleId, 40),
+        }];
+      })
+      .filter(Boolean)
+  );
+
+  const mainCharacterLabels = mainCharacterIds.map((id, index) => {
+    const currentEntry = entriesById.get(id);
+    return cleanString(currentEntry?.label || storedLabels[index] || rawLabels[index] || id, 120);
+  }).filter(Boolean);
+
+  const characterRoleIds = [...new Set(mainCharacterIds
+    .map((id) => entriesById.get(id)?.roleId)
+    .map((value) => cleanString(value, 40))
+    .filter(Boolean))];
+
+  return {
+    mainCharacterIds,
+    mainCharacterLabels,
+    characterRoleIds,
+  };
+}
+
 module.exports = {
+  deriveProfileMainView,
   INTEGRATION_MODE_DORMANT,
   SHARED_PROFILE_VERSION,
   createDefaultIntegrationState,

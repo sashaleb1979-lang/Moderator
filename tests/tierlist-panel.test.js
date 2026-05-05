@@ -91,6 +91,38 @@ test("getDormantTierlistPanelSnapshot summarizes integration and strongest influ
   assert.equal(snapshot.strongestInfluence.userId, "user1");
 });
 
+test("getDormantTierlistPanelSnapshot prefers persisted SoT panel channels while keeping legacy fallback message ids", () => {
+  const snapshot = getDormantTierlistPanelSnapshot({
+    sot: {
+      integrations: {
+        tierlist: {
+          dashboard: {
+            channelId: "dashboard-sot",
+          },
+          summary: {
+            channelId: "summary-sot",
+          },
+        },
+      },
+    },
+    config: {
+      integrations: {
+        tierlist: {
+          sourcePath: "./tierlist/state.json",
+          status: "in_progress",
+          dashboard: { channelId: "dashboard-legacy", messageId: "dashboard-msg", lastUpdated: "2026-05-01T12:02:00.000Z" },
+          summary: { channelId: "summary-legacy", messageId: "summary-msg", lastUpdated: "2026-05-01T12:03:00.000Z" },
+        },
+      },
+    },
+  });
+
+  assert.equal(snapshot.dashboard.channelId, "dashboard-sot");
+  assert.equal(snapshot.dashboard.messageId, "dashboard-msg");
+  assert.equal(snapshot.summary.channelId, "summary-sot");
+  assert.equal(snapshot.summary.messageId, "summary-msg");
+});
+
 test("getDormantTierlistProfileSnapshot returns exact user snapshot", () => {
   const snapshot = getDormantTierlistProfileSnapshot({
     profiles: {

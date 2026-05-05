@@ -306,6 +306,12 @@ function readLegacyTierlistCustomCharacters(liveState) {
   return loadJsonIfExists(liveState?.customCharactersPath, []);
 }
 
+function listLegacyTierlistCustomCharacterIds(liveState) {
+  return readLegacyTierlistCustomCharacters(liveState)
+    .map((entry) => cleanString(entry?.id, 80))
+    .filter(Boolean);
+}
+
 function getLegacyTierlistUserMainIds(rawUser = {}) {
   const mainIds = Array.isArray(rawUser?.mainIds) ? rawUser.mainIds : [];
   const fallback = mainIds.length ? mainIds : (rawUser?.mainId ? [rawUser.mainId] : []);
@@ -915,6 +921,7 @@ module.exports = {
   getLegacyTierlistImageConfig,
   getLegacyTierlistUserTierCounts,
   invalidateLegacyTierlistGlobalPngCache,
+  listLegacyTierlistCustomCharacterIds,
   loadLegacyTierlistState,
   mergeLegacyTierlistCharacters,
   renderLegacyTierlistFromBuckets,

@@ -72,6 +72,38 @@ test("getDormantEloPanelSnapshot summarizes imported elo profiles and panel stat
   assert.equal(snapshot.graphicBoard.channelId, "graphic-1");
 });
 
+test("getDormantEloPanelSnapshot prefers persisted SoT integration panel channels while keeping legacy fallback message ids", () => {
+  const snapshot = getDormantEloPanelSnapshot({
+    sot: {
+      integrations: {
+        elo: {
+          submitPanel: {
+            channelId: "submit-sot",
+          },
+          graphicBoard: {
+            channelId: "graphic-sot",
+          },
+        },
+      },
+    },
+    config: {
+      integrations: {
+        elo: {
+          sourcePath: "legacy/elo-db.json",
+          status: "in_progress",
+          submitPanel: { channelId: "submit-legacy", messageId: "submit-msg" },
+          graphicBoard: { channelId: "graphic-legacy", messageId: "graphic-msg", lastUpdated: "2026-05-01T16:10:00.000Z" },
+        },
+      },
+    },
+  });
+
+  assert.equal(snapshot.submitPanel.channelId, "submit-sot");
+  assert.equal(snapshot.submitPanel.messageId, "submit-msg");
+  assert.equal(snapshot.graphicBoard.channelId, "graphic-sot");
+  assert.equal(snapshot.graphicBoard.messageId, "graphic-msg");
+});
+
 test("getDormantEloProfileSnapshot returns a specific imported elo profile", () => {
   const db = {
     profiles: {
