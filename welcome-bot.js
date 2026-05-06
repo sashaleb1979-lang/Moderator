@@ -244,6 +244,10 @@ const {
   getTierlistStats,
 } = require("./src/onboard/tierlist-stats");
 const {
+  filterEntriesByAllowedUserIds,
+  hasAnyAllowedRole,
+} = require("./src/onboard/tierlist-live-members");
+const {
   buildCharacterFactData,
   collectRecentKillChanges,
   paginateRecentKillChanges,
@@ -1096,6 +1100,7 @@ function buildMyCardEmbed(userId) {
 
 function getApprovedTierlistEntries(options = {}) {
   const liveMainsByUserId = options?.liveMainsByUserId;
+  const allowedUserIds = options?.allowedUserIds instanceof Set ? options.allowedUserIds : null;
   const characterEntries = getCharacterEntries();
   const characterById = new Map(characterEntries.map((entry) => [entry.id, entry]));
   const characterByLabel = new Map(characterEntries.map((entry) => [String(entry.label).toLowerCase(), entry]));
@@ -1133,7 +1138,7 @@ function getApprovedTierlistEntries(options = {}) {
     }
     return out;
   };
-  return Object.entries(db.profiles || {})
+  return filterEntriesByAllowedUserIds(Object.entries(db.profiles || {})
     .map(([userId, profile]) => {
       const liveMains = liveMainsByUserId instanceof Map ? liveMainsByUserId.get(userId) : null;
       const mains = (Array.isArray(liveMains) && liveMains.length) ? liveMains : buildFallbackMains(profile);
@@ -1151,7 +1156,14 @@ function getApprovedTierlistEntries(options = {}) {
     .sort((left, right) => {
       if (right.approvedKills !== left.approvedKills) return right.approvedKills - left.approvedKills;
       return left.displayName.localeCompare(right.displayName, "ru");
-    });
+    }), allowedUserIds);
+}
+
+function getLiveApprovedTierlistEntries(liveContext) {
+  return getApprovedTierlistEntries({
+    liveMainsByUserId: liveContext?.liveMainsByUserId,
+    allowedUserIds: liveContext?.trackedUserIds,
+  });
 }
 
 function getStatsSnapshot(entries) {
@@ -1205,6 +1217,7 @@ function createTrackedLiveMemberEntry(userId, member) {
     displayName: member?.displayName || getProfileDisplayName(userId, profile),
     approvedKills: parseTrackedStatNumber(profile?.approvedKills),
     killTier: parseTrackedStatNumber(profile?.killTier),
+    hasLiveKillRole: true,
   };
 }
 
@@ -1238,6 +1251,7 @@ async function getLiveCharacterStatsContext(client, options = {}) {
     if (!characterEntries.length) {
       return {
         liveMainsByUserId: new Map(),
+        trackedUserIds: new Set(),
         trackedMemberStats: getTrackedMemberStats([]),
         characterStats: [],
       };
@@ -1257,12 +1271,14 @@ async function getLiveCharacterStatsContext(client, options = {}) {
     );
     const liveMainsByUserId = new Map();
     const trackedMembersByUserId = new Map();
+    const tierRoleIds = getAllTierRoleIds();
 
     for (const member of guild.members.cache.values()) {
       if (member.user?.bot) continue;
 
       const memberCharacters = characterEntries.filter((entry) => member.roles.cache.has(entry.roleId));
       if (!memberCharacters.length) continue;
+      if (!hasAnyAllowedRole(member.roles.cache.keys(), tierRoleIds)) continue;
 
       const liveMains = memberCharacters
         .map((entry) => ({ id: entry.id, label: entry.label, roleId: entry.roleId }))
@@ -1286,6 +1302,7 @@ async function getLiveCharacterStatsContext(client, options = {}) {
 
     return {
       liveMainsByUserId,
+      trackedUserIds: new Set(trackedMembersByUserId.keys()),
       trackedMemberStats: getTrackedMemberStats([...trackedMembersByUserId.values()]),
       characterStats: getCharacterRoleStats([...characterStatsInputById.values()]),
     };
@@ -1395,7 +1412,7 @@ function buildMainStatsEmbeds(characterStats = []) {
   if (!characterStats.length) return [];
 
   const popularityLines = characterStats.map((stat, index) =>
-    `${index + 1}. ${stat.roleId ? formatRoleMention(stat.roleId) : `**${stat.main}**`} — с ролью: **${formatNumber(stat.roleHolderCount)}** • с kills: **${formatNumber(stat.rememberedCount)}** • сумма: **${formatNumber(stat.totalKills)}** • ср: **${formatNumber(stat.averageKills)}** • мед: **${formatNumber(stat.medianKills)}**`
+    `${index + 1}. ${stat.roleId ? formatRoleMention(stat.roleId) : `**${stat.main}**`} — с kill-ролью: **${formatNumber(stat.roleHolderCount)}** • с kills: **${formatNumber(stat.rememberedCount)}** • сумма: **${formatNumber(stat.totalKills)}** • ср: **${formatNumber(stat.averageKills)}** • мед: **${formatNumber(stat.medianKills)}**`
   );
   const distributionLines = characterStats.map((stat) =>
     `${stat.roleId ? formatRoleMention(stat.roleId) : `**${stat.main}**`} — тиры T5/T4/T3/T2/T1: **${stat.totalsByTier[5]} / ${stat.totalsByTier[4]} / ${stat.totalsByTier[3]} / ${stat.totalsByTier[2]} / ${stat.totalsByTier[1]}**`
@@ -1429,7 +1446,7 @@ function buildStatsEmbedsFromContext(entries, liveContext) {
 
   const lines = [];
   if (!entries.length && trackedStats.totalRoleHolders === 0) {
-    lines.push("Пока нет подтверждённых игроков и нет участников с ролями персонажей.");
+    lines.push("Пока нет подтверждённых игроков и нет участников с ролью персонажа и kill-ролью.");
   } else if (!entries.length) {
     lines.push("Подтверждённых игроков пока нет.");
   } else {
@@ -1441,7 +1458,7 @@ function buildStatsEmbedsFromContext(entries, liveContext) {
     const pct = (n) => totalActive > 0 ? `${Math.round((n / totalActive) * 100)}%` : "0%";
 
     lines.push(`👥 Активных игроков: **${formatNumber(entries.length)}**`);
-    lines.push(`🎭 С ролью персонажа: **${formatNumber(trackedStats.totalRoleHolders)}** • с kills: **${formatNumber(trackedStats.rememberedCount)}**`);
+  lines.push(`🎭 С ролью персонажа и kill-ролью: **${formatNumber(trackedStats.totalRoleHolders)}** • с сохранёнными kills: **${formatNumber(trackedStats.rememberedCount)}**`);
     lines.push(`💀 Сумма kills: **${formatNumber(totalKills)}**`);
     lines.push(`📊 Среднее: **${formatNumber(avg)}** • медиана: **${formatNumber(median)}**`);
     lines.push("");
@@ -1473,13 +1490,13 @@ function buildStatsEmbedsFromContext(entries, liveContext) {
 
 async function buildStatsEmbeds(client) {
   const liveContext = await getLiveCharacterStatsContext(client);
-  const entries = getApprovedTierlistEntries({ liveMainsByUserId: liveContext.liveMainsByUserId });
+  const entries = getLiveApprovedTierlistEntries(liveContext);
   return buildStatsEmbedsFromContext(entries, liveContext);
 }
 
 async function buildTierlistEmbeds(client) {
   const liveContext = await getLiveCharacterStatsContext(client);
-  const entries = getApprovedTierlistEntries({ liveMainsByUserId: liveContext.liveMainsByUserId });
+  const entries = getLiveApprovedTierlistEntries(liveContext);
   const embeds = [...buildStatsEmbedsFromContext(entries, liveContext)];
 
   if (!entries.length) {
@@ -1527,7 +1544,7 @@ async function buildTierlistBoardPayload(client, options = {}) {
 
 async function buildTextTierlistPayloads(client, options = {}) {
   const liveContext = await getLiveCharacterStatsContext(client);
-  const entries = getApprovedTierlistEntries({ liveMainsByUserId: liveContext.liveMainsByUserId });
+  const entries = getLiveApprovedTierlistEntries(liveContext);
   const recentChanges = collectRecentKillChanges(Object.values(db.submissions || {}));
 
   const PAGE_SIZE = 25;
@@ -1772,7 +1789,7 @@ function buildCharactersRankingEmbed(entries, liveContext) {
   });
 
   const facts = buildCharacterFacts(visible, clusterRanking, refOf);
-  const legend = "**Что значит:** 👥 людей с ролью • 🏷 кластер • 📊 сред/мед/сумм kills • 🏆 самый высокий kills";
+  const legend = "**Что значит:** 👥 людей с ролью персонажа и kill-ролью • 🏷 кластер • 📊 сред/мед/сумм kills • 🏆 самый высокий kills";
 
   let body = lines.join("\n");
   if (body.length > 3300) {
@@ -1914,7 +1931,8 @@ function buildRecentKillChangesEmbed(pagination = null) {
 }
 
 async function buildGraphicTierlistBoardPayload(client) {
-  const entries = getApprovedTierlistEntries();
+  const liveContext = await getLiveCharacterStatsContext(client);
+  const entries = getLiveApprovedTierlistEntries(liveContext);
   const guild = await getGuild(client);
   const graphicBoard = getGraphicTierlistBoardState(db.config, appConfig.channels.tierlistChannelId || "");
   const imgCfg = getGraphicImageConfig();
@@ -6398,8 +6416,9 @@ async function removeRoleFromAllMembers(client, roleId, behavior, moderatorTag) 
   };
 }
 
-function buildModeratorPanelPayload(statusText = "", includeFlags = true) {
-  const entries = getApprovedTierlistEntries();
+async function buildModeratorPanelPayload(client, statusText = "", includeFlags = true) {
+  const liveContext = await getLiveCharacterStatsContext(client).catch(() => null);
+  const entries = liveContext ? getLiveApprovedTierlistEntries(liveContext) : getApprovedTierlistEntries();
   const stats = getStatsSnapshot(entries);
   const onboardModeState = getOnboardModeState();
   const currentMode = onboardModeState.mode;
@@ -10548,7 +10567,7 @@ client.on("interactionCreate", async (interaction) => {
     }
 
     if (subcommand === "panel") {
-      await interaction.reply(buildModeratorPanelPayload());
+      await interaction.reply(await buildModeratorPanelPayload(client));
       return;
     }
 
@@ -11554,7 +11573,7 @@ client.on("interactionCreate", async (interaction) => {
       } catch (error) {
         statusText = `Не удалось отправить PNG tier-лист: ${String(error?.message || error)}`;
       }
-      await interaction.editReply(buildModeratorPanelPayload(statusText, false));
+      await interaction.editReply(await buildModeratorPanelPayload(client, statusText, false));
       return;
     }
 
@@ -11571,7 +11590,7 @@ client.on("interactionCreate", async (interaction) => {
       } catch (error) {
         statusText = `Не удалось отправить текстовый tier-лист: ${String(error?.message || error)}`;
       }
-      await interaction.editReply(buildModeratorPanelPayload(statusText, false));
+      await interaction.editReply(await buildModeratorPanelPayload(client, statusText, false));
       return;
     }
 
@@ -11857,7 +11876,8 @@ client.on("interactionCreate", async (interaction) => {
       state.changedBy = interaction.user.tag;
       saveDb();
 
-      await interaction.update(buildModeratorPanelPayload(
+      await interaction.update(await buildModeratorPanelPayload(
+        client,
         "Режим онбординга переключён на апокалипсис. Новые участники без ролей будут удаляться при входе.",
         false
       ));
@@ -11870,7 +11890,7 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
-      await interaction.update(buildModeratorPanelPayload("Включение апокалипсиса отменено.", false));
+      await interaction.update(await buildModeratorPanelPayload(client, "Включение апокалипсиса отменено.", false));
       return;
     }
 
@@ -11899,7 +11919,7 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.deferUpdate().catch(() => {});
         const pagination = getTextTierlistPaginationState();
         const liveContext = await getLiveCharacterStatsContext(client);
-        const total = getApprovedTierlistEntries({ liveMainsByUserId: liveContext.liveMainsByUserId }).length;
+        const total = getLiveApprovedTierlistEntries(liveContext).length;
         const recentPageCount = paginateRecentKillChanges(
           collectRecentKillChanges(Object.values(db.submissions || {})),
           {
@@ -11944,7 +11964,7 @@ client.on("interactionCreate", async (interaction) => {
       }
 
       if (interaction.customId === "tierlist_panel_back") {
-        await interaction.update(buildModeratorPanelPayload("", false));
+        await interaction.update(await buildModeratorPanelPayload(client, "", false));
         return;
       }
 
@@ -12948,7 +12968,7 @@ client.on("interactionCreate", async (interaction) => {
       }
 
       if (interaction.customId === "elo_panel_back") {
-        await interaction.update(buildModeratorPanelPayload("", false));
+        await interaction.update(await buildModeratorPanelPayload(client, "", false));
         return;
       }
 
@@ -13502,7 +13522,7 @@ client.on("interactionCreate", async (interaction) => {
         }
       }
 
-      await interaction.editReply(buildModeratorPanelPayload(statusText, false));
+      await interaction.editReply(await buildModeratorPanelPayload(client, statusText, false));
       return;
     }
 
@@ -14681,7 +14701,7 @@ client.on("interactionCreate", async (interaction) => {
       );
 
       if (!changedChannelOverrides.length) {
-        await interaction.editReply(buildModeratorPanelPayload("Изменений по каналам нет.", false));
+        await interaction.editReply(await buildModeratorPanelPayload(client, "Изменений по каналам нет.", false));
         return;
       }
 
@@ -14721,7 +14741,7 @@ client.on("interactionCreate", async (interaction) => {
       let statusText = batchResult.statusNotes.length ? `${batchResult.statusNotes.join(" ")} ` : "";
       statusText += "Каналы сохранены.";
 
-      await interaction.editReply(buildModeratorPanelPayload(statusText, false));
+      await interaction.editReply(await buildModeratorPanelPayload(client, statusText, false));
       return;
     }
 

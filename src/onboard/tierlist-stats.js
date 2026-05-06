@@ -34,6 +34,10 @@ function hasTrackedKills(entry) {
   return Number.isFinite(approvedKills) && approvedKills >= 0 && Number.isFinite(killTier) && killTier >= 1 && killTier <= 5;
 }
 
+function hasLiveKillRole(entry) {
+  return entry?.hasLiveKillRole !== false;
+}
+
 function getTierlistStats(entries = [], submissions = []) {
   const pendingCount = submissions.filter((submission) => submission && submission.status === "pending").length;
   const approvedCount = submissions.filter((submission) => submission && submission.status === "approved").length;
@@ -110,7 +114,8 @@ function getMainStats(entries = []) {
 
 function getTrackedMemberStats(entries = []) {
   const totalsByTier = createTierTotals();
-  const rememberedEntries = entries.filter(hasTrackedKills);
+  const liveEntries = entries.filter(hasLiveKillRole);
+  const rememberedEntries = liveEntries.filter(hasTrackedKills);
   let totalKills = 0;
 
   for (const entry of rememberedEntries) {
@@ -123,7 +128,7 @@ function getTrackedMemberStats(entries = []) {
   const medianKills = getMedianNumber(rememberedEntries.map((entry) => entry.approvedKills));
 
   return {
-    totalRoleHolders: entries.length,
+    totalRoleHolders: liveEntries.length,
     rememberedCount: rememberedEntries.length,
     totalKills,
     averageKills,
@@ -140,7 +145,7 @@ function getCharacterRoleStats(entries = [], options = {}) {
       const main = String(entry?.main || "").trim();
       const roleId = String(entry?.roleId || "").trim();
       const rememberedMembers = Array.isArray(entry?.rememberedMembers)
-        ? entry.rememberedMembers.filter(hasTrackedKills)
+        ? entry.rememberedMembers.filter((member) => hasLiveKillRole(member) && hasTrackedKills(member))
         : [];
       const rememberedCount = rememberedMembers.length;
       const roleHolderCount = Math.max(Number(entry?.roleHolderCount) || 0, rememberedCount);

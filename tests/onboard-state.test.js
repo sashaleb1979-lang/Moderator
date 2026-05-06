@@ -431,6 +431,23 @@ test("tracked member stats ignore null and empty kills instead of coercing them 
   });
 });
 
+test("tracked member stats ignore leaked users without a live kill role", () => {
+  const trackedMembers = [
+    { userId: "1", approvedKills: 500, killTier: 1, hasLiveKillRole: true },
+    { userId: "2", approvedKills: 3200, killTier: 3, hasLiveKillRole: false },
+    { userId: "3", approvedKills: 11000, killTier: 5 },
+  ];
+
+  assert.deepEqual(getTrackedMemberStats(trackedMembers), {
+    totalRoleHolders: 2,
+    rememberedCount: 2,
+    totalKills: 11500,
+    averageKills: 5750,
+    medianKills: 5750,
+    totalsByTier: { 1: 1, 2: 0, 3: 0, 4: 0, 5: 1 },
+  });
+});
+
 test("character role stats separate live holders from remembered kills", () => {
   const characterStats = getCharacterRoleStats([
     {
@@ -520,6 +537,35 @@ test("character role stats keep role holder count as the primary popularity sign
   assert.equal(characterStats[1].rememberedCount, 3);
   assert.equal(characterStats[1].averageKills, 1600);
   assert.equal(characterStats[1].medianKills, 0);
+});
+
+test("character role stats ignore remembered members without a live kill role", () => {
+  const [yuji] = getCharacterRoleStats([
+    {
+      main: "Юджи",
+      roleId: "role-yuji",
+      roleHolderCount: 2,
+      rememberedMembers: [
+        { userId: "1", approvedKills: 1000, killTier: 2, hasLiveKillRole: false },
+        { userId: "2", approvedKills: 3000, killTier: 3, hasLiveKillRole: true },
+      ],
+    },
+  ]);
+
+  assert.deepEqual(yuji, {
+    id: "",
+    main: "Юджи",
+    roleId: "role-yuji",
+    roleHolderCount: 2,
+    rememberedCount: 1,
+    totalKills: 3000,
+    averageKills: 1500,
+    medianKills: 1500,
+    totalsByTier: { 1: 0, 2: 0, 3: 1, 4: 0, 5: 0 },
+    bestPlayer: { userId: "2", displayName: "", kills: 3000, tier: 3 },
+    highCount: 0,
+    lowCount: 0,
+  });
 });
 
 test("non-JJS captcha switches to practice mode when the member already has access", () => {
