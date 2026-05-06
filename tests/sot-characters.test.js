@@ -302,3 +302,56 @@ test("listCharacterRecords ignores compat db.config.characters and still applies
 
   assert.deepEqual(result.map((entry) => entry.id), ["vessel"]);
 });
+
+test("listCharacterRecords preserves configured character order before label sort", () => {
+  const result = listCharacterRecords({
+    db: {
+      sot: {
+        characters: {
+          honored_one: {
+            id: "honored_one",
+            label: "Годжо",
+            englishLabel: "Honored One",
+            roleId: "role-gojo",
+            source: "manual",
+          },
+          vessel: {
+            id: "vessel",
+            label: "Юджи",
+            englishLabel: "Vessel",
+            roleId: "role-yuji",
+            source: "manual",
+          },
+          ten_shadows: {
+            id: "ten_shadows",
+            label: "Мегуми",
+            englishLabel: "Ten Shadows",
+            roleId: "role-megumi",
+            source: "manual",
+          },
+          manual_only: {
+            id: "manual_only",
+            label: "Ручной",
+            englishLabel: "Manual Only",
+            roleId: "role-manual",
+            source: "manual",
+          },
+        },
+      },
+    },
+    appConfig: {
+      characters: [
+        { id: "honored_one", label: "Honored One" },
+        { id: "vessel", label: "Vessel" },
+        { id: "ten_shadows", label: "Ten Shadows" },
+      ],
+    },
+  });
+
+  assert.deepEqual(result.map((entry) => entry.id), [
+    "honored_one",
+    "vessel",
+    "ten_shadows",
+    "manual_only",
+  ]);
+});

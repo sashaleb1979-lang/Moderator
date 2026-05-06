@@ -243,6 +243,11 @@ const {
   getTrackedMemberStats,
   getTierlistStats,
 } = require("./src/onboard/tierlist-stats");
+const {
+  buildCharacterFactData,
+  collectRecentKillChanges,
+  paginateRecentKillChanges,
+} = require("./src/onboard/tierlist-ranking");
 const { parseKillsFromSubmittedText } = require("./src/onboard/submission-message");
 let nonGgsCaptchaModule = null;
 try {
@@ -331,6 +336,8 @@ const SOT_CHARACTER_ALERT_STALE_HOURS = 24;
 const SOT_CHARACTER_ALERT_PERIODIC_MS = 60 * 60 * 1000;
 const SOT_CHARACTER_ALERT_REPEAT_MS = 6 * 60 * 60 * 1000;
 const SOT_DRIFT_ALERT_REPEAT_MS = 6 * 60 * 60 * 1000;
+const RECENT_KILL_CHANGES_PAGE_SIZE = 5;
+const RECENT_KILL_CHANGES_MAX_PAGES = 4;
 const LEGACY_TIERLIST_ROLE_INFLUENCE = {
   1: 2.0,
   2: 2.5,
@@ -1426,11 +1433,9 @@ function buildStatsEmbedsFromContext(entries, liveContext) {
   } else if (!entries.length) {
     lines.push("Подтверждённых игроков пока нет.");
   } else {
-    const totalKills = trackedStats.totalKills || entries.reduce((sum, e) => sum + (Number(e.approvedKills) || 0), 0);
-    const eligible = entries.filter((e) => Number.isFinite(e.approvedKills) && e.approvedKills > 0);
-    const sortedKills = eligible.map((e) => Number(e.approvedKills)).sort((a, b) => a - b);
-    const median = sortedKills.length ? sortedKills[Math.floor(sortedKills.length / 2)] : 0;
-    const avg = sortedKills.length ? Math.round(totalKills / sortedKills.length) : 0;
+    const totalKills = stats.totalKills;
+    const median = stats.medianKills;
+    const avg = stats.averageKills;
     const tiers = trackedStats.totalsByTier || { 5: 0, 4: 0, 3: 0, 2: 0, 1: 0 };
     const totalActive = tiers[5] + tiers[4] + tiers[3] + tiers[2] + tiers[1] || entries.length;
     const pct = (n) => totalActive > 0 ? `${Math.round((n / totalActive) * 100)}%` : "0%";
@@ -1523,12 +1528,20 @@ async function buildTierlistBoardPayload(client, options = {}) {
 async function buildTextTierlistPayloads(client, options = {}) {
   const liveContext = await getLiveCharacterStatsContext(client);
   const entries = getApprovedTierlistEntries({ liveMainsByUserId: liveContext.liveMainsByUserId });
+  const recentChanges = collectRecentKillChanges(Object.values(db.submissions || {}));
 
   const PAGE_SIZE = 25;
-  const totalPages = Math.max(1, Math.ceil(entries.length / PAGE_SIZE));
+  const rankPageCount = Math.max(1, Math.ceil(entries.length / PAGE_SIZE));
+  const recentPageCount = paginateRecentKillChanges(recentChanges, {
+    page: 0,
+    pageSize: RECENT_KILL_CHANGES_PAGE_SIZE,
+    maxPages: RECENT_KILL_CHANGES_MAX_PAGES,
+  }).pageCount;
+  const totalPages = Math.max(rankPageCount, recentPageCount);
   let pageIndex = Number.isFinite(Number(options.page)) ? Number(options.page) : 0;
   if (pageIndex < 0) pageIndex = 0;
   if (pageIndex >= totalPages) pageIndex = totalPages - 1;
+  const rankPageIndex = Math.min(pageIndex, rankPageCount - 1);
 
   const presentation = getPresentation();
   const baseTitle = presentation.tierlist.textTitle || "Tier List";
@@ -1559,7 +1572,7 @@ async function buildTextTierlistPayloads(client, options = {}) {
     return eloJumpUrl ? `[${label}](${eloJumpUrl})` : label;
   };
 
-  const pageEntries = entries.slice(pageIndex * PAGE_SIZE, pageIndex * PAGE_SIZE + PAGE_SIZE);
+  const pageEntries = entries.slice(rankPageIndex * PAGE_SIZE, rankPageIndex * PAGE_SIZE + PAGE_SIZE);
   const dominantTier = (() => {
     if (!pageEntries.length) return 0;
     const tally = new Map();
@@ -1585,7 +1598,13 @@ async function buildTextTierlistPayloads(client, options = {}) {
   const mainsEmbed = buildCharactersRankingEmbed(entries, liveContext);
   if (mainsEmbed) summaryEmbeds.push(mainsEmbed);
 
-  const recentEmbed = buildRecentKillChangesEmbed();
+  const recentEmbed = buildRecentKillChangesEmbed(
+    paginateRecentKillChanges(recentChanges, {
+      page: pageIndex,
+      pageSize: RECENT_KILL_CHANGES_PAGE_SIZE,
+      maxPages: RECENT_KILL_CHANGES_MAX_PAGES,
+    })
+  );
   if (recentEmbed) pagesEmbeds.push(recentEmbed);
 
   if (!entries.length) {
@@ -1781,6 +1800,7 @@ function buildCharacterFacts(items, clusterRanking, refOf) {
     byId.set(item.id, item);
     if (item.legacyId) byId.set(item.legacyId, item);
   }
+  const factData = buildCharacterFactData(items, clusterRanking, { minPeopleCount: 3 });
   const lines = [];
   const factPlaceIcons = ["🥇", "🥈", "🥉"];
 
@@ -1802,96 +1822,62 @@ function buildCharacterFacts(items, clusterRanking, refOf) {
     })
     .join(" • ");
   const refOrName = (item, fallbackName) => item ? refOf(item) : `**${String(fallbackName || "—").trim()}**`;
-
-  const topPositions = (arr, scoreFn, takePositions) => {
-    const enriched = arr
-      .map((it) => ({ it, score: scoreFn(it) }))
-      .filter((x) => Number.isFinite(x.score));
-    if (!enriched.length) return [];
-    enriched.sort((a, b) => b.score - a.score);
-    const positions = [];
-    let i = 0;
-    while (positions.length < takePositions && i < enriched.length) {
-      const cur = enriched[i].score;
-      const tie = [];
-      while (i < enriched.length && enriched[i].score === cur) {
-        tie.push(enriched[i].it);
-        i += 1;
-      }
-      positions.push({ score: cur, items: tie });
-    }
-    return positions;
-  };
+  const formatClusterPlaces = (positions) => positions
+    .map((position, index) => {
+      const marker = factPlaceIcons[index] || `${index + 1}.`;
+      const first = position.items[0] || null;
+      const clusterName = String(first?.cluster?.name || first?.main || first?.id || "—").trim();
+      return `${marker} ${position.items.map((item) => refOrName(byId.get(item.legacyId || item.id) || item, item.main || item.id)).join(", ")} — ${clusterName}`;
+    })
+    .join(" • ");
 
   // 1. Топ-3 по медиане kills
-  const medTop = topPositions(items.filter((r) => r.trackedCount > 0), (r) => r.medKills, 3);
+  const medTop = factData.medianTop;
   if (medTop.length) {
     lines.push(`**📈 Лучшие по медиане kills**\n${formatFactPlaces(medTop, (score) => formatKillsCompact(score))}`);
   }
 
   // 2. Низшая медиана kills (топ-3 снизу)
-  const medBot = topPositions(items.filter((r) => r.trackedCount > 0), (r) => -r.medKills, 3);
+  const medBot = factData.medianBottom;
   if (medBot.length) {
     lines.push(`**📉 Самая низкая медиана kills**\n${formatFactPlaces(medBot, (score) => formatKillsCompact(-score))}`);
   }
 
-  // 3. Топ кластера / Анскил (по cluster.avg)
-  if (clusterRanking.length >= 2) {
-    const top = clusterRanking[0];
-    const bot = clusterRanking[clusterRanking.length - 1];
-    if (top.id !== bot.id) {
-      const topItem = byId.get(top.id);
-      const botItem = byId.get(bot.id);
-      const topTxt = refOrName(topItem, top.name || top.id);
-      const botTxt = refOrName(botItem, bot.name || bot.id);
-      lines.push(`**👑 Глобальный рейтинг tierlist**\nВерх: ${topTxt} • Низ: ${botTxt}`);
-    }
+  // 3. Глобальный рейтинг tierlist: top-3 и bottom-3
+  if (factData.globalTop.length || factData.globalBottom.length) {
+    const topText = factData.globalTop.length ? formatClusterPlaces(factData.globalTop) : "—";
+    const bottomText = factData.globalBottom.length ? formatClusterPlaces(factData.globalBottom) : "—";
+    lines.push(`**👑 Глобальный рейтинг tierlist**\nВерх: ${topText}\nНиз: ${bottomText}`);
   }
 
   // 4. Больше всего хай-игроков (абсолют)
-  const highTop = topPositions(items.filter((r) => r.highCount > 0), (r) => r.highCount, 1);
+  const highTop = factData.highCountTop;
   if (highTop.length) {
-    const p = highTop[0];
-    lines.push(`**🔥 Хай-игроков больше всего**\n${p.items.map(refOf).join(", ")} — ${formatPlayersCount(p.score)}`);
+    lines.push(`**🔥 Хай-игроков больше всего**\n${formatFactPlaces(highTop, (score) => formatPlayersCount(score))}`);
   }
 
   // 5. Лучший хай-рейт (T5+T4 / remembered players)
-  const rateTop = topPositions(
-    items.filter((r) => r.trackedCount >= 3),
-    (r) => Math.round((r.highCount / r.trackedCount) * 100),
-    2
-  );
+  const rateTop = factData.highRateTop;
   if (rateTop.length) {
     lines.push(`**⚡ Лучший хай-рейт**\n${formatFactPlaces(rateTop, (score) => `${score}%`)}`);
   }
 
-  // 6. Самый популярный (1 + 2)
-  const popTop = topPositions(items.filter((r) => r.peopleCount > 0), (r) => r.peopleCount, 2);
+  // 6. Самый популярный
+  const popTop = factData.popularTop;
   if (popTop.length) {
     lines.push(`**💖 Самые популярные**\n${formatFactPlaces(popTop, (score) => formatPlayersCount(score))}`);
   }
 
-  // 7. Самый редкий (1 + 2)
-  const rareTop = topPositions(items.filter((r) => r.peopleCount > 0), (r) => -r.peopleCount, 2);
+  // 7. Самый редкий
+  const rareTop = factData.rareTop;
   if (rareTop.length) {
     lines.push(`**🪶 Самые редкие**\n${formatFactPlaces(rareTop, (score) => formatPlayersCount(-score))}`);
-  }
-
-  // 8. Tierlist лидер / аутсайдер
-  const withCluster = items.filter((r) => r.cluster && r.peopleCount > 0);
-  if (withCluster.length >= 2) {
-    const sorted = [...withCluster].sort((a, b) => (b.cluster.avg || 0) - (a.cluster.avg || 0));
-    const best = sorted[0];
-    const worst = sorted[sorted.length - 1];
-    if ((best.legacyId || best.id) !== (worst.legacyId || worst.id)) {
-      lines.push(`**🏆 Среди мейнов из панели**\nЛидер: ${refOf(best)} — ${best.cluster.name} • Аутсайдер: ${refOf(worst)} — ${worst.cluster.name}`);
-    }
   }
 
   return lines;
 }
 
-function buildRecentKillChangesEmbed() {
+function buildRecentKillChangesEmbed(pagination = null) {
   const formatKillsChangeValue = (value) => {
     const n = Math.max(0, Math.round(Number(value) || 0));
     if (n < 100) return String(n);
@@ -1902,47 +1888,29 @@ function buildRecentKillChangesEmbed() {
     return `${Math.round(n / 1000)}к`;
   };
 
-  const killSubs = Object.values(db.submissions || {})
-    .filter((s) => s && s.status === "approved" && s.userId && Number.isFinite(Number(s.kills)))
-    .sort((a, b) => {
-      const ta = Date.parse(a.reviewedAt || a.createdAt || 0) || 0;
-      const tb = Date.parse(b.reviewedAt || b.createdAt || 0) || 0;
-      return ta - tb;
+  const resolvedPagination = pagination && typeof pagination === "object"
+    ? pagination
+    : paginateRecentKillChanges(collectRecentKillChanges(Object.values(db.submissions || {})), {
+      page: 0,
+      pageSize: RECENT_KILL_CHANGES_PAGE_SIZE,
+      maxPages: RECENT_KILL_CHANGES_MAX_PAGES,
     });
+  if (!resolvedPagination.totalCount) return null;
 
-  const lastByUser = new Map();
-  for (const s of killSubs) {
-    const next = Number(s.kills);
-    const at = Date.parse(s.reviewedAt || s.createdAt || 0) || 0;
-    const prev = lastByUser.get(s.userId);
-    if (!prev) {
-      lastByUser.set(s.userId, { prev: null, prevAt: 0, current: next, currentAt: at });
-    } else {
-      lastByUser.set(s.userId, { prev: prev.current, prevAt: prev.currentAt, current: next, currentAt: at });
-    }
-  }
-
-  const upgrades = [];
-  for (const [userId, rec] of lastByUser) {
-    if (rec.prev == null) continue;
-    if (!(rec.current > rec.prev)) continue;
-    upgrades.push({ userId, from: rec.prev, to: rec.current, fromAt: rec.prevAt, toAt: rec.currentAt });
-  }
-  if (!upgrades.length) return null;
-
-  upgrades.sort((a, b) => b.toAt - a.toAt);
-  const top = upgrades.slice(0, 5);
-
-  const lines = top.map((c) => {
+  const lines = resolvedPagination.items.map((c) => {
     const delta = c.to - c.from;
     const pct = c.from > 0 ? Math.round((delta / c.from) * 100) : 100;
     return [`<@${c.userId}>`, `**${formatKillsChangeValue(c.from)} → ${formatKillsChangeValue(c.to)}** • +${formatKillsChangeValue(delta)} (+${pct}%) • ${formatDateOnly(c.fromAt)} → ${formatDateOnly(c.toAt)}`].join("\n");
   });
 
+  const start = resolvedPagination.page * RECENT_KILL_CHANGES_PAGE_SIZE + 1;
+  const end = start + resolvedPagination.items.length - 1;
+
   return new EmbedBuilder()
-    .setTitle("⚡ Последние изменения")
+    .setTitle(`⚡ Последние изменения — стр. ${resolvedPagination.page + 1}/${resolvedPagination.pageCount}`)
     .setColor(0x00897B)
-    .setDescription(lines.join("\n\n"));
+    .setDescription(lines.join("\n\n"))
+    .setFooter({ text: `Показано ${start}-${end} из ${resolvedPagination.totalCount}` });
 }
 
 async function buildGraphicTierlistBoardPayload(client) {
@@ -11932,8 +11900,16 @@ client.on("interactionCreate", async (interaction) => {
         const pagination = getTextTierlistPaginationState();
         const liveContext = await getLiveCharacterStatsContext(client);
         const total = getApprovedTierlistEntries({ liveMainsByUserId: liveContext.liveMainsByUserId }).length;
+        const recentPageCount = paginateRecentKillChanges(
+          collectRecentKillChanges(Object.values(db.submissions || {})),
+          {
+            page: 0,
+            pageSize: RECENT_KILL_CHANGES_PAGE_SIZE,
+            maxPages: RECENT_KILL_CHANGES_MAX_PAGES,
+          }
+        ).pageCount;
         const PAGE_SIZE = 25;
-        const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+        const totalPages = Math.max(Math.max(1, Math.ceil(total / PAGE_SIZE)), recentPageCount);
         let nextPage = pagination.page;
         if (interaction.customId === "text_tierlist_first") nextPage = 0;
         else if (interaction.customId === "text_tierlist_prev") nextPage = Math.max(0, pagination.page - 1);

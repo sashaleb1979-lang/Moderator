@@ -346,8 +346,15 @@ function resolveAllCharacterRecords({ db = {}, appConfig = {}, managedCharacters
   return records;
 }
 
+function buildCharacterOrderIndex(context = {}) {
+  return new Map(
+    getManagedCatalog(context).map((entry, index) => [entry.id, index])
+  );
+}
+
 function listCharacterRecords({ pickerOnly = false, includeUnresolved = true, ...context } = {}) {
   let records = Object.values(resolveAllCharacterRecords(context));
+  const characterOrderIndex = buildCharacterOrderIndex(context);
   if (pickerOnly) {
     records = records.filter((record) => cleanString(record?.verifiedAt, 80));
   } else if (!includeUnresolved) {
@@ -360,6 +367,11 @@ function listCharacterRecords({ pickerOnly = false, includeUnresolved = true, ..
       const rightResolved = cleanString(right?.roleId, 80) ? 1 : 0;
       if (leftResolved !== rightResolved) return rightResolved - leftResolved;
     }
+
+    const leftOrder = characterOrderIndex.has(left?.id) ? characterOrderIndex.get(left.id) : Number.MAX_SAFE_INTEGER;
+    const rightOrder = characterOrderIndex.has(right?.id) ? characterOrderIndex.get(right.id) : Number.MAX_SAFE_INTEGER;
+    if (leftOrder !== rightOrder) return leftOrder - rightOrder;
+
     return String(left?.label || left?.id || "").localeCompare(String(right?.label || right?.id || ""), "ru");
   });
 

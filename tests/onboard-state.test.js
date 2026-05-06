@@ -472,8 +472,8 @@ test("character role stats separate live holders from remembered kills", () => {
     roleHolderCount: 28,
     rememberedCount: 2,
     totalKills: 4000,
-    averageKills: 2000,
-    medianKills: 2000,
+    averageKills: 143,
+    medianKills: 0,
     totalsByTier: { 1: 0, 2: 1, 3: 1, 4: 0, 5: 0 },
     bestPlayer: { userId: "2", displayName: "", kills: 3000, tier: 3 },
     highCount: 0,
@@ -484,8 +484,8 @@ test("character role stats separate live holders from remembered kills", () => {
   assert.equal(nobara.roleHolderCount, 28);
   assert.equal(nobara.rememberedCount, 3);
   assert.equal(nobara.totalKills, 6000);
-  assert.equal(nobara.averageKills, 2000);
-  assert.equal(nobara.medianKills, 1500);
+  assert.equal(nobara.averageKills, 214);
+  assert.equal(nobara.medianKills, 0);
   assert.deepEqual(nobara.totalsByTier, { 1: 1, 2: 1, 3: 1, 4: 0, 5: 0 });
 });
 
@@ -514,8 +514,12 @@ test("character role stats keep role holder count as the primary popularity sign
   assert.deepEqual(characterStats.map((entry) => entry.main), ["Юджи", "Мегуми"]);
   assert.equal(characterStats[0].roleHolderCount, 50);
   assert.equal(characterStats[0].rememberedCount, 1);
+  assert.equal(characterStats[0].averageKills, 20);
+  assert.equal(characterStats[0].medianKills, 0);
   assert.equal(characterStats[1].roleHolderCount, 10);
   assert.equal(characterStats[1].rememberedCount, 3);
+  assert.equal(characterStats[1].averageKills, 1600);
+  assert.equal(characterStats[1].medianKills, 0);
 });
 
 test("non-JJS captcha switches to practice mode when the member already has access", () => {

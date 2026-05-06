@@ -145,6 +145,10 @@ function getCharacterRoleStats(entries = [], options = {}) {
       const rememberedCount = rememberedMembers.length;
       const roleHolderCount = Math.max(Number(entry?.roleHolderCount) || 0, rememberedCount);
       const totalKills = rememberedMembers.reduce((sum, member) => sum + normalizeKills(member.approvedKills), 0);
+      const medianKillsSource = [
+        ...rememberedMembers.map((member) => normalizeKills(member.approvedKills)),
+        ...Array(Math.max(0, roleHolderCount - rememberedCount)).fill(0),
+      ];
       const totalsByTier = createTierTotals();
 
       let bestPlayer = null;
@@ -172,8 +176,8 @@ function getCharacterRoleStats(entries = [], options = {}) {
         roleHolderCount,
         rememberedCount,
         totalKills,
-        averageKills: rememberedCount ? Math.round(totalKills / rememberedCount) : 0,
-        medianKills: getMedianNumber(rememberedMembers.map((member) => member.approvedKills)),
+        averageKills: roleHolderCount ? Math.round(totalKills / roleHolderCount) : 0,
+        medianKills: getMedianNumber(medianKillsSource),
         totalsByTier,
         bestPlayer,
         highCount,
