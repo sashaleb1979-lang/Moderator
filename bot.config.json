@@ -26,7 +26,7 @@
     "nonJjsDescription": "Если ты не играешь в JJS, нажми кнопку ниже. Бот запустит 2 этапа капчи и после успешного прохождения выдаст отдельную роль доступа.",
     "nonJjsButtonLabel": "Я не играю в JJS",
     "onboardingProofExampleImageUrl": "",
-    "onboardingProofExampleImagePath": "",
+    "onboardingProofExampleImagePath": "assets/onboarding-proof-example.png",
     "tierlistButtonLabel": "Текстовый тир-лист",
     "tierlistTitle": "Текстовый тир-лист"
   },

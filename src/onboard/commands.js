@@ -10,6 +10,7 @@ const ONBOARD_SUBCOMMAND_NAMES = [
   "movetext",
   "movenotices",
   "modset",
+  "robloxauth",
   "deleteprofile",
   "removetier",
 ];
@@ -55,6 +56,14 @@ function buildCommands() {
           .setDescription("Вручную выставить kills и tier-role")
           .addAttachmentOption((option) => option.setName("screenshot").setDescription("Скрин-пруф").setRequired(true))
           .addIntegerOption((option) => option.setName("kills").setDescription("Точное число kills").setMinValue(0).setRequired(true))
+          .addUserOption((option) => option.setName("target").setDescription("Игрок (если в сервере)"))
+          .addStringOption((option) => option.setName("user_id").setDescription("ID игрока (если вышел из сервера)"))
+      )
+      .addSubcommand((subcommand) =>
+        subcommand
+          .setName("robloxauth")
+          .setDescription("Вручную подтвердить Roblox username игрока")
+          .addStringOption((option) => option.setName("roblox_username").setDescription("Roblox username").setRequired(true))
           .addUserOption((option) => option.setName("target").setDescription("Игрок (если в сервере)"))
           .addStringOption((option) => option.setName("user_id").setDescription("ID игрока (если вышел из сервера)"))
       )

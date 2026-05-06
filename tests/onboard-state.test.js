@@ -672,6 +672,7 @@ test("command builder includes new admin refresh and editor subcommands", () => 
       "movetext",
       "panel",
       "removetier",
+      "robloxauth",
       "sotreport",
       "welcomeedit",
     ].sort()

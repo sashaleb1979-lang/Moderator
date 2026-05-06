@@ -126,6 +126,7 @@ const {
   ONBOARD_ACCESS_GRANT_MODES,
   createOnboardAccessGrantState,
   getOnboardAccessGrantModeLabel,
+  normalizeOnboardAccessGrantMode,
 } = require("./src/onboard/access-grant-mode");
 const { resolveNonJjsCaptchaMode } = require("./src/onboard/non-jjs-mode");
 const {
@@ -2238,6 +2239,60 @@ async function downloadToBuffer(url, timeoutMs = 15000) {
   });
 }
 
+async function fetchJson(url, options = {}, timeoutMs = 15000) {
+  const method = String(options?.method || "GET").toUpperCase();
+  const headers = {
+    "User-Agent": "Mozilla/5.0 JujutsuWelcomeBot/1.0",
+    "Accept": "application/json",
+    ...(options?.headers || {}),
+  };
+  const body = options?.body;
+
+  if (typeof fetch === "function") {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(url, { method, headers, body, signal: controller.signal });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      return await response.json();
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  return new Promise((resolve, reject) => {
+    const lib = url.startsWith("https:") ? https : http;
+    const request = lib.request(url, { method, headers }, (response) => {
+      if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
+        response.resume();
+        fetchJson(response.headers.location, options, timeoutMs).then(resolve).catch(reject);
+        return;
+      }
+
+      if (response.statusCode !== 200) {
+        response.resume();
+        reject(new Error(`HTTP ${response.statusCode}`));
+        return;
+      }
+
+      const chunks = [];
+      response.on("data", (chunk) => chunks.push(chunk));
+      response.on("end", () => {
+        try {
+          resolve(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+        } catch (error) {
+          reject(error);
+        }
+      });
+    });
+
+    request.on("error", reject);
+    request.setTimeout(timeoutMs, () => request.destroy(new Error("timeout")));
+    if (body) request.write(body);
+    request.end();
+  });
+}
+
 function getCachedVerifiedCharacterRoleIds() {
   const roleCache = guildCache?.roles?.cache;
   if (!roleCache || typeof roleCache.keys !== "function") return null;
@@ -2493,9 +2548,12 @@ async function completeMainSelection(interaction, selectedEntries, options = {})
     const syncedPending = await syncPendingSubmissionMainsForUser(client, interaction.user.id, appliedEntries);
     const welcomeChannelId = getResolvedChannelId("welcome");
     const uploadTarget = welcomeChannelId ? `<#${welcomeChannelId}>` : "welcome-канал";
+    const needsRobloxIdentity = !(activeSubmitSession?.robloxUsername && activeSubmitSession?.robloxUserId);
     clearMainsPickerSession(interaction.user.id);
     const content = activeSubmitSession?.mainCharacterIds?.length
-      ? `Мейны обновлены: **${appliedEntries.map((entry) => entry.label).join(", ")}**. Текущая загрузка тоже обновлена, теперь просто отправь kills и скрин в ${uploadTarget}.`
+      ? needsRobloxIdentity
+        ? `Мейны обновлены: **${appliedEntries.map((entry) => entry.label).join(", ")}**. Текущая загрузка тоже обновлена, теперь заново укажи Roblox username.`
+        : `Мейны обновлены: **${appliedEntries.map((entry) => entry.label).join(", ")}**. Текущая загрузка тоже обновлена, теперь просто отправь kills и скрин в ${uploadTarget}.`
       : syncedPending
         ? `Мейны обновлены: **${appliedEntries.map((entry) => entry.label).join(", ")}**. Pending-заявка тоже обновлена.`
         : `Мейны обновлены: **${appliedEntries.map((entry) => entry.label).join(", ")}**.`;
@@ -2961,6 +3019,12 @@ function getProfile(userId) {
   return db.profiles[userId];
 }
 
+function finalizeStoredProfile(userId) {
+  const ensured = ensureSharedProfile(db.profiles[userId], userId);
+  db.profiles[userId] = refreshDerivedProfileMainFields(ensured.profile);
+  return db.profiles[userId];
+}
+
 function scheduleDeleteMessage(message, delayMs = TEMP_MESSAGE_DELETE_MS) {
   if (!message) return;
   setTimeout(() => {
@@ -3026,6 +3090,53 @@ function getSubmitSession(userId) {
 
 function clearSubmitSession(userId) {
   submitSessions.delete(userId);
+}
+
+function normalizeRobloxUsernameInput(value) {
+  const username = String(value || "").trim();
+  return /^[A-Za-z0-9_]{3,20}$/.test(username) ? username : "";
+}
+
+async function resolveRobloxUserByUsername(username) {
+  const normalizedUsername = normalizeRobloxUsernameInput(username);
+  if (!normalizedUsername) {
+    throw new Error("Roblox username должен содержать от 3 до 20 символов: буквы, цифры или _.");
+  }
+
+  const payload = await fetchJson("https://users.roblox.com/v1/usernames/users", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      usernames: [normalizedUsername],
+      excludeBannedUsers: false,
+    }),
+  });
+
+  const match = Array.isArray(payload?.data) ? payload.data[0] : null;
+  if (!match?.id) return null;
+
+  return {
+    id: String(match.id),
+    name: String(match.name || normalizedUsername).trim(),
+    displayName: String(match.displayName || match.name || normalizedUsername).trim(),
+  };
+}
+
+function buildRobloxUsernameModal(customId, initialValue = "") {
+  const modal = new ModalBuilder().setCustomId(customId).setTitle("Roblox username");
+  const input = new TextInputBuilder()
+    .setCustomId("roblox_username")
+    .setLabel("Уникальный Roblox username")
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true)
+    .setMaxLength(20)
+    .setPlaceholder("Например Ryomen_One")
+    .setValue(String(initialValue || "").trim().slice(0, 20));
+
+  modal.addComponents(new ActionRowBuilder().addComponents(input));
+  return modal;
 }
 
 function getOnboardingProofExampleImagePath() {
@@ -3920,6 +4031,97 @@ async function syncProfileNamesFromDiscord(client) {
   return updated;
 }
 
+function profileNeedsRobloxNicknameMarker(profile) {
+  const approvedKills = Number(profile?.approvedKills);
+  const robloxState = profile?.domains?.roblox || {};
+  const hasVerifiedRoblox = robloxState.verificationStatus === "verified" && Boolean(robloxState.userId);
+  return Number.isSafeInteger(approvedKills) && approvedKills >= 0 && !hasVerifiedRoblox;
+}
+
+function stripRobloxNicknameMarker(value) {
+  return String(value || "").replace(/\s*❌$/, "").trimEnd();
+}
+
+function buildRobloxNicknameWithMarker(value) {
+  const marker = " ❌";
+  const baseName = stripRobloxNicknameMarker(value) || "Игрок";
+  const maxBaseLength = Math.max(1, 32 - marker.length);
+  return `${baseName.slice(0, maxBaseLength).trimEnd()}${marker}`;
+}
+
+async function syncRobloxNicknameMarkerForUser(client, userId, reason = "roblox nickname marker sync") {
+  const member = await fetchMember(client, userId);
+  if (!member) return { updated: false, skipped: "member_missing" };
+  if (!member.manageable) return { updated: false, skipped: "member_not_manageable" };
+
+  const fallbackName = String(member.user?.globalName || member.user?.username || "").trim();
+  const currentNickname = String(member.nickname || "").trim();
+  const shouldMark = isRobloxNicknameMarkerEnabled() && profileNeedsRobloxNicknameMarker(db.profiles?.[userId]);
+
+  if (shouldMark) {
+    const targetNickname = buildRobloxNicknameWithMarker(currentNickname || fallbackName);
+    if (currentNickname === targetNickname) {
+      return { updated: false, marked: true, skipped: "already_marked" };
+    }
+    await member.setNickname(targetNickname, reason);
+    return { updated: true, marked: true, nickname: targetNickname };
+  }
+
+  if (!currentNickname) {
+    return { updated: false, marked: false, skipped: "no_custom_nickname" };
+  }
+
+  const strippedNickname = stripRobloxNicknameMarker(currentNickname);
+  if (strippedNickname === currentNickname) {
+    return { updated: false, marked: false, skipped: "marker_not_present" };
+  }
+
+  const nextNickname = strippedNickname && strippedNickname !== fallbackName ? strippedNickname : null;
+  await member.setNickname(nextNickname, reason);
+  return { updated: true, marked: false, nickname: nextNickname || "" };
+}
+
+async function syncRobloxNicknameMarkers(client, options = {}) {
+  const targetUserId = String(options.targetUserId || "").trim();
+  const reason = String(options.reason || "roblox nickname marker sync").trim() || "roblox nickname marker sync";
+
+  if (targetUserId) {
+    try {
+      const result = await syncRobloxNicknameMarkerForUser(client, targetUserId, reason);
+      return {
+        processed: 1,
+        updated: result.updated ? 1 : 0,
+        skipped: result.updated ? 0 : 1,
+        errors: 0,
+      };
+    } catch (error) {
+      return { processed: 1, updated: 0, skipped: 0, errors: 1, error };
+    }
+  }
+
+  const userIds = Object.keys(db.profiles || {});
+  let updated = 0;
+  let skipped = 0;
+  let errors = 0;
+
+  for (const userId of userIds) {
+    try {
+      const result = await syncRobloxNicknameMarkerForUser(client, userId, reason);
+      if (result.updated) updated += 1;
+      else skipped += 1;
+    } catch {
+      errors += 1;
+    }
+  }
+
+  return {
+    processed: userIds.length,
+    updated,
+    skipped,
+    errors,
+  };
+}
+
 async function syncManagedCharacterRoles(member, selectedCharacterIds, reason = "main character sync") {
   const selectedEntries = getSelectedCharacterEntries(selectedCharacterIds);
   return syncMemberCharacterRoles({
@@ -3967,8 +4169,43 @@ function getOnboardModeState() {
   return db.config.onboardMode;
 }
 
+function getOnboardAccessGrantState() {
+  db.config.accessGrant = createOnboardAccessGrantState(db.config.accessGrant);
+  return db.config.accessGrant;
+}
+
 function getCurrentOnboardMode() {
   return getOnboardModeState().mode;
+}
+
+function getCurrentOnboardAccessGrantMode() {
+  return getOnboardAccessGrantState().mode;
+}
+
+function getOnboardAccessGrantModeRank(value) {
+  const normalized = normalizeOnboardAccessGrantMode(value);
+  if (normalized === ONBOARD_ACCESS_GRANT_MODES.AFTER_REVIEW_POST) return 2;
+  if (normalized === ONBOARD_ACCESS_GRANT_MODES.AFTER_APPROVE) return 3;
+  return 1;
+}
+
+function shouldGrantAccessRoleAtStage(stage, mode = getCurrentOnboardAccessGrantMode()) {
+  return getOnboardAccessGrantModeRank(stage) >= getOnboardAccessGrantModeRank(mode);
+}
+
+function getRobloxNicknameMarkerState() {
+  const rawState = db.config?.robloxNicknameMarker;
+  const source = rawState && typeof rawState === "object" ? rawState : {};
+  db.config.robloxNicknameMarker = {
+    enabled: source.enabled === true,
+    changedAt: String(source.changedAt || "").trim() || null,
+    changedBy: String(source.changedBy || "").trim(),
+  };
+  return db.config.robloxNicknameMarker;
+}
+
+function isRobloxNicknameMarkerEnabled() {
+  return getRobloxNicknameMarkerState().enabled === true;
 }
 
 function getManagedStartAccessRoleIds() {
@@ -4219,6 +4456,18 @@ async function grantAccessRole(client, userId, reason = "welcome application sub
     throw error;
   }
   return true;
+}
+
+async function maybeGrantAccessRoleAtStage(client, userId, stage, reason = "welcome application submitted") {
+  if (!shouldGrantAccessRoleAtStage(stage)) return false;
+
+  const granted = await grantAccessRole(client, userId, reason);
+  if (granted) {
+    const profile = getProfile(userId);
+    profile.accessGrantedAt = profile.accessGrantedAt || nowIso();
+    profile.updatedAt = nowIso();
+  }
+  return granted;
 }
 
 async function grantNonGgsAccessRole(client, userId, reason = "non-JJS captcha passed") {
@@ -4577,11 +4826,41 @@ function buildSubmitStepPayload(userId, options = {}) {
   const exampleImageUrl = getOnboardingProofExampleImageUrl();
   const hasExampleImagePath = Boolean(exampleImagePath) && fs.existsSync(exampleImagePath);
   const hasExampleImageUrl = Boolean(exampleImageUrl);
+  const hasRobloxIdentity = Boolean(session?.robloxUsername && session?.robloxUserId);
+
+  if (!hasRobloxIdentity) {
+    const lines = [];
+    if (options.noticeText) lines.push(options.noticeText);
+    lines.push(
+      `Мейны: **${selectedLabels.join(", ")}**.`,
+      "Сначала укажи свой **уникальный Roblox username**. Бот сверит его через Roblox API и запомнит ID аккаунта.",
+      "Потом модератор сравнит этот username с тем, что виден на том же скрине, где показаны kills.",
+      "Без этого второго шага заявка не засчитывается."
+    );
+
+    const payload = {
+      embeds: [
+        new EmbedBuilder()
+          .setColor(0xFEE75C)
+          .setTitle("Шаг 2. Укажи Roblox username")
+          .setDescription(lines.join("\n")),
+      ],
+      components: [
+        new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId("onboard_set_roblox_username").setLabel("Указать Roblox username").setStyle(ButtonStyle.Primary),
+          new ButtonBuilder().setCustomId("onboard_change_mains").setLabel("Сменить мейнов").setStyle(ButtonStyle.Secondary)
+        ),
+      ],
+    };
+
+    return options.includeEphemeralFlag === false ? payload : ephemeralPayload(payload);
+  }
 
   const lines = [];
   if (options.noticeText) lines.push(options.noticeText);
   lines.push(
     `Мейны: **${selectedLabels.join(", ")}**.`,
+    `Roblox: **${session.robloxUsername}** (ID ${session.robloxUserId}).`,
     `Отправь одним сообщением в ${uploadTarget} **точное число kills** в тексте и **один скрин** во вложении.`,
     "На этом же скрине обязательно должны быть одновременно видны и kills, и твой **уникальный Roblox username**.",
     "Если на скрине не видно и kills, и username сразу, второй этап авторизации не засчитывается.",
@@ -4595,7 +4874,12 @@ function buildSubmitStepPayload(userId, options = {}) {
         .setTitle("Готово. Кидай kills и общий скрин")
         .setDescription(lines.filter(Boolean).join("\n")),
     ],
-    components: [],
+    components: [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("onboard_set_roblox_username").setLabel("Сменить Roblox username").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("onboard_change_mains").setLabel("Сменить мейнов").setStyle(ButtonStyle.Secondary)
+      ),
+    ],
   };
 
   if (hasExampleImagePath) {
@@ -4624,6 +4908,7 @@ function buildReviewEmbed(submission, statusLabel, extraFields = []) {
       `Игрок: <@${submission.userId}> (${submission.displayName})`,
       `Мейны: **${submission.mainCharacterLabels.join(", ")}**`,
       `Kills: **${submission.kills}**`,
+      `Roblox: **${submission.robloxUsername || "—"}**${submission.robloxUserId ? ` (ID ${submission.robloxUserId})` : ""}`,
       `Tier по kills: **${submission.derivedTier}** (${formatTierLabel(submission.derivedTier)})`,
       `ID: \`${submission.id}\``,
       `Создано: **${formatDateTime(submission.createdAt)}**`,
@@ -5516,6 +5801,9 @@ async function createPendingSubmissionFromAttachment(client, input) {
     mainRoleIds: selectedEntries.map((entry) => entry.roleId),
     kills: input.kills,
     derivedTier,
+    robloxUsername: String(input.robloxUsername || "").trim(),
+    robloxUserId: String(input.robloxUserId || "").trim(),
+    robloxDisplayName: String(input.robloxDisplayName || "").trim(),
     screenshotUrl: input.screenshotUrl,
     reviewImage,
     status: "pending",
@@ -5553,6 +5841,22 @@ async function createPendingSubmissionFromAttachment(client, input) {
     profile.lastSubmissionId = submission.id;
     profile.lastSubmissionStatus = "pending";
     profile.updatedAt = nowIso();
+    if (submission.robloxUsername && submission.robloxUserId) {
+      profile.domains = profile.domains || {};
+      profile.domains.roblox = {
+        ...(profile.domains.roblox || {}),
+        username: submission.robloxUsername,
+        userId: submission.robloxUserId,
+        verificationStatus: "pending",
+        verifiedAt: null,
+        updatedAt: profile.updatedAt,
+        lastSubmissionId: submission.id,
+        lastReviewedAt: null,
+        reviewedBy: null,
+        source: "onboarding",
+      };
+      finalizeStoredProfile(input.user.id);
+    }
     setSubmitCooldown(input.user.id);
     saveDb();
   } catch (error) {
@@ -5637,10 +5941,29 @@ async function approveSubmission(client, submission, moderatorTag) {
   profile.username = submission.username;
   profile.approvedKills = submission.kills;
   profile.killTier = tier;
+  if (!profile.accessGrantedAt || getCurrentOnboardAccessGrantMode() === ONBOARD_ACCESS_GRANT_MODES.AFTER_APPROVE) {
+    await maybeGrantAccessRoleAtStage(client, submission.userId, ONBOARD_ACCESS_GRANT_MODES.AFTER_APPROVE, "welcome submission approved");
+  }
   profile.lastSubmissionId = submission.id;
   profile.lastSubmissionStatus = "approved";
   profile.lastReviewedAt = submission.reviewedAt;
   profile.updatedAt = nowIso();
+  if (submission.robloxUsername && submission.robloxUserId) {
+    profile.domains = profile.domains || {};
+    profile.domains.roblox = {
+      ...(profile.domains.roblox || {}),
+      username: submission.robloxUsername,
+      userId: submission.robloxUserId,
+      verificationStatus: "verified",
+      verifiedAt: submission.reviewedAt,
+      updatedAt: profile.updatedAt,
+      lastSubmissionId: submission.id,
+      lastReviewedAt: submission.reviewedAt,
+      reviewedBy: moderatorTag,
+      source: "onboarding",
+    };
+    finalizeStoredProfile(submission.userId);
+  }
 
   try {
     saveDb();
@@ -5694,6 +6017,21 @@ async function rejectSubmission(client, submission, moderatorTag, reason) {
   profile.lastSubmissionStatus = "rejected";
   profile.lastReviewedAt = submission.reviewedAt;
   profile.updatedAt = nowIso();
+  if (submission.robloxUsername && submission.robloxUserId) {
+    profile.domains = profile.domains || {};
+    profile.domains.roblox = {
+      ...(profile.domains.roblox || {}),
+      username: submission.robloxUsername,
+      userId: submission.robloxUserId,
+      verificationStatus: "failed",
+      updatedAt: profile.updatedAt,
+      lastSubmissionId: submission.id,
+      lastReviewedAt: submission.reviewedAt,
+      reviewedBy: moderatorTag,
+      source: "onboarding",
+    };
+    finalizeStoredProfile(submission.userId);
+  }
 
   try {
     saveDb();
@@ -6516,6 +6854,8 @@ async function buildModeratorPanelPayload(client, statusText = "", includeFlags 
   const stats = getStatsSnapshot(entries);
   const onboardModeState = getOnboardModeState();
   const currentMode = onboardModeState.mode;
+  const accessGrantState = getOnboardAccessGrantState();
+  const currentAccessGrantMode = accessGrantState.mode;
   const wartimeValidationError = getOnboardModeValidationError(ONBOARD_ACCESS_MODES.WARTIME);
   const apocalypseDescription = isApocalypseMode(currentMode)
     ? "Новые участники без ролей удаляются сразу при входе."
@@ -6523,6 +6863,10 @@ async function buildModeratorPanelPayload(client, statusText = "", includeFlags 
   const changedByText = onboardModeState.changedBy ? ` (${onboardModeState.changedBy})` : "";
   const lastModeChangeText = onboardModeState.changedAt
     ? `${formatDateTime(onboardModeState.changedAt)}${changedByText}`
+    : "—";
+  const accessGrantChangedByText = accessGrantState.changedBy ? ` (${accessGrantState.changedBy})` : "";
+  const lastAccessGrantChangeText = accessGrantState.changedAt
+    ? `${formatDateTime(accessGrantState.changedAt)}${accessGrantChangedByText}`
     : "—";
 
   const embed = new EmbedBuilder()
@@ -6549,6 +6893,17 @@ async function buildModeratorPanelPayload(client, statusText = "", includeFlags 
           apocalypseDescription,
           `Последнее переключение: ${lastModeChangeText}`,
           wartimeValidationError ? `Военный режим недоступен: ${wartimeValidationError}` : "Военный режим готов к переключению.",
+        ].join("\n"),
+        inline: false,
+      },
+      {
+        name: "Выдача стартовой роли",
+        value: [
+          `Сейчас: **${getOnboardAccessGrantModeLabel(currentAccessGrantMode)}**`,
+          "После заявки: роль сразу после первого шага submit.",
+          "После review: роль после публикации заявки в канале модерации.",
+          "После approve: роль только после решения модератора.",
+          `Последнее переключение: ${lastAccessGrantChangeText}`,
         ].join("\n"),
         inline: false,
       },
@@ -6601,6 +6956,23 @@ async function buildModeratorPanelPayload(client, statusText = "", includeFlags 
           .setLabel("Апокалипсис")
           .setStyle(currentMode === ONBOARD_ACCESS_MODES.APOCALYPSE ? ButtonStyle.Danger : ButtonStyle.Secondary)
           .setDisabled(currentMode === ONBOARD_ACCESS_MODES.APOCALYPSE)
+      ),
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId("panel_access_grant_after_submit")
+          .setLabel("Роль после заявки")
+          .setStyle(currentAccessGrantMode === ONBOARD_ACCESS_GRANT_MODES.AFTER_SUBMIT ? ButtonStyle.Success : ButtonStyle.Secondary)
+          .setDisabled(currentAccessGrantMode === ONBOARD_ACCESS_GRANT_MODES.AFTER_SUBMIT),
+        new ButtonBuilder()
+          .setCustomId("panel_access_grant_after_review_post")
+          .setLabel("Роль после review")
+          .setStyle(currentAccessGrantMode === ONBOARD_ACCESS_GRANT_MODES.AFTER_REVIEW_POST ? ButtonStyle.Success : ButtonStyle.Secondary)
+          .setDisabled(currentAccessGrantMode === ONBOARD_ACCESS_GRANT_MODES.AFTER_REVIEW_POST),
+        new ButtonBuilder()
+          .setCustomId("panel_access_grant_after_approve")
+          .setLabel("Роль после approve")
+          .setStyle(currentAccessGrantMode === ONBOARD_ACCESS_GRANT_MODES.AFTER_APPROVE ? ButtonStyle.Success : ButtonStyle.Secondary)
+          .setDisabled(currentAccessGrantMode === ONBOARD_ACCESS_GRANT_MODES.AFTER_APPROVE)
       ),
       new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId("panel_add_character").setLabel("Добавить персонажа").setStyle(ButtonStyle.Success),
@@ -10426,6 +10798,13 @@ client.on("messageCreate", async (message) => {
     return;
   }
 
+  if (!session.robloxUsername || !session.robloxUserId) {
+    const reply = await message.reply("Сначала укажи Roblox username через кнопку «Получить роль», а потом отправляй kills и общий скрин.").catch(() => null);
+    if (reply) scheduleDeleteMessage(reply);
+    await message.delete().catch(() => {});
+    return;
+  }
+
   const attachment = [...message.attachments.values()].find((item) => isImageAttachment(item));
   if (!attachment) {
     const reply = await message.reply("В одной заявке должны быть и kills в тексте, и скрин во вложении. Отправь одно сообщение с числом kills и приложи картинку.").catch(() => null);
@@ -10462,20 +10841,28 @@ client.on("messageCreate", async (message) => {
   const existingProfile = db.profiles?.[message.author.id] || null;
   const isKillsUpdate = hasTrackedProfileKills(existingProfile);
   let submission = null;
+  const currentAccessGrantMode = getCurrentOnboardAccessGrantMode();
 
   try {
-    await grantAccessRole(client, message.author.id, "newcomer application submitted");
-
-    const profile = getProfile(message.author.id);
-    profile.accessGrantedAt = profile.accessGrantedAt || nowIso();
+    if (currentAccessGrantMode === ONBOARD_ACCESS_GRANT_MODES.AFTER_SUBMIT) {
+      await maybeGrantAccessRoleAtStage(client, message.author.id, ONBOARD_ACCESS_GRANT_MODES.AFTER_SUBMIT, "newcomer application submitted");
+    }
 
     submission = await createPendingSubmissionFromAttachment(client, {
       user: message.author,
       member: message.member,
       mainCharacterIds: session.mainCharacterIds,
       kills: effectiveKills,
+      robloxUsername: session.robloxUsername,
+      robloxUserId: session.robloxUserId,
+      robloxDisplayName: session.robloxDisplayName,
       screenshotUrl: attachment.url,
     });
+
+    if (currentAccessGrantMode === ONBOARD_ACCESS_GRANT_MODES.AFTER_REVIEW_POST) {
+      await maybeGrantAccessRoleAtStage(client, message.author.id, ONBOARD_ACCESS_GRANT_MODES.AFTER_REVIEW_POST, "newcomer application moved to moderator review");
+      saveDb();
+    }
   } catch (error) {
     if (submission?.id) {
       delete db.submissions[submission.id];
@@ -10515,7 +10902,9 @@ client.on("messageCreate", async (message) => {
   const reply = await message.reply(
     isKillsUpdate
       ? "Обновление kills отправлено модераторам. Текущие kills и tier изменятся после проверки."
-      : "Заявка отправлена модераторам. Стартовая роль уже выдана, kill-tier прилетит после проверки."
+      : currentAccessGrantMode === ONBOARD_ACCESS_GRANT_MODES.AFTER_APPROVE
+        ? "Заявка отправлена модераторам. Стартовая роль будет выдана после approve модератора, kill-tier прилетит после проверки."
+        : "Заявка отправлена модераторам. Стартовая роль уже выдана, kill-tier прилетит после проверки."
   ).catch(() => null);
   if (reply) scheduleDeleteMessage(reply);
 
@@ -10766,12 +11155,9 @@ client.on("interactionCreate", async (interaction) => {
       const previousAccessRoleIds = getRolePoolSnapshot(accessMember, accessRoleIds);
 
       try {
-        await grantAccessRole(client, target.id, "manual moderator setup");
-
         const profile = getProfile(target.id);
         profile.displayName = getProfileDisplayName(target.id, profile);
         profile.username = target.username;
-        profile.accessGrantedAt = profile.accessGrantedAt || nowIso();
 
         await createManualApprovedRecord(client, target, screenshot, kills, interaction.user.tag);
       } catch (error) {
@@ -10794,6 +11180,81 @@ client.on("interactionCreate", async (interaction) => {
       });
 
       await interaction.editReply(`Готово. <@${target.id}> теперь имеет kills ${kills} и tier ${killTierFor(kills)}.`);
+      return;
+    }
+
+    if (subcommand === "robloxauth") {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+      const targetUser = interaction.options.getUser("target");
+      const userIdInput = (interaction.options.getString("user_id") || "").trim();
+      const robloxUsernameInput = interaction.options.getString("roblox_username", true);
+
+      let target = targetUser;
+      if (!target && userIdInput) {
+        if (!/^\d{17,20}$/.test(userIdInput)) {
+          await interaction.editReply("user_id должен быть числовым Discord ID (17–20 цифр).");
+          return;
+        }
+        target = await client.users.fetch(userIdInput).catch(() => null);
+        if (!target) {
+          await interaction.editReply(`Не удалось получить пользователя по ID ${userIdInput}.`);
+          return;
+        }
+      }
+      if (!target) {
+        await interaction.editReply("Укажи `target` (пользователь в сервере) или `user_id` (для тех, кто вышел из сервера).");
+        return;
+      }
+
+      let robloxUser = null;
+      try {
+        robloxUser = await resolveRobloxUserByUsername(robloxUsernameInput);
+      } catch (error) {
+        await interaction.editReply(String(error?.message || error || "Не удалось проверить Roblox username."));
+        return;
+      }
+
+      if (!robloxUser) {
+        await interaction.editReply("Такой Roblox username не найден через Roblox API.");
+        return;
+      }
+
+      const previousProfile = cloneJsonValue(db.profiles?.[target.id]);
+      const hadProfile = Boolean(db.profiles?.[target.id]);
+      const reviewedAt = nowIso();
+
+      try {
+        const profile = getProfile(target.id);
+        profile.displayName = getProfileDisplayName(target.id, profile);
+        profile.username = target.username;
+        profile.updatedAt = reviewedAt;
+        profile.domains = profile.domains || {};
+        profile.domains.roblox = {
+          ...(profile.domains.roblox || {}),
+          username: robloxUser.name,
+          userId: robloxUser.id,
+          verificationStatus: "verified",
+          verifiedAt: reviewedAt,
+          updatedAt: reviewedAt,
+          lastSubmissionId: profile.lastSubmissionId || null,
+          lastReviewedAt: reviewedAt,
+          reviewedBy: interaction.user.tag,
+          source: "manual_moderator",
+        };
+        finalizeStoredProfile(target.id);
+        saveDb();
+      } catch (error) {
+        restoreRecordValue(db.profiles, target.id, previousProfile, hadProfile);
+        await interaction.editReply(String(error?.message || error || "Не удалось вручную подтвердить Roblox username."));
+        return;
+      }
+
+      await logLine(client, `ROBLOX_AUTH_MANUAL: <@${target.id}> username=${robloxUser.name} id=${robloxUser.id} by ${interaction.user.tag}`).catch((error) => {
+        console.warn(`Manual Roblox auth log failed for ${target.id}: ${formatRuntimeError(error)}`);
+      });
+
+      await interaction.editReply(`Roblox-аккаунт для <@${target.id}> подтверждён: ${robloxUser.name} (ID ${robloxUser.id}).`);
       return;
     }
 
@@ -13587,6 +14048,9 @@ client.on("interactionCreate", async (interaction) => {
       "panel_refresh_summary",
       "panel_mode_normal",
       "panel_mode_wartime",
+      "panel_access_grant_after_submit",
+      "panel_access_grant_after_review_post",
+      "panel_access_grant_after_approve",
     ].includes(interaction.customId)) {
       if (!isModerator(interaction.member)) {
         await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
@@ -13634,6 +14098,27 @@ client.on("interactionCreate", async (interaction) => {
           saveDb();
           statusText = "Режим онбординга переключён на военное время.";
         }
+      } else if (interaction.customId === "panel_access_grant_after_submit") {
+        const state = getOnboardAccessGrantState();
+        state.mode = ONBOARD_ACCESS_GRANT_MODES.AFTER_SUBMIT;
+        state.changedAt = nowIso();
+        state.changedBy = interaction.user.tag;
+        saveDb();
+        statusText = "Выдача стартовой роли переключена на режим: сразу после заявки.";
+      } else if (interaction.customId === "panel_access_grant_after_review_post") {
+        const state = getOnboardAccessGrantState();
+        state.mode = ONBOARD_ACCESS_GRANT_MODES.AFTER_REVIEW_POST;
+        state.changedAt = nowIso();
+        state.changedBy = interaction.user.tag;
+        saveDb();
+        statusText = "Выдача стартовой роли переключена на режим: после публикации review-заявки.";
+      } else if (interaction.customId === "panel_access_grant_after_approve") {
+        const state = getOnboardAccessGrantState();
+        state.mode = ONBOARD_ACCESS_GRANT_MODES.AFTER_APPROVE;
+        state.changedAt = nowIso();
+        state.changedBy = interaction.user.tag;
+        saveDb();
+        statusText = "Выдача стартовой роли переключена на режим: только после approve модератора.";
       }
 
       await interaction.editReply(await buildModeratorPanelPayload(client, statusText, false));
@@ -13775,6 +14260,17 @@ client.on("interactionCreate", async (interaction) => {
 
     if (interaction.customId === "onboard_change_mains") {
       await openCharacterPicker(interaction, "full", "update");
+      return;
+    }
+
+    if (interaction.customId === "onboard_set_roblox_username") {
+      const session = getSubmitSession(interaction.user.id);
+      if (!session?.mainCharacterIds?.length) {
+        await interaction.reply(ephemeralPayload({ content: "Сессия онбординга истекла. Нажми «Получить роль» заново." }));
+        return;
+      }
+
+      await interaction.showModal(buildRobloxUsernameModal("onboard_roblox_username_modal", session.robloxUsername || ""));
       return;
     }
 
@@ -14431,6 +14927,43 @@ client.on("interactionCreate", async (interaction) => {
         mode,
         responseMethod: getMainsPickerSession(interaction.user.id) ? "update" : "reply",
       });
+      return;
+    }
+
+    if (interaction.customId === "onboard_roblox_username_modal") {
+      const session = getSubmitSession(interaction.user.id);
+      if (!session?.mainCharacterIds?.length) {
+        await interaction.reply(ephemeralPayload({ content: "Сессия онбординга истекла. Нажми «Получить роль» заново." }));
+        return;
+      }
+
+      const robloxUsernameInput = interaction.fields.getTextInputValue("roblox_username");
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+      let robloxUser = null;
+      try {
+        robloxUser = await resolveRobloxUserByUsername(robloxUsernameInput);
+      } catch (error) {
+        await interaction.editReply(String(error?.message || error || "Не удалось проверить Roblox username."));
+        return;
+      }
+
+      if (!robloxUser) {
+        await interaction.editReply("Такой Roblox username не найден через Roblox API. Проверь написание и попробуй ещё раз.");
+        return;
+      }
+
+      setSubmitSession(interaction.user.id, {
+        ...session,
+        robloxUsername: robloxUser.name,
+        robloxUserId: robloxUser.id,
+        robloxDisplayName: robloxUser.displayName,
+      });
+
+      await interaction.editReply(buildSubmitStepPayload(interaction.user.id, {
+        includeEphemeralFlag: false,
+        noticeText: `Roblox username подтверждён: **${robloxUser.name}** (ID ${robloxUser.id}).`,
+      }));
       return;
     }
 
