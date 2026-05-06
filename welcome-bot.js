@@ -776,10 +776,10 @@ function getLegacyReportManagedCharacterCatalog() {
   });
 }
 
-function getManagedCharacterCatalog() {
-  const excludedCharacterIds = getLegacyTierlistCustomCharacterIds(db);
+function getManagedCharacterCatalog(currentDb = db) {
+  const excludedCharacterIds = getLegacyTierlistCustomCharacterIds(currentDb);
   const resolvedRecords = listSotCharacters({
-    db,
+    db: currentDb,
     appConfig,
     excludedCharacterIds,
     includeUnresolved: true,
@@ -805,21 +805,29 @@ function getManagedCharacterRoleIdMap(entries = getManagedCharacterCatalog()) {
 }
 
 function getLegacyTierlistCustomCharacterIds(currentDb = db) {
-  const liveState = getLiveLegacyTierlistState(currentDb);
-  if (!liveState.ok) return [];
-  return listLegacyTierlistCustomCharacterIds(liveState);
+  const sourcePath = String(getResolvedIntegrationSourcePath("tierlist", currentDb) || "").trim();
+  if (!sourcePath) return [];
+
+  const resolvedStatePath = path.isAbsolute(sourcePath)
+    ? sourcePath
+    : path.resolve(DATA_ROOT || process.cwd(), sourcePath);
+  const customCharactersPath = path.join(path.dirname(resolvedStatePath), "characters.custom.json");
+
+  if (!fs.existsSync(customCharactersPath)) return [];
+
+  return listLegacyTierlistCustomCharacterIds({ customCharactersPath });
 }
 
-function getCharacterCatalog() {
-  return getManagedCharacterCatalog().map((entry) => ({
+function getCharacterCatalog(currentDb = db) {
+  return getManagedCharacterCatalog(currentDb).map((entry) => ({
     id: String(entry?.id || "").trim(),
     label: String(entry?.label || entry?.id || "").trim(),
     roleId: String(entry?.roleId || "").trim(),
   }));
 }
 
-function getLegacyTierlistBaseCharacterCatalog() {
-  return getManagedCharacterCatalog().map((entry) => ({
+function getLegacyTierlistBaseCharacterCatalog(currentDb = db) {
+  return getManagedCharacterCatalog(currentDb).map((entry) => ({
     id: String(entry.id || "").trim(),
     label: String(entry.label || entry.id || "").trim(),
   }));
@@ -7035,7 +7043,7 @@ function getLiveLegacyTierlistState(currentDb = db) {
   return loadLegacyTierlistState({
     sourcePath: getResolvedIntegrationSourcePath("tierlist", currentDb),
     baseDir: DATA_ROOT,
-    baseCharacterCatalog: getLegacyTierlistBaseCharacterCatalog(),
+    baseCharacterCatalog: getLegacyTierlistBaseCharacterCatalog(currentDb),
     baseCharacterAssetsDir: CHARACTERS_ASSET_DIR,
   });
 }
