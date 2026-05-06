@@ -20,11 +20,13 @@
   },
   "ui": {
     "welcomeTitle": "Jujutsu Shinigans Onboarding",
-    "welcomeDescription": "Нажми кнопку ниже, выбери 1 или 2 мейнов, затем укажи точное количество kills и отправь скрин, чтобы получить роль доступа. Kill-tier роль прилетит после проверки модератором.",
+    "welcomeDescription": "Нажми кнопку ниже, выбери 1 или 2 мейнов, затем укажи точное количество kills и отправь один скрин, на котором одновременно видны kills и твой Roblox username. Kill-tier роль прилетит после проверки модератором.",
     "getRoleButtonLabel": "Получить роль",
     "nonJjsTitle": "Я не играю в JJS",
     "nonJjsDescription": "Если ты не играешь в JJS, нажми кнопку ниже. Бот запустит 2 этапа капчи и после успешного прохождения выдаст отдельную роль доступа.",
     "nonJjsButtonLabel": "Я не играю в JJS",
+    "onboardingProofExampleImageUrl": "",
+    "onboardingProofExampleImagePath": "",
     "tierlistButtonLabel": "Текстовый тир-лист",
     "tierlistTitle": "Текстовый тир-лист"
   },

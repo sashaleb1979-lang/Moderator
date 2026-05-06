@@ -8,6 +8,7 @@ const {
   SHARED_PROFILE_VERSION,
   deriveProfileMainView,
   ensureSharedProfile,
+  normalizeRobloxDomainState,
   normalizeIntegrationState,
   syncSharedProfiles,
 } = require("../src/integrations/shared-profile");
@@ -24,6 +25,9 @@ test("ensureSharedProfile migrates onboarding fields into domains and summary", 
     killTier: "3",
     accessGrantedAt: "2026-05-01T10:00:00.000Z",
     lastSubmissionStatus: "approved",
+    robloxUsername: "RynexV",
+    robloxUserId: "123456",
+    verificationStatus: "verified",
   };
 
   const result = ensureSharedProfile(legacyProfile, legacyProfile.userId);
@@ -42,6 +46,19 @@ test("ensureSharedProfile migrates onboarding fields into domains and summary", 
   assert.equal(result.profile.summary.onboarding.mainsCount, 2);
   assert.equal(result.profile.summary.elo.hasRating, false);
   assert.equal(result.profile.summary.tierlist.hasSubmission, false);
+  assert.deepEqual(result.profile.domains.roblox, {
+    username: "RynexV",
+    userId: "123456",
+    verificationStatus: "verified",
+    verifiedAt: null,
+    updatedAt: null,
+    lastSubmissionId: null,
+    lastReviewedAt: null,
+    reviewedBy: null,
+    source: null,
+  });
+  assert.equal(result.profile.summary.roblox.hasVerifiedAccount, true);
+  assert.equal(result.profile.summary.roblox.username, "RynexV");
 });
 
 test("ensureSharedProfile keeps the first raw onboarding snapshot immutable across later syncs", () => {
@@ -161,4 +178,18 @@ test("normalizeIntegrationState creates dormant elo and tierlist scaffolding", (
   assert.equal(result.integrations.tierlist.status, "not_started");
   assert.equal(result.integrations.tierlist.dashboard.channelId, "999");
   assert.equal(result.integrations.tierlist.summary.messageId, "666");
+});
+
+test("normalizeRobloxDomainState defaults to unverified when binding is missing", () => {
+  assert.deepEqual(normalizeRobloxDomainState({ username: "RynexV" }), {
+    username: "RynexV",
+    userId: null,
+    verificationStatus: "unverified",
+    verifiedAt: null,
+    updatedAt: null,
+    lastSubmissionId: null,
+    lastReviewedAt: null,
+    reviewedBy: null,
+    source: null,
+  });
 });

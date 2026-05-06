@@ -1,9 +1,10 @@
 "use strict";
 
-const SHARED_PROFILE_VERSION = 1;
+const SHARED_PROFILE_VERSION = 2;
 const INTEGRATION_STATE_VERSION = 1;
 const INTEGRATION_MODE_DORMANT = "dormant";
 const INTEGRATION_STATUSES = new Set(["not_started", "in_progress", "migrated"]);
+const ROBLOX_VERIFICATION_STATUSES = new Set(["unverified", "pending", "verified", "failed"]);
 
 function cleanString(value, limit = 2000) {
   return String(value || "").trim().slice(0, Math.max(0, Number(limit) || 0));
@@ -108,10 +109,33 @@ function normalizeTierlistDomainState(value = {}) {
   };
 }
 
+function normalizeRobloxDomainState(value = {}) {
+  const source = value && typeof value === "object" ? value : {};
+  const rawStatus = cleanString(source.verificationStatus || source.status, 40).toLowerCase();
+  const userId = normalizeNullableString(source.robloxUserId ?? source.userId, 40);
+
+  return {
+    username: normalizeNullableString(source.robloxUsername ?? source.username, 120),
+    userId,
+    verificationStatus: ROBLOX_VERIFICATION_STATUSES.has(rawStatus)
+      ? rawStatus
+      : userId
+        ? "verified"
+        : "unverified",
+    verifiedAt: normalizeNullableString(source.verifiedAt, 80),
+    updatedAt: normalizeNullableString(source.updatedAt, 80),
+    lastSubmissionId: normalizeNullableString(source.lastSubmissionId, 80),
+    lastReviewedAt: normalizeNullableString(source.lastReviewedAt, 80),
+    reviewedBy: normalizeNullableString(source.reviewedBy, 120),
+    source: normalizeNullableString(source.source, 40),
+  };
+}
+
 function buildSharedProfileSummary(profile = {}, domains = {}) {
   const onboarding = domains.onboarding || normalizeOnboardingDomainState(profile);
   const elo = domains.elo || normalizeEloDomainState(profile?.domains?.elo);
   const tierlist = domains.tierlist || normalizeTierlistDomainState(profile?.domains?.tierlist);
+  const roblox = domains.roblox || normalizeRobloxDomainState(profile?.domains?.roblox || profile);
 
   return {
     preferredDisplayName: cleanString(profile.displayName, 200) || cleanString(profile.username, 120) || cleanString(profile.userId, 80),
@@ -134,6 +158,12 @@ function buildSharedProfileSummary(profile = {}, domains = {}) {
       mainName: tierlist.mainName,
       influenceMultiplier: tierlist.influenceMultiplier,
     },
+    roblox: {
+      hasVerifiedAccount: roblox.verificationStatus === "verified" && Boolean(roblox.userId),
+      username: roblox.username,
+      userId: roblox.userId,
+      verificationStatus: roblox.verificationStatus,
+    },
   };
 }
 
@@ -142,6 +172,7 @@ function ensureSharedProfile(profile = {}, userId = "") {
   const onboarding = normalizeOnboardingDomainState(source);
   const elo = normalizeEloDomainState(source?.domains?.elo);
   const tierlist = normalizeTierlistDomainState(source?.domains?.tierlist);
+  const roblox = normalizeRobloxDomainState(source?.domains?.roblox || source);
 
   const next = {
     ...source,
@@ -165,6 +196,7 @@ function ensureSharedProfile(profile = {}, userId = "") {
       onboarding,
       elo,
       tierlist,
+      roblox,
     },
   };
   next.summary = buildSharedProfileSummary(next, next.domains);
@@ -320,5 +352,6 @@ module.exports = {
   createDefaultIntegrationState,
   ensureSharedProfile,
   normalizeIntegrationState,
+  normalizeRobloxDomainState,
   syncSharedProfiles,
 };

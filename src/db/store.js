@@ -53,6 +53,7 @@ function createDefaultDbState({
   appConfig,
   createDefaultIntegrationState,
   createOnboardModeState,
+  createOnboardAccessGrantState,
   normalizeCharacterCatalog,
 }) {
   return {
@@ -84,6 +85,9 @@ function createDefaultDbState({
       },
       integrations: createDefaultIntegrationState(),
       onboardMode: createOnboardModeState(),
+      accessGrant: typeof createOnboardAccessGrantState === "function"
+        ? createOnboardAccessGrantState()
+        : { mode: "after_submit", changedAt: null, changedBy: "" },
       characters: normalizeCharacterCatalog(appConfig.characters),
     },
     profiles: {},
@@ -100,6 +104,7 @@ function createDbStore({
   normalizeCharacterCatalog,
   createDefaultIntegrationState,
   createOnboardModeState,
+  createOnboardAccessGrantState,
   ensurePresentationConfig,
   createPresentationDefaults,
   normalizeRoleGrantRegistry,
@@ -118,6 +123,7 @@ function createDbStore({
       appConfig,
       createDefaultIntegrationState,
       createOnboardModeState,
+      createOnboardAccessGrantState,
       normalizeCharacterCatalog,
     });
 
@@ -139,6 +145,11 @@ function createDbStore({
     const normalizedOnboardMode = createOnboardModeState(db.config.onboardMode);
     const onboardModeChanged = JSON.stringify(normalizedOnboardMode) !== JSON.stringify(db.config.onboardMode || null);
     db.config.onboardMode = normalizedOnboardMode;
+    const normalizedAccessGrant = typeof createOnboardAccessGrantState === "function"
+      ? createOnboardAccessGrantState(db.config.accessGrant)
+      : { mode: "after_submit", changedAt: null, changedBy: "" };
+    const accessGrantChanged = JSON.stringify(normalizedAccessGrant) !== JSON.stringify(db.config.accessGrant || null);
+    db.config.accessGrant = normalizedAccessGrant;
     const normalizedIntegrations = normalizeIntegrationState(db.config.integrations);
     const integrationsChanged = normalizedIntegrations.mutated;
     db.config.integrations = normalizedIntegrations.integrations;
@@ -179,6 +190,7 @@ function createDbStore({
       || roleGrantRegistry.mutated
       || comboGuideEditorRoleIdsChanged
       || onboardModeChanged
+      || accessGrantChanged
       || integrationsChanged
       || Boolean(dormantEloImport.mutated)
       || Boolean(dormantTierlistImport.mutated)

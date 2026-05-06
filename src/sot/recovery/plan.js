@@ -231,9 +231,31 @@ function compareRecoveryCandidates(left, right) {
   return String(left?.roleName || "").localeCompare(String(right?.roleName || ""), "ru");
 }
 
+function getManagedCharacterNameCandidates(rawEntry = {}, normalizedEntry = {}) {
+  const names = [];
+  const push = (value) => {
+    const text = cleanText(value, 120);
+    if (text) names.push(text);
+  };
+
+  push(normalizedEntry?.label);
+  push(rawEntry?.label);
+  push(rawEntry?.englishLabel);
+
+  const evidenceAliasNames = Array.isArray(rawEntry?.evidence?.aliasNames)
+    ? rawEntry.evidence.aliasNames
+    : Array.isArray(rawEntry?.aliasNames)
+      ? rawEntry.aliasNames
+      : [];
+  for (const alias of evidenceAliasNames) push(alias);
+
+  return [...new Set(names)];
+}
+
 function isConfidentRecoveryCandidate(best, second) {
   if (!best) return false;
   if (best.preferredMatch) return true;
+  if (best.exactName && Number(best.evidenceCount || 0) === 0 && !second) return true;
   if (best.overlap >= 2 && (!second || best.overlap > Number(second.overlap || 0))) return true;
   if (best.overlap >= 1 && best.coverage >= 0.75 && best.roleShare >= 0.75 && (!second || Number(second.overlap || 0) === 0)) {
     return true;
@@ -251,11 +273,18 @@ function buildManagedCharacterRoleRecoveryPlan({
   generatedRoleIds = {},
 } = {}) {
   const managedCatalog = normalizeManagedCharacterCatalog(managedCharacters);
+  const rawEntriesById = new Map(
+    (Array.isArray(managedCharacters) ? managedCharacters : [])
+      .map((entry) => [normalizeManagedCharacterId(entry?.id || entry?.label, ""), entry])
+      .filter(([id]) => Boolean(id))
+  );
   const expectedUserIdsByCharacterId = buildHistoricalManagedCharacterUserIds({ managedCharacters, profiles, submissions });
   const normalizedGuildRoles = normalizeGuildRoleCandidates(guildRoles);
   const analyses = [];
 
   for (const entry of managedCatalog) {
+    const rawEntry = rawEntriesById.get(entry.id) || {};
+    const nameCandidates = getManagedCharacterNameCandidates(rawEntry, entry);
     const expectedUserIds = new Set(Array.isArray(expectedUserIdsByCharacterId[entry.id]) ? expectedUserIdsByCharacterId[entry.id] : []);
     const preferredRoleIds = [...new Set([
       cleanText(entry.roleId, 80),
@@ -267,7 +296,7 @@ function buildManagedCharacterRoleRecoveryPlan({
     for (const role of normalizedGuildRoles) {
       const preferredMatch = preferredRoleIds.includes(role.id);
       const overlap = countSharedUserIds(role.memberUserIds, expectedUserIds);
-      const exactName = cleanText(role.name, 120).toLowerCase() === cleanText(entry.label, 120).toLowerCase();
+      const exactName = nameCandidates.some((candidate) => cleanText(role.name, 120).toLowerCase() === cleanText(candidate, 120).toLowerCase());
       if (!preferredMatch && !overlap && !exactName) continue;
 
       const evidenceCount = expectedUserIds.size;

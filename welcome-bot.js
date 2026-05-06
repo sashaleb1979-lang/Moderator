@@ -53,7 +53,11 @@ const {
 } = require("./src/sot/report-operator");
 const { getSotReportIntegrationSnapshots } = require("./src/sot/report-integrations");
 const { resolveAllCharacterRecords } = require("./src/sot/resolver/characters");
-const { runSotStartupAlerts, scheduleSotAlertTicks } = require("./src/sot/runtime-alerts");
+const {
+  getActionableSotCharacterAlertState,
+  runSotStartupAlerts,
+  scheduleSotAlertTicks,
+} = require("./src/sot/runtime-alerts");
 const { runClientReadyCore, scheduleClientReadyIntervals } = require("./src/runtime/client-ready-core");
 const {
   syncLegacyGraphicTierlistBoardSnapshot,
@@ -118,6 +122,11 @@ const {
   isApocalypseMode,
   normalizeOnboardAccessMode,
 } = require("./src/onboard/access-mode");
+const {
+  ONBOARD_ACCESS_GRANT_MODES,
+  createOnboardAccessGrantState,
+  getOnboardAccessGrantModeLabel,
+} = require("./src/onboard/access-grant-mode");
 const { resolveNonJjsCaptchaMode } = require("./src/onboard/non-jjs-mode");
 const {
   createPresentationDefaults,
@@ -247,6 +256,11 @@ const {
   filterEntriesByAllowedUserIds,
   hasAnyAllowedRole,
 } = require("./src/onboard/tierlist-live-members");
+const {
+  applyTextTierlistPaginationAction,
+  normalizeTextTierlistPaginationState,
+  resolveTextTierlistPageState,
+} = require("./src/onboard/text-tierlist-pagination");
 const {
   buildCharacterFactData,
   collectRecentKillChanges,
@@ -471,6 +485,14 @@ function buildRuntimeConfig(fileConfig = {}) {
         "Если ты не играешь в JJS, нажми кнопку ниже. Бот запустит 2 этапа капчи и после успешного прохождения выдаст отдельную роль доступа."
       ).trim(),
       nonGgsButtonLabel: String(fileConfig?.ui?.nonJjsButtonLabel || fileConfig?.ui?.nonGgsButtonLabel || "Я не играю в JJS").trim(),
+      onboardingProofExampleImageUrl: envText(
+        "ONBOARD_PROOF_EXAMPLE_IMAGE_URL",
+        fileConfig?.ui?.onboardingProofExampleImageUrl || ""
+      ),
+      onboardingProofExampleImagePath: envText(
+        "ONBOARD_PROOF_EXAMPLE_IMAGE_PATH",
+        fileConfig?.ui?.onboardingProofExampleImagePath || ""
+      ),
       tierlistButtonLabel: String(fileConfig?.ui?.tierlistButtonLabel || "Текстовый тир-лист").trim(),
       tierlistTitle: String(fileConfig?.ui?.tierlistTitle || "Текстовый тир-лист").trim(),
     },
@@ -661,6 +683,7 @@ const dbStore = createDbStore({
   normalizeCharacterCatalog,
   createDefaultIntegrationState,
   createOnboardModeState,
+  createOnboardAccessGrantState,
   ensurePresentationConfig,
   createPresentationDefaults,
   normalizeRoleGrantRegistry,
@@ -1554,11 +1577,15 @@ async function buildTextTierlistPayloads(client, options = {}) {
     pageSize: RECENT_KILL_CHANGES_PAGE_SIZE,
     maxPages: RECENT_KILL_CHANGES_MAX_PAGES,
   }).pageCount;
-  const totalPages = Math.max(rankPageCount, recentPageCount);
-  let pageIndex = Number.isFinite(Number(options.page)) ? Number(options.page) : 0;
-  if (pageIndex < 0) pageIndex = 0;
-  if (pageIndex >= totalPages) pageIndex = totalPages - 1;
-  const rankPageIndex = Math.min(pageIndex, rankPageCount - 1);
+  const paginationState = resolveTextTierlistPageState({
+    page: options.page,
+    recentPage: options.recentPage,
+  }, {
+    rankPageCount,
+    recentPageCount,
+  });
+  const pageIndex = paginationState.page;
+  const recentPageIndex = paginationState.recentPage;
 
   const presentation = getPresentation();
   const baseTitle = presentation.tierlist.textTitle || "Tier List";
@@ -1589,7 +1616,7 @@ async function buildTextTierlistPayloads(client, options = {}) {
     return eloJumpUrl ? `[${label}](${eloJumpUrl})` : label;
   };
 
-  const pageEntries = entries.slice(rankPageIndex * PAGE_SIZE, rankPageIndex * PAGE_SIZE + PAGE_SIZE);
+  const pageEntries = entries.slice(pageIndex * PAGE_SIZE, pageIndex * PAGE_SIZE + PAGE_SIZE);
   const dominantTier = (() => {
     if (!pageEntries.length) return 0;
     const tally = new Map();
@@ -1617,7 +1644,7 @@ async function buildTextTierlistPayloads(client, options = {}) {
 
   const recentEmbed = buildRecentKillChangesEmbed(
     paginateRecentKillChanges(recentChanges, {
-      page: pageIndex,
+      page: recentPageIndex,
       pageSize: RECENT_KILL_CHANGES_PAGE_SIZE,
       maxPages: RECENT_KILL_CHANGES_MAX_PAGES,
     })
@@ -1642,32 +1669,53 @@ async function buildTextTierlistPayloads(client, options = {}) {
     });
 
     const rankEmbed = new EmbedBuilder()
-      .setTitle(`${baseTitle} — стр. ${pageIndex + 1}/${totalPages}`)
+      .setTitle(`${baseTitle} — стр. ${pageIndex + 1}/${rankPageCount}`)
       .setColor(embedColor)
       .setDescription(rankLines.join("\n"))
-      .setFooter({ text: `Всего участников: ${entries.length} • Страница ${pageIndex + 1} из ${totalPages}` });
+      .setFooter({ text: `Всего участников: ${entries.length} • Страница ${pageIndex + 1} из ${rankPageCount}` });
     pagesEmbeds.push(rankEmbed);
   }
 
   const components = [];
-  if (totalPages > 1) {
+  if (recentPageCount > 1) {
+    components.push(
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId("text_tierlist_recent_first")
+          .setLabel("⏮ Изменения")
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(recentPageIndex === 0),
+        new ButtonBuilder()
+          .setCustomId("text_tierlist_recent_prev")
+          .setLabel("◀ Изменения")
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(recentPageIndex === 0),
+        new ButtonBuilder()
+          .setCustomId("text_tierlist_recent_next")
+          .setLabel("Изменения ▶")
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(recentPageIndex >= recentPageCount - 1)
+      )
+    );
+  }
+  if (rankPageCount > 1) {
     components.push(
       new ActionRowBuilder().addComponents(
         new ButtonBuilder()
           .setCustomId("text_tierlist_first")
-          .setLabel("⏮ В начало")
+          .setLabel("⏮ Рейтинг")
           .setStyle(ButtonStyle.Secondary)
           .setDisabled(pageIndex === 0),
         new ButtonBuilder()
           .setCustomId("text_tierlist_prev")
-          .setLabel("◀ Назад")
+          .setLabel("◀ Рейтинг")
           .setStyle(ButtonStyle.Secondary)
           .setDisabled(pageIndex === 0),
         new ButtonBuilder()
           .setCustomId("text_tierlist_next")
-          .setLabel("Вперёд ▶")
+          .setLabel("Рейтинг ▶")
           .setStyle(ButtonStyle.Secondary)
-          .setDisabled(pageIndex >= totalPages - 1)
+          .setDisabled(pageIndex >= rankPageCount - 1)
       )
     );
   }
@@ -2089,7 +2137,7 @@ function buildWelcomeEditorPayload(statusText = "") {
     .setDescription([
       `**Welcome title:** ${previewText(presentation.welcome.title, 140)}`,
       `**Welcome text:** ${previewText(presentation.welcome.description, 240)}`,
-      `**Buttons:** ${presentation.welcome.buttons.begin} / ${presentation.welcome.buttons.quickMains} / ${presentation.welcome.buttons.myCard}`,
+      `**Buttons:** ${presentation.welcome.buttons.begin} / ${nonJjsUi.buttonLabel} / ${presentation.welcome.buttons.quickMains}`,
       `**JJS block:** ${previewText(nonJjsUi.title, 90)} / ${previewText(nonJjsUi.buttonLabel, 80)}`,
       `**JJS text:** ${previewText(nonJjsUi.description, 160)}`,
       `**Text tierlist:** ${presentation.tierlist.textTitle}`,
@@ -2978,6 +3026,16 @@ function getSubmitSession(userId) {
 
 function clearSubmitSession(userId) {
   submitSessions.delete(userId);
+}
+
+function getOnboardingProofExampleImagePath() {
+  const rawPath = String(appConfig?.ui?.onboardingProofExampleImagePath || "").trim();
+  if (!rawPath) return "";
+  return path.isAbsolute(rawPath) ? rawPath : path.resolve(PROJECT_ROOT, rawPath);
+}
+
+function getOnboardingProofExampleImageUrl() {
+  return String(appConfig?.ui?.onboardingProofExampleImageUrl || "").trim();
 }
 
 function normalizeMainsPickerState(rawValue = {}) {
@@ -4299,17 +4357,22 @@ async function purgeUserProfile(client, userId, moderatorTag) {
 
 function buildWelcomeEmbed() {
   const presentation = getPresentation();
+  const nonJjsUi = getNonJjsUiConfig();
   return new EmbedBuilder()
     .setTitle(presentation.welcome.title)
     .setDescription([
       presentation.welcome.description,
       "",
       ...presentation.welcome.steps.map((step, index) => `${index + 1}. ${step}`),
+      "",
+      `**${nonJjsUi.title}**`,
+      nonJjsUi.description,
     ].join("\n"));
 }
 
 function buildWelcomeComponents() {
   const presentation = getPresentation();
+  const nonJjsUi = getNonJjsUiConfig();
   return [
     new ActionRowBuilder().addComponents(
       new ButtonBuilder()
@@ -4317,12 +4380,12 @@ function buildWelcomeComponents() {
         .setLabel(presentation.welcome.buttons.begin)
         .setStyle(ButtonStyle.Primary),
       new ButtonBuilder()
+        .setCustomId("onboard_non_ggs_start")
+        .setLabel(nonJjsUi.buttonLabel)
+        .setStyle(ButtonStyle.Success),
+      new ButtonBuilder()
         .setCustomId("onboard_quick_mains")
         .setLabel(presentation.welcome.buttons.quickMains)
-        .setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder()
-        .setCustomId("onboard_my_card")
-        .setLabel(presentation.welcome.buttons.myCard)
         .setStyle(ButtonStyle.Secondary)
     ),
   ];
@@ -4415,6 +4478,26 @@ async function buildNonGgsCaptchaPayload(userId, noticeText = "", options = {}) 
 
   if (session.mode === "practice") {
     descriptionLines.splice(1, 0, "Тренировочный режим: роли и профиль не изменятся.");
+  function buildNonGgsConfirmPayload() {
+    return ephemeralPayload({
+      embeds: [
+        new EmbedBuilder()
+          .setColor(0xED4245)
+          .setTitle("Подтверди путь без JJS")
+          .setDescription([
+            "Ты уверен, что хочешь продолжить?",
+            "Если подтвердить этот путь, ты потеряешь большинство функций сервера.",
+            "Если играешь в JJS, лучше вернись и используй обычную кнопку «Получить роль».",
+          ].join("\n")),
+      ],
+      components: [
+        new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId("onboard_non_ggs_confirm").setLabel("Да, продолжить").setStyle(ButtonStyle.Danger),
+          new ButtonBuilder().setCustomId("onboard_non_ggs_cancel").setLabel("Отмена").setStyle(ButtonStyle.Secondary)
+        ),
+      ],
+    });
+  }
   }
 
   if (noticeText) {
@@ -4490,23 +4573,38 @@ function buildSubmitStepPayload(userId, options = {}) {
     : mainCharacterIds.map((value) => String(value || "").trim()).filter(Boolean);
   const welcomeChannelId = getResolvedChannelId("welcome");
   const uploadTarget = welcomeChannelId ? `<#${welcomeChannelId}>` : "welcome-канал";
+  const exampleImagePath = getOnboardingProofExampleImagePath();
+  const exampleImageUrl = getOnboardingProofExampleImageUrl();
+  const hasExampleImagePath = Boolean(exampleImagePath) && fs.existsSync(exampleImagePath);
+  const hasExampleImageUrl = Boolean(exampleImageUrl);
 
   const lines = [];
   if (options.noticeText) lines.push(options.noticeText);
   lines.push(
     `Мейны: **${selectedLabels.join(", ")}**.`,
-    `Отправь одним сообщением в ${uploadTarget} число kills в тексте и скрин во вложении — бот выдаст роль доступа и передаст заявку модератору.`
+    `Отправь одним сообщением в ${uploadTarget} **точное число kills** в тексте и **один скрин** во вложении.`,
+    "На этом же скрине обязательно должны быть одновременно видны и kills, и твой **уникальный Roblox username**.",
+    "Если на скрине не видно и kills, и username сразу, второй этап авторизации не засчитывается.",
+    hasExampleImagePath || hasExampleImageUrl ? "Ниже прикреплён пример того, как должна выглядеть заявка." : ""
   );
 
   const payload = {
     embeds: [
       new EmbedBuilder()
         .setColor(0x57F287)
-        .setTitle("Готово. Кидай kills и скрин")
-        .setDescription(lines.join("\n")),
+        .setTitle("Готово. Кидай kills и общий скрин")
+        .setDescription(lines.filter(Boolean).join("\n")),
     ],
     components: [],
   };
+
+  if (hasExampleImagePath) {
+    const fileName = sanitizeFileName(path.basename(exampleImagePath) || "onboarding-proof-example.png");
+    payload.files = [new AttachmentBuilder(exampleImagePath, { name: fileName })];
+    payload.embeds[0].setImage(`attachment://${fileName}`);
+  } else if (hasExampleImageUrl) {
+    payload.embeds[0].setImage(exampleImageUrl);
+  }
 
   return options.includeEphemeralFlag === false ? payload : ephemeralPayload(payload);
 }
@@ -4664,11 +4762,7 @@ function shouldKeepWelcomeChannelMessage(message, keepMessageIds) {
 
   const ageMs = Date.now() - Number(message.createdTimestamp || 0);
 
-  if (message.author?.id === client.user?.id && messageHasRequiredCustomIds(message, ["onboard_begin", "onboard_quick_mains"])) {
-    return true;
-  }
-
-  if (message.author?.id === client.user?.id && messageHasRequiredCustomIds(message, ["onboard_non_ggs_start"])) {
+  if (message.author?.id === client.user?.id && messageHasRequiredCustomIds(message, ["onboard_begin", "onboard_non_ggs_start", "onboard_quick_mains"])) {
     return true;
   }
 
@@ -4745,36 +4839,24 @@ async function refreshWelcomePanel(client) {
     throw new Error("welcomeChannelId не указывает на текстовый канал");
   }
 
-  const nonGgsChannelId = String(nonGgsPanelState.channelId || panelState.channelId).trim() || welcomeChannel.id;
-  const nonGgsChannel = nonGgsChannelId === welcomeChannel.id
-    ? welcomeChannel
-    : await client.channels.fetch(nonGgsChannelId).catch(() => null);
-  if (!nonGgsChannel?.isTextBased()) {
-    throw new Error("nonGgsPanel.channelId не указывает на текстовый канал");
-  }
+  nonGgsPanelState.channelId = welcomeChannel.id;
+  nonGgsPanelState.messageId = "";
 
   const welcomePayload = {
     embeds: [buildWelcomeEmbed()],
     components: buildWelcomeComponents(),
   };
-  const nonGgsPayload = buildNonGgsPanelPayload();
 
   const botId = client.user?.id;
   const welcomeMessage = await upsertManagedPanelMessage(welcomeChannel, panelState, welcomePayload, findExistingWelcomePanelMessage, botId);
-  const nonGgsMessage = await upsertManagedPanelMessage(nonGgsChannel, nonGgsPanelState, nonGgsPayload, findExistingNonGgsPanelMessage, botId);
 
-  if (previousNonGgsMessageId && (previousNonGgsChannelId !== nonGgsMessage.channel.id || previousNonGgsMessageId !== nonGgsMessage.id)) {
-    await deleteManagedChannelMessage(client, previousNonGgsChannelId || nonGgsMessage.channel.id, previousNonGgsMessageId);
+  if (previousNonGgsMessageId) {
+    await deleteManagedChannelMessage(client, previousNonGgsChannelId || welcomeChannel.id, previousNonGgsMessageId);
   }
 
-  if (welcomeChannel.id === nonGgsChannel.id) {
-    await cleanupWelcomeChannelMessages(welcomeChannel, [welcomeMessage.id, nonGgsMessage.id]);
-  } else {
-    await cleanupWelcomeChannelMessages(welcomeChannel, [welcomeMessage.id]);
-    await cleanupWelcomeChannelMessages(nonGgsChannel, [nonGgsMessage.id]);
-  }
+  await cleanupWelcomeChannelMessages(welcomeChannel, [welcomeMessage.id]);
   saveDb();
-  return { welcomeMessage, nonGgsMessage };
+  return { welcomeMessage, nonGgsMessage: null };
 }
 
 async function ensureWelcomePanel(client) {
@@ -5113,13 +5195,7 @@ async function linkGroundTruthReportChannel(client, slot, targetChannelId) {
 
 function getTextTierlistPaginationState() {
   db.config.textTierlist ||= {};
-  if (typeof db.config.textTierlist.page !== "number" || db.config.textTierlist.page < 0) {
-    db.config.textTierlist.page = 0;
-  }
-  if (typeof db.config.textTierlist.lastInteractionAt !== "number") {
-    db.config.textTierlist.lastInteractionAt = 0;
-  }
-  return db.config.textTierlist;
+  return normalizeTextTierlistPaginationState(db.config.textTierlist);
 }
 
 async function refreshTextTierlistBoard(client, options = {}) {
@@ -5142,11 +5218,25 @@ async function refreshTextTierlistBoard(client, options = {}) {
   // Pagination state with 10-min auto-reset.
   const pagination = getTextTierlistPaginationState();
   const now = Date.now();
-  if (Number.isFinite(options.page)) {
-    pagination.page = Math.max(0, Math.floor(options.page));
+  const hasExplicitRankPage = Number.isFinite(options.page);
+  const hasExplicitRecentPage = Number.isFinite(options.recentPage);
+  if (hasExplicitRankPage || hasExplicitRecentPage) {
+    if (hasExplicitRankPage) {
+      pagination.page = Math.max(0, Math.floor(options.page));
+    }
+    if (hasExplicitRecentPage) {
+      pagination.recentPage = Math.max(0, Math.floor(options.recentPage));
+    }
+    if (options.forceRecreate && hasExplicitRankPage && !hasExplicitRecentPage) {
+      pagination.recentPage = 0;
+    }
+    if (options.forceRecreate && hasExplicitRecentPage && !hasExplicitRankPage) {
+      pagination.page = 0;
+    }
     pagination.lastInteractionAt = now;
   } else if (pagination.lastInteractionAt && now - pagination.lastInteractionAt > 10 * 60 * 1000) {
     pagination.page = 0;
+    pagination.recentPage = 0;
   }
 
   const botId = client.user?.id;
@@ -5173,7 +5263,10 @@ async function refreshTextTierlistBoard(client, options = {}) {
     pagesMessage = null;
   }
 
-  const { summaryPayload, pagesPayload } = await buildTextTierlistPayloads(client, { page: pagination.page });
+  const { summaryPayload, pagesPayload } = await buildTextTierlistPayloads(client, {
+    page: pagination.page,
+    recentPage: pagination.recentPage,
+  });
   if (!summaryMessage || !pagesMessage) {
     summaryMessage = await channel.send(summaryPayload);
     try {
@@ -5246,6 +5339,7 @@ function buildTierlistResendReply(result) {
 }
 
 async function refreshAllTierlists(client) {
+  invalidateLiveCharacterStatsContext();
   const graphicState = getResolvedGraphicTierlistBoardSnapshot();
   const textState = getResolvedTextTierlistBoardSnapshot();
   const hadGraphicMessage = Boolean(graphicState.messageId);
@@ -6761,6 +6855,7 @@ function getSotReportCharacterDiagnostics(guild) {
   const unresolvedById = new Map(recoveryPlan.unresolved.map((entry) => [entry.characterId, entry]));
   const bindingLines = [];
   const attentionLines = [];
+  const attentionEntries = [];
   let runtimeBound = 0;
   let staleCount = 0;
   let staleVerificationCount = 0;
@@ -6805,6 +6900,12 @@ function getSotReportCharacterDiagnostics(guild) {
     bindingLines.push(line);
     if (["stale", "unresolved", "ambiguous"].includes(status) || note) {
       attentionLines.push(line);
+      attentionEntries.push({
+        characterId: entry.id,
+        status,
+        line,
+        evidenceCount: Number(unresolved?.evidenceCount || 0),
+      });
     }
   }
 
@@ -6814,8 +6915,11 @@ function getSotReportCharacterDiagnostics(guild) {
     recoveredCount: Object.keys(recoveryPlan.recoveredRoleIds || {}).length,
     ambiguousCount: recoveryPlan.ambiguous.length,
     unresolvedCount: recoveryPlan.unresolved.length,
+    ambiguousEntries: recoveryPlan.ambiguous,
+    unresolvedEntries: recoveryPlan.unresolved,
     staleCount,
     staleVerificationCount,
+    attentionEntries,
     attentionLines,
     bindingLines,
   };
@@ -6833,13 +6937,9 @@ async function maybeLogSotCharacterHealthAlert(client, reason = "sync") {
   }
 
   const diagnostics = getSotReportCharacterDiagnostics(guild);
-  const issueParts = [];
-  if (diagnostics.unresolvedCount) issueParts.push(`unresolved=${diagnostics.unresolvedCount}`);
-  if (diagnostics.ambiguousCount) issueParts.push(`ambiguous=${diagnostics.ambiguousCount}`);
-  if (diagnostics.staleCount) issueParts.push(`staleRole=${diagnostics.staleCount}`);
-  if (diagnostics.staleVerificationCount) {
-    issueParts.push(`staleVerification>${SOT_CHARACTER_ALERT_STALE_HOURS}h=${diagnostics.staleVerificationCount}`);
-  }
+  const { issueParts, attentionLines } = getActionableSotCharacterAlertState(diagnostics, {
+    staleHours: SOT_CHARACTER_ALERT_STALE_HOURS,
+  });
 
   if (!issueParts.length) {
     lastSotCharacterAlertSignature = "";
@@ -6847,7 +6947,7 @@ async function maybeLogSotCharacterHealthAlert(client, reason = "sync") {
     return { sent: false, diagnostics };
   }
 
-  const attentionPreview = previewText(diagnostics.attentionLines.slice(0, 3).join(" | "), 400);
+  const attentionPreview = previewText(attentionLines.slice(0, 3).join(" | "), 400);
   const signature = `${issueParts.join(",")}|${attentionPreview}`;
   const now = Date.now();
   if (signature === lastSotCharacterAlertSignature && now - lastSotCharacterAlertAt < SOT_CHARACTER_ALERT_REPEAT_MS) {
@@ -11748,9 +11848,6 @@ client.on("interactionCreate", async (interaction) => {
           ),
           new ActionRowBuilder().addComponents(
             new TextInputBuilder().setCustomId("button_quick").setLabel("Кнопка мейнов").setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(80).setValue(presentation.welcome.buttons.quickMains)
-          ),
-          new ActionRowBuilder().addComponents(
-            new TextInputBuilder().setCustomId("button_card").setLabel("Кнопка карточки").setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(80).setValue(presentation.welcome.buttons.myCard)
           )
         );
         await interaction.showModal(modal);
@@ -11914,7 +12011,14 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    if (interaction.customId === "text_tierlist_first" || interaction.customId === "text_tierlist_prev" || interaction.customId === "text_tierlist_next") {
+    if ([
+      "text_tierlist_first",
+      "text_tierlist_prev",
+      "text_tierlist_next",
+      "text_tierlist_recent_first",
+      "text_tierlist_recent_prev",
+      "text_tierlist_recent_next",
+    ].includes(interaction.customId)) {
       try {
         await interaction.deferUpdate().catch(() => {});
         const pagination = getTextTierlistPaginationState();
@@ -11929,17 +12033,27 @@ client.on("interactionCreate", async (interaction) => {
           }
         ).pageCount;
         const PAGE_SIZE = 25;
-        const totalPages = Math.max(Math.max(1, Math.ceil(total / PAGE_SIZE)), recentPageCount);
-        let nextPage = pagination.page;
-        if (interaction.customId === "text_tierlist_first") nextPage = 0;
-        else if (interaction.customId === "text_tierlist_prev") nextPage = Math.max(0, pagination.page - 1);
-        else if (interaction.customId === "text_tierlist_next") nextPage = Math.min(totalPages - 1, pagination.page + 1);
+        const nextPagination = applyTextTierlistPaginationAction(pagination, {
+          text_tierlist_first: "rank_first",
+          text_tierlist_prev: "rank_prev",
+          text_tierlist_next: "rank_next",
+          text_tierlist_recent_first: "recent_first",
+          text_tierlist_recent_prev: "recent_prev",
+          text_tierlist_recent_next: "recent_next",
+        }[interaction.customId] || "", {
+          rankPageCount: Math.max(1, Math.ceil(total / PAGE_SIZE)),
+          recentPageCount,
+        });
 
-        pagination.page = nextPage;
+        pagination.page = nextPagination.page;
+        pagination.recentPage = nextPagination.recentPage;
         pagination.lastInteractionAt = Date.now();
         saveDb();
 
-        const payload = await buildTierlistBoardPayload(client, { page: nextPage });
+        const payload = await buildTierlistBoardPayload(client, {
+          page: nextPagination.page,
+          recentPage: nextPagination.recentPage,
+        });
         await interaction.editReply({
           content: payload.content || "",
           embeds: payload.embeds || [],
@@ -13526,32 +13640,53 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    if (interaction.customId === "onboard_my_card") {
-      await interaction.reply(ephemeralPayload({ embeds: [buildMyCardEmbed(interaction.user.id)] }));
+    if (interaction.customId === "onboard_non_ggs_start") {
+      await interaction.reply(buildNonGgsConfirmPayload());
       return;
     }
 
-    if (interaction.customId === "onboard_non_ggs_start") {
+    if (interaction.customId === "onboard_non_ggs_cancel") {
+      await interaction.update({
+        content: "Ок. Оставил обычный путь входа без изменений.",
+        embeds: [],
+        components: [],
+        attachments: [],
+      });
+      return;
+    }
+
+    if (interaction.customId === "onboard_non_ggs_confirm") {
       const member = await fetchMember(client, interaction.user.id);
       if (!member) {
-        await interaction.reply(ephemeralPayload({ content: "Не удалось получить твой профиль на сервере." }));
+        await interaction.update({
+          content: "Не удалось получить твой профиль на сервере.",
+          embeds: [],
+          components: [],
+          attachments: [],
+        });
         return;
       }
 
       const captchaMode = getNonJjsCaptchaModeForMember(member);
 
       if (captchaMode.mode !== "practice" && !getNonJjsAccessRoleId()) {
-        await interaction.reply(ephemeralPayload({
+        await interaction.update({
           content: "Отдельная роль для доступа без JJS ещё не настроена. Заполни `NON_JJS_ACCESS_ROLE_ID`, затем попробуй снова.",
-        }));
+          embeds: [],
+          components: [],
+          attachments: [],
+        });
         return;
       }
 
       const pending = getPendingSubmissionForUser(interaction.user.id);
       if (pending && captchaMode.mode !== "practice") {
-        await interaction.reply(ephemeralPayload({
+        await interaction.update({
           content: `У тебя уже есть pending-заявка с kills ${pending.kills}. Дождись решения модератора.`,
-        }));
+          embeds: [],
+          components: [],
+          attachments: [],
+        });
         return;
       }
 
@@ -13563,16 +13698,19 @@ client.on("interactionCreate", async (interaction) => {
 
       try {
         setNonGgsCaptchaSession(interaction.user.id, createNonGgsCaptchaSession(null, 1, { mode: captchaMode.mode }));
-        await interaction.reply(await buildNonGgsCaptchaPayload(
+        await interaction.update(await buildNonGgsCaptchaPayload(
           interaction.user.id,
           getNonJjsCaptchaStartText(captchaMode),
-          { includeEphemeralFlag: true }
+          { includeEphemeralFlag: false }
         ));
       } catch (error) {
         clearNonGgsCaptchaSession(interaction.user.id);
-        await interaction.reply(ephemeralPayload({
+        await interaction.update({
           content: `Не удалось запустить JJS-капчу: ${String(error?.message || error || "неизвестная ошибка")}\nПапка с картинками: \`${NON_GGS_CAPTCHA_ASSET_DIR}\``,
-        }));
+          embeds: [],
+          components: [],
+          attachments: [],
+        });
       }
       return;
     }
@@ -14592,8 +14730,7 @@ client.on("interactionCreate", async (interaction) => {
       }
       const begin = interaction.fields.getTextInputValue("button_begin").trim();
       const quick = interaction.fields.getTextInputValue("button_quick").trim();
-      const card = interaction.fields.getTextInputValue("button_card").trim();
-      if (!begin || !quick || !card) {
+      if (!begin || !quick) {
         await interaction.reply(ephemeralPayload({ content: "Все подписи кнопок должны быть заполнены." }));
         return;
       }
@@ -14601,7 +14738,7 @@ client.on("interactionCreate", async (interaction) => {
         db.config.presentation.welcome.buttons ||= {};
         db.config.presentation.welcome.buttons.begin = begin;
         db.config.presentation.welcome.buttons.quickMains = quick;
-        db.config.presentation.welcome.buttons.myCard = card;
+        delete db.config.presentation.welcome.buttons.myCard;
       });
       await interaction.reply(buildWelcomeEditorPayload("Кнопки welcome обновлены."));
       return;

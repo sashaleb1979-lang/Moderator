@@ -4,6 +4,12 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const {
+  ONBOARD_ACCESS_GRANT_MODES,
+  createOnboardAccessGrantState,
+  getOnboardAccessGrantModeLabel,
+  normalizeOnboardAccessGrantMode,
+} = require("../src/onboard/access-grant-mode");
+const {
   ONBOARD_ACCESS_MODES,
   createOnboardModeState,
   getOnboardAccessModeLabel,
@@ -114,6 +120,7 @@ test("presentation resolution prefers db overrides over file defaults and hard d
     },
     ui: {
       getRoleButtonLabel: "File start",
+      quickMainsButtonLabel: "File quick",
       tierlistTitle: "File text tierlist",
     },
     graphicTierlist: {
@@ -146,7 +153,10 @@ test("presentation resolution prefers db overrides over file defaults and hard d
   assert.equal(resolved.welcome.title, "DB welcome title");
   assert.equal(resolved.welcome.description, "File welcome text");
   assert.deepEqual(resolved.welcome.steps, ["F1", "F2", "F3", "F4", "F5"]);
-  assert.equal(resolved.welcome.buttons.begin, "DB start");
+  assert.deepEqual(resolved.welcome.buttons, {
+    begin: "DB start",
+    quickMains: "File quick",
+  });
   assert.equal(resolved.tierlist.textTitle, "File text tierlist");
   assert.equal(resolved.tierlist.graphicTitle, "File graphic title");
   assert.equal(resolved.tierlist.graphicMessageText, "DB graphic text");
@@ -154,6 +164,33 @@ test("presentation resolution prefers db overrides over file defaults and hard d
   assert.equal(getTierLabel(resolved, 2), "File tier two");
   assert.equal(resolved.tierlist.graphic.colors[3], "#c0ffee");
   assert.equal(resolved.tierlist.graphic.colors[5], "#555555");
+});
+
+test("ensurePresentationConfig drops stale myCard button config", () => {
+  const dbConfig = {
+    presentation: {
+      welcome: {
+        buttons: {
+          begin: "Start",
+          quickMains: "Quick",
+          myCard: "Old card",
+        },
+      },
+    },
+  };
+
+  const result = ensurePresentationConfig(dbConfig, {
+    defaults: createPresentationDefaults({}, { defaultGraphicTierColors: DEFAULT_GRAPHIC_TIER_COLORS }),
+    defaultWelcomeChannelId: "welcome-home",
+    defaultTextTierlistChannelId: "text-home",
+    defaultGraphicTierColors: DEFAULT_GRAPHIC_TIER_COLORS,
+  });
+
+  assert.equal(result.mutated, true);
+  assert.deepEqual(dbConfig.presentation.welcome.buttons, {
+    begin: "Start",
+    quickMains: "Quick",
+  });
 });
 
 test("text and graphic board states stay separate after migration and direct updates", () => {
@@ -608,6 +645,17 @@ test("onboard mode state normalizes persisted values and exposes readable labels
   assert.equal(isApocalypseMode("normal"), false);
   assert.deepEqual(createOnboardModeState({ mode: " Apocalypse ", changedAt: " 2026-04-23T08:00:00.000Z ", changedBy: " mod " }), {
     mode: ONBOARD_ACCESS_MODES.APOCALYPSE,
+    changedAt: "2026-04-23T08:00:00.000Z",
+    changedBy: "mod",
+  });
+});
+
+test("access grant mode state normalizes persisted values and exposes readable labels", () => {
+  assert.equal(normalizeOnboardAccessGrantMode(" after_review_post "), ONBOARD_ACCESS_GRANT_MODES.AFTER_REVIEW_POST);
+  assert.equal(normalizeOnboardAccessGrantMode("unknown"), ONBOARD_ACCESS_GRANT_MODES.AFTER_SUBMIT);
+  assert.equal(getOnboardAccessGrantModeLabel("after_approve"), "Только после approve");
+  assert.deepEqual(createOnboardAccessGrantState({ mode: " after_approve ", changedAt: " 2026-04-23T08:00:00.000Z ", changedBy: " mod " }), {
+    mode: ONBOARD_ACCESS_GRANT_MODES.AFTER_APPROVE,
     changedAt: "2026-04-23T08:00:00.000Z",
     changedBy: "mod",
   });

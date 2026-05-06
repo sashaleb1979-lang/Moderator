@@ -32,7 +32,6 @@ const HARD_DEFAULT_PRESENTATION = {
     buttons: {
       begin: "Получить роль",
       quickMains: "Быстро сменить мейнов",
-      myCard: "Моя карточка",
     },
   },
   tierlist: {
@@ -163,7 +162,6 @@ function createPresentationDefaults(fileConfig = {}, options = {}) {
       buttons: {
         begin: firstNonEmpty(welcomeButtons.begin, ui.getRoleButtonLabel, hardDefaults.welcome.buttons.begin),
         quickMains: firstNonEmpty(welcomeButtons.quickMains, ui.quickMainsButtonLabel, hardDefaults.welcome.buttons.quickMains),
-        myCard: firstNonEmpty(welcomeButtons.myCard, ui.myCardButtonLabel, hardDefaults.welcome.buttons.myCard),
       },
     },
     tierlist: {
@@ -350,6 +348,10 @@ function ensurePresentationConfig(dbConfig, options = {}) {
     presentation.welcome.steps = [...defaults.welcome.steps];
     mutated = true;
   }
+  if (Object.prototype.hasOwnProperty.call(presentation.welcome.buttons, "myCard")) {
+    delete presentation.welcome.buttons.myCard;
+    mutated = true;
+  }
 
   const nextNonGgs = normalizeNonGgsPresentation(legacyNonGgs, normalizeNonGgsPresentation(presentation.nonGgs));
   if (JSON.stringify(presentation.nonGgs) !== JSON.stringify(nextNonGgs)) {
@@ -389,7 +391,6 @@ function resolvePresentation(dbConfig = {}, fileConfig = {}, options = {}) {
       buttons: {
         begin: firstNonEmpty(welcome.buttons?.begin, defaults.welcome.buttons.begin),
         quickMains: firstNonEmpty(welcome.buttons?.quickMains, defaults.welcome.buttons.quickMains),
-        myCard: firstNonEmpty(welcome.buttons?.myCard, defaults.welcome.buttons.myCard),
       },
     },
     tierlist: {

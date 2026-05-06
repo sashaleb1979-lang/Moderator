@@ -46,6 +46,7 @@ function createDeps(overrides = {}) {
     sameCharacterCatalog: overrides.sameCharacterCatalog || ((left, right) => JSON.stringify(left || []) === JSON.stringify(right || [])),
     createDefaultIntegrationState: overrides.createDefaultIntegrationState || (() => ({ elo: { sourcePath: "" }, tierlist: { sourcePath: "" } })),
     createOnboardModeState: overrides.createOnboardModeState || ((value) => value ? { value: String(value.value || value.mode || "peace") } : { value: "peace" }),
+    createOnboardAccessGrantState: overrides.createOnboardAccessGrantState || ((value) => value ? { mode: String(value.mode || "after_submit") } : { mode: "after_submit" }),
     ensurePresentationConfig: overrides.ensurePresentationConfig || (() => ({ mutated: false })),
     createPresentationDefaults: overrides.createPresentationDefaults || (() => ({ welcome: {} })),
     normalizeRoleGrantRegistry: overrides.normalizeRoleGrantRegistry || (() => ({ registry: {}, mutated: false })),
@@ -101,11 +102,13 @@ test("createDefaultDbState seeds expected onboarding defaults", () => {
     },
     createDefaultIntegrationState: () => ({ elo: {}, tierlist: {} }),
     createOnboardModeState: () => ({ value: "peace" }),
+    createOnboardAccessGrantState: () => ({ mode: "after_submit" }),
     normalizeCharacterCatalog: (value) => value,
   });
 
   assert.equal(state.config.welcomePanel.channelId, "welcome-1");
   assert.equal(state.config.nonGgsPanel.channelId, "welcome-1");
+  assert.deepEqual(state.config.accessGrant, { mode: "after_submit" });
   assert.deepEqual(state.config.tierlistBoard.text, {
     channelId: "tier-1",
     messageIdSummary: "",
@@ -124,6 +127,7 @@ test("createDbStore.load normalizes legacy db state and marks dirty migrations",
         elo: { sourcePath: "elo-db.json" },
         tierlist: { sourcePath: "tierlist/state.json" },
       },
+      accessGrant: { mode: "after_approve" },
       onboardMode: { mode: "wartime" },
       characters: [{ id: "gojo", label: "Годжо", roleId: "role-gojo" }],
     },
@@ -174,6 +178,7 @@ test("createDbStore.load normalizes legacy db state and marks dirty migrations",
 
   assert.equal(db.config.reviewChannelId, "");
   assert.equal(db.config.notificationChannelId, "");
+  assert.deepEqual(db.config.accessGrant, { mode: "after_approve" });
   assert.deepEqual(db.comboGuide.editorRoleIds, ["combo-editor"]);
   assert.equal(db.profiles.synced, true);
   assert.deepEqual(db.sot, { sotVersion: 1 });

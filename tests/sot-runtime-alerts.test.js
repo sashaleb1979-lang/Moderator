@@ -3,7 +3,47 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { runSotStartupAlerts, scheduleSotAlertTicks } = require("../src/sot/runtime-alerts");
+const {
+  getActionableSotCharacterAlertState,
+  runSotStartupAlerts,
+  scheduleSotAlertTicks,
+} = require("../src/sot/runtime-alerts");
+
+test("getActionableSotCharacterAlertState suppresses zero-evidence unresolved entries", () => {
+  const result = getActionableSotCharacterAlertState({
+    unresolvedCount: 1,
+    unresolvedEntries: [{ characterId: "aspiring_mangaka", evidenceCount: 0 }],
+    attentionEntries: [{
+      characterId: "aspiring_mangaka",
+      status: "unresolved",
+      evidenceCount: 0,
+      line: "• Aspiring Mangaka: — [default; unresolved] — evidence 0; aliases Aspiring Mangaka, Чарльз, Шарль",
+    }],
+  }, { staleHours: 24 });
+
+  assert.deepEqual(result, {
+    issueParts: [],
+    attentionLines: [],
+  });
+});
+
+test("getActionableSotCharacterAlertState keeps actionable unresolved, ambiguous and stale issues", () => {
+  const result = getActionableSotCharacterAlertState({
+    ambiguousCount: 1,
+    staleCount: 2,
+    staleVerificationCount: 1,
+    unresolvedEntries: [{ characterId: "vessel", evidenceCount: 3 }],
+    attentionEntries: [
+      { characterId: "vessel", status: "unresolved", evidenceCount: 3, line: "line unresolved" },
+      { characterId: "honored_one", status: "stale", evidenceCount: 0, line: "line stale" },
+    ],
+  }, { staleHours: 24 });
+
+  assert.deepEqual(result, {
+    issueParts: ["unresolved=1", "ambiguous=1", "staleRole=2", "staleVerification>24h=1"],
+    attentionLines: ["line unresolved", "line stale"],
+  });
+});
 
 test("runSotStartupAlerts logs a character alert failure and still runs drift alert", async () => {
   const client = { id: "client" };

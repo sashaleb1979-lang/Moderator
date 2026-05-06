@@ -152,6 +152,30 @@ test("buildManagedCharacterRoleRecoveryPlan restores surviving roles and live ro
   assert.deepEqual(result.unresolved, []);
 });
 
+test("buildManagedCharacterRoleRecoveryPlan recovers a unique alias-named role without historical evidence", () => {
+  const result = buildManagedCharacterRoleRecoveryPlan({
+    managedCharacters: [
+      {
+        id: "aspiring_mangaka",
+        label: "Aspiring Mangaka",
+        evidence: { aliasNames: ["Чарльз", "Шарль"] },
+      },
+    ],
+    guildRoles: [
+      { id: "role_charles", name: "Чарльз", memberUserIds: [] },
+    ],
+  });
+
+  assert.deepEqual(result.recoveredRoleIds, {
+    aspiring_mangaka: "role_charles",
+  });
+  assert.deepEqual(result.recoveredRoleLabels, {
+    aspiring_mangaka: "Чарльз",
+  });
+  assert.deepEqual(result.ambiguous, []);
+  assert.deepEqual(result.unresolved, []);
+});
+
 test("buildManagedCharacterRoleRecoveryPlan keeps unresolved entries when overlap is ambiguous", () => {
   const result = buildManagedCharacterRoleRecoveryPlan({
     managedCharacters: [
