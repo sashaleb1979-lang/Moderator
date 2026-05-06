@@ -266,6 +266,28 @@ try {
   };
 }
 
+const {
+  createCaptchaChallenge,
+  loadCaptchaCatalog,
+  renderCaptchaPng,
+} = nonGgsCaptchaModule;
+
+const {
+  Client,
+  GatewayIntentBits,
+  PermissionsBitField,
+  EmbedBuilder,
+  AttachmentBuilder,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  StringSelectMenuBuilder,
+  ModalBuilder,
+  TextInputBuilder,
+  TextInputStyle,
+  MessageFlags,
+} = require("discord.js");
+
 const PROJECT_ROOT = __dirname;
 
 function resolvePathFromBase(baseDir, rawPath, fallbackRelative = "") {
