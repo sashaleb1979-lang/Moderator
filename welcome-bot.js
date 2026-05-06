@@ -4727,26 +4727,6 @@ async function buildNonGgsCaptchaPayload(userId, noticeText = "", options = {}) 
 
   if (session.mode === "practice") {
     descriptionLines.splice(1, 0, "Тренировочный режим: роли и профиль не изменятся.");
-  function buildNonGgsConfirmPayload() {
-    return ephemeralPayload({
-      embeds: [
-        new EmbedBuilder()
-          .setColor(0xED4245)
-          .setTitle("Подтверди путь без JJS")
-          .setDescription([
-            "Ты уверен, что хочешь продолжить?",
-            "Если подтвердить этот путь, ты потеряешь большинство функций сервера.",
-            "Если играешь в JJS, лучше вернись и используй обычную кнопку «Получить роль».",
-          ].join("\n")),
-      ],
-      components: [
-        new ActionRowBuilder().addComponents(
-          new ButtonBuilder().setCustomId("onboard_non_ggs_confirm").setLabel("Да, продолжить").setStyle(ButtonStyle.Danger),
-          new ButtonBuilder().setCustomId("onboard_non_ggs_cancel").setLabel("Отмена").setStyle(ButtonStyle.Secondary)
-        ),
-      ],
-    });
-  }
   }
 
   if (noticeText) {
@@ -4769,6 +4749,27 @@ async function buildNonGgsCaptchaPayload(userId, noticeText = "", options = {}) 
   };
 
   return options.includeEphemeralFlag ? ephemeralPayload(payload) : payload;
+}
+
+function buildNonGgsConfirmPayload() {
+  return ephemeralPayload({
+    embeds: [
+      new EmbedBuilder()
+        .setColor(0xED4245)
+        .setTitle("Подтверди путь без JJS")
+        .setDescription([
+          "Ты уверен, что хочешь продолжить?",
+          "Если подтвердить этот путь, ты потеряешь большинство функций сервера.",
+          "Если играешь в JJS, лучше вернись и используй обычную кнопку «Получить роль».",
+        ].join("\n")),
+    ],
+    components: [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("onboard_non_ggs_confirm").setLabel("Да, продолжить").setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId("onboard_non_ggs_cancel").setLabel("Отмена").setStyle(ButtonStyle.Secondary)
+      ),
+    ],
+  });
 }
 
 function buildCharacterPickerPayload(mode = "full") {
@@ -4828,44 +4829,19 @@ function buildSubmitStepPayload(userId, options = {}) {
   const hasExampleImageUrl = Boolean(exampleImageUrl);
   const hasRobloxIdentity = Boolean(session?.robloxUsername && session?.robloxUserId);
 
-  if (!hasRobloxIdentity) {
-    const lines = [];
-    if (options.noticeText) lines.push(options.noticeText);
-    lines.push(
-      `Мейны: **${selectedLabels.join(", ")}**.`,
-      "Сначала укажи свой **уникальный Roblox username**. Бот сверит его через Roblox API и запомнит ID аккаунта.",
-      "Потом модератор сравнит этот username с тем, что виден на том же скрине, где показаны kills.",
-      "Без этого второго шага заявка не засчитывается."
-    );
-
-    const payload = {
-      embeds: [
-        new EmbedBuilder()
-          .setColor(0xFEE75C)
-          .setTitle("Шаг 2. Укажи Roblox username")
-          .setDescription(lines.join("\n")),
-      ],
-      components: [
-        new ActionRowBuilder().addComponents(
-          new ButtonBuilder().setCustomId("onboard_set_roblox_username").setLabel("Указать Roblox username").setStyle(ButtonStyle.Primary),
-          new ButtonBuilder().setCustomId("onboard_change_mains").setLabel("Сменить мейнов").setStyle(ButtonStyle.Secondary)
-        ),
-      ],
-    };
-
-    return options.includeEphemeralFlag === false ? payload : ephemeralPayload(payload);
-  }
-
   const lines = [];
   if (options.noticeText) lines.push(options.noticeText);
   lines.push(
     `Мейны: **${selectedLabels.join(", ")}**.`,
-    `Roblox: **${session.robloxUsername}** (ID ${session.robloxUserId}).`,
     `Отправь одним сообщением в ${uploadTarget} **точное число kills** в тексте и **один скрин** во вложении.`,
     "На этом же скрине обязательно должны быть одновременно видны и kills, и твой **уникальный Roblox username**.",
-    "Если на скрине не видно и kills, и username сразу, второй этап авторизации не засчитывается.",
+    "После отправки kills бот отдельно попросит Roblox username и добавит его в модераторскую заявку.",
     hasExampleImagePath || hasExampleImageUrl ? "Ниже прикреплён пример того, как должна выглядеть заявка." : ""
   );
+
+  if (hasRobloxIdentity) {
+    lines.splice(1, 0, `Roblox: **${session.robloxUsername}** (ID ${session.robloxUserId}).`);
+  }
 
   const payload = {
     embeds: [
@@ -4876,11 +4852,16 @@ function buildSubmitStepPayload(userId, options = {}) {
     ],
     components: [
       new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId("onboard_set_roblox_username").setLabel("Сменить Roblox username").setStyle(ButtonStyle.Secondary),
         new ButtonBuilder().setCustomId("onboard_change_mains").setLabel("Сменить мейнов").setStyle(ButtonStyle.Secondary)
       ),
     ],
   };
+
+  if (hasRobloxIdentity) {
+    payload.components[0].addComponents(
+      new ButtonBuilder().setCustomId("onboard_set_roblox_username").setLabel("Сменить Roblox username").setStyle(ButtonStyle.Secondary)
+    );
+  }
 
   if (hasExampleImagePath) {
     const fileName = sanitizeFileName(path.basename(exampleImagePath) || "onboarding-proof-example.png");
@@ -4889,6 +4870,66 @@ function buildSubmitStepPayload(userId, options = {}) {
   } else if (hasExampleImageUrl) {
     payload.embeds[0].setImage(exampleImageUrl);
   }
+
+  return options.includeEphemeralFlag === false ? payload : ephemeralPayload(payload);
+}
+
+function buildRobloxUsernameStepPayload(userId, options = {}) {
+  const session = getSubmitSession(userId);
+  const pending = getPendingSubmissionForUser(userId);
+  const mainCharacterIds = Array.isArray(options.mainCharacterIds) && options.mainCharacterIds.length
+    ? options.mainCharacterIds
+    : Array.isArray(session?.mainCharacterIds) && session.mainCharacterIds.length
+      ? session.mainCharacterIds
+      : Array.isArray(pending?.mainCharacterIds)
+        ? pending.mainCharacterIds
+        : [];
+
+  if (!mainCharacterIds.length && !pending?.id) {
+    return ephemeralPayload({ content: "Сессия онбординга истекла. Нажми «Получить роль» заново." });
+  }
+
+  const selectedEntries = getSelectedCharacterEntries(mainCharacterIds);
+  const selectedLabels = selectedEntries.length
+    ? selectedEntries.map((entry) => entry.label)
+    : mainCharacterIds.map((value) => String(value || "").trim()).filter(Boolean);
+  const kills = Number.isSafeInteger(options.kills)
+    ? options.kills
+    : Number.isSafeInteger(session?.pendingKills)
+      ? session.pendingKills
+      : Number.isSafeInteger(pending?.kills)
+        ? pending.kills
+        : null;
+  const required = options.required === true;
+  const lines = [];
+
+  if (options.noticeText) lines.push(options.noticeText);
+  if (selectedLabels.length) {
+    lines.push(`Мейны: **${selectedLabels.join(", ")}**.`);
+  }
+  if (kills !== null) {
+    lines.push(`Kills: **${kills}**.`);
+  }
+  lines.push(
+    required
+      ? "Теперь обязательно укажи свой Roblox username. Без этого шага заявка не уйдёт модераторам."
+      : "Теперь можешь добавить Roblox username. Шаг необязателен, но тогда модератор увидит его прямо в pending-заявке."
+  );
+  lines.push("Модератор сравнит этот username с тем же скрином, где одновременно видны kills и уникальный Roblox username.");
+
+  const payload = {
+    embeds: [
+      new EmbedBuilder()
+        .setColor(required ? 0xFEE75C : 0x57F287)
+        .setTitle("Шаг 3. Укажи Roblox username")
+        .setDescription(lines.join("\n")),
+    ],
+    components: [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("onboard_set_roblox_username").setLabel(required ? "Указать Roblox username" : "Добавить Roblox username").setStyle(ButtonStyle.Primary)
+      ),
+    ],
+  };
 
   return options.includeEphemeralFlag === false ? payload : ephemeralPayload(payload);
 }
@@ -6085,6 +6126,48 @@ async function updateSubmissionKills(client, submission, kills, moderatorTag) {
   }
 }
 
+async function updatePendingSubmissionRobloxIdentity(client, submission, robloxUser, moderatorTag = null) {
+  const previousSubmission = cloneJsonValue(submission);
+  const profile = getProfile(submission.userId);
+  const previousProfile = cloneJsonValue(profile);
+
+  submission.robloxUsername = robloxUser.name;
+  submission.robloxUserId = robloxUser.id;
+  submission.robloxDisplayName = robloxUser.displayName;
+
+  profile.updatedAt = nowIso();
+  profile.domains = profile.domains || {};
+  profile.domains.roblox = {
+    ...(profile.domains.roblox || {}),
+    username: robloxUser.name,
+    userId: robloxUser.id,
+    verificationStatus: "pending",
+    verifiedAt: null,
+    updatedAt: profile.updatedAt,
+    lastSubmissionId: submission.id,
+    lastReviewedAt: null,
+    reviewedBy: moderatorTag,
+    source: "onboarding",
+  };
+  finalizeStoredProfile(submission.userId);
+
+  try {
+    saveDb();
+  } catch (error) {
+    restoreRecordValue(db.submissions, submission.id, previousSubmission, true);
+    restoreRecordValue(db.profiles, submission.userId, previousProfile, true);
+    throw error;
+  }
+
+  const reviewMessage = await fetchReviewMessage(client, submission);
+  if (reviewMessage) {
+    await reviewMessage.edit({
+      embeds: [buildReviewEmbed(submission, "pending", [{ name: "Изменено", value: moderatorTag ? `Roblox username подтвердил: ${moderatorTag}` : "Игрок добавил Roblox username", inline: false }])],
+      components: [buildReviewButtons(submission.id)],
+    }).catch(() => {});
+  }
+}
+
 async function createManualApprovedRecord(client, targetUser, screenshotAttachment, kills, moderatorTag) {
   const member = await fetchMember(client, targetUser.id);
   const profile = getProfile(targetUser.id);
@@ -6977,9 +7060,7 @@ async function buildModeratorPanelPayload(client, statusText = "", includeFlags 
       new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId("panel_add_character").setLabel("Добавить персонажа").setStyle(ButtonStyle.Success),
         new ButtonBuilder().setCustomId("panel_sot_report").setLabel("SoT Report").setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId("panel_cleanup_orphan_characters").setLabel("Очистить orphan").setStyle(ButtonStyle.Danger)
-      ),
-      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("panel_cleanup_orphan_characters").setLabel("Очистить orphan").setStyle(ButtonStyle.Danger),
         new ButtonBuilder().setCustomId("welcome_editor").setLabel("Редактор UI").setStyle(ButtonStyle.Secondary),
         new ButtonBuilder().setCustomId("welcome_editor_jjs").setLabel("Редактировать JJS").setStyle(ButtonStyle.Secondary)
       ),
@@ -10798,17 +10879,27 @@ client.on("messageCreate", async (message) => {
     return;
   }
 
-  if (!session.robloxUsername || !session.robloxUserId) {
-    const reply = await message.reply("Сначала укажи Roblox username через кнопку «Получить роль», а потом отправляй kills и общий скрин.").catch(() => null);
-    if (reply) scheduleDeleteMessage(reply);
-    await message.delete().catch(() => {});
-    return;
-  }
+  const currentAccessGrantMode = getCurrentOnboardAccessGrantMode();
+  const requiresRobloxBeforeReview = currentAccessGrantMode !== ONBOARD_ACCESS_GRANT_MODES.AFTER_SUBMIT;
+  const hasRobloxIdentity = Boolean(session.robloxUsername && session.robloxUserId);
 
   const attachment = [...message.attachments.values()].find((item) => isImageAttachment(item));
   if (!attachment) {
     const reply = await message.reply("В одной заявке должны быть и kills в тексте, и скрин во вложении. Отправь одно сообщение с числом kills и приложи картинку.").catch(() => null);
     if (reply) scheduleDeleteMessage(reply);
+    await message.delete().catch(() => {});
+    return;
+  }
+
+  if (requiresRobloxBeforeReview && !hasRobloxIdentity) {
+    setSubmitSession(message.author.id, {
+      ...session,
+      pendingKills: effectiveKills,
+      pendingScreenshotUrl: attachment.url,
+      pendingScreenshotName: attachment.name || "",
+    });
+    const reply = await message.reply("Kills и скрин приняты. Теперь нажми «Получить роль» ещё раз и укажи Roblox username — без этого заявка не уйдёт модераторам.").catch(() => null);
+    if (reply) scheduleDeleteMessage(reply, 18000);
     await message.delete().catch(() => {});
     return;
   }
@@ -10841,7 +10932,6 @@ client.on("messageCreate", async (message) => {
   const existingProfile = db.profiles?.[message.author.id] || null;
   const isKillsUpdate = hasTrackedProfileKills(existingProfile);
   let submission = null;
-  const currentAccessGrantMode = getCurrentOnboardAccessGrantMode();
 
   try {
     if (currentAccessGrantMode === ONBOARD_ACCESS_GRANT_MODES.AFTER_SUBMIT) {
@@ -10902,6 +10992,8 @@ client.on("messageCreate", async (message) => {
   const reply = await message.reply(
     isKillsUpdate
       ? "Обновление kills отправлено модераторам. Текущие kills и tier изменятся после проверки."
+      : currentAccessGrantMode === ONBOARD_ACCESS_GRANT_MODES.AFTER_SUBMIT && !hasRobloxIdentity
+        ? "Заявка отправлена модераторам. Стартовая роль уже выдана, kill-tier прилетит после проверки. Если захочешь добавить Roblox username, нажми «Получить роль» ещё раз, пока заявка pending."
       : currentAccessGrantMode === ONBOARD_ACCESS_GRANT_MODES.AFTER_APPROVE
         ? "Заявка отправлена модераторам. Стартовая роль будет выдана после approve модератора, kill-tier прилетит после проверки."
         : "Заявка отправлена модераторам. Стартовая роль уже выдана, kill-tier прилетит после проверки."
@@ -11056,7 +11148,14 @@ client.on("interactionCreate", async (interaction) => {
     }
 
     if (subcommand === "panel") {
-      await interaction.reply(await buildModeratorPanelPayload(client));
+      try {
+        await interaction.reply(await buildModeratorPanelPayload(client));
+      } catch (error) {
+        console.error("onboard panel failed:", error);
+        await interaction.reply(ephemeralPayload({
+          content: `Не удалось открыть мод-панель: ${String(error?.message || error || "неизвестная ошибка").slice(0, 220)}`,
+        })).catch(() => {});
+      }
       return;
     }
 
@@ -14126,7 +14225,15 @@ client.on("interactionCreate", async (interaction) => {
     }
 
     if (interaction.customId === "onboard_non_ggs_start") {
-      await interaction.reply(buildNonGgsConfirmPayload());
+      try {
+        await interaction.reply(buildNonGgsConfirmPayload());
+      } catch (error) {
+        console.error("onboard_non_ggs_start failed:", error);
+        await respondToOnboardError(
+          interaction,
+          `Не удалось открыть non-JJS шаг: ${String(error?.message || error || "неизвестная ошибка").slice(0, 220)}`
+        );
+      }
       return;
     }
 
@@ -14203,13 +14310,33 @@ client.on("interactionCreate", async (interaction) => {
     if (interaction.customId === "onboard_begin") {
       try {
         clearNonGgsCaptchaSession(interaction.user.id);
+        const session = getSubmitSession(interaction.user.id);
+        const pending = getPendingSubmissionForUser(interaction.user.id);
+
+        if (session?.mainCharacterIds?.length && Number.isSafeInteger(session?.pendingKills) && session?.pendingScreenshotUrl) {
+          await interaction.reply(buildRobloxUsernameStepPayload(interaction.user.id, {
+            required: true,
+            noticeText: "Kills и скрин уже приняты. Осталось указать Roblox username, чтобы отправить заявку модераторам.",
+          }));
+          return;
+        }
+
+        if (pending && (!pending.robloxUsername || !pending.robloxUserId)) {
+          await interaction.reply(buildRobloxUsernameStepPayload(interaction.user.id, {
+            required: false,
+            mainCharacterIds: pending.mainCharacterIds,
+            kills: pending.kills,
+            noticeText: `У тебя уже есть pending-заявка с kills ${pending.kills}. Если хочешь, добавь Roblox username прямо сейчас.`,
+          }));
+          return;
+        }
+
         const cooldownLeft = getSubmitCooldownLeftSeconds(interaction.user.id);
         if (cooldownLeft > 0) {
           await interaction.reply(ephemeralPayload({ content: `Подожди ещё ${cooldownLeft} сек. перед новой заявкой.` }));
           return;
         }
 
-        const pending = getPendingSubmissionForUser(interaction.user.id);
         if (pending) {
           await interaction.reply(ephemeralPayload({
             content: `У тебя уже есть pending-заявка с kills ${pending.kills}. Дождись решения модератора.`,
@@ -14217,7 +14344,6 @@ client.on("interactionCreate", async (interaction) => {
           return;
         }
 
-        const session = getSubmitSession(interaction.user.id);
         if (session) {
           const welcomeChannelId = getResolvedChannelId("welcome");
           if (!welcomeChannelId) {
@@ -14265,12 +14391,16 @@ client.on("interactionCreate", async (interaction) => {
 
     if (interaction.customId === "onboard_set_roblox_username") {
       const session = getSubmitSession(interaction.user.id);
-      if (!session?.mainCharacterIds?.length) {
+      const pending = getPendingSubmissionForUser(interaction.user.id);
+      if (!session?.mainCharacterIds?.length && !pending?.id) {
         await interaction.reply(ephemeralPayload({ content: "Сессия онбординга истекла. Нажми «Получить роль» заново." }));
         return;
       }
 
-      await interaction.showModal(buildRobloxUsernameModal("onboard_roblox_username_modal", session.robloxUsername || ""));
+      await interaction.showModal(buildRobloxUsernameModal(
+        "onboard_roblox_username_modal",
+        session?.robloxUsername || pending?.robloxUsername || ""
+      ));
       return;
     }
 
@@ -14932,7 +15062,8 @@ client.on("interactionCreate", async (interaction) => {
 
     if (interaction.customId === "onboard_roblox_username_modal") {
       const session = getSubmitSession(interaction.user.id);
-      if (!session?.mainCharacterIds?.length) {
+      const pending = getPendingSubmissionForUser(interaction.user.id);
+      if (!session?.mainCharacterIds?.length && !pending?.id) {
         await interaction.reply(ephemeralPayload({ content: "Сессия онбординга истекла. Нажми «Получить роль» заново." }));
         return;
       }
@@ -14950,6 +15081,105 @@ client.on("interactionCreate", async (interaction) => {
 
       if (!robloxUser) {
         await interaction.editReply("Такой Roblox username не найден через Roblox API. Проверь написание и попробуй ещё раз.");
+        return;
+      }
+
+      const currentAccessGrantMode = getCurrentOnboardAccessGrantMode();
+      const hasPendingProof = Boolean(
+        session?.mainCharacterIds?.length
+        && Number.isSafeInteger(session?.pendingKills)
+        && session?.pendingScreenshotUrl
+      );
+
+      if (hasPendingProof) {
+        const accessRoleIds = getManagedStartAccessRoleIds();
+        const previousProfile = cloneJsonValue(db.profiles?.[interaction.user.id]);
+        const hadProfile = Boolean(db.profiles?.[interaction.user.id]);
+        const hadCooldown = Object.prototype.hasOwnProperty.call(db.cooldowns || {}, interaction.user.id);
+        const previousCooldown = hadCooldown ? db.cooldowns[interaction.user.id] : undefined;
+        const accessMember = await fetchMember(client, interaction.user.id);
+        const previousAccessRoleIds = getRolePoolSnapshot(accessMember, accessRoleIds);
+        let submission = null;
+
+        try {
+          if (currentAccessGrantMode === ONBOARD_ACCESS_GRANT_MODES.AFTER_SUBMIT) {
+            await maybeGrantAccessRoleAtStage(client, interaction.user.id, ONBOARD_ACCESS_GRANT_MODES.AFTER_SUBMIT, "newcomer application submitted");
+          }
+
+          submission = await createPendingSubmissionFromAttachment(client, {
+            user: interaction.user,
+            member: interaction.member,
+            mainCharacterIds: session.mainCharacterIds,
+            kills: session.pendingKills,
+            robloxUsername: robloxUser.name,
+            robloxUserId: robloxUser.id,
+            robloxDisplayName: robloxUser.displayName,
+            screenshotUrl: session.pendingScreenshotUrl,
+          });
+
+          if (currentAccessGrantMode === ONBOARD_ACCESS_GRANT_MODES.AFTER_REVIEW_POST) {
+            await maybeGrantAccessRoleAtStage(client, interaction.user.id, ONBOARD_ACCESS_GRANT_MODES.AFTER_REVIEW_POST, "newcomer application moved to moderator review");
+            saveDb();
+          }
+        } catch (error) {
+          if (submission?.id) {
+            delete db.submissions[submission.id];
+            restoreRecordValue(db.profiles, interaction.user.id, previousProfile, hadProfile);
+            restoreRecordValue(db.cooldowns, interaction.user.id, previousCooldown, hadCooldown);
+            saveDb();
+            await deleteTrackedMessage(
+              client,
+              submission.reviewChannelId,
+              submission.reviewMessageId,
+              `review-сообщение ${submission.id}`
+            ).catch((deleteError) => {
+              console.warn(`Submit outer rollback message cleanup failed for ${submission.id}: ${formatRuntimeError(deleteError)}`);
+            });
+          } else {
+            restoreRecordValue(db.profiles, interaction.user.id, previousProfile, hadProfile);
+            restoreRecordValue(db.cooldowns, interaction.user.id, previousCooldown, hadCooldown);
+          }
+
+          await restoreRolePoolSnapshot(
+            client,
+            interaction.user.id,
+            accessRoleIds,
+            previousAccessRoleIds,
+            "submit rollback"
+          ).catch((restoreError) => {
+            console.error(`Submit access-role rollback failed for ${interaction.user.id}: ${formatRuntimeError(restoreError)}`);
+          });
+
+          await interaction.editReply(String(error?.message || error || "Не удалось отправить заявку."));
+          return;
+        }
+
+        clearSubmitSession(interaction.user.id);
+        await logLine(client, `SUBMIT: <@${interaction.user.id}> kills ${session.pendingKills} mains=${session.mainCharacterIds.join(",")} with roblox ${robloxUser.name}`).catch((error) => {
+          console.warn(`Submit log failed for ${interaction.user.id}: ${formatRuntimeError(error)}`);
+        });
+
+        await interaction.editReply(
+          currentAccessGrantMode === ONBOARD_ACCESS_GRANT_MODES.AFTER_APPROVE
+            ? `Roblox username подтверждён: **${robloxUser.name}** (ID ${robloxUser.id}). Заявка ушла модераторам. Стартовая роль будет выдана после approve.`
+            : `Roblox username подтверждён: **${robloxUser.name}** (ID ${robloxUser.id}). Заявка ушла модераторам.`
+        );
+        return;
+      }
+
+      if (pending) {
+        try {
+          await updatePendingSubmissionRobloxIdentity(client, pending, robloxUser);
+        } catch (error) {
+          await interaction.editReply(String(error?.message || error || "Не удалось обновить pending-заявку."));
+          return;
+        }
+
+        clearSubmitSession(interaction.user.id);
+        await logLine(client, `ROBLOX UPDATE: <@${interaction.user.id}> -> ${robloxUser.name} (${robloxUser.id}) for ${pending.id}`).catch((error) => {
+          console.warn(`Roblox update log failed for ${pending.id}: ${formatRuntimeError(error)}`);
+        });
+        await interaction.editReply(`Roblox username подтверждён: **${robloxUser.name}** (ID ${robloxUser.id}). Pending-заявка обновлена.`);
         return;
       }
 
