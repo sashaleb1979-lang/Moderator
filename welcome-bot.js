@@ -128,6 +128,7 @@ const {
   getOnboardAccessGrantModeLabel,
   normalizeOnboardAccessGrantMode,
 } = require("./src/onboard/access-grant-mode");
+const { ONBOARD_BEGIN_ROUTES, resolveOnboardBeginRoute } = require("./src/onboard/begin-state");
 const { resolveNonJjsCaptchaMode } = require("./src/onboard/non-jjs-mode");
 const {
   createPresentationDefaults,
@@ -267,7 +268,7 @@ const {
   collectRecentKillChanges,
   paginateRecentKillChanges,
 } = require("./src/onboard/tierlist-ranking");
-const { parseKillsFromSubmittedText } = require("./src/onboard/submission-message");
+const { parseKillsFromSubmittedText, resolveEffectiveSubmittedKills } = require("./src/onboard/submission-message");
 let nonGgsCaptchaModule = null;
 try {
   nonGgsCaptchaModule = require("./src/onboard/non-jjs-captcha");
@@ -10891,6 +10892,20 @@ client.on("messageCreate", async (message) => {
     return;
   }
 
+  const killsResult = resolveEffectiveSubmittedKills(message.content, session?.suggestedKills);
+  const { effectiveKills } = killsResult;
+
+  if (effectiveKills === null) {
+    const reply = await message.reply(
+      killsResult.reason === "ambiguous"
+        ? "Не понял число kills. Укажи в тексте только одно число, например `3120`, и приложи скрин в этом же сообщении."
+        : "В тексте заявки нужно указать точное число kills, например `3120` или `3120 kills`, и приложить скрин в этом же сообщении."
+    ).catch(() => null);
+    if (reply) scheduleDeleteMessage(reply);
+    await message.delete().catch(() => {});
+    return;
+  }
+
   if (requiresRobloxBeforeReview && !hasRobloxIdentity) {
     setSubmitSession(message.author.id, {
       ...session,
@@ -10900,24 +10915,6 @@ client.on("messageCreate", async (message) => {
     });
     const reply = await message.reply("Kills и скрин приняты. Теперь нажми «Получить роль» ещё раз и укажи Roblox username — без этого заявка не уйдёт модераторам.").catch(() => null);
     if (reply) scheduleDeleteMessage(reply, 18000);
-    await message.delete().catch(() => {});
-    return;
-  }
-
-  const killsResult = parseKillsFromSubmittedText(message.content);
-  const effectiveKills = killsResult.kills !== null
-    ? killsResult.kills
-    : killsResult.reason === "missing" && Number.isSafeInteger(session?.suggestedKills)
-      ? session.suggestedKills
-      : null;
-
-  if (effectiveKills === null) {
-    const reply = await message.reply(
-      killsResult.reason === "ambiguous"
-        ? "Не понял число kills. Укажи в тексте только одно число, например `3120`, и приложи скрин в этом же сообщении."
-        : "В тексте заявки нужно указать точное число kills, например `3120` или `3120 kills`, и приложить скрин в этом же сообщении."
-    ).catch(() => null);
-    if (reply) scheduleDeleteMessage(reply);
     await message.delete().catch(() => {});
     return;
   }
@@ -14312,8 +14309,18 @@ client.on("interactionCreate", async (interaction) => {
         clearNonGgsCaptchaSession(interaction.user.id);
         const session = getSubmitSession(interaction.user.id);
         const pending = getPendingSubmissionForUser(interaction.user.id);
+        const draft = getMainDraft(interaction.user.id);
+        const cooldownLeft = getSubmitCooldownLeftSeconds(interaction.user.id);
+        const beginRoute = resolveOnboardBeginRoute({
+          hasPendingProof: Boolean(session?.mainCharacterIds?.length && Number.isSafeInteger(session?.pendingKills) && session?.pendingScreenshotUrl),
+          hasPendingMissingRoblox: Boolean(pending && (!pending.robloxUsername || !pending.robloxUserId)),
+          hasPendingSubmission: Boolean(pending),
+          cooldownLeft,
+          hasSubmitSession: Boolean(session),
+          hasMainDraft: Boolean(draft?.characterIds?.length),
+        });
 
-        if (session?.mainCharacterIds?.length && Number.isSafeInteger(session?.pendingKills) && session?.pendingScreenshotUrl) {
+        if (beginRoute.type === ONBOARD_BEGIN_ROUTES.REQUIRED_ROBLOX) {
           await interaction.reply(buildRobloxUsernameStepPayload(interaction.user.id, {
             required: true,
             noticeText: "Kills и скрин уже приняты. Осталось указать Roblox username, чтобы отправить заявку модераторам.",
@@ -14321,7 +14328,7 @@ client.on("interactionCreate", async (interaction) => {
           return;
         }
 
-        if (pending && (!pending.robloxUsername || !pending.robloxUserId)) {
+        if (beginRoute.type === ONBOARD_BEGIN_ROUTES.OPTIONAL_ROBLOX) {
           await interaction.reply(buildRobloxUsernameStepPayload(interaction.user.id, {
             required: false,
             mainCharacterIds: pending.mainCharacterIds,
@@ -14331,20 +14338,19 @@ client.on("interactionCreate", async (interaction) => {
           return;
         }
 
-        const cooldownLeft = getSubmitCooldownLeftSeconds(interaction.user.id);
-        if (cooldownLeft > 0) {
-          await interaction.reply(ephemeralPayload({ content: `Подожди ещё ${cooldownLeft} сек. перед новой заявкой.` }));
-          return;
-        }
-
-        if (pending) {
+        if (beginRoute.type === ONBOARD_BEGIN_ROUTES.PENDING) {
           await interaction.reply(ephemeralPayload({
             content: `У тебя уже есть pending-заявка с kills ${pending.kills}. Дождись решения модератора.`,
           }));
           return;
         }
 
-        if (session) {
+        if (beginRoute.type === ONBOARD_BEGIN_ROUTES.COOLDOWN) {
+          await interaction.reply(ephemeralPayload({ content: `Подожди ещё ${cooldownLeft} сек. перед новой заявкой.` }));
+          return;
+        }
+
+        if (beginRoute.type === ONBOARD_BEGIN_ROUTES.SUBMIT) {
           const welcomeChannelId = getResolvedChannelId("welcome");
           if (!welcomeChannelId) {
             await interaction.reply(ephemeralPayload({
@@ -14359,8 +14365,7 @@ client.on("interactionCreate", async (interaction) => {
           return;
         }
 
-        const draft = getMainDraft(interaction.user.id);
-        if (draft?.characterIds?.length) {
+        if (beginRoute.type === ONBOARD_BEGIN_ROUTES.DRAFT) {
           setSubmitSession(interaction.user.id, { mainCharacterIds: draft.characterIds });
           clearMainDraft(interaction.user.id);
           await interaction.reply(buildSubmitStepPayload(interaction.user.id));

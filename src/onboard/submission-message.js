@@ -25,6 +25,21 @@ function parseKillsFromSubmittedText(input) {
   return { kills: value, reason: null };
 }
 
+function resolveEffectiveSubmittedKills(input, suggestedKills = null) {
+  const result = parseKillsFromSubmittedText(input);
+  const effectiveKills = result.kills !== null
+    ? result.kills
+    : result.reason === "missing" && Number.isSafeInteger(suggestedKills)
+      ? suggestedKills
+      : null;
+
+  return {
+    ...result,
+    effectiveKills,
+  };
+}
+
 module.exports = {
   parseKillsFromSubmittedText,
+  resolveEffectiveSubmittedKills,
 };

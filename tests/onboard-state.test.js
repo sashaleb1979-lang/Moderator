@@ -9,6 +9,7 @@ const {
   getOnboardAccessGrantModeLabel,
   normalizeOnboardAccessGrantMode,
 } = require("../src/onboard/access-grant-mode");
+const { ONBOARD_BEGIN_ROUTES, resolveOnboardBeginRoute } = require("../src/onboard/begin-state");
 const {
   ONBOARD_ACCESS_MODES,
   createOnboardModeState,
@@ -658,6 +659,61 @@ test("access grant mode state normalizes persisted values and exposes readable l
     mode: ONBOARD_ACCESS_GRANT_MODES.AFTER_APPROVE,
     changedAt: "2026-04-23T08:00:00.000Z",
     changedBy: "mod",
+  });
+});
+
+test("onboard begin route prioritizes pending proof and pending submission over cooldown", () => {
+  assert.deepEqual(resolveOnboardBeginRoute({
+    hasPendingProof: true,
+    hasPendingMissingRoblox: true,
+    hasPendingSubmission: true,
+    cooldownLeft: 42,
+    hasSubmitSession: true,
+    hasMainDraft: true,
+  }), {
+    type: ONBOARD_BEGIN_ROUTES.REQUIRED_ROBLOX,
+    cooldownLeft: 42,
+  });
+
+  assert.deepEqual(resolveOnboardBeginRoute({
+    hasPendingSubmission: true,
+    cooldownLeft: 42,
+    hasSubmitSession: true,
+    hasMainDraft: true,
+  }), {
+    type: ONBOARD_BEGIN_ROUTES.PENDING,
+    cooldownLeft: 42,
+  });
+});
+
+test("onboard begin route falls through from cooldown to submit, draft, and picker", () => {
+  assert.deepEqual(resolveOnboardBeginRoute({
+    cooldownLeft: 17,
+    hasSubmitSession: true,
+    hasMainDraft: true,
+  }), {
+    type: ONBOARD_BEGIN_ROUTES.COOLDOWN,
+    cooldownLeft: 17,
+  });
+
+  assert.deepEqual(resolveOnboardBeginRoute({
+    hasSubmitSession: true,
+    hasMainDraft: true,
+  }), {
+    type: ONBOARD_BEGIN_ROUTES.SUBMIT,
+    cooldownLeft: 0,
+  });
+
+  assert.deepEqual(resolveOnboardBeginRoute({
+    hasMainDraft: true,
+  }), {
+    type: ONBOARD_BEGIN_ROUTES.DRAFT,
+    cooldownLeft: 0,
+  });
+
+  assert.deepEqual(resolveOnboardBeginRoute({}), {
+    type: ONBOARD_BEGIN_ROUTES.PICKER,
+    cooldownLeft: 0,
   });
 });
 
