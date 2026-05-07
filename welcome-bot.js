@@ -150,12 +150,17 @@ const {
   normalizeChannelSlot: normalizeManagedChannelSlot,
 } = require("./src/onboard/channel-owner");
 const {
+  applyRobloxAccountSnapshot,
   createDefaultIntegrationState,
   deriveProfileMainView,
   ensureSharedProfile,
   normalizeIntegrationState,
   syncSharedProfiles,
 } = require("./src/integrations/shared-profile");
+const {
+  normalizeRobloxAvatarHeadshot,
+  normalizeRobloxUserProfile,
+} = require("./src/integrations/roblox-service");
 const {
   buildHistoricalManagedCharacterRoleIds,
   buildManagedCharacterRoleRecoveryPlan,
@@ -2139,6 +2144,7 @@ function buildWelcomeEditorPayload(statusText = "") {
     .setDescription([
       `**Welcome title:** ${previewText(presentation.welcome.title, 140)}`,
       `**Welcome text:** ${previewText(presentation.welcome.description, 240)}`,
+      `**Submit step:** ${previewText(presentation.welcome.submitStep?.title || "—", 100)} / ${previewText(presentation.welcome.submitStep?.description || "—", 180)}`,
       `**Buttons:** ${presentation.welcome.buttons.begin} / ${nonJjsUi.buttonLabel} / ${presentation.welcome.buttons.quickMains}`,
       `**JJS block:** ${previewText(nonJjsUi.title, 90)} / ${previewText(nonJjsUi.buttonLabel, 80)}`,
       `**JJS text:** ${previewText(nonJjsUi.description, 160)}`,
@@ -2160,6 +2166,7 @@ function buildWelcomeEditorPayload(statusText = "") {
   );
 
   const row2 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId("welcome_editor_submit").setLabel("Submit шаг").setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId("welcome_editor_jjs").setLabel("JJS блок").setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId("welcome_editor_tiers").setLabel("Названия тиров").setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId("welcome_editor_png").setLabel("PNG и tierlist").setStyle(ButtonStyle.Secondary)
@@ -3118,10 +3125,32 @@ async function resolveRobloxUserByUsername(username) {
   const match = Array.isArray(payload?.data) ? payload.data[0] : null;
   if (!match?.id) return null;
 
+  const [profilePayload, avatarPayload] = await Promise.all([
+    fetchJson(`https://users.roblox.com/v1/users/${match.id}`),
+    fetchJson(
+      `https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds=${match.id}&size=150x150&format=Png&isCircular=false`
+    ).catch(() => null),
+  ]);
+
+  const profile = normalizeRobloxUserProfile(profilePayload);
+  const avatar = Array.isArray(avatarPayload?.data) && avatarPayload.data.length
+    ? normalizeRobloxAvatarHeadshot(avatarPayload.data[0])
+    : null;
+
   return {
-    id: String(match.id),
-    name: String(match.name || normalizedUsername).trim(),
-    displayName: String(match.displayName || match.name || normalizedUsername).trim(),
+    id: String(profile.userId || match.id),
+    name: String(profile.username || match.name || normalizedUsername).trim(),
+    displayName: String(profile.displayName || profile.username || match.displayName || match.name || normalizedUsername).trim(),
+    avatarUrl: avatar?.imageUrl || null,
+    profileUrl: profile.profileUrl,
+    createdAt: profile.createdAt,
+    description: profile.description,
+    hasVerifiedBadge: profile.hasVerifiedBadge,
+    accountStatus: profile.isBanned === true
+      ? "banned-or-unavailable"
+      : profile.isBanned === false
+        ? "active"
+        : null,
   };
 }
 
@@ -4810,6 +4839,14 @@ function buildCharacterPickerPayload(mode = "full") {
 }
 
 function buildSubmitStepPayload(userId, options = {}) {
+  const renderSubmitStepTemplate = (template, tokens = {}) => {
+    let text = String(template || "").trim();
+    for (const [key, value] of Object.entries(tokens)) {
+      text = text.split(`{{${key}}}`).join(String(value || ""));
+    }
+    return text;
+  };
+
   const session = getSubmitSession(userId);
   const mainCharacterIds = Array.isArray(options.mainCharacterIds) && options.mainCharacterIds.length
     ? options.mainCharacterIds
@@ -4829,26 +4866,30 @@ function buildSubmitStepPayload(userId, options = {}) {
   const hasExampleImagePath = Boolean(exampleImagePath) && fs.existsSync(exampleImagePath);
   const hasExampleImageUrl = Boolean(exampleImageUrl);
   const hasRobloxIdentity = Boolean(session?.robloxUsername && session?.robloxUserId);
+  const presentation = getPresentation();
+  const submitStepPresentation = presentation.welcome.submitStep || {};
+  const exampleNote = hasExampleImagePath || hasExampleImageUrl
+    ? "Ниже прикреплён пример того, как должна выглядеть заявка."
+    : "";
+  const submitStepText = renderSubmitStepTemplate(submitStepPresentation.description, {
+    uploadTarget,
+    exampleNote,
+  });
 
   const lines = [];
   if (options.noticeText) lines.push(options.noticeText);
-  lines.push(
-    `Мейны: **${selectedLabels.join(", ")}**.`,
-    `Отправь одним сообщением в ${uploadTarget} **точное число kills** в тексте и **один скрин** во вложении.`,
-    "На этом же скрине обязательно должны быть одновременно видны и kills, и твой **уникальный Roblox username**.",
-    "После отправки kills бот отдельно попросит Roblox username и добавит его в модераторскую заявку.",
-    hasExampleImagePath || hasExampleImageUrl ? "Ниже прикреплён пример того, как должна выглядеть заявка." : ""
-  );
+  lines.push(`Мейны: **${selectedLabels.join(", ")}**.`);
 
   if (hasRobloxIdentity) {
-    lines.splice(1, 0, `Roblox: **${session.robloxUsername}** (ID ${session.robloxUserId}).`);
+    lines.push(`Roblox: **${session.robloxUsername}** (ID ${session.robloxUserId}).`);
   }
+  lines.push(...submitStepText.split(/\r?\n/).map((line) => line.trim()).filter(Boolean));
 
   const payload = {
     embeds: [
       new EmbedBuilder()
         .setColor(0x57F287)
-        .setTitle("Готово. Кидай kills и общий скрин")
+        .setTitle(String(submitStepPresentation.title || "Готово. Кидай kills и общий скрин").trim())
         .setDescription(lines.filter(Boolean).join("\n")),
     ],
     components: [
@@ -5884,11 +5925,11 @@ async function createPendingSubmissionFromAttachment(client, input) {
     profile.lastSubmissionStatus = "pending";
     profile.updatedAt = nowIso();
     if (submission.robloxUsername && submission.robloxUserId) {
-      profile.domains = profile.domains || {};
-      profile.domains.roblox = {
-        ...(profile.domains.roblox || {}),
+      applyRobloxAccountSnapshot(profile, {
         username: submission.robloxUsername,
         userId: submission.robloxUserId,
+        displayName: submission.robloxDisplayName,
+      }, {
         verificationStatus: "pending",
         verifiedAt: null,
         updatedAt: profile.updatedAt,
@@ -5896,7 +5937,7 @@ async function createPendingSubmissionFromAttachment(client, input) {
         lastReviewedAt: null,
         reviewedBy: null,
         source: "onboarding",
-      };
+      });
       finalizeStoredProfile(input.user.id);
     }
     setSubmitCooldown(input.user.id);
@@ -5991,11 +6032,11 @@ async function approveSubmission(client, submission, moderatorTag) {
   profile.lastReviewedAt = submission.reviewedAt;
   profile.updatedAt = nowIso();
   if (submission.robloxUsername && submission.robloxUserId) {
-    profile.domains = profile.domains || {};
-    profile.domains.roblox = {
-      ...(profile.domains.roblox || {}),
+    applyRobloxAccountSnapshot(profile, {
       username: submission.robloxUsername,
       userId: submission.robloxUserId,
+      displayName: submission.robloxDisplayName,
+    }, {
       verificationStatus: "verified",
       verifiedAt: submission.reviewedAt,
       updatedAt: profile.updatedAt,
@@ -6003,7 +6044,7 @@ async function approveSubmission(client, submission, moderatorTag) {
       lastReviewedAt: submission.reviewedAt,
       reviewedBy: moderatorTag,
       source: "onboarding",
-    };
+    });
     finalizeStoredProfile(submission.userId);
   }
 
@@ -6060,18 +6101,18 @@ async function rejectSubmission(client, submission, moderatorTag, reason) {
   profile.lastReviewedAt = submission.reviewedAt;
   profile.updatedAt = nowIso();
   if (submission.robloxUsername && submission.robloxUserId) {
-    profile.domains = profile.domains || {};
-    profile.domains.roblox = {
-      ...(profile.domains.roblox || {}),
+    applyRobloxAccountSnapshot(profile, {
       username: submission.robloxUsername,
       userId: submission.robloxUserId,
+      displayName: submission.robloxDisplayName,
+    }, {
       verificationStatus: "failed",
       updatedAt: profile.updatedAt,
       lastSubmissionId: submission.id,
       lastReviewedAt: submission.reviewedAt,
       reviewedBy: moderatorTag,
       source: "onboarding",
-    };
+    });
     finalizeStoredProfile(submission.userId);
   }
 
@@ -6137,11 +6178,17 @@ async function updatePendingSubmissionRobloxIdentity(client, submission, robloxU
   submission.robloxDisplayName = robloxUser.displayName;
 
   profile.updatedAt = nowIso();
-  profile.domains = profile.domains || {};
-  profile.domains.roblox = {
-    ...(profile.domains.roblox || {}),
+  applyRobloxAccountSnapshot(profile, {
     username: robloxUser.name,
     userId: robloxUser.id,
+    displayName: robloxUser.displayName,
+    avatarUrl: robloxUser.avatarUrl,
+    profileUrl: robloxUser.profileUrl,
+    createdAt: robloxUser.createdAt,
+    description: robloxUser.description,
+    hasVerifiedBadge: robloxUser.hasVerifiedBadge,
+    accountStatus: robloxUser.accountStatus,
+  }, {
     verificationStatus: "pending",
     verifiedAt: null,
     updatedAt: profile.updatedAt,
@@ -6149,7 +6196,7 @@ async function updatePendingSubmissionRobloxIdentity(client, submission, robloxU
     lastReviewedAt: null,
     reviewedBy: moderatorTag,
     source: "onboarding",
-  };
+  });
   finalizeStoredProfile(submission.userId);
 
   try {
@@ -11325,11 +11372,17 @@ client.on("interactionCreate", async (interaction) => {
         profile.displayName = getProfileDisplayName(target.id, profile);
         profile.username = target.username;
         profile.updatedAt = reviewedAt;
-        profile.domains = profile.domains || {};
-        profile.domains.roblox = {
-          ...(profile.domains.roblox || {}),
+        applyRobloxAccountSnapshot(profile, {
           username: robloxUser.name,
           userId: robloxUser.id,
+          displayName: robloxUser.displayName,
+          avatarUrl: robloxUser.avatarUrl,
+          profileUrl: robloxUser.profileUrl,
+          createdAt: robloxUser.createdAt,
+          description: robloxUser.description,
+          hasVerifiedBadge: robloxUser.hasVerifiedBadge,
+          accountStatus: robloxUser.accountStatus,
+        }, {
           verificationStatus: "verified",
           verifiedAt: reviewedAt,
           updatedAt: reviewedAt,
@@ -11337,7 +11390,7 @@ client.on("interactionCreate", async (interaction) => {
           lastReviewedAt: reviewedAt,
           reviewedBy: interaction.user.tag,
           source: "manual_moderator",
-        };
+        });
         finalizeStoredProfile(target.id);
         saveDb();
       } catch (error) {
@@ -12405,6 +12458,32 @@ client.on("interactionCreate", async (interaction) => {
           ),
           new ActionRowBuilder().addComponents(
             new TextInputBuilder().setCustomId("button_quick").setLabel("Кнопка мейнов").setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(80).setValue(presentation.welcome.buttons.quickMains)
+          )
+        );
+        await interaction.showModal(modal);
+        return;
+      }
+
+      if (interaction.customId === "welcome_editor_submit") {
+        const modal = new ModalBuilder().setCustomId("welcome_editor_submit_modal").setTitle("Submit шаг");
+        modal.addComponents(
+          new ActionRowBuilder().addComponents(
+            new TextInputBuilder()
+              .setCustomId("submit_step_title")
+              .setLabel("Заголовок")
+              .setStyle(TextInputStyle.Short)
+              .setRequired(true)
+              .setMaxLength(256)
+              .setValue(presentation.welcome.submitStep?.title || "")
+          ),
+          new ActionRowBuilder().addComponents(
+            new TextInputBuilder()
+              .setCustomId("submit_step_text")
+              .setLabel("Текст ({{uploadTarget}}, {{exampleNote}})")
+              .setStyle(TextInputStyle.Paragraph)
+              .setRequired(true)
+              .setMaxLength(3000)
+              .setValue(presentation.welcome.submitStep?.description || "")
           )
         );
         await interaction.showModal(modal);
@@ -15509,6 +15588,26 @@ client.on("interactionCreate", async (interaction) => {
         delete db.config.presentation.welcome.buttons.myCard;
       });
       await interaction.reply(buildWelcomeEditorPayload("Кнопки welcome обновлены."));
+      return;
+    }
+
+    if (interaction.customId === "welcome_editor_submit_modal") {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+      const title = interaction.fields.getTextInputValue("submit_step_title").trim();
+      const description = interaction.fields.getTextInputValue("submit_step_text").trim();
+      if (!title || !description) {
+        await interaction.reply(ephemeralPayload({ content: "Заголовок и текст submit-шага не могут быть пустыми." }));
+        return;
+      }
+      await applyUiMutation(client, "welcome", () => {
+        db.config.presentation.welcome.submitStep ||= {};
+        db.config.presentation.welcome.submitStep.title = title;
+        db.config.presentation.welcome.submitStep.description = description;
+      });
+      await interaction.reply(buildWelcomeEditorPayload("Submit-шаг обновлён."));
       return;
     }
 

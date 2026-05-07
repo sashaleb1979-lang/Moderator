@@ -30,6 +30,15 @@ const HARD_DEFAULT_PRESENTATION = {
     title: "Jujutsu Shinigans Onboarding",
     description: COMBINED_SUBMISSION_WELCOME_DESCRIPTION,
     steps: COMBINED_SUBMISSION_WELCOME_STEPS,
+    submitStep: {
+      title: "Готово. Кидай kills и общий скрин",
+      description: [
+        "Отправь одним сообщением в {{uploadTarget}} **точное число kills** в тексте и **один скрин** во вложении.",
+        "На этом же скрине обязательно должны быть одновременно видны и kills, и твой **уникальный Roblox username**.",
+        "После отправки kills бот отдельно попросит Roblox username и добавит его в модераторскую заявку.",
+        "{{exampleNote}}",
+      ].join("\n"),
+    },
     buttons: {
       begin: "Получить роль",
       quickMains: "Быстро сменить мейнов",
@@ -101,6 +110,15 @@ function normalizeWelcomeSteps(value, fallback) {
   return steps.some((step) => isLegacyWelcomeCopy(step)) ? [...fallback] : steps;
 }
 
+function normalizeWelcomeSubmitStep(value, fallback = {}) {
+  const source = value && typeof value === "object" ? value : {};
+  const base = fallback && typeof fallback === "object" ? fallback : {};
+  return {
+    title: firstNonEmpty(source.title, base.title),
+    description: firstNonEmpty(source.description, base.description),
+  };
+}
+
 function normalizeTierMap(value, fallback) {
   const out = { ...fallback };
   const source = value && typeof value === "object" ? value : {};
@@ -160,6 +178,7 @@ function createPresentationDefaults(fileConfig = {}, options = {}) {
         hardDefaults.welcome.description
       ),
       steps: normalizeWelcomeSteps(welcomeEmbed.steps, hardDefaults.welcome.steps),
+      submitStep: normalizeWelcomeSubmitStep(welcomeEmbed.submitStep, hardDefaults.welcome.submitStep),
       buttons: {
         begin: firstNonEmpty(welcomeButtons.begin, ui.getRoleButtonLabel, hardDefaults.welcome.buttons.begin),
         quickMains: firstNonEmpty(welcomeButtons.quickMains, ui.quickMainsButtonLabel, hardDefaults.welcome.buttons.quickMains),
@@ -297,6 +316,7 @@ function ensurePresentationConfig(dbConfig, options = {}) {
   dbConfig.generatedRoles ||= { characters: {}, tiers: {} };
   dbConfig.presentation ||= {};
   dbConfig.presentation.welcome ||= {};
+  dbConfig.presentation.welcome.submitStep ||= {};
   dbConfig.presentation.welcome.buttons ||= {};
   dbConfig.presentation.tierlist ||= {};
   dbConfig.presentation.tierlist.labels ||= {};
@@ -389,6 +409,7 @@ function resolvePresentation(dbConfig = {}, fileConfig = {}, options = {}) {
       title: firstNonEmpty(welcome.title, defaults.welcome.title),
       description: normalizeWelcomeDescription(welcome.description, defaults.welcome.description),
       steps: normalizeWelcomeSteps(welcome.steps, defaults.welcome.steps),
+      submitStep: normalizeWelcomeSubmitStep(welcome.submitStep, defaults.welcome.submitStep),
       buttons: {
         begin: firstNonEmpty(welcome.buttons?.begin, defaults.welcome.buttons.begin),
         quickMains: firstNonEmpty(welcome.buttons?.quickMains, defaults.welcome.buttons.quickMains),

@@ -154,6 +154,8 @@ test("presentation resolution prefers db overrides over file defaults and hard d
   assert.equal(resolved.welcome.title, "DB welcome title");
   assert.equal(resolved.welcome.description, "File welcome text");
   assert.deepEqual(resolved.welcome.steps, ["F1", "F2", "F3", "F4", "F5"]);
+  assert.equal(resolved.welcome.submitStep.title, "Готово. Кидай kills и общий скрин");
+  assert.match(resolved.welcome.submitStep.description, /\{\{uploadTarget\}\}/);
   assert.deepEqual(resolved.welcome.buttons, {
     begin: "DB start",
     quickMains: "File quick",
@@ -165,6 +167,24 @@ test("presentation resolution prefers db overrides over file defaults and hard d
   assert.equal(getTierLabel(resolved, 2), "File tier two");
   assert.equal(resolved.tierlist.graphic.colors[3], "#c0ffee");
   assert.equal(resolved.tierlist.graphic.colors[5], "#555555");
+});
+
+test("presentation resolution prefers submit-step overrides over defaults", () => {
+  const resolved = resolvePresentation({
+    presentation: {
+      welcome: {
+        submitStep: {
+          title: "Custom submit title",
+          description: "Отправь всё в {{uploadTarget}}. {{exampleNote}}",
+        },
+      },
+    },
+  }, {}, {
+    defaultGraphicTierColors: DEFAULT_GRAPHIC_TIER_COLORS,
+  });
+
+  assert.equal(resolved.welcome.submitStep.title, "Custom submit title");
+  assert.equal(resolved.welcome.submitStep.description, "Отправь всё в {{uploadTarget}}. {{exampleNote}}");
 });
 
 test("ensurePresentationConfig drops stale myCard button config", () => {

@@ -4,6 +4,8 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const {
+  applyRobloxAccountSnapshot,
+  buildRobloxProfileUrl,
   INTEGRATION_MODE_DORMANT,
   SHARED_PROFILE_VERSION,
   deriveProfileMainView,
@@ -48,7 +50,14 @@ test("ensureSharedProfile migrates onboarding fields into domains and summary", 
   assert.equal(result.profile.summary.tierlist.hasSubmission, false);
   assert.deepEqual(result.profile.domains.roblox, {
     username: "RynexV",
+    displayName: null,
     userId: "123456",
+    avatarUrl: null,
+    profileUrl: "https://www.roblox.com/users/123456/profile",
+    createdAt: null,
+    description: null,
+    hasVerifiedBadge: null,
+    accountStatus: null,
     verificationStatus: "verified",
     verifiedAt: null,
     updatedAt: null,
@@ -56,9 +65,39 @@ test("ensureSharedProfile migrates onboarding fields into domains and summary", 
     lastReviewedAt: null,
     reviewedBy: null,
     source: null,
+    lastRefreshAt: null,
+    refreshStatus: null,
+    refreshError: null,
+    usernameHistory: [
+      {
+        name: "RynexV",
+        firstSeenAt: null,
+        lastSeenAt: null,
+      },
+    ],
+    displayNameHistory: [],
+    serverFriends: {
+      userIds: [],
+      computedAt: null,
+    },
+    playtime: {
+      totalJjsMinutes: 0,
+      jjsMinutes7d: 0,
+      jjsMinutes30d: 0,
+      sessionCount: 0,
+      currentSessionStartedAt: null,
+      lastSeenInJjsAt: null,
+    },
+    coPlay: {
+      peers: [],
+      computedAt: null,
+    },
   });
   assert.equal(result.profile.summary.roblox.hasVerifiedAccount, true);
   assert.equal(result.profile.summary.roblox.username, "RynexV");
+  assert.equal(result.profile.summary.roblox.profileUrl, "https://www.roblox.com/users/123456/profile");
+  assert.equal(result.profile.summary.roblox.serverFriendsCount, 0);
+  assert.equal(result.profile.summary.roblox.totalJjsMinutes, 0);
 });
 
 test("ensureSharedProfile keeps the first raw onboarding snapshot immutable across later syncs", () => {
@@ -183,7 +222,14 @@ test("normalizeIntegrationState creates dormant elo and tierlist scaffolding", (
 test("normalizeRobloxDomainState defaults to unverified when binding is missing", () => {
   assert.deepEqual(normalizeRobloxDomainState({ username: "RynexV" }), {
     username: "RynexV",
+    displayName: null,
     userId: null,
+    avatarUrl: null,
+    profileUrl: null,
+    createdAt: null,
+    description: null,
+    hasVerifiedBadge: null,
+    accountStatus: null,
     verificationStatus: "unverified",
     verifiedAt: null,
     updatedAt: null,
@@ -191,5 +237,201 @@ test("normalizeRobloxDomainState defaults to unverified when binding is missing"
     lastReviewedAt: null,
     reviewedBy: null,
     source: null,
+    lastRefreshAt: null,
+    refreshStatus: null,
+    refreshError: null,
+    usernameHistory: [
+      {
+        name: "RynexV",
+        firstSeenAt: null,
+        lastSeenAt: null,
+      },
+    ],
+    displayNameHistory: [],
+    serverFriends: {
+      userIds: [],
+      computedAt: null,
+    },
+    playtime: {
+      totalJjsMinutes: 0,
+      jjsMinutes7d: 0,
+      jjsMinutes30d: 0,
+      sessionCount: 0,
+      currentSessionStartedAt: null,
+      lastSeenInJjsAt: null,
+    },
+    coPlay: {
+      peers: [],
+      computedAt: null,
+    },
   });
+});
+
+test("ensureSharedProfile does not leak Discord identity fields into Roblox domain without an explicit binding", () => {
+  const result = ensureSharedProfile({
+    userId: "200",
+    username: "discord_ryomen",
+    displayName: "Discord Sukuna",
+  }, "200");
+
+  assert.equal(result.profile.domains.roblox.username, null);
+  assert.equal(result.profile.domains.roblox.displayName, null);
+  assert.equal(result.profile.summary.roblox.hasVerifiedAccount, false);
+  assert.equal(result.profile.summary.roblox.username, null);
+});
+
+test("normalizeRobloxDomainState keeps current names first and normalizes social and playtime scaffolding", () => {
+  const result = normalizeRobloxDomainState({
+    robloxUsername: "NewName",
+    robloxDisplayName: "Display New",
+    robloxUserId: "321",
+    isBanned: false,
+    robloxUsernameHistory: [
+      { name: "OldName", firstSeenAt: "2026-05-01T00:00:00.000Z", lastSeenAt: "2026-05-02T00:00:00.000Z" },
+      { name: "newname" },
+    ],
+    robloxDisplayNameHistory: ["Display Old", "Display New"],
+    robloxServerFriends: {
+      userIds: ["u1", "u2", "u2"],
+      computedAt: "2026-05-03T00:00:00.000Z",
+    },
+    robloxPlaytime: {
+      totalJjsMinutes: 123,
+      jjsMinutes7d: 45,
+      jjsMinutes30d: 67,
+      sessionCount: 8,
+      currentSessionStartedAt: "2026-05-04T00:00:00.000Z",
+      lastSeenInJjsAt: "2026-05-05T00:00:00.000Z",
+    },
+    robloxCoPlay: {
+      computedAt: "2026-05-06T00:00:00.000Z",
+      peers: [
+        { peerUserId: "friend-1", minutesTogether: 90, sessionsTogether: 4, daysTogether: 2, sharedJjsSessionCount: 4, lastSeenTogetherAt: "2026-05-06T01:00:00.000Z", isRobloxFriend: true },
+        { peerUserId: "nonfriend-1", minutesTogether: 140, sessionsTogether: 6, daysTogether: 3, sharedJjsSessionCount: 5, lastSeenTogetherAt: "2026-05-06T02:00:00.000Z", isRobloxFriend: false },
+      ],
+    },
+  });
+
+  assert.equal(result.profileUrl, buildRobloxProfileUrl("321"));
+  assert.equal(result.accountStatus, "active");
+  assert.deepEqual(result.usernameHistory, [
+    { name: "NewName", firstSeenAt: null, lastSeenAt: null },
+    { name: "OldName", firstSeenAt: "2026-05-01T00:00:00.000Z", lastSeenAt: "2026-05-02T00:00:00.000Z" },
+  ]);
+  assert.deepEqual(result.displayNameHistory, [
+    { name: "Display New", firstSeenAt: null, lastSeenAt: null },
+    { name: "Display Old", firstSeenAt: null, lastSeenAt: null },
+  ]);
+  assert.deepEqual(result.serverFriends, {
+    userIds: ["u1", "u2"],
+    computedAt: "2026-05-03T00:00:00.000Z",
+  });
+  assert.equal(result.playtime.totalJjsMinutes, 123);
+  assert.equal(result.playtime.sessionCount, 8);
+  assert.equal(result.coPlay.peers.length, 2);
+  assert.equal(result.coPlay.peers[1].isRobloxFriend, false);
+});
+
+test("applyRobloxAccountSnapshot writes canonical pending Roblox state and preserves existing social scaffolding", () => {
+  const profile = {
+    domains: {
+      roblox: {
+        username: "OldName",
+        displayName: "Old Display",
+        userId: "111",
+        verificationStatus: "verified",
+        verifiedAt: "2026-05-01T00:00:00.000Z",
+        updatedAt: "2026-05-01T00:00:00.000Z",
+        serverFriends: {
+          userIds: ["friend-1"],
+          computedAt: "2026-05-02T00:00:00.000Z",
+        },
+        playtime: {
+          totalJjsMinutes: 33,
+          jjsMinutes7d: 10,
+          jjsMinutes30d: 20,
+          sessionCount: 2,
+          currentSessionStartedAt: null,
+          lastSeenInJjsAt: "2026-05-03T00:00:00.000Z",
+        },
+        coPlay: {
+          peers: [{ peerUserId: "peer-1", minutesTogether: 10 }],
+          computedAt: "2026-05-04T00:00:00.000Z",
+        },
+      },
+    },
+  };
+
+  const result = applyRobloxAccountSnapshot(profile, {
+    username: "NewName",
+    displayName: "New Display",
+    userId: "222",
+    avatarUrl: "https://cdn.example/avatar.png",
+    createdAt: "2020-01-01T00:00:00.000Z",
+    description: "Bound by moderator",
+    hasVerifiedBadge: true,
+    accountStatus: "active",
+  }, {
+    verificationStatus: "pending",
+    verifiedAt: null,
+    updatedAt: "2026-05-05T00:00:00.000Z",
+    lastSubmissionId: "sub-1",
+    lastReviewedAt: null,
+    reviewedBy: null,
+    source: "onboarding",
+  });
+
+  assert.equal(result.userId, "222");
+  assert.equal(result.profileUrl, buildRobloxProfileUrl("222"));
+  assert.equal(result.avatarUrl, "https://cdn.example/avatar.png");
+  assert.equal(result.createdAt, "2020-01-01T00:00:00.000Z");
+  assert.equal(result.description, "Bound by moderator");
+  assert.equal(result.hasVerifiedBadge, true);
+  assert.equal(result.accountStatus, "active");
+  assert.equal(result.verificationStatus, "pending");
+  assert.equal(result.verifiedAt, null);
+  assert.equal(result.lastSubmissionId, "sub-1");
+  assert.equal(result.source, "onboarding");
+  assert.equal(result.serverFriends.userIds[0], "friend-1");
+  assert.equal(result.playtime.totalJjsMinutes, 33);
+  assert.equal(result.coPlay.peers[0].peerUserId, "peer-1");
+  assert.deepEqual(result.usernameHistory, [
+    { name: "NewName", firstSeenAt: null, lastSeenAt: null },
+    { name: "OldName", firstSeenAt: null, lastSeenAt: "2026-05-05T00:00:00.000Z" },
+  ]);
+  assert.deepEqual(result.displayNameHistory, [
+    { name: "New Display", firstSeenAt: null, lastSeenAt: null },
+    { name: "Old Display", firstSeenAt: null, lastSeenAt: "2026-05-05T00:00:00.000Z" },
+  ]);
+  assert.equal(profile.domains.roblox.userId, "222");
+});
+
+test("applyRobloxAccountSnapshot preserves existing verification timestamp when a failed review does not override it", () => {
+  const profile = {
+    domains: {
+      roblox: {
+        username: "StableName",
+        userId: "123",
+        verificationStatus: "verified",
+        verifiedAt: "2026-05-01T00:00:00.000Z",
+      },
+    },
+  };
+
+  const result = applyRobloxAccountSnapshot(profile, {
+    username: "StableName",
+    userId: "123",
+  }, {
+    verificationStatus: "failed",
+    updatedAt: "2026-05-10T00:00:00.000Z",
+    lastSubmissionId: "sub-2",
+    lastReviewedAt: "2026-05-10T00:00:00.000Z",
+    reviewedBy: "mod#0001",
+    source: "onboarding",
+  });
+
+  assert.equal(result.verificationStatus, "failed");
+  assert.equal(result.verifiedAt, "2026-05-01T00:00:00.000Z");
+  assert.equal(result.lastReviewedAt, "2026-05-10T00:00:00.000Z");
+  assert.equal(result.reviewedBy, "mod#0001");
 });

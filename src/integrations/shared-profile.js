@@ -1,10 +1,14 @@
 "use strict";
 
-const SHARED_PROFILE_VERSION = 2;
+const SHARED_PROFILE_VERSION = 3;
 const INTEGRATION_STATE_VERSION = 1;
 const INTEGRATION_MODE_DORMANT = "dormant";
 const INTEGRATION_STATUSES = new Set(["not_started", "in_progress", "migrated"]);
 const ROBLOX_VERIFICATION_STATUSES = new Set(["unverified", "pending", "verified", "failed"]);
+const ROBLOX_ACCOUNT_STATUSES = new Set(["active", "banned-or-unavailable", "lookup-failed"]);
+const ROBLOX_NAME_HISTORY_LIMIT = 20;
+const ROBLOX_SERVER_FRIEND_LIMIT = 500;
+const ROBLOX_COPLAY_PEER_LIMIT = 50;
 
 function cleanString(value, limit = 2000) {
   return String(value || "").trim().slice(0, Math.max(0, Number(limit) || 0));
@@ -13,6 +17,10 @@ function cleanString(value, limit = 2000) {
 function normalizeNullableString(value, limit = 2000) {
   const text = cleanString(value, limit);
   return text || null;
+}
+
+function normalizeNullableBoolean(value) {
+  return typeof value === "boolean" ? value : null;
 }
 
 function normalizeStringArray(value, limit = 50, itemLimit = 120) {
@@ -56,6 +64,12 @@ function normalizePositiveNumber(value, fallback = 1) {
   if (value === null || value === undefined || value === "") return fallback;
   const amount = Number(value);
   return Number.isFinite(amount) && amount > 0 ? amount : fallback;
+}
+
+function normalizeNonNegativeInteger(value, fallback = 0) {
+  if (value === null || value === undefined || value === "") return fallback;
+  const amount = Number(value);
+  return Number.isSafeInteger(amount) && amount >= 0 ? amount : fallback;
 }
 
 function normalizeOnboardingDomainState(profile = {}) {
@@ -109,14 +123,214 @@ function normalizeTierlistDomainState(value = {}) {
   };
 }
 
+function buildRobloxProfileUrl(userId) {
+  const normalizedUserId = normalizeNullableString(userId, 40);
+  return normalizedUserId ? `https://www.roblox.com/users/${normalizedUserId}/profile` : null;
+}
+
+function normalizeRobloxHistoryEntry(value = {}) {
+  const source = value && typeof value === "object" ? value : {};
+  const name = normalizeNullableString(source.name ?? source.value, 120);
+  if (!name) return null;
+  return {
+    name,
+    firstSeenAt: normalizeNullableString(source.firstSeenAt ?? source.seenAt, 80),
+    lastSeenAt: normalizeNullableString(source.lastSeenAt ?? source.seenAt, 80),
+  };
+}
+
+function normalizeRobloxNameHistory(value, currentName, options = {}) {
+  const limit = normalizeNonNegativeInteger(options.limit, ROBLOX_NAME_HISTORY_LIMIT) || ROBLOX_NAME_HISTORY_LIMIT;
+  const entries = [];
+
+  if (currentName) {
+    entries.push({
+      name: currentName,
+      firstSeenAt: null,
+      lastSeenAt: null,
+    });
+  }
+
+  for (const item of Array.isArray(value) ? value : []) {
+    const normalized = typeof item === "string"
+      ? normalizeRobloxHistoryEntry({ name: item })
+      : normalizeRobloxHistoryEntry(item);
+    if (normalized) entries.push(normalized);
+  }
+
+  const seen = new Set();
+  const normalizedHistory = [];
+  for (const entry of entries) {
+    const key = entry.name.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    normalizedHistory.push(entry);
+    if (normalizedHistory.length >= limit) break;
+  }
+
+  return normalizedHistory;
+}
+
+function normalizeRobloxServerFriendsState(value = {}) {
+  const source = value && typeof value === "object" ? value : {};
+  return {
+    userIds: normalizeStringArray(source.userIds, ROBLOX_SERVER_FRIEND_LIMIT, 80),
+    computedAt: normalizeNullableString(source.computedAt, 80),
+  };
+}
+
+function normalizeRobloxPlaytimeState(value = {}) {
+  const source = value && typeof value === "object" ? value : {};
+  return {
+    totalJjsMinutes: normalizeNonNegativeInteger(source.totalJjsMinutes, 0),
+    jjsMinutes7d: normalizeNonNegativeInteger(source.jjsMinutes7d, 0),
+    jjsMinutes30d: normalizeNonNegativeInteger(source.jjsMinutes30d, 0),
+    sessionCount: normalizeNonNegativeInteger(source.sessionCount, 0),
+    currentSessionStartedAt: normalizeNullableString(source.currentSessionStartedAt, 80),
+    lastSeenInJjsAt: normalizeNullableString(source.lastSeenInJjsAt, 80),
+  };
+}
+
+function normalizeRobloxCoPlayPeer(value = {}) {
+  const source = value && typeof value === "object" ? value : {};
+  const peerUserId = normalizeNullableString(source.peerUserId ?? source.userId, 80);
+  if (!peerUserId) return null;
+
+  return {
+    peerUserId,
+    minutesTogether: normalizeNonNegativeInteger(source.minutesTogether, 0),
+    sessionsTogether: normalizeNonNegativeInteger(source.sessionsTogether, 0),
+    daysTogether: normalizeNonNegativeInteger(source.daysTogether, 0),
+    sharedJjsSessionCount: normalizeNonNegativeInteger(source.sharedJjsSessionCount, 0),
+    lastSeenTogetherAt: normalizeNullableString(source.lastSeenTogetherAt, 80),
+    isRobloxFriend: normalizeNullableBoolean(source.isRobloxFriend),
+  };
+}
+
+function normalizeRobloxCoPlayState(value = {}) {
+  const source = value && typeof value === "object" ? value : {};
+  const peers = [];
+  const seen = new Set();
+
+  for (const entry of Array.isArray(source.peers) ? source.peers : []) {
+    const normalized = normalizeRobloxCoPlayPeer(entry);
+    if (!normalized) continue;
+    if (seen.has(normalized.peerUserId)) continue;
+    seen.add(normalized.peerUserId);
+    peers.push(normalized);
+    if (peers.length >= ROBLOX_COPLAY_PEER_LIMIT) break;
+  }
+
+  return {
+    peers,
+    computedAt: normalizeNullableString(source.computedAt, 80),
+  };
+}
+
+function buildLegacyRobloxSource(profile = {}) {
+  const source = profile && typeof profile === "object" ? profile : {};
+  return {
+    robloxUsername: source.robloxUsername,
+    robloxUserId: source.robloxUserId,
+    robloxDisplayName: source.robloxDisplayName,
+    robloxAvatarUrl: source.robloxAvatarUrl,
+    robloxProfileUrl: source.robloxProfileUrl,
+    robloxCreatedAt: source.robloxCreatedAt,
+    robloxDescription: source.robloxDescription,
+    robloxHasVerifiedBadge: source.robloxHasVerifiedBadge,
+    robloxAccountStatus: source.robloxAccountStatus,
+    robloxLastRefreshAt: source.robloxLastRefreshAt,
+    robloxRefreshStatus: source.robloxRefreshStatus,
+    robloxRefreshError: source.robloxRefreshError,
+    robloxUsernameHistory: source.robloxUsernameHistory,
+    robloxDisplayNameHistory: source.robloxDisplayNameHistory,
+    robloxServerFriends: source.robloxServerFriends,
+    robloxPlaytime: source.robloxPlaytime,
+    robloxCoPlay: source.robloxCoPlay,
+    verificationStatus: source.verificationStatus,
+    verifiedAt: source.robloxVerifiedAt ?? source.verifiedAt,
+    updatedAt: source.robloxUpdatedAt,
+    lastSubmissionId: source.robloxLastSubmissionId,
+    lastReviewedAt: source.robloxLastReviewedAt,
+    reviewedBy: source.robloxReviewedBy,
+    source: source.robloxSource,
+  };
+}
+
+function hasOwn(source, key) {
+  return Boolean(source) && Object.prototype.hasOwnProperty.call(source, key);
+}
+
+function buildUpdatedRobloxNameHistory(currentName, nextName, history = [], seenAt = null) {
+  const current = normalizeNullableString(currentName, 120);
+  const next = normalizeNullableString(nextName, 120);
+  const entries = [];
+
+  if (current && next && current.toLowerCase() !== next.toLowerCase()) {
+    entries.push({
+      name: current,
+      firstSeenAt: null,
+      lastSeenAt: normalizeNullableString(seenAt, 80),
+    });
+  }
+
+  return normalizeRobloxNameHistory(entries.concat(Array.isArray(history) ? history : []), next, {
+    limit: ROBLOX_NAME_HISTORY_LIMIT,
+  });
+}
+
+function getRobloxPreviousName(currentName, history = []) {
+  const current = normalizeNullableString(currentName, 120);
+  for (const entry of Array.isArray(history) ? history : []) {
+    const value = normalizeNullableString(entry?.name, 120);
+    if (!value) continue;
+    if (!current || value.toLowerCase() !== current.toLowerCase()) return value;
+  }
+  return null;
+}
+
+function getRobloxRenameCount(currentName, history = []) {
+  const current = normalizeNullableString(currentName, 120);
+  if (!Array.isArray(history) || !history.length) return 0;
+  const unique = history
+    .map((entry) => normalizeNullableString(entry?.name, 120))
+    .filter(Boolean)
+    .filter((value, index, values) => values.findIndex((candidate) => candidate.toLowerCase() === value.toLowerCase()) === index);
+
+  if (!current) return Math.max(0, unique.length - 1);
+  return unique.filter((value) => value.toLowerCase() !== current.toLowerCase()).length;
+}
+
 function normalizeRobloxDomainState(value = {}) {
   const source = value && typeof value === "object" ? value : {};
   const rawStatus = cleanString(source.verificationStatus || source.status, 40).toLowerCase();
   const userId = normalizeNullableString(source.robloxUserId ?? source.userId, 40);
+  const username = normalizeNullableString(source.robloxUsername ?? source.username, 120);
+  const displayName = normalizeNullableString(source.robloxDisplayName ?? source.displayName, 120);
+  const rawAccountStatus = cleanString(source.robloxAccountStatus ?? source.accountStatus, 40).toLowerCase();
+  const usernameHistory = normalizeRobloxNameHistory(source.robloxUsernameHistory ?? source.usernameHistory, username, {
+    limit: ROBLOX_NAME_HISTORY_LIMIT,
+  });
+  const displayNameHistory = normalizeRobloxNameHistory(source.robloxDisplayNameHistory ?? source.displayNameHistory, displayName, {
+    limit: ROBLOX_NAME_HISTORY_LIMIT,
+  });
 
   return {
-    username: normalizeNullableString(source.robloxUsername ?? source.username, 120),
+    username,
+    displayName,
     userId,
+    avatarUrl: normalizeNullableString(source.robloxAvatarUrl ?? source.avatarUrl, 2000),
+    profileUrl: normalizeNullableString(source.robloxProfileUrl ?? source.profileUrl, 2000) || buildRobloxProfileUrl(userId),
+    createdAt: normalizeNullableString(source.robloxCreatedAt ?? source.createdAt, 80),
+    description: normalizeNullableString(source.robloxDescription ?? source.description, 2000),
+    hasVerifiedBadge: normalizeNullableBoolean(source.robloxHasVerifiedBadge ?? source.hasVerifiedBadge),
+    accountStatus: ROBLOX_ACCOUNT_STATUSES.has(rawAccountStatus)
+      ? rawAccountStatus
+      : source.isBanned === true
+        ? "banned-or-unavailable"
+        : source.isBanned === false
+          ? "active"
+          : null,
     verificationStatus: ROBLOX_VERIFICATION_STATUSES.has(rawStatus)
       ? rawStatus
       : userId
@@ -128,7 +342,78 @@ function normalizeRobloxDomainState(value = {}) {
     lastReviewedAt: normalizeNullableString(source.lastReviewedAt, 80),
     reviewedBy: normalizeNullableString(source.reviewedBy, 120),
     source: normalizeNullableString(source.source, 40),
+    lastRefreshAt: normalizeNullableString(source.robloxLastRefreshAt ?? source.lastRefreshAt, 80),
+    refreshStatus: normalizeNullableString(source.robloxRefreshStatus ?? source.refreshStatus, 40),
+    refreshError: normalizeNullableString(source.robloxRefreshError ?? source.refreshError, 500),
+    usernameHistory,
+    displayNameHistory,
+    serverFriends: normalizeRobloxServerFriendsState(source.robloxServerFriends ?? source.serverFriends),
+    playtime: normalizeRobloxPlaytimeState(source.robloxPlaytime ?? source.playtime),
+    coPlay: normalizeRobloxCoPlayState(source.robloxCoPlay ?? source.coPlay),
   };
+}
+
+function applyRobloxAccountSnapshot(profile = {}, snapshot = {}, options = {}) {
+  const targetProfile = profile && typeof profile === "object" ? profile : {};
+  const source = snapshot && typeof snapshot === "object" ? snapshot : {};
+  const current = normalizeRobloxDomainState(targetProfile?.domains?.roblox || buildLegacyRobloxSource(targetProfile));
+  const nextUpdatedAt = hasOwn(options, "updatedAt")
+    ? normalizeNullableString(options.updatedAt, 80)
+    : current.updatedAt;
+  const nextUsername = hasOwn(source, "username") || hasOwn(source, "name")
+    ? normalizeNullableString(source.username ?? source.name, 120)
+    : current.username;
+  const nextDisplayName = hasOwn(source, "displayName")
+    ? normalizeNullableString(source.displayName, 120)
+    : current.displayName;
+  const nextUserId = hasOwn(source, "userId") || hasOwn(source, "id")
+    ? normalizeNullableString(source.userId ?? source.id, 40)
+    : current.userId;
+  const nextAccountStatus = hasOwn(source, "accountStatus")
+    ? cleanString(source.accountStatus, 40).toLowerCase()
+    : hasOwn(source, "isBanned")
+      ? source.isBanned === true
+        ? "banned-or-unavailable"
+        : source.isBanned === false
+          ? "active"
+          : current.accountStatus
+      : current.accountStatus;
+
+  const nextRoblox = normalizeRobloxDomainState({
+    ...current,
+    username: nextUsername,
+    displayName: nextDisplayName,
+    userId: nextUserId,
+    avatarUrl: hasOwn(source, "avatarUrl") ? source.avatarUrl : current.avatarUrl,
+    profileUrl: hasOwn(source, "profileUrl")
+      ? source.profileUrl
+      : buildRobloxProfileUrl(nextUserId) || current.profileUrl,
+    createdAt: hasOwn(source, "createdAt") || hasOwn(source, "created")
+      ? source.createdAt ?? source.created
+      : current.createdAt,
+    description: hasOwn(source, "description") ? source.description : current.description,
+    hasVerifiedBadge: hasOwn(source, "hasVerifiedBadge") ? source.hasVerifiedBadge : current.hasVerifiedBadge,
+    accountStatus: nextAccountStatus,
+    verificationStatus: hasOwn(options, "verificationStatus") ? options.verificationStatus : current.verificationStatus,
+    verifiedAt: hasOwn(options, "verifiedAt") ? options.verifiedAt : current.verifiedAt,
+    updatedAt: nextUpdatedAt,
+    lastSubmissionId: hasOwn(options, "lastSubmissionId") ? options.lastSubmissionId : current.lastSubmissionId,
+    lastReviewedAt: hasOwn(options, "lastReviewedAt") ? options.lastReviewedAt : current.lastReviewedAt,
+    reviewedBy: hasOwn(options, "reviewedBy") ? options.reviewedBy : current.reviewedBy,
+    source: hasOwn(options, "source") ? options.source : current.source,
+    lastRefreshAt: hasOwn(options, "lastRefreshAt") ? options.lastRefreshAt : current.lastRefreshAt,
+    refreshStatus: hasOwn(options, "refreshStatus") ? options.refreshStatus : current.refreshStatus,
+    refreshError: hasOwn(options, "refreshError") ? options.refreshError : current.refreshError,
+    usernameHistory: buildUpdatedRobloxNameHistory(current.username, nextUsername, current.usernameHistory, nextUpdatedAt || current.updatedAt),
+    displayNameHistory: buildUpdatedRobloxNameHistory(current.displayName, nextDisplayName, current.displayNameHistory, nextUpdatedAt || current.updatedAt),
+    serverFriends: current.serverFriends,
+    playtime: current.playtime,
+    coPlay: current.coPlay,
+  });
+
+  targetProfile.domains ||= {};
+  targetProfile.domains.roblox = nextRoblox;
+  return nextRoblox;
 }
 
 function buildSharedProfileSummary(profile = {}, domains = {}) {
@@ -136,6 +421,10 @@ function buildSharedProfileSummary(profile = {}, domains = {}) {
   const elo = domains.elo || normalizeEloDomainState(profile?.domains?.elo);
   const tierlist = domains.tierlist || normalizeTierlistDomainState(profile?.domains?.tierlist);
   const roblox = domains.roblox || normalizeRobloxDomainState(profile?.domains?.roblox || profile);
+  const previousUsername = getRobloxPreviousName(roblox.username, roblox.usernameHistory);
+  const previousDisplayName = getRobloxPreviousName(roblox.displayName, roblox.displayNameHistory);
+  const serverFriendsCount = roblox.serverFriends.userIds.length;
+  const frequentNonFriendCount = roblox.coPlay.peers.filter((entry) => entry.isRobloxFriend === false).length;
 
   return {
     preferredDisplayName: cleanString(profile.displayName, 200) || cleanString(profile.username, 120) || cleanString(profile.userId, 80),
@@ -161,8 +450,24 @@ function buildSharedProfileSummary(profile = {}, domains = {}) {
     roblox: {
       hasVerifiedAccount: roblox.verificationStatus === "verified" && Boolean(roblox.userId),
       username: roblox.username,
+      displayName: roblox.displayName,
       userId: roblox.userId,
+      profileUrl: roblox.profileUrl,
+      createdAt: roblox.createdAt,
+      accountStatus: roblox.accountStatus,
       verificationStatus: roblox.verificationStatus,
+      previousUsername,
+      previousDisplayName,
+      renameCount: getRobloxRenameCount(roblox.username, roblox.usernameHistory),
+      displayRenameCount: getRobloxRenameCount(roblox.displayName, roblox.displayNameHistory),
+      serverFriendsCount,
+      frequentNonFriendCount,
+      totalJjsMinutes: roblox.playtime.totalJjsMinutes,
+      jjsMinutes7d: roblox.playtime.jjsMinutes7d,
+      jjsMinutes30d: roblox.playtime.jjsMinutes30d,
+      lastSeenInJjsAt: roblox.playtime.lastSeenInJjsAt,
+      lastRefreshAt: roblox.lastRefreshAt,
+      refreshStatus: roblox.refreshStatus,
     },
   };
 }
@@ -172,7 +477,7 @@ function ensureSharedProfile(profile = {}, userId = "") {
   const onboarding = normalizeOnboardingDomainState(source);
   const elo = normalizeEloDomainState(source?.domains?.elo);
   const tierlist = normalizeTierlistDomainState(source?.domains?.tierlist);
-  const roblox = normalizeRobloxDomainState(source?.domains?.roblox || source);
+  const roblox = normalizeRobloxDomainState(source?.domains?.roblox || buildLegacyRobloxSource(source));
 
   const next = {
     ...source,
@@ -346,6 +651,8 @@ function deriveProfileMainView(profile = {}, characterEntries = []) {
 }
 
 module.exports = {
+  applyRobloxAccountSnapshot,
+  buildRobloxProfileUrl,
   deriveProfileMainView,
   INTEGRATION_MODE_DORMANT,
   SHARED_PROFILE_VERSION,
