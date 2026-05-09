@@ -42,12 +42,14 @@ function buildClientReadyPeriodicJobs(options = {}) {
     runVerificationDeadlineSweep,
     runRobloxProfileRefreshJob,
     flushActivityRuntime,
+    runDailyActivityRoleSync,
     flushRobloxRuntime,
     syncRobloxPlaytime,
     getResolvedIntegrationSourcePath = null,
     rolePanelAutoResendTickMs = 0,
     legacyTierlistSummaryRefreshMs = 0,
     activityFlushIntervalMs = 0,
+    activityRoleSyncHours = 24,
     roblox = {},
     verification = {},
   } = options;
@@ -62,6 +64,9 @@ function buildClientReadyPeriodicJobs(options = {}) {
   }
   if (flushActivityRuntime != null) {
     assertFunction(flushActivityRuntime, "flushActivityRuntime");
+  }
+  if (runDailyActivityRoleSync != null) {
+    assertFunction(runDailyActivityRoleSync, "runDailyActivityRoleSync");
   }
   if (syncRobloxPlaytime != null) {
     assertFunction(syncRobloxPlaytime, "syncRobloxPlaytime");
@@ -97,6 +102,14 @@ function buildClientReadyPeriodicJobs(options = {}) {
       run: flushActivityRuntime,
       intervalMs: normalizeIntervalMs(activityFlushIntervalMs, 0),
       errorLabel: "Activity runtime flush failed",
+    });
+  }
+
+  if (typeof runDailyActivityRoleSync === "function") {
+    periodicJobs.push({
+      run: runDailyActivityRoleSync,
+      intervalMs: Math.max(1, Number(activityRoleSyncHours) || 24) * 60 * 60 * 1000,
+      errorLabel: "Activity daily role sync failed",
     });
   }
 

@@ -21,6 +21,10 @@ test("createEmptyActivityState seeds config and empty activity collections", () 
 
   assert.equal(state.config.sessionGapMinutes, 45);
   assert.equal(state.config.scoreWindowDays, 30);
+  assert.equal(state.config.roleEligibilityMinMemberDays, 3);
+  assert.equal(state.config.roleBoostEndMemberDays, 7);
+  assert.equal(state.config.roleBoostMaxMultiplier, 1.15);
+  assert.equal(state.config.autoRoleSyncHours, 24);
   assert.equal(state.config.channelWeightPresets.main_chat, 1);
   assert.deepEqual(state.watchedChannels, []);
   assert.deepEqual(state.globalUserSessions, []);
@@ -32,6 +36,9 @@ test("normalizeActivityState deduplicates watched channels and normalizes config
   const state = normalizeActivityState({
     config: {
       sessionGapMinutes: "60",
+      roleEligibilityMinMemberDays: "4",
+      roleBoostEndMemberDays: "8",
+      roleBoostMaxMultiplier: "1.2",
       moderatorRoleIds: ["mod-1", "", "mod-1", "mod-2"],
     },
     watchedChannels: [
@@ -57,6 +64,9 @@ test("normalizeActivityState deduplicates watched channels and normalizes config
   });
 
   assert.equal(state.config.sessionGapMinutes, 60);
+  assert.equal(state.config.roleEligibilityMinMemberDays, 4);
+  assert.equal(state.config.roleBoostEndMemberDays, 8);
+  assert.equal(state.config.roleBoostMaxMultiplier, 1.2);
   assert.deepEqual(state.config.moderatorRoleIds, ["mod-1", "mod-2"]);
   assert.equal(state.watchedChannels.length, 2);
   assert.deepEqual(state.watchedChannels[0], {

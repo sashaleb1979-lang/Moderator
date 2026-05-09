@@ -15,7 +15,7 @@ const LEGACY_CHARACTER_ROLE_ALIASES = Object.freeze({
   salaryman: ["Нанами"],
   locust_guy: ["Локуст Гай", "Локуст"],
   star_rage: ["Юки"],
-  aspiring_mangaka: ["Чарльз", "Шарль", "Mangaka"],
+  aspiring_mangaka: ["Чарльз", "Шарль", "Mangaka", "Мангака"],
   lucky_coward: ["Харута"],
   disaster_plants: ["Ханами"],
   crow_charmer: ["Мэй Мэй", "Мей Мей", "Мэй-Мэй", "Меи Меи"],

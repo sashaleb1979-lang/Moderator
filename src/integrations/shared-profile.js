@@ -174,7 +174,9 @@ function normalizeTierlistDomainState(value = {}) {
 function normalizeActivityDomainState(value = {}) {
   const source = value && typeof value === "object" ? value : {};
   return {
+    baseActivityScore: normalizeNullableInteger(source.baseActivityScore, { min: 0 }),
     activityScore: normalizeNullableInteger(source.activityScore, { min: 0 }),
+    activityScoreMultiplier: normalizeNullableNumber(source.activityScoreMultiplier, { min: 0 }),
     trustScore: normalizeNullableInteger(source.trustScore, { min: 0 }),
     messages7d: normalizeNullableInteger(source.messages7d, { min: 0 }),
     messages30d: normalizeNullableInteger(source.messages30d, { min: 0 }),
@@ -190,7 +192,11 @@ function normalizeActivityDomainState(value = {}) {
     globalEffectiveSessions30d: normalizeNullableNumber(source.globalEffectiveSessions30d, { min: 0 }),
     effectiveActiveDays30d: normalizeNullableNumber(source.effectiveActiveDays30d, { min: 0 }),
     daysAbsent: normalizeNullableInteger(source.daysAbsent, { min: 0 }),
+    guildJoinedAt: normalizeNullableString(source.guildJoinedAt, 80),
+    daysSinceGuildJoin: normalizeNullableNumber(source.daysSinceGuildJoin, { min: 0 }),
     lastSeenAt: normalizeNullableString(source.lastSeenAt, 80),
+    roleEligibilityStatus: normalizeNullableString(source.roleEligibilityStatus, 80),
+    roleEligibleForActivityRole: normalizeNullableBoolean(source.roleEligibleForActivityRole),
     desiredActivityRoleKey: normalizeNullableString(source.desiredActivityRoleKey, 80),
     appliedActivityRoleKey: normalizeNullableString(source.appliedActivityRoleKey, 80),
     manualOverride: normalizeNullableBoolean(source.manualOverride),
@@ -648,7 +654,9 @@ function buildSharedProfileSummary(profile = {}, domains = {}) {
       influenceMultiplier: tierlist.influenceMultiplier,
     },
     activity: {
+      baseActivityScore: activity.baseActivityScore,
       activityScore: activity.activityScore,
+      activityScoreMultiplier: activity.activityScoreMultiplier,
       trustScore: activity.trustScore,
       messages7d: activity.messages7d,
       messages30d: activity.messages30d,
@@ -664,7 +672,11 @@ function buildSharedProfileSummary(profile = {}, domains = {}) {
       globalEffectiveSessions30d: activity.globalEffectiveSessions30d,
       effectiveActiveDays30d: activity.effectiveActiveDays30d,
       daysAbsent: activity.daysAbsent,
+      guildJoinedAt: activity.guildJoinedAt,
+      daysSinceGuildJoin: activity.daysSinceGuildJoin,
       lastSeenAt: activity.lastSeenAt,
+      roleEligibilityStatus: activity.roleEligibilityStatus,
+      roleEligibleForActivityRole: activity.roleEligibleForActivityRole,
       desiredActivityRoleKey: activity.desiredActivityRoleKey,
       appliedActivityRoleKey: activity.appliedActivityRoleKey,
       manualOverride: activity.manualOverride,

@@ -38,9 +38,43 @@ test("buildActivityOperatorPanelPayload summarizes runtime, calibration, and rol
   });
 
   const state = ensureActivityState(db);
-  state.runtime.openSessions.user_1 = { startedAt: "2026-05-09T12:00:00.000Z" };
+  state.runtime.openSessions.user_1 = {
+    startedAt: "2026-05-09T12:00:00.000Z",
+    messageCount: 2,
+    weightedMessageCount: 2,
+  };
   state.runtime.lastFlushAt = "2026-05-09T12:30:00.000Z";
+  state.runtime.lastFlushStats = {
+    finalizedSessionCount: 1,
+    rebuiltUserCount: 2,
+  };
   state.runtime.lastFullRecalcAt = "2026-05-09T12:35:00.000Z";
+  state.runtime.lastDailyRoleSyncAt = "2026-05-09T13:00:00.000Z";
+  state.runtime.lastDailyRoleSyncStats = {
+    targetUserCount: 3,
+    rebuiltUserCount: 3,
+    appliedCount: 2,
+    skippedCount: 1,
+  };
+  state.userSnapshots["user-1"] = {
+    roleEligibilityStatus: "boosted_new_member",
+    roleEligibleForActivityRole: true,
+  };
+  state.userSnapshots["user-2"] = {
+    roleEligibilityStatus: "gated_new_member",
+    roleEligibleForActivityRole: false,
+  };
+  state.userChannelDailyStats.push({
+    guildId: "guild-1",
+    channelId: "main-1",
+    userId: "user-1",
+    date: "2026-05-09",
+    messagesCount: 10,
+    weightedMessagesCount: 10,
+    sessionsCount: 1,
+    effectiveSessionsCount: 1,
+  });
+  state.globalUserSessions.push({ id: "session-1" });
   state.calibrationRuns.push({
     mode: "historical_import",
     completedAt: "2026-05-09T12:35:00.000Z",
@@ -73,8 +107,16 @@ test("buildActivityOperatorPanelPayload summarizes runtime, calibration, and rol
   assert.match(fieldTexts, /Watched channels: \*\*1\*\*/);
   assert.match(fieldTexts, /main-1 \(main-1\)/);
   assert.match(fieldTexts, /Mapped roles: \*\*2\*\*/);
-  assert.match(fieldTexts, /Snapshots: \*\*0\*\*/);
+  assert.match(fieldTexts, /Snapshots: \*\*2\*\*/);
   assert.match(fieldTexts, /Open sessions: \*\*1\*\*/);
+  assert.match(fieldTexts, /Analyzed messages: \*\*12\*\*/);
+  assert.match(fieldTexts, /Weighted messages: \*\*12\*\*/);
+  assert.match(fieldTexts, /Last flush result: 2 users, 1 finalized sessions/);
+  assert.match(fieldTexts, /Role gate: after \*\*3\*\* days on server/);
+  assert.match(fieldTexts, /Newcomer boost: \*\*x1\.15\*\* -> x1\.00 by day \*\*7\*\*/);
+  assert.match(fieldTexts, /Snapshots gated\/boosted: \*\*1\*\* \/ \*\*1\*\*/);
+  assert.match(fieldTexts, /Last daily sync:/);
+  assert.match(fieldTexts, /Targets: \*\*3\*\*/);
   assert.match(fieldTexts, /historical_import/);
   assert.match(fieldTexts, /24 entries/);
   assert.match(fieldTexts, /Activity moderators:/);

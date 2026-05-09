@@ -160,7 +160,9 @@ test("ensureSharedProfile normalizes the activity domain and exposes an activity
     username: "todo",
     domains: {
       activity: {
+        baseActivityScore: "64",
         activityScore: "72",
+        activityScoreMultiplier: "1.125",
         trustScore: "540",
         messages7d: "28",
         messages30d: "110",
@@ -176,7 +178,11 @@ test("ensureSharedProfile normalizes the activity domain and exposes an activity
         globalEffectiveSessions30d: "19.25",
         effectiveActiveDays30d: 11.5,
         daysAbsent: 2,
+        guildJoinedAt: "2026-05-01T10:00:00.000Z",
+        daysSinceGuildJoin: "8.5",
         lastSeenAt: "2026-05-08T10:00:00.000Z",
+        roleEligibilityStatus: "eligible",
+        roleEligibleForActivityRole: true,
         desiredActivityRoleKey: "stable",
         appliedActivityRoleKey: "active",
         manualOverride: true,
@@ -187,7 +193,9 @@ test("ensureSharedProfile normalizes the activity domain and exposes an activity
     },
   }, "300");
 
+  assert.equal(result.profile.domains.activity.baseActivityScore, 64);
   assert.equal(result.profile.domains.activity.activityScore, 72);
+  assert.equal(result.profile.domains.activity.activityScoreMultiplier, 1.125);
   assert.equal(result.profile.domains.activity.trustScore, 540);
   assert.equal(result.profile.domains.activity.messages7d, 28);
   assert.equal(result.profile.domains.activity.messages30d, 110);
@@ -203,14 +211,20 @@ test("ensureSharedProfile normalizes the activity domain and exposes an activity
   assert.equal(result.profile.domains.activity.globalEffectiveSessions30d, 19.25);
   assert.equal(result.profile.domains.activity.effectiveActiveDays30d, 11.5);
   assert.equal(result.profile.domains.activity.daysAbsent, 2);
+  assert.equal(result.profile.domains.activity.guildJoinedAt, "2026-05-01T10:00:00.000Z");
+  assert.equal(result.profile.domains.activity.daysSinceGuildJoin, 8.5);
   assert.equal(result.profile.domains.activity.lastSeenAt, "2026-05-08T10:00:00.000Z");
+  assert.equal(result.profile.domains.activity.roleEligibilityStatus, "eligible");
+  assert.equal(result.profile.domains.activity.roleEligibleForActivityRole, true);
   assert.equal(result.profile.domains.activity.desiredActivityRoleKey, "stable");
   assert.equal(result.profile.domains.activity.appliedActivityRoleKey, "active");
   assert.equal(result.profile.domains.activity.manualOverride, true);
   assert.equal(result.profile.domains.activity.autoRoleFrozen, true);
   assert.equal(result.profile.domains.activity.recalculatedAt, "2026-05-09T12:00:00.000Z");
   assert.equal(result.profile.domains.activity.lastRoleAppliedAt, "2026-05-08T15:00:00.000Z");
+  assert.equal(result.profile.summary.activity.baseActivityScore, 64);
   assert.equal(result.profile.summary.activity.activityScore, 72);
+  assert.equal(result.profile.summary.activity.activityScoreMultiplier, 1.125);
   assert.equal(result.profile.summary.activity.trustScore, 540);
   assert.equal(result.profile.summary.activity.messages7d, 28);
   assert.equal(result.profile.summary.activity.messages30d, 110);
@@ -225,7 +239,11 @@ test("ensureSharedProfile normalizes the activity domain and exposes an activity
   assert.equal(result.profile.summary.activity.globalEffectiveSessions30d, 19.25);
   assert.equal(result.profile.summary.activity.effectiveActiveDays30d, 11.5);
   assert.equal(result.profile.summary.activity.daysAbsent, 2);
+  assert.equal(result.profile.summary.activity.guildJoinedAt, "2026-05-01T10:00:00.000Z");
+  assert.equal(result.profile.summary.activity.daysSinceGuildJoin, 8.5);
   assert.equal(result.profile.summary.activity.lastSeenAt, "2026-05-08T10:00:00.000Z");
+  assert.equal(result.profile.summary.activity.roleEligibilityStatus, "eligible");
+  assert.equal(result.profile.summary.activity.roleEligibleForActivityRole, true);
   assert.equal(result.profile.summary.activity.desiredActivityRoleKey, "stable");
   assert.equal(result.profile.summary.activity.appliedActivityRoleKey, "active");
   assert.equal(result.profile.summary.activity.manualOverride, true);

@@ -249,11 +249,114 @@ test("rebuildActivityUserSnapshot computes 7/30/90 metrics and a desired role fr
   approxEqual(snapshot.globalEffectiveSessions30d, 1.45);
   assert.equal(snapshot.activeWatchedChannels30d, 2);
   assert.equal(snapshot.daysAbsent, 2);
+  assert.equal(snapshot.baseActivityScore, 22);
   assert.equal(snapshot.activityScore, 22);
+  assert.equal(snapshot.activityScoreMultiplier, 1);
+  assert.equal(snapshot.guildJoinedAt, null);
+  assert.equal(snapshot.daysSinceGuildJoin, null);
+  assert.equal(snapshot.roleEligibilityStatus, "join_age_unknown");
+  assert.equal(snapshot.roleEligibleForActivityRole, true);
   assert.equal(snapshot.desiredActivityRoleKey, "weak");
   assert.equal(snapshot.trustScore, 540);
   assert.equal(snapshot.manualOverride, true);
   assert.equal(snapshot.autoRoleFrozen, true);
+});
+
+test("rebuildActivityUserSnapshot gates very new members and applies a temporary decay boost after day 3", () => {
+  const db = {
+    profiles: {
+      "user-1": {
+        userId: "user-1",
+        username: "todo",
+      },
+    },
+    sot: {
+      activity: {
+        config: {},
+        watchedChannels: [
+          {
+            channelId: "main-1",
+            channelType: "main_chat",
+            enabled: true,
+            channelWeight: 1,
+            countMessages: true,
+            countSessions: true,
+            countForTrust: true,
+            countForRoles: true,
+          },
+        ],
+        globalUserSessions: [
+          {
+            guildId: "guild-1",
+            userId: "user-1",
+            startedAt: "2026-05-08T12:00:00.000Z",
+            endedAt: "2026-05-08T12:10:00.000Z",
+            effectiveValue: 1,
+          },
+        ],
+        userChannelDailyStats: [
+          {
+            guildId: "guild-1",
+            channelId: "main-1",
+            userId: "user-1",
+            date: "2026-05-08",
+            messagesCount: 8,
+            weightedMessagesCount: 8,
+            sessionsCount: 1,
+            effectiveSessionsCount: 1,
+            firstMessageAt: "2026-05-08T12:00:00.000Z",
+            lastMessageAt: "2026-05-08T12:10:00.000Z",
+          },
+        ],
+        userSnapshots: {},
+        calibrationRuns: [],
+        ops: { moderationAuditLog: [] },
+        runtime: { openSessions: {}, dirtyUsers: [] },
+      },
+    },
+  };
+
+  const gatedSnapshot = rebuildActivityUserSnapshot({
+    db,
+    userId: "user-1",
+    now: "2026-05-09T12:00:00.000Z",
+    memberActivityMeta: {
+      joinedAt: "2026-05-07T12:00:00.000Z",
+    },
+  });
+  assert.equal(gatedSnapshot.baseActivityScore, 21);
+  assert.equal(gatedSnapshot.activityScore, 21);
+  assert.equal(gatedSnapshot.activityScoreMultiplier, 1);
+  assert.equal(gatedSnapshot.roleEligibilityStatus, "gated_new_member");
+  assert.equal(gatedSnapshot.roleEligibleForActivityRole, false);
+  assert.equal(gatedSnapshot.desiredActivityRoleKey, null);
+
+  const boostedSnapshot = rebuildActivityUserSnapshot({
+    db,
+    userId: "user-1",
+    now: "2026-05-09T12:00:00.000Z",
+    memberActivityMeta: {
+      joinedAt: "2026-05-06T12:00:00.000Z",
+    },
+  });
+  assert.equal(boostedSnapshot.baseActivityScore, 21);
+  assert.equal(boostedSnapshot.activityScoreMultiplier, 1.15);
+  assert.equal(boostedSnapshot.activityScore, 24);
+  assert.equal(boostedSnapshot.roleEligibilityStatus, "boosted_new_member");
+  assert.equal(boostedSnapshot.roleEligibleForActivityRole, true);
+  assert.equal(boostedSnapshot.desiredActivityRoleKey, "weak");
+
+  const decayedSnapshot = rebuildActivityUserSnapshot({
+    db,
+    userId: "user-1",
+    now: "2026-05-09T12:00:00.000Z",
+    memberActivityMeta: {
+      joinedAt: "2026-05-05T12:00:00.000Z",
+    },
+  });
+  assert.equal(decayedSnapshot.activityScoreMultiplier, 1.1125);
+  assert.equal(decayedSnapshot.activityScore, 23);
+  assert.equal(decayedSnapshot.roleEligibilityStatus, "boosted_new_member");
 });
 
 test("flushActivityRuntime finalizes stale sessions, keeps fresh sessions open, and mirrors activity snapshots into profiles", async () => {

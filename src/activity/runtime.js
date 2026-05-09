@@ -3,6 +3,8 @@
 const { ensureSharedProfile } = require("../integrations/shared-profile");
 const { ensureActivityState } = require("./state");
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
 function clone(value) {
   if (value === undefined) return undefined;
   return JSON.parse(JSON.stringify(value));
@@ -29,6 +31,69 @@ function getActivityRuntimeNow(options = {}) {
     return options.now.toISOString();
   }
   return normalizeIsoTimestamp(options.now, new Date().toISOString());
+}
+
+function resolveMemberJoinContext(memberActivityMeta = {}, existingActivity = {}) {
+  return normalizeIsoTimestamp(
+    memberActivityMeta?.guildJoinedAt ?? memberActivityMeta?.joinedAt ?? existingActivity?.guildJoinedAt,
+    null
+  );
+}
+
+function resolveActivityRoleTiming({ currentTime, joinedAt, config = {} }) {
+  const roleEligibilityMinMemberDays = Math.max(0, Number(config.roleEligibilityMinMemberDays) || 3);
+  const roleBoostEndMemberDays = Math.max(
+    roleEligibilityMinMemberDays,
+    Number(config.roleBoostEndMemberDays) || 7
+  );
+  const roleBoostMaxMultiplier = Math.max(1, Number(config.roleBoostMaxMultiplier) || 1.15);
+
+  if (!joinedAt) {
+    return {
+      guildJoinedAt: null,
+      daysSinceGuildJoin: null,
+      roleEligibilityStatus: "join_age_unknown",
+      roleEligibleForActivityRole: true,
+      activityScoreMultiplier: 1,
+    };
+  }
+
+  const currentTimeMs = Date.parse(currentTime);
+  const joinedAtMs = Date.parse(joinedAt);
+  const daysSinceGuildJoin = Math.max(0, (currentTimeMs - joinedAtMs) / DAY_MS);
+
+  if (daysSinceGuildJoin < roleEligibilityMinMemberDays) {
+    return {
+      guildJoinedAt: joinedAt,
+      daysSinceGuildJoin: Number(daysSinceGuildJoin.toFixed(2)),
+      roleEligibilityStatus: "gated_new_member",
+      roleEligibleForActivityRole: false,
+      activityScoreMultiplier: 1,
+    };
+  }
+
+  if (roleBoostEndMemberDays > roleEligibilityMinMemberDays && daysSinceGuildJoin < roleBoostEndMemberDays) {
+    const remainingBoostShare = Math.max(
+      0,
+      Math.min(1, (roleBoostEndMemberDays - daysSinceGuildJoin) / (roleBoostEndMemberDays - roleEligibilityMinMemberDays))
+    );
+    const activityScoreMultiplier = 1 + ((roleBoostMaxMultiplier - 1) * remainingBoostShare);
+    return {
+      guildJoinedAt: joinedAt,
+      daysSinceGuildJoin: Number(daysSinceGuildJoin.toFixed(2)),
+      roleEligibilityStatus: activityScoreMultiplier > 1.0001 ? "boosted_new_member" : "eligible",
+      roleEligibleForActivityRole: true,
+      activityScoreMultiplier: Number(activityScoreMultiplier.toFixed(4)),
+    };
+  }
+
+  return {
+    guildJoinedAt: joinedAt,
+    daysSinceGuildJoin: Number(daysSinceGuildJoin.toFixed(2)),
+    roleEligibilityStatus: "eligible",
+    roleEligibleForActivityRole: true,
+    activityScoreMultiplier: 1,
+  };
 }
 
 function buildSessionId(session) {
@@ -402,7 +467,7 @@ function resolveDesiredActivityRoleKey(score, config = {}) {
   return "dead";
 }
 
-function rebuildActivityUserSnapshot({ db = {}, userId = "", now } = {}) {
+function rebuildActivityUserSnapshot({ db = {}, userId = "", now, memberActivityMeta } = {}) {
   const normalizedUserId = cleanString(userId, 80);
   if (!normalizedUserId) {
     throw new Error("userId is required");
@@ -488,10 +553,23 @@ function rebuildActivityUserSnapshot({ db = {}, userId = "", now } = {}) {
     * (Number(config.activityScoreWeights?.messages) || 10);
   const diversityPart = getDiversityBonus(activeWatchedChannels30d, config);
   const uncappedScore = sessionsPart + daysPart + freshnessPart + messagesPart + diversityPart;
-  const activityScore = Math.round(Math.min(getActivityScoreCap(effectiveActiveDays30d, config), Math.min(100, uncappedScore)));
+  const baseActivityScore = Math.round(
+    Math.min(getActivityScoreCap(effectiveActiveDays30d, config), Math.min(100, uncappedScore))
+  );
+  const guildJoinedAt = resolveMemberJoinContext(memberActivityMeta, existingActivity);
+  const roleTiming = resolveActivityRoleTiming({
+    currentTime,
+    joinedAt: guildJoinedAt,
+    config,
+  });
+  const activityScore = roleTiming.roleEligibleForActivityRole
+    ? Math.round(Math.min(100, baseActivityScore * roleTiming.activityScoreMultiplier))
+    : baseActivityScore;
 
   const snapshot = {
+    baseActivityScore,
     activityScore,
+    activityScoreMultiplier: roleTiming.activityScoreMultiplier,
     trustScore: Number.isSafeInteger(existingActivity.trustScore) ? existingActivity.trustScore : null,
     messages7d: messageWindowSums.get(7),
     messages30d: messageWindowSums.get(30),
@@ -507,8 +585,14 @@ function rebuildActivityUserSnapshot({ db = {}, userId = "", now } = {}) {
     globalEffectiveSessions30d,
     effectiveActiveDays30d,
     daysAbsent,
+    guildJoinedAt: roleTiming.guildJoinedAt,
+    daysSinceGuildJoin: roleTiming.daysSinceGuildJoin,
     lastSeenAt,
-    desiredActivityRoleKey: resolveDesiredActivityRoleKey(activityScore, config),
+    roleEligibilityStatus: roleTiming.roleEligibilityStatus,
+    roleEligibleForActivityRole: roleTiming.roleEligibleForActivityRole,
+    desiredActivityRoleKey: roleTiming.roleEligibleForActivityRole
+      ? resolveDesiredActivityRoleKey(activityScore, config)
+      : null,
     appliedActivityRoleKey: cleanString(existingActivity.appliedActivityRoleKey, 80) || null,
     manualOverride: existingActivity.manualOverride === true,
     autoRoleFrozen: existingActivity.autoRoleFrozen === true,
@@ -538,6 +622,60 @@ function mirrorActivitySnapshotToProfile(db, userId, snapshot) {
 
   db.profiles[userId] = ensureSharedProfile(nextProfile, userId).profile;
   return db.profiles[userId];
+}
+
+async function safelyResolveMemberActivityMeta(resolveMemberActivityMeta, userId) {
+  if (typeof resolveMemberActivityMeta !== "function") {
+    return null;
+  }
+
+  try {
+    return await Promise.resolve(resolveMemberActivityMeta(userId));
+  } catch {
+    return null;
+  }
+}
+
+async function rebuildActivitySnapshots({ db = {}, userIds = [], now, saveDb, runSerialized, resolveMemberActivityMeta } = {}) {
+  const execute = async () => {
+    const state = ensureActivityState(db);
+    const currentTime = getActivityRuntimeNow({ now });
+    const rebuiltUsers = [];
+    const targetUserIds = [...new Set(
+      (Array.isArray(userIds) ? userIds : [])
+        .map((entry) => cleanString(entry, 80))
+        .filter(Boolean)
+    )];
+
+    for (const userId of targetUserIds) {
+      const memberActivityMeta = await safelyResolveMemberActivityMeta(resolveMemberActivityMeta, userId);
+      const snapshot = rebuildActivityUserSnapshot({
+        db,
+        userId,
+        now: currentTime,
+        memberActivityMeta,
+      });
+      mirrorActivitySnapshotToProfile(db, userId, snapshot);
+      rebuiltUsers.push(userId);
+    }
+
+    state.runtime.lastFullRecalcAt = currentTime;
+    db.sot.activity = state;
+    if (typeof saveDb === "function") {
+      saveDb();
+    }
+
+    return {
+      rebuiltAt: currentTime,
+      rebuiltUserCount: rebuiltUsers.length,
+      rebuiltUsers,
+    };
+  };
+
+  if (typeof runSerialized === "function") {
+    return runSerialized(execute, "activity-snapshot-rebuild");
+  }
+  return execute();
 }
 
 function recordActivityMessage({ db = {}, message = {} } = {}) {
@@ -584,7 +722,7 @@ function recordActivityMessage({ db = {}, message = {} } = {}) {
   };
 }
 
-async function flushActivityRuntime({ db = {}, now, saveDb, runSerialized } = {}) {
+async function flushActivityRuntime({ db = {}, now, saveDb, runSerialized, resolveMemberActivityMeta } = {}) {
   const execute = async () => {
     const state = ensureActivityState(db);
     const config = state.config || {};
@@ -602,13 +740,18 @@ async function flushActivityRuntime({ db = {}, now, saveDb, runSerialized } = {}
 
     const rebuiltUsers = [];
     for (const userId of [...dirtyUsers]) {
-      const snapshot = rebuildActivityUserSnapshot({ db, userId, now: currentTime });
+      const memberActivityMeta = await safelyResolveMemberActivityMeta(resolveMemberActivityMeta, userId);
+      const snapshot = rebuildActivityUserSnapshot({ db, userId, now: currentTime, memberActivityMeta });
       mirrorActivitySnapshotToProfile(db, userId, snapshot);
       rebuiltUsers.push(userId);
     }
 
     commitDirtyUserSet(state, new Set());
     state.runtime.lastFlushAt = currentTime;
+    state.runtime.lastFlushStats = {
+      finalizedSessionCount,
+      rebuiltUserCount: rebuiltUsers.length,
+    };
     db.sot.activity = state;
     if (typeof saveDb === "function") {
       saveDb();
@@ -652,6 +795,7 @@ async function resumeActivityRuntime({ db = {}, now, saveDb, runSerialized } = {
 module.exports = {
   flushActivityRuntime,
   getEffectiveSessionBase,
+  rebuildActivitySnapshots,
   rebuildActivityUserSnapshot,
   recordActivityMessage,
   resumeActivityRuntime,

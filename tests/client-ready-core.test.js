@@ -121,6 +121,26 @@ test("buildClientReadyPeriodicJobs does not require an activity flush callback t
   ]);
 });
 
+test("buildClientReadyPeriodicJobs adds a daily activity role sync job when requested", async () => {
+  const calls = [];
+
+  const periodicJobs = buildClientReadyPeriodicJobs({
+    runAutoResendTick() {},
+    async refreshLegacyTierlistSummaryMessage() {},
+    runDailyActivityRoleSync(client) {
+      calls.push(client);
+    },
+    activityRoleSyncHours: 12,
+  });
+
+  const activityRoleSyncJob = periodicJobs.find((job) => job.errorLabel === "Activity daily role sync failed");
+  assert.ok(activityRoleSyncJob);
+  assert.equal(activityRoleSyncJob.intervalMs, 43200000);
+
+  await activityRoleSyncJob.run({ id: "client" });
+  assert.deepEqual(calls, [{ id: "client" }]);
+});
+
 test("buildClientReadyPeriodicJobs applies Roblox default poll and flush cadences when callbacks are provided", () => {
   const periodicJobs = buildClientReadyPeriodicJobs({
     runAutoResendTick() {},

@@ -10,7 +10,7 @@ const {
   TextInputStyle,
 } = require("discord.js");
 const { ensureSharedProfile } = require("../integrations/shared-profile");
-const { flushActivityRuntime, recordActivityMessage } = require("./runtime");
+const { flushActivityRuntime, rebuildActivitySnapshots, recordActivityMessage } = require("./runtime");
 const {
   ACTIVITY_CHANNEL_TYPES,
   ensureActivityState,
@@ -424,12 +424,33 @@ function buildActivityOperatorPanelPayload({ db = {}, statusText = "" } = {}) {
   const watchedChannelCount = Array.isArray(state.watchedChannels) ? state.watchedChannels.length : 0;
   const mappedRoleCount = listActivityManagedRoleIds(config).length;
   const snapshotCount = Object.keys(state.userSnapshots || {}).length;
-  const openSessionCount = Object.keys(state.runtime?.openSessions || {}).length;
+  const openSessions = Object.values(state.runtime?.openSessions || {});
+  const openSessionCount = openSessions.length;
   const dirtyUserCount = Array.isArray(state.runtime?.dirtyUsers) ? state.runtime.dirtyUsers.length : 0;
   const activityProfileCount = Object.values(db.profiles || {}).filter((profile) => profile?.domains?.activity).length;
   const lastCalibrationRun = Array.isArray(state.calibrationRuns) && state.calibrationRuns.length
     ? state.calibrationRuns[state.calibrationRuns.length - 1]
     : null;
+  const snapshotRecords = Object.values(state.userSnapshots || {}).filter((entry) => entry && typeof entry === "object");
+  const analyzedMessageCount = (
+    (Array.isArray(state.userChannelDailyStats) ? state.userChannelDailyStats : [])
+      .reduce((sum, entry) => sum + Number(entry?.messagesCount || 0), 0)
+  ) + openSessions.reduce((sum, entry) => sum + Number(entry?.messageCount || 0), 0);
+  const analyzedWeightedMessageCount = (
+    (Array.isArray(state.userChannelDailyStats) ? state.userChannelDailyStats : [])
+      .reduce((sum, entry) => sum + Number(entry?.weightedMessagesCount || 0), 0)
+  ) + openSessions.reduce((sum, entry) => sum + Number(entry?.weightedMessageCount || 0), 0);
+  const finalizedSessionCount = Array.isArray(state.globalUserSessions) ? state.globalUserSessions.length : 0;
+  const gatedSnapshotCount = snapshotRecords.filter((entry) => entry.roleEligibilityStatus === "gated_new_member").length;
+  const boostedSnapshotCount = snapshotRecords.filter((entry) => entry.roleEligibilityStatus === "boosted_new_member").length;
+  const flushStats = state.runtime?.lastFlushStats && typeof state.runtime.lastFlushStats === "object"
+    ? state.runtime.lastFlushStats
+    : null;
+  const dailyRoleSyncStats = state.runtime?.lastDailyRoleSyncStats && typeof state.runtime.lastDailyRoleSyncStats === "object"
+    ? state.runtime.lastDailyRoleSyncStats
+    : null;
+  const thresholds = config.activityRoleThresholds || {};
+  const roleBoostMaxMultiplier = Math.max(1, Number(config.roleBoostMaxMultiplier) || 1);
 
   const embed = new EmbedBuilder()
     .setTitle("Activity Panel")
@@ -455,7 +476,20 @@ function buildActivityOperatorPanelPayload({ db = {}, statusText = "" } = {}) {
           `Open sessions: **${openSessionCount}**`,
           `Dirty users: **${dirtyUserCount}**`,
           `Last flush: ${formatDateTime(state.runtime?.lastFlushAt)}`,
+          flushStats
+            ? `Last flush result: ${Number(flushStats.rebuiltUserCount || 0)} users, ${Number(flushStats.finalizedSessionCount || 0)} finalized sessions`
+            : "Last flush result: n/a",
           `Last full recalc: ${formatDateTime(state.runtime?.lastFullRecalcAt)}`,
+        ].join("\n"),
+        inline: false,
+      },
+      {
+        name: "Processing",
+        value: [
+          `Analyzed messages: **${analyzedMessageCount}**`,
+          `Weighted messages: **${Number(analyzedWeightedMessageCount.toFixed(2))}**`,
+          `Finalized sessions: **${finalizedSessionCount}**`,
+          `Open-session messages: **${openSessions.reduce((sum, entry) => sum + Number(entry?.messageCount || 0), 0)}**`,
         ].join("\n"),
         inline: false,
       },
@@ -470,6 +504,29 @@ function buildActivityOperatorPanelPayload({ db = {}, statusText = "" } = {}) {
             `${Number(lastCalibrationRun.appliedRoleCount || 0)} role assignments`,
           ].join("\n")
           : "Исторический import ещё не запускался.",
+        inline: false,
+      },
+      {
+        name: "Scoring",
+        value: [
+          `Role gate: after **${Number(config.roleEligibilityMinMemberDays || 0)}** days on server`,
+          `Newcomer boost: **x${roleBoostMaxMultiplier.toFixed(2)}** -> x1.00 by day **${Number(config.roleBoostEndMemberDays || 0)}**`,
+          `Snapshots gated/boosted: **${gatedSnapshotCount}** / **${boostedSnapshotCount}**`,
+          `Weights S/D/F/M/B: ${Number(config.activityScoreWeights?.sessions || 0)}/${Number(config.activityScoreWeights?.days || 0)}/${Number(config.activityScoreWeights?.freshness || 0)}/${Number(config.activityScoreWeights?.messages || 0)}/${Number(config.activityScoreWeights?.diversity || 0)}`,
+          `Thresholds: weak ${Number(thresholds.weak ?? 18)}, floating ${Number(thresholds.floating ?? 38)}, active ${Number(thresholds.active ?? 55)}, stable ${Number(thresholds.stable ?? 70)}, core ${Number(thresholds.core ?? 85)}`,
+        ].join("\n"),
+        inline: false,
+      },
+      {
+        name: "Role Sync",
+        value: dailyRoleSyncStats
+          ? [
+            `Last daily sync: ${formatDateTime(state.runtime?.lastDailyRoleSyncAt)}`,
+            `Targets: **${Number(dailyRoleSyncStats.targetUserCount || 0)}**`,
+            `Rebuilt: **${Number(dailyRoleSyncStats.rebuiltUserCount || 0)}**`,
+            `Applied: **${Number(dailyRoleSyncStats.appliedCount || 0)}**, skipped: **${Number(dailyRoleSyncStats.skippedCount || 0)}**`,
+          ].join("\n")
+          : "Ежедневный role sync ещё не запускался.",
         inline: false,
       },
       {
@@ -538,6 +595,9 @@ function buildActivityRoleAssignmentPlan({ db = {}, userId = "", memberRoleIds =
   const desiredRoleId = desiredRoleKey
     ? normalizeNullableString(config.activityRoleIds?.[desiredRoleKey], 80)
     : null;
+  const roleEligibilityStatus = cleanString(activity.roleEligibilityStatus, 80) || null;
+  const roleEligibleForActivityRole = activity.roleEligibleForActivityRole !== false
+    && roleEligibilityStatus !== "gated_new_member";
   const normalizedMemberRoleIds = normalizeStringArray(memberRoleIds, 5000);
   const managedRoleIds = listActivityManagedRoleIds(config);
 
@@ -562,6 +622,31 @@ function buildActivityRoleAssignmentPlan({ db = {}, userId = "", memberRoleIds =
       desiredRoleId,
       addRoleIds: [],
       removeRoleIds: [],
+    };
+  }
+
+  if (!roleEligibleForActivityRole) {
+    const removeRoleIds = managedRoleIds.filter((roleId) => normalizedMemberRoleIds.includes(roleId));
+    if (!removeRoleIds.length) {
+      return {
+        userId: normalizedUserId,
+        shouldApply: false,
+        skipReason: "member_too_new",
+        desiredRoleKey: null,
+        desiredRoleId: null,
+        addRoleIds: [],
+        removeRoleIds: [],
+      };
+    }
+
+    return {
+      userId: normalizedUserId,
+      shouldApply: true,
+      skipReason: null,
+      desiredRoleKey: null,
+      desiredRoleId: null,
+      addRoleIds: [],
+      removeRoleIds,
     };
   }
 
@@ -731,6 +816,7 @@ async function importHistoricalActivity({
   requestedByUserId,
   now,
   resolveMemberRoleIds,
+  resolveMemberActivityMeta,
   applyRoleChanges,
   saveDb,
   runSerialized,
@@ -764,6 +850,7 @@ async function importHistoricalActivity({
     const flushResult = await flushActivityRuntime({
       db,
       now: flushAt,
+      resolveMemberActivityMeta,
     });
     const initialRoleAssignment = await applyInitialActivityRoleAssignments({
       db,
@@ -821,6 +908,62 @@ async function importHistoricalActivity({
 
   if (typeof runSerialized === "function") {
     return runSerialized(execute, "activity-historical-import");
+  }
+  return execute();
+}
+
+async function runDailyActivityRoleSync({
+  db = {},
+  userIds,
+  resolveMemberRoleIds,
+  resolveMemberActivityMeta,
+  applyRoleChanges,
+  now,
+  saveDb,
+  runSerialized,
+} = {}) {
+  const execute = async () => {
+    const syncedAt = resolveNowIso(now);
+    const targetUserIds = collectActivityAssignmentTargetUserIds(db, userIds);
+    const rebuildResult = await rebuildActivitySnapshots({
+      db,
+      userIds: targetUserIds,
+      now: syncedAt,
+      resolveMemberActivityMeta,
+    });
+    const roleAssignment = await applyInitialActivityRoleAssignments({
+      db,
+      userIds: targetUserIds,
+      resolveMemberRoleIds,
+      applyRoleChanges,
+      now: syncedAt,
+    });
+
+    const state = ensureActivityState(db);
+    state.runtime.lastFullRecalcAt = syncedAt;
+    state.runtime.lastDailyRoleSyncAt = syncedAt;
+    state.runtime.lastDailyRoleSyncStats = {
+      targetUserCount: targetUserIds.length,
+      rebuiltUserCount: rebuildResult.rebuiltUserCount,
+      appliedCount: roleAssignment.appliedCount,
+      skippedCount: roleAssignment.skippedCount,
+    };
+    db.sot.activity = state;
+    if (typeof saveDb === "function") {
+      saveDb();
+    }
+
+    return {
+      syncedAt,
+      targetUserCount: targetUserIds.length,
+      rebuiltUserCount: rebuildResult.rebuiltUserCount,
+      rebuiltUsers: rebuildResult.rebuiltUsers,
+      roleAssignment,
+    };
+  };
+
+  if (typeof runSerialized === "function") {
+    return runSerialized(execute, "activity-daily-role-sync");
   }
   return execute();
 }
@@ -1024,9 +1167,10 @@ async function handleActivityPanelButtonInteraction({
   buildModeratorPanelPayload,
   buildActivityPanelPayload,
   runHistoricalImport = importHistoricalActivityFromWatchedChannels,
-  runInitialRoleAssignment = applyInitialActivityRoleAssignments,
+  runInitialRoleAssignment = runDailyActivityRoleSync,
   fetchChannel,
   resolveMemberRoleIds,
+  resolveMemberActivityMeta,
   applyRoleChanges,
   saveDb,
   runSerialized,
@@ -1114,6 +1258,7 @@ async function handleActivityPanelButtonInteraction({
         requestedByUserId: cleanString(interaction?.user?.id, 80),
         fetchChannel,
         resolveMemberRoleIds,
+        resolveMemberActivityMeta,
         applyRoleChanges,
         saveDb,
         runSerialized,
@@ -1142,6 +1287,7 @@ async function handleActivityPanelButtonInteraction({
   const result = await runInitialRoleAssignment({
     db,
     resolveMemberRoleIds,
+    resolveMemberActivityMeta,
     applyRoleChanges,
     saveDb,
     runSerialized,
@@ -1435,4 +1581,5 @@ module.exports = {
   handleActivityPanelModalSubmitInteraction,
   importHistoricalActivity,
   importHistoricalActivityFromWatchedChannels,
+  runDailyActivityRoleSync,
 };

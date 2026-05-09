@@ -158,11 +158,11 @@ test("buildManagedCharacterRoleRecoveryPlan recovers a unique alias-named role w
       {
         id: "aspiring_mangaka",
         label: "Aspiring Mangaka",
-        evidence: { aliasNames: ["Чарльз", "Шарль", "Mangaka"] },
+        evidence: { aliasNames: ["Чарльз", "Шарль", "Mangaka", "Мангака"] },
       },
     ],
     guildRoles: [
-      { id: "role_mangaka", name: "Mangaka", memberUserIds: [] },
+      { id: "role_mangaka", name: "Мангака", memberUserIds: [] },
     ],
   });
 
@@ -170,7 +170,7 @@ test("buildManagedCharacterRoleRecoveryPlan recovers a unique alias-named role w
     aspiring_mangaka: "role_mangaka",
   });
   assert.deepEqual(result.recoveredRoleLabels, {
-    aspiring_mangaka: "Mangaka",
+    aspiring_mangaka: "Мангака",
   });
   assert.deepEqual(result.ambiguous, []);
   assert.deepEqual(result.unresolved, []);

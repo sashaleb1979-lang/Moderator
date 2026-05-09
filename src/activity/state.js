@@ -82,6 +82,13 @@ const DEFAULT_ACTIVITY_ANTI_SPAM_CAPS = Object.freeze([
   { maxActiveDays: 10, maxScore: 75 },
 ]);
 
+const DEFAULT_ACTIVITY_MEMBER_RULES = Object.freeze({
+  roleEligibilityMinMemberDays: 3,
+  roleBoostEndMemberDays: 7,
+  roleBoostMaxMultiplier: 1.15,
+  autoRoleSyncHours: 24,
+});
+
 const WATCHED_CHANNEL_ROLE_OPT_OUT_TYPES = new Set(["admin", "ignored"]);
 
 function clone(value) {
@@ -161,6 +168,10 @@ function createDefaultActivityConfig() {
     maxEffectiveSessionsPerDay: 3.2,
     sessionWeightMin: 0.35,
     sessionWeightMax: 1.15,
+    roleEligibilityMinMemberDays: DEFAULT_ACTIVITY_MEMBER_RULES.roleEligibilityMinMemberDays,
+    roleBoostEndMemberDays: DEFAULT_ACTIVITY_MEMBER_RULES.roleBoostEndMemberDays,
+    roleBoostMaxMultiplier: DEFAULT_ACTIVITY_MEMBER_RULES.roleBoostMaxMultiplier,
+    autoRoleSyncHours: DEFAULT_ACTIVITY_MEMBER_RULES.autoRoleSyncHours,
     adminRoleIds: [],
     moderatorRoleIds: [],
     channelWeightPresets: clone(ACTIVITY_CHANNEL_WEIGHT_PRESETS),
@@ -258,6 +269,18 @@ function normalizeActivityConfig(value = {}) {
 
   const sessionWeightMin = normalizeNonNegativeNumber(source.sessionWeightMin, defaults.sessionWeightMin);
   const sessionWeightMax = normalizeNonNegativeNumber(source.sessionWeightMax, defaults.sessionWeightMax);
+  const roleEligibilityMinMemberDays = normalizeNonNegativeNumber(
+    source.roleEligibilityMinMemberDays,
+    defaults.roleEligibilityMinMemberDays
+  );
+  const roleBoostEndMemberDays = Math.max(
+    roleEligibilityMinMemberDays,
+    normalizeNonNegativeNumber(source.roleBoostEndMemberDays, defaults.roleBoostEndMemberDays)
+  );
+  const roleBoostMaxMultiplier = Math.max(
+    1,
+    normalizePositiveNumber(source.roleBoostMaxMultiplier, defaults.roleBoostMaxMultiplier)
+  );
 
   return {
     ...clone(source),
@@ -269,6 +292,10 @@ function normalizeActivityConfig(value = {}) {
     ),
     sessionWeightMin,
     sessionWeightMax: sessionWeightMax >= sessionWeightMin ? sessionWeightMax : defaults.sessionWeightMax,
+    roleEligibilityMinMemberDays,
+    roleBoostEndMemberDays,
+    roleBoostMaxMultiplier,
+    autoRoleSyncHours: normalizePositiveNumber(source.autoRoleSyncHours, defaults.autoRoleSyncHours),
     adminRoleIds: normalizeStringArray(source.adminRoleIds, 25, 80),
     moderatorRoleIds: normalizeStringArray(source.moderatorRoleIds, 25, 80),
     channelWeightPresets,
@@ -299,8 +326,11 @@ function createEmptyActivityState() {
       openSessions: {},
       dirtyUsers: [],
       lastFlushAt: null,
+      lastFlushStats: null,
       lastResumeAt: null,
       lastFullRecalcAt: null,
+      lastDailyRoleSyncAt: null,
+      lastDailyRoleSyncStats: null,
       errors: [],
     },
   };
@@ -390,8 +420,19 @@ function normalizeActivityState(value = {}) {
       : {},
     dirtyUsers: normalizeStringArray(source.runtime?.dirtyUsers, 5000, 80),
     lastFlushAt: normalizeNullableString(source.runtime?.lastFlushAt, 80),
+    lastFlushStats: source.runtime?.lastFlushStats
+      && typeof source.runtime.lastFlushStats === "object"
+      && !Array.isArray(source.runtime.lastFlushStats)
+      ? clone(source.runtime.lastFlushStats)
+      : null,
     lastResumeAt: normalizeNullableString(source.runtime?.lastResumeAt, 80),
     lastFullRecalcAt: normalizeNullableString(source.runtime?.lastFullRecalcAt, 80),
+    lastDailyRoleSyncAt: normalizeNullableString(source.runtime?.lastDailyRoleSyncAt, 80),
+    lastDailyRoleSyncStats: source.runtime?.lastDailyRoleSyncStats
+      && typeof source.runtime.lastDailyRoleSyncStats === "object"
+      && !Array.isArray(source.runtime.lastDailyRoleSyncStats)
+      ? clone(source.runtime.lastDailyRoleSyncStats)
+      : null,
     errors: Array.isArray(source.runtime?.errors) ? clone(source.runtime.errors) : [],
   };
 

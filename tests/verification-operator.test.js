@@ -6,11 +6,35 @@ const assert = require("node:assert/strict");
 const {
   VERIFY_ENTRY_START_ID,
   VERIFY_ENTRY_STATUS_ID,
+  VERIFY_ENTRY_GUIDE_ID,
+  VERIFY_PANEL_BACK_ID,
+  VERIFY_PANEL_CONFIG_INFRA_ID,
+  VERIFY_PANEL_CONFIG_INFRA_MODAL_ID,
+  VERIFY_PANEL_CONFIG_RISK_ID,
+  VERIFY_PANEL_CONFIG_RISK_MODAL_ID,
+  VERIFY_PANEL_CONFIG_TEXTS_ID,
+  VERIFY_PANEL_CONFIG_TEXTS_MODAL_ID,
+  VERIFY_PANEL_RESEND_REPORT_ID,
+  VERIFY_PANEL_RESEND_REPORT_MODAL_ID,
+  VERIFY_PANEL_GUIDE_ID,
+  VERIFY_PANEL_HOME_ID,
+  VERIFY_PANEL_PUBLISH_ENTRY_ID,
+  VERIFY_PANEL_QUEUE_ID,
   VERIFY_PANEL_REFRESH_ID,
+  VERIFY_PANEL_RUN_SWEEP_ID,
+  VERIFY_PANEL_RUNTIME_ID,
   buildVerificationEntryPayload,
+  buildVerificationInfraConfigModal,
+  buildVerificationGuidePayload,
   buildVerificationLaunchPayload,
   buildVerificationPanelPayload,
+  buildVerificationQueuePayload,
+  buildVerificationResendReportModal,
+  buildVerificationRiskRulesModal,
   buildVerificationReportPayload,
+  buildVerificationRuntimePayload,
+  buildVerificationStageTextsModal,
+  handleVerificationPanelButtonInteraction,
   parseVerificationReportAction,
 } = require("../src/verification/operator");
 
@@ -40,13 +64,43 @@ test("buildVerificationPanelPayload summarizes autonomous verification config", 
     accessRoleId: "base-role",
     wartimeAccessRoleId: "wartime-role",
     oauthConfigured: true,
+    snapshot: {
+      totals: {
+        pending: 3,
+        manualReview: 1,
+        overdue: 2,
+        verified: 4,
+        rejected: 1,
+      },
+      runtime: {
+        callbackReady: true,
+        joinGateReady: true,
+        entryMessagePublished: true,
+        reportChannelReady: true,
+      },
+    },
   });
 
-  assert.equal(payload.components[0].toJSON().components[0].custom_id, VERIFY_PANEL_REFRESH_ID);
+  const navRow = payload.components[0].toJSON().components;
+  const actionRow = payload.components[1].toJSON().components;
+  const configRow = payload.components[2].toJSON().components;
+  assert.equal(navRow[0].custom_id, VERIFY_PANEL_HOME_ID);
+  assert.equal(navRow[1].custom_id, VERIFY_PANEL_QUEUE_ID);
+  assert.equal(navRow[2].custom_id, VERIFY_PANEL_RUNTIME_ID);
+  assert.equal(navRow[3].custom_id, VERIFY_PANEL_GUIDE_ID);
+  assert.equal(navRow[4].custom_id, VERIFY_PANEL_BACK_ID);
+  assert.equal(actionRow[0].custom_id, VERIFY_PANEL_REFRESH_ID);
+  assert.equal(actionRow[1].custom_id, VERIFY_PANEL_PUBLISH_ENTRY_ID);
+  assert.equal(actionRow[2].custom_id, VERIFY_PANEL_RUN_SWEEP_ID);
+  assert.equal(configRow[0].custom_id, VERIFY_PANEL_CONFIG_INFRA_ID);
+  assert.equal(configRow[1].custom_id, VERIFY_PANEL_CONFIG_RISK_ID);
+  assert.equal(configRow[2].custom_id, VERIFY_PANEL_CONFIG_TEXTS_ID);
+  assert.equal(configRow[3].custom_id, VERIFY_PANEL_RESEND_REPORT_ID);
   assert.equal(payload.embeds[0].data.title, "Verification Panel");
-  assert.match(payload.embeds[0].data.fields[1].value, /<@&verify-role>/);
-  assert.match(payload.embeds[0].data.fields[2].value, /Enemy guilds: \*\*2\*\*/);
-  assert.match(payload.embeds[0].data.fields[3].value, /7 дн\./);
+  assert.match(payload.embeds[0].data.fields[1].value, /Pending: \*\*3\*\*/);
+  assert.match(payload.embeds[0].data.fields[2].value, /<@&verify-role>/);
+  assert.match(payload.embeds[0].data.fields[3].value, /Enemy guilds: \*\*2\*\*/);
+  assert.match(payload.embeds[0].data.fields[5].value, /7 дн\./);
 });
 
 test("buildVerificationEntryPayload exposes user-facing OAuth and status buttons", () => {
@@ -66,7 +120,120 @@ test("buildVerificationEntryPayload exposes user-facing OAuth and status buttons
   assert.equal(payload.embeds[0].data.title, "Verification Access");
   assert.equal(row[0].custom_id, VERIFY_ENTRY_START_ID);
   assert.equal(row[1].custom_id, VERIFY_ENTRY_STATUS_ID);
+  assert.equal(row[2].custom_id, VERIFY_ENTRY_GUIDE_ID);
   assert.match(payload.embeds[0].data.description, /7 дн\./);
+});
+
+test("buildVerificationGuidePayload returns separate moderator and participant guides", () => {
+  const moderatorPayload = buildVerificationGuidePayload({
+    audience: "moderator",
+    integration: {
+      deadline: { pendingDays: 7 },
+    },
+    snapshot: {
+      totals: { pending: 4, manualReview: 2, overdue: 1 },
+    },
+  });
+  const participantPayload = buildVerificationGuidePayload({
+    audience: "participant",
+    integration: {
+      deadline: { pendingDays: 7 },
+      stageTexts: {
+        approved: "роль будет выдана",
+        rejected: "роль не будет выдана",
+      },
+    },
+  });
+
+  assert.equal(moderatorPayload.embeds[0].data.title, "Verification Moderator Guide");
+  assert.equal(participantPayload.embeds[0].data.title, "Verification Guide");
+  assert.equal(participantPayload.components[0].toJSON().components[0].custom_id, VERIFY_ENTRY_START_ID);
+  assert.match(moderatorPayload.embeds[0].data.description, /pending 4/i);
+  assert.match(participantPayload.embeds[0].data.description, /7 дн\./);
+});
+
+test("buildVerificationQueuePayload and buildVerificationRuntimePayload expose queue and runtime views", () => {
+  const queuePayload = buildVerificationQueuePayload({
+    snapshot: {
+      totals: {
+        pending: 2,
+        manualReview: 1,
+        failed: 1,
+        overdue: 1,
+        blocked: 3,
+      },
+      queueEntries: [
+        "<@1> • pending • due 10.05",
+        "<@2> • manual_review • due 11.05",
+      ],
+    },
+  });
+  const runtimePayload = buildVerificationRuntimePayload({
+    integration: {
+      entryMessage: {
+        channelId: "verify-room",
+        messageId: "message-1",
+      },
+    },
+    snapshot: {
+      runtime: {
+        callbackReady: true,
+        verifyRoleReady: true,
+        verificationRoomReady: true,
+        reportChannelReady: false,
+        entryMessagePublished: true,
+        entryMessageChannelId: "verify-room",
+        entryMessageId: "message-1",
+      },
+      issues: ["report channel missing"],
+    },
+  });
+
+  assert.equal(queuePayload.embeds[0].data.title, "Verification Queue");
+  assert.match(queuePayload.embeds[0].data.fields[1].value, /<@1>/);
+  assert.equal(runtimePayload.embeds[0].data.title, "Verification Runtime");
+  assert.match(runtimePayload.embeds[0].data.fields[0].value, /report channel: \*\*missing\*\*/i);
+  assert.match(runtimePayload.embeds[0].data.fields[2].value, /report channel missing/i);
+});
+
+test("verification config modals expose infra, risk, and stage editors", () => {
+  const infraModal = buildVerificationInfraConfigModal({
+    integration: {
+      enabled: true,
+      callbackBaseUrl: "https://example.com/callback",
+      verificationChannelId: "111",
+      reportChannelId: "222",
+    },
+    verifyRoleId: "333",
+  }).toJSON();
+  const riskModal = buildVerificationRiskRulesModal({
+    integration: {
+      riskRules: {
+        enemyGuildIds: ["guild-1"],
+        manualTags: ["flag-a"],
+      },
+    },
+  }).toJSON();
+  const textsModal = buildVerificationStageTextsModal({
+    integration: {
+      stageTexts: {
+        entry: "entry text",
+      },
+      deadline: {
+        pendingDays: 9,
+      },
+    },
+  }).toJSON();
+  const resendModal = buildVerificationResendReportModal().toJSON();
+
+  assert.equal(infraModal.custom_id, VERIFY_PANEL_CONFIG_INFRA_MODAL_ID);
+  assert.equal(riskModal.custom_id, VERIFY_PANEL_CONFIG_RISK_MODAL_ID);
+  assert.equal(textsModal.custom_id, VERIFY_PANEL_CONFIG_TEXTS_MODAL_ID);
+  assert.equal(resendModal.custom_id, VERIFY_PANEL_RESEND_REPORT_MODAL_ID);
+  assert.equal(infraModal.components.length, 5);
+  assert.equal(riskModal.components.length, 5);
+  assert.equal(textsModal.components.length, 5);
+  assert.equal(resendModal.components.length, 2);
 });
 
 test("buildVerificationLaunchPayload returns a link button for Discord OAuth", () => {
@@ -118,4 +285,64 @@ test("buildVerificationReportPayload and parseVerificationReportAction round-tri
   assert.equal(payload.embeds[0].data.title, "Verification Manual Review");
   assert.deepEqual(parseVerificationReportAction(row[0].custom_id), { action: "approve", userId: "user-1" });
   assert.deepEqual(parseVerificationReportAction(row[1].custom_id), { action: "reject", userId: "user-1" });
+});
+
+test("handleVerificationPanelButtonInteraction routes panel views and runtime actions", async () => {
+  const calls = [];
+  const interaction = {
+    customId: VERIFY_PANEL_RUN_SWEEP_ID,
+    member: { id: "moderator" },
+    async deferUpdate() {
+      calls.push(["deferUpdate"]);
+    },
+    async editReply(payload) {
+      calls.push(["editReply", payload]);
+    },
+    async update(payload) {
+      calls.push(["update", payload]);
+    },
+  };
+
+  const handled = await handleVerificationPanelButtonInteraction({
+    interaction,
+    isModerator: () => true,
+    replyNoPermission: async () => {
+      calls.push(["replyNoPermission"]);
+    },
+    buildView: async (view, statusText) => ({ view, statusText }),
+    buildBackPayload: async () => ({ back: true }),
+    runAction: async (action) => {
+      calls.push(["runAction", action]);
+      return "Sweep finished.";
+    },
+  });
+
+  assert.equal(handled, true);
+  assert.deepEqual(calls[0], ["deferUpdate"]);
+  assert.deepEqual(calls[1], ["runAction", VERIFY_PANEL_RUN_SWEEP_ID]);
+  assert.deepEqual(calls[2], ["editReply", { view: "runtime", statusText: "Sweep finished." }]);
+});
+
+test("handleVerificationPanelButtonInteraction opens config modal actions", async () => {
+  const calls = [];
+  const interaction = {
+    customId: VERIFY_PANEL_CONFIG_INFRA_ID,
+    member: { id: "moderator" },
+    async showModal(modal) {
+      calls.push(["showModal", modal]);
+    },
+  };
+
+  const handled = await handleVerificationPanelButtonInteraction({
+    interaction,
+    isModerator: () => true,
+    replyNoPermission: async () => {},
+    buildView: async () => ({}),
+    buildBackPayload: async () => ({}),
+    buildModal: async (customId) => ({ customId }),
+    runAction: async () => "",
+  });
+
+  assert.equal(handled, true);
+  assert.deepEqual(calls[0], ["showModal", { customId: VERIFY_PANEL_CONFIG_INFRA_ID }]);
 });

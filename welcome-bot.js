@@ -4,6 +4,7 @@ const fs = require("fs");
 const path = require("path");
 const https = require("https");
 const http = require("http");
+const crypto = require("node:crypto");
 const { createDbStore, loadJsonFile } = require("./src/db/store");
 const {
   getChannelValue: getSotChannelValue,
@@ -36,6 +37,7 @@ const {
 } = require("./src/sot/native-roles");
 const {
   clearNativeIntegrationSourcePath,
+  writeNativeIntegrationSnapshot,
   writeNativeIntegrationRoleGrantEnabled,
   writeNativeIntegrationSourcePath,
 } = require("./src/sot/native-integrations");
@@ -116,14 +118,45 @@ const {
 } = require("./src/role-panel");
 const {
   VERIFY_COMMAND_NAME,
+  VERIFY_ENTRY_GUIDE_ID,
+  VERIFY_ENTRY_START_ID,
+  VERIFY_ENTRY_STATUS_ID,
+  VERIFY_PANEL_CONFIG_INFRA_ID,
+  VERIFY_PANEL_CONFIG_INFRA_MODAL_ID,
+  VERIFY_PANEL_CONFIG_RISK_ID,
+  VERIFY_PANEL_CONFIG_RISK_MODAL_ID,
+  VERIFY_PANEL_CONFIG_TEXTS_ID,
+  VERIFY_PANEL_CONFIG_TEXTS_MODAL_ID,
+  VERIFY_PANEL_RESEND_REPORT_ID,
+  VERIFY_PANEL_RESEND_REPORT_MODAL_ID,
+  VERIFY_PANEL_MODAL_IDS,
+  VERIFY_PANEL_PUBLISH_ENTRY_ID,
+  VERIFY_PANEL_RUN_SWEEP_ID,
+  buildVerificationEntryPayload,
+  buildVerificationGuidePayload,
+  buildVerificationInfraConfigModal,
+  buildVerificationLaunchPayload,
   buildVerificationPanelPayload,
+  buildVerificationQueuePayload,
+  buildVerificationResendReportModal,
+  buildVerificationReportPayload,
+  buildVerificationRiskRulesModal,
+  buildVerificationRuntimePayload,
+  buildVerificationStageTextsModal,
   handleVerificationPanelButtonInteraction,
+  parseVerificationReportAction,
 } = require("./src/verification/operator");
+const {
+  buildDiscordOAuthAuthorizeUrl,
+  createVerificationCallbackServer,
+  normalizeVerificationRuntimeConfig,
+} = require("./src/verification/runtime");
 const { commitMutation } = require("./src/onboard/refresh-runner");
 const {
   buildActivityOperatorPanelPayload,
   handleActivityPanelButtonInteraction,
   handleActivityPanelModalSubmitInteraction,
+  runDailyActivityRoleSync,
 } = require("./src/activity/operator");
 const {
   flushActivityRuntime,
@@ -136,6 +169,7 @@ const {
   getOnboardAccessModeLabel,
   isApocalypseMode,
   normalizeOnboardAccessMode,
+  resolveGrantedAccessRoleId,
 } = require("./src/onboard/access-mode");
 const {
   ONBOARD_ACCESS_GRANT_MODES,
@@ -4076,6 +4110,40 @@ async function getGuild(client) {
   return guildCache;
 }
 
+async function getActivityGuildMember(client, userId, guildHint = null) {
+  const normalizedUserId = String(userId || "").trim();
+  if (!normalizedUserId) return null;
+
+  const guild = guildHint || await getGuild(client).catch(() => null);
+  if (!guild) return null;
+  return guild.members?.cache?.get(normalizedUserId) || await guild.members.fetch(normalizedUserId).catch(() => null);
+}
+
+async function resolveActivityMemberRoleIds(client, userId, guildHint = null) {
+  const member = await getActivityGuildMember(client, userId, guildHint);
+  return member ? [...member.roles.cache.keys()] : [];
+}
+
+async function resolveActivityMemberMeta(client, userId, guildHint = null) {
+  const member = await getActivityGuildMember(client, userId, guildHint);
+  const joinedAt = member?.joinedAt instanceof Date && Number.isFinite(member.joinedAt.getTime())
+    ? member.joinedAt.toISOString()
+    : null;
+  return joinedAt ? { joinedAt } : null;
+}
+
+async function applyActivityMemberRoleChanges(client, { userId, addRoleIds = [], removeRoleIds = [], reason = "activity role sync", guildHint = null } = {}) {
+  const member = await getActivityGuildMember(client, userId, guildHint);
+  if (!member) return false;
+  if (removeRoleIds.length) {
+    await member.roles.remove(removeRoleIds, reason);
+  }
+  if (addRoleIds.length) {
+    await member.roles.add(addRoleIds, reason);
+  }
+  return true;
+}
+
 function isModerator(member) {
   if (!member) return false;
   if (member.permissions?.has?.(PermissionsBitField.Flags.Administrator)) return true;
@@ -4446,10 +4514,13 @@ function getManagedStartAccessRoleIds() {
 }
 
 function getGrantedAccessRoleIdForMode(mode = getCurrentOnboardMode()) {
-  if (normalizeOnboardAccessMode(mode) === ONBOARD_ACCESS_MODES.WARTIME) {
-    return getWartimeAccessRoleId();
-  }
-  return getNormalAccessRoleId();
+  const member = arguments.length > 1 ? arguments[1] : null;
+  return resolveGrantedAccessRoleId({
+    mode,
+    normalAccessRoleId: getNormalAccessRoleId(),
+    wartimeAccessRoleId: getWartimeAccessRoleId(),
+    heldRoleIds: member?.roles?.cache ? [...member.roles.cache.keys()] : [],
+  });
 }
 
 function memberHasManagedStartAccessRole(member) {
@@ -4470,23 +4541,514 @@ function formatRoleMention(roleId) {
   return roleId ? `<@&${roleId}>` : "не настроена";
 }
 
-function isVerificationOauthConfigured() {
-  return Boolean(
-    envText("DISCORD_OAUTH_CLIENT_ID")
-    && envText("DISCORD_OAUTH_CLIENT_SECRET")
-    && envText("DISCORD_OAUTH_REDIRECT_URI")
-  );
+function cleanVerificationText(value, limit = 2000) {
+  return String(value || "").trim().slice(0, Math.max(0, Number(limit) || 0));
 }
 
-async function buildVerificationPanelReply(statusText = "", includeFlags = true) {
-  const payload = buildVerificationPanelPayload({
-    integration: getSotIntegration("verification", { db, appConfig }) || {},
+function buildVerificationOauthUsername(oauthUser = {}) {
+  const username = cleanVerificationText(oauthUser.username || oauthUser.global_name, 120);
+  const discriminator = cleanVerificationText(oauthUser.discriminator, 10);
+  if (!username) return "";
+  if (discriminator && discriminator !== "0") {
+    return `${username}#${discriminator}`;
+  }
+  return username;
+}
+
+function getVerificationIntegrationState() {
+  return getSotIntegration("verification", { db, appConfig }) || {};
+}
+
+function getVerificationPendingDays() {
+  return Math.max(1, Number(getVerificationIntegrationState().deadline?.pendingDays) || 7);
+}
+
+function getVerificationRiskRules() {
+  const riskRules = getVerificationIntegrationState().riskRules;
+  return riskRules && typeof riskRules === "object" && !Array.isArray(riskRules)
+    ? cloneJsonValue(riskRules)
+    : {};
+}
+
+function isVerificationEnabled() {
+  return getVerificationIntegrationState().enabled === true;
+}
+
+function computeVerificationReportDueAt(fromIso = nowIso()) {
+  const date = new Date(fromIso);
+  if (!Number.isFinite(date.getTime())) return null;
+  date.setUTCDate(date.getUTCDate() + getVerificationPendingDays());
+  return date.toISOString();
+}
+
+function isVerificationOauthConfigured() {
+  const runtimeConfig = normalizeVerificationRuntimeConfig({
+    integration: getVerificationIntegrationState(),
+    env: process.env,
+  });
+  return Boolean(runtimeConfig.clientId && runtimeConfig.clientSecret && runtimeConfig.redirectUri);
+}
+
+function updateVerificationProfile(userId, patch = {}, options = {}) {
+  const profile = getProfile(userId);
+  profile.domains = profile.domains && typeof profile.domains === "object" && !Array.isArray(profile.domains)
+    ? profile.domains
+    : {};
+  const current = profile.domains.verification && typeof profile.domains.verification === "object" && !Array.isArray(profile.domains.verification)
+    ? profile.domains.verification
+    : {};
+  profile.domains.verification = {
+    ...current,
+    ...cloneJsonValue(patch),
+  };
+  profile.updatedAt = nowIso();
+  const finalized = finalizeStoredProfile(userId);
+  if (options.save !== false) saveDb();
+  return finalized;
+}
+
+function ensureVerificationPendingProfile(userId, patch = {}, options = {}) {
+  const currentProfile = getProfile(userId);
+  const current = currentProfile.domains?.verification && typeof currentProfile.domains.verification === "object"
+    ? currentProfile.domains.verification
+    : {};
+  const assignedAt = cleanVerificationText(current.assignedAt, 80) || nowIso();
+  const reportDueAt = cleanVerificationText(current.reportDueAt, 80) || computeVerificationReportDueAt(assignedAt);
+
+  return updateVerificationProfile(userId, {
+    status: ["verified", "rejected", "manual_review", "failed", "pending"].includes(current.status) ? current.status : "pending",
+    decision: ["approved", "rejected", "manual_review"].includes(current.decision) ? current.decision : "none",
+    assignedAt,
+    reportDueAt,
+    ...patch,
+  }, options);
+}
+
+function buildVerificationStatusText(userId) {
+  const profile = finalizeStoredProfile(userId);
+  const verification = profile.summary?.verification && typeof profile.summary.verification === "object"
+    ? profile.summary.verification
+    : profile.domains?.verification && typeof profile.domains.verification === "object"
+      ? profile.domains.verification
+      : {};
+  const status = cleanVerificationText(verification.status, 40) || "not_started";
+  const reportDueAt = cleanVerificationText(verification.reportDueAt, 80);
+  const reviewedAt = cleanVerificationText(verification.reviewedAt, 80);
+  const lastError = cleanVerificationText(verification.lastError, 300);
+  const verificationChannelId = cleanVerificationText(getVerificationIntegrationState().verificationChannelId, 80);
+
+  if (status === "verified") {
+    return "Статус: verified. Доступ выдан или будет выдан после sync роли.";
+  }
+  if (status === "manual_review") {
+    return `Статус: manual review. Кейс уже ушёл модераторам${reportDueAt ? `, дедлайн был ${formatDateTime(reportDueAt)}` : ""}.`;
+  }
+  if (status === "rejected") {
+    return `Статус: rejected${reviewedAt ? ` (${formatDateTime(reviewedAt)})` : ""}. Доступ не будет выдан.`;
+  }
+  if (status === "failed") {
+    return `Статус: failed. ${lastError || "Последняя попытка OAuth завершилась ошибкой."}`;
+  }
+  if (status === "pending") {
+    return `Статус: pending${reportDueAt ? `. Если кейс зависнет, escalation уйдёт модераторам после ${formatDateTime(reportDueAt)}` : ""}.`;
+  }
+  return verificationChannelId
+    ? `Статус: not started. Открой ${formatChannelMention(verificationChannelId)} и нажми кнопку OAuth.`
+    : "Статус: not started. Verification room пока не настроен.";
+}
+
+function clearExpiredVerificationOauthStates() {
+  const now = Date.now();
+  for (const [state, session] of verificationOauthStates.entries()) {
+    if (!session || now - Number(session.createdAt) > VERIFICATION_OAUTH_STATE_EXPIRE_MS) {
+      verificationOauthStates.delete(state);
+    }
+  }
+}
+
+function createVerificationOauthState(userId) {
+  const normalizedUserId = cleanVerificationText(userId, 80);
+  clearExpiredVerificationOauthStates();
+  const state = `${normalizedUserId}.${crypto.randomUUID()}`;
+  verificationOauthStates.set(state, {
+    userId: normalizedUserId,
+    createdAt: Date.now(),
+    riskRules: getVerificationRiskRules(),
+  });
+  return state;
+}
+
+function consumeVerificationOauthState(state) {
+  clearExpiredVerificationOauthStates();
+  const normalizedState = cleanVerificationText(state, 200);
+  if (!normalizedState) return null;
+  const session = verificationOauthStates.get(normalizedState);
+  verificationOauthStates.delete(normalizedState);
+  if (!session || Date.now() - Number(session.createdAt) > VERIFICATION_OAUTH_STATE_EXPIRE_MS) {
+    return null;
+  }
+  return cloneJsonValue(session);
+}
+
+function buildVerificationPanelSnapshot() {
+  const integration = getVerificationIntegrationState();
+  const snapshot = {
+    totals: {
+      pending: 0,
+      manualReview: 0,
+      failed: 0,
+      overdue: 0,
+      verified: 0,
+      rejected: 0,
+      blocked: 0,
+      reportSent: 0,
+      totalProfiles: 0,
+    },
+    queueEntries: [],
+    issues: [],
+    runtime: {
+      callbackReady: Boolean(verificationCallbackServer?.isListening?.()),
+      joinGateReady: Boolean(getVerifyAccessRoleId() && integration.verificationChannelId),
+      entryMessagePublished: Boolean(integration.entryMessage?.messageId),
+      reportChannelReady: Boolean(integration.reportChannelId),
+      verificationRoomReady: Boolean(integration.verificationChannelId),
+      verifyRoleReady: Boolean(getVerifyAccessRoleId()),
+      lastSweepAt: cleanVerificationText(integration.lastSyncAt, 80),
+      lastReportSentAt: "",
+      entryMessageChannelId: cleanVerificationText(integration.entryMessage?.channelId || integration.verificationChannelId, 80),
+      entryMessageId: cleanVerificationText(integration.entryMessage?.messageId, 80),
+    },
+  };
+
+  if (integration.enabled !== true) snapshot.issues.push("verification disabled in config");
+  if (!isVerificationOauthConfigured()) snapshot.issues.push("OAuth env is not configured");
+  if (!getVerifyAccessRoleId()) snapshot.issues.push("verify-role is missing");
+  if (!integration.verificationChannelId) snapshot.issues.push("verification room is missing");
+  if (!integration.reportChannelId) snapshot.issues.push("report channel is missing");
+
+  for (const userId of Object.keys(db.profiles || {})) {
+    const profile = finalizeStoredProfile(userId);
+    const verification = profile.summary?.verification && typeof profile.summary.verification === "object"
+      ? profile.summary.verification
+      : profile.domains?.verification && typeof profile.domains.verification === "object"
+        ? profile.domains.verification
+        : null;
+    if (!verification) continue;
+
+    snapshot.totals.totalProfiles += 1;
+    const status = cleanVerificationText(verification.status, 40) || "not_started";
+    const reportDueAt = cleanVerificationText(verification.reportDueAt, 80);
+    const reportSentAt = cleanVerificationText(verification.reportSentAt, 80);
+    const oauthUsername = cleanVerificationText(verification.oauthUsername, 120) || `<@${userId}>`;
+    const isOverdue = reportDueAt && Number.isFinite(Date.parse(reportDueAt)) && Date.parse(reportDueAt) <= Date.now() && !reportSentAt;
+
+    if (status === "pending") snapshot.totals.pending += 1;
+    if (status === "manual_review") snapshot.totals.manualReview += 1;
+    if (status === "failed") snapshot.totals.failed += 1;
+    if (status === "verified") snapshot.totals.verified += 1;
+    if (status === "rejected") snapshot.totals.rejected += 1;
+    if (["pending", "manual_review", "failed"].includes(status)) snapshot.totals.blocked += 1;
+    if (reportSentAt) {
+      snapshot.totals.reportSent += 1;
+      if (!snapshot.runtime.lastReportSentAt || Date.parse(reportSentAt) > Date.parse(snapshot.runtime.lastReportSentAt)) {
+        snapshot.runtime.lastReportSentAt = reportSentAt;
+      }
+    }
+    if (isOverdue) snapshot.totals.overdue += 1;
+
+    if (["pending", "manual_review", "failed"].includes(status) || isOverdue) {
+      snapshot.queueEntries.push([
+        `<@${userId}>`,
+        oauthUsername,
+        status,
+        reportDueAt ? `due ${formatDateTime(reportDueAt)}` : "due —",
+        reportSentAt ? "report sent" : isOverdue ? "overdue" : "waiting",
+      ].join(" • "));
+    }
+  }
+
+  snapshot.queueEntries = snapshot.queueEntries.slice(0, 8);
+  return snapshot;
+}
+
+async function resolveVerificationReportChannel(client) {
+  const channelId = cleanVerificationText(getVerificationIntegrationState().reportChannelId, 80);
+  if (!channelId) {
+    throw new Error("verification.reportChannelId не настроен.");
+  }
+  const guild = await getGuild(client).catch(() => null);
+  if (!guild) {
+    throw new Error("Не удалось получить guild для verification report channel.");
+  }
+
+  await guild.channels.fetch().catch(() => null);
+  const channel = guild.channels.cache.get(channelId) || await guild.channels.fetch(channelId).catch(() => null);
+  if (!channel?.isTextBased() || typeof channel.send !== "function") {
+    throw new Error("verification.reportChannelId не указывает на текстовый канал.");
+  }
+  return channel;
+}
+
+async function postVerificationManualReport(client, userId, statusNote = "", options = {}) {
+  const channel = await resolveVerificationReportChannel(client);
+  const profile = finalizeStoredProfile(userId);
+  const message = await channel.send(buildVerificationReportPayload({
+    userId,
+    profile,
+    statusNote,
+    disableActions: options.disableActions === true,
+  }));
+  return { channel, message, profile };
+}
+
+async function ensureVerificationEntryMessage(client) {
+  const integration = getVerificationIntegrationState();
+  const channelId = cleanVerificationText(integration.verificationChannelId, 80);
+  if (!channelId) {
+    throw new Error("verification.verificationChannelId не настроен.");
+  }
+
+  const guild = await getGuild(client).catch(() => null);
+  if (!guild) {
+    throw new Error("Не удалось получить guild для verification room.");
+  }
+
+  await guild.channels.fetch().catch(() => null);
+  const channel = guild.channels.cache.get(channelId) || await guild.channels.fetch(channelId).catch(() => null);
+  if (!channel?.isTextBased() || typeof channel.send !== "function") {
+    throw new Error("verification.verificationChannelId не указывает на текстовый канал.");
+  }
+
+  const payload = buildVerificationEntryPayload({
+    integration,
+    statusText: isVerificationOauthConfigured()
+      ? "OAuth runtime готов. Если кейс зависнет, модераторы увидят его в queue/report flow."
+      : "OAuth env пока не настроен. Guide уже доступен, launch станет рабочим после заполнения env.",
+  });
+
+  const trackedMessageId = cleanVerificationText(integration.entryMessage?.messageId, 80);
+  let message = null;
+  if (trackedMessageId && channel.messages?.fetch) {
+    message = await channel.messages.fetch(trackedMessageId).catch(() => null);
+    if (message && message.author?.id !== client.user?.id) {
+      message = null;
+    }
+  }
+
+  if (message) {
+    await message.edit(payload);
+  } else {
+    message = await channel.send(payload);
+  }
+
+  writeNativeIntegrationSnapshot(db, {
+    slot: "verification",
+    patch: {
+      status: integration.enabled === true ? "in_progress" : cleanVerificationText(integration.status, 40),
+      lastSyncAt: nowIso(),
+      entryMessage: {
+        channelId: channel.id,
+        messageId: message.id,
+      },
+    },
+  });
+  saveDb();
+  return { channelId: channel.id, messageId: message.id, updated: true };
+}
+
+async function completeVerificationApprovedAccess(client, userId, reason = "verification approved") {
+  const granted = await grantAccessRole(client, userId, reason);
+  const verifyRoleId = getVerifyAccessRoleId();
+  if (verifyRoleId) {
+    const member = await fetchMember(client, userId);
+    if (member?.roles?.cache?.has(verifyRoleId)) {
+      await member.roles.remove(verifyRoleId, reason).catch(() => {});
+    }
+  }
+  return granted;
+}
+
+async function approveVerificationUser(client, userId, reviewedBy, reason = "verification moderator approve") {
+  await completeVerificationApprovedAccess(client, userId, reason);
+  return updateVerificationProfile(userId, {
+    status: "verified",
+    decision: "approved",
+    completedAt: nowIso(),
+    reviewedAt: nowIso(),
+    reviewedBy: cleanVerificationText(reviewedBy, 120),
+    decisionReason: reason,
+    lastError: "",
+  });
+}
+
+async function rejectVerificationUser(userId, reviewedBy, reason = "verification moderator reject") {
+  return updateVerificationProfile(userId, {
+    status: "rejected",
+    decision: "rejected",
+    completedAt: nowIso(),
+    reviewedAt: nowIso(),
+    reviewedBy: cleanVerificationText(reviewedBy, 120),
+    decisionReason: reason,
+    lastError: "",
+  });
+}
+
+async function runVerificationDeadlineSweep(client) {
+  if (!isVerificationEnabled()) {
+    return { scanned: 0, reported: 0 };
+  }
+
+  let scanned = 0;
+  let reported = 0;
+  for (const userId of Object.keys(db.profiles || {})) {
+    const profile = finalizeStoredProfile(userId);
+    const verification = profile.summary?.verification && typeof profile.summary.verification === "object"
+      ? profile.summary.verification
+      : profile.domains?.verification && typeof profile.domains.verification === "object"
+        ? profile.domains.verification
+        : null;
+    if (!verification) continue;
+
+    const status = cleanVerificationText(verification.status, 40);
+    const reportDueAt = cleanVerificationText(verification.reportDueAt, 80);
+    const reportSentAt = cleanVerificationText(verification.reportSentAt, 80);
+    if (!["pending", "failed"].includes(status) || !reportDueAt || reportSentAt) continue;
+
+    const dueAt = Date.parse(reportDueAt);
+    if (!Number.isFinite(dueAt) || dueAt > Date.now()) continue;
+
+    scanned += 1;
+    await postVerificationManualReport(client, userId, "Срок verification истёк. Участник не завершил кейс до дедлайна.");
+    updateVerificationProfile(userId, {
+      reportSentAt: nowIso(),
+    });
+    reported += 1;
+  }
+
+  return { scanned, reported };
+}
+
+async function handleVerificationApprovedCallback(client, payload = {}) {
+  const userId = cleanVerificationText(payload.session?.userId, 80);
+  if (!userId) throw new Error("Verification callback не содержит userId session.");
+  await completeVerificationApprovedAccess(client, userId, "verification oauth approved");
+  const risk = payload.risk && typeof payload.risk === "object" ? payload.risk : {};
+  updateVerificationProfile(userId, {
+    status: "verified",
+    decision: "approved",
+    startedAt: nowIso(),
+    completedAt: nowIso(),
+    reviewedAt: nowIso(),
+    reviewedBy: "verification-oauth",
+    decisionReason: "oauth_auto_approved",
+    oauthUserId: cleanVerificationText(payload.oauthUser?.id, 80),
+    oauthUsername: buildVerificationOauthUsername(payload.oauthUser),
+    oauthAvatarUrl: cleanVerificationText(payload.oauthUser?.avatar ? `https://cdn.discordapp.com/avatars/${payload.oauthUser.id}/${payload.oauthUser.avatar}.png` : "", 2000),
+    observedGuildIds: Array.isArray(risk.observedGuildIds) ? risk.observedGuildIds : [],
+    observedGuildNames: Array.isArray(risk.observedGuildNames) ? risk.observedGuildNames : [],
+    matchedEnemyGuildIds: Array.isArray(risk.matchedEnemyGuildIds) ? risk.matchedEnemyGuildIds : [],
+    matchedEnemyUserIds: Array.isArray(risk.matchedEnemyUserIds) ? risk.matchedEnemyUserIds : [],
+    matchedEnemyInviteCodes: Array.isArray(risk.matchedEnemyInviteCodes) ? risk.matchedEnemyInviteCodes : [],
+    matchedEnemyInviterUserIds: Array.isArray(risk.matchedEnemyInviterUserIds) ? risk.matchedEnemyInviterUserIds : [],
+    lastError: "",
+  });
+  await logLine(client, `VERIFICATION_APPROVED: <@${userId}> oauth=${buildVerificationOauthUsername(payload.oauthUser) || "unknown"}`).catch(() => {});
+}
+
+async function handleVerificationManualReviewCallback(client, payload = {}) {
+  const userId = cleanVerificationText(payload.session?.userId, 80);
+  if (!userId) throw new Error("Verification callback не содержит userId session.");
+  const risk = payload.risk && typeof payload.risk === "object" ? payload.risk : {};
+  updateVerificationProfile(userId, {
+    status: "manual_review",
+    decision: "manual_review",
+    startedAt: nowIso(),
+    oauthUserId: cleanVerificationText(payload.oauthUser?.id, 80),
+    oauthUsername: buildVerificationOauthUsername(payload.oauthUser),
+    observedGuildIds: Array.isArray(risk.observedGuildIds) ? risk.observedGuildIds : [],
+    observedGuildNames: Array.isArray(risk.observedGuildNames) ? risk.observedGuildNames : [],
+    matchedEnemyGuildIds: Array.isArray(risk.matchedEnemyGuildIds) ? risk.matchedEnemyGuildIds : [],
+    matchedEnemyUserIds: Array.isArray(risk.matchedEnemyUserIds) ? risk.matchedEnemyUserIds : [],
+    matchedEnemyInviteCodes: Array.isArray(risk.matchedEnemyInviteCodes) ? risk.matchedEnemyInviteCodes : [],
+    matchedEnemyInviterUserIds: Array.isArray(risk.matchedEnemyInviterUserIds) ? risk.matchedEnemyInviterUserIds : [],
+    reportSentAt: nowIso(),
+    lastError: "",
+  });
+  await postVerificationManualReport(client, userId, "Автоматическая проверка пометила профиль как рискованный.");
+  await logLine(client, `VERIFICATION_MANUAL_REVIEW: <@${userId}>`).catch(() => {});
+}
+
+async function handleVerificationFailedCallback(client, payload = {}) {
+  const userId = cleanVerificationText(payload.session?.userId, 80);
+  if (!userId) return;
+  ensureVerificationPendingProfile(userId, {
+    status: "failed",
+    lastError: cleanVerificationText(payload.error?.message || payload.error, 400),
+  });
+  await logLine(client, `VERIFICATION_FAILED: <@${userId}> ${cleanVerificationText(payload.error?.message || payload.error, 200)}`).catch(() => {});
+}
+
+async function startVerificationRuntime(client) {
+  if (!isVerificationEnabled()) {
+    return { enabled: false, callbackStarted: false, entryPublished: false };
+  }
+
+  let callbackStarted = false;
+  let entryPublished = false;
+
+  if (isVerificationOauthConfigured()) {
+    if (!verificationCallbackServer) {
+      verificationCallbackServer = createVerificationCallbackServer({
+        config: {
+          integration: getVerificationIntegrationState(),
+          env: process.env,
+        },
+        consumeState: consumeVerificationOauthState,
+        onApproved: (payload) => handleVerificationApprovedCallback(client, payload),
+        onManualReview: (payload) => handleVerificationManualReviewCallback(client, payload),
+        onFailure: (payload) => handleVerificationFailedCallback(client, payload),
+      });
+    }
+
+    const result = await verificationCallbackServer.start();
+    callbackStarted = result.started === true || result.alreadyListening === true;
+  }
+
+  if (cleanVerificationText(getVerificationIntegrationState().verificationChannelId, 80)) {
+    await ensureVerificationEntryMessage(client);
+    entryPublished = true;
+  }
+
+  return { enabled: true, callbackStarted, entryPublished };
+}
+
+async function buildVerificationPanelReply(view = "home", statusText = "", includeFlags = true) {
+  const integration = getVerificationIntegrationState();
+  const snapshot = buildVerificationPanelSnapshot();
+  const payloadOptions = {
+    integration,
     verifyRoleId: getVerifyAccessRoleId(),
     accessRoleId: getNormalAccessRoleId(),
     wartimeAccessRoleId: getWartimeAccessRoleId(),
     oauthConfigured: isVerificationOauthConfigured(),
     statusText,
-  });
+    snapshot,
+  };
+
+  let payload = buildVerificationPanelPayload(payloadOptions);
+  if (view === "queue") {
+    payload = buildVerificationQueuePayload(payloadOptions);
+  } else if (view === "runtime") {
+    payload = buildVerificationRuntimePayload(payloadOptions);
+  } else if (view === "guide") {
+    payload = buildVerificationGuidePayload({
+      audience: "moderator",
+      integration,
+      snapshot,
+      statusText,
+    });
+  }
+
   return includeFlags ? ephemeralPayload(payload) : payload;
 }
 
@@ -4680,7 +5242,7 @@ async function grantAccessRole(client, userId, reason = "welcome application sub
     throw new Error(validationError);
   }
 
-  const targetRoleId = getGrantedAccessRoleIdForMode(mode);
+  const targetRoleId = getGrantedAccessRoleIdForMode(mode, member);
   if (!targetRoleId) {
     throw new Error("Не настроена роль стартового доступа для текущего режима.");
   }
@@ -9971,6 +10533,22 @@ function parseRequestedRoleId(value, fallbackRoleId = "") {
   return /^\d{5,25}$/.test(candidate) ? candidate : "";
 }
 
+function parseVerificationBooleanInput(value, fallback = false) {
+  const text = cleanVerificationText(value, 20).toLowerCase();
+  if (!text) return fallback;
+  if (["1", "true", "yes", "y", "on", "да"].includes(text)) return true;
+  if (["0", "false", "no", "n", "off", "нет"].includes(text)) return false;
+  return null;
+}
+
+function parseVerificationListInput(value, limit = 200, itemLimit = 120) {
+  const parts = String(value || "")
+    .split(/\r?\n|,/)
+    .map((entry) => cleanVerificationText(entry, itemLimit))
+    .filter(Boolean);
+  return [...new Set(parts)].slice(0, limit);
+}
+
 function isLikelyImageUrl(value) {
   const text = String(value || "").trim();
   if (!text) return false;
@@ -10772,6 +11350,10 @@ process.on("unhandledRejection", (error) => {
   console.error("Unhandled rejection:", error);
 });
 
+const verificationOauthStates = new Map();
+let verificationCallbackServer = null;
+const VERIFICATION_OAUTH_STATE_EXPIRE_MS = 10 * 60 * 1000;
+
 client.once("clientReady", async () => {
   console.log(`Logged in as ${client.user.tag}`);
   console.log(`Data root: ${DATA_ROOT}`);
@@ -10883,6 +11465,16 @@ client.once("clientReady", async () => {
     }
   }
   console.log(`Managed roles ready. Characters: ${generated.characterRoles}, resolved: ${generated.resolvedCharacters}, recovered: ${generated.recoveredCharacters}, ambiguous: ${generated.ambiguousCharacters}, unresolved: ${generated.unresolvedCharacters}, tiers: ${generated.tierRoles}`);
+
+  try {
+    const verificationRuntime = await startVerificationRuntime(client);
+    if (verificationRuntime.enabled) {
+      console.log(`Verification runtime ready. callback=${verificationRuntime.callbackStarted ? "yes" : "no"} entry=${verificationRuntime.entryPublished ? "yes" : "no"}`);
+    }
+  } catch (error) {
+    console.error("Verification runtime startup failed:", error?.message || error);
+  }
+
   console.log("Welcome onboarding bot is ready");
 
   const periodicJobs = buildClientReadyPeriodicJobs({
@@ -10893,13 +11485,29 @@ client.once("clientReady", async () => {
     flushActivityRuntime: () => flushActivityRuntime({
       db,
       saveDb,
+      resolveMemberActivityMeta: (userId) => resolveActivityMemberMeta(client, userId),
     }),
     activityFlushIntervalMs: ACTIVITY_RUNTIME_FLUSH_INTERVAL_MS,
+    runDailyActivityRoleSync: () => runDailyActivityRoleSync({
+      db,
+      saveDb,
+      resolveMemberRoleIds: (userId) => resolveActivityMemberRoleIds(client, userId),
+      resolveMemberActivityMeta: (userId) => resolveActivityMemberMeta(client, userId),
+      applyRoleChanges: ({ userId, addRoleIds, removeRoleIds }) => applyActivityMemberRoleChanges(client, {
+        userId,
+        addRoleIds,
+        removeRoleIds,
+        reason: "activity daily role sync",
+      }),
+    }),
+    activityRoleSyncHours: ensureActivityState(db).config?.autoRoleSyncHours,
     runRobloxProfileRefreshJob: runScheduledRobloxProfileRefreshJob,
     syncRobloxPlaytime,
     flushRobloxRuntime,
+    runVerificationDeadlineSweep: (currentClient) => runVerificationDeadlineSweep(currentClient),
     getResolvedIntegrationSourcePath,
     roblox: appConfig?.roblox,
+    verification: getVerificationIntegrationState(),
   });
 
   scheduleClientReadyIntervals(client, {
@@ -11713,8 +12321,129 @@ client.on("interactionCreate", async (interaction) => {
       replyNoPermission: async (currentInteraction) => {
         await currentInteraction.reply(ephemeralPayload({ content: "Нет прав." }));
       },
-      buildPayload: async (statusText, includeFlags) => buildVerificationPanelReply(statusText, includeFlags),
+      buildView: async (view, statusText, includeFlags) => buildVerificationPanelReply(view, statusText, includeFlags),
+      buildBackPayload: async () => buildModeratorPanelPayload(client, "", false),
+      buildModal: async (customId) => {
+        const integration = getVerificationIntegrationState();
+        if (customId === VERIFY_PANEL_CONFIG_INFRA_ID) {
+          return buildVerificationInfraConfigModal({
+            integration,
+            verifyRoleId: getVerifyAccessRoleId(),
+          });
+        }
+        if (customId === VERIFY_PANEL_CONFIG_RISK_ID) {
+          return buildVerificationRiskRulesModal({ integration });
+        }
+        if (customId === VERIFY_PANEL_RESEND_REPORT_ID) {
+          return buildVerificationResendReportModal();
+        }
+        return buildVerificationStageTextsModal({ integration });
+      },
+      runAction: async (action) => {
+        try {
+          if (action === VERIFY_PANEL_PUBLISH_ENTRY_ID) {
+            const result = await ensureVerificationEntryMessage(client);
+            return `Verification entry message опубликовано в <#${result.channelId}>.`;
+          }
+          if (action === VERIFY_PANEL_RUN_SWEEP_ID) {
+            const result = await runVerificationDeadlineSweep(client);
+            return `Verification sweep завершён. Проверено: ${result.scanned}, отправлено report: ${result.reported}.`;
+          }
+          return "Verification action завершён.";
+        } catch (error) {
+          return `Verification action failed: ${cleanVerificationText(error?.message || error, 300)}`;
+        }
+      },
     })) {
+      return;
+    }
+
+    if (interaction.customId === VERIFY_ENTRY_GUIDE_ID) {
+      await interaction.reply(ephemeralPayload(buildVerificationGuidePayload({
+        audience: "participant",
+        integration: getVerificationIntegrationState(),
+      })));
+      return;
+    }
+
+    if (interaction.customId === VERIFY_ENTRY_STATUS_ID) {
+      await interaction.reply(ephemeralPayload({ content: buildVerificationStatusText(interaction.user.id) }));
+      return;
+    }
+
+    if (interaction.customId === VERIFY_ENTRY_START_ID) {
+      if (!isVerificationOauthConfigured()) {
+        await interaction.reply(ephemeralPayload({ content: "OAuth env пока не настроен. Сообщи модератору." }));
+        return;
+      }
+
+      try {
+        if (!verificationCallbackServer?.isListening?.()) {
+          await startVerificationRuntime(client);
+        }
+
+        const startedAt = nowIso();
+        ensureVerificationPendingProfile(interaction.user.id, {
+          status: "pending",
+          decision: "none",
+          startedAt,
+          reportDueAt: computeVerificationReportDueAt(startedAt),
+          lastError: "",
+        });
+        const state = createVerificationOauthState(interaction.user.id);
+        const authorizeUrl = buildDiscordOAuthAuthorizeUrl({
+          integration: getVerificationIntegrationState(),
+          env: process.env,
+          state,
+        });
+        await interaction.reply(ephemeralPayload(buildVerificationLaunchPayload({
+          authorizeUrl,
+          description: [
+            "Открой ссылку, авторизуйся тем же Discord-аккаунтом и дождись callback страницы.",
+            buildVerificationStatusText(interaction.user.id),
+          ].join("\n\n"),
+        })));
+      } catch (error) {
+        await interaction.reply(ephemeralPayload({
+          content: `Не удалось запустить verification OAuth: ${cleanVerificationText(error?.message || error, 300)}`,
+        }));
+      }
+      return;
+    }
+
+    const verificationReportAction = parseVerificationReportAction(interaction.customId);
+    if (verificationReportAction?.userId) {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      await interaction.deferUpdate();
+      try {
+        if (verificationReportAction.action === "approve") {
+          const profile = await approveVerificationUser(client, verificationReportAction.userId, interaction.user.tag);
+          await interaction.message.edit(buildVerificationReportPayload({
+            userId: verificationReportAction.userId,
+            profile,
+            statusNote: `Approved by ${interaction.user.tag} at ${formatDateTime(profile.domains?.verification?.reviewedAt)}`,
+            disableActions: true,
+          }));
+          await interaction.followUp(ephemeralPayload({ content: `Verification для <@${verificationReportAction.userId}> одобрена.` }));
+        } else {
+          const profile = await rejectVerificationUser(verificationReportAction.userId, interaction.user.tag);
+          await interaction.message.edit(buildVerificationReportPayload({
+            userId: verificationReportAction.userId,
+            profile,
+            statusNote: `Rejected by ${interaction.user.tag} at ${formatDateTime(profile.domains?.verification?.reviewedAt)}`,
+            disableActions: true,
+          }));
+          await interaction.followUp(ephemeralPayload({ content: `Verification для <@${verificationReportAction.userId}> отклонена.` }));
+        }
+      } catch (error) {
+        await interaction.followUp(ephemeralPayload({
+          content: `Не удалось завершить verification review: ${cleanVerificationText(error?.message || error, 300)}`,
+        }));
+      }
       return;
     }
 
@@ -12594,26 +13323,15 @@ client.on("interactionCreate", async (interaction) => {
         if (cachedChannel) return cachedChannel;
         return client.channels.fetch(channelId).catch(() => null);
       },
-      resolveMemberRoleIds: async (userId) => {
-        const guild = interaction.guild || await getGuild(client).catch(() => null);
-        if (!guild) return [];
-        const member = guild.members?.cache?.get(userId) || await guild.members.fetch(userId).catch(() => null);
-        return member ? [...member.roles.cache.keys()] : [];
-      },
-      applyRoleChanges: async ({ userId, addRoleIds, removeRoleIds }) => {
-        const guild = interaction.guild || await getGuild(client).catch(() => null);
-        if (!guild) return false;
-        const member = guild.members?.cache?.get(userId) || await guild.members.fetch(userId).catch(() => null);
-        if (!member) return false;
-        const reason = `activity initial role assignment by ${interaction.user?.tag || interaction.user?.id || "unknown"}`;
-        if (removeRoleIds.length) {
-          await member.roles.remove(removeRoleIds, reason);
-        }
-        if (addRoleIds.length) {
-          await member.roles.add(addRoleIds, reason);
-        }
-        return true;
-      },
+      resolveMemberRoleIds: (userId) => resolveActivityMemberRoleIds(client, userId, interaction.guild || null),
+      resolveMemberActivityMeta: (userId) => resolveActivityMemberMeta(client, userId, interaction.guild || null),
+      applyRoleChanges: ({ userId, addRoleIds, removeRoleIds }) => applyActivityMemberRoleChanges(client, {
+        userId,
+        addRoleIds,
+        removeRoleIds,
+        guildHint: interaction.guild || null,
+        reason: `activity role sync by ${interaction.user?.tag || interaction.user?.id || "unknown"}`,
+      }),
       saveDb,
     })) {
       return;
@@ -15473,6 +16191,164 @@ client.on("interactionCreate", async (interaction) => {
   }
 
   if (interaction.isModalSubmit()) {
+    if (VERIFY_PANEL_MODAL_IDS.includes(interaction.customId)) {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      try {
+        if (interaction.customId === VERIFY_PANEL_CONFIG_INFRA_MODAL_ID) {
+          const currentIntegration = getVerificationIntegrationState();
+          const enabledRaw = interaction.fields.getTextInputValue("verification_enabled");
+          const callbackBaseUrl = cleanVerificationText(interaction.fields.getTextInputValue("verification_callback_base_url"), 500);
+          const verifyRoleRaw = interaction.fields.getTextInputValue("verification_verify_role");
+          const verificationRoomRaw = interaction.fields.getTextInputValue("verification_room_channel");
+          const reportChannelRaw = interaction.fields.getTextInputValue("verification_report_channel");
+
+          const enabled = parseVerificationBooleanInput(enabledRaw, currentIntegration.enabled === true);
+          if (enabled === null) {
+            await interaction.reply(ephemeralPayload({ content: "Enabled должно быть yes/no, true/false или да/нет." }));
+            return;
+          }
+
+          const verifyRoleId = parseRequestedRoleId(verifyRoleRaw, "");
+          const verificationChannelId = parseRequestedChannelId(verificationRoomRaw, "");
+          const reportChannelId = parseRequestedChannelId(reportChannelRaw, "");
+          if (cleanVerificationText(verifyRoleRaw, 80) && !verifyRoleId) {
+            await interaction.reply(ephemeralPayload({ content: "Verify role должен быть ID роли или mention вида <@&...>." }));
+            return;
+          }
+          if (cleanVerificationText(verificationRoomRaw, 80) && !verificationChannelId) {
+            await interaction.reply(ephemeralPayload({ content: "Verification room должен быть ID канала или mention вида <#...>." }));
+            return;
+          }
+          if (cleanVerificationText(reportChannelRaw, 80) && !reportChannelId) {
+            await interaction.reply(ephemeralPayload({ content: "Report channel должен быть ID канала или mention вида <#...>." }));
+            return;
+          }
+
+          const patch = {
+            enabled,
+            callbackBaseUrl,
+            verificationChannelId,
+            reportChannelId,
+            lastSyncAt: nowIso(),
+          };
+          if (cleanVerificationText(currentIntegration.verificationChannelId, 80) !== verificationChannelId) {
+            patch.entryMessage = { channelId: "", messageId: "" };
+          }
+          writeNativeIntegrationSnapshot(db, { slot: "verification", patch });
+
+          if (verifyRoleId) {
+            writeNativeRoleRecord(db, { slot: "verifyAccess", roleId: verifyRoleId });
+          } else {
+            clearNativeRoleRecord(db, { slot: "verifyAccess" });
+          }
+          saveDb();
+
+          const statusParts = ["Verification infra сохранена."];
+          if (enabled) {
+            try {
+              const runtimeState = await startVerificationRuntime(client);
+              statusParts.push(`Runtime: callback ${runtimeState.callbackStarted ? "ready" : "degraded"}, entry ${runtimeState.entryPublished ? "published" : "not published"}.`);
+            } catch (error) {
+              statusParts.push(`Runtime warning: ${cleanVerificationText(error?.message || error, 200)}`);
+            }
+          }
+
+          await interaction.reply(await buildVerificationPanelReply("runtime", statusParts.join(" ")));
+          return;
+        }
+
+        if (interaction.customId === VERIFY_PANEL_CONFIG_RISK_MODAL_ID) {
+          writeNativeIntegrationSnapshot(db, {
+            slot: "verification",
+            patch: {
+              riskRules: {
+                enemyGuildIds: parseVerificationListInput(interaction.fields.getTextInputValue("verification_enemy_guild_ids")),
+                enemyUserIds: parseVerificationListInput(interaction.fields.getTextInputValue("verification_enemy_user_ids")),
+                enemyInviteCodes: parseVerificationListInput(interaction.fields.getTextInputValue("verification_enemy_invite_codes")),
+                enemyInviterUserIds: parseVerificationListInput(interaction.fields.getTextInputValue("verification_enemy_inviter_user_ids")),
+                manualTags: parseVerificationListInput(interaction.fields.getTextInputValue("verification_manual_tags")),
+              },
+              lastSyncAt: nowIso(),
+            },
+          });
+          saveDb();
+          await interaction.reply(await buildVerificationPanelReply("home", "Verification risk rules сохранены."));
+          return;
+        }
+
+        if (interaction.customId === VERIFY_PANEL_RESEND_REPORT_MODAL_ID) {
+          const targetRaw = interaction.fields.getTextInputValue("verification_resend_user");
+          const targetUserId = parseRequestedUserId(targetRaw, "");
+          if (!targetUserId) {
+            await interaction.reply(ephemeralPayload({ content: "Target user должен быть Discord user ID или mention вида <@...>." }));
+            return;
+          }
+
+          const moderatorNote = cleanVerificationText(interaction.fields.getTextInputValue("verification_resend_note"), 1000)
+            || "Ручной resend verification report.";
+          ensureVerificationPendingProfile(targetUserId, {
+            status: "manual_review",
+            decision: "manual_review",
+          });
+          const result = await postVerificationManualReport(client, targetUserId, moderatorNote);
+          updateVerificationProfile(targetUserId, {
+            status: "manual_review",
+            decision: "manual_review",
+            reportSentAt: nowIso(),
+            reportDueAt: cleanVerificationText(result.profile?.domains?.verification?.reportDueAt, 80) || computeVerificationReportDueAt(),
+          });
+          await interaction.reply(await buildVerificationPanelReply(
+            "runtime",
+            `Verification report повторно отправлен для <@${targetUserId}> в <#${result.channel.id}>.`
+          ));
+          return;
+        }
+
+        const pendingDaysValue = Number.parseInt(interaction.fields.getTextInputValue("verification_pending_days"), 10);
+        if (!Number.isSafeInteger(pendingDaysValue) || pendingDaysValue < 1 || pendingDaysValue > 60) {
+          await interaction.reply(ephemeralPayload({ content: "Pending days должен быть целым числом от 1 до 60." }));
+          return;
+        }
+
+        writeNativeIntegrationSnapshot(db, {
+          slot: "verification",
+          patch: {
+            stageTexts: {
+              entry: cleanVerificationText(interaction.fields.getTextInputValue("verification_stage_entry"), 4000),
+              manualReview: cleanVerificationText(interaction.fields.getTextInputValue("verification_stage_manual_review"), 4000),
+              approved: cleanVerificationText(interaction.fields.getTextInputValue("verification_stage_approved"), 4000),
+              rejected: cleanVerificationText(interaction.fields.getTextInputValue("verification_stage_rejected"), 4000),
+            },
+            deadline: {
+              pendingDays: pendingDaysValue,
+            },
+            lastSyncAt: nowIso(),
+          },
+        });
+        saveDb();
+
+        const currentIntegration = getVerificationIntegrationState();
+        let statusText = "Verification stage texts сохранены.";
+        if (cleanVerificationText(currentIntegration.verificationChannelId, 80)) {
+          try {
+            await ensureVerificationEntryMessage(client);
+            statusText = `${statusText} Entry message обновлено.`;
+          } catch (error) {
+            statusText = `${statusText} Entry warning: ${cleanVerificationText(error?.message || error, 200)}`;
+          }
+        }
+        await interaction.reply(await buildVerificationPanelReply("home", statusText));
+        return;
+      } catch (error) {
+        await interaction.reply(ephemeralPayload({ content: `Не удалось сохранить verification config: ${cleanVerificationText(error?.message || error, 300)}` }));
+        return;
+      }
+    }
+
     if (["onboard_manual_mains_modal", "onboard_manual_mains_quick_modal"].includes(interaction.customId)) {
       const mode = interaction.customId === "onboard_manual_mains_quick_modal" ? "quick" : "full";
       const mainsText = interaction.fields.getTextInputValue("mains");
