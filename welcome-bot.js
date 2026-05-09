@@ -288,6 +288,7 @@ const {
   buildCharacterFactData,
   collectRecentKillChanges,
   paginateRecentKillChanges,
+  summarizeRecentKillChange,
 } = require("./src/onboard/tierlist-ranking");
 const { parseKillsFromSubmittedText, resolveEffectiveSubmittedKills } = require("./src/onboard/submission-message");
 let nonGgsCaptchaModule = null;
@@ -2044,6 +2045,17 @@ function buildRecentKillChangesEmbed(pagination = null) {
     return `${Math.round(n / 1000)}к`;
   };
 
+  const formatKillsRateValue = (value) => {
+    const n = Math.max(0, Number(value) || 0);
+    const rounded = n < 100 ? Math.round(n * 10) / 10 : Math.round(n);
+    if (rounded < 1000) {
+      return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1).replace(/\.0$/, "");
+    }
+
+    const k = rounded / 1000;
+    return `${k.toFixed(k < 100 ? 1 : 0).replace(/\.0$/, "")}к`;
+  };
+
   const resolvedPagination = pagination && typeof pagination === "object"
     ? pagination
     : paginateRecentKillChanges(collectRecentKillChanges(Object.values(db.submissions || {})), {
@@ -2054,9 +2066,13 @@ function buildRecentKillChangesEmbed(pagination = null) {
   if (!resolvedPagination.totalCount) return null;
 
   const lines = resolvedPagination.items.map((c) => {
-    const delta = c.to - c.from;
+    const summary = summarizeRecentKillChange(c);
+    const delta = summary.delta;
     const pct = c.from > 0 ? Math.round((delta / c.from) * 100) : 100;
-    return [`<@${c.userId}>`, `**${formatKillsChangeValue(c.from)} → ${formatKillsChangeValue(c.to)}** • +${formatKillsChangeValue(delta)} (+${pct}%) • ${formatDateOnly(c.fromAt)} → ${formatDateOnly(c.toAt)}`].join("\n");
+    return [
+      `<@${c.userId}>`,
+      `**${formatKillsChangeValue(c.from)} → ${formatKillsChangeValue(c.to)}** • +${formatKillsChangeValue(delta)} (+${pct}%) • ${formatDateOnly(c.fromAt)} → ${formatDateOnly(c.toAt)} (${summary.dayCount} дн.) • ср. ${formatKillsRateValue(summary.averagePerDay)}/день`,
+    ].join("\n");
   });
 
   const start = resolvedPagination.page * RECENT_KILL_CHANGES_PAGE_SIZE + 1;

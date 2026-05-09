@@ -7,6 +7,7 @@ const {
   buildCharacterFactData,
   collectRecentKillChanges,
   paginateRecentKillChanges,
+  summarizeRecentKillChange,
 } = require("../src/onboard/tierlist-ranking");
 
 test("buildCharacterFactData applies people-count threshold to all facts except global and rare", () => {
@@ -86,6 +87,36 @@ test("collectRecentKillChanges keeps only approved upward changes sorted by late
     { userId: "u4", from: 900, to: 1600, fromAt: Date.parse("2026-05-01T00:00:00.000Z"), toAt: Date.parse("2026-05-05T00:00:00.000Z") },
     { userId: "u1", from: 1000, to: 1800, fromAt: Date.parse("2026-05-01T00:00:00.000Z"), toAt: Date.parse("2026-05-03T00:00:00.000Z") },
   ]);
+});
+
+test("summarizeRecentKillChange reports elapsed days and average per day", () => {
+  assert.deepEqual(
+    summarizeRecentKillChange({
+      from: 900,
+      to: 1600,
+      fromAt: Date.parse("2026-05-01T00:00:00.000Z"),
+      toAt: Date.parse("2026-05-05T00:00:00.000Z"),
+    }),
+    {
+      delta: 700,
+      dayCount: 4,
+      averagePerDay: 175,
+    }
+  );
+
+  assert.deepEqual(
+    summarizeRecentKillChange({
+      from: 100,
+      to: 160,
+      fromAt: Date.parse("2026-05-05T08:00:00.000Z"),
+      toAt: Date.parse("2026-05-05T22:00:00.000Z"),
+    }),
+    {
+      delta: 60,
+      dayCount: 1,
+      averagePerDay: 60,
+    }
+  );
 });
 
 test("paginateRecentKillChanges caps the feed at four pages of five entries", () => {
