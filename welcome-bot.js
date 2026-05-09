@@ -160,6 +160,7 @@ const {
 } = require("./src/onboard/channel-owner");
 const {
   applyRobloxAccountSnapshot,
+  configureSharedProfileRuntime,
   createDefaultIntegrationState,
   deriveProfileMainView,
   ensureSharedProfile,
@@ -659,6 +660,7 @@ function validateRuntimeConfig(config) {
 const fileConfig = loadJsonFile(CONFIG_PATH, {});
 const appConfig = buildRuntimeConfig(fileConfig);
 validateRuntimeConfig(appConfig);
+configureSharedProfileRuntime({ roblox: appConfig?.roblox });
 
 function buildSotLegacyOptions(currentDb) {
   const liveTierlistState = getLiveLegacyTierlistState(currentDb);
@@ -9281,18 +9283,26 @@ function buildLegacyEloReviewButtons(submissionId) {
 
 function buildLegacyEloReviewEmbed(submission, statusLabel, extraFields = []) {
   const proofUrl = submission.reviewAttachmentUrl || submission.reviewImage || submission.screenshotUrl || "";
+  const proofMessageUrl = submission.messageUrl || "";
+  const normalizedExtraFields = extraFields.filter(Boolean);
   const embed = new EmbedBuilder()
-    .setTitle(`ELO заявка (${statusLabel || submission.status || "unknown"})`)
+    .setTitle(`ELO-заявка (${statusLabel || submission.status || "unknown"})`)
     .setDescription([
       `Игрок: <@${submission.userId}> (${submission.name || submission.username || submission.userId})`,
       `ELO: **${submission.elo !== null ? formatNumber(submission.elo) : "—"}**`,
-      `Тир: **${submission.tier !== null ? submission.tier : "—"}**`,
-      `Сообщение: ${submission.messageUrl || "—"}`,
-      `ID: **${submission.id || "—"}**`,
+      `Tier по ELO: **${submission.tier !== null ? submission.tier : "—"}**`,
+      `ID: \`${submission.id || "—"}\``,
+      `Создано: **${submission.createdAt ? formatDateTime(submission.createdAt) : "—"}**`,
     ].join("\n"));
 
   if (proofUrl) embed.setImage(proofUrl);
-  if (extraFields.length) embed.addFields(...extraFields);
+  if (proofUrl && !normalizedExtraFields.some((field) => field?.name === "Пруф")) {
+    normalizedExtraFields.push({ name: "Пруф", value: proofUrl, inline: false });
+  }
+  if (proofMessageUrl && !normalizedExtraFields.some((field) => field?.name === "Сообщение с пруфом")) {
+    normalizedExtraFields.push({ name: "Сообщение с пруфом", value: proofMessageUrl, inline: false });
+  }
+  if (normalizedExtraFields.length) embed.addFields(...normalizedExtraFields);
   return embed;
 }
 
@@ -9364,12 +9374,10 @@ function buildLegacyEloReviewPayload(submissionId, statusText = "", includeFlags
   const statusLabel = expired ? "expired" : (submission.status || "unknown");
   const proofUrl = submission.reviewAttachmentUrl || submission.reviewImage || submission.screenshotUrl || "";
   const embed = buildLegacyEloReviewEmbed(submission, statusLabel, [
-    { name: "Создано", value: submission.createdAt ? formatDateTime(submission.createdAt) : "—", inline: true },
     { name: "Проверено", value: submission.reviewedAt ? formatDateTime(submission.reviewedAt) : "—", inline: true },
     { name: "Review channel", value: formatChannelMention(submission.reviewChannelId), inline: true },
     { name: "Review message", value: submission.reviewMessageId || "—", inline: true },
     expired ? { name: "Expired", value: `Да, больше ${LEGACY_ELO_PENDING_EXPIRE_HOURS} ч`, inline: true } : null,
-    proofUrl ? { name: "Пруф", value: proofUrl, inline: false } : null,
   ].filter(Boolean));
   if (statusText) {
     embed.addFields({ name: "Статус", value: statusText, inline: false });
@@ -10711,6 +10719,9 @@ client.once("clientReady", async () => {
     }));
   } catch (error) {
     console.error("Client ready core failed:", error?.message || error);
+    process.exitCode = 1;
+    client.destroy();
+    return;
   }
 
   const legacyEloState = getLiveLegacyEloState();
@@ -14747,19 +14758,48 @@ client.on("interactionCreate", async (interaction) => {
           return;
         }
 
-        await grantNonGgsAccessRole(client, interaction.user.id, "non-JJS captcha passed");
+        const grantWartimeStarterRole = normalizeOnboardAccessMode(getCurrentOnboardMode()) === ONBOARD_ACCESS_MODES.WARTIME
+          && Boolean(getWartimeAccessRoleId());
+        let grantedWartimeStarterRole = false;
+
+        if (grantWartimeStarterRole) {
+          await grantAccessRole(client, interaction.user.id, "non-JJS captcha passed during wartime");
+          grantedWartimeStarterRole = true;
+        }
+
+        try {
+          await grantNonGgsAccessRole(client, interaction.user.id, "non-JJS captcha passed");
+        } catch (error) {
+          if (grantedWartimeStarterRole) {
+            await revokeAccessRole(client, interaction.user.id, "rollback wartime starter role after non-JJS grant failure").catch((rollbackError) => {
+              console.warn(`Rollback wartime starter role failed for ${interaction.user.id}: ${formatRuntimeError(rollbackError)}`);
+            });
+          }
+          throw error;
+        }
+
         clearNonGgsCaptchaSession(interaction.user.id);
 
         const profile = getProfile(interaction.user.id);
+        if (grantedWartimeStarterRole) {
+          profile.accessGrantedAt = profile.accessGrantedAt || nowIso();
+        }
         profile.nonGgsAccessGrantedAt = profile.nonGgsAccessGrantedAt || nowIso();
         profile.nonGgsCaptchaPassedAt = nowIso();
         profile.updatedAt = nowIso();
         saveDb();
 
-        await logLine(client, `NON_JJS_ACCESS: <@${interaction.user.id}> passed captcha and received separate no-JJS role`);
+        await logLine(
+          client,
+          grantedWartimeStarterRole
+            ? `NON_JJS_ACCESS: <@${interaction.user.id}> passed captcha and received separate no-JJS role plus wartime starter role`
+            : `NON_JJS_ACCESS: <@${interaction.user.id}> passed captcha and received separate no-JJS role`
+        );
 
         await interaction.update({
-          content: "Готово. Капча пройдена, тебе выдана отдельная роль доступа для тех, кто не играет в JJS.",
+          content: grantedWartimeStarterRole
+            ? "Готово. Капча пройдена: тебе выдана отдельная роль доступа для тех, кто не играет в JJS, и военная стартовая роль текущего режима."
+            : "Готово. Капча пройдена, тебе выдана отдельная роль доступа для тех, кто не играет в JJS.",
           embeds: [],
           components: [],
           attachments: [],

@@ -362,6 +362,144 @@ test("runRobloxPlaytimeSyncJob updates rolling JJS minutes and co-play state in 
   assert.equal(runtimeState.dirtyDiscordUserIds.has("user_b"), true);
 });
 
+test("runRobloxPlaytimeSyncJob keeps active sessions open when presence polling fails", async () => {
+  const runtimeState = createRobloxRuntimeState();
+  runtimeState.activeSessionsByDiscordUserId.user_a = {
+    startedAt: "2026-05-09T12:00:00.000Z",
+    lastSeenAt: "2026-05-09T12:00:00.000Z",
+    gameId: "server-1",
+  };
+  runtimeState.activeCoPlayPairsByKey["user_a:user_b"] = {
+    gameId: "server-1",
+    lastSeenAt: "2026-05-09T12:00:00.000Z",
+  };
+
+  const db = {
+    profiles: {
+      user_a: {
+        userId: "user_a",
+        domains: {
+          roblox: {
+            username: "AlphaRb",
+            userId: "101",
+            verificationStatus: "verified",
+            playtime: {
+              totalJjsMinutes: 10,
+              jjsMinutes7d: 10,
+              jjsMinutes30d: 10,
+              sessionCount: 1,
+              currentSessionStartedAt: "2026-05-09T12:00:00.000Z",
+              lastSeenInJjsAt: "2026-05-09T12:00:00.000Z",
+              dailyBuckets: {
+                "2026-05-09": 10,
+              },
+            },
+          },
+        },
+      },
+      user_b: {
+        userId: "user_b",
+        domains: {
+          roblox: {
+            username: "BetaRb",
+            userId: "202",
+            verificationStatus: "verified",
+          },
+        },
+      },
+    },
+  };
+
+  const result = await runRobloxPlaytimeSyncJob({
+    db,
+    runtimeState,
+    now: () => "2026-05-09T12:02:00.000Z",
+    roblox: {
+      jjsUniverseId: 999,
+      playtimePollMinutes: 2,
+    },
+    async fetchUserPresences() {
+      throw new Error("rate limited");
+    },
+  });
+
+  assert.deepEqual(result, {
+    totalCandidates: 2,
+    activeJjsUsers: 0,
+    touchedUserCount: 0,
+    startedSessionCount: 0,
+    closedSessionCount: 0,
+    activeCoPlayPairCount: 0,
+  });
+  assert.deepEqual(runtimeState.activeSessionsByDiscordUserId.user_a, {
+    startedAt: "2026-05-09T12:00:00.000Z",
+    lastSeenAt: "2026-05-09T12:00:00.000Z",
+    gameId: "server-1",
+  });
+  assert.deepEqual(runtimeState.activeCoPlayPairsByKey["user_a:user_b"], {
+    gameId: "server-1",
+    lastSeenAt: "2026-05-09T12:00:00.000Z",
+  });
+  assert.equal(db.profiles.user_a.domains.roblox.playtime.currentSessionStartedAt, "2026-05-09T12:00:00.000Z");
+  assert.equal(runtimeState.dirtyDiscordUserIds.size, 0);
+});
+
+test("runRobloxPlaytimeSyncJob clears stale persisted session markers after restart when user is offline", async () => {
+  const runtimeState = createRobloxRuntimeState();
+  const db = {
+    profiles: {
+      user_a: {
+        userId: "user_a",
+        domains: {
+          roblox: {
+            username: "AlphaRb",
+            userId: "101",
+            verificationStatus: "verified",
+            playtime: {
+              totalJjsMinutes: 10,
+              jjsMinutes7d: 10,
+              jjsMinutes30d: 10,
+              sessionCount: 1,
+              currentSessionStartedAt: "2026-05-09T12:00:00.000Z",
+              lastSeenInJjsAt: "2026-05-09T12:00:00.000Z",
+              dailyBuckets: {
+                "2026-05-09": 10,
+              },
+            },
+          },
+        },
+      },
+    },
+  };
+
+  const result = await runRobloxPlaytimeSyncJob({
+    db,
+    runtimeState,
+    now: () => "2026-05-09T12:02:00.000Z",
+    roblox: {
+      jjsUniverseId: 999,
+      playtimePollMinutes: 2,
+    },
+    async fetchUserPresences(userIds) {
+      return userIds.map((userId) => ({
+        userId,
+        presenceType: "offline",
+      }));
+    },
+  });
+
+  assert.deepEqual(result, {
+    totalCandidates: 1,
+    activeJjsUsers: 0,
+    touchedUserCount: 1,
+    startedSessionCount: 0,
+    closedSessionCount: 0,
+    activeCoPlayPairCount: 0,
+  });
+  assert.equal(db.profiles.user_a.domains.roblox.playtime.currentSessionStartedAt, null);
+  assert.equal(runtimeState.dirtyDiscordUserIds.has("user_a"), true);
+});
+
 test("flushRobloxRuntime persists only when playtime runtime marked profiles dirty", () => {
   const runtimeState = createRobloxRuntimeState();
   const db = {

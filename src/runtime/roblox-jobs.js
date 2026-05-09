@@ -270,6 +270,7 @@ function createRobloxJobCoordinator(options = {}) {
 async function runRobloxPlaytimeCycle(options = {}) {
   const fetchPresenceBatch = options.fetchPresenceBatch || options.fetchUserPresences;
   const processPresenceBatch = options.processPresenceBatch || null;
+  const handleFailedBatch = options.handleFailedBatch || null;
   const logError = typeof options.logError === "function" ? options.logError : () => {};
   const candidateUserIds = normalizeCandidateUserIds(options.userIds);
   const batchSize = normalizePositiveInteger(options.batchSize, 100);
@@ -277,6 +278,9 @@ async function runRobloxPlaytimeCycle(options = {}) {
   assertFunction(fetchPresenceBatch, "fetchPresenceBatch");
   if (processPresenceBatch != null) {
     assertFunction(processPresenceBatch, "processPresenceBatch");
+  }
+  if (handleFailedBatch != null) {
+    assertFunction(handleFailedBatch, "handleFailedBatch");
   }
 
   const summary = {
@@ -301,11 +305,26 @@ async function runRobloxPlaytimeCycle(options = {}) {
     } catch (error) {
       summary.failedBatches += 1;
       summary.failedUserIds += batchUserIds.length;
+      if (typeof handleFailedBatch === "function") {
+        await handleFailedBatch(batchUserIds, error);
+      }
       logError(`Roblox playtime batch failed [${batchUserIds.join(",")}]:`, formatErrorText(error));
     }
   }
 
   return summary;
+}
+
+function recalculatePlaytimeWindows(playtime, nowIso) {
+  playtime.jjsMinutes7d = sumRecentDailyMinutes(playtime.dailyBuckets, nowIso, 7);
+  playtime.jjsMinutes30d = sumRecentDailyMinutes(playtime.dailyBuckets, nowIso, 30);
+}
+
+function splitRuntimePairKey(pairKey) {
+  return String(pairKey || "")
+    .split(":")
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
 }
 
 async function runRobloxProfileRefreshJob(options = {}) {
@@ -448,6 +467,7 @@ async function runRobloxPlaytimeSyncJob(options = {}) {
   const candidates = buildRobloxVerifiedCandidates(db);
   const candidateByRobloxUserId = new Map(candidates.map((candidate) => [candidate.robloxUserId, candidate]));
   const presenceByRobloxUserId = new Map();
+  const failedRobloxUserIds = new Set();
 
   await runRobloxPlaytimeCycle({
     userIds: candidates.map((candidate) => candidate.robloxUserId),
@@ -460,20 +480,37 @@ async function runRobloxPlaytimeSyncJob(options = {}) {
         presenceByRobloxUserId.set(robloxUserId, presence);
       }
     },
+    handleFailedBatch(batchUserIds) {
+      for (const robloxUserId of Array.isArray(batchUserIds) ? batchUserIds : []) {
+        failedRobloxUserIds.add(Number(robloxUserId));
+      }
+    },
     logError,
   });
 
   const activeUsersByGameId = new Map();
   const touchedDiscordUserIds = new Set();
+  const failedDiscordUserIds = new Set();
   let startedSessionCount = 0;
   let closedSessionCount = 0;
 
   for (const candidate of candidates) {
+    if (failedRobloxUserIds.has(candidate.robloxUserId)) {
+      failedDiscordUserIds.add(candidate.discordUserId);
+    }
+  }
+
+  for (const candidate of candidates) {
+    if (failedRobloxUserIds.has(candidate.robloxUserId)) {
+      continue;
+    }
+
     const presence = presenceByRobloxUserId.get(candidate.robloxUserId) || null;
     const inJjs = isPresenceInConfiguredJjs(presence, trackingConfig);
     const profile = candidate.profile;
     const playtime = profile.domains.roblox.playtime;
     const activeSession = runtimeState.activeSessionsByDiscordUserId[candidate.discordUserId] || null;
+    const hasPersistedSessionMarker = Boolean(playtime.currentSessionStartedAt);
 
     if (inJjs) {
       const gameId = String(presence?.gameId || "").trim() || `root:${presence?.rootPlaceId || "unknown"}`;
@@ -492,8 +529,7 @@ async function runRobloxPlaytimeSyncJob(options = {}) {
         playtime.dailyBuckets = appendDailyMinutes(playtime.dailyBuckets, nowIso, deltaMinutes);
       }
 
-      playtime.jjsMinutes7d = sumRecentDailyMinutes(playtime.dailyBuckets, nowIso, 7);
-      playtime.jjsMinutes30d = sumRecentDailyMinutes(playtime.dailyBuckets, nowIso, 30);
+      recalculatePlaytimeWindows(playtime, nowIso);
       playtime.lastSeenInJjsAt = nowIso;
       runtimeState.activeSessionsByDiscordUserId[candidate.discordUserId] = {
         startedAt: isContinuation ? activeSession.startedAt : nowIso,
@@ -509,13 +545,14 @@ async function runRobloxPlaytimeSyncJob(options = {}) {
       continue;
     }
 
-    if (activeSession) {
+    if (activeSession || hasPersistedSessionMarker) {
       delete runtimeState.activeSessionsByDiscordUserId[candidate.discordUserId];
       playtime.currentSessionStartedAt = null;
-      playtime.jjsMinutes7d = sumRecentDailyMinutes(playtime.dailyBuckets, nowIso, 7);
-      playtime.jjsMinutes30d = sumRecentDailyMinutes(playtime.dailyBuckets, nowIso, 30);
+      recalculatePlaytimeWindows(playtime, nowIso);
       touchedDiscordUserIds.add(candidate.discordUserId);
-      closedSessionCount += 1;
+      if (activeSession) {
+        closedSessionCount += 1;
+      }
     }
   }
 
@@ -570,6 +607,10 @@ async function runRobloxPlaytimeSyncJob(options = {}) {
   }
 
   for (const pairKey of Object.keys(runtimeState.activeCoPlayPairsByKey)) {
+    const pairDiscordUserIds = splitRuntimePairKey(pairKey);
+    if (pairDiscordUserIds.some((discordUserId) => failedDiscordUserIds.has(discordUserId))) {
+      continue;
+    }
     if (!activePairKeys.has(pairKey)) {
       delete runtimeState.activeCoPlayPairsByKey[pairKey];
     }
