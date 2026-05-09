@@ -206,6 +206,44 @@ test("getRobloxStatsPanelSnapshot aggregates linked users, job telemetry, and co
   assert.match(snapshot.issues[2], /Синк playtime потерял пачки/i);
 });
 
+test("getRobloxStatsPanelSnapshot hides refresh blockers in passive-only mode", async () => {
+  const telemetry = createRobloxPanelTelemetry();
+  await telemetry.wrapJob("profile_refresh", async () => ({
+    refreshedCount: 1,
+    failedCount: 7,
+  }))();
+
+  const snapshot = getRobloxStatsPanelSnapshot({
+    db: {
+      profiles: {
+        user_1: {
+          userId: "user_1",
+          displayName: "Gojo",
+          domains: {
+            roblox: {
+              username: "GojoRb",
+              userId: "1",
+              verificationStatus: "verified",
+              refreshError: "Roblox API request failed (429)",
+            },
+          },
+        },
+      },
+    },
+    telemetry,
+    appConfig: {
+      roblox: {
+        metadataRefreshEnabled: false,
+        jjsUniverseId: 3508322461,
+      },
+    },
+  });
+
+  assert.equal(snapshot.config.metadataRefreshEnabled, false);
+  assert.equal(snapshot.totals.refreshErrorUsers, 0);
+  assert.equal(snapshot.issues.length, 0);
+});
+
 test("buildRobloxStatsPanelPayload renders manual controls and blocker field", () => {
   const payload = buildRobloxStatsPanelPayload({
     db: {
@@ -225,6 +263,7 @@ test("buildRobloxStatsPanelPayload renders manual controls and blocker field", (
     },
     appConfig: {
       roblox: {
+        metadataRefreshEnabled: false,
         jjsUniverseId: 0,
         jjsRootPlaceId: 0,
         jjsPlaceId: 0,
@@ -237,6 +276,7 @@ test("buildRobloxStatsPanelPayload renders manual controls and blocker field", (
   assert.equal(payload.components[0].components[0].data.custom_id, "roblox_stats_refresh");
   assert.equal(payload.components[0].components[4].data.custom_id, "roblox_stats_back");
   assert.equal(payload.components[0].components[1].data.label, "Обновить профили");
+  assert.equal(payload.components[0].components[1].data.disabled, true);
   assert.equal(payload.components[0].components[2].data.label, "Синк playtime");
   assert.equal(payload.components[0].components[3].data.label, "Сохранить runtime");
   assert.equal(payload.embeds[0].data.fields.at(-1).name, "Последнее действие");
@@ -292,6 +332,30 @@ test("handleRobloxStatsPanelButtonInteraction gates permissions and delegates ma
   assert.equal(playtimeRuns, 1);
   assert.equal(manual.calls.deferred, 1);
   assert.match(manual.calls.edits[0].content, /Активных в JJS: 2, затронуто профилей: 3, ошибок пользователей: 1/i);
+
+  const disabledRefresh = createInteraction("roblox_stats_run_profile_refresh");
+  let profileRuns = 0;
+  await handleRobloxStatsPanelButtonInteraction({
+    interaction: disabledRefresh.interaction,
+    client: {},
+    db: {},
+    runtimeState: {},
+    appConfig: { roblox: { metadataRefreshEnabled: false } },
+    telemetry: createRobloxPanelTelemetry(),
+    isModerator: () => true,
+    replyNoPermission: () => disabledRefresh.interaction.reply({ content: "Нет прав." }),
+    buildModeratorPanelPayload: async () => ({ content: "main" }),
+    buildRobloxPanelPayload: ({ statusText = "" } = {}) => ({ content: statusText }),
+    runProfileRefreshJob: async () => {
+      profileRuns += 1;
+      return {};
+    },
+    runPlaytimeSyncJob: async () => ({}),
+    runRuntimeFlush: async () => ({}),
+  });
+
+  assert.equal(profileRuns, 0);
+  assert.match(disabledRefresh.calls.updates[0].content, /выключено/i);
 
   const back = createInteraction("roblox_stats_back");
   await handleRobloxStatsPanelButtonInteraction({

@@ -217,6 +217,10 @@ function isJjsConfigured(appConfig = {}) {
   );
 }
 
+function isMetadataRefreshEnabled(appConfig = {}) {
+  return appConfig?.roblox?.metadataRefreshEnabled !== false;
+}
+
 function shouldIncludeRobloxEntry(roblox = {}) {
   return Boolean(
     cleanString(roblox.userId, 40)
@@ -268,7 +272,8 @@ function getRobloxEntryPriority(entry = {}) {
   return score;
 }
 
-function collectRobloxPanelEntries(db = {}, runtimeState = {}) {
+function collectRobloxPanelEntries(db = {}, runtimeState = {}, options = {}) {
+  const showRefreshDiagnostics = options.showRefreshDiagnostics !== false;
   return Object.entries(db?.profiles || {})
     .map(([userId, rawProfile]) => {
       const profile = ensureSharedProfile(rawProfile, userId).profile;
@@ -287,7 +292,7 @@ function collectRobloxPanelEntries(db = {}, runtimeState = {}) {
         robloxUserId: cleanString(summary.userId, 40) || null,
         verificationStatus: cleanString(summary.verificationStatus, 40) || "unverified",
         refreshStatus: cleanString(summary.refreshStatus, 40) || null,
-        refreshError: cleanString(summary.refreshError, 500) || null,
+        refreshError: showRefreshDiagnostics ? cleanString(summary.refreshError, 500) || null : null,
         lastRefreshAt: cleanString(summary.lastRefreshAt, 80) || null,
         totalJjsMinutes: normalizeNonNegativeInteger(summary.totalJjsMinutes, 0),
         currentSessionStartedAt: cleanString(summary.currentSessionStartedAt, 80) || null,
@@ -330,14 +335,15 @@ function cloneTelemetryJobState(job = {}, runtimeState = {}) {
 
 function buildRobloxPanelIssues(snapshot = {}) {
   const issues = [];
+  const metadataRefreshEnabled = snapshot.config?.metadataRefreshEnabled !== false;
 
   if (!snapshot.config?.jjsReady) {
     issues.push("JJS IDs не настроены: сбор playtime не начнётся, пока jjsUniverseId, jjsRootPlaceId и jjsPlaceId равны 0.");
   }
 
-  if (snapshot.jobs?.profileRefresh?.status === "error") {
+  if (metadataRefreshEnabled && snapshot.jobs?.profileRefresh?.status === "error") {
     issues.push(`Обновление профилей упало: ${snapshot.jobs.profileRefresh.errorText}`);
-  } else if (normalizeNonNegativeInteger(snapshot.jobs?.profileRefresh?.summary?.failedCount, 0) > 0) {
+  } else if (metadataRefreshEnabled && normalizeNonNegativeInteger(snapshot.jobs?.profileRefresh?.summary?.failedCount, 0) > 0) {
     issues.push(`Обновление профилей завершилось с ошибками: ${snapshot.jobs.profileRefresh.summary.failedCount}.`);
   }
 
@@ -353,7 +359,7 @@ function buildRobloxPanelIssues(snapshot = {}) {
     issues.push(`Сохранение runtime упало: ${snapshot.jobs.runtimeFlush.errorText}`);
   }
 
-  if (snapshot.totals?.refreshErrorUsers > 0) {
+  if (metadataRefreshEnabled && snapshot.totals?.refreshErrorUsers > 0) {
     const names = snapshot.topEntries
       .filter((entry) => entry.refreshError)
       .slice(0, ROBLOX_PANEL_ISSUE_LIMIT)
@@ -365,11 +371,15 @@ function buildRobloxPanelIssues(snapshot = {}) {
 }
 
 function getRobloxStatsPanelSnapshot({ db = {}, runtimeState = {}, telemetry = null, appConfig = {} } = {}) {
-  const entries = collectRobloxPanelEntries(db, runtimeState);
+  const metadataRefreshEnabled = isMetadataRefreshEnabled(appConfig);
+  const entries = collectRobloxPanelEntries(db, runtimeState, {
+    showRefreshDiagnostics: metadataRefreshEnabled,
+  });
   const topEntries = entries.slice(0, ROBLOX_PANEL_TOP_LIMIT);
   const snapshot = {
     config: {
       jjsReady: isJjsConfigured(appConfig),
+      metadataRefreshEnabled,
       jjsUniverseId: normalizeNonNegativeInteger(appConfig?.roblox?.jjsUniverseId, 0),
       jjsRootPlaceId: normalizeNonNegativeInteger(appConfig?.roblox?.jjsRootPlaceId, 0),
       jjsPlaceId: normalizeNonNegativeInteger(appConfig?.roblox?.jjsPlaceId, 0),
@@ -436,12 +446,14 @@ function formatTopEntry(entry = {}, index = 0) {
 
 function buildRobloxStatsPanelPayload({ db = {}, runtimeState = {}, telemetry = null, appConfig = {}, statusText = "" } = {}) {
   const snapshot = getRobloxStatsPanelSnapshot({ db, runtimeState, telemetry, appConfig });
+  const metadataRefreshEnabled = snapshot.config.metadataRefreshEnabled !== false;
   const embed = new EmbedBuilder()
     .setTitle("Контроль Roblox")
     .setDescription([
       "Закрытая мод-панель для привязок Roblox, обновления профилей и учёта JJS.",
       `Связано аккаунтов: **${snapshot.totals.linkedUsers}**`,
       `Трекинг JJS: **${snapshot.config.jjsReady ? "готов" : "не настроен"}**`,
+      `Обновление профилей: **${metadataRefreshEnabled ? "включено" : "выключено"}**`,
     ].join("\n"))
     .addFields(
       {
@@ -450,7 +462,7 @@ function buildRobloxStatsPanelPayload({ db = {}, runtimeState = {}, telemetry = 
           `Проверено: **${snapshot.totals.verifiedUsers}**`,
           `Ждут сверки: **${snapshot.totals.pendingUsers}**`,
           `Сверка не пройдена: **${snapshot.totals.failedUsers}**`,
-          `С ошибками обновления: **${snapshot.totals.refreshErrorUsers}**`,
+          `${metadataRefreshEnabled ? "С ошибками обновления" : "Исторические ошибки обновления скрыты"}: **${metadataRefreshEnabled ? snapshot.totals.refreshErrorUsers : 0}**`,
           `Проверены, но не обновлялись: **${snapshot.totals.neverRefreshedVerifiedUsers}**`,
         ].join("\n"),
         inline: false,
@@ -468,7 +480,7 @@ function buildRobloxStatsPanelPayload({ db = {}, runtimeState = {}, telemetry = 
       {
         name: "Фоновые задачи",
         value: [
-          `Обновление профилей: ${formatRobloxJobLine(snapshot.jobs.profileRefresh)}`,
+          `Обновление профилей: ${metadataRefreshEnabled ? formatRobloxJobLine(snapshot.jobs.profileRefresh) : "выключено для passive tracking"}`,
           `Синк playtime: ${formatRobloxJobLine(snapshot.jobs.playtimeSync)}`,
           `Сохранение runtime: ${formatRobloxJobLine(snapshot.jobs.runtimeFlush)}`,
         ].join("\n"),
@@ -501,7 +513,7 @@ function buildRobloxStatsPanelPayload({ db = {}, runtimeState = {}, telemetry = 
     components: [
       new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId("roblox_stats_refresh").setLabel("Обновить").setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId("roblox_stats_run_profile_refresh").setLabel("Обновить профили").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("roblox_stats_run_profile_refresh").setLabel("Обновить профили").setStyle(ButtonStyle.Secondary).setDisabled(!metadataRefreshEnabled),
         new ButtonBuilder().setCustomId("roblox_stats_run_playtime_sync").setLabel("Синк playtime").setStyle(ButtonStyle.Secondary),
         new ButtonBuilder().setCustomId("roblox_stats_run_flush").setLabel("Сохранить runtime").setStyle(ButtonStyle.Secondary),
         new ButtonBuilder().setCustomId("roblox_stats_back").setLabel("Назад").setStyle(ButtonStyle.Secondary)
@@ -574,6 +586,13 @@ async function handleRobloxStatsPanelButtonInteraction({
 
   if (customId === "roblox_stats_back") {
     await interaction.update(await buildModeratorPanelPayload(client, "", false));
+    return true;
+  }
+
+  if (customId === "roblox_stats_run_profile_refresh" && !isMetadataRefreshEnabled(appConfig)) {
+    await interaction.update(renderPanel({
+      statusText: "Обновление профилей выключено. Для пассивного учёта JJS оно не нужно.",
+    }));
     return true;
   }
 

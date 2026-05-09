@@ -16,6 +16,7 @@ const {
   getOnboardAccessModeLabel,
   isApocalypseMode,
   normalizeOnboardAccessMode,
+  resolveGrantedAccessRoleId,
 } = require("../src/onboard/access-mode");
 const { commitMutation } = require("../src/onboard/refresh-runner");
 const {
@@ -676,6 +677,29 @@ test("onboard mode state normalizes persisted values and exposes readable labels
     changedAt: "2026-04-23T08:00:00.000Z",
     changedBy: "mod",
   });
+});
+
+test("resolveGrantedAccessRoleId keeps the normal access role for returning members during wartime", () => {
+  assert.equal(resolveGrantedAccessRoleId({
+    mode: ONBOARD_ACCESS_MODES.WARTIME,
+    normalAccessRoleId: "base-role",
+    wartimeAccessRoleId: "wartime-role",
+    heldRoleIds: ["base-role"],
+  }), "base-role");
+
+  assert.equal(resolveGrantedAccessRoleId({
+    mode: ONBOARD_ACCESS_MODES.WARTIME,
+    normalAccessRoleId: "base-role",
+    wartimeAccessRoleId: "wartime-role",
+    heldRoleIds: ["other-role"],
+  }), "wartime-role");
+
+  assert.equal(resolveGrantedAccessRoleId({
+    mode: ONBOARD_ACCESS_MODES.WARTIME,
+    normalAccessRoleId: "base-role",
+    wartimeAccessRoleId: "",
+    heldRoleIds: [],
+  }), "base-role");
 });
 
 test("access grant mode state normalizes persisted values and exposes readable labels", () => {

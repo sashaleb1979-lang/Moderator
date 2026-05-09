@@ -39,6 +39,41 @@ function isApocalypseMode(value) {
   return normalizeOnboardAccessMode(value) === ONBOARD_ACCESS_MODES.APOCALYPSE;
 }
 
+function cleanRoleId(value) {
+  return String(value || "").trim();
+}
+
+function normalizeHeldRoleIds(value) {
+  if (value instanceof Set) {
+    return new Set([...value].map((entry) => cleanRoleId(entry)).filter(Boolean));
+  }
+  if (Array.isArray(value)) {
+    return new Set(value.map((entry) => cleanRoleId(entry)).filter(Boolean));
+  }
+  return new Set();
+}
+
+function resolveGrantedAccessRoleId({
+  mode = ONBOARD_ACCESS_MODES.NORMAL,
+  normalAccessRoleId = "",
+  wartimeAccessRoleId = "",
+  heldRoleIds = [],
+} = {}) {
+  const normalizedMode = normalizeOnboardAccessMode(mode);
+  const normalRoleId = cleanRoleId(normalAccessRoleId);
+  const wartimeRoleId = cleanRoleId(wartimeAccessRoleId);
+  const heldRoleIdSet = normalizeHeldRoleIds(heldRoleIds);
+
+  if (normalizedMode === ONBOARD_ACCESS_MODES.WARTIME) {
+    if (normalRoleId && heldRoleIdSet.has(normalRoleId)) {
+      return normalRoleId;
+    }
+    return wartimeRoleId || normalRoleId;
+  }
+
+  return normalRoleId;
+}
+
 module.exports = {
   ONBOARD_ACCESS_MODES,
   ONBOARD_ACCESS_MODE_LABELS,
@@ -46,4 +81,5 @@ module.exports = {
   getOnboardAccessModeLabel,
   isApocalypseMode,
   normalizeOnboardAccessMode,
+  resolveGrantedAccessRoleId,
 };
