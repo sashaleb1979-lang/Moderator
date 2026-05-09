@@ -13,7 +13,7 @@ function cleanString(value, limit = 500) {
 
 function normalizeIntegrationSlot(slot) {
   const normalized = cleanString(slot, 40);
-  return ["elo", "tierlist", "verification"].includes(normalized) ? normalized : "";
+  return ["elo", "tierlist", "roblox", "verification"].includes(normalized) ? normalized : "";
 }
 
 function isPlainObject(value) {

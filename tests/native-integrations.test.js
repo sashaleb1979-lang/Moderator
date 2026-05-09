@@ -14,6 +14,7 @@ const {
 test("normalizeIntegrationSlot accepts only supported integration slots", () => {
   assert.equal(normalizeIntegrationSlot("elo"), "elo");
   assert.equal(normalizeIntegrationSlot("tierlist"), "tierlist");
+  assert.equal(normalizeIntegrationSlot("roblox"), "roblox");
   assert.equal(normalizeIntegrationSlot("verification"), "verification");
   assert.equal(normalizeIntegrationSlot("unknown"), "");
 });
@@ -101,4 +102,22 @@ test("writeNativeIntegrationSnapshot supports verification integration state", (
   assert.deepEqual(db.sot.integrations.verification.riskRules, {
     enemyGuildIds: ["guild-1"],
   });
+});
+
+test("writeNativeIntegrationSnapshot supports roblox integration state", () => {
+  const db = {};
+
+  const result = writeNativeIntegrationSnapshot(db, {
+    slot: "roblox",
+    patch: {
+      playtimeTrackingEnabled: true,
+      playtimePollMinutes: 3,
+      runtimeFlushEnabled: false,
+    },
+  });
+
+  assert.equal(result.mutated, true);
+  assert.equal(db.sot.integrations.roblox.playtimeTrackingEnabled, true);
+  assert.equal(db.config.integrations.roblox.playtimePollMinutes, 3);
+  assert.equal(db.config.integrations.roblox.runtimeFlushEnabled, false);
 });

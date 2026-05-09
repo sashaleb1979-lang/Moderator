@@ -165,6 +165,7 @@ const {
   handleActivityPanelModalSubmitInteraction,
   runDailyActivityRoleSync,
 } = require("./src/activity/operator");
+const { ensureActivityState } = require("./src/activity/state");
 const {
   flushActivityRuntime,
   recordActivityMessage,

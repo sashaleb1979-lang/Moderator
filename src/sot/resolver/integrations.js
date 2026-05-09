@@ -2,7 +2,7 @@
 
 const { migrateLegacyState } = require("../schema");
 
-const INTEGRATION_SLOTS = ["elo", "tierlist", "verification"];
+const INTEGRATION_SLOTS = ["elo", "tierlist", "roblox", "verification"];
 
 function clone(value) {
   if (value === undefined) return undefined;
