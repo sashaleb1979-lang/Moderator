@@ -25,6 +25,9 @@ test("buildClientReadyPeriodicJobs owns interval defaults and feature gating for
     flushActivityRuntime(client) {
       calls.push(["flushActivityRuntime", client]);
     },
+    runVerificationDeadlineSweep(client) {
+      calls.push(["runVerificationDeadlineSweep", client]);
+    },
     syncRobloxPlaytime(client) {
       calls.push(["syncRobloxPlaytime", client]);
     },
@@ -38,6 +41,10 @@ test("buildClientReadyPeriodicJobs owns interval defaults and feature gating for
     rolePanelAutoResendTickMs: 100,
     legacyTierlistSummaryRefreshMs: 200,
     activityFlushIntervalMs: 300,
+    verification: {
+      enabled: true,
+      reportSweepMinutes: 45,
+    },
     roblox: {
       metadataRefreshEnabled: true,
       metadataRefreshHours: 6,
@@ -51,11 +58,12 @@ test("buildClientReadyPeriodicJobs owns interval defaults and feature gating for
     "Auto-resend tick error",
     "Legacy Tierlist summary refresh failed",
     "Activity runtime flush failed",
+    "Verification deadline sweep failed",
     "Roblox metadata refresh failed",
     "Roblox playtime sync failed",
     "Roblox runtime flush failed",
   ]);
-  assert.deepEqual(periodicJobs.map((job) => job.intervalMs), [100, 200, 300, 21600000, 900000, 660000]);
+  assert.deepEqual(periodicJobs.map((job) => job.intervalMs), [100, 200, 300, 2700000, 21600000, 900000, 660000]);
 
   await periodicJobs[1].run({ id: "client" });
   assert.deepEqual(calls, [
@@ -134,6 +142,21 @@ test("buildClientReadyPeriodicJobs applies Roblox default poll and flush cadence
     "Roblox runtime flush failed",
   ]);
   assert.deepEqual(robloxJobs.map((job) => job.intervalMs), [86400000, 120000, 600000]);
+});
+
+test("buildClientReadyPeriodicJobs adds verification deadline sweep only when verification is enabled", () => {
+  const periodicJobs = buildClientReadyPeriodicJobs({
+    runAutoResendTick() {},
+    async refreshLegacyTierlistSummaryMessage() {},
+    runVerificationDeadlineSweep() {},
+    verification: {
+      enabled: true,
+      reportSweepMinutes: 30,
+    },
+  });
+
+  assert.equal(periodicJobs.some((job) => job.errorLabel === "Verification deadline sweep failed"), true);
+  assert.equal(periodicJobs.find((job) => job.errorLabel === "Verification deadline sweep failed").intervalMs, 1800000);
 });
 
 test("runClientReadyCore preserves startup order for the core prelude", async () => {

@@ -364,11 +364,27 @@ function buildPanelMap(dbConfig = {}) {
   };
 }
 
-function buildIntegrationState(dbConfig = {}) {
+function buildIntegrationState(dbConfig = {}, appConfig = {}) {
   const integrations = dbConfig.integrations && typeof dbConfig.integrations === "object" ? dbConfig.integrations : {};
   const eloIntegration = integrations.elo && typeof integrations.elo === "object" ? integrations.elo : {};
   const tierlistIntegration = integrations.tierlist && typeof integrations.tierlist === "object" ? integrations.tierlist : {};
   const verificationIntegration = integrations.verification && typeof integrations.verification === "object" ? integrations.verification : {};
+  const appVerification = appConfig.verification && typeof appConfig.verification === "object" && !Array.isArray(appConfig.verification)
+    ? appConfig.verification
+    : {};
+
+  const verificationStageTexts = appVerification.stageTexts && typeof appVerification.stageTexts === "object" && !Array.isArray(appVerification.stageTexts)
+    ? appVerification.stageTexts
+    : {};
+  const verificationRiskRules = appVerification.riskRules && typeof appVerification.riskRules === "object" && !Array.isArray(appVerification.riskRules)
+    ? appVerification.riskRules
+    : {};
+  const verificationDeadline = appVerification.deadline && typeof appVerification.deadline === "object" && !Array.isArray(appVerification.deadline)
+    ? appVerification.deadline
+    : {};
+  const verificationEntryMessage = appVerification.entryMessage && typeof appVerification.entryMessage === "object" && !Array.isArray(appVerification.entryMessage)
+    ? appVerification.entryMessage
+    : {};
 
   return clone({
     elo: {
@@ -391,17 +407,19 @@ function buildIntegrationState(dbConfig = {}) {
       summary: clone(tierlistIntegration.summary || {}),
     },
     verification: {
-      enabled: verificationIntegration.enabled === true,
+      enabled: Object.prototype.hasOwnProperty.call(verificationIntegration, "enabled")
+        ? verificationIntegration.enabled === true
+        : appVerification.enabled === true,
       status: cleanString(verificationIntegration.status, 40),
       mode: cleanString(verificationIntegration.mode, 40),
-      callbackBaseUrl: cleanString(verificationIntegration.callbackBaseUrl, 500),
-      reportChannelId: cleanString(verificationIntegration.reportChannelId, 80),
-      verificationChannelId: cleanString(verificationIntegration.verificationChannelId, 80),
+      callbackBaseUrl: cleanString(verificationIntegration.callbackBaseUrl || appVerification.callbackBaseUrl, 500),
+      reportChannelId: cleanString(verificationIntegration.reportChannelId || appVerification.reportChannelId, 80),
+      verificationChannelId: cleanString(verificationIntegration.verificationChannelId || appVerification.verificationChannelId, 80),
       lastSyncAt: normalizeNullableString(verificationIntegration.lastSyncAt, 80),
-      stageTexts: clone(verificationIntegration.stageTexts || {}),
-      riskRules: clone(verificationIntegration.riskRules || {}),
-      deadline: clone(verificationIntegration.deadline || {}),
-      entryMessage: clone(verificationIntegration.entryMessage || {}),
+      stageTexts: clone({ ...verificationStageTexts, ...(verificationIntegration.stageTexts || {}) }),
+      riskRules: clone({ ...verificationRiskRules, ...(verificationIntegration.riskRules || {}) }),
+      deadline: clone({ ...verificationDeadline, ...(verificationIntegration.deadline || {}) }),
+      entryMessage: clone({ ...verificationEntryMessage, ...(verificationIntegration.entryMessage || {}) }),
     },
   });
 }
@@ -475,7 +493,7 @@ function migrateLegacyState(db = {}, options = {}) {
 
   next.presentation = buildPresentationState(dbConfig, options);
   next.modes.onboard = createRecord(dbConfig.onboardMode?.value || dbConfig.onboardMode?.mode || "peace", "configured");
-  next.integrations = buildIntegrationState(dbConfig);
+  next.integrations = buildIntegrationState(dbConfig, appConfig);
   next.influence = buildInfluenceState(db, options);
   next.lastVerifiedAt = normalizeNullableString(options.lastVerifiedAt, 80);
 

@@ -68,7 +68,6 @@ test("buildActivityOperatorPanelPayload summarizes runtime, calibration, and rol
     "activity_panel_config_roles_primary",
     "activity_panel_config_roles_secondary",
     "activity_panel_config_watch_save",
-    "activity_panel_config_watch_remove",
   ]);
   const fieldTexts = payload.embeds[0].data.fields.map((field) => `${field.name}: ${field.value}`).join("\n");
   assert.match(fieldTexts, /Watched channels: \*\*1\*\*/);
@@ -208,7 +207,7 @@ test("handleActivityPanelButtonInteraction opens, refreshes, config modals, assi
 
   assert.equal(handledImport, true);
   assert.deepEqual(calls[5], ["deferUpdate"]);
-  assert.deepEqual(calls[6], ["editReply", { content: "Historical import завершён. Imported 4, ignored 1. All watched channels processed successfully." }]);
+  assert.deepEqual(calls[6], ["editReply", { content: "Импорт истории завершён. Импортировано 4, пропущено 1. Все каналы обработаны без ошибок." }]);
 
   interaction.customId = "activity_panel_assign_roles";
   const handledAssign = await handleActivityPanelButtonInteraction({
@@ -366,6 +365,14 @@ test("handleActivityPanelModalSubmitInteraction saves and removes watched channe
   const replies = [];
   const saved = [];
 
+  upsertWatchedChannel(db, {
+    channelId: "111111111111111111",
+    channelType: "small_chat",
+    channelWeight: 1.15,
+    countForTrust: false,
+    now: "2026-05-01T00:00:00.000Z",
+  });
+
   const handledSave = await handleActivityPanelModalSubmitInteraction({
     interaction: {
       customId: "activity_panel_config_watch_save_modal",
@@ -373,10 +380,7 @@ test("handleActivityPanelModalSubmitInteraction saves and removes watched channe
       user: { id: "mod-1" },
       fields: {
         getTextInputValue(fieldId) {
-          if (fieldId === "activity_watch_channel_id") return "<#123456789012345678>";
-          if (fieldId === "activity_watch_channel_type") return "small_chat";
-          if (fieldId === "activity_watch_channel_weight") return "1.15";
-          if (fieldId === "activity_watch_channel_flags") return "enabled no_trust";
+          if (fieldId === "activity_watch_channel_list") return "<#123456789012345678>\n987654321098765432";
           return "";
         },
       },
@@ -417,11 +421,12 @@ test("handleActivityPanelModalSubmitInteraction saves and removes watched channe
   });
 
   assert.equal(handledSave, true);
-  assert.equal(ensureActivityState(db).watchedChannels.length, 1);
-  assert.equal(ensureActivityState(db).watchedChannels[0].channelId, "123456789012345678");
-  assert.equal(ensureActivityState(db).watchedChannels[0].channelType, "small_chat");
-  assert.equal(ensureActivityState(db).watchedChannels[0].countForTrust, false);
-  assert.match(replies[0][1], /Watched channel добавлен/);
+  assert.equal(ensureActivityState(db).watchedChannels.length, 2);
+  assert.deepEqual(ensureActivityState(db).watchedChannels.map((entry) => entry.channelId).sort(), ["123456789012345678", "987654321098765432"]);
+  assert.equal(ensureActivityState(db).watchedChannels.find((entry) => entry.channelId === "123456789012345678").channelType, "normal_chat");
+  assert.equal(ensureActivityState(db).watchedChannels.find((entry) => entry.channelId === "123456789012345678").channelWeight, 1);
+  assert.equal(ensureActivityState(db).watchedChannels.find((entry) => entry.channelId === "123456789012345678").countForTrust, true);
+  assert.match(replies[0][1], /Список каналов сохранён/);
 
   const handledRemove = await handleActivityPanelModalSubmitInteraction({
     interaction: {
@@ -461,7 +466,8 @@ test("handleActivityPanelModalSubmitInteraction saves and removes watched channe
   });
 
   assert.equal(handledRemove, true);
-  assert.equal(ensureActivityState(db).watchedChannels.length, 0);
+  assert.equal(ensureActivityState(db).watchedChannels.length, 1);
+  assert.equal(ensureActivityState(db).watchedChannels[0].channelId, "987654321098765432");
   assert.match(replies[1][1], /Watched channel удалён/);
   assert.equal(saved.length, 2);
 });

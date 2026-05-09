@@ -12,6 +12,7 @@ const {
   ensureSharedProfile,
   normalizeRobloxDomainState,
   normalizeIntegrationState,
+  normalizeVerificationDomainState,
   syncSharedProfiles,
 } = require("../src/integrations/shared-profile");
 
@@ -231,6 +232,82 @@ test("ensureSharedProfile normalizes the activity domain and exposes an activity
   assert.equal(result.profile.summary.activity.autoRoleFrozen, true);
   assert.equal(result.profile.summary.activity.recalculatedAt, "2026-05-09T12:00:00.000Z");
   assert.equal(result.profile.summary.activity.lastRoleAppliedAt, "2026-05-08T15:00:00.000Z");
+});
+
+test("normalizeVerificationDomainState keeps autonomous verification state separate from onboarding and roblox", () => {
+  assert.deepEqual(normalizeVerificationDomainState({
+    status: "manual_review",
+    decision: "manual_review",
+    assignedAt: "2026-05-01T10:00:00.000Z",
+    startedAt: "2026-05-01T10:05:00.000Z",
+    completedAt: "2026-05-01T10:10:00.000Z",
+    reportDueAt: "2026-05-08T10:00:00.000Z",
+    reportSentAt: "2026-05-08T12:00:00.000Z",
+    oauthUserId: "oauth-1",
+    oauthUsername: "discord-user",
+    observedGuildIds: ["guild-1", "guild-1", "guild-2"],
+    matchedEnemyGuildIds: ["enemy-1", "enemy-1"],
+    matchedEnemyUserIds: ["user-1"],
+    matchedEnemyInviteCodes: ["invite-1"],
+    matchedEnemyInviterUserIds: ["inviter-1"],
+    manualTags: ["fresh", "fresh", "watch"],
+    reviewedBy: "mod#1",
+    reviewedAt: "2026-05-08T12:01:00.000Z",
+    decisionReason: "manual check",
+    lastError: "none",
+  }), {
+    status: "manual_review",
+    decision: "manual_review",
+    assignedAt: "2026-05-01T10:00:00.000Z",
+    startedAt: "2026-05-01T10:05:00.000Z",
+    completedAt: "2026-05-01T10:10:00.000Z",
+    reportDueAt: "2026-05-08T10:00:00.000Z",
+    reportSentAt: "2026-05-08T12:00:00.000Z",
+    lastState: null,
+    oauthUserId: "oauth-1",
+    oauthUsername: "discord-user",
+    oauthAvatarUrl: null,
+    matchedEnemyGuildIds: ["enemy-1"],
+    matchedEnemyUserIds: ["user-1"],
+    matchedEnemyInviteCodes: ["invite-1"],
+    matchedEnemyInviterUserIds: ["inviter-1"],
+    manualTags: ["fresh", "watch"],
+    observedGuildIds: ["guild-1", "guild-2"],
+    observedGuildNames: [],
+    reviewedBy: "mod#1",
+    reviewedAt: "2026-05-08T12:01:00.000Z",
+    decisionReason: "manual check",
+    lastError: "none",
+  });
+});
+
+test("ensureSharedProfile exposes verification summary without leaking it into onboarding or roblox", () => {
+  const result = ensureSharedProfile({
+    userId: "400",
+    domains: {
+      verification: {
+        status: "pending",
+        decision: "none",
+        assignedAt: "2026-05-01T10:00:00.000Z",
+        reportDueAt: "2026-05-08T10:00:00.000Z",
+        oauthUsername: "verify-user",
+        observedGuildIds: ["guild-1", "guild-2", "guild-3"],
+        matchedEnemyGuildIds: ["enemy-1"],
+        manualTags: ["watch"],
+      },
+    },
+  }, "400");
+
+  assert.equal(result.profile.sharedProfileVersion, SHARED_PROFILE_VERSION);
+  assert.equal(result.profile.domains.verification.status, "pending");
+  assert.equal(result.profile.domains.onboarding.accessGrantedAt, null);
+  assert.equal(result.profile.domains.roblox.userId, null);
+  assert.equal(result.profile.summary.verification.isBlocked, true);
+  assert.equal(result.profile.summary.verification.isApproved, false);
+  assert.equal(result.profile.summary.verification.oauthUsername, "verify-user");
+  assert.equal(result.profile.summary.verification.observedGuildCount, 3);
+  assert.equal(result.profile.summary.verification.matchedEnemyGuildCount, 1);
+  assert.equal(result.profile.summary.verification.manualTagCount, 1);
 });
 
 test("deriveProfileMainView recalculates labels and role ids from current character entries", () => {

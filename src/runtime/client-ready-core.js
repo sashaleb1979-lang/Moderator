@@ -39,6 +39,7 @@ function buildClientReadyPeriodicJobs(options = {}) {
   const {
     runAutoResendTick,
     refreshLegacyTierlistSummaryMessage,
+    runVerificationDeadlineSweep,
     runRobloxProfileRefreshJob,
     flushActivityRuntime,
     flushRobloxRuntime,
@@ -48,12 +49,16 @@ function buildClientReadyPeriodicJobs(options = {}) {
     legacyTierlistSummaryRefreshMs = 0,
     activityFlushIntervalMs = 0,
     roblox = {},
+    verification = {},
   } = options;
 
   assertFunction(runAutoResendTick, "runAutoResendTick");
   assertFunction(refreshLegacyTierlistSummaryMessage, "refreshLegacyTierlistSummaryMessage");
   if (runRobloxProfileRefreshJob != null) {
     assertFunction(runRobloxProfileRefreshJob, "runRobloxProfileRefreshJob");
+  }
+  if (runVerificationDeadlineSweep != null) {
+    assertFunction(runVerificationDeadlineSweep, "runVerificationDeadlineSweep");
   }
   if (flushActivityRuntime != null) {
     assertFunction(flushActivityRuntime, "flushActivityRuntime");
@@ -92,6 +97,14 @@ function buildClientReadyPeriodicJobs(options = {}) {
       run: flushActivityRuntime,
       intervalMs: normalizeIntervalMs(activityFlushIntervalMs, 0),
       errorLabel: "Activity runtime flush failed",
+    });
+  }
+
+  if (verification?.enabled === true && typeof runVerificationDeadlineSweep === "function") {
+    periodicJobs.push({
+      run: runVerificationDeadlineSweep,
+      intervalMs: Math.max(5, Number(verification?.reportSweepMinutes) || 60) * 60 * 1000,
+      errorLabel: "Verification deadline sweep failed",
     });
   }
 

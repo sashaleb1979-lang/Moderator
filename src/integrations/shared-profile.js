@@ -1,9 +1,11 @@
 "use strict";
 
-const SHARED_PROFILE_VERSION = 3;
+const SHARED_PROFILE_VERSION = 4;
 const INTEGRATION_STATE_VERSION = 1;
 const INTEGRATION_MODE_DORMANT = "dormant";
 const INTEGRATION_STATUSES = new Set(["not_started", "in_progress", "migrated"]);
+const VERIFICATION_DOMAIN_STATUSES = new Set(["not_started", "pending", "manual_review", "verified", "rejected", "failed"]);
+const VERIFICATION_DOMAIN_DECISIONS = new Set(["none", "approved", "manual_review", "rejected"]);
 const ROBLOX_VERIFICATION_STATUSES = new Set(["unverified", "pending", "verified", "failed"]);
 const ROBLOX_ACCOUNT_STATUSES = new Set(["active", "banned-or-unavailable", "lookup-failed"]);
 const ROBLOX_NAME_HISTORY_LIMIT = 20;
@@ -195,6 +197,37 @@ function normalizeActivityDomainState(value = {}) {
     autoRoleFrozen: normalizeNullableBoolean(source.autoRoleFrozen),
     recalculatedAt: normalizeNullableString(source.recalculatedAt, 80),
     lastRoleAppliedAt: normalizeNullableString(source.lastRoleAppliedAt, 80),
+  };
+}
+
+function normalizeVerificationDomainState(value = {}) {
+  const source = value && typeof value === "object" ? value : {};
+  const rawStatus = cleanString(source.status, 40).toLowerCase();
+  const rawDecision = cleanString(source.decision, 40).toLowerCase();
+
+  return {
+    status: VERIFICATION_DOMAIN_STATUSES.has(rawStatus) ? rawStatus : "not_started",
+    decision: VERIFICATION_DOMAIN_DECISIONS.has(rawDecision) ? rawDecision : "none",
+    assignedAt: normalizeNullableString(source.assignedAt, 80),
+    startedAt: normalizeNullableString(source.startedAt, 80),
+    completedAt: normalizeNullableString(source.completedAt, 80),
+    reportDueAt: normalizeNullableString(source.reportDueAt, 80),
+    reportSentAt: normalizeNullableString(source.reportSentAt, 80),
+    lastState: normalizeNullableString(source.lastState, 120),
+    oauthUserId: normalizeNullableString(source.oauthUserId, 80),
+    oauthUsername: normalizeNullableString(source.oauthUsername, 120),
+    oauthAvatarUrl: normalizeNullableString(source.oauthAvatarUrl, 2000),
+    matchedEnemyGuildIds: normalizeStringArray(source.matchedEnemyGuildIds, 100, 80),
+    matchedEnemyUserIds: normalizeStringArray(source.matchedEnemyUserIds, 100, 80),
+    matchedEnemyInviteCodes: normalizeStringArray(source.matchedEnemyInviteCodes, 100, 80),
+    matchedEnemyInviterUserIds: normalizeStringArray(source.matchedEnemyInviterUserIds, 100, 80),
+    manualTags: normalizeStringArray(source.manualTags, 100, 80),
+    observedGuildIds: normalizeStringArray(source.observedGuildIds, 200, 80),
+    observedGuildNames: normalizeStringArray(source.observedGuildNames, 200, 120),
+    reviewedBy: normalizeNullableString(source.reviewedBy, 120),
+    reviewedAt: normalizeNullableString(source.reviewedAt, 80),
+    decisionReason: normalizeNullableString(source.decisionReason, 500),
+    lastError: normalizeNullableString(source.lastError, 500),
   };
 }
 
@@ -580,6 +613,7 @@ function buildSharedProfileSummary(profile = {}, domains = {}) {
   const elo = domains.elo || normalizeEloDomainState(profile?.domains?.elo);
   const tierlist = domains.tierlist || normalizeTierlistDomainState(profile?.domains?.tierlist);
   const activity = domains.activity || normalizeActivityDomainState(profile?.domains?.activity || profile?.activity);
+  const verification = domains.verification || normalizeVerificationDomainState(profile?.domains?.verification);
   const roblox = domains.roblox || normalizeRobloxDomainState(profile?.domains?.roblox || profile);
   const previousUsername = getRobloxPreviousName(roblox.username, roblox.usernameHistory);
   const previousDisplayName = getRobloxPreviousName(roblox.displayName, roblox.displayNameHistory);
@@ -638,6 +672,29 @@ function buildSharedProfileSummary(profile = {}, domains = {}) {
       recalculatedAt: activity.recalculatedAt,
       lastRoleAppliedAt: activity.lastRoleAppliedAt,
     },
+    verification: {
+      isBlocked: ["pending", "manual_review", "failed"].includes(verification.status),
+      isApproved: verification.decision === "approved" || verification.status === "verified",
+      status: verification.status,
+      decision: verification.decision,
+      assignedAt: verification.assignedAt,
+      startedAt: verification.startedAt,
+      completedAt: verification.completedAt,
+      reportDueAt: verification.reportDueAt,
+      reportSentAt: verification.reportSentAt,
+      oauthUserId: verification.oauthUserId,
+      oauthUsername: verification.oauthUsername,
+      observedGuildCount: verification.observedGuildIds.length,
+      matchedEnemyGuildCount: verification.matchedEnemyGuildIds.length,
+      matchedEnemyUserCount: verification.matchedEnemyUserIds.length,
+      matchedEnemyInviteCount: verification.matchedEnemyInviteCodes.length,
+      matchedEnemyInviterCount: verification.matchedEnemyInviterUserIds.length,
+      manualTagCount: verification.manualTags.length,
+      reviewedBy: verification.reviewedBy,
+      reviewedAt: verification.reviewedAt,
+      decisionReason: verification.decisionReason,
+      lastError: verification.lastError,
+    },
     roblox: {
       hasVerifiedAccount: roblox.verificationStatus === "verified" && Boolean(roblox.userId),
       currentUsername: roblox.username,
@@ -686,6 +743,7 @@ function ensureSharedProfile(profile = {}, userId = "") {
   const elo = normalizeEloDomainState(source?.domains?.elo);
   const tierlist = normalizeTierlistDomainState(source?.domains?.tierlist);
   const activity = normalizeActivityDomainState(source?.domains?.activity || source?.activity);
+  const verification = normalizeVerificationDomainState(source?.domains?.verification);
   const roblox = normalizeRobloxDomainState(source?.domains?.roblox || buildLegacyRobloxSource(source));
 
   const next = {
@@ -711,6 +769,7 @@ function ensureSharedProfile(profile = {}, userId = "") {
       elo,
       tierlist,
       activity,
+      verification,
       roblox,
     },
   };
@@ -923,6 +982,7 @@ module.exports = {
   ensureSharedProfile,
   normalizeActivityDomainState,
   normalizeIntegrationState,
+  normalizeVerificationDomainState,
   normalizeRobloxDomainState,
   syncSharedProfiles,
 };

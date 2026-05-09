@@ -64,6 +64,34 @@
       "jjsGameUrl": "https://www.roblox.com/games/9391468976"
     }
   },
+  "verification": {
+    "enabled": false,
+    "callbackBaseUrl": "",
+    "verificationChannelId": "",
+    "reportChannelId": "",
+    "reportSweepMinutes": 60,
+    "stageTexts": {
+      "entry": "Нажми кнопку, авторизуйся через Discord OAuth и дождись результата.",
+      "manualReview": "Если система не может принять решение автоматически, она отправит отчёт модераторам.",
+      "approved": "После успешной проверки бот снимет verify-role и выдаст стартовый доступ.",
+      "rejected": "Если модератор отклонит проверку, доступ не будет выдан."
+    },
+    "riskRules": {
+      "enemyGuildIds": [],
+      "enemyUserIds": [],
+      "enemyInviteCodes": [],
+      "enemyInviterUserIds": [],
+      "manualTags": []
+    },
+    "deadline": {
+      "pendingDays": 7,
+      "reportOnly": true
+    },
+    "entryMessage": {
+      "channelId": "",
+      "messageId": ""
+    }
+  },
   "killTierLabels": {
     "1": "Низший ранг",
     "2": "Средний ранг",

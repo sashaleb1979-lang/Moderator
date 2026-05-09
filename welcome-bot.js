@@ -184,6 +184,11 @@ const {
   runRobloxPlaytimeSyncJob,
 } = require("./src/runtime/roblox-jobs");
 const {
+  buildRobloxStatsPanelPayload,
+  createRobloxPanelTelemetry,
+  handleRobloxStatsPanelButtonInteraction,
+} = require("./src/integrations/roblox-panel");
+const {
   buildHistoricalManagedCharacterRoleIds,
   buildManagedCharacterRoleRecoveryPlan,
   normalizeManagedCharacterCatalog,
@@ -596,6 +601,25 @@ function buildRuntimeConfig(fileConfig = {}) {
         jjsGameUrl: envText("ROBLOX_JJS_GAME_URL", fileRoblox?.links?.jjsGameUrl || ""),
       },
     },
+    verification: {
+      enabled: envBoolean("VERIFICATION_ENABLED", fileConfig?.verification?.enabled === true),
+      callbackBaseUrl: envText("DISCORD_OAUTH_REDIRECT_URI", fileConfig?.verification?.callbackBaseUrl || ""),
+      verificationChannelId: envText("VERIFICATION_CHANNEL_ID", fileConfig?.verification?.verificationChannelId || ""),
+      reportChannelId: envText("VERIFICATION_REPORT_CHANNEL_ID", fileConfig?.verification?.reportChannelId || ""),
+      reportSweepMinutes: envInteger("VERIFICATION_REPORT_SWEEP_MINUTES", fileConfig?.verification?.reportSweepMinutes || 60, 5),
+      stageTexts: fileConfig?.verification?.stageTexts && typeof fileConfig.verification.stageTexts === "object" ? fileConfig.verification.stageTexts : {},
+      riskRules: fileConfig?.verification?.riskRules && typeof fileConfig.verification.riskRules === "object" ? fileConfig.verification.riskRules : {},
+      deadline: fileConfig?.verification?.deadline && typeof fileConfig.verification.deadline === "object"
+        ? {
+            ...fileConfig.verification.deadline,
+            pendingDays: envInteger("VERIFICATION_PENDING_DAYS", fileConfig?.verification?.deadline?.pendingDays || 7, 1),
+          }
+        : {
+            pendingDays: envInteger("VERIFICATION_PENDING_DAYS", 7, 1),
+            reportOnly: true,
+          },
+      entryMessage: fileConfig?.verification?.entryMessage && typeof fileConfig.verification.entryMessage === "object" ? fileConfig.verification.entryMessage : {},
+    },
     characters,
   };
 }
@@ -775,6 +799,7 @@ const robloxJobCoordinator = createRobloxJobCoordinator({
   logError: (...args) => console.error(...args),
 });
 const robloxRuntimeState = createRobloxRuntimeState();
+const robloxPanelTelemetry = createRobloxPanelTelemetry({ now: nowIso });
 
 logSotDrift(db, "startup-load");
 
@@ -790,30 +815,30 @@ function nowIso() {
   return new Date().toISOString();
 }
 
-const runScheduledRobloxProfileRefreshJob = robloxJobCoordinator.createRunner("profile_refresh", () => runRobloxProfileRefreshJobCore({
+const runScheduledRobloxProfileRefreshJob = robloxPanelTelemetry.wrapJob("profile_refresh", robloxJobCoordinator.createRunner("profile_refresh", () => runRobloxProfileRefreshJobCore({
   db,
   now: nowIso,
   fetchUserProfile: robloxApiClient.fetchUserProfile.bind(robloxApiClient),
   fetchUserAvatarHeadshots: robloxApiClient.fetchUserAvatarHeadshots.bind(robloxApiClient),
   fetchUserUsernameHistory: robloxApiClient.fetchUserUsernameHistory.bind(robloxApiClient),
   logError: (...args) => console.error(...args),
-}));
+})));
 
-const syncRobloxPlaytime = robloxJobCoordinator.createRunner("playtime_sync", () => runRobloxPlaytimeSyncJob({
+const syncRobloxPlaytime = robloxPanelTelemetry.wrapJob("playtime_sync", robloxJobCoordinator.createRunner("playtime_sync", () => runRobloxPlaytimeSyncJob({
   db,
   runtimeState: robloxRuntimeState,
   now: nowIso,
   roblox: appConfig?.roblox,
   fetchUserPresences: robloxApiClient.fetchUserPresences.bind(robloxApiClient),
   logError: (...args) => console.error(...args),
-}));
+})));
 
-const flushRobloxRuntime = robloxJobCoordinator.createRunner("runtime_flush", () => flushRobloxRuntimeState({
+const flushRobloxRuntime = robloxPanelTelemetry.wrapJob("runtime_flush", robloxJobCoordinator.createRunner("runtime_flush", () => flushRobloxRuntimeState({
   db,
   runtimeState: robloxRuntimeState,
   now: nowIso,
   saveDb,
-}));
+})));
 
 function cloneJsonValue(value) {
   return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
@@ -12590,6 +12615,30 @@ client.on("interactionCreate", async (interaction) => {
         return true;
       },
       saveDb,
+    })) {
+      return;
+    }
+
+    if (await handleRobloxStatsPanelButtonInteraction({
+      interaction,
+      client,
+      db,
+      runtimeState: robloxRuntimeState,
+      telemetry: robloxPanelTelemetry,
+      appConfig,
+      isModerator,
+      replyNoPermission: () => interaction.reply(ephemeralPayload({ content: "Нет прав." })),
+      buildModeratorPanelPayload,
+      buildRobloxPanelPayload: ({ statusText = "" } = {}) => buildRobloxStatsPanelPayload({
+        db,
+        runtimeState: robloxRuntimeState,
+        telemetry: robloxPanelTelemetry,
+        appConfig,
+        statusText,
+      }),
+      runProfileRefreshJob: runScheduledRobloxProfileRefreshJob,
+      runPlaytimeSyncJob: syncRobloxPlaytime,
+      runRuntimeFlush: flushRobloxRuntime,
     })) {
       return;
     }

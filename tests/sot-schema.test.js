@@ -88,6 +88,13 @@ function createLegacyDbFixture() {
             lastUpdated: "2026-05-03T12:11:00.000Z",
           },
         },
+        verification: {
+          status: "in_progress",
+          verificationChannelId: "verify-db",
+          entryMessage: {
+            messageId: "verify-message-db",
+          },
+        },
       },
       onboardMode: {
         value: "wartime",
@@ -134,6 +141,24 @@ function createAppConfigFixture() {
       { id: "gojo", label: "Годжо", roleId: "role-gojo-configured" },
       { id: "megumi", label: "Мегуми", roleId: "" },
     ],
+    verification: {
+      enabled: true,
+      callbackBaseUrl: "https://verify.example.com/oauth/discord/callback",
+      verificationChannelId: "verify-config",
+      reportChannelId: "verify-report-config",
+      stageTexts: {
+        entry: "Пройди verify",
+      },
+      riskRules: {
+        enemyGuildIds: ["enemy-guild"],
+      },
+      deadline: {
+        pendingDays: 7,
+      },
+      entryMessage: {
+        channelId: "verify-config",
+      },
+    },
   };
 }
 
@@ -184,6 +209,15 @@ test("ensureSotState migrates legacy config into the new v1 SoT shape", () => {
   assert.equal(db.sot.presentation.nonGgs.buttonLabel, "Я не играю в JJS");
   assert.equal(db.sot.integrations.elo.roleGrantEnabled, false);
   assert.equal(db.sot.integrations.tierlist.summary.channelId, "tier-summary-channel");
+  assert.equal(db.sot.integrations.verification.enabled, true);
+  assert.equal(db.sot.integrations.verification.callbackBaseUrl, "https://verify.example.com/oauth/discord/callback");
+  assert.equal(db.sot.integrations.verification.verificationChannelId, "verify-db");
+  assert.equal(db.sot.integrations.verification.reportChannelId, "verify-report-config");
+  assert.equal(db.sot.integrations.verification.stageTexts.entry, "Пройди verify");
+  assert.deepEqual(db.sot.integrations.verification.riskRules.enemyGuildIds, ["enemy-guild"]);
+  assert.equal(db.sot.integrations.verification.deadline.pendingDays, 7);
+  assert.equal(db.sot.integrations.verification.entryMessage.channelId, "verify-config");
+  assert.equal(db.sot.integrations.verification.entryMessage.messageId, "verify-message-db");
   assert.equal(db.sot.influence.tiers[5], 100);
 });
 

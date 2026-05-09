@@ -33,122 +33,112 @@ const ACTIVITY_PANEL_BUTTON_IDS = Object.freeze([
   "activity_panel_back",
 ]);
 
-const ACTIVITY_PANEL_MODAL_IDS = Object.freeze([
-  "activity_panel_config_access_modal",
-  "activity_panel_config_roles_primary_modal",
-  "activity_panel_config_roles_secondary_modal",
-  "activity_panel_config_watch_save_modal",
-  "activity_panel_config_watch_remove_modal",
-]);
+    const ACTIVITY_PANEL_MODAL_IDS = Object.freeze([
+      "activity_panel_config_access_modal",
+      "activity_panel_config_roles_primary_modal",
+      "activity_panel_config_roles_secondary_modal",
+      "activity_panel_config_watch_save_modal",
+      "activity_panel_config_watch_remove_modal",
+    ]);
 
-const ACTIVITY_ROLE_MAPPING_PRIMARY_KEYS = Object.freeze(["core", "stable", "active"]);
-const ACTIVITY_ROLE_MAPPING_SECONDARY_KEYS = Object.freeze(["floating", "weak", "dead"]);
-const ACTIVE_HISTORICAL_IMPORTS = new WeakSet();
+    const ACTIVITY_ROLE_MAPPING_PRIMARY_KEYS = Object.freeze(["core", "stable", "active"]);
+    const ACTIVITY_ROLE_MAPPING_SECONDARY_KEYS = Object.freeze(["floating", "weak", "dead"]);
+    const ACTIVE_HISTORICAL_IMPORTS = new WeakSet();
 
-function clone(value) {
-  if (value === undefined) return undefined;
-  return JSON.parse(JSON.stringify(value));
-}
+    function clone(value) {
+      if (value === undefined) return undefined;
+      return JSON.parse(JSON.stringify(value));
+    }
 
-function cleanString(value, limit = 2000) {
-  return String(value || "").trim().slice(0, Math.max(0, Number(limit) || 0));
-}
+    function cleanString(value, limit = 2000) {
+      return String(value || "").trim().slice(0, Math.max(0, Number(limit) || 0));
+    }
 
-function normalizeNullableString(value, limit = 2000) {
-  const text = cleanString(value, limit);
-  return text || null;
-}
+    function normalizeNullableString(value, limit = 2000) {
+      const text = cleanString(value, limit);
+      return text || null;
+    }
 
-function normalizeIsoTimestamp(value, fallback = null) {
-  const text = cleanString(value, 80);
-  if (!text) return fallback;
-  const date = new Date(text);
-  return Number.isFinite(date.getTime()) ? date.toISOString() : fallback;
-}
+    function normalizeIsoTimestamp(value, fallback = null) {
+      const text = cleanString(value, 80);
+      if (!text) return fallback;
+      const date = new Date(text);
+      return Number.isFinite(date.getTime()) ? date.toISOString() : fallback;
+    }
 
-function normalizeStringArray(value, limit = 2000) {
-  if (!Array.isArray(value)) return [];
-  const normalized = [];
-  const seen = new Set();
-  for (const entry of value) {
-    const text = cleanString(entry, 80);
-    if (!text || seen.has(text)) continue;
-    seen.add(text);
-    normalized.push(text);
-    if (normalized.length >= limit) break;
-  }
-  return normalized;
-}
+    function normalizeStringArray(value, limit = 2000) {
+      if (!Array.isArray(value)) return [];
+      const normalized = [];
+      const seen = new Set();
+      for (const entry of value) {
+        const text = cleanString(entry, 80);
+        if (!text || seen.has(text)) continue;
+        seen.add(text);
+        normalized.push(text);
+        if (normalized.length >= limit) break;
+      }
+      return normalized;
+    }
 
-function resolveNowIso(now) {
-  if (typeof now === "function") {
-    return normalizeIsoTimestamp(now(), new Date().toISOString());
-  }
-  return normalizeIsoTimestamp(now, new Date().toISOString());
-}
+    function resolveNowIso(now) {
+      if (typeof now === "function") {
+        return normalizeIsoTimestamp(now(), new Date().toISOString());
+      }
+      return normalizeIsoTimestamp(now, new Date().toISOString());
+    }
 
-function assertFunction(value, name) {
-  if (typeof value !== "function") {
-    throw new TypeError(`${name} must be a function`);
-  }
-}
+    function assertFunction(value, name) {
+      if (typeof value !== "function") {
+        throw new TypeError(`${name} must be a function`);
+      }
+    }
 
-function formatDateTime(value) {
-  const timestamp = Date.parse(value || "");
-  if (!Number.isFinite(timestamp)) return "—";
-  return new Date(timestamp).toLocaleString("ru-RU");
-}
+    function formatDateTime(value) {
+      const timestamp = Date.parse(value || "");
+      if (!Number.isFinite(timestamp)) return "—";
+      return new Date(timestamp).toLocaleString("ru-RU");
+    }
 
-function getActivitySessionGapMs(config = {}) {
-  return Math.max(1, Number(config.sessionGapMinutes) || 45) * 60 * 1000;
-}
+    function getActivitySessionGapMs(config = {}) {
+      return Math.max(1, Number(config.sessionGapMinutes) || 45) * 60 * 1000;
+    }
 
-function listActivityManagedRoleIds(config = {}) {
-  return normalizeStringArray(Object.values(config.activityRoleIds || {}));
-}
+    function listActivityManagedRoleIds(config = {}) {
+      return normalizeStringArray(Object.values(config.activityRoleIds || {}));
+    }
 
-function formatRoleIdPreview(roleId) {
-  return cleanString(roleId, 80) || "—";
-}
+    function formatRoleIdPreview(roleId) {
+      return cleanString(roleId, 80) || "—";
+    }
 
-function formatRoleIdListPreview(roleIds = []) {
-  const normalized = normalizeStringArray(roleIds, 25, 80);
-  return normalized.length ? normalized.join(", ") : "—";
-}
+    function formatRoleIdListPreview(roleIds = []) {
+      const normalized = normalizeStringArray(roleIds, 25, 80);
+      return normalized.length ? normalized.join(", ") : "—";
+    }
 
-function buildActivityRoleMappingPreview(config = {}, roleKeys = []) {
-  return roleKeys
-    .map((roleKey) => `${roleKey}: ${formatRoleIdPreview(config.activityRoleIds?.[roleKey])}`)
-    .join(" • ");
-}
+    function buildActivityRoleMappingPreview(config = {}, roleKeys = []) {
+      return roleKeys
+        .map((roleKey) => `${roleKey}: ${formatRoleIdPreview(config.activityRoleIds?.[roleKey])}`)
+        .join(" • ");
+    }
 
-function formatChannelPreview(record = {}) {
-  const channelId = cleanString(record.channelId, 80) || "unknown";
-  const channelType = cleanString(record.channelType, 40) || "normal_chat";
-  const channelWeight = Number(record.channelWeight);
-  const weightText = Number.isFinite(channelWeight) ? channelWeight.toFixed(2).replace(/\.00$/, "") : "preset";
-  const stateText = record.enabled === false ? "off" : "on";
-  return `${cleanString(record.channelNameCache, 80) || channelId} (${channelId}) • ${channelType} • w=${weightText} • ${stateText}`;
-}
+    function formatChannelPreview(record = {}) {
+      const channelId = cleanString(record.channelId, 80) || "unknown";
+      return `${cleanString(record.channelNameCache, 80) || channelId} (${channelId})`;
+    }
 
-function buildWatchedChannelPreview(state = {}, limit = 4) {
-  const watchedChannels = Array.isArray(state.watchedChannels) ? state.watchedChannels : [];
-  if (!watchedChannels.length) return "Watched channels ещё не настроены.";
+    function buildWatchedChannelPreview(state = {}, limit = 4) {
+      const watchedChannels = Array.isArray(state.watchedChannels) ? state.watchedChannels : [];
+      if (!watchedChannels.length) return "Список каналов ещё не настроен.";
 
-  const lines = watchedChannels
-    .slice(0, Math.max(1, Number(limit) || 1))
-    .map((record, index) => `${index + 1}. ${formatChannelPreview(record)}`);
-  if (watchedChannels.length > lines.length) {
-    lines.push(`… ещё ${watchedChannels.length - lines.length}`);
-  }
-  return lines.join("\n");
-}
-
-function normalizeActivityChannelTypeInput(value = "") {
-  const channelType = cleanString(value, 40).toLowerCase();
-  if (!channelType) return "";
-  return ACTIVITY_CHANNEL_TYPES.has(channelType) ? channelType : null;
-}
+      const lines = watchedChannels
+        .slice(0, Math.max(1, Number(limit) || 1))
+        .map((record, index) => `${index + 1}. ${formatChannelPreview(record)}`);
+      if (watchedChannels.length > lines.length) {
+        lines.push(`… ещё ${watchedChannels.length - lines.length}`);
+      }
+      return lines.join("\n");
+    }
 
 function parseOptionalPositiveNumber(value = "") {
   const text = cleanString(value, 80);
@@ -234,6 +224,35 @@ function parseRequestedRoleIds(value = "", parseRequestedRoleId) {
   };
 }
 
+function parseRequestedChannelIds(value = "", parseRequestedChannelId) {
+  const text = cleanString(value, 4000);
+  if (!text) {
+    return {
+      channelIds: [],
+      invalidTokens: [],
+    };
+  }
+
+  const normalized = [];
+  const seen = new Set();
+  const invalidTokens = [];
+  for (const token of text.split(/[\s,;|]+/).map((entry) => entry.trim()).filter(Boolean)) {
+    const channelId = parseRequestedChannelId(token, "");
+    if (!channelId) {
+      invalidTokens.push(token);
+      continue;
+    }
+    if (seen.has(channelId)) continue;
+    seen.add(channelId);
+    normalized.push(channelId);
+  }
+
+  return {
+    channelIds: normalized,
+    invalidTokens,
+  };
+}
+
 function parseOptionalRequestedRoleId(value = "", parseRequestedRoleId) {
   const text = cleanString(value, 120);
   if (!text) {
@@ -299,43 +318,16 @@ function buildActivityRoleMappingModal({ config = {}, modalId = "", title = "", 
 function buildWatchedChannelSaveModal() {
   return new ModalBuilder()
     .setCustomId("activity_panel_config_watch_save_modal")
-    .setTitle("Save watched channel")
+    .setTitle("Список каналов")
     .addComponents(
       new ActionRowBuilder().addComponents(
         new TextInputBuilder()
-          .setCustomId("activity_watch_channel_id")
-          .setLabel("Channel ID / mention")
-          .setStyle(TextInputStyle.Short)
-          .setRequired(true)
-          .setMaxLength(80)
-          .setPlaceholder("123456789012345678 или <#123456789012345678>")
-      ),
-      new ActionRowBuilder().addComponents(
-        new TextInputBuilder()
-          .setCustomId("activity_watch_channel_type")
-          .setLabel("Type")
-          .setStyle(TextInputStyle.Short)
-          .setRequired(false)
-          .setMaxLength(40)
-          .setPlaceholder("main_chat / normal_chat / small_chat / flood / media / event / admin / ignored")
-      ),
-      new ActionRowBuilder().addComponents(
-        new TextInputBuilder()
-          .setCustomId("activity_watch_channel_weight")
-          .setLabel("Weight")
-          .setStyle(TextInputStyle.Short)
-          .setRequired(false)
-          .setMaxLength(20)
-          .setPlaceholder("Пусто = existing/preset")
-      ),
-      new ActionRowBuilder().addComponents(
-        new TextInputBuilder()
-          .setCustomId("activity_watch_channel_flags")
-          .setLabel("Flags")
+          .setCustomId("activity_watch_channel_list")
+          .setLabel("Каналы")
           .setStyle(TextInputStyle.Paragraph)
-          .setRequired(false)
-          .setMaxLength(300)
-          .setPlaceholder("disabled no_messages no_sessions no_trust no_roles")
+          .setRequired(true)
+          .setMaxLength(2000)
+          .setPlaceholder("Один канал на строку: 123456789012345678 или <#123456789012345678>")
       )
     );
 }
@@ -491,7 +483,7 @@ function buildActivityOperatorPanelPayload({ db = {}, statusText = "" } = {}) {
         inline: false,
       },
       {
-        name: "Watched channels",
+        name: "Список каналов",
         value: buildWatchedChannelPreview(state),
         inline: false,
       }
@@ -510,16 +502,15 @@ function buildActivityOperatorPanelPayload({ db = {}, statusText = "" } = {}) {
     components: [
       new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId("activity_panel_refresh").setLabel("Обновить").setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId("activity_panel_historical_import").setLabel("Historical Import").setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId("activity_panel_assign_roles").setLabel("Initial roles").setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId("activity_panel_config_access").setLabel("Доступ").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("activity_panel_historical_import").setLabel("Импорт истории").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("activity_panel_assign_roles").setLabel("Пересчитать роли").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("activity_panel_config_access").setLabel("Кто видит панель").setStyle(ButtonStyle.Secondary),
         new ButtonBuilder().setCustomId("activity_panel_back").setLabel("Назад").setStyle(ButtonStyle.Secondary)
       ),
       new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId("activity_panel_config_roles_primary").setLabel("Роли 1/2").setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId("activity_panel_config_roles_secondary").setLabel("Роли 2/2").setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId("activity_panel_config_watch_save").setLabel("Сохранить канал").setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId("activity_panel_config_watch_remove").setLabel("Удалить канал").setStyle(ButtonStyle.Danger)
+        new ButtonBuilder().setCustomId("activity_panel_config_roles_primary").setLabel("Роли активности 1/2").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("activity_panel_config_roles_secondary").setLabel("Роли активности 2/2").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("activity_panel_config_watch_save").setLabel("Список каналов").setStyle(ButtonStyle.Secondary)
       ),
     ],
   };
@@ -887,6 +878,9 @@ async function importHistoricalActivityFromWatchedChannels({
       for (const watchedChannel of watchedChannels) {
         if (!watchedChannel || watchedChannel.enabled === false) continue;
 
+        let newestImportedMessageId = null;
+        let lastScannedMessageId = null;
+
         try {
           const channel = await fetchChannel(watchedChannel.channelId);
           if (!channel?.isTextBased?.()) {
@@ -899,8 +893,6 @@ async function importHistoricalActivityFromWatchedChannels({
           scannedChannelCount += 1;
 
           let before = null;
-          let newestImportedMessageId = null;
-          let lastScannedMessageId = null;
           let reachedCursor = false;
 
           while (true) {
@@ -941,6 +933,12 @@ async function importHistoricalActivityFromWatchedChannels({
             lastScannedMessageId,
           });
         } catch (error) {
+          if (newestImportedMessageId || lastScannedMessageId) {
+            channelUpdates.set(watchedChannel.channelId, {
+              importedUntilMessageId: newestImportedMessageId || cleanString(watchedChannel.importedUntilMessageId, 80),
+              lastScannedMessageId,
+            });
+          }
           failedChannels.push({
             channelId: watchedChannel.channelId,
             reason: cleanString(error?.message || error, 200) || "import_failed",
@@ -1129,10 +1127,10 @@ async function handleActivityPanelButtonInteraction({
     }
 
     const statusText = result.alreadyRunning
-      ? "Historical import уже выполняется. Дождись завершения текущего запуска."
+      ? "Импорт истории уже выполняется. Дождись завершения текущего запуска."
       : [
-        `Historical import завершён. Imported ${result.importedEntryCount}, ignored ${result.ignoredEntryCount}.`,
-        result.failedChannelCount ? `Failed channels: ${result.failedChannelCount}.` : "All watched channels processed successfully.",
+        `Импорт истории завершён. Импортировано ${result.importedEntryCount}, пропущено ${result.ignoredEntryCount}.`,
+        result.failedChannelCount ? `Каналов с ошибками: ${result.failedChannelCount}.` : "Все каналы обработаны без ошибок.",
       ].join(" ");
     await interaction.editReply(buildActivityPanelPayload({
       db,
@@ -1192,73 +1190,81 @@ async function handleActivityPanelModalSubmitInteraction({
       assertFunction(parseRequestedChannelId, "parseRequestedChannelId");
       assertFunction(resolveChannel, "resolveChannel");
 
-      const channelId = parseRequestedChannelId(
-        interaction.fields.getTextInputValue("activity_watch_channel_id"),
-        ""
+      const parsedChannels = parseRequestedChannelIds(
+        interaction.fields.getTextInputValue("activity_watch_channel_list"),
+        parseRequestedChannelId
       );
-      if (!channelId) {
+      if (parsedChannels.invalidTokens.length) {
         return {
           ok: false,
-          message: "Некорректный channel input. Используй Channel ID или <#...>.",
+          message: `Некорректные каналы: ${parsedChannels.invalidTokens.join(", ")}. Используй Channel ID или <#...>.`,
+        };
+      }
+      if (!parsedChannels.channelIds.length) {
+        return {
+          ok: false,
+          message: "Список каналов пуст. Укажи хотя бы один Channel ID или <#...>.",
         };
       }
 
-      const existingRecord = getWatchedChannel(db, channelId);
-      const resolvedChannel = await Promise.resolve(resolveChannel(channelId));
-      if (!resolvedChannel?.isTextBased?.()) {
-        return {
-          ok: false,
-          message: "Канал не найден или не является text channel, доступным боту.",
-        };
+      const resolvedChannels = [];
+      for (const channelId of parsedChannels.channelIds) {
+        const resolvedChannel = await Promise.resolve(resolveChannel(channelId));
+        if (!resolvedChannel?.isTextBased?.()) {
+          return {
+            ok: false,
+            message: `Канал не найден или не является text channel, доступным боту: ${channelId}.`,
+          };
+        }
+        resolvedChannels.push({
+          channelId,
+          resolvedChannel,
+          existingRecord: getWatchedChannel(db, channelId),
+        });
       }
 
-      const rawChannelType = cleanString(interaction.fields.getTextInputValue("activity_watch_channel_type"), 40);
-      const channelType = normalizeActivityChannelTypeInput(rawChannelType);
-      if (channelType === null) {
-        return {
-          ok: false,
-          message: `Некорректный channel type: ${rawChannelType}.`,
-        };
+      const desiredChannelIds = new Set(resolvedChannels.map((entry) => entry.channelId));
+      const currentChannels = Array.isArray(ensureActivityState(db).watchedChannels)
+        ? [...ensureActivityState(db).watchedChannels]
+        : [];
+      let addedCount = 0;
+      let updatedCount = 0;
+      let removedCount = 0;
+
+      for (const { channelId, resolvedChannel, existingRecord } of resolvedChannels) {
+        const upsertResult = upsertWatchedChannel(db, {
+          channelId,
+          guildId: cleanString(resolvedChannel.guildId ?? resolvedChannel.guild?.id, 80) || existingRecord?.guildId || null,
+          channelNameCache: cleanString(resolvedChannel.name, 200) || existingRecord?.channelNameCache || "",
+          channelType: "normal_chat",
+          channelWeight: 1,
+          enabled: true,
+          countMessages: true,
+          countSessions: true,
+          countForTrust: true,
+          countForRoles: true,
+          now: changedAt,
+        });
+
+        if (upsertResult.created) addedCount += 1;
+        else if (upsertResult.mutated) updatedCount += 1;
       }
 
-      const weight = parseOptionalPositiveNumber(interaction.fields.getTextInputValue("activity_watch_channel_weight"));
-      if (weight.invalidToken) {
-        return {
-          ok: false,
-          message: `Некорректный weight: ${weight.invalidToken}. Нужен positive number или пусто.`,
-        };
-      }
-
-      const flags = parseWatchedChannelFlags(
-        interaction.fields.getTextInputValue("activity_watch_channel_flags"),
-        existingRecord
-      );
-
-      const upsertResult = upsertWatchedChannel(db, {
-        channelId,
-        guildId: cleanString(resolvedChannel.guildId ?? resolvedChannel.guild?.id, 80) || existingRecord?.guildId || null,
-        channelNameCache: cleanString(resolvedChannel.name, 200) || existingRecord?.channelNameCache || "",
-        ...(channelType ? { channelType } : {}),
-        ...(weight.number !== undefined ? { channelWeight: weight.number } : {}),
-        ...flags,
-        now: changedAt,
-      });
-
-      if (!upsertResult.mutated) {
-        return {
-          ok: true,
-          message: "Watched channel без изменений.",
-        };
+      for (const record of currentChannels) {
+        if (!desiredChannelIds.has(record.channelId)) {
+          const removeResult = removeWatchedChannel(db, { channelId: record.channelId });
+          if (removeResult.removed) removedCount += 1;
+        }
       }
 
       appendActivityAuditLog(db, {
-        actionType: upsertResult.created ? "watch_channel_add" : "watch_channel_update",
+        actionType: "watch_channel_sync",
         moderatorUserId: requestedByUserId,
         createdAt: changedAt,
-        channelId,
-        channelType: upsertResult.record.channelType,
-        channelWeight: upsertResult.record.channelWeight,
-        enabled: upsertResult.record.enabled,
+        channelIds: [...desiredChannelIds],
+        addedCount,
+        updatedCount,
+        removedCount,
       });
       if (typeof saveDb === "function") {
         saveDb();
@@ -1266,7 +1272,7 @@ async function handleActivityPanelModalSubmitInteraction({
 
       return {
         ok: true,
-        message: `${upsertResult.created ? "Watched channel добавлен" : "Watched channel обновлён"}: ${formatChannelPreview(upsertResult.record)}. Нажми «Обновить» в Activity Panel.`,
+        message: `Список каналов сохранён. Сейчас каналов: ${desiredChannelIds.size}. Добавлено: ${addedCount}, обновлено: ${updatedCount}, удалено: ${removedCount}. Все каналы считаются одинаково.`,
       };
     }
 

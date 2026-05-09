@@ -314,6 +314,95 @@ test("importHistoricalActivityFromWatchedChannels keeps successful channel progr
   assert.equal(db.sot.activity.runtime.errors.at(-1).channelId, "small-1");
 });
 
+test("importHistoricalActivityFromWatchedChannels preserves per-channel cursor progress when a later page fetch fails", async () => {
+  const db = {
+    profiles: {
+      "user-1": {
+        userId: "user-1",
+        username: "todo",
+      },
+    },
+  };
+
+  upsertWatchedChannel(db, {
+    channelId: "main-1",
+    channelType: "main_chat",
+    now: "2026-05-01T00:00:00.000Z",
+  });
+
+  const firstBatch = new Collection(
+    Array.from({ length: 100 }, (_, index) => {
+      const numericId = 150 - index;
+      const messageId = `m-${numericId}`;
+      const createdAt = new Date(Date.parse("2026-05-01T10:00:00.000Z") + index * 60_000);
+      return [messageId, {
+        id: messageId,
+        guildId: "guild-1",
+        channelId: "main-1",
+        author: { id: "user-1", bot: false },
+        createdAt,
+      }];
+    })
+  );
+
+  const fetchCalls = [];
+  const result = await importHistoricalActivityFromWatchedChannels({
+    db,
+    requestedByUserId: "mod-1",
+    fetchChannel: async () => ({
+      isTextBased() {
+        return true;
+      },
+      messages: {
+        async fetch(options = {}) {
+          fetchCalls.push(options);
+          if (!options.before) {
+            return firstBatch;
+          }
+
+          throw new Error("second page failed");
+        },
+      },
+    }),
+    resolveMemberRoleIds() {
+      return [];
+    },
+    async applyRoleChanges() {
+      return true;
+    },
+  });
+
+  assert.deepEqual(fetchCalls, [{ limit: 100 }, { limit: 100, before: "m-51" }]);
+  assert.equal(result.importedEntryCount, 100);
+  assert.equal(result.failedChannelCount, 1);
+  assert.equal(db.sot.activity.watchedChannels[0].importedUntilMessageId, "m-150");
+  assert.equal(db.sot.activity.watchedChannels[0].lastScannedMessageId, "m-51");
+
+  const rerun = await importHistoricalActivityFromWatchedChannels({
+    db,
+    requestedByUserId: "mod-2",
+    fetchChannel: async () => ({
+      isTextBased() {
+        return true;
+      },
+      messages: {
+        async fetch() {
+          return firstBatch;
+        },
+      },
+    }),
+    resolveMemberRoleIds() {
+      return [];
+    },
+    async applyRoleChanges() {
+      return true;
+    },
+  });
+
+  assert.equal(rerun.importedEntryCount, 0);
+  assert.equal(db.sot.activity.globalUserSessions.length, 1);
+});
+
 test("importHistoricalActivityFromWatchedChannels rejects concurrent runs for the same db instance", async () => {
   const db = {};
   upsertWatchedChannel(db, {
