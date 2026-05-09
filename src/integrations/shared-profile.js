@@ -774,6 +774,19 @@ function createDefaultIntegrationState() {
         lastUpdated: null,
       },
     },
+    verification: {
+      mode: INTEGRATION_MODE_DORMANT,
+      status: "not_started",
+      enabled: false,
+      callbackBaseUrl: "",
+      verificationChannelId: "",
+      reportChannelId: "",
+      lastSyncAt: null,
+      stageTexts: {},
+      riskRules: normalizeVerificationRiskRules(),
+      deadline: normalizeVerificationDeadline(),
+      entryMessage: normalizeBoardState(),
+    },
   };
 }
 
@@ -786,11 +799,31 @@ function normalizeBoardState(value = {}) {
   };
 }
 
+function normalizeVerificationRiskRules(value = {}) {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  return {
+    enemyGuildIds: normalizeStringArray(source.enemyGuildIds, 100, 80),
+    enemyUserIds: normalizeStringArray(source.enemyUserIds, 100, 80),
+    enemyInviteCodes: normalizeStringArray(source.enemyInviteCodes, 100, 80),
+    enemyInviterUserIds: normalizeStringArray(source.enemyInviterUserIds, 100, 80),
+    manualTags: normalizeStringArray(source.manualTags, 100, 80),
+  };
+}
+
+function normalizeVerificationDeadline(value = {}) {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  return {
+    pendingDays: normalizePositiveInteger(source.pendingDays, 7),
+    reportOnly: source.reportOnly !== false,
+  };
+}
+
 function normalizeIntegrationState(value = {}) {
   const source = value && typeof value === "object" ? value : {};
 
   const eloStatus = cleanString(source?.elo?.status, 40);
   const tierlistStatus = cleanString(source?.tierlist?.status, 40);
+  const verificationStatus = cleanString(source?.verification?.status, 40);
   const next = {
     integrationStateVersion: INTEGRATION_STATE_VERSION,
     elo: {
@@ -814,6 +847,25 @@ function normalizeIntegrationState(value = {}) {
       lastSyncAt: normalizeNullableString(source?.tierlist?.lastSyncAt, 80),
       dashboard: normalizeBoardState(source?.tierlist?.dashboard),
       summary: normalizeBoardState(source?.tierlist?.summary),
+    },
+    verification: {
+      mode: INTEGRATION_MODE_DORMANT,
+      status: INTEGRATION_STATUSES.has(verificationStatus) ? verificationStatus : "not_started",
+      enabled: source?.verification?.enabled === true,
+      callbackBaseUrl: cleanString(source?.verification?.callbackBaseUrl, 500),
+      verificationChannelId: cleanString(source?.verification?.verificationChannelId, 40),
+      reportChannelId: cleanString(source?.verification?.reportChannelId, 40),
+      lastSyncAt: normalizeNullableString(source?.verification?.lastSyncAt, 80),
+      stageTexts: source?.verification?.stageTexts && typeof source.verification.stageTexts === "object" && !Array.isArray(source.verification.stageTexts)
+        ? Object.fromEntries(
+            Object.entries(source.verification.stageTexts)
+              .map(([key, text]) => [cleanString(key, 80), cleanString(text, 4000)])
+              .filter(([key, text]) => key && text)
+          )
+        : {},
+      riskRules: normalizeVerificationRiskRules(source?.verification?.riskRules),
+      deadline: normalizeVerificationDeadline(source?.verification?.deadline),
+      entryMessage: normalizeBoardState(source?.verification?.entryMessage),
     },
   };
 

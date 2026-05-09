@@ -274,7 +274,7 @@ test("deriveProfileMainView keeps label fallback for missing entries but drops s
   assert.deepEqual(derived.characterRoleIds, []);
 });
 
-test("normalizeIntegrationState creates dormant elo and tierlist scaffolding", () => {
+test("normalizeIntegrationState creates dormant elo, tierlist, and verification scaffolding", () => {
   const result = normalizeIntegrationState({
     elo: {
       mode: "active",
@@ -288,6 +288,30 @@ test("normalizeIntegrationState creates dormant elo and tierlist scaffolding", (
       dashboard: { channelId: "999", messageId: "888" },
       summary: { channelId: "777", messageId: "666", lastUpdated: "2026-05-01T12:30:00.000Z" },
     },
+    verification: {
+      enabled: true,
+      status: "in_progress",
+      callbackBaseUrl: "https://example.com/oauth/discord",
+      verificationChannelId: "verify-room",
+      reportChannelId: "report-room",
+      lastSyncAt: "2026-05-09T09:00:00.000Z",
+      stageTexts: {
+        entry: "Пройди verify",
+      },
+      riskRules: {
+        enemyGuildIds: ["guild-1", "guild-1", "guild-2"],
+        manualTags: ["fresh", "fresh", "watch"],
+      },
+      deadline: {
+        pendingDays: 7,
+        reportOnly: true,
+      },
+      entryMessage: {
+        channelId: "verify-room",
+        messageId: "verify-message",
+        lastUpdated: "2026-05-09T10:00:00.000Z",
+      },
+    },
   });
 
   assert.equal(result.integrations.elo.mode, INTEGRATION_MODE_DORMANT);
@@ -298,6 +322,16 @@ test("normalizeIntegrationState creates dormant elo and tierlist scaffolding", (
   assert.equal(result.integrations.tierlist.status, "not_started");
   assert.equal(result.integrations.tierlist.dashboard.channelId, "999");
   assert.equal(result.integrations.tierlist.summary.messageId, "666");
+  assert.equal(result.integrations.verification.mode, INTEGRATION_MODE_DORMANT);
+  assert.equal(result.integrations.verification.status, "in_progress");
+  assert.equal(result.integrations.verification.enabled, true);
+  assert.equal(result.integrations.verification.callbackBaseUrl, "https://example.com/oauth/discord");
+  assert.equal(result.integrations.verification.verificationChannelId, "verify-room");
+  assert.equal(result.integrations.verification.entryMessage.messageId, "verify-message");
+  assert.deepEqual(result.integrations.verification.riskRules.enemyGuildIds, ["guild-1", "guild-2"]);
+  assert.deepEqual(result.integrations.verification.riskRules.manualTags, ["fresh", "watch"]);
+  assert.equal(result.integrations.verification.deadline.pendingDays, 7);
+  assert.equal(result.integrations.verification.deadline.reportOnly, true);
 });
 
 test("normalizeRobloxDomainState defaults to unverified when binding is missing", () => {

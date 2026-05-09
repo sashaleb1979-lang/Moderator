@@ -57,6 +57,22 @@ function normalizeTelemetryJobKey(kind) {
   return ROBLOX_PANEL_JOB_KEYS[String(kind || "").trim()] || null;
 }
 
+function formatJobStatus(status) {
+  const normalized = cleanString(status, 40) || "idle";
+  if (normalized === "running") return "в работе";
+  if (normalized === "ok") return "успешно";
+  if (normalized === "error") return "ошибка";
+  return "ожидание";
+}
+
+function formatVerificationStatus(status) {
+  const normalized = cleanString(status, 40) || "unverified";
+  if (normalized === "verified") return "проверен";
+  if (normalized === "pending") return "ждёт сверки";
+  if (normalized === "failed") return "сверка не пройдена";
+  return "не привязан";
+}
+
 function createTelemetryJobState(label) {
   return {
     label,
@@ -109,9 +125,9 @@ function summarizeTelemetryResult(kind, result = {}) {
 function createRobloxPanelTelemetry(options = {}) {
   const telemetry = {
     jobs: {
-      profileRefresh: createTelemetryJobState("Metadata refresh"),
-      playtimeSync: createTelemetryJobState("Playtime sync"),
-      runtimeFlush: createTelemetryJobState("Runtime flush"),
+      profileRefresh: createTelemetryJobState("Обновление профилей"),
+      playtimeSync: createTelemetryJobState("Синк playtime"),
+      runtimeFlush: createTelemetryJobState("Сохранение runtime"),
     },
     wrapJob(kind, job) {
       const normalizedKind = normalizeTelemetryJobKey(kind);
@@ -215,30 +231,30 @@ function shouldIncludeRobloxEntry(roblox = {}) {
 function buildRobloxEntryNote(entry = {}) {
   const parts = [];
   if (entry.refreshError) {
-    parts.push(`refresh error: ${truncateText(entry.refreshError, 70)}`);
+    parts.push(`ошибка обновления: ${truncateText(entry.refreshError, 70)}`);
   } else if (entry.verificationStatus === "failed") {
-    parts.push("verify failed");
+    parts.push("сверка не пройдена");
   } else if (entry.verificationStatus === "pending") {
-    parts.push("pending verify");
+    parts.push("ждёт сверки");
   } else if (entry.verificationStatus === "verified" && !entry.lastRefreshAt) {
-    parts.push("ожидает metadata refresh");
+    parts.push("ждёт обновления профиля");
   }
 
   if (entry.isActiveInRuntime) {
-    parts.push("в JJS сейчас");
+    parts.push("сейчас в JJS");
   } else if (entry.currentSessionStartedAt) {
-    parts.push("есть session marker");
+    parts.push("остался session marker");
   }
 
   if (entry.dirtyRuntime) {
-    parts.push("dirty runtime");
+    parts.push("есть несохранённый runtime");
   }
 
   if (!parts.length && entry.lastSeenInJjsAt) {
-    parts.push(`last seen ${formatDateTime(entry.lastSeenInJjsAt)}`);
+    parts.push(`последний раз замечен ${formatDateTime(entry.lastSeenInJjsAt)}`);
   }
 
-  return parts.join(" | ") || "ok";
+  return parts.join(" | ") || "норма";
 }
 
 function getRobloxEntryPriority(entry = {}) {
@@ -316,25 +332,25 @@ function buildRobloxPanelIssues(snapshot = {}) {
   const issues = [];
 
   if (!snapshot.config?.jjsReady) {
-    issues.push("JJS ids не настроены: playtime tracking не сможет собираться, пока jjsUniverseId, jjsRootPlaceId и jjsPlaceId равны 0.");
+    issues.push("JJS IDs не настроены: сбор playtime не начнётся, пока jjsUniverseId, jjsRootPlaceId и jjsPlaceId равны 0.");
   }
 
   if (snapshot.jobs?.profileRefresh?.status === "error") {
-    issues.push(`Metadata refresh упал: ${snapshot.jobs.profileRefresh.errorText}`);
+    issues.push(`Обновление профилей упало: ${snapshot.jobs.profileRefresh.errorText}`);
   } else if (normalizeNonNegativeInteger(snapshot.jobs?.profileRefresh?.summary?.failedCount, 0) > 0) {
-    issues.push(`Metadata refresh завершился с ошибками профилей: ${snapshot.jobs.profileRefresh.summary.failedCount}.`);
+    issues.push(`Обновление профилей завершилось с ошибками: ${snapshot.jobs.profileRefresh.summary.failedCount}.`);
   }
 
   if (snapshot.jobs?.playtimeSync?.status === "error") {
-    issues.push(`Playtime sync упал: ${snapshot.jobs.playtimeSync.errorText}`);
+    issues.push(`Синк playtime упал: ${snapshot.jobs.playtimeSync.errorText}`);
   } else if (normalizeNonNegativeInteger(snapshot.jobs?.playtimeSync?.summary?.failedBatches, 0) > 0) {
     issues.push(
-      `Playtime sync потерял batch-ы: ${snapshot.jobs.playtimeSync.summary.failedBatches} batch, ${normalizeNonNegativeInteger(snapshot.jobs?.playtimeSync?.summary?.failedUserIds, 0)} users.`
+      `Синк playtime потерял пачки: ${snapshot.jobs.playtimeSync.summary.failedBatches} шт., пользователей с ошибкой: ${normalizeNonNegativeInteger(snapshot.jobs?.playtimeSync?.summary?.failedUserIds, 0)}.`
     );
   }
 
   if (snapshot.jobs?.runtimeFlush?.status === "error") {
-    issues.push(`Runtime flush упал: ${snapshot.jobs.runtimeFlush.errorText}`);
+    issues.push(`Сохранение runtime упало: ${snapshot.jobs.runtimeFlush.errorText}`);
   }
 
   if (snapshot.totals?.refreshErrorUsers > 0) {
@@ -342,7 +358,7 @@ function buildRobloxPanelIssues(snapshot = {}) {
       .filter((entry) => entry.refreshError)
       .slice(0, ROBLOX_PANEL_ISSUE_LIMIT)
       .map((entry) => entry.robloxUsername || entry.displayName);
-    issues.push(`У пользователей остались refreshError: ${names.join(", ")}${snapshot.totals.refreshErrorUsers > names.length ? ", ..." : ""}.`);
+    issues.push(`У пользователей остались ошибки обновления: ${names.join(", ")}${snapshot.totals.refreshErrorUsers > names.length ? ", ..." : ""}.`);
   }
 
   return issues.slice(0, ROBLOX_PANEL_ISSUE_LIMIT);
@@ -381,27 +397,27 @@ function getRobloxStatsPanelSnapshot({ db = {}, runtimeState = {}, telemetry = n
 }
 
 function formatRobloxJobLine(job = {}) {
-  const status = String(job.status || "idle").toUpperCase();
+  const status = formatJobStatus(job.status);
   const pieces = [status];
   if (job.lastFinishedAt) {
     pieces.push(formatDateTime(job.lastFinishedAt));
   } else if (job.lastStartedAt) {
-    pieces.push(`started ${formatDateTime(job.lastStartedAt)}`);
+    pieces.push(`запущено ${formatDateTime(job.lastStartedAt)}`);
   }
   if (job.status === "error" && job.errorText) {
     pieces.push(job.errorText);
   }
   if (normalizeNonNegativeInteger(job.summary?.failedCount, 0) > 0) {
-    pieces.push(`failed ${job.summary.failedCount}`);
+    pieces.push(`ошибок ${job.summary.failedCount}`);
   }
   if (normalizeNonNegativeInteger(job.summary?.failedBatches, 0) > 0) {
-    pieces.push(`failed batches ${job.summary.failedBatches}`);
+    pieces.push(`потеряно пачек ${job.summary.failedBatches}`);
   }
   if (normalizeNonNegativeInteger(job.summary?.touchedUserCount, 0) > 0) {
-    pieces.push(`touched ${job.summary.touchedUserCount}`);
+    pieces.push(`затронуто ${job.summary.touchedUserCount}`);
   }
   if (normalizeNonNegativeInteger(job.summary?.dirtyUserCount, 0) > 0) {
-    pieces.push(`dirty ${job.summary.dirtyUserCount}`);
+    pieces.push(`грязных ${job.summary.dirtyUserCount}`);
   }
   return pieces.join(" | ");
 }
@@ -412,54 +428,54 @@ function formatTopEntry(entry = {}, index = 0) {
     : entry.displayName;
   return [
     `${index + 1}. ${label}`,
-    entry.verificationStatus,
+    formatVerificationStatus(entry.verificationStatus),
     formatMinutes(entry.totalJjsMinutes),
-    truncateText(entry.note, 90) || "ok",
+    truncateText(entry.note, 90) || "норма",
   ].join(" | ");
 }
 
 function buildRobloxStatsPanelPayload({ db = {}, runtimeState = {}, telemetry = null, appConfig = {}, statusText = "" } = {}) {
   const snapshot = getRobloxStatsPanelSnapshot({ db, runtimeState, telemetry, appConfig });
   const embed = new EmbedBuilder()
-    .setTitle("Roblox Stats Panel")
+    .setTitle("Контроль Roblox")
     .setDescription([
-      "Закрытая мод-панель Roblox binding, metadata и JJS playtime.",
+      "Закрытая мод-панель для привязок Roblox, обновления профилей и учёта JJS.",
       `Связано аккаунтов: **${snapshot.totals.linkedUsers}**`,
-      `JJS tracking: **${snapshot.config.jjsReady ? "готов" : "не настроен"}**`,
+      `Трекинг JJS: **${snapshot.config.jjsReady ? "готов" : "не настроен"}**`,
     ].join("\n"))
     .addFields(
       {
-        name: "Сводка",
+        name: "Профили",
         value: [
-          `Verified: **${snapshot.totals.verifiedUsers}**`,
-          `Pending: **${snapshot.totals.pendingUsers}**`,
-          `Failed: **${snapshot.totals.failedUsers}**`,
-          `Refresh errors: **${snapshot.totals.refreshErrorUsers}**`,
-          `Never refreshed verified: **${snapshot.totals.neverRefreshedVerifiedUsers}**`,
+          `Проверено: **${snapshot.totals.verifiedUsers}**`,
+          `Ждут сверки: **${snapshot.totals.pendingUsers}**`,
+          `Сверка не пройдена: **${snapshot.totals.failedUsers}**`,
+          `С ошибками обновления: **${snapshot.totals.refreshErrorUsers}**`,
+          `Проверены, но не обновлялись: **${snapshot.totals.neverRefreshedVerifiedUsers}**`,
         ].join("\n"),
         inline: false,
       },
       {
-        name: "Runtime",
+        name: "JJS и runtime",
         value: [
-          `Active JJS users: **${snapshot.totals.activeJjsUsers}**`,
-          `Dirty runtime users: **${snapshot.totals.dirtyRuntimeUsers}**`,
-          `Active co-play pairs: **${snapshot.totals.activeCoPlayPairs}**`,
-          `Last playtime sync: ${formatDateTime(snapshot.jobs.playtimeSync.lastFinishedAt || snapshot.jobs.playtimeSync.lastStartedAt)}`,
+          `Сейчас в JJS: **${snapshot.totals.activeJjsUsers}**`,
+          `Несохранённых runtime-профилей: **${snapshot.totals.dirtyRuntimeUsers}**`,
+          `Активных co-play пар: **${snapshot.totals.activeCoPlayPairs}**`,
+          `Последний синк playtime: ${formatDateTime(snapshot.jobs.playtimeSync.lastFinishedAt || snapshot.jobs.playtimeSync.lastStartedAt)}`,
         ].join("\n"),
         inline: false,
       },
       {
-        name: "Jobs",
+        name: "Фоновые задачи",
         value: [
-          `Metadata refresh: ${formatRobloxJobLine(snapshot.jobs.profileRefresh)}`,
-          `Playtime sync: ${formatRobloxJobLine(snapshot.jobs.playtimeSync)}`,
-          `Runtime flush: ${formatRobloxJobLine(snapshot.jobs.runtimeFlush)}`,
+          `Обновление профилей: ${formatRobloxJobLine(snapshot.jobs.profileRefresh)}`,
+          `Синк playtime: ${formatRobloxJobLine(snapshot.jobs.playtimeSync)}`,
+          `Сохранение runtime: ${formatRobloxJobLine(snapshot.jobs.runtimeFlush)}`,
         ].join("\n"),
         inline: false,
       },
       {
-        name: "Короткий топ-лист",
+        name: "Кого проверить первым",
         value: snapshot.topEntries.length
           ? snapshot.topEntries.map((entry, index) => formatTopEntry(entry, index)).join("\n")
           : "Пока нет Roblox-профилей для контроля.",
@@ -485,9 +501,9 @@ function buildRobloxStatsPanelPayload({ db = {}, runtimeState = {}, telemetry = 
     components: [
       new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId("roblox_stats_refresh").setLabel("Обновить").setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId("roblox_stats_run_profile_refresh").setLabel("Metadata refresh").setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId("roblox_stats_run_playtime_sync").setLabel("Playtime sync").setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId("roblox_stats_run_flush").setLabel("Runtime flush").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("roblox_stats_run_profile_refresh").setLabel("Обновить профили").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("roblox_stats_run_playtime_sync").setLabel("Синк playtime").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("roblox_stats_run_flush").setLabel("Сохранить runtime").setStyle(ButtonStyle.Secondary),
         new ButtonBuilder().setCustomId("roblox_stats_back").setLabel("Назад").setStyle(ButtonStyle.Secondary)
       ),
     ],
@@ -552,7 +568,7 @@ async function handleRobloxStatsPanelButtonInteraction({
   }
 
   if (customId === "roblox_stats_refresh") {
-    await interaction.update(renderPanel({ statusText: "Roblox panel refreshed." }));
+    await interaction.update(renderPanel({ statusText: "Панель Roblox обновлена." }));
     return true;
   }
 
@@ -564,15 +580,15 @@ async function handleRobloxStatsPanelButtonInteraction({
   const actionMap = {
     roblox_stats_run_profile_refresh: {
       runner: runProfileRefreshJob,
-      successText: (result = {}) => `Metadata refresh завершён. Refreshed ${normalizeNonNegativeInteger(result.refreshedCount, 0)}, failed ${normalizeNonNegativeInteger(result.failedCount, 0)}.`,
+      successText: (result = {}) => `Обновление профилей завершено. Обновлено: ${normalizeNonNegativeInteger(result.refreshedCount, 0)}, с ошибками: ${normalizeNonNegativeInteger(result.failedCount, 0)}.`,
     },
     roblox_stats_run_playtime_sync: {
       runner: runPlaytimeSyncJob,
-      successText: (result = {}) => `Playtime sync завершён. Active ${normalizeNonNegativeInteger(result.activeJjsUsers, 0)}, touched ${normalizeNonNegativeInteger(result.touchedUserCount, 0)}, failed users ${normalizeNonNegativeInteger(result.failedUserIds, 0)}.`,
+      successText: (result = {}) => `Синк playtime завершён. Активных в JJS: ${normalizeNonNegativeInteger(result.activeJjsUsers, 0)}, затронуто профилей: ${normalizeNonNegativeInteger(result.touchedUserCount, 0)}, ошибок пользователей: ${normalizeNonNegativeInteger(result.failedUserIds, 0)}.`,
     },
     roblox_stats_run_flush: {
       runner: runRuntimeFlush,
-      successText: (result = {}) => `Runtime flush завершён. Dirty users ${normalizeNonNegativeInteger(result.dirtyUserCount, 0)}, saved ${result.saved === true ? "yes" : "no"}.`,
+      successText: (result = {}) => `Сохранение runtime завершено. Грязных профилей: ${normalizeNonNegativeInteger(result.dirtyUserCount, 0)}, сохранено: ${result.saved === true ? "да" : "нет"}.`,
     },
   };
 

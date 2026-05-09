@@ -1,6 +1,7 @@
 "use strict";
 
 const { ROLE_PANEL_COMMAND_NAME } = require("../role-panel");
+const { VERIFY_COMMAND_NAME, VERIFY_SUBCOMMAND_NAMES } = require("../verification/operator");
 
 const ONBOARD_SUBCOMMAND_NAMES = [
   "panel",
@@ -15,7 +16,7 @@ const ONBOARD_SUBCOMMAND_NAMES = [
   "removetier",
 ];
 
-const TOP_LEVEL_COMMAND_NAMES = ["onboard", ROLE_PANEL_COMMAND_NAME];
+const TOP_LEVEL_COMMAND_NAMES = ["onboard", ROLE_PANEL_COMMAND_NAME, VERIFY_COMMAND_NAME];
 
 function buildCommands() {
   const { SlashCommandBuilder } = require("discord.js");
@@ -84,6 +85,12 @@ function buildCommands() {
     new SlashCommandBuilder()
       .setName(ROLE_PANEL_COMMAND_NAME)
       .setDescription("Открыть панель выдачи и массового снятия ивент-ролей"),
+    new SlashCommandBuilder()
+      .setName(VERIFY_COMMAND_NAME)
+      .setDescription("Открыть автономную verification-панель")
+      .addSubcommand((subcommand) =>
+        subcommand.setName("panel").setDescription("Открыть verification-панель")
+      ),
   ].map((command) => command.toJSON());
 }
 
@@ -91,5 +98,7 @@ module.exports = {
   ONBOARD_SUBCOMMAND_NAMES,
   ROLE_PANEL_COMMAND_NAME,
   TOP_LEVEL_COMMAND_NAMES,
+  VERIFY_COMMAND_NAME,
+  VERIFY_SUBCOMMAND_NAMES,
   buildCommands,
 };

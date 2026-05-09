@@ -7,6 +7,7 @@ const BASE_ROLE_SLOT_LABELS = {
   accessNormal: "Access normal",
   accessWartime: "Access wartime",
   accessNonJjs: "Access nonJJS",
+  verifyAccess: "Verify access",
 };
 
 const TIER_ROLE_LABELS = {
@@ -44,6 +45,8 @@ function normalizeRoleSlot(slot) {
     nonjjs: "accessNonJjs",
     accessnonggs: "accessNonJjs",
     nonggs: "accessNonJjs",
+    verifyaccess: "verifyAccess",
+    verify: "verifyAccess",
   };
 
   const canonical = aliases[normalized] || "";

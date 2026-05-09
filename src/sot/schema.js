@@ -191,6 +191,7 @@ function createEmptySotState() {
       accessNormal: null,
       accessWartime: null,
       accessNonJjs: null,
+      verifyAccess: null,
       killTier: {
         1: null,
         2: null,
@@ -218,6 +219,7 @@ function createEmptySotState() {
     integrations: {
       elo: {},
       tierlist: {},
+      verification: {},
     },
     activity: createEmptyActivityState(),
     influence: normalizeInfluence(DEFAULT_INFLUENCE),
@@ -366,6 +368,7 @@ function buildIntegrationState(dbConfig = {}) {
   const integrations = dbConfig.integrations && typeof dbConfig.integrations === "object" ? dbConfig.integrations : {};
   const eloIntegration = integrations.elo && typeof integrations.elo === "object" ? integrations.elo : {};
   const tierlistIntegration = integrations.tierlist && typeof integrations.tierlist === "object" ? integrations.tierlist : {};
+  const verificationIntegration = integrations.verification && typeof integrations.verification === "object" ? integrations.verification : {};
 
   return clone({
     elo: {
@@ -386,6 +389,19 @@ function buildIntegrationState(dbConfig = {}) {
       lastSyncAt: normalizeNullableString(tierlistIntegration.lastSyncAt, 80),
       dashboard: clone(tierlistIntegration.dashboard || {}),
       summary: clone(tierlistIntegration.summary || {}),
+    },
+    verification: {
+      enabled: verificationIntegration.enabled === true,
+      status: cleanString(verificationIntegration.status, 40),
+      mode: cleanString(verificationIntegration.mode, 40),
+      callbackBaseUrl: cleanString(verificationIntegration.callbackBaseUrl, 500),
+      reportChannelId: cleanString(verificationIntegration.reportChannelId, 80),
+      verificationChannelId: cleanString(verificationIntegration.verificationChannelId, 80),
+      lastSyncAt: normalizeNullableString(verificationIntegration.lastSyncAt, 80),
+      stageTexts: clone(verificationIntegration.stageTexts || {}),
+      riskRules: clone(verificationIntegration.riskRules || {}),
+      deadline: clone(verificationIntegration.deadline || {}),
+      entryMessage: clone(verificationIntegration.entryMessage || {}),
     },
   });
 }
@@ -443,6 +459,7 @@ function migrateLegacyState(db = {}, options = {}) {
   next.roles.accessNormal = roleRecord(appRoles.accessRoleId);
   next.roles.accessWartime = roleRecord(appRoles.wartimeAccessRoleId);
   next.roles.accessNonJjs = roleRecord(appRoles.nonGgsAccessRoleId || appRoles.nonJjsAccessRoleId);
+  next.roles.verifyAccess = roleRecord(appRoles.verifyAccessRoleId);
   for (const tier of [1, 2, 3, 4, 5]) {
     next.roles.killTier[tier] = roleRecord(appRoles.killTierRoleIds?.[tier] || appRoles.killTierRoleIds?.[String(tier)], dbConfig.generatedRoles?.tiers?.[tier] || dbConfig.generatedRoles?.tiers?.[String(tier)]);
   }
@@ -479,6 +496,7 @@ function normalizeSotState(value = {}) {
   next.roles.accessNormal = normalizeRecord(source.roles?.accessNormal, "configured");
   next.roles.accessWartime = normalizeRecord(source.roles?.accessWartime, "configured");
   next.roles.accessNonJjs = normalizeRecord(source.roles?.accessNonJjs, "configured");
+  next.roles.verifyAccess = normalizeRecord(source.roles?.verifyAccess, "configured");
   for (const tier of [1, 2, 3, 4, 5]) {
     next.roles.killTier[tier] = normalizeRecord(source.roles?.killTier?.[tier] || source.roles?.killTier?.[String(tier)], "configured");
   }

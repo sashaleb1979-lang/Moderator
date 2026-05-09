@@ -9,6 +9,7 @@
     "moderatorRoleId": "REPLACE_MODERATOR_ROLE_ID",
     "accessRoleId": "REPLACE_ACCESS_ROLE_ID",
     "wartimeAccessRoleId": "1496376994966011954",
+    "verifyAccessRoleId": "",
     "nonJjsAccessRoleId": "",
     "killTierRoleIds": {
       "1": "",
@@ -53,14 +54,14 @@
     "playtimePollMinutes": 2,
     "runtimeFlushEnabled": true,
     "flushIntervalMinutes": 10,
-    "jjsUniverseId": 0,
-    "jjsRootPlaceId": 0,
-    "jjsPlaceId": 0,
+    "jjsUniverseId": 3508322461,
+    "jjsRootPlaceId": 9391468976,
+    "jjsPlaceId": 9391468976,
     "frequentNonFriendMinutes": 60,
     "frequentNonFriendSessions": 2,
     "links": {
       "friendRequestsUrl": "https://www.roblox.com/users/friends#!/friend-requests",
-      "jjsGameUrl": ""
+      "jjsGameUrl": "https://www.roblox.com/games/9391468976"
     }
   },
   "killTierLabels": {

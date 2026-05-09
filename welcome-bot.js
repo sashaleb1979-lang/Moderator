@@ -114,18 +114,22 @@ const {
   parseRoleGrantCustomId,
   validateRoleMessageDraft,
 } = require("./src/role-panel");
+const {
+  VERIFY_COMMAND_NAME,
+  buildVerificationPanelPayload,
+  handleVerificationPanelButtonInteraction,
+} = require("./src/verification/operator");
 const { commitMutation } = require("./src/onboard/refresh-runner");
 const {
   buildActivityOperatorPanelPayload,
   handleActivityPanelButtonInteraction,
   handleActivityPanelModalSubmitInteraction,
 } = require("./src/activity/operator");
-  const {
-    flushActivityRuntime,
-    recordActivityMessage,
-    resumeActivityRuntime,
-  } = require("./src/activity/runtime");
-const { ensureActivityState } = require("./src/activity/state");
+const {
+  flushActivityRuntime,
+  recordActivityMessage,
+  resumeActivityRuntime,
+} = require("./src/activity/runtime");
 const {
   ONBOARD_ACCESS_MODES,
   createOnboardModeState,
@@ -172,10 +176,6 @@ const {
 const {
   createRobloxApiClient,
 } = require("./src/integrations/roblox-service");
-const {
-  createRobloxPanelTelemetry,
-  handleRobloxStatsPanelButtonInteraction,
-} = require("./src/integrations/roblox-panel");
 const {
   createRobloxJobCoordinator,
   createRobloxRuntimeState,
@@ -500,6 +500,7 @@ function buildRuntimeConfig(fileConfig = {}) {
       moderatorRoleId: envText("MODERATOR_ROLE_ID", fileConfig?.roles?.moderatorRoleId || ""),
       accessRoleId: envText("ACCESS_ROLE_ID", fileConfig?.roles?.accessRoleId || ""),
       wartimeAccessRoleId: envText("WARTIME_ACCESS_ROLE_ID", fileConfig?.roles?.wartimeAccessRoleId || ""),
+      verifyAccessRoleId: envText("VERIFY_ACCESS_ROLE_ID", fileConfig?.roles?.verifyAccessRoleId || ""),
       nonJjsAccessRoleId: envText(
         "NON_JJS_ACCESS_ROLE_ID",
         envText("NON_GGS_ACCESS_ROLE_ID", fileConfig?.roles?.nonJjsAccessRoleId || fileConfig?.roles?.nonGgsAccessRoleId || "")
@@ -789,32 +790,30 @@ function nowIso() {
   return new Date().toISOString();
 }
 
-const robloxPanelTelemetry = createRobloxPanelTelemetry({ now: nowIso });
-
-const runScheduledRobloxProfileRefreshJob = robloxPanelTelemetry.wrapJob("profile_refresh", robloxJobCoordinator.createRunner("profile_refresh", () => runRobloxProfileRefreshJobCore({
+const runScheduledRobloxProfileRefreshJob = robloxJobCoordinator.createRunner("profile_refresh", () => runRobloxProfileRefreshJobCore({
   db,
   now: nowIso,
   fetchUserProfile: robloxApiClient.fetchUserProfile.bind(robloxApiClient),
   fetchUserAvatarHeadshots: robloxApiClient.fetchUserAvatarHeadshots.bind(robloxApiClient),
   fetchUserUsernameHistory: robloxApiClient.fetchUserUsernameHistory.bind(robloxApiClient),
   logError: (...args) => console.error(...args),
-})));
+}));
 
-const syncRobloxPlaytime = robloxPanelTelemetry.wrapJob("playtime_sync", robloxJobCoordinator.createRunner("playtime_sync", () => runRobloxPlaytimeSyncJob({
+const syncRobloxPlaytime = robloxJobCoordinator.createRunner("playtime_sync", () => runRobloxPlaytimeSyncJob({
   db,
   runtimeState: robloxRuntimeState,
   now: nowIso,
   roblox: appConfig?.roblox,
   fetchUserPresences: robloxApiClient.fetchUserPresences.bind(robloxApiClient),
   logError: (...args) => console.error(...args),
-})));
+}));
 
-const flushRobloxRuntime = robloxPanelTelemetry.wrapJob("runtime_flush", robloxJobCoordinator.createRunner("runtime_flush", () => flushRobloxRuntimeState({
+const flushRobloxRuntime = robloxJobCoordinator.createRunner("runtime_flush", () => flushRobloxRuntimeState({
   db,
   runtimeState: robloxRuntimeState,
   now: nowIso,
   saveDb,
-})));
+}));
 
 function cloneJsonValue(value) {
   return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
@@ -4365,6 +4364,10 @@ function getNonJjsAccessRoleId() {
   return getSotRole("accessNonJjs", { db, appConfig })?.value || "";
 }
 
+function getVerifyAccessRoleId() {
+  return getSotRole("verifyAccess", { db, appConfig })?.value || "";
+}
+
 function getModeratorRoleId() {
   return getSotRole("moderator", { db, appConfig })?.value || "";
 }
@@ -4440,6 +4443,26 @@ function getOnboardModeValidationError(mode = getCurrentOnboardMode()) {
 
 function formatRoleMention(roleId) {
   return roleId ? `<@&${roleId}>` : "не настроена";
+}
+
+function isVerificationOauthConfigured() {
+  return Boolean(
+    envText("DISCORD_OAUTH_CLIENT_ID")
+    && envText("DISCORD_OAUTH_CLIENT_SECRET")
+    && envText("DISCORD_OAUTH_REDIRECT_URI")
+  );
+}
+
+async function buildVerificationPanelReply(statusText = "", includeFlags = true) {
+  const payload = buildVerificationPanelPayload({
+    integration: getSotIntegration("verification", { db, appConfig }) || {},
+    verifyRoleId: getVerifyAccessRoleId(),
+    accessRoleId: getNormalAccessRoleId(),
+    wartimeAccessRoleId: getWartimeAccessRoleId(),
+    oauthConfigured: isVerificationOauthConfigured(),
+    statusText,
+  });
+  return includeFlags ? ephemeralPayload(payload) : payload;
 }
 
 function buildOnboardModeStatusLines() {
@@ -7208,17 +7231,17 @@ async function buildModeratorPanelPayload(client, statusText = "", includeFlags 
     embeds: [embed],
     components: [
       new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId("panel_refresh_welcome").setLabel("Обновить welcome").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId("panel_refresh_welcome").setLabel("Обновить приветствие").setStyle(ButtonStyle.Primary),
         new ButtonBuilder().setCustomId("panel_refresh_tierlists").setLabel("Обновить тир-листы").setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId("panel_sync_roles").setLabel("Синк ролей").setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId("panel_open_roblox_stats").setLabel("Roblox Panel").setStyle(ButtonStyle.Secondary)
+        new ButtonBuilder().setCustomId("panel_sync_roles").setLabel("Синхронизировать роли").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("panel_open_roblox_stats").setLabel("Контроль Roblox").setStyle(ButtonStyle.Secondary)
       ),
       new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId("panel_remind_missing").setLabel("Напомнить отсутствующим").setStyle(ButtonStyle.Danger),
         new ButtonBuilder().setCustomId("panel_config_channels").setLabel("Каналы").setStyle(ButtonStyle.Secondary),
         new ButtonBuilder().setCustomId("panel_refresh_summary").setLabel("Обновить сводку").setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId("panel_open_tierlist").setLabel("Tierlist Panel").setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId("panel_open_elo").setLabel("ELO Panel").setStyle(ButtonStyle.Secondary)
+        new ButtonBuilder().setCustomId("panel_open_tierlist").setLabel("Панель тир-листа").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("panel_open_elo").setLabel("Панель ELO").setStyle(ButtonStyle.Secondary)
       ),
       new ActionRowBuilder().addComponents(
         new ButtonBuilder()
@@ -7245,19 +7268,19 @@ async function buildModeratorPanelPayload(client, statusText = "", includeFlags 
           .setDisabled(currentAccessGrantMode === ONBOARD_ACCESS_GRANT_MODES.AFTER_SUBMIT),
         new ButtonBuilder()
           .setCustomId("panel_access_grant_after_review_post")
-          .setLabel("Роль после review")
+          .setLabel("Роль после проверки")
           .setStyle(currentAccessGrantMode === ONBOARD_ACCESS_GRANT_MODES.AFTER_REVIEW_POST ? ButtonStyle.Success : ButtonStyle.Secondary)
           .setDisabled(currentAccessGrantMode === ONBOARD_ACCESS_GRANT_MODES.AFTER_REVIEW_POST),
         new ButtonBuilder()
           .setCustomId("panel_access_grant_after_approve")
-          .setLabel("Роль после approve")
+          .setLabel("Роль после одобрения")
           .setStyle(currentAccessGrantMode === ONBOARD_ACCESS_GRANT_MODES.AFTER_APPROVE ? ButtonStyle.Success : ButtonStyle.Secondary)
           .setDisabled(currentAccessGrantMode === ONBOARD_ACCESS_GRANT_MODES.AFTER_APPROVE)
       ),
       new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId("panel_add_character").setLabel("Добавить персонажа").setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId("panel_sot_report").setLabel("SoT Report").setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId("panel_open_activity").setLabel("Activity Panel").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("panel_sot_report").setLabel("Отчёт SoT").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("panel_open_activity").setLabel("Панель активности").setStyle(ButtonStyle.Secondary),
         new ButtonBuilder().setCustomId("welcome_editor").setLabel("Редактор UI").setStyle(ButtonStyle.Secondary),
         new ButtonBuilder().setCustomId("welcome_editor_jjs").setLabel("Редактировать JJS").setStyle(ButtonStyle.Secondary)
       ),
@@ -11253,6 +11276,19 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
+    if (interaction.commandName === VERIFY_COMMAND_NAME) {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      const subcommand = interaction.options.getSubcommand();
+      if (subcommand === "panel") {
+        await interaction.reply(await buildVerificationPanelReply());
+        return;
+      }
+    }
+
     if (interaction.commandName === "combo") {
       const sub = interaction.options.getSubcommand();
 
@@ -11646,6 +11682,17 @@ client.on("interactionCreate", async (interaction) => {
   }
 
   if (interaction.isButton()) {
+    if (await handleVerificationPanelButtonInteraction({
+      interaction,
+      isModerator,
+      replyNoPermission: async (currentInteraction) => {
+        await currentInteraction.reply(ephemeralPayload({ content: "Нет прав." }));
+      },
+      buildPayload: async (statusText, includeFlags) => buildVerificationPanelReply(statusText, includeFlags),
+    })) {
+      return;
+    }
+
     const grantParsed = parseRoleGrantCustomId(interaction.customId);
     if (grantParsed) {
       const record = getRoleGrantRecord(grantParsed.recordId);
@@ -12501,23 +12548,6 @@ client.on("interactionCreate", async (interaction) => {
       interaction,
       isModerator,
       replyNoPermission: () => interaction.reply(ephemeralPayload({ content: "Нет прав." })),
-    })) {
-      return;
-    }
-
-    if (await handleRobloxStatsPanelButtonInteraction({
-      interaction,
-      client,
-      db,
-      runtimeState: robloxRuntimeState,
-      telemetry: robloxPanelTelemetry,
-      appConfig,
-      isModerator,
-      replyNoPermission: () => interaction.reply(ephemeralPayload({ content: "Нет прав." })),
-      buildModeratorPanelPayload,
-      runProfileRefreshJob: runScheduledRobloxProfileRefreshJob,
-      runPlaytimeSyncJob: syncRobloxPlaytime,
-      runRuntimeFlush: flushRobloxRuntime,
     })) {
       return;
     }
@@ -15588,6 +15618,13 @@ client.on("interactionCreate", async (interaction) => {
       replyError: (_interaction, text) => interaction.reply(ephemeralPayload({ content: text })),
       replySuccess: (_interaction, text) => interaction.reply(ephemeralPayload({ content: text })),
       parseRequestedRoleId,
+      parseRequestedChannelId,
+      resolveChannel: async (channelId) => {
+        const guild = interaction.guild || await getGuild(client).catch(() => null);
+        const cachedChannel = guild?.channels?.cache?.get(channelId) || client.channels?.cache?.get?.(channelId) || null;
+        if (cachedChannel) return cachedChannel;
+        return client.channels.fetch(channelId).catch(() => null);
+      },
       saveDb,
     })) {
       return;

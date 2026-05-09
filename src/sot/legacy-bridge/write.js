@@ -4,7 +4,7 @@ const { CHANNEL_SLOTS, buildInfluenceState, buildIntegrationState, buildPanelMap
 const { getConfiguredChannelValue, getLegacyChannelRecord } = require("../resolver/channels");
 const { selectPreferredRecord } = require("../resolver/priority");
 
-const BASE_ROLE_SLOTS = ["moderator", "accessNormal", "accessWartime", "accessNonJjs"];
+const BASE_ROLE_SLOTS = ["moderator", "accessNormal", "accessWartime", "accessNonJjs", "verifyAccess"];
 const KILL_TIER_SLOTS = [1, 2, 3, 4, 5];
 const LEGACY_ELO_TIER_SLOTS = [1, 2, 3, 4];
 
@@ -196,6 +196,8 @@ function buildLegacyBaseRoleRecord(slot, { appConfig = {} } = {}) {
       return createRecord(appRoles.wartimeAccessRoleId, "configured");
     case "accessNonJjs":
       return createRecord(appRoles.nonGgsAccessRoleId || appRoles.nonJjsAccessRoleId, "configured");
+    case "verifyAccess":
+      return createRecord(appRoles.verifyAccessRoleId, "configured");
     default:
       return null;
   }
@@ -224,6 +226,7 @@ function buildLegacyRoleRecords({ db = {}, appConfig = {} } = {}) {
     accessNormal: buildLegacyBaseRoleRecord("accessNormal", { appConfig }),
     accessWartime: buildLegacyBaseRoleRecord("accessWartime", { appConfig }),
     accessNonJjs: buildLegacyBaseRoleRecord("accessNonJjs", { appConfig }),
+    verifyAccess: buildLegacyBaseRoleRecord("verifyAccess", { appConfig }),
     killTier: Object.fromEntries(KILL_TIER_SLOTS.map((tier) => [tier, buildLegacyKillTierRecord(tier, { db, appConfig })])),
     legacyEloTier: Object.fromEntries(LEGACY_ELO_TIER_SLOTS.map((tier) => [tier, buildLegacyLegacyEloTierRecord(tier, { appConfig })])),
   };
@@ -428,7 +431,7 @@ function syncLegacyIntegrationWrites(db = {}) {
   const nextIntegrations = buildLegacyIntegrationState({ db });
   const writtenSlots = [];
 
-  for (const slot of ["elo", "tierlist"]) {
+  for (const slot of ["elo", "tierlist", "verification"]) {
     const nextRecord = mergeLegacyObject(nextSot.integrations?.[slot], nextIntegrations?.[slot]);
     if (isEqual(nextSot.integrations?.[slot], nextRecord)) continue;
     nextSot.integrations[slot] = nextRecord;

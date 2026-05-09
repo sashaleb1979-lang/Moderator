@@ -67,9 +67,12 @@ test("buildActivityOperatorPanelPayload summarizes runtime, calibration, and rol
   assert.deepEqual(payload.components[1].components.map((component) => component.data.custom_id), [
     "activity_panel_config_roles_primary",
     "activity_panel_config_roles_secondary",
+    "activity_panel_config_watch_save",
+    "activity_panel_config_watch_remove",
   ]);
   const fieldTexts = payload.embeds[0].data.fields.map((field) => `${field.name}: ${field.value}`).join("\n");
   assert.match(fieldTexts, /Watched channels: \*\*1\*\*/);
+  assert.match(fieldTexts, /main-1 \(main-1\)/);
   assert.match(fieldTexts, /Mapped roles: \*\*2\*\*/);
   assert.match(fieldTexts, /Snapshots: \*\*0\*\*/);
   assert.match(fieldTexts, /Open sessions: \*\*1\*\*/);
@@ -152,6 +155,42 @@ test("handleActivityPanelButtonInteraction opens, refreshes, config modals, assi
   assert.equal(handledPrimaryRoleConfig, true);
   assert.deepEqual(calls[2], ["showModal", "activity_panel_config_roles_primary_modal"]);
 
+  interaction.customId = "activity_panel_config_watch_save";
+  const handledWatchSave = await handleActivityPanelButtonInteraction({
+    interaction,
+    client: { id: "client" },
+    db: {},
+    isModerator: () => true,
+    replyNoPermission: async () => {
+      throw new Error("should not run");
+    },
+    buildModeratorPanelPayload: async () => ({ content: "main" }),
+    buildActivityPanelPayload: () => ({ content: "activity" }),
+    runHistoricalImport: async () => ({ importedEntryCount: 4, ignoredEntryCount: 1 }),
+    runInitialRoleAssignment: async () => ({ appliedCount: 2, skippedCount: 1 }),
+  });
+
+  assert.equal(handledWatchSave, true);
+  assert.deepEqual(calls[3], ["showModal", "activity_panel_config_watch_save_modal"]);
+
+  interaction.customId = "activity_panel_config_watch_remove";
+  const handledWatchRemove = await handleActivityPanelButtonInteraction({
+    interaction,
+    client: { id: "client" },
+    db: {},
+    isModerator: () => true,
+    replyNoPermission: async () => {
+      throw new Error("should not run");
+    },
+    buildModeratorPanelPayload: async () => ({ content: "main" }),
+    buildActivityPanelPayload: () => ({ content: "activity" }),
+    runHistoricalImport: async () => ({ importedEntryCount: 4, ignoredEntryCount: 1 }),
+    runInitialRoleAssignment: async () => ({ appliedCount: 2, skippedCount: 1 }),
+  });
+
+  assert.equal(handledWatchRemove, true);
+  assert.deepEqual(calls[4], ["showModal", "activity_panel_config_watch_remove_modal"]);
+
   interaction.customId = "activity_panel_historical_import";
   const handledImport = await handleActivityPanelButtonInteraction({
     interaction,
@@ -168,8 +207,8 @@ test("handleActivityPanelButtonInteraction opens, refreshes, config modals, assi
   });
 
   assert.equal(handledImport, true);
-  assert.deepEqual(calls[3], ["deferUpdate"]);
-  assert.deepEqual(calls[4], ["editReply", { content: "Historical import завершён. Imported 4, ignored 1." }]);
+  assert.deepEqual(calls[5], ["deferUpdate"]);
+  assert.deepEqual(calls[6], ["editReply", { content: "Historical import завершён. Imported 4, ignored 1. All watched channels processed successfully." }]);
 
   interaction.customId = "activity_panel_assign_roles";
   const handledAssign = await handleActivityPanelButtonInteraction({
@@ -187,8 +226,8 @@ test("handleActivityPanelButtonInteraction opens, refreshes, config modals, assi
   });
 
   assert.equal(handledAssign, true);
-  assert.deepEqual(calls[5], ["deferUpdate"]);
-  assert.deepEqual(calls[6], ["editReply", { content: "Initial role assignment завершён. Applied 2, skipped 1." }]);
+  assert.deepEqual(calls[7], ["deferUpdate"]);
+  assert.deepEqual(calls[8], ["editReply", { content: "Initial role assignment завершён. Applied 2, skipped 1." }]);
 
   interaction.customId = "activity_panel_back";
   const handledBack = await handleActivityPanelButtonInteraction({
@@ -206,7 +245,7 @@ test("handleActivityPanelButtonInteraction opens, refreshes, config modals, assi
   });
 
   assert.equal(handledBack, true);
-  assert.deepEqual(calls[7], ["update", { content: "main" }]);
+  assert.deepEqual(calls[9], ["update", { content: "main" }]);
 });
 
 test("handleActivityPanelButtonInteraction rejects non-moderators before opening the panel", async () => {
@@ -319,5 +358,110 @@ test("handleActivityPanelModalSubmitInteraction updates access roles and activit
   assert.equal(ensureActivityState(db).config.activityRoleIds.weak, "555");
   assert.equal(ensureActivityState(db).config.activityRoleIds.dead, null);
   assert.match(replies[1][1], /Activity role mapping обновлён/);
+  assert.equal(saved.length, 2);
+});
+
+test("handleActivityPanelModalSubmitInteraction saves and removes watched channels", async () => {
+  const db = {};
+  const replies = [];
+  const saved = [];
+
+  const handledSave = await handleActivityPanelModalSubmitInteraction({
+    interaction: {
+      customId: "activity_panel_config_watch_save_modal",
+      member: { id: "mod-1" },
+      user: { id: "mod-1" },
+      fields: {
+        getTextInputValue(fieldId) {
+          if (fieldId === "activity_watch_channel_id") return "<#123456789012345678>";
+          if (fieldId === "activity_watch_channel_type") return "small_chat";
+          if (fieldId === "activity_watch_channel_weight") return "1.15";
+          if (fieldId === "activity_watch_channel_flags") return "enabled no_trust";
+          return "";
+        },
+      },
+    },
+    db,
+    isModerator: () => true,
+    replyNoPermission: async () => {
+      throw new Error("should not run");
+    },
+    replyError: async (_interaction, text) => {
+      replies.push(["error", text]);
+    },
+    replySuccess: async (_interaction, text) => {
+      replies.push(["success", text]);
+    },
+    parseRequestedRoleId() {
+      throw new Error("should not parse roles");
+    },
+    parseRequestedChannelId(value) {
+      const text = String(value || "").trim();
+      const mentionMatch = text.match(/^<#(\d+)>$/);
+      const candidate = mentionMatch ? mentionMatch[1] : text;
+      return /^\d+$/.test(candidate) ? candidate : "";
+    },
+    async resolveChannel(channelId) {
+      return {
+        id: channelId,
+        name: "main-chat",
+        guildId: "guild-1",
+        isTextBased() {
+          return true;
+        },
+      };
+    },
+    saveDb() {
+      saved.push("saved");
+    },
+  });
+
+  assert.equal(handledSave, true);
+  assert.equal(ensureActivityState(db).watchedChannels.length, 1);
+  assert.equal(ensureActivityState(db).watchedChannels[0].channelId, "123456789012345678");
+  assert.equal(ensureActivityState(db).watchedChannels[0].channelType, "small_chat");
+  assert.equal(ensureActivityState(db).watchedChannels[0].countForTrust, false);
+  assert.match(replies[0][1], /Watched channel добавлен/);
+
+  const handledRemove = await handleActivityPanelModalSubmitInteraction({
+    interaction: {
+      customId: "activity_panel_config_watch_remove_modal",
+      member: { id: "mod-1" },
+      user: { id: "mod-1" },
+      fields: {
+        getTextInputValue(fieldId) {
+          if (fieldId === "activity_watch_remove_channel_id") return "123456789012345678";
+          return "";
+        },
+      },
+    },
+    db,
+    isModerator: () => true,
+    replyNoPermission: async () => {
+      throw new Error("should not run");
+    },
+    replyError: async (_interaction, text) => {
+      replies.push(["error", text]);
+    },
+    replySuccess: async (_interaction, text) => {
+      replies.push(["success", text]);
+    },
+    parseRequestedRoleId() {
+      throw new Error("should not parse roles");
+    },
+    parseRequestedChannelId(value) {
+      return String(value || "").trim();
+    },
+    async resolveChannel() {
+      throw new Error("should not resolve channels");
+    },
+    saveDb() {
+      saved.push("saved");
+    },
+  });
+
+  assert.equal(handledRemove, true);
+  assert.equal(ensureActivityState(db).watchedChannels.length, 0);
+  assert.match(replies[1][1], /Watched channel удалён/);
   assert.equal(saved.length, 2);
 });

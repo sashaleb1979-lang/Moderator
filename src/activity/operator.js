@@ -11,7 +11,14 @@ const {
 } = require("discord.js");
 const { ensureSharedProfile } = require("../integrations/shared-profile");
 const { flushActivityRuntime, recordActivityMessage } = require("./runtime");
-const { ensureActivityState, updateActivityConfig } = require("./state");
+const {
+  ACTIVITY_CHANNEL_TYPES,
+  ensureActivityState,
+  getWatchedChannel,
+  removeWatchedChannel,
+  updateActivityConfig,
+  upsertWatchedChannel,
+} = require("./state");
 
 const ACTIVITY_PANEL_BUTTON_IDS = Object.freeze([
   "panel_open_activity",
@@ -21,6 +28,8 @@ const ACTIVITY_PANEL_BUTTON_IDS = Object.freeze([
   "activity_panel_config_access",
   "activity_panel_config_roles_primary",
   "activity_panel_config_roles_secondary",
+  "activity_panel_config_watch_save",
+  "activity_panel_config_watch_remove",
   "activity_panel_back",
 ]);
 
@@ -28,10 +37,13 @@ const ACTIVITY_PANEL_MODAL_IDS = Object.freeze([
   "activity_panel_config_access_modal",
   "activity_panel_config_roles_primary_modal",
   "activity_panel_config_roles_secondary_modal",
+  "activity_panel_config_watch_save_modal",
+  "activity_panel_config_watch_remove_modal",
 ]);
 
 const ACTIVITY_ROLE_MAPPING_PRIMARY_KEYS = Object.freeze(["core", "stable", "active"]);
 const ACTIVITY_ROLE_MAPPING_SECONDARY_KEYS = Object.freeze(["floating", "weak", "dead"]);
+const ACTIVE_HISTORICAL_IMPORTS = new WeakSet();
 
 function clone(value) {
   if (value === undefined) return undefined;
@@ -108,6 +120,89 @@ function buildActivityRoleMappingPreview(config = {}, roleKeys = []) {
   return roleKeys
     .map((roleKey) => `${roleKey}: ${formatRoleIdPreview(config.activityRoleIds?.[roleKey])}`)
     .join(" • ");
+}
+
+function formatChannelPreview(record = {}) {
+  const channelId = cleanString(record.channelId, 80) || "unknown";
+  const channelType = cleanString(record.channelType, 40) || "normal_chat";
+  const channelWeight = Number(record.channelWeight);
+  const weightText = Number.isFinite(channelWeight) ? channelWeight.toFixed(2).replace(/\.00$/, "") : "preset";
+  const stateText = record.enabled === false ? "off" : "on";
+  return `${cleanString(record.channelNameCache, 80) || channelId} (${channelId}) • ${channelType} • w=${weightText} • ${stateText}`;
+}
+
+function buildWatchedChannelPreview(state = {}, limit = 4) {
+  const watchedChannels = Array.isArray(state.watchedChannels) ? state.watchedChannels : [];
+  if (!watchedChannels.length) return "Watched channels ещё не настроены.";
+
+  const lines = watchedChannels
+    .slice(0, Math.max(1, Number(limit) || 1))
+    .map((record, index) => `${index + 1}. ${formatChannelPreview(record)}`);
+  if (watchedChannels.length > lines.length) {
+    lines.push(`… ещё ${watchedChannels.length - lines.length}`);
+  }
+  return lines.join("\n");
+}
+
+function normalizeActivityChannelTypeInput(value = "") {
+  const channelType = cleanString(value, 40).toLowerCase();
+  if (!channelType) return "";
+  return ACTIVITY_CHANNEL_TYPES.has(channelType) ? channelType : null;
+}
+
+function parseOptionalPositiveNumber(value = "") {
+  const text = cleanString(value, 80);
+  if (!text) {
+    return {
+      number: undefined,
+      invalidToken: null,
+    };
+  }
+
+  const amount = Number(text.replace(",", "."));
+  if (!Number.isFinite(amount) || amount <= 0) {
+    return {
+      number: undefined,
+      invalidToken: text,
+    };
+  }
+
+  return {
+    number: amount,
+    invalidToken: null,
+  };
+}
+
+function buildWatchedChannelFlagDefaults(existingRecord = null) {
+  return {
+    enabled: existingRecord?.enabled !== false,
+    countMessages: existingRecord?.countMessages !== false,
+    countSessions: existingRecord?.countSessions !== false,
+    countForTrust: existingRecord?.countForTrust !== false,
+    countForRoles: existingRecord?.countForRoles !== false,
+  };
+}
+
+function parseWatchedChannelFlags(value = "", existingRecord = null) {
+  const defaults = buildWatchedChannelFlagDefaults(existingRecord);
+  const text = cleanString(value, 400);
+  if (!text) return { ...defaults };
+
+  const next = { ...defaults };
+  for (const token of text.split(/[\s,;|]+/).map((entry) => entry.trim().toLowerCase()).filter(Boolean)) {
+    if (["enabled", "on"].includes(token)) next.enabled = true;
+    else if (["disabled", "off"].includes(token)) next.enabled = false;
+    else if (["messages", "count_messages"].includes(token)) next.countMessages = true;
+    else if (["no_messages", "skip_messages"].includes(token)) next.countMessages = false;
+    else if (["sessions", "count_sessions"].includes(token)) next.countSessions = true;
+    else if (["no_sessions", "skip_sessions"].includes(token)) next.countSessions = false;
+    else if (["trust", "count_trust"].includes(token)) next.countForTrust = true;
+    else if (["no_trust", "skip_trust"].includes(token)) next.countForTrust = false;
+    else if (["roles", "count_roles"].includes(token)) next.countForRoles = true;
+    else if (["no_roles", "skip_roles"].includes(token)) next.countForRoles = false;
+  }
+
+  return next;
 }
 
 function parseRequestedRoleIds(value = "", parseRequestedRoleId) {
@@ -201,11 +296,82 @@ function buildActivityRoleMappingModal({ config = {}, modalId = "", title = "", 
     );
 }
 
+function buildWatchedChannelSaveModal() {
+  return new ModalBuilder()
+    .setCustomId("activity_panel_config_watch_save_modal")
+    .setTitle("Save watched channel")
+    .addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId("activity_watch_channel_id")
+          .setLabel("Channel ID / mention")
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+          .setMaxLength(80)
+          .setPlaceholder("123456789012345678 или <#123456789012345678>")
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId("activity_watch_channel_type")
+          .setLabel("Type")
+          .setStyle(TextInputStyle.Short)
+          .setRequired(false)
+          .setMaxLength(40)
+          .setPlaceholder("main_chat / normal_chat / small_chat / flood / media / event / admin / ignored")
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId("activity_watch_channel_weight")
+          .setLabel("Weight")
+          .setStyle(TextInputStyle.Short)
+          .setRequired(false)
+          .setMaxLength(20)
+          .setPlaceholder("Пусто = existing/preset")
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId("activity_watch_channel_flags")
+          .setLabel("Flags")
+          .setStyle(TextInputStyle.Paragraph)
+          .setRequired(false)
+          .setMaxLength(300)
+          .setPlaceholder("disabled no_messages no_sessions no_trust no_roles")
+      )
+    );
+}
+
+function buildWatchedChannelRemoveModal() {
+  return new ModalBuilder()
+    .setCustomId("activity_panel_config_watch_remove_modal")
+    .setTitle("Remove watched channel")
+    .addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId("activity_watch_remove_channel_id")
+          .setLabel("Channel ID / mention")
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+          .setMaxLength(80)
+          .setPlaceholder("123456789012345678 или <#123456789012345678>")
+      )
+    );
+}
+
 function appendActivityAuditLog(db, entry = {}) {
   const state = ensureActivityState(db);
   state.ops ||= {};
   state.ops.moderationAuditLog ||= [];
   state.ops.moderationAuditLog.push(clone(entry));
+  db.sot.activity = state;
+  return state;
+}
+
+function appendActivityRuntimeError(db, entry = {}) {
+  const state = ensureActivityState(db);
+  state.runtime ||= {};
+  const errors = Array.isArray(state.runtime.errors) ? state.runtime.errors.slice(-9) : [];
+  errors.push(clone(entry));
+  state.runtime.errors = errors;
   db.sot.activity = state;
   return state;
 }
@@ -323,6 +489,11 @@ function buildActivityOperatorPanelPayload({ db = {}, statusText = "" } = {}) {
           buildActivityRoleMappingPreview(config, ACTIVITY_ROLE_MAPPING_SECONDARY_KEYS),
         ].join("\n"),
         inline: false,
+      },
+      {
+        name: "Watched channels",
+        value: buildWatchedChannelPreview(state),
+        inline: false,
       }
     );
 
@@ -346,7 +517,9 @@ function buildActivityOperatorPanelPayload({ db = {}, statusText = "" } = {}) {
       ),
       new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId("activity_panel_config_roles_primary").setLabel("Роли 1/2").setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId("activity_panel_config_roles_secondary").setLabel("Роли 2/2").setStyle(ButtonStyle.Secondary)
+        new ButtonBuilder().setCustomId("activity_panel_config_roles_secondary").setLabel("Роли 2/2").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("activity_panel_config_watch_save").setLabel("Сохранить канал").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("activity_panel_config_watch_remove").setLabel("Удалить канал").setStyle(ButtonStyle.Danger)
       ),
     ],
   };
@@ -676,96 +849,170 @@ async function importHistoricalActivityFromWatchedChannels({
       throw new TypeError("fetchChannel must be a function");
     }
 
-    const state = ensureActivityState(db);
-    const watchedChannels = Array.isArray(state.watchedChannels) ? state.watchedChannels : [];
-    const collectedEntries = [];
-    const channelUpdates = new Map();
-    let scannedChannelCount = 0;
-    let scannedMessageCount = 0;
+    if (ACTIVE_HISTORICAL_IMPORTS.has(db)) {
+      return {
+        alreadyRunning: true,
+        importedEntryCount: 0,
+        ignoredEntryCount: 0,
+        importedUserCount: 0,
+        finalizedSessionCount: 0,
+        rebuiltUserCount: 0,
+        flushedAt: resolveNowIso(now),
+        calibrationRun: null,
+        initialRoleAssignment: {
+          appliedCount: 0,
+          skippedCount: 0,
+          appliedUserIds: [],
+          skippedUserIds: [],
+          skippedReasons: {},
+        },
+        scannedChannelCount: 0,
+        scannedMessageCount: 0,
+        failedChannelCount: 0,
+        failedChannels: [],
+      };
+    }
 
-    for (const watchedChannel of watchedChannels) {
-      if (!watchedChannel || watchedChannel.enabled === false) continue;
+    ACTIVE_HISTORICAL_IMPORTS.add(db);
+    try {
+      const state = ensureActivityState(db);
+      const watchedChannels = Array.isArray(state.watchedChannels) ? state.watchedChannels : [];
+      const collectedEntries = [];
+      const channelUpdates = new Map();
+      const failedChannels = [];
+      const errorTimestamp = resolveNowIso(now);
+      let scannedChannelCount = 0;
+      let scannedMessageCount = 0;
 
-      const channel = await fetchChannel(watchedChannel.channelId).catch(() => null);
-      if (!channel?.isTextBased?.()) continue;
-      scannedChannelCount += 1;
+      for (const watchedChannel of watchedChannels) {
+        if (!watchedChannel || watchedChannel.enabled === false) continue;
 
-      let before = null;
-      let newestImportedMessageId = null;
-      let lastScannedMessageId = null;
-      let reachedCursor = false;
+        try {
+          const channel = await fetchChannel(watchedChannel.channelId);
+          if (!channel?.isTextBased?.()) {
+            failedChannels.push({
+              channelId: watchedChannel.channelId,
+              reason: "channel_not_accessible",
+            });
+            continue;
+          }
+          scannedChannelCount += 1;
 
-      while (true) {
-        const batch = await channel.messages.fetch({ limit: 100, ...(before ? { before } : {}) }).catch(() => null);
-        if (!batch?.size) break;
+          let before = null;
+          let newestImportedMessageId = null;
+          let lastScannedMessageId = null;
+          let reachedCursor = false;
 
-        for (const message of batch.values()) {
-          scannedMessageCount += 1;
-          lastScannedMessageId = cleanString(message?.id, 80) || lastScannedMessageId;
+          while (true) {
+            const batch = await channel.messages.fetch({ limit: 100, ...(before ? { before } : {}) });
+            if (!batch?.size) break;
 
-          if (message?.id && message.id === watchedChannel.importedUntilMessageId) {
-            reachedCursor = true;
-            break;
+            for (const message of batch.values()) {
+              scannedMessageCount += 1;
+              lastScannedMessageId = cleanString(message?.id, 80) || lastScannedMessageId;
+
+              if (message?.id && message.id === watchedChannel.importedUntilMessageId) {
+                reachedCursor = true;
+                break;
+              }
+
+              if (!message?.author?.id || message.author.bot) continue;
+              const createdAt = normalizeIsoTimestamp(message.createdAt, null);
+              const guildId = cleanString(message.guildId ?? message.guild?.id ?? watchedChannel.guildId, 80);
+              if (!createdAt || !guildId) continue;
+
+              newestImportedMessageId ||= cleanString(message.id, 80) || null;
+              collectedEntries.push({
+                guildId,
+                userId: cleanString(message.author.id, 80),
+                channelId: watchedChannel.channelId,
+                messageId: cleanString(message.id, 80),
+                createdAt,
+              });
+            }
+
+            if (reachedCursor) break;
+            before = cleanString(batch.last()?.id, 80) || null;
+            if (!before || batch.size < 100) break;
           }
 
-          if (!message?.author?.id || message.author.bot) continue;
-          const createdAt = normalizeIsoTimestamp(message.createdAt, null);
-          const guildId = cleanString(message.guildId ?? message.guild?.id ?? watchedChannel.guildId, 80);
-          if (!createdAt || !guildId) continue;
-
-          newestImportedMessageId ||= cleanString(message.id, 80) || null;
-          collectedEntries.push({
-            guildId,
-            userId: cleanString(message.author.id, 80),
+          channelUpdates.set(watchedChannel.channelId, {
+            importedUntilMessageId: newestImportedMessageId || cleanString(watchedChannel.importedUntilMessageId, 80),
+            lastScannedMessageId,
+          });
+        } catch (error) {
+          failedChannels.push({
             channelId: watchedChannel.channelId,
-            messageId: cleanString(message.id, 80),
-            createdAt,
+            reason: cleanString(error?.message || error, 200) || "import_failed",
           });
         }
-
-        if (reachedCursor) break;
-        before = cleanString(batch.last()?.id, 80) || null;
-        if (!before || batch.size < 100) break;
       }
 
-      channelUpdates.set(watchedChannel.channelId, {
-        importedUntilMessageId: newestImportedMessageId || cleanString(watchedChannel.importedUntilMessageId, 80),
-        lastScannedMessageId,
+      const importResult = await importHistoricalActivity({
+        db,
+        entries: collectedEntries,
+        requestedByUserId,
+        now,
+        resolveMemberRoleIds,
+        applyRoleChanges,
       });
+      const liveState = ensureActivityState(db);
+
+      for (const watchedChannel of liveState.watchedChannels || []) {
+        const update = channelUpdates.get(watchedChannel.channelId);
+        if (!update) continue;
+        watchedChannel.importedUntilMessageId = cleanString(update.importedUntilMessageId, 80);
+        watchedChannel.lastScannedMessageId = cleanString(update.lastScannedMessageId, 80);
+        watchedChannel.lastImportAt = importResult.flushedAt;
+      }
+
+      if (importResult.calibrationRun && typeof importResult.calibrationRun === "object") {
+        importResult.calibrationRun.failedChannelCount = failedChannels.length;
+      }
+      if (Array.isArray(liveState.calibrationRuns) && liveState.calibrationRuns.length) {
+        liveState.calibrationRuns[liveState.calibrationRuns.length - 1] = {
+          ...liveState.calibrationRuns[liveState.calibrationRuns.length - 1],
+          failedChannelCount: failedChannels.length,
+        };
+      }
+      if (failedChannels.length) {
+        const existingErrors = Array.isArray(liveState.runtime?.errors) ? liveState.runtime.errors : [];
+        const retainedErrors = existingErrors.slice(-Math.max(0, 10 - failedChannels.length));
+        const nextErrors = [...retainedErrors];
+        for (const failedChannel of failedChannels) {
+          nextErrors.push({
+            scope: "historical_import",
+            createdAt: errorTimestamp,
+            channelId: failedChannel.channelId,
+            reason: failedChannel.reason,
+          });
+        }
+        liveState.runtime = {
+          ...(liveState.runtime || {}),
+          errors: nextErrors,
+        };
+      }
+
+      db.sot.activity = liveState;
+      if (typeof saveDb === "function") {
+        saveDb();
+      }
+
+      return {
+        ...importResult,
+        scannedChannelCount,
+        scannedMessageCount,
+        failedChannelCount: failedChannels.length,
+        failedChannels,
+        alreadyRunning: false,
+      };
+    } finally {
+      ACTIVE_HISTORICAL_IMPORTS.delete(db);
     }
-
-    const importResult = await importHistoricalActivity({
-      db,
-      entries: collectedEntries,
-      requestedByUserId,
-      now,
-      resolveMemberRoleIds,
-      applyRoleChanges,
-    });
-    const liveState = ensureActivityState(db);
-
-    for (const watchedChannel of liveState.watchedChannels || []) {
-      const update = channelUpdates.get(watchedChannel.channelId);
-      if (!update) continue;
-      watchedChannel.importedUntilMessageId = cleanString(update.importedUntilMessageId, 80);
-      watchedChannel.lastScannedMessageId = cleanString(update.lastScannedMessageId, 80);
-      watchedChannel.lastImportAt = importResult.flushedAt;
-    }
-
-    db.sot.activity = liveState;
-    if (typeof saveDb === "function") {
-      saveDb();
-    }
-
-    return {
-      ...importResult,
-      scannedChannelCount,
-      scannedMessageCount,
-    };
   };
 
   if (typeof runSerialized === "function") {
-    return runSerialized(execute, "activity-historical-channel-import");
+    return runSerialized(execute, "activity-historical-import-from-watched-channels");
   }
   return execute();
 }
@@ -773,11 +1020,11 @@ async function importHistoricalActivityFromWatchedChannels({
 async function handleActivityPanelButtonInteraction({
   interaction,
   client,
-  db,
+  db = {},
   isModerator,
   replyNoPermission,
   buildModeratorPanelPayload,
-  buildActivityPanelPayload = buildActivityOperatorPanelPayload,
+  buildActivityPanelPayload,
   runHistoricalImport = importHistoricalActivityFromWatchedChannels,
   runInitialRoleAssignment = applyInitialActivityRoleAssignments,
   fetchChannel,
@@ -849,21 +1096,47 @@ async function handleActivityPanelButtonInteraction({
     return true;
   }
 
+  if (customId === "activity_panel_config_watch_save") {
+    await interaction.showModal(buildWatchedChannelSaveModal());
+    return true;
+  }
+
+  if (customId === "activity_panel_config_watch_remove") {
+    await interaction.showModal(buildWatchedChannelRemoveModal());
+    return true;
+  }
+
   await interaction.deferUpdate();
   if (customId === "activity_panel_historical_import") {
-    const result = await runHistoricalImport({
-      db,
-      client,
-      requestedByUserId: cleanString(interaction?.user?.id, 80),
-      fetchChannel,
-      resolveMemberRoleIds,
-      applyRoleChanges,
-      saveDb,
-      runSerialized,
-    });
+    let result;
+    try {
+      result = await runHistoricalImport({
+        db,
+        client,
+        requestedByUserId: cleanString(interaction?.user?.id, 80),
+        fetchChannel,
+        resolveMemberRoleIds,
+        applyRoleChanges,
+        saveDb,
+        runSerialized,
+      });
+    } catch (error) {
+      await interaction.editReply(buildActivityPanelPayload({
+        db,
+        statusText: `Historical import failed: ${cleanString(error?.message || error, 500) || "unknown error"}.`,
+      }));
+      return true;
+    }
+
+    const statusText = result.alreadyRunning
+      ? "Historical import уже выполняется. Дождись завершения текущего запуска."
+      : [
+        `Historical import завершён. Imported ${result.importedEntryCount}, ignored ${result.ignoredEntryCount}.`,
+        result.failedChannelCount ? `Failed channels: ${result.failedChannelCount}.` : "All watched channels processed successfully.",
+      ].join(" ");
     await interaction.editReply(buildActivityPanelPayload({
       db,
-      statusText: `Historical import завершён. Imported ${result.importedEntryCount}, ignored ${result.ignoredEntryCount}.`,
+      statusText,
     }));
     return true;
   }
@@ -890,6 +1163,8 @@ async function handleActivityPanelModalSubmitInteraction({
   replyError,
   replySuccess,
   parseRequestedRoleId,
+  parseRequestedChannelId,
+  resolveChannel,
   saveDb,
   runSerialized,
   now,
@@ -903,7 +1178,6 @@ async function handleActivityPanelModalSubmitInteraction({
   assertFunction(replyNoPermission, "replyNoPermission");
   assertFunction(replyError, "replyError");
   assertFunction(replySuccess, "replySuccess");
-  assertFunction(parseRequestedRoleId, "parseRequestedRoleId");
 
   if (!isModerator(interaction?.member)) {
     await replyNoPermission(interaction);
@@ -913,6 +1187,128 @@ async function handleActivityPanelModalSubmitInteraction({
   const execute = async () => {
     const changedAt = resolveNowIso(now);
     const requestedByUserId = normalizeNullableString(interaction?.user?.id, 80);
+
+    if (customId === "activity_panel_config_watch_save_modal") {
+      assertFunction(parseRequestedChannelId, "parseRequestedChannelId");
+      assertFunction(resolveChannel, "resolveChannel");
+
+      const channelId = parseRequestedChannelId(
+        interaction.fields.getTextInputValue("activity_watch_channel_id"),
+        ""
+      );
+      if (!channelId) {
+        return {
+          ok: false,
+          message: "Некорректный channel input. Используй Channel ID или <#...>.",
+        };
+      }
+
+      const existingRecord = getWatchedChannel(db, channelId);
+      const resolvedChannel = await Promise.resolve(resolveChannel(channelId));
+      if (!resolvedChannel?.isTextBased?.()) {
+        return {
+          ok: false,
+          message: "Канал не найден или не является text channel, доступным боту.",
+        };
+      }
+
+      const rawChannelType = cleanString(interaction.fields.getTextInputValue("activity_watch_channel_type"), 40);
+      const channelType = normalizeActivityChannelTypeInput(rawChannelType);
+      if (channelType === null) {
+        return {
+          ok: false,
+          message: `Некорректный channel type: ${rawChannelType}.`,
+        };
+      }
+
+      const weight = parseOptionalPositiveNumber(interaction.fields.getTextInputValue("activity_watch_channel_weight"));
+      if (weight.invalidToken) {
+        return {
+          ok: false,
+          message: `Некорректный weight: ${weight.invalidToken}. Нужен positive number или пусто.`,
+        };
+      }
+
+      const flags = parseWatchedChannelFlags(
+        interaction.fields.getTextInputValue("activity_watch_channel_flags"),
+        existingRecord
+      );
+
+      const upsertResult = upsertWatchedChannel(db, {
+        channelId,
+        guildId: cleanString(resolvedChannel.guildId ?? resolvedChannel.guild?.id, 80) || existingRecord?.guildId || null,
+        channelNameCache: cleanString(resolvedChannel.name, 200) || existingRecord?.channelNameCache || "",
+        ...(channelType ? { channelType } : {}),
+        ...(weight.number !== undefined ? { channelWeight: weight.number } : {}),
+        ...flags,
+        now: changedAt,
+      });
+
+      if (!upsertResult.mutated) {
+        return {
+          ok: true,
+          message: "Watched channel без изменений.",
+        };
+      }
+
+      appendActivityAuditLog(db, {
+        actionType: upsertResult.created ? "watch_channel_add" : "watch_channel_update",
+        moderatorUserId: requestedByUserId,
+        createdAt: changedAt,
+        channelId,
+        channelType: upsertResult.record.channelType,
+        channelWeight: upsertResult.record.channelWeight,
+        enabled: upsertResult.record.enabled,
+      });
+      if (typeof saveDb === "function") {
+        saveDb();
+      }
+
+      return {
+        ok: true,
+        message: `${upsertResult.created ? "Watched channel добавлен" : "Watched channel обновлён"}: ${formatChannelPreview(upsertResult.record)}. Нажми «Обновить» в Activity Panel.`,
+      };
+    }
+
+    if (customId === "activity_panel_config_watch_remove_modal") {
+      assertFunction(parseRequestedChannelId, "parseRequestedChannelId");
+
+      const channelId = parseRequestedChannelId(
+        interaction.fields.getTextInputValue("activity_watch_remove_channel_id"),
+        ""
+      );
+      if (!channelId) {
+        return {
+          ok: false,
+          message: "Некорректный channel input. Используй Channel ID или <#...>.",
+        };
+      }
+
+      const removeResult = removeWatchedChannel(db, { channelId });
+      if (!removeResult.removed) {
+        return {
+          ok: false,
+          message: `Watched channel не найден: ${channelId}.`,
+        };
+      }
+
+      appendActivityAuditLog(db, {
+        actionType: "watch_channel_remove",
+        moderatorUserId: requestedByUserId,
+        createdAt: changedAt,
+        channelId,
+      });
+      if (typeof saveDb === "function") {
+        saveDb();
+      }
+
+      return {
+        ok: true,
+        message: `Watched channel удалён: ${formatChannelPreview(removeResult.record)}. Нажми «Обновить» в Activity Panel.`,
+      };
+    }
+
+    assertFunction(parseRequestedRoleId, "parseRequestedRoleId");
 
     if (customId === "activity_panel_config_access_modal") {
       const moderatorRoles = parseRequestedRoleIds(

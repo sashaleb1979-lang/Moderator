@@ -202,8 +202,8 @@ test("getRobloxStatsPanelSnapshot aggregates linked users, job telemetry, and co
   assert.equal(snapshot.topEntries[0].userId, "problem_user");
   assert.equal(snapshot.topEntries[1].userId, "failed_user");
   assert.match(snapshot.issues[0], /JJS ids/i);
-  assert.match(snapshot.issues[1], /Metadata refresh завершился с ошибками/i);
-  assert.match(snapshot.issues[2], /Playtime sync потерял batch/i);
+  assert.match(snapshot.issues[1], /Обновление профилей завершилось с ошибками/i);
+  assert.match(snapshot.issues[2], /Синк playtime потерял пачки/i);
 });
 
 test("buildRobloxStatsPanelPayload renders manual controls and blocker field", () => {
@@ -236,9 +236,12 @@ test("buildRobloxStatsPanelPayload renders manual controls and blocker field", (
   assert.equal(payload.components[0].components.length, 5);
   assert.equal(payload.components[0].components[0].data.custom_id, "roblox_stats_refresh");
   assert.equal(payload.components[0].components[4].data.custom_id, "roblox_stats_back");
+  assert.equal(payload.components[0].components[1].data.label, "Обновить профили");
+  assert.equal(payload.components[0].components[2].data.label, "Синк playtime");
+  assert.equal(payload.components[0].components[3].data.label, "Сохранить runtime");
   assert.equal(payload.embeds[0].data.fields.at(-1).name, "Последнее действие");
   assert.match(payload.embeds[0].data.fields[3].value, /Gojo/);
-  assert.match(payload.embeds[0].data.fields[4].value, /JJS ids/i);
+  assert.match(payload.embeds[0].data.fields[4].value, /JJS IDs/i);
 });
 
 test("handleRobloxStatsPanelButtonInteraction gates permissions and delegates manual actions", async () => {
@@ -288,7 +291,7 @@ test("handleRobloxStatsPanelButtonInteraction gates permissions and delegates ma
   assert.equal(manualHandled, true);
   assert.equal(playtimeRuns, 1);
   assert.equal(manual.calls.deferred, 1);
-  assert.match(manual.calls.edits[0].content, /Active 2, touched 3, failed users 1/i);
+  assert.match(manual.calls.edits[0].content, /Активных в JJS: 2, затронуто профилей: 3, ошибок пользователей: 1/i);
 
   const back = createInteraction("roblox_stats_back");
   await handleRobloxStatsPanelButtonInteraction({

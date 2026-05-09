@@ -26,6 +26,16 @@ function seedWatchedChannels(db) {
   });
 }
 
+function createDeferred() {
+  let resolve = null;
+  let reject = null;
+  const promise = new Promise((nextResolve, nextReject) => {
+    resolve = nextResolve;
+    reject = nextReject;
+  });
+  return { promise, resolve, reject };
+}
+
 test("importHistoricalActivity replays history, finalizes imported sessions, records calibration, and runs initial role assignment", async () => {
   const db = {
     profiles: {
@@ -238,4 +248,127 @@ test("importHistoricalActivityFromWatchedChannels paginates channel history, res
   assert.equal(db.sot.activity.watchedChannels[0].lastScannedMessageId, "m-2");
   assert.equal(db.sot.activity.watchedChannels[0].lastImportAt, result.flushedAt);
   assert.equal(db.profiles["user-1"].domains.activity.appliedActivityRoleKey, "weak");
+});
+
+test("importHistoricalActivityFromWatchedChannels keeps successful channel progress when another watched channel fails", async () => {
+  const db = {
+    profiles: {
+      "user-1": {
+        userId: "user-1",
+        username: "todo",
+      },
+    },
+  };
+  seedWatchedChannels(db);
+  updateActivityConfig(db, {
+    activityRoleIds: {
+      weak: "role-weak",
+    },
+  });
+
+  const result = await importHistoricalActivityFromWatchedChannels({
+    db,
+    requestedByUserId: "mod-1",
+    fetchChannel: async (channelId) => {
+      if (channelId === "small-1") {
+        return {
+          isTextBased() {
+            return true;
+          },
+          messages: {
+            async fetch() {
+              throw new Error("missing access");
+            },
+          },
+        };
+      }
+
+      return {
+        isTextBased() {
+          return true;
+        },
+        messages: {
+          async fetch() {
+            return new Collection([
+              ["m-2", { id: "m-2", guildId: "guild-1", channelId: "main-1", author: { id: "user-1", bot: false }, createdAt: new Date("2026-05-01T10:10:00.000Z") }],
+              ["m-1", { id: "m-1", guildId: "guild-1", channelId: "main-1", author: { id: "user-1", bot: false }, createdAt: new Date("2026-05-01T10:00:00.000Z") }],
+            ]);
+          },
+        },
+      };
+    },
+    resolveMemberRoleIds() {
+      return [];
+    },
+    async applyRoleChanges() {
+      return true;
+    },
+  });
+
+  assert.equal(result.importedEntryCount, 2);
+  assert.equal(result.failedChannelCount, 1);
+  assert.equal(result.failedChannels[0].channelId, "small-1");
+  assert.match(result.failedChannels[0].reason, /missing access/i);
+  assert.equal(db.sot.activity.watchedChannels.find((entry) => entry.channelId === "main-1").importedUntilMessageId, "m-2");
+  assert.equal(db.sot.activity.watchedChannels.find((entry) => entry.channelId === "small-1").importedUntilMessageId, "");
+  assert.equal(db.sot.activity.runtime.errors.at(-1).channelId, "small-1");
+});
+
+test("importHistoricalActivityFromWatchedChannels rejects concurrent runs for the same db instance", async () => {
+  const db = {};
+  upsertWatchedChannel(db, {
+    channelId: "main-1",
+    channelType: "main_chat",
+    now: "2026-05-01T00:00:00.000Z",
+  });
+
+  const gate = createDeferred();
+  const firstRun = importHistoricalActivityFromWatchedChannels({
+    db,
+    requestedByUserId: "mod-1",
+    fetchChannel: async () => ({
+      isTextBased() {
+        return true;
+      },
+      messages: {
+        async fetch() {
+          await gate.promise;
+          return new Collection();
+        },
+      },
+    }),
+    resolveMemberRoleIds() {
+      return [];
+    },
+    async applyRoleChanges() {
+      return true;
+    },
+  });
+
+  const concurrentRun = await importHistoricalActivityFromWatchedChannels({
+    db,
+    requestedByUserId: "mod-2",
+    fetchChannel: async () => ({
+      isTextBased() {
+        return true;
+      },
+      messages: {
+        async fetch() {
+          return new Collection();
+        },
+      },
+    }),
+    resolveMemberRoleIds() {
+      return [];
+    },
+    async applyRoleChanges() {
+      return true;
+    },
+  });
+
+  assert.equal(concurrentRun.alreadyRunning, true);
+
+  gate.resolve();
+  const completedRun = await firstRun;
+  assert.equal(completedRun.alreadyRunning, false);
 });

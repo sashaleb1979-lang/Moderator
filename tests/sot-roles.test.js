@@ -33,6 +33,7 @@ function createContext(overrides = {}) {
         accessRoleId: "access-config",
         wartimeAccessRoleId: "wartime-config",
         nonGgsAccessRoleId: "nonjjs-config",
+        verifyAccessRoleId: "verify-config",
         killTierRoleIds: {
           1: "tier-1-config",
           2: "tier-2-config",
@@ -152,9 +153,35 @@ test("resolveAllRoleRecords returns all base and tier role slots", () => {
 
   assert.equal(result.moderator.value, "moderator-config");
   assert.equal(result.accessNormal.value, "access-config");
+  assert.equal(result.verifyAccess.value, "verify-config");
   assert.equal(result.killTier[1].value, "tier-1-config");
   assert.equal(result.killTier[5].value, "tier-5-generated");
   assert.equal(result.legacyEloTier[1].value, "legacy-1-config");
+});
+
+test("writeNativeRoleRecord stores manual verify-role override and resolveRoleRecord prefers it", () => {
+  const context = createContext();
+
+  const result = writeNativeRoleRecord(context.db, {
+    slot: "verifyAccess",
+    roleId: "verify-manual",
+    source: "manual",
+    verifiedAt: "2026-05-09T10:00:00.000Z",
+  });
+
+  assert.equal(result.mutated, true);
+  assert.equal(result.record.value, "verify-manual");
+
+  const resolved = resolveRoleRecord({ slot: "verifyAccess", ...context });
+  assert.deepEqual(resolved, {
+    value: "verify-manual",
+    source: "manual",
+    verifiedAt: "2026-05-09T10:00:00.000Z",
+    evidence: {
+      nativeWriter: true,
+      manualOverride: true,
+    },
+  });
 });
 
 test("writeNativeRoleRecord stores manual base-role override and resolveRoleRecord prefers it", () => {
@@ -269,6 +296,12 @@ test("normalizeRoleSlot accepts nonJjs aliases and rejects unknown slots", () =>
     label: "Access nonJJS",
     domain: "base",
     key: "accessNonJjs",
+  });
+  assert.deepEqual(normalizeRoleSlot("verify"), {
+    canonical: "verifyAccess",
+    label: "Verify access",
+    domain: "base",
+    key: "verifyAccess",
   });
   assert.deepEqual(normalizeRoleSlot("killTier:4"), {
     canonical: "killTier:4",

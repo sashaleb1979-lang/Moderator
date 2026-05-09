@@ -20,6 +20,7 @@ function createContext() {
         accessRoleId: "access-config",
         wartimeAccessRoleId: "wartime-config",
         nonJjsAccessRoleId: "nonjjs-config",
+        verifyAccessRoleId: "verify-config",
         killTierRoleIds: {
           1: "tier-1-config",
           2: "tier-2-config",
@@ -42,6 +43,7 @@ function createContext() {
           accessNormal: null,
           accessWartime: null,
           accessNonJjs: null,
+          verifyAccess: null,
           killTier: {
             1: null,
             2: null,
@@ -228,9 +230,11 @@ test("syncLegacyRoleWrites updates configured and generated role slots without t
     "legacyEloTier.1",
     "legacyEloTier.2",
     "moderator",
+    "verifyAccess",
   ]);
   assert.equal(context.db.sot.roles.moderator.value, "moderator-config");
   assert.equal(context.db.sot.roles.accessNormal.value, "access-config");
+  assert.equal(context.db.sot.roles.verifyAccess.value, "verify-config");
   assert.equal(context.db.sot.roles.killTier[5].value, "tier-5-generated");
   assert.equal(context.db.sot.roles.killTier[4], null);
   assert.equal(context.db.sot.channels.review.value, "stale-review");
@@ -364,10 +368,12 @@ test("syncLegacyIntegrationWrites updates integration slots without touching oth
   assert.deepEqual(result.writtenSlots.sort(), [
     "elo",
     "tierlist",
+    "verification",
   ]);
   assert.equal(context.db.sot.integrations.elo.status, "");
   assert.equal(context.db.sot.integrations.elo.submitPanel.channelId, "elo-submit-manual");
   assert.equal(context.db.sot.integrations.tierlist.summary.channelId, "tier-summary-manual");
+  assert.equal(context.db.sot.integrations.verification.status, "");
   assert.equal(context.db.sot.channels.review.value, "stale-review");
   assert.equal(context.db.sot.panels.welcome.channelId.value, "stale-welcome-channel");
 });

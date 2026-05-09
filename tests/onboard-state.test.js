@@ -18,7 +18,14 @@ const {
   normalizeOnboardAccessMode,
 } = require("../src/onboard/access-mode");
 const { commitMutation } = require("../src/onboard/refresh-runner");
-const { ONBOARD_SUBCOMMAND_NAMES, ROLE_PANEL_COMMAND_NAME, TOP_LEVEL_COMMAND_NAMES, buildCommands } = require("../src/onboard/commands");
+const {
+  ONBOARD_SUBCOMMAND_NAMES,
+  ROLE_PANEL_COMMAND_NAME,
+  TOP_LEVEL_COMMAND_NAMES,
+  VERIFY_COMMAND_NAME,
+  VERIFY_SUBCOMMAND_NAMES,
+  buildCommands,
+} = require("../src/onboard/commands");
 const { resolveNonJjsCaptchaMode } = require("../src/onboard/non-jjs-mode");
 const {
   DEFAULT_ROLE_PANEL_BUTTON_LABEL,
@@ -756,10 +763,13 @@ test("command builder includes new admin refresh and editor subcommands", () => 
 });
 
 test("command builder registers onboard and rolepanel top-level commands", () => {
-  assert.deepEqual([...TOP_LEVEL_COMMAND_NAMES].sort(), ["onboard", ROLE_PANEL_COMMAND_NAME].sort());
-  assert.deepEqual(buildCommands().map((command) => command.name).sort(), ["onboard", ROLE_PANEL_COMMAND_NAME].sort());
+  assert.deepEqual([...TOP_LEVEL_COMMAND_NAMES].sort(), ["onboard", ROLE_PANEL_COMMAND_NAME, VERIFY_COMMAND_NAME].sort());
+  assert.deepEqual(buildCommands().map((command) => command.name).sort(), ["onboard", ROLE_PANEL_COMMAND_NAME, VERIFY_COMMAND_NAME].sort());
   const onboardCommand = buildCommands().find((command) => command.name === "onboard");
+  const verifyCommand = buildCommands().find((command) => command.name === VERIFY_COMMAND_NAME);
   assert.equal(onboardCommand.options.some((option) => option.type === 1 && option.name === "sotreport"), true);
+  assert.equal(verifyCommand.options.some((option) => option.type === 1 && option.name === "panel"), true);
+  assert.deepEqual(VERIFY_SUBCOMMAND_NAMES, ["panel"]);
 });
 
 test("role panel draft normalization applies defaults and validation rules", () => {

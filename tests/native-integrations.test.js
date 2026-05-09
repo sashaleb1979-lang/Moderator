@@ -14,6 +14,7 @@ const {
 test("normalizeIntegrationSlot accepts only supported integration slots", () => {
   assert.equal(normalizeIntegrationSlot("elo"), "elo");
   assert.equal(normalizeIntegrationSlot("tierlist"), "tierlist");
+  assert.equal(normalizeIntegrationSlot("verification"), "verification");
   assert.equal(normalizeIntegrationSlot("unknown"), "");
 });
 
@@ -76,4 +77,28 @@ test("writeNativeIntegrationSnapshot mirrors nested integration snapshots into S
   assert.equal(result.mutated, true);
   assert.equal(db.sot.integrations.tierlist.dashboard.channelId, "dash-1");
   assert.equal(db.config.integrations.tierlist.summary.messageId, "sum-msg");
+});
+
+test("writeNativeIntegrationSnapshot supports verification integration state", () => {
+  const db = {};
+
+  const result = writeNativeIntegrationSnapshot(db, {
+    slot: "verification",
+    patch: {
+      enabled: true,
+      status: "configured",
+      verificationChannelId: "verify-room",
+      reportChannelId: "verify-report",
+      riskRules: {
+        enemyGuildIds: ["guild-1"],
+      },
+    },
+  });
+
+  assert.equal(result.mutated, true);
+  assert.equal(db.sot.integrations.verification.enabled, true);
+  assert.equal(db.config.integrations.verification.reportChannelId, "verify-report");
+  assert.deepEqual(db.sot.integrations.verification.riskRules, {
+    enemyGuildIds: ["guild-1"],
+  });
 });

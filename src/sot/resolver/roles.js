@@ -27,6 +27,8 @@ function resolveBaseRoleRecord(slot, appRoles = {}) {
       return createRecord(appRoles.wartimeAccessRoleId, "configured");
     case "accessNonJjs":
       return createRecord(appRoles.nonGgsAccessRoleId || appRoles.nonJjsAccessRoleId, "configured");
+    case "verifyAccess":
+      return createRecord(appRoles.verifyAccessRoleId, "configured");
     default:
       return null;
   }
@@ -35,7 +37,7 @@ function resolveBaseRoleRecord(slot, appRoles = {}) {
 function resolveRoleRecord({ slot, db = {}, appConfig = {} } = {}) {
   const appRoles = getAppRoles(appConfig);
   const record = resolveBaseRoleRecord(slot, appRoles);
-  if (!record && !["moderator", "accessNormal", "accessWartime", "accessNonJjs"].includes(slot)) {
+  if (!record && !["moderator", "accessNormal", "accessWartime", "accessNonJjs", "verifyAccess"].includes(slot)) {
     return null;
   }
 
@@ -75,6 +77,7 @@ function resolveAllRoleRecords({ db = {}, appConfig = {} } = {}) {
     accessNormal: resolveRoleRecord({ slot: "accessNormal", db, appConfig }),
     accessWartime: resolveRoleRecord({ slot: "accessWartime", db, appConfig }),
     accessNonJjs: resolveRoleRecord({ slot: "accessNonJjs", db, appConfig }),
+    verifyAccess: resolveRoleRecord({ slot: "verifyAccess", db, appConfig }),
     killTier: Object.fromEntries([1, 2, 3, 4, 5].map((tier) => [tier, resolveKillTierRole({ tier, db, appConfig })])),
     legacyEloTier: Object.fromEntries([1, 2, 3, 4].map((tier) => [tier, resolveLegacyEloTierRole({ tier, db, appConfig })])),
   };
