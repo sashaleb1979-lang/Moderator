@@ -26,6 +26,10 @@ function resolveOnboardBeginRoute(value = {}) {
     return { type: ONBOARD_BEGIN_ROUTES.PENDING, cooldownLeft };
   }
 
+  if (state.hasResumableAccessSubmit) {
+    return { type: ONBOARD_BEGIN_ROUTES.SUBMIT, cooldownLeft };
+  }
+
   if (cooldownLeft > 0) {
     return { type: ONBOARD_BEGIN_ROUTES.COOLDOWN, cooldownLeft };
   }

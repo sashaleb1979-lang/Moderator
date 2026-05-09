@@ -7,6 +7,7 @@ const { Collection } = require("discord.js");
 const {
   applyInitialActivityRoleAssignments,
   buildActivityRoleAssignmentPlan,
+  getActivityUserInspection,
   importHistoricalActivity,
   importHistoricalActivityFromWatchedChannels,
   runActivityRoleSyncFromSnapshots,
@@ -560,6 +561,285 @@ test("runActivityRoleSyncFromSnapshots aligns roles only for saved snapshots and
       removeRoleIds: [],
     },
   ]);
+});
+
+test("runActivityRoleSyncFromSnapshots also targets persisted profile mirrors when snapshot index is missing", async () => {
+  const db = {
+    profiles: {
+      mirrorOnly: {
+        userId: "mirrorOnly",
+        domains: {
+          activity: {
+            activityScore: 26,
+            baseActivityScore: 26,
+            desiredActivityRoleKey: "weak",
+            appliedActivityRoleKey: null,
+            roleEligibilityStatus: "eligible",
+            roleEligibleForActivityRole: true,
+            recalculatedAt: "2026-05-08T12:00:00.000Z",
+            lastSeenAt: "2026-05-08T11:50:00.000Z",
+          },
+        },
+      },
+    },
+    sot: {
+      activity: {
+        config: {},
+        watchedChannels: [],
+        globalUserSessions: [],
+        userChannelDailyStats: [],
+        userSnapshots: {},
+        calibrationRuns: [],
+        ops: { moderationAuditLog: [] },
+        runtime: {
+          openSessions: {},
+          dirtyUsers: [],
+        },
+      },
+    },
+  };
+
+  updateActivityConfig(db, {
+    activityRoleIds: {
+      weak: "role-weak",
+    },
+  });
+
+  const roleChanges = [];
+  const result = await runActivityRoleSyncFromSnapshots({
+    db,
+    now: "2026-05-09T12:00:00.000Z",
+    resolveMemberRoleIds() {
+      return [];
+    },
+    async applyRoleChanges(change) {
+      roleChanges.push(change);
+      return true;
+    },
+  });
+
+  assert.equal(result.targetUserCount, 1);
+  assert.equal(result.localActivityTargetCount, 1);
+  assert.equal(result.missingLocalHistoryUserCount, 0);
+  assert.equal(result.roleAssignment.appliedCount, 1);
+  assert.deepEqual(roleChanges, [
+    {
+      userId: "mirrorOnly",
+      desiredRoleKey: "weak",
+      desiredRoleId: "role-weak",
+      addRoleIds: ["role-weak"],
+      removeRoleIds: [],
+    },
+  ]);
+  assert.equal(db.profiles.mirrorOnly.domains.activity.appliedActivityRoleKey, "weak");
+});
+
+test("runActivityRoleSyncFromSnapshots also targets legacy summary activity mirrors when domains.activity is missing", async () => {
+  const db = {
+    profiles: {
+      legacySummaryOnly: {
+        userId: "legacySummaryOnly",
+        summary: {
+          activity: {
+            activityScore: 91,
+            baseActivityScore: 88,
+            desiredActivityRoleKey: "core",
+            appliedActivityRoleKey: null,
+            roleEligibilityStatus: "eligible",
+            roleEligibleForActivityRole: true,
+            recalculatedAt: "2026-05-08T12:00:00.000Z",
+            lastSeenAt: "2026-05-08T11:50:00.000Z",
+          },
+        },
+      },
+    },
+    sot: {
+      activity: {
+        config: {},
+        watchedChannels: [],
+        globalUserSessions: [],
+        userChannelDailyStats: [],
+        userSnapshots: {},
+        calibrationRuns: [],
+        ops: { moderationAuditLog: [] },
+        runtime: {
+          openSessions: {},
+          dirtyUsers: [],
+        },
+      },
+    },
+  };
+
+  updateActivityConfig(db, {
+    activityRoleIds: {
+      core: "role-core",
+    },
+  });
+
+  const roleChanges = [];
+  const result = await runActivityRoleSyncFromSnapshots({
+    db,
+    now: "2026-05-09T12:00:00.000Z",
+    resolveMemberRoleIds() {
+      return [];
+    },
+    async applyRoleChanges(change) {
+      roleChanges.push(change);
+      return true;
+    },
+  });
+
+  assert.equal(result.targetUserCount, 1);
+  assert.equal(result.localActivityTargetCount, 1);
+  assert.equal(result.roleAssignment.appliedCount, 1);
+  assert.deepEqual(roleChanges, [
+    {
+      userId: "legacySummaryOnly",
+      desiredRoleKey: "core",
+      desiredRoleId: "role-core",
+      addRoleIds: ["role-core"],
+      removeRoleIds: [],
+    },
+  ]);
+  assert.equal(db.profiles.legacySummaryOnly.domains.activity.appliedActivityRoleKey, "core");
+});
+
+test("runActivityRoleSyncFromSnapshots prefers indexed activity snapshots over stale profile mirrors", async () => {
+  const db = {
+    profiles: {
+      snapshotOwned: {
+        userId: "snapshotOwned",
+        domains: {
+          activity: {
+            desiredActivityRoleKey: null,
+            appliedActivityRoleKey: null,
+            roleEligibilityStatus: "eligible",
+            roleEligibleForActivityRole: true,
+          },
+        },
+      },
+    },
+    sot: {
+      activity: {
+        config: {},
+        watchedChannels: [],
+        globalUserSessions: [],
+        userChannelDailyStats: [],
+        calibrationRuns: [],
+        ops: { moderationAuditLog: [] },
+        runtime: {
+          openSessions: {},
+          dirtyUsers: [],
+        },
+        userSnapshots: {
+          snapshotOwned: {
+            activityScore: 92,
+            baseActivityScore: 88,
+            desiredActivityRoleKey: "core",
+            appliedActivityRoleKey: null,
+            roleEligibilityStatus: "eligible",
+            roleEligibleForActivityRole: true,
+            recalculatedAt: "2026-05-09T12:00:00.000Z",
+          },
+        },
+      },
+    },
+  };
+
+  updateActivityConfig(db, {
+    activityRoleIds: {
+      core: "role-core",
+    },
+  });
+
+  const roleChanges = [];
+  const result = await runActivityRoleSyncFromSnapshots({
+    db,
+    now: "2026-05-09T12:00:00.000Z",
+    resolveMemberRoleIds() {
+      return [];
+    },
+    async applyRoleChanges(change) {
+      roleChanges.push(change);
+      return true;
+    },
+  });
+
+  assert.equal(result.targetUserCount, 1);
+  assert.equal(result.localActivityTargetCount, 1);
+  assert.equal(result.roleAssignment.appliedCount, 1);
+  assert.deepEqual(roleChanges, [
+    {
+      userId: "snapshotOwned",
+      desiredRoleKey: "core",
+      desiredRoleId: "role-core",
+      addRoleIds: ["role-core"],
+      removeRoleIds: [],
+    },
+  ]);
+  assert.equal(db.profiles.snapshotOwned.domains.activity.appliedActivityRoleKey, "core");
+});
+
+test("getActivityUserInspection explains mirror-only users and their recovery path", () => {
+  const db = {
+    profiles: {
+      mirrorOnly: {
+        userId: "mirrorOnly",
+        domains: {
+          activity: {
+            activityScore: 26,
+            baseActivityScore: 26,
+            desiredActivityRoleKey: "weak",
+            appliedActivityRoleKey: null,
+            roleEligibilityStatus: "eligible",
+            roleEligibleForActivityRole: true,
+            recalculatedAt: "2026-05-08T12:00:00.000Z",
+            lastSeenAt: "2026-05-08T11:50:00.000Z",
+          },
+        },
+      },
+    },
+    sot: {
+      activity: {
+        config: {},
+        watchedChannels: [],
+        globalUserSessions: [],
+        userChannelDailyStats: [],
+        userSnapshots: {},
+        calibrationRuns: [],
+        ops: { moderationAuditLog: [] },
+        runtime: {
+          openSessions: {},
+          dirtyUsers: [],
+        },
+      },
+    },
+  };
+
+  updateActivityConfig(db, {
+    activityRoleIds: {
+      weak: "role-weak",
+    },
+  });
+
+  const inspection = getActivityUserInspection({
+    db,
+    userId: "mirrorOnly",
+    memberRoleIds: [],
+  });
+
+  assert.equal(inspection.userId, "mirrorOnly");
+  assert.equal(inspection.snapshotSource, "profile_mirror");
+  assert.equal(inspection.hasSnapshotIndex, false);
+  assert.equal(inspection.hasProfileMirror, true);
+  assert.equal(inspection.history.hasLocalHistory, false);
+  assert.equal(inspection.visibility.canRunRebuildAndSync, false);
+  assert.equal(inspection.visibility.canRunRolesOnlySync, true);
+  assert.equal(inspection.roleAssignmentPlan.desiredRoleKey, "weak");
+  assert.equal(inspection.roleAssignmentPlan.desiredRoleId, "role-weak");
+  assert.equal(inspection.diagnosis.statusCode, "profile_mirror_only");
+  assert.match(inspection.diagnosis.summary, /profile activity mirror/i);
+  assert.match(inspection.diagnosis.recommendedAction, /roles-only sync/i);
 });
 
 test("buildActivityRoleAssignmentPlan removes managed activity roles from gated new members", () => {

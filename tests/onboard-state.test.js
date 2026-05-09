@@ -768,6 +768,17 @@ test("onboard begin route falls through from cooldown to submit, draft, and pick
   });
 });
 
+test("onboard begin route lets access-role users resume submit before cooldown when mains can be restored", () => {
+  assert.deepEqual(resolveOnboardBeginRoute({
+    cooldownLeft: 17,
+    hasResumableAccessSubmit: true,
+    hasMainDraft: true,
+  }), {
+    type: ONBOARD_BEGIN_ROUTES.SUBMIT,
+    cooldownLeft: 17,
+  });
+});
+
 test("command builder includes new admin refresh and editor subcommands", () => {
   assert.deepEqual(
     [...ONBOARD_SUBCOMMAND_NAMES].sort(),

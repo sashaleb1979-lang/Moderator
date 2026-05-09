@@ -344,7 +344,11 @@ const {
   paginateRecentKillChanges,
   summarizeRecentKillChange,
 } = require("./src/onboard/tierlist-ranking");
-const { parseKillsFromSubmittedText, resolveEffectiveSubmittedKills } = require("./src/onboard/submission-message");
+const {
+  parseKillsFromSubmittedText,
+  resolveEffectiveSubmittedKills,
+  resolveResumableMainCharacterIds,
+} = require("./src/onboard/submission-message");
 let nonGgsCaptchaModule = null;
 try {
   nonGgsCaptchaModule = require("./src/onboard/non-jjs-captcha");
@@ -3421,6 +3425,54 @@ function getSubmitSession(userId) {
 
 function clearSubmitSession(userId) {
   submitSessions.delete(userId);
+}
+
+function getValidatedLiveMainCharacterIds(characterIds = []) {
+  return [...new Set(
+    getSelectedCharacterEntries(characterIds)
+      .filter((entry) => isLiveCharacterEntry(entry))
+      .map((entry) => entry.id)
+      .filter(Boolean)
+  )].slice(0, 2);
+}
+
+function getStoredProfileMainCharacterIds(userId) {
+  const existingProfile = db.profiles?.[userId];
+  if (!existingProfile || typeof existingProfile !== "object") return [];
+
+  const ensuredProfile = ensureSharedProfile(existingProfile, userId).profile;
+  const derived = getDerivedProfileMainFields(ensuredProfile);
+  return getValidatedLiveMainCharacterIds(derived.mainCharacterIds);
+}
+
+function getLiveMemberMainCharacterIds(member) {
+  if (!member?.roles?.cache) return [];
+  return getValidatedLiveMainCharacterIds(
+    getCharacterEntries()
+      .filter((entry) => isLiveCharacterEntry(entry) && member.roles.cache.has(entry.roleId))
+      .map((entry) => entry.id)
+  );
+}
+
+function buildSubmitSessionBootstrap(userId, member) {
+  const mainCharacterIds = resolveResumableMainCharacterIds({
+    storedMainCharacterIds: getStoredProfileMainCharacterIds(userId),
+    liveMainCharacterIds: getLiveMemberMainCharacterIds(member),
+  });
+  if (!mainCharacterIds.length) return null;
+
+  const existingProfile = db.profiles?.[userId];
+  const ensuredProfile = existingProfile && typeof existingProfile === "object"
+    ? ensureSharedProfile(existingProfile, userId).profile
+    : null;
+  const robloxSnapshot = buildCanonicalRobloxBindingSnapshot(ensuredProfile?.domains?.roblox || ensuredProfile || {});
+
+  return {
+    mainCharacterIds,
+    robloxUsername: robloxSnapshot.username || "",
+    robloxUserId: robloxSnapshot.userId || "",
+    robloxDisplayName: robloxSnapshot.displayName || "",
+  };
 }
 
 function normalizeRobloxUsernameInput(value) {
@@ -11881,9 +11933,25 @@ client.on("messageCreate", async (message) => {
 
   if (message.channelId !== getResolvedChannelId("welcome")) return;
 
-  const session = getSubmitSession(message.author.id);
+  let session = getSubmitSession(message.author.id);
+  const bootstrapMember = session
+    ? null
+    : (message.member?.roles?.cache ? message.member : await fetchMember(client, message.author.id).catch(() => null));
+  const canResumeWithAccessRole = !session && memberHasManagedStartAccessRole(bootstrapMember);
+  if (!session && canResumeWithAccessRole) {
+    const bootstrapSession = buildSubmitSessionBootstrap(message.author.id, bootstrapMember);
+    if (bootstrapSession?.mainCharacterIds?.length) {
+      setSubmitSession(message.author.id, bootstrapSession);
+      session = getSubmitSession(message.author.id);
+    }
+  }
+
   if (!session) {
-    const reply = await message.reply("В этом канале принимается только заявка одним сообщением после кнопки «Получить роль»: текст с точным числом kills и скрин во вложении. Остальные сообщения удаляются.").catch(() => null);
+    const reply = await message.reply(
+      canResumeWithAccessRole
+        ? "Не удалось восстановить твоих мейнов автоматически. Нажми «Получить роль» и выбери их заново, затем отправь kills и скрин одним сообщением."
+        : "В этом канале принимается только заявка одним сообщением после кнопки «Получить роль»: текст с точным числом kills и скрин во вложении. Остальные сообщения удаляются."
+    ).catch(() => null);
     if (reply) scheduleDeleteMessage(reply);
     await message.delete().catch(() => {});
     return;
@@ -15581,10 +15649,17 @@ client.on("interactionCreate", async (interaction) => {
         const pending = getPendingSubmissionForUser(interaction.user.id);
         const draft = getMainDraft(interaction.user.id);
         const cooldownLeft = getSubmitCooldownLeftSeconds(interaction.user.id);
+        const beginMember = interaction.member?.roles?.cache
+          ? interaction.member
+          : await fetchMember(client, interaction.user.id).catch(() => null);
+        const accessResumeSession = !session && !pending && memberHasManagedStartAccessRole(beginMember)
+          ? buildSubmitSessionBootstrap(interaction.user.id, beginMember)
+          : null;
         const beginRoute = resolveOnboardBeginRoute({
           hasPendingProof: Boolean(session?.mainCharacterIds?.length && Number.isSafeInteger(session?.pendingKills) && session?.pendingScreenshotUrl),
           hasPendingMissingRoblox: Boolean(pending && (!pending.robloxUsername || !pending.robloxUserId)),
           hasPendingSubmission: Boolean(pending),
+          hasResumableAccessSubmit: Boolean(accessResumeSession?.mainCharacterIds?.length),
           cooldownLeft,
           hasSubmitSession: Boolean(session),
           hasMainDraft: Boolean(draft?.characterIds?.length),
@@ -15621,6 +15696,10 @@ client.on("interactionCreate", async (interaction) => {
         }
 
         if (beginRoute.type === ONBOARD_BEGIN_ROUTES.SUBMIT) {
+          if (!session?.mainCharacterIds?.length && accessResumeSession?.mainCharacterIds?.length) {
+            setSubmitSession(interaction.user.id, accessResumeSession);
+          }
+
           const welcomeChannelId = getResolvedChannelId("welcome");
           if (!welcomeChannelId) {
             await interaction.reply(ephemeralPayload({
@@ -16697,9 +16776,16 @@ client.on("interactionCreate", async (interaction) => {
       isModerator: hasActivityPanelAccess,
       replyNoPermission: () => interaction.reply(ephemeralPayload({ content: "Нет прав." })),
       replyError: (_interaction, text) => interaction.reply(ephemeralPayload({ content: text })),
-      replySuccess: (_interaction, text) => interaction.reply(ephemeralPayload({ content: text })),
+      replySuccess: (_interaction, response) => {
+        if (typeof response === "string") {
+          return interaction.reply(ephemeralPayload({ content: response }));
+        }
+        return interaction.reply(ephemeralPayload(response || {}));
+      },
       parseRequestedRoleId,
+      parseRequestedUserId,
       parseRequestedChannelId,
+      resolveMemberRoleIds: (userId) => resolveActivityMemberRoleIds(client, userId, interaction.guild || null),
       resolveChannel: async (channelId) => {
         const guild = interaction.guild || await getGuild(client).catch(() => null);
         const cachedChannel = guild?.channels?.cache?.get(channelId) || client.channels?.cache?.get?.(channelId) || null;

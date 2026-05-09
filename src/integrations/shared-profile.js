@@ -206,6 +206,11 @@ function normalizeActivityDomainState(value = {}) {
   };
 }
 
+function getLegacyActivitySource(profile = {}) {
+  const source = profile && typeof profile === "object" ? profile : {};
+  return source?.domains?.activity || source?.activity || source?.summary?.activity || {};
+}
+
 function normalizeVerificationDomainState(value = {}) {
   const source = value && typeof value === "object" ? value : {};
   const rawStatus = cleanString(source.status, 40).toLowerCase();
@@ -668,7 +673,7 @@ function buildSharedProfileSummary(profile = {}, domains = {}) {
   const onboarding = domains.onboarding || normalizeOnboardingDomainState(profile);
   const elo = domains.elo || normalizeEloDomainState(profile?.domains?.elo);
   const tierlist = domains.tierlist || normalizeTierlistDomainState(profile?.domains?.tierlist);
-  const activity = domains.activity || normalizeActivityDomainState(profile?.domains?.activity || profile?.activity);
+  const activity = domains.activity || normalizeActivityDomainState(getLegacyActivitySource(profile));
   const verification = domains.verification || normalizeVerificationDomainState(profile?.domains?.verification);
   const roblox = domains.roblox || normalizeRobloxDomainState(profile?.domains?.roblox || profile);
   const previousUsername = getRobloxPreviousName(roblox.username, roblox.usernameHistory);
@@ -804,7 +809,7 @@ function ensureSharedProfile(profile = {}, userId = "") {
   const onboarding = normalizeOnboardingDomainState(source);
   const elo = normalizeEloDomainState(source?.domains?.elo);
   const tierlist = normalizeTierlistDomainState(source?.domains?.tierlist);
-  const activity = normalizeActivityDomainState(source?.domains?.activity || source?.activity);
+  const activity = normalizeActivityDomainState(getLegacyActivitySource(source));
   const verification = normalizeVerificationDomainState(source?.domains?.verification);
   const roblox = normalizeRobloxDomainState(source?.domains?.roblox || buildLegacyRobloxSource(source));
 

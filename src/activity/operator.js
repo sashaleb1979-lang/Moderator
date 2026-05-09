@@ -19,6 +19,12 @@ const {
   updateActivityConfig,
   upsertWatchedChannel,
 } = require("./state");
+const {
+  collectActivityAssignmentTargetUserIds,
+  collectActivityHistoryTargetUserIds,
+  collectActivitySnapshotTargetUserIds,
+  getActivityUserInspection: inspectActivityUser,
+} = require("./user-state");
 
 const ACTIVITY_PANEL_DEFAULT_VIEW = "overview";
 const ACTIVITY_PANEL_VIEWS = Object.freeze(["overview", "channels", "roles", "runtime"]);
@@ -28,17 +34,29 @@ const ACTIVITY_PANEL_VIEW_TITLES = Object.freeze({
   roles: "Роли и правила",
   runtime: "Процессы",
 });
+const ACTIVITY_PANEL_VIEW_BUTTON_LABELS = Object.freeze({
+  overview: "Сводка",
+  channels: "Каналы",
+  roles: "Роли",
+  runtime: "Процессы",
+});
+const ACTIVITY_PANEL_COLORS = Object.freeze({
+  healthy: 0x2E7D32,
+  neutral: 0x1565C0,
+  warning: 0xF9A825,
+  danger: 0xC62828,
+});
 
 const ACTIVITY_ROLE_SYNC_SKIP_REASON_LABELS = Object.freeze({
-  missing_user_id: "нет user id",
-  manual_override: "manual override",
+  missing_user_id: "неизвестен user id",
+  manual_override: "ручной override",
   auto_role_frozen: "автороли заморожены",
   member_too_new: "ещё не прошёл gate",
-  missing_desired_role: "нет целевой роли",
-  missing_role_mapping: "нет mapping для роли",
-  unchanged: "без изменений",
-  missing_apply_callback: "нет apply callback",
-  apply_declined: "Discord apply отклонён",
+  missing_desired_role: "целевая роль не выбрана",
+  missing_role_mapping: "для tier не привязана Discord-роль",
+  unchanged: "уже совпадает",
+  missing_apply_callback: "некому применить роли",
+  apply_declined: "Discord отклонил применение",
 });
 
 const ACTIVITY_PANEL_BUTTON_IDS = Object.freeze([
@@ -54,6 +72,7 @@ const ACTIVITY_PANEL_BUTTON_IDS = Object.freeze([
   "activity_panel_historical_import",
   "activity_panel_rebuild_metrics",
   "activity_panel_sync_roles",
+  "activity_panel_inspect_user",
   "activity_panel_config_access",
   "activity_panel_config_roles_primary",
   "activity_panel_config_roles_secondary",
@@ -68,6 +87,7 @@ const ACTIVITY_PANEL_BUTTON_IDS = Object.freeze([
       "activity_panel_config_roles_secondary_modal",
       "activity_panel_config_watch_save_modal",
       "activity_panel_config_watch_remove_modal",
+      "activity_panel_inspect_user_modal",
     ]);
 
     const ACTIVITY_ROLE_MAPPING_PRIMARY_KEYS = Object.freeze(["core", "stable", "active"]);
@@ -137,6 +157,10 @@ const ACTIVITY_PANEL_BUTTON_IDS = Object.freeze([
       return ACTIVITY_PANEL_VIEW_TITLES[normalizeActivityPanelView(view)] || ACTIVITY_PANEL_VIEW_TITLES[ACTIVITY_PANEL_DEFAULT_VIEW];
     }
 
+    function getActivityPanelViewButtonLabel(view) {
+      return ACTIVITY_PANEL_VIEW_BUTTON_LABELS[normalizeActivityPanelView(view)] || ACTIVITY_PANEL_VIEW_BUTTON_LABELS[ACTIVITY_PANEL_DEFAULT_VIEW];
+    }
+
     function getActivityPanelViewButtonId(view) {
       return `activity_panel_view_${normalizeActivityPanelView(view)}`;
     }
@@ -175,8 +199,8 @@ const ACTIVITY_PANEL_BUTTON_IDS = Object.freeze([
 
     function buildActivityRoleMappingPreview(config = {}, roleKeys = []) {
       return roleKeys
-        .map((roleKey) => `${roleKey}: ${formatRoleIdPreview(config.activityRoleIds?.[roleKey])}`)
-        .join(" • ");
+        .map((roleKey) => `${roleKey} -> ${formatRoleIdPreview(config.activityRoleIds?.[roleKey])}`)
+        .join("\n");
     }
 
     function formatChannelPreview(record = {}) {
@@ -229,8 +253,8 @@ const ACTIVITY_PANEL_BUTTON_IDS = Object.freeze([
 
     function formatActivityRoleSyncMode(syncMode) {
       return cleanString(syncMode, 40) === "roles_only"
-        ? "Только синхронизация ролей"
-        : "Пересчёт метрик + синхронизация ролей";
+        ? "Только выдача ролей по готовым данным"
+        : "Полный пересчёт + выдача ролей";
     }
 
     function summarizeActivitySkipReasonCounts(skippedReasons = {}) {
@@ -262,7 +286,7 @@ const ACTIVITY_PANEL_BUTTON_IDS = Object.freeze([
         .filter(([reason, count]) => reason && count > 0)
         .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]));
 
-      if (!entries.length) return "Skipped reasons не зафиксированы.";
+      if (!entries.length) return "Причины пропуска не зафиксированы.";
 
       const lines = entries
         .slice(0, Math.max(1, Number(limit) || 1))
@@ -277,8 +301,47 @@ const ACTIVITY_PANEL_BUTTON_IDS = Object.freeze([
       return Array.isArray(state.runtime?.errors) ? state.runtime.errors.length : 0;
     }
 
-    function buildActivityPanelDiagnosticEmbed({ title = "", description = "", fields = [] } = {}) {
+    function resolveActivityPanelColor({
+      view = ACTIVITY_PANEL_DEFAULT_VIEW,
+      watchedChannelCount = 0,
+      mappedRoleCount = 0,
+      runtimeErrorCount = 0,
+      channelsWithoutImportCheckpointCount = 0,
+      missingLocalHistoryUserCount = 0,
+      openSessionCount = 0,
+      dirtyUserCount = 0,
+    } = {}) {
+      const normalizedView = normalizeActivityPanelView(view);
+
+      if (runtimeErrorCount > 0) return ACTIVITY_PANEL_COLORS.danger;
+
+      if (normalizedView === "channels") {
+        if (!watchedChannelCount || channelsWithoutImportCheckpointCount > 0) return ACTIVITY_PANEL_COLORS.warning;
+        return ACTIVITY_PANEL_COLORS.healthy;
+      }
+
+      if (normalizedView === "roles") {
+        if (!mappedRoleCount || missingLocalHistoryUserCount > 0) return ACTIVITY_PANEL_COLORS.warning;
+        return ACTIVITY_PANEL_COLORS.healthy;
+      }
+
+      if (normalizedView === "runtime") {
+        if (openSessionCount > 0 || dirtyUserCount > 0) return ACTIVITY_PANEL_COLORS.neutral;
+        return ACTIVITY_PANEL_COLORS.healthy;
+      }
+
+      if (!watchedChannelCount || !mappedRoleCount || missingLocalHistoryUserCount > 0) {
+        return ACTIVITY_PANEL_COLORS.warning;
+      }
+
+      return ACTIVITY_PANEL_COLORS.healthy;
+    }
+
+    function buildActivityPanelDiagnosticEmbed({ title = "", description = "", fields = [], color = null } = {}) {
       const embed = new EmbedBuilder().setTitle(cleanString(title, 200) || "Activity Panel • Диагностика");
+      if (color !== null && color !== undefined) {
+        embed.setColor(color);
+      }
       const normalizedDescription = cleanString(description, 2000);
       if (normalizedDescription) {
         embed.setDescription(normalizedDescription);
@@ -305,56 +368,56 @@ const ACTIVITY_PANEL_BUTTON_IDS = Object.freeze([
 
       if (normalizedView === "channels") {
         if (!watchedChannelCount) {
-          return "Сначала добавь хотя бы один watched channel и сохрани список.";
+          return "Сначала добавь хотя бы один канал в tracking и сохрани список.";
         }
         if (runtimeErrorCount > 0) {
-          return "Есть ошибки import/runtime: проверь доступ к каналам и повтори import при необходимости.";
+          return "Есть ошибки import/runtime: проверь доступ к каналам и потом повтори импорт.";
         }
         if (!lastCalibrationRun) {
-          return "После настройки списка запусти «Импорт истории», чтобы заполнить локальную активность за старые сообщения.";
+          return "После настройки списка запусти импорт истории, чтобы добрать старые сообщения.";
         }
         if (channelsWithoutImportCheckpointCount > 0) {
-          return `У ${channelsWithoutImportCheckpointCount} каналов ещё нет import checkpoint: после проверки списка запусти «Импорт истории».`;
+          return `У ${channelsWithoutImportCheckpointCount} каналов ещё нет checkpoint-а: после проверки списка запусти импорт истории.`;
         }
-        return "Checkpoint-ы уже есть. Повторный import нужен после расширения списка каналов или если нужно добрать старую активность.";
+        return "Checkpoint-и уже есть. Повторный импорт нужен после расширения списка каналов или если нужно добрать старую активность.";
       }
 
       if (normalizedView === "roles") {
         if (!mappedRoleCount) {
-          return "Сначала заполни activity role mapping, иначе sync roles не сможет корректно выдать роли.";
+          return "Сначала привяжи activity-роли, иначе кнопка «Только выдать роли» ничего не применит.";
         }
         if (missingLocalHistoryUserCount > 0) {
-          return `Есть ${missingLocalHistoryUserCount} users без локальной истории: сначала historical import, потом sync roles.`;
+          return `Есть ${missingLocalHistoryUserCount} users без локальной истории: сначала импорт истории, потом только выдача ролей.`;
         }
         if (Number(dailyRoleSyncStats?.skippedCount || 0) > 0) {
-          return "Посмотри breakdown skipped ниже: он покажет, нужен ли import, role mapping или ручная проверка.";
+          return "Ниже показаны причины пропуска. По ним видно, нужен ли импорт, правка ролей или ручная проверка.";
         }
-        return "Если score уже актуален, «Синхронизировать роли» можно использовать как отдельное безопасное выравнивание без rebuild metrics.";
+        return "Если score уже актуален, используй «Только выдать роли» для безопасного выравнивания без нового пересчёта.";
       }
 
       if (normalizedView === "runtime") {
         if (runtimeErrorCount > 0) {
-          return "Сначала проверь последние ошибки runtime. Ручной rebuild metrics имеет смысл только после устранения блокеров.";
+          return "Сначала проверь последние ошибки runtime. Полный пересчёт имеет смысл только после устранения блокеров.";
         }
         if (openSessionCount > 0 || dirtyUserCount > 0) {
-          return "Runtime ещё живой: дождись flush или обнови раздел позже, если нужна самая свежая картина.";
+          return "Runtime ещё живой: дождись flush или просто обнови вид позже, если нужна финальная картина.";
         }
-        return "Runtime спокоен: ручной пересчёт нужен только после import, для forced reconciliation или проверки новых правил.";
+        return "Runtime спокоен: полный пересчёт нужен после импорта, смены правил или для принудительного reconcile.";
       }
 
       if (!watchedChannelCount) {
-        return "Начни с раздела «Каналы и импорт»: без watched channels activity не накопится.";
+        return "Начни с раздела «Каналы и импорт»: без tracking-каналов activity не накопится.";
       }
       if (!mappedRoleCount) {
-        return "Потом заполни раздел «Роли и правила», иначе sync roles будет неполным.";
+        return "Потом открой «Роли и правила» и привяжи activity-роли, иначе выдача будет неполной.";
       }
       if (missingLocalHistoryUserCount > 0) {
-        return "Есть users без локальной истории: запусти «Импорт истории» перед sync roles.";
+        return "Есть users без локальной истории: сначала импорт истории, потом выдача ролей.";
       }
       if (runtimeErrorCount > 0) {
         return "Есть runtime errors: открой раздел «Процессы» и проверь последние сбои.";
       }
-      return "Явных блокеров нет. Используй import для старой истории, rebuild для нового score и sync для точечной выдачи ролей.";
+      return "Явных блокеров нет. Сначала импортируй старую историю при необходимости, затем используй полный пересчёт или только выдачу ролей.";
     }
 
     function buildActivityPanelNavigationRow(activeView = ACTIVITY_PANEL_DEFAULT_VIEW) {
@@ -362,9 +425,9 @@ const ACTIVITY_PANEL_BUTTON_IDS = Object.freeze([
       return new ActionRowBuilder().addComponents(
         ...ACTIVITY_PANEL_VIEWS.map((view) => new ButtonBuilder()
           .setCustomId(getActivityPanelViewButtonId(view))
-          .setLabel(getActivityPanelViewTitle(view))
+          .setLabel(getActivityPanelViewButtonLabel(view))
           .setStyle(view === normalizedView ? ButtonStyle.Primary : ButtonStyle.Secondary)),
-        new ButtonBuilder().setCustomId("activity_panel_back").setLabel("Назад").setStyle(ButtonStyle.Secondary)
+        new ButtonBuilder().setCustomId("activity_panel_back").setLabel("В мод-панель").setStyle(ButtonStyle.Secondary)
       );
     }
 
@@ -374,10 +437,11 @@ const ACTIVITY_PANEL_BUTTON_IDS = Object.freeze([
       if (normalizedView === "channels") {
         return [
           new ActionRowBuilder().addComponents(
-            new ButtonBuilder().setCustomId(getActivityPanelRefreshButtonId(normalizedView)).setLabel("Обновить").setStyle(ButtonStyle.Secondary),
-            new ButtonBuilder().setCustomId("activity_panel_historical_import").setLabel("Импорт истории").setStyle(ButtonStyle.Primary),
-            new ButtonBuilder().setCustomId("activity_panel_config_watch_save").setLabel("Редактировать").setStyle(ButtonStyle.Secondary),
-            new ButtonBuilder().setCustomId("activity_panel_config_watch_remove").setLabel("Убрать канал").setStyle(ButtonStyle.Secondary)
+            new ButtonBuilder().setCustomId(getActivityPanelRefreshButtonId(normalizedView)).setLabel("Обновить вид").setStyle(ButtonStyle.Secondary),
+            new ButtonBuilder().setCustomId("activity_panel_historical_import").setLabel("Запустить импорт").setStyle(ButtonStyle.Primary),
+            new ButtonBuilder().setCustomId("activity_panel_config_watch_save").setLabel("Список каналов").setStyle(ButtonStyle.Secondary),
+            new ButtonBuilder().setCustomId("activity_panel_config_watch_remove").setLabel("Убрать 1 канал").setStyle(ButtonStyle.Secondary),
+            new ButtonBuilder().setCustomId("activity_panel_inspect_user").setLabel("Проверить юзера").setStyle(ButtonStyle.Secondary)
           ),
         ];
       }
@@ -385,11 +449,14 @@ const ACTIVITY_PANEL_BUTTON_IDS = Object.freeze([
       if (normalizedView === "roles") {
         return [
           new ActionRowBuilder().addComponents(
-            new ButtonBuilder().setCustomId(getActivityPanelRefreshButtonId(normalizedView)).setLabel("Обновить").setStyle(ButtonStyle.Secondary),
-            new ButtonBuilder().setCustomId("activity_panel_sync_roles").setLabel("Синхронизировать роли").setStyle(ButtonStyle.Success),
-            new ButtonBuilder().setCustomId("activity_panel_config_access").setLabel("Доступ").setStyle(ButtonStyle.Secondary),
-            new ButtonBuilder().setCustomId("activity_panel_config_roles_primary").setLabel("Роли 1/2").setStyle(ButtonStyle.Secondary),
-            new ButtonBuilder().setCustomId("activity_panel_config_roles_secondary").setLabel("Роли 2/2").setStyle(ButtonStyle.Secondary)
+            new ButtonBuilder().setCustomId(getActivityPanelRefreshButtonId(normalizedView)).setLabel("Обновить вид").setStyle(ButtonStyle.Secondary),
+            new ButtonBuilder().setCustomId("activity_panel_sync_roles").setLabel("Только выдать роли").setStyle(ButtonStyle.Success)
+          ),
+          new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId("activity_panel_config_access").setLabel("Кто управляет").setStyle(ButtonStyle.Secondary),
+            new ButtonBuilder().setCustomId("activity_panel_config_roles_primary").setLabel("Основные роли").setStyle(ButtonStyle.Secondary),
+            new ButtonBuilder().setCustomId("activity_panel_config_roles_secondary").setLabel("Доп. роли").setStyle(ButtonStyle.Secondary),
+            new ButtonBuilder().setCustomId("activity_panel_inspect_user").setLabel("Проверить юзера").setStyle(ButtonStyle.Secondary)
           ),
         ];
       }
@@ -397,24 +464,26 @@ const ACTIVITY_PANEL_BUTTON_IDS = Object.freeze([
       if (normalizedView === "runtime") {
         return [
           new ActionRowBuilder().addComponents(
-            new ButtonBuilder().setCustomId(getActivityPanelRefreshButtonId(normalizedView)).setLabel("Обновить").setStyle(ButtonStyle.Secondary),
-            new ButtonBuilder().setCustomId("activity_panel_rebuild_metrics").setLabel("Пересчитать метрики").setStyle(ButtonStyle.Primary)
+            new ButtonBuilder().setCustomId(getActivityPanelRefreshButtonId(normalizedView)).setLabel("Обновить вид").setStyle(ButtonStyle.Secondary),
+            new ButtonBuilder().setCustomId("activity_panel_rebuild_metrics").setLabel("Пересчитать и выдать").setStyle(ButtonStyle.Primary),
+            new ButtonBuilder().setCustomId("activity_panel_inspect_user").setLabel("Проверить юзера").setStyle(ButtonStyle.Secondary)
           ),
         ];
       }
 
       return [
         new ActionRowBuilder().addComponents(
-          new ButtonBuilder().setCustomId(getActivityPanelRefreshButtonId(normalizedView)).setLabel("Обновить").setStyle(ButtonStyle.Secondary),
-          new ButtonBuilder().setCustomId("activity_panel_historical_import").setLabel("Импорт истории").setStyle(ButtonStyle.Secondary),
-          new ButtonBuilder().setCustomId("activity_panel_rebuild_metrics").setLabel("Пересчитать метрики").setStyle(ButtonStyle.Primary),
-          new ButtonBuilder().setCustomId("activity_panel_sync_roles").setLabel("Синхронизировать роли").setStyle(ButtonStyle.Success)
+          new ButtonBuilder().setCustomId(getActivityPanelRefreshButtonId(normalizedView)).setLabel("Обновить вид").setStyle(ButtonStyle.Secondary),
+          new ButtonBuilder().setCustomId("activity_panel_historical_import").setLabel("Запустить импорт").setStyle(ButtonStyle.Primary),
+          new ButtonBuilder().setCustomId("activity_panel_rebuild_metrics").setLabel("Пересчитать и выдать").setStyle(ButtonStyle.Primary),
+          new ButtonBuilder().setCustomId("activity_panel_sync_roles").setLabel("Только выдать роли").setStyle(ButtonStyle.Success)
         ),
         new ActionRowBuilder().addComponents(
-          new ButtonBuilder().setCustomId("activity_panel_config_access").setLabel("Доступ").setStyle(ButtonStyle.Secondary),
-          new ButtonBuilder().setCustomId("activity_panel_config_roles_primary").setLabel("Роли 1/2").setStyle(ButtonStyle.Secondary),
-          new ButtonBuilder().setCustomId("activity_panel_config_roles_secondary").setLabel("Роли 2/2").setStyle(ButtonStyle.Secondary),
-          new ButtonBuilder().setCustomId("activity_panel_config_watch_save").setLabel("Каналы").setStyle(ButtonStyle.Secondary)
+          new ButtonBuilder().setCustomId("activity_panel_config_watch_save").setLabel("Каналы").setStyle(ButtonStyle.Secondary),
+          new ButtonBuilder().setCustomId("activity_panel_config_access").setLabel("Кто управляет").setStyle(ButtonStyle.Secondary),
+          new ButtonBuilder().setCustomId("activity_panel_config_roles_primary").setLabel("Основные роли").setStyle(ButtonStyle.Secondary),
+          new ButtonBuilder().setCustomId("activity_panel_config_roles_secondary").setLabel("Доп. роли").setStyle(ButtonStyle.Secondary),
+          new ButtonBuilder().setCustomId("activity_panel_inspect_user").setLabel("Проверить юзера").setStyle(ButtonStyle.Secondary)
         ),
       ];
     }
@@ -551,26 +620,26 @@ function parseOptionalRequestedRoleId(value = "", parseRequestedRoleId) {
 function buildActivityAccessConfigModal(config = {}) {
   return new ModalBuilder()
     .setCustomId("activity_panel_config_access_modal")
-    .setTitle("Activity access")
+    .setTitle("Кто управляет Activity")
     .addComponents(
       new ActionRowBuilder().addComponents(
         new TextInputBuilder()
           .setCustomId("activity_access_moderator_roles")
-          .setLabel("Activity moderators")
+          .setLabel("Роли модераторов")
           .setStyle(TextInputStyle.Paragraph)
           .setRequired(false)
           .setMaxLength(1000)
-          .setPlaceholder("Role IDs или <@&...>, несколько через пробел/запятую/новую строку")
+          .setPlaceholder("Role ID или <@&...>, можно несколько значений через пробел/запятую/новую строку")
           .setValue(normalizeStringArray(config.moderatorRoleIds, 25, 80).join("\n"))
       ),
       new ActionRowBuilder().addComponents(
         new TextInputBuilder()
           .setCustomId("activity_access_admin_roles")
-          .setLabel("Activity admins")
+          .setLabel("Роли админов")
           .setStyle(TextInputStyle.Paragraph)
           .setRequired(false)
           .setMaxLength(1000)
-          .setPlaceholder("Role IDs или <@&...>, несколько через пробел/запятую/новую строку")
+          .setPlaceholder("Role ID или <@&...>, можно несколько значений через пробел/запятую/новую строку")
           .setValue(normalizeStringArray(config.adminRoleIds, 25, 80).join("\n"))
       )
     );
@@ -579,12 +648,12 @@ function buildActivityAccessConfigModal(config = {}) {
 function buildActivityRoleMappingModal({ config = {}, modalId = "", title = "", roleKeys = [] } = {}) {
   return new ModalBuilder()
     .setCustomId(cleanString(modalId, 80))
-    .setTitle(cleanString(title, 45) || "Activity roles")
+    .setTitle(cleanString(title, 45) || "Роли Activity")
     .addComponents(
       ...roleKeys.map((roleKey) => new ActionRowBuilder().addComponents(
         new TextInputBuilder()
           .setCustomId(`activity_role_${roleKey}`)
-          .setLabel(`Role for ${roleKey}`)
+          .setLabel(`Роль для ${roleKey}`)
           .setStyle(TextInputStyle.Short)
           .setRequired(false)
           .setMaxLength(80)
@@ -594,36 +663,61 @@ function buildActivityRoleMappingModal({ config = {}, modalId = "", title = "", 
     );
 }
 
-function buildWatchedChannelSaveModal() {
+function buildWatchedChannelSaveModal(state = {}) {
+  const channelValue = (Array.isArray(state.watchedChannels) ? state.watchedChannels : [])
+    .map((record) => cleanString(record?.channelId, 80))
+    .filter(Boolean)
+    .join("\n")
+    .slice(0, 2000);
+  const channelInput = new TextInputBuilder()
+    .setCustomId("activity_watch_channel_list")
+    .setLabel("Полный список каналов")
+    .setStyle(TextInputStyle.Paragraph)
+    .setRequired(true)
+    .setMaxLength(2000)
+    .setPlaceholder("Один канал на строку. Новый список заменит текущий целиком.");
+  if (channelValue) {
+    channelInput.setValue(channelValue);
+  }
+
   return new ModalBuilder()
     .setCustomId("activity_panel_config_watch_save_modal")
-    .setTitle("Список каналов")
+    .setTitle("Каналы для Activity")
     .addComponents(
-      new ActionRowBuilder().addComponents(
-        new TextInputBuilder()
-          .setCustomId("activity_watch_channel_list")
-          .setLabel("Каналы")
-          .setStyle(TextInputStyle.Paragraph)
-          .setRequired(true)
-          .setMaxLength(2000)
-          .setPlaceholder("Один канал на строку: 123456789012345678 или <#123456789012345678>")
-      )
+      new ActionRowBuilder().addComponents(channelInput)
     );
 }
 
 function buildWatchedChannelRemoveModal() {
   return new ModalBuilder()
     .setCustomId("activity_panel_config_watch_remove_modal")
-    .setTitle("Remove watched channel")
+    .setTitle("Убрать канал из Activity")
     .addComponents(
       new ActionRowBuilder().addComponents(
         new TextInputBuilder()
           .setCustomId("activity_watch_remove_channel_id")
-          .setLabel("Channel ID / mention")
+          .setLabel("ID канала или mention")
           .setStyle(TextInputStyle.Short)
           .setRequired(true)
           .setMaxLength(80)
           .setPlaceholder("123456789012345678 или <#123456789012345678>")
+      )
+    );
+}
+
+function buildActivityUserInspectionModal() {
+  return new ModalBuilder()
+    .setCustomId("activity_panel_inspect_user_modal")
+    .setTitle("Проверить пользователя")
+    .addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId("activity_inspect_user_id")
+          .setLabel("User ID или mention")
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+          .setMaxLength(80)
+          .setPlaceholder("123456789012345678 или <@123456789012345678>")
       )
     );
 }
@@ -656,6 +750,26 @@ function ensureProfileRecord(db, userId) {
   return db.profiles[userId];
 }
 
+function resolveActivityRolePlanSource(state, profile, userId) {
+  const snapshot = state?.userSnapshots?.[userId];
+  const profileMirror = profile?.domains?.activity || profile?.activity || profile?.summary?.activity;
+  const normalizedSnapshot = snapshot && typeof snapshot === "object" && !Array.isArray(snapshot)
+    ? snapshot
+    : null;
+  const normalizedProfileMirror = profileMirror && typeof profileMirror === "object" && !Array.isArray(profileMirror)
+    ? profileMirror
+    : null;
+
+  if (normalizedSnapshot && normalizedProfileMirror) {
+    return {
+      ...normalizedProfileMirror,
+      ...normalizedSnapshot,
+    };
+  }
+
+  return normalizedSnapshot || normalizedProfileMirror || {};
+}
+
 function syncAppliedActivityRoleMetadata(db, userId, { appliedActivityRoleKey, lastRoleAppliedAt }) {
   const profile = ensureProfileRecord(db, userId);
   const nextProfile = clone(profile);
@@ -680,78 +794,135 @@ function syncAppliedActivityRoleMetadata(db, userId, { appliedActivityRoleKey, l
   return db.profiles[userId];
 }
 
-function collectActivityAssignmentTargetUserIds(db, explicitUserIds = [], managedRoleUserIds = []) {
-  const state = ensureActivityState(db);
-  const targetUserIds = new Set([
-    ...normalizeStringArray(explicitUserIds, 5000),
-    ...normalizeStringArray(managedRoleUserIds, 5000),
-  ]);
-
-  for (const userId of Object.keys(state.userSnapshots || {})) {
-    const normalizedUserId = cleanString(userId, 80);
-    if (normalizedUserId) targetUserIds.add(normalizedUserId);
-  }
-
-  for (const userId of Object.keys(state.runtime?.openSessions || {})) {
-    const normalizedUserId = cleanString(userId, 80);
-    if (normalizedUserId) targetUserIds.add(normalizedUserId);
-  }
-
-  for (const userId of Array.isArray(state.runtime?.dirtyUsers) ? state.runtime.dirtyUsers : []) {
-    const normalizedUserId = cleanString(userId, 80);
-    if (normalizedUserId) targetUserIds.add(normalizedUserId);
-  }
-
-  for (const session of Array.isArray(state.globalUserSessions) ? state.globalUserSessions : []) {
-    const normalizedUserId = cleanString(session?.userId, 80);
-    if (normalizedUserId) targetUserIds.add(normalizedUserId);
-  }
-
-  for (const row of Array.isArray(state.userChannelDailyStats) ? state.userChannelDailyStats : []) {
-    const normalizedUserId = cleanString(row?.userId, 80);
-    if (normalizedUserId) targetUserIds.add(normalizedUserId);
-  }
-
-  return [...targetUserIds];
+function getActivityUserInspection({ db = {}, userId = "", memberRoleIds = [] } = {}) {
+  return inspectActivityUser({
+    db,
+    userId,
+    memberRoleIds,
+    resolveRoleAssignmentPlan: ({ db: nextDb, userId: nextUserId, memberRoleIds: nextMemberRoleIds }) => buildActivityRoleAssignmentPlan({
+      db: nextDb,
+      userId: nextUserId,
+      memberRoleIds: nextMemberRoleIds,
+    }),
+  });
 }
 
-function collectActivityHistoryTargetUserIds(db, explicitUserIds = []) {
-  const state = ensureActivityState(db);
-  const targetUserIds = new Set(normalizeStringArray(explicitUserIds, 5000));
-
-  for (const userId of Object.keys(state.runtime?.openSessions || {})) {
-    const normalizedUserId = cleanString(userId, 80);
-    if (normalizedUserId) targetUserIds.add(normalizedUserId);
-  }
-
-  for (const userId of Array.isArray(state.runtime?.dirtyUsers) ? state.runtime.dirtyUsers : []) {
-    const normalizedUserId = cleanString(userId, 80);
-    if (normalizedUserId) targetUserIds.add(normalizedUserId);
-  }
-
-  for (const session of Array.isArray(state.globalUserSessions) ? state.globalUserSessions : []) {
-    const normalizedUserId = cleanString(session?.userId, 80);
-    if (normalizedUserId) targetUserIds.add(normalizedUserId);
-  }
-
-  for (const row of Array.isArray(state.userChannelDailyStats) ? state.userChannelDailyStats : []) {
-    const normalizedUserId = cleanString(row?.userId, 80);
-    if (normalizedUserId) targetUserIds.add(normalizedUserId);
-  }
-
-  return [...targetUserIds];
+function formatActivityInspectionSnapshotSource(source = "none") {
+  if (source === "state_snapshot") return "saved snapshot";
+  if (source === "profile_mirror") return "profile mirror";
+  return "нет сохранённого snapshot-а";
 }
 
-function collectActivitySnapshotTargetUserIds(db, explicitUserIds = []) {
-  const state = ensureActivityState(db);
-  const targetUserIds = new Set(normalizeStringArray(explicitUserIds, 5000));
+function formatActivityInspectionRolePreview(roleIds = []) {
+  const normalizedRoleIds = normalizeStringArray(roleIds, 50, 80);
+  if (!normalizedRoleIds.length) return "—";
+  return normalizedRoleIds.map((roleId) => `<@&${roleId}>`).join(", ");
+}
 
-  for (const userId of Object.keys(state.userSnapshots || {})) {
-    const normalizedUserId = cleanString(userId, 80);
-    if (normalizedUserId) targetUserIds.add(normalizedUserId);
+function buildActivityUserInspectionPayload({ db = {}, userId = "", memberRoleIds = [] } = {}) {
+  const inspection = getActivityUserInspection({ db, userId, memberRoleIds });
+  const snapshot = inspection.snapshot || {};
+  const profile = db.profiles?.[inspection.userId] || {};
+  const label = cleanString(profile.displayName, 120)
+    || cleanString(profile.username, 120)
+    || inspection.userId
+    || "unknown";
+  const desiredRoleKey = cleanString(snapshot?.desiredActivityRoleKey, 80) || "—";
+  const appliedRoleKey = cleanString(snapshot?.appliedActivityRoleKey, 80) || "—";
+  const roleEligibilityStatus = cleanString(snapshot?.roleEligibilityStatus, 80) || "—";
+  const summaryEmbed = new EmbedBuilder()
+    .setTitle(`Activity • ${label}`)
+    .setColor(inspection.diagnosis.statusCode === "role_synced"
+      ? ACTIVITY_PANEL_COLORS.healthy
+      : inspection.visibility.canRunRolesOnlySync
+        ? ACTIVITY_PANEL_COLORS.neutral
+        : ACTIVITY_PANEL_COLORS.warning)
+    .setDescription(inspection.userId ? `<@${inspection.userId}> • ${inspection.userId}` : "User не распознан.")
+    .addFields(
+      {
+        name: "Диагноз",
+        value: [
+          inspection.diagnosis.summary,
+          `Следующий шаг: ${inspection.diagnosis.recommendedAction}`,
+        ].join("\n"),
+        inline: false,
+      },
+      {
+        name: "Роль и доступность sync",
+        value: [
+          `Желаемый tier: **${desiredRoleKey}**`,
+          `Последний applied tier: **${appliedRoleKey}**`,
+          `Eligibility: **${roleEligibilityStatus}**`,
+          `Можно full rebuild+sync: **${inspection.visibility.canRunRebuildAndSync ? "да" : "нет"}**`,
+          `Можно roles-only sync: **${inspection.visibility.canRunRolesOnlySync ? "да" : "нет"}**`,
+        ].join("\n"),
+        inline: false,
+      },
+      {
+        name: "Откуда взяты данные",
+        value: [
+          `Источник snapshot-а: **${formatActivityInspectionSnapshotSource(inspection.snapshotSource)}**`,
+          `Есть snapshot index: **${inspection.hasSnapshotIndex ? "да" : "нет"}**`,
+          `Есть profile mirror: **${inspection.hasProfileMirror ? "да" : "нет"}**`,
+          `Локальная history-база: **${inspection.history.hasLocalHistory ? "да" : "нет"}**`,
+          `Finalized sessions: **${inspection.history.finalizedSessionCount}**, daily rows: **${inspection.history.dailyRowCount}**`,
+          `Open session: **${inspection.history.hasOpenSession ? "да" : "нет"}**, dirty: **${inspection.history.isDirty ? "да" : "нет"}**`,
+        ].join("\n"),
+        inline: false,
+      },
+      {
+        name: "Текущие Discord-роли",
+        value: formatActivityInspectionRolePreview(memberRoleIds),
+        inline: false,
+      }
+    );
+
+  if (!inspection.snapshot) {
+    return {
+      embeds: [summaryEmbed],
+    };
   }
 
-  return [...targetUserIds];
+  const metricsEmbed = new EmbedBuilder()
+    .setTitle("Activity • Метрики пользователя")
+    .setColor(summaryEmbed.data.color)
+    .addFields(
+      {
+        name: "Score",
+        value: [
+          `Base score: **${Number(snapshot.baseActivityScore ?? 0)}**`,
+          `Финальный score: **${Number(snapshot.activityScore ?? 0)}**`,
+          `Множитель: **x${Number(snapshot.activityScoreMultiplier ?? 1).toFixed(2)}**`,
+          `Days absent: **${snapshot.daysAbsent ?? "—"}**`,
+          `Last seen: ${formatDateTime(snapshot.lastSeenAt)}`,
+        ].join("\n"),
+        inline: false,
+      },
+      {
+        name: "Окна активности",
+        value: [
+          `Messages 7/30/90d: **${Number(snapshot.messages7d ?? 0)} / ${Number(snapshot.messages30d ?? 0)} / ${Number(snapshot.messages90d ?? 0)}**`,
+          `Sessions 7/30/90d: **${Number(snapshot.sessions7d ?? 0)} / ${Number(snapshot.sessions30d ?? 0)} / ${Number(snapshot.sessions90d ?? 0)}**`,
+          `Active days 7/30/90d: **${Number(snapshot.activeDays7d ?? 0)} / ${Number(snapshot.activeDays30d ?? 0)} / ${Number(snapshot.activeDays90d ?? 0)}**`,
+        ].join("\n"),
+        inline: false,
+      },
+      {
+        name: "30d детали",
+        value: [
+          `Активных watched channels: **${Number(snapshot.activeWatchedChannels30d ?? 0)}**`,
+          `Weighted messages 30d: **${Number(snapshot.weightedMessages30d ?? 0)}**`,
+          `Effective sessions 30d: **${Number(snapshot.globalEffectiveSessions30d ?? 0)}**`,
+          `Effective active days 30d: **${Number(snapshot.effectiveActiveDays30d ?? 0)}**`,
+          `Guild joined: ${formatDateTime(snapshot.guildJoinedAt)} • days: **${snapshot.daysSinceGuildJoin ?? "—"}**`,
+        ].join("\n"),
+        inline: false,
+      }
+    );
+
+  return {
+    embeds: [summaryEmbed, metricsEmbed],
+  };
 }
 
 function getActivitySyncStatsRecord(value) {
@@ -792,25 +963,183 @@ function buildActivitySyncOperationLines(label, at, stats, options = {}) {
 
   const lines = [
     `${label}: ${formatDateTime(at)}`,
-    `Targets: **${Number(normalizedStats.targetUserCount || 0)}**`,
+    `Охват: **${Number(normalizedStats.targetUserCount || 0)}** пользователей`,
   ];
 
   if (options.includeRebuiltCount || cleanString(normalizedStats.syncMode, 40) === "rebuild_and_sync") {
-    lines.push(`Rebuilt: **${Number(normalizedStats.rebuiltUserCount || 0)}**`);
+    lines.push(`Пересобрано snapshots: **${Number(normalizedStats.rebuiltUserCount || 0)}**`);
   }
 
-  lines.push(`Applied: **${Number(normalizedStats.appliedCount || 0)}**, skipped: **${Number(normalizedStats.skippedCount || 0)}**`);
+  lines.push(`Роли применены: **${Number(normalizedStats.appliedCount || 0)}**, пропущено: **${Number(normalizedStats.skippedCount || 0)}**`);
 
   const missingLocalHistoryUserCount = Number(normalizedStats.missingLocalHistoryUserCount || 0);
   if (missingLocalHistoryUserCount > 0) {
-    lines.push(`Need import rerun for old history: **${missingLocalHistoryUserCount}**`);
+    lines.push(`Нужен добор старой истории: **${missingLocalHistoryUserCount}**`);
   }
 
   if (options.includeSkipReasons) {
-    lines.push(buildActivitySkipReasonPreview(normalizedStats.skipReasonCounts));
+    lines.push(`Причины пропуска:\n${buildActivitySkipReasonPreview(normalizedStats.skipReasonCounts)}`);
   }
 
   return lines;
+}
+
+function buildActivityPanelField(name, value, inline = false) {
+  const lines = Array.isArray(value)
+    ? value.map((entry) => cleanString(entry, 2000)).filter(Boolean)
+    : [cleanString(value, 2000)].filter(Boolean);
+
+  return {
+    name: cleanString(name, 256) || "—",
+    value: lines.length ? lines.join("\n") : "—",
+    inline,
+  };
+}
+
+function buildActivityCompactSyncLine(label, at, stats, options = {}) {
+  const normalizedStats = getActivitySyncStatsRecord(stats);
+  if (!normalizedStats) {
+    return `${label}: ещё не запускался.`;
+  }
+
+  const parts = [
+    `${label}: ${formatDateTime(at)}`,
+    `применено ${Number(normalizedStats.appliedCount || 0)}`,
+    `пропущено ${Number(normalizedStats.skippedCount || 0)}`,
+  ];
+
+  if (options.includeRebuiltCount || cleanString(normalizedStats.syncMode, 40) === "rebuild_and_sync") {
+    parts.push(`пересобрано ${Number(normalizedStats.rebuiltUserCount || 0)}`);
+  }
+
+  return parts.join(" • ");
+}
+
+function resolveActivityPanelStatusSnapshot({
+  view = ACTIVITY_PANEL_DEFAULT_VIEW,
+  watchedChannelCount = 0,
+  mappedRoleCount = 0,
+  runtimeErrorCount = 0,
+  channelsWithoutImportCheckpointCount = 0,
+  missingLocalHistoryUserCount = 0,
+  openSessionCount = 0,
+  dirtyUserCount = 0,
+  lastCalibrationRun = null,
+} = {}) {
+  const normalizedView = normalizeActivityPanelView(view);
+
+  if (runtimeErrorCount > 0) {
+    return {
+      label: "КРИТИЧНО",
+      headline: "Есть runtime ошибки, и панель уже не считается безопасно зелёной.",
+      summary: "Сначала разберись с последними сбоями, а уже потом запускай ручные import/sync действия.",
+    };
+  }
+
+  if (normalizedView === "channels") {
+    if (!watchedChannelCount) {
+      return {
+        label: "ПУСТО",
+        headline: "Tracking-контур ещё не собран.",
+        summary: "Пока список каналов пуст, Activity просто не из чего считать.",
+      };
+    }
+    if (!lastCalibrationRun || channelsWithoutImportCheckpointCount > 0) {
+      return {
+        label: "ВНИМАНИЕ",
+        headline: "Список каналов уже есть, но historical backfill ещё не закрыт.",
+        summary: "Старые пользователи могут выпадать из статистики, пока import истории не доберёт прошлые сообщения.",
+      };
+    }
+    return {
+      label: "OK",
+      headline: "Tracking-контур выглядит собранным.",
+      summary: "Дальше это уже скорее операционный режим: расширяй список или повторяй import только по необходимости.",
+    };
+  }
+
+  if (normalizedView === "roles") {
+    if (!mappedRoleCount) {
+      return {
+        label: "ВНИМАНИЕ",
+        headline: "Role mapping ещё не закрыт.",
+        summary: "Пока роли не привязаны, roles-only sync будет пропускать часть или все target tiers.",
+      };
+    }
+    if (missingLocalHistoryUserCount > 0) {
+      return {
+        label: "ВНИМАНИЕ",
+        headline: "Есть пользователи без локальной history-базы.",
+        summary: "Их можно разбирать точечно, но для полного восстановления сначала нужен import старой истории.",
+      };
+    }
+    return {
+      label: "OK",
+      headline: "Контур выдачи ролей собран.",
+      summary: "Если score уже свежий, roles-only sync можно использовать как безопасное выравнивание без нового пересчёта.",
+    };
+  }
+
+  if (normalizedView === "runtime") {
+    if (openSessionCount > 0 || dirtyUserCount > 0) {
+      return {
+        label: "В РАБОТЕ",
+        headline: "Runtime ещё двигает живые данные.",
+        summary: "Картина уже полезна, но финальный flush ещё может подвинуть метрики и snapshots.",
+      };
+    }
+    return {
+      label: "OK",
+      headline: "Очередь выглядит спокойной.",
+      summary: "Ручной полный цикл нужен только после import, смены правил или forced reconcile.",
+    };
+  }
+
+  if (!watchedChannelCount) {
+    return {
+      label: "ПУСТО",
+      headline: "Activity-контур ещё не собран.",
+      summary: "Начни с tracking-каналов, иначе ни статистика, ни роли не будут иметь нормальную базу.",
+    };
+  }
+
+  if (!mappedRoleCount) {
+    return {
+      label: "ВНИМАНИЕ",
+      headline: "Данные уже копятся, но role mapping ещё не закрыт.",
+      summary: "Пока роли не привязаны, панель можно читать, но выдача останется частично или полностью пустой.",
+    };
+  }
+
+  if (missingLocalHistoryUserCount > 0) {
+    return {
+      label: "ВНИМАНИЕ",
+      headline: "Есть старые users без локальной history-базы.",
+      summary: "Это не ломает весь контур, но именно из-за этого часть старых людей может остаться без activity-роли.",
+    };
+  }
+
+  if (openSessionCount > 0 || dirtyUserCount > 0) {
+    return {
+      label: "В РАБОТЕ",
+      headline: "Контур живой и всё ещё крутит новые данные.",
+      summary: "Можно смотреть сводку и разбирать users, но самые свежие значения ещё могут доехать после flush.",
+    };
+  }
+
+  return {
+    label: "OK",
+    headline: "Контур выглядит собранным и спокойным.",
+    summary: "Панель уже можно использовать как операторский control surface, а не как аварийную диагностику.",
+  };
+}
+
+function buildActivityPanelStatusDescription(status = {}) {
+  return [
+    `Статус раздела: **${cleanString(status.label, 40) || "—"}**`,
+    cleanString(status.headline, 300),
+    cleanString(status.summary, 500),
+  ].filter(Boolean).join("\n");
 }
 
 function buildActivityOperatorPanelPayload({ db = {}, statusText = "", view = ACTIVITY_PANEL_DEFAULT_VIEW } = {}) {
@@ -861,378 +1190,276 @@ function buildActivityOperatorPanelPayload({ db = {}, statusText = "", view = AC
     || 0
   );
   const supportEmbeds = [];
+  const panelColor = resolveActivityPanelColor({
+    view: normalizedView,
+    watchedChannelCount,
+    mappedRoleCount,
+    runtimeErrorCount,
+    channelsWithoutImportCheckpointCount,
+    missingLocalHistoryUserCount,
+    openSessionCount,
+    dirtyUserCount,
+  });
+  const panelStatus = resolveActivityPanelStatusSnapshot({
+    view: normalizedView,
+    watchedChannelCount,
+    mappedRoleCount,
+    runtimeErrorCount,
+    channelsWithoutImportCheckpointCount,
+    missingLocalHistoryUserCount,
+    openSessionCount,
+    dirtyUserCount,
+    lastCalibrationRun,
+  });
 
   const embed = new EmbedBuilder()
-    .setTitle(`Activity Panel • ${getActivityPanelViewTitle(normalizedView)}`);
+    .setTitle(`Activity Panel • ${getActivityPanelViewTitle(normalizedView)}`)
+    .setColor(panelColor)
+    .setDescription(buildActivityPanelStatusDescription(panelStatus));
 
   if (normalizedView === "channels") {
-    embed
-      .setDescription([
-        "Здесь настраиваются каналы tracking и запускается historical import.",
-        "Редактор каналов полностью заменяет текущий список watched channels.",
-      ].join("\n"))
-      .addFields(
-        {
-          name: "Импорт истории",
-          value: lastCalibrationRun
-            ? [
-              `Последний запуск: **${cleanString(lastCalibrationRun.mode, 80) || "unknown"}**`,
-              `Завершён: ${formatDateTime(lastCalibrationRun.completedAt)}`,
-              `Импортировано сообщений: **${Number(lastCalibrationRun.importedEntryCount || 0)}**`,
-              `Пользователей затронуто: **${Number(lastCalibrationRun.importedUserCount || 0)}**`,
-              `Role assignments после import: **${Number(lastCalibrationRun.appliedRoleCount || 0)}**`,
-              Number(lastCalibrationRun.failedChannelCount || 0)
-                ? `Каналов с ошибками: **${Number(lastCalibrationRun.failedChannelCount || 0)}**`
-                : "Каналы обработаны без ошибок.",
-            ].join("\n")
-            : [
-              "Historical import ещё не запускался.",
-              "Используй его, если нужно подтянуть старые сообщения до включения tracking.",
-            ].join("\n"),
-          inline: false,
-        },
-        {
-          name: `Каналы tracking • ${watchedChannelCount}`,
-          value: buildWatchedChannelImportPreview(state),
-          inline: false,
-        },
-        {
-          name: "Подсказка",
-          value: [
-            "Импорт истории не меняет список каналов.",
-            "Кнопка «Редактировать» открывает полный список каналов и сохраняет его целиком.",
-          ].join("\n"),
-          inline: false,
-        }
-      );
+    embed.addFields(
+      buildActivityPanelField("Контур импорта", [
+        `Каналов в tracking: **${watchedChannelCount}**`,
+        `С import cursor: **${channelsWithImportCursorCount}**`,
+        `С completed import: **${channelsWithCompletedImportCount}**`,
+        `Без checkpoint-а: **${channelsWithoutImportCheckpointCount}**`,
+      ], true),
+      buildActivityPanelField("Последний импорт", lastCalibrationRun
+        ? [
+          `Режим: **${cleanString(lastCalibrationRun.mode, 80) || "unknown"}**`,
+          `Завершён: ${formatDateTime(lastCalibrationRun.completedAt)}`,
+          `Сообщений: **${Number(lastCalibrationRun.importedEntryCount || 0)}**`,
+          `Users: **${Number(lastCalibrationRun.importedUserCount || 0)}**`,
+        ]
+        : [
+          "Импорт истории ещё не запускался.",
+          "Без него старые сообщения не будут добраны в локальную базу.",
+        ], true),
+      buildActivityPanelField("Ошибки и сбои", [
+        `Ошибки import/runtime: **${runtimeErrorCount}**`,
+        `Каналов с ошибками в последнем прогоне: **${Number(lastCalibrationRun?.failedChannelCount || 0)}**`,
+        Number(lastCalibrationRun?.failedChannelCount || 0)
+          ? "Последний import уже был не идеально чистым."
+          : "Последний import не оставил каналов с ошибками.",
+      ], true),
+      buildActivityPanelField(`Текущий список • ${watchedChannelCount}`, buildWatchedChannelImportPreview(state), false),
+      buildActivityPanelField("Быстрые действия", [
+        "Запустить импорт: добирает старые сообщения до включения tracking.",
+        "Список каналов: открывает и сохраняет полный текущий список целиком.",
+        "Убрать 1 канал: быстро удаляет один канал без полной правки списка.",
+      ], false)
+    );
     supportEmbeds.push(buildActivityPanelDiagnosticEmbed({
-      title: "Activity Panel • Каналы • Диагностика",
-      description: "Checkpoint-и, ошибки и краткая подсказка по кнопкам.",
+      title: "Activity Panel • Каналы • Фокус",
+      description: "Здесь только узкие места и следующий ход, без длинного журнала.",
+      color: panelColor,
       fields: [
-        {
-          name: "Checkpoint-и",
-          value: [
-            `Каналов с import cursor: **${channelsWithImportCursorCount}**`,
-            `Каналов с completed import: **${channelsWithCompletedImportCount}**`,
-            `Каналов без import checkpoint: **${channelsWithoutImportCheckpointCount}**`,
-            `Ошибки import/runtime: **${runtimeErrorCount}**`,
-          ].join("\n"),
-          inline: false,
-        },
-        {
-          name: "Когда использовать кнопки",
-          value: [
-            "Импорт истории: когда нужно подтянуть старые сообщения до включения tracking.",
-            "Редактировать: когда меняется полный список watched channels.",
-            "Убрать канал: когда нужно быстро удалить один channel из текущего списка.",
-          ].join("\n"),
-          inline: false,
-        },
-        {
-          name: "Следующий шаг",
-          value: buildActivityPanelNextStepPreview({
-            view: normalizedView,
-            watchedChannelCount,
-            mappedRoleCount,
-            runtimeErrorCount,
-            channelsWithoutImportCheckpointCount,
-            missingLocalHistoryUserCount,
-            openSessionCount,
-            dirtyUserCount,
-            lastCalibrationRun,
-            dailyRoleSyncStats,
-          }),
-          inline: false,
-        },
+        buildActivityPanelField("Где тонко", [
+          `Каналов без import checkpoint: **${channelsWithoutImportCheckpointCount}**`,
+          `Ошибки import/runtime: **${runtimeErrorCount}**`,
+          channelsWithoutImportCheckpointCount > 0
+            ? "Есть каналы, которые ещё не прошли нормальный backfill."
+            : "Checkpoint-контур уже выглядит собранным.",
+        ], false),
+        buildActivityPanelField("Памятка", [
+          "Импорт не меняет список каналов сам по себе.",
+          "Редактор каналов заменяет список целиком.",
+          "Если каналов стало больше, сначала сохрани список, потом запускай import.",
+        ], false),
+        buildActivityPanelField("Следующий шаг", buildActivityPanelNextStepPreview({
+          view: normalizedView,
+          watchedChannelCount,
+          mappedRoleCount,
+          runtimeErrorCount,
+          channelsWithoutImportCheckpointCount,
+          missingLocalHistoryUserCount,
+          openSessionCount,
+          dirtyUserCount,
+          lastCalibrationRun,
+          dailyRoleSyncStats,
+        }), false),
       ],
     }));
   } else if (normalizedView === "roles") {
-    embed
-      .setDescription([
-        "Здесь собраны правила activity-ролей и все действия по их выравниванию.",
-        "Синхронизация ролей не пересчитывает score: она только сверяет Discord-роли с уже сохранёнными snapshots.",
-      ].join("\n"))
-      .addFields(
-        {
-          name: "Правила",
-          value: [
-            `Role gate: after **${Number(config.roleEligibilityMinMemberDays || 0)}** days on server`,
-            `Newcomer boost: **x${roleBoostMaxMultiplier.toFixed(2)}** -> x1.00 by day **${Number(config.roleBoostEndMemberDays || 0)}**`,
-            `Snapshots gated/boosted: **${gatedSnapshotCount}** / **${boostedSnapshotCount}**`,
-            `Thresholds: weak ${Number(thresholds.weak ?? 18)}, floating ${Number(thresholds.floating ?? 38)}, active ${Number(thresholds.active ?? 55)}, stable ${Number(thresholds.stable ?? 70)}, core ${Number(thresholds.core ?? 85)}`,
-          ].join("\n"),
-          inline: false,
-        },
-        {
-          name: "Маппинг и доступ",
-          value: [
-            `Activity moderators: ${formatRoleIdListPreview(config.moderatorRoleIds)}`,
-            `Activity admins: ${formatRoleIdListPreview(config.adminRoleIds)}`,
-            buildActivityRoleMappingPreview(config, ACTIVITY_ROLE_MAPPING_PRIMARY_KEYS),
-            buildActivityRoleMappingPreview(config, ACTIVITY_ROLE_MAPPING_SECONDARY_KEYS),
-          ].join("\n"),
-          inline: false,
-        },
-        {
-          name: "Последние операции",
-          value: [
-            ...buildActivitySyncOperationLines(
-              "Последний полный rebuild+sync",
-              syncHistory.lastRebuildAndRoleSyncAt,
-              fullRebuildAndRoleSyncStats,
-              { includeRebuiltCount: true }
-            ),
-            ...buildActivitySyncOperationLines(
-              "Последний roles-only sync",
-              syncHistory.lastRolesOnlySyncAt,
-              rolesOnlySyncStats
-            ),
-            "Source: local saved activity sessions/stats only.",
-          ].join("\n"),
-          inline: false,
-        }
-      );
+    embed.addFields(
+      buildActivityPanelField("Правила", [
+        `Роль можно выдавать после **${Number(config.roleEligibilityMinMemberDays || 0)}** дней на сервере`,
+        `Буст новичка: **x${roleBoostMaxMultiplier.toFixed(2)}** -> x1.00 к дню **${Number(config.roleBoostEndMemberDays || 0)}**`,
+        `Snapshots под gate/boost: **${gatedSnapshotCount}** / **${boostedSnapshotCount}**`,
+      ], true),
+      buildActivityPanelField("Контур выдачи", [
+        `Привязано activity-ролей: **${mappedRoleCount}**`,
+        `Нужен добор старой истории: **${missingLocalHistoryUserCount}**`,
+        `Ошибки runtime: **${runtimeErrorCount}**`,
+        `Последний режим: **${formatActivityRoleSyncMode(syncMode)}**`,
+      ], true),
+      buildActivityPanelField("Кто управляет", [
+        `Модераторы Activity: ${formatRoleIdListPreview(config.moderatorRoleIds)}`,
+        `Админы Activity: ${formatRoleIdListPreview(config.adminRoleIds)}`,
+      ], true),
+      buildActivityPanelField("Маппинг ролей", [
+        `Основные:\n${buildActivityRoleMappingPreview(config, ACTIVITY_ROLE_MAPPING_PRIMARY_KEYS)}`,
+        `Дополнительные:\n${buildActivityRoleMappingPreview(config, ACTIVITY_ROLE_MAPPING_SECONDARY_KEYS)}`,
+        `Thresholds: weak ${Number(thresholds.weak ?? 18)}, floating ${Number(thresholds.floating ?? 38)}, active ${Number(thresholds.active ?? 55)}, stable ${Number(thresholds.stable ?? 70)}, core ${Number(thresholds.core ?? 85)}`,
+      ], false),
+      buildActivityPanelField("Последний sync", [
+        buildActivityCompactSyncLine("Полный цикл", syncHistory.lastRebuildAndRoleSyncAt, fullRebuildAndRoleSyncStats, { includeRebuiltCount: true }),
+        buildActivityCompactSyncLine("Только роли", syncHistory.lastRolesOnlySyncAt, rolesOnlySyncStats),
+        "Источник: только локально сохранённые activity sessions/stats.",
+      ], false)
+    );
     supportEmbeds.push(buildActivityPanelDiagnosticEmbed({
-      title: "Activity Panel • Роли • Диагностика",
-      description: "Отдельно видно, почему sync roles что-то пропускает и какой следующий шаг нужен.",
+      title: "Activity Panel • Роли • Фокус",
+      description: "Смотри сюда, если роли снова начали расходиться с ожиданиями.",
+      color: panelColor,
       fields: [
-        {
-          name: "Full rebuild + sync",
-          value: buildActivitySyncOperationLines(
-            "Последний полный rebuild+sync",
-            syncHistory.lastRebuildAndRoleSyncAt,
-            fullRebuildAndRoleSyncStats,
-            { includeRebuiltCount: true, includeSkipReasons: true }
-          ).join("\n"),
-          inline: false,
-        },
-        {
-          name: "Roles-only sync",
-          value: buildActivitySyncOperationLines(
-            "Последний roles-only sync",
-            syncHistory.lastRolesOnlySyncAt,
-            rolesOnlySyncStats,
-            { includeSkipReasons: true }
-          ).join("\n"),
-          inline: false,
-        },
-        {
-          name: "Риски",
-          value: [
-            `Mapped roles: **${mappedRoleCount}**`,
-            `Need import rerun for old history: **${missingLocalHistoryUserCount}**`,
-            `Ошибки runtime: **${runtimeErrorCount}**`,
-          ].join("\n"),
-          inline: false,
-        },
-        {
-          name: "Следующий шаг",
-          value: buildActivityPanelNextStepPreview({
-            view: normalizedView,
-            watchedChannelCount,
-            mappedRoleCount,
-            runtimeErrorCount,
-            channelsWithoutImportCheckpointCount,
-            missingLocalHistoryUserCount,
-            openSessionCount,
-            dirtyUserCount,
-            lastCalibrationRun,
-            dailyRoleSyncStats,
-          }),
-          inline: false,
-        },
+        buildActivityPanelField("Что мешает выдаче", [
+          `Привязано activity-ролей: **${mappedRoleCount}**`,
+          `Нужен добор старой истории: **${missingLocalHistoryUserCount}**`,
+          `Ошибки runtime: **${runtimeErrorCount}**`,
+        ], false),
+        buildActivityPanelField("Причины пропуска", dailyRoleSyncStats
+          ? [
+            `Последний режим: ${formatActivityRoleSyncMode(syncMode)}`,
+            `Роли применены: **${Number(dailyRoleSyncStats.appliedCount || 0)}**, пропущено: **${Number(dailyRoleSyncStats.skippedCount || 0)}**`,
+            buildActivitySkipReasonPreview(dailyRoleSyncStats.skipReasonCounts),
+          ]
+          : "Выдача ролей ещё не запускалась.", false),
+        buildActivityPanelField("Следующий шаг", buildActivityPanelNextStepPreview({
+          view: normalizedView,
+          watchedChannelCount,
+          mappedRoleCount,
+          runtimeErrorCount,
+          channelsWithoutImportCheckpointCount,
+          missingLocalHistoryUserCount,
+          openSessionCount,
+          dirtyUserCount,
+          lastCalibrationRun,
+          dailyRoleSyncStats,
+        }), false),
       ],
     }));
   } else if (normalizedView === "runtime") {
-    embed
-      .setDescription([
-        "Здесь видно текущее состояние runtime и последнего пересчёта activity-метрик.",
-        "Кнопка «Пересчитать метрики» пересобирает snapshots из локальной истории и затем запускает sync roles.",
-      ].join("\n"))
-      .addFields(
-        {
-          name: "Runtime",
-          value: [
-            `Open sessions: **${openSessionCount}**`,
-            `Dirty users: **${dirtyUserCount}**`,
-            `Last flush: ${formatDateTime(state.runtime?.lastFlushAt)}`,
-            flushStats
-              ? `Last flush result: ${Number(flushStats.rebuiltUserCount || 0)} users, ${Number(flushStats.finalizedSessionCount || 0)} finalized sessions`
-              : "Last flush result: n/a",
-            `Last full recalc: ${formatDateTime(state.runtime?.lastFullRecalcAt)}`,
-          ].join("\n"),
-          inline: false,
-        },
-        {
-          name: "Обработка",
-          value: [
-            `Analyzed messages: **${analyzedMessageCount}**`,
-            `Weighted messages: **${Number(analyzedWeightedMessageCount.toFixed(2))}**`,
-            `Finalized sessions: **${finalizedSessionCount}**`,
-            `Open-session messages: **${openSessions.reduce((sum, entry) => sum + Number(entry?.messageCount || 0), 0)}**`,
-            `Profiles with activity: **${activityProfileCount}**`,
-          ].join("\n"),
-          inline: false,
-        },
-        {
-          name: "Последние ошибки",
-          value: buildActivityRuntimeErrorPreview(state),
-          inline: false,
-        }
-      );
+    embed.addFields(
+      buildActivityPanelField("Очередь", [
+        `Открытых сессий: **${openSessionCount}**`,
+        `Пользователей в очереди flush: **${dirtyUserCount}**`,
+        `Завершённых сессий: **${finalizedSessionCount}**`,
+      ], true),
+      buildActivityPanelField("Flush", [
+        `Последний flush: ${formatDateTime(state.runtime?.lastFlushAt)}`,
+        flushStats
+          ? `Итог flush: пересобрано ${Number(flushStats.rebuiltUserCount || 0)}, завершено сессий ${Number(flushStats.finalizedSessionCount || 0)}`
+          : "Итог flush: пока нет данных",
+        `Последний полный пересчёт: ${formatDateTime(state.runtime?.lastFullRecalcAt)}`,
+      ], true),
+      buildActivityPanelField("Нагрузка", [
+        `Проанализировано сообщений: **${analyzedMessageCount}**`,
+        `Взвешенных сообщений: **${Number(analyzedWeightedMessageCount.toFixed(2))}**`,
+        `Сообщений в открытых сессиях: **${openSessions.reduce((sum, entry) => sum + Number(entry?.messageCount || 0), 0)}**`,
+        `Профилей с activity: **${activityProfileCount}**`,
+      ], true),
+      buildActivityPanelField("Последние ошибки", buildActivityRuntimeErrorPreview(state), false)
+    );
     supportEmbeds.push(buildActivityPanelDiagnosticEmbed({
-      title: "Activity Panel • Процессы • Диагностика",
-      description: "Коротко о очереди, последнем flush и том, нужен ли ручной rebuild metrics.",
+      title: "Activity Panel • Процессы • Фокус",
+      description: "Если что-то плывёт, этот блок должен сказать почему именно.",
+      color: panelColor,
       fields: [
-        {
-          name: "Очередь",
-          value: [
-            `Open sessions: **${openSessionCount}**`,
-            `Dirty users: **${dirtyUserCount}**`,
-            `Finalized sessions: **${finalizedSessionCount}**`,
-            `Ошибки runtime: **${runtimeErrorCount}**`,
-          ].join("\n"),
-          inline: false,
-        },
-        {
-          name: "Последний rebuild",
-          value: [
-            `Last full recalc: ${formatDateTime(state.runtime?.lastFullRecalcAt)}`,
-            ...buildActivitySyncOperationLines(
-              "Последний полный rebuild+sync",
-              syncHistory.lastRebuildAndRoleSyncAt,
-              fullRebuildAndRoleSyncStats,
-              { includeRebuiltCount: true }
-            ),
-            flushStats
-              ? `Flush rebuilt users: **${Number(flushStats.rebuiltUserCount || 0)}** • finalized sessions: **${Number(flushStats.finalizedSessionCount || 0)}**`
-              : "Flush stats ещё не зафиксированы.",
-          ].join("\n"),
-          inline: false,
-        },
-        {
-          name: "Следующий шаг",
-          value: buildActivityPanelNextStepPreview({
-            view: normalizedView,
-            watchedChannelCount,
-            mappedRoleCount,
-            runtimeErrorCount,
-            channelsWithoutImportCheckpointCount,
-            missingLocalHistoryUserCount,
-            openSessionCount,
-            dirtyUserCount,
-            lastCalibrationRun,
-            dailyRoleSyncStats,
-          }),
-          inline: false,
-        },
+        buildActivityPanelField("Последний полный цикл", [
+          `Последний полный пересчёт: ${formatDateTime(state.runtime?.lastFullRecalcAt)}`,
+          ...buildActivitySyncOperationLines(
+            "Полный пересчёт + выдача",
+            syncHistory.lastRebuildAndRoleSyncAt,
+            fullRebuildAndRoleSyncStats,
+            { includeRebuiltCount: true }
+          ),
+          flushStats
+            ? `Flush: пересобрано **${Number(flushStats.rebuiltUserCount || 0)}**, завершено сессий **${Number(flushStats.finalizedSessionCount || 0)}**`
+            : "Flush stats ещё не зафиксированы.",
+        ], false),
+        buildActivityPanelField("Следующий шаг", buildActivityPanelNextStepPreview({
+          view: normalizedView,
+          watchedChannelCount,
+          mappedRoleCount,
+          runtimeErrorCount,
+          channelsWithoutImportCheckpointCount,
+          missingLocalHistoryUserCount,
+          openSessionCount,
+          dirtyUserCount,
+          lastCalibrationRun,
+          dailyRoleSyncStats,
+        }), false),
       ],
     }));
   } else {
-    embed
-      .setDescription([
-        "Закрытая мод-панель активности.",
-        "Кнопки ниже разделены по смыслу: история, пересчёт метрик и отдельная синхронизация ролей.",
-      ].join("\n"))
-      .addFields(
-        {
-          name: "Сводка",
-          value: [
-            `Watched channels: **${watchedChannelCount}**`,
-            `Mapped roles: **${mappedRoleCount}**`,
-            `Snapshots: **${snapshotCount}**`,
-            `Profiles with activity: **${activityProfileCount}**`,
-          ].join("\n"),
-          inline: false,
-        },
-        {
-          name: "Что делает каждая кнопка",
-          value: [
-            "Импорт истории: подтягивает старые сообщения из watched channels.",
-            "Пересчитать метрики: пересобирает activity snapshots из локальной истории и затем sync roles.",
-            "Синхронизировать роли: только выравнивает роли по уже посчитанным snapshots, без нового score.",
-          ].join("\n"),
-          inline: false,
-        },
-        {
-          name: "Импорт и роли",
-          value: [
-            lastCalibrationRun
-              ? `Последний import: ${formatDateTime(lastCalibrationRun.completedAt)} • ${Number(lastCalibrationRun.importedEntryCount || 0)} entries`
-              : "Historical import ещё не запускался.",
-            fullRebuildAndRoleSyncStats
-              ? `Последний полный rebuild+sync: ${formatDateTime(syncHistory.lastRebuildAndRoleSyncAt)}`
-              : "Полный rebuild+sync ещё не запускался.",
-            rolesOnlySyncStats
-              ? `Последний roles-only sync: ${formatDateTime(syncHistory.lastRolesOnlySyncAt)}`
-              : "Roles-only sync ещё не запускался.",
-            dailyRoleSyncStats
-              ? `Последний режим sync: ${formatActivityRoleSyncMode(syncMode)}`
-              : "Последний режим sync: n/a.",
-            dailyRoleSyncStats
-              ? `Need import rerun for old history: **${missingLocalHistoryUserCount}**`
-              : "Для старой активности до включения tracking нужен historical import.",
-          ].join("\n"),
-          inline: false,
-        },
-        {
-          name: "Процессы",
-          value: [
-            `Open sessions: **${openSessionCount}**`,
-            `Dirty users: **${dirtyUserCount}**`,
-            `Analyzed messages: **${analyzedMessageCount}**`,
-            `Snapshots gated/boosted: **${gatedSnapshotCount}** / **${boostedSnapshotCount}**`,
-          ].join("\n"),
-          inline: false,
-        }
-      );
+    embed.addFields(
+      buildActivityPanelField("Контур", [
+        `Каналов в tracking: **${watchedChannelCount}**`,
+        `Привязано activity-ролей: **${mappedRoleCount}**`,
+        `Готовых snapshots: **${snapshotCount}**`,
+        `Профилей с activity: **${activityProfileCount}**`,
+      ], true),
+      buildActivityPanelField("Синхронизация", [
+        `Последний режим: **${formatActivityRoleSyncMode(syncMode)}**`,
+        buildActivityCompactSyncLine("Полный цикл", syncHistory.lastRebuildAndRoleSyncAt, fullRebuildAndRoleSyncStats, { includeRebuiltCount: true }),
+        buildActivityCompactSyncLine("Только роли", syncHistory.lastRolesOnlySyncAt, rolesOnlySyncStats),
+      ], true),
+      buildActivityPanelField("Runtime", [
+        `Открытых сессий: **${openSessionCount}**`,
+        `Пользователей в очереди flush: **${dirtyUserCount}**`,
+        `Проанализировано сообщений: **${analyzedMessageCount}**`,
+        `Gate / boost snapshots: **${gatedSnapshotCount}** / **${boostedSnapshotCount}**`,
+      ], true),
+      buildActivityPanelField("Последний импорт", lastCalibrationRun
+        ? [
+          `Импорт истории: ${formatDateTime(lastCalibrationRun.completedAt)}`,
+          `Сообщений импортировано: **${Number(lastCalibrationRun.importedEntryCount || 0)}**`,
+          `Users затронуто: **${Number(lastCalibrationRun.importedUserCount || 0)}**`,
+          `Ролей применено: **${Number(lastCalibrationRun.appliedRoleCount || 0)}**`,
+        ]
+        : [
+          "Импорт истории ещё не запускался.",
+          "Если tracking включили недавно, это первое действие перед лечением старых ролей.",
+        ], false),
+      buildActivityPanelField("Быстрые действия", [
+        "Запустить импорт: добирает старые сообщения из tracking-каналов.",
+        "Пересчитать и выдать: пересобирает snapshots и затем применяет роли.",
+        "Только выдать роли: синхронизирует Discord-роли без нового score.",
+      ], false)
+    );
     supportEmbeds.push(buildActivityPanelDiagnosticEmbed({
-      title: "Activity Panel • Что важно",
-      description: "Короткий dashboard по блокерам, последнему sync и рекомендуемому следующему действию.",
+      title: "Activity Panel • Фокус оператора",
+      description: "Здесь только блокеры, причины пропуска и следующий ход.",
+      color: panelColor,
       fields: [
-        {
-          name: "Диагностика",
-          value: [
-            `Ошибки runtime: **${runtimeErrorCount}**`,
-            `Каналов без import checkpoint: **${channelsWithoutImportCheckpointCount}**`,
-            `Need import rerun for old history: **${missingLocalHistoryUserCount}**`,
-            `Mapped roles: **${mappedRoleCount}**`,
-          ].join("\n"),
-          inline: false,
-        },
-        {
-          name: "Последние роли",
-          value: dailyRoleSyncStats
-            ? [
-              fullRebuildAndRoleSyncStats
-                ? `Полный rebuild+sync: ${formatDateTime(syncHistory.lastRebuildAndRoleSyncAt)}`
-                : "Полный rebuild+sync: ещё не запускался.",
-              rolesOnlySyncStats
-                ? `Roles-only sync: ${formatDateTime(syncHistory.lastRolesOnlySyncAt)}`
-                : "Roles-only sync: ещё не запускался.",
-              `Последний режим: ${formatActivityRoleSyncMode(syncMode)}`,
-              `Applied: **${Number(dailyRoleSyncStats.appliedCount || 0)}**, skipped: **${Number(dailyRoleSyncStats.skippedCount || 0)}**`,
-              buildActivitySkipReasonPreview(dailyRoleSyncStats.skipReasonCounts),
-            ].join("\n")
-            : "Синхронизация ролей ещё не запускалась.",
-          inline: false,
-        },
-        {
-          name: "Следующий шаг",
-          value: buildActivityPanelNextStepPreview({
-            view: normalizedView,
-            watchedChannelCount,
-            mappedRoleCount,
-            runtimeErrorCount,
-            channelsWithoutImportCheckpointCount,
-            missingLocalHistoryUserCount,
-            openSessionCount,
-            dirtyUserCount,
-            lastCalibrationRun,
-            dailyRoleSyncStats,
-          }),
-          inline: false,
-        },
+        buildActivityPanelField("Что стопорит", [
+          `Ошибки runtime: **${runtimeErrorCount}**`,
+          `Каналов без import checkpoint: **${channelsWithoutImportCheckpointCount}**`,
+          `Нужен добор старой истории: **${missingLocalHistoryUserCount}**`,
+          `Привязано activity-ролей: **${mappedRoleCount}**`,
+        ], false),
+        buildActivityPanelField("Последняя выдача", dailyRoleSyncStats
+          ? [
+            buildActivityCompactSyncLine("Полный цикл", syncHistory.lastRebuildAndRoleSyncAt, fullRebuildAndRoleSyncStats, { includeRebuiltCount: true }),
+            buildActivityCompactSyncLine("Только роли", syncHistory.lastRolesOnlySyncAt, rolesOnlySyncStats),
+            `Последний режим: ${formatActivityRoleSyncMode(syncMode)}`,
+            `Причины пропуска:\n${buildActivitySkipReasonPreview(dailyRoleSyncStats.skipReasonCounts)}`,
+          ]
+          : "Выдача ролей ещё не запускалась.", false),
+        buildActivityPanelField("Следующий шаг", buildActivityPanelNextStepPreview({
+          view: normalizedView,
+          watchedChannelCount,
+          mappedRoleCount,
+          runtimeErrorCount,
+          channelsWithoutImportCheckpointCount,
+          missingLocalHistoryUserCount,
+          openSessionCount,
+          dirtyUserCount,
+          lastCalibrationRun,
+          dailyRoleSyncStats,
+        }), false),
       ],
     }));
   }
@@ -1271,7 +1498,7 @@ function buildActivityRoleAssignmentPlan({ db = {}, userId = "", memberRoleIds =
   const state = ensureActivityState(db);
   const config = state.config || {};
   const profile = ensureProfileRecord(db, normalizedUserId);
-  const activity = profile?.domains?.activity || {};
+  const activity = resolveActivityRolePlanSource(state, profile, normalizedUserId);
   const desiredRoleKey = normalizeNullableString(activity.desiredActivityRoleKey, 80);
   const desiredRoleId = desiredRoleKey
     ? normalizeNullableString(config.activityRoleIds?.[desiredRoleKey], 80)
@@ -2005,7 +2232,7 @@ async function handleActivityPanelButtonInteraction({
     await interaction.update(buildActivityPanelPayload({
       db,
       view: requestedView,
-      statusText: "Панель обновлена.",
+      statusText: "Вид обновлён.",
     }));
     return true;
   }
@@ -2024,7 +2251,7 @@ async function handleActivityPanelButtonInteraction({
     await interaction.showModal(buildActivityRoleMappingModal({
       config: ensureActivityState(db).config || {},
       modalId: "activity_panel_config_roles_primary_modal",
-      title: "Activity roles 1/2",
+      title: "Роли Activity • Основные",
       roleKeys: ACTIVITY_ROLE_MAPPING_PRIMARY_KEYS,
     }));
     return true;
@@ -2034,19 +2261,24 @@ async function handleActivityPanelButtonInteraction({
     await interaction.showModal(buildActivityRoleMappingModal({
       config: ensureActivityState(db).config || {},
       modalId: "activity_panel_config_roles_secondary_modal",
-      title: "Activity roles 2/2",
+      title: "Роли Activity • Доп. роли",
       roleKeys: ACTIVITY_ROLE_MAPPING_SECONDARY_KEYS,
     }));
     return true;
   }
 
   if (customId === "activity_panel_config_watch_save") {
-    await interaction.showModal(buildWatchedChannelSaveModal());
+    await interaction.showModal(buildWatchedChannelSaveModal(ensureActivityState(db)));
     return true;
   }
 
   if (customId === "activity_panel_config_watch_remove") {
     await interaction.showModal(buildWatchedChannelRemoveModal());
+    return true;
+  }
+
+  if (customId === "activity_panel_inspect_user") {
+    await interaction.showModal(buildActivityUserInspectionModal());
     return true;
   }
 
@@ -2104,7 +2336,7 @@ async function handleActivityPanelButtonInteraction({
       await interaction.editReply(buildActivityPanelPayload({
         db,
         view: "runtime",
-        statusText: `Пересчёт метрик не выполнен: ${cleanString(error?.message || error, 500) || "unknown error"}.`,
+        statusText: `Полный пересчёт не выполнен: ${cleanString(error?.message || error, 500) || "unknown error"}.`,
       }));
       return true;
     }
@@ -2112,7 +2344,7 @@ async function handleActivityPanelButtonInteraction({
     await interaction.editReply(buildActivityPanelPayload({
       db,
       view: "runtime",
-      statusText: `Пересчёт метрик завершён. Пересобрано ${Number(result?.rebuiltUserCount || 0)}, роли применены ${Number(result?.roleAssignment?.appliedCount || 0)}, пропущено ${Number(result?.roleAssignment?.skippedCount || 0)}.`,
+      statusText: `Полный пересчёт завершён. Пересобрано ${Number(result?.rebuiltUserCount || 0)}, роли применены ${Number(result?.roleAssignment?.appliedCount || 0)}, пропущено ${Number(result?.roleAssignment?.skippedCount || 0)}.`,
     }));
     return true;
   }
@@ -2132,7 +2364,7 @@ async function handleActivityPanelButtonInteraction({
       await interaction.editReply(buildActivityPanelPayload({
         db,
         view: "roles",
-        statusText: `Синхронизация ролей не выполнена: ${cleanString(error?.message || error, 500) || "unknown error"}.`,
+        statusText: `Выдача ролей по готовым данным не выполнена: ${cleanString(error?.message || error, 500) || "unknown error"}.`,
       }));
       return true;
     }
@@ -2140,7 +2372,7 @@ async function handleActivityPanelButtonInteraction({
     await interaction.editReply(buildActivityPanelPayload({
       db,
       view: "roles",
-      statusText: `Синхронизация ролей завершена. Применено ${Number(result?.roleAssignment?.appliedCount || 0)}, пропущено ${Number(result?.roleAssignment?.skippedCount || 0)}. Score не пересчитывался.`,
+      statusText: `Выдача ролей по готовым данным завершена. Применено ${Number(result?.roleAssignment?.appliedCount || 0)}, пропущено ${Number(result?.roleAssignment?.skippedCount || 0)}. Score не пересчитывался.`,
     }));
     return true;
   }
@@ -2156,7 +2388,9 @@ async function handleActivityPanelModalSubmitInteraction({
   replyError,
   replySuccess,
   parseRequestedRoleId,
+  parseRequestedUserId,
   parseRequestedChannelId,
+  resolveMemberRoleIds,
   resolveChannel,
   saveDb,
   runSerialized,
@@ -2180,6 +2414,34 @@ async function handleActivityPanelModalSubmitInteraction({
   const execute = async () => {
     const changedAt = resolveNowIso(now);
     const requestedByUserId = normalizeNullableString(interaction?.user?.id, 80);
+
+    if (customId === "activity_panel_inspect_user_modal") {
+      assertFunction(parseRequestedUserId, "parseRequestedUserId");
+
+      const targetUserId = parseRequestedUserId(
+        interaction.fields.getTextInputValue("activity_inspect_user_id"),
+        ""
+      );
+      if (!targetUserId) {
+        return {
+          ok: false,
+          message: "Некорректный user input. Используй Discord user ID или <@...>.",
+        };
+      }
+
+      const memberRoleIds = typeof resolveMemberRoleIds === "function"
+        ? await Promise.resolve(resolveMemberRoleIds(targetUserId))
+        : [];
+
+      return {
+        ok: true,
+        payload: buildActivityUserInspectionPayload({
+          db,
+          userId: targetUserId,
+          memberRoleIds,
+        }),
+      };
+    }
 
     if (customId === "activity_panel_config_watch_save_modal") {
       assertFunction(parseRequestedChannelId, "parseRequestedChannelId");
@@ -2267,7 +2529,7 @@ async function handleActivityPanelModalSubmitInteraction({
 
       return {
         ok: true,
-        message: `Список каналов сохранён. Сейчас каналов: ${desiredChannelIds.size}. Добавлено: ${addedCount}, обновлено: ${updatedCount}, удалено: ${removedCount}. Все каналы считаются одинаково.`,
+        message: `Каналы Activity сохранены. Сейчас в tracking: ${desiredChannelIds.size}. Добавлено: ${addedCount}, обновлено: ${updatedCount}, удалено: ${removedCount}.`,
       };
     }
 
@@ -2305,7 +2567,7 @@ async function handleActivityPanelModalSubmitInteraction({
 
       return {
         ok: true,
-        message: `Watched channel удалён: ${formatChannelPreview(removeResult.record)}. Нажми «Обновить» в Activity Panel.`,
+        message: `Канал убран из Activity: ${formatChannelPreview(removeResult.record)}. Обнови вид панели, если она уже открыта.`,
       };
     }
 
@@ -2353,7 +2615,7 @@ async function handleActivityPanelModalSubmitInteraction({
 
       return {
         ok: true,
-        message: `Activity access обновлён. Moderator roles: ${moderatorRoles.roleIds.length}, admin roles: ${adminRoles.roleIds.length}. Нажми «Обновить» в Activity Panel.`,
+        message: `Доступ к Activity обновлён. Ролей модераторов: ${moderatorRoles.roleIds.length}, ролей админов: ${adminRoles.roleIds.length}. Обнови вид панели, если она уже открыта.`,
       };
     }
 
@@ -2405,7 +2667,7 @@ async function handleActivityPanelModalSubmitInteraction({
 
     return {
       ok: true,
-      message: `Activity role mapping обновлён. Total mapped roles: ${listActivityManagedRoleIds(updateResult.config).length}. Нажми «Обновить» в Activity Panel.`,
+      message: `Роли Activity обновлены. Всего привязок: ${listActivityManagedRoleIds(updateResult.config).length}. Обнови вид панели, если она уже открыта.`,
     };
   };
 
@@ -2418,13 +2680,14 @@ async function handleActivityPanelModalSubmitInteraction({
     return true;
   }
 
-  await replySuccess(interaction, result.message);
+  await replySuccess(interaction, result.payload || result.message);
   return true;
 }
 
 module.exports = {
   applyInitialActivityRoleAssignments,
   buildActivityRoleAssignmentPlan,
+  getActivityUserInspection,
   buildActivityOperatorPanelPayload,
   handleActivityPanelButtonInteraction,
   handleActivityPanelModalSubmitInteraction,

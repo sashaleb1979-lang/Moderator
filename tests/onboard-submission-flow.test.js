@@ -4,7 +4,11 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const { createPresentationDefaults, ensurePresentationConfig, resolvePresentation } = require("../src/onboard/presentation");
-const { parseKillsFromSubmittedText, resolveEffectiveSubmittedKills } = require("../src/onboard/submission-message");
+const {
+  parseKillsFromSubmittedText,
+  resolveEffectiveSubmittedKills,
+  resolveResumableMainCharacterIds,
+} = require("../src/onboard/submission-message");
 
 const DEFAULT_GRAPHIC_TIER_COLORS = {
   1: "#111111",
@@ -104,4 +108,16 @@ test("resolveEffectiveSubmittedKills falls back to suggested kills only when tex
     candidates: ["3120", "2"],
     effectiveKills: null,
   });
+});
+
+test("resolveResumableMainCharacterIds prefers stored mains and falls back to live role mains", () => {
+  assert.deepEqual(resolveResumableMainCharacterIds({
+    storedMainCharacterIds: ["vessel", "vessel", "ten_shadows"],
+    liveMainCharacterIds: ["honored_one"],
+  }), ["vessel", "ten_shadows"]);
+
+  assert.deepEqual(resolveResumableMainCharacterIds({
+    storedMainCharacterIds: [],
+    liveMainCharacterIds: ["honored_one", "honored_one", "vessel"],
+  }), ["honored_one", "vessel"]);
 });

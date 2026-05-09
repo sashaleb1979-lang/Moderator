@@ -253,6 +253,34 @@ test("ensureSharedProfile normalizes the activity domain and exposes an activity
   assert.equal(result.profile.summary.activity.lastRoleAppliedAt, "2026-05-08T15:00:00.000Z");
 });
 
+test("ensureSharedProfile backfills legacy summary.activity into domains.activity", () => {
+  const result = ensureSharedProfile({
+    userId: "301",
+    username: "legacy-activity",
+    summary: {
+      activity: {
+        activityScore: 91,
+        baseActivityScore: 88,
+        roleEligibilityStatus: "eligible",
+        roleEligibleForActivityRole: true,
+        desiredActivityRoleKey: "core",
+        appliedActivityRoleKey: "stable",
+        recalculatedAt: "2026-05-09T12:00:00.000Z",
+        lastSeenAt: "2026-05-09T11:00:00.000Z",
+      },
+    },
+  }, "301");
+
+  assert.equal(result.profile.domains.activity.activityScore, 91);
+  assert.equal(result.profile.domains.activity.baseActivityScore, 88);
+  assert.equal(result.profile.domains.activity.roleEligibilityStatus, "eligible");
+  assert.equal(result.profile.domains.activity.roleEligibleForActivityRole, true);
+  assert.equal(result.profile.domains.activity.desiredActivityRoleKey, "core");
+  assert.equal(result.profile.domains.activity.appliedActivityRoleKey, "stable");
+  assert.equal(result.profile.summary.activity.activityScore, 91);
+  assert.equal(result.profile.summary.activity.desiredActivityRoleKey, "core");
+});
+
 test("normalizeVerificationDomainState keeps autonomous verification state separate from onboarding and roblox", () => {
   assert.deepEqual(normalizeVerificationDomainState({
     status: "manual_review",

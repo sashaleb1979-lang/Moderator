@@ -121,9 +121,10 @@ test("buildActivityOperatorPanelPayload separates overview, channels, roles, and
   });
 
   assert.equal(payload.embeds[0].data.title, "Activity Panel • Обзор");
-  assert.match(payload.embeds[0].data.description, /Кнопки ниже разделены по смыслу/);
+  assert.match(payload.embeds[0].data.description, /Статус раздела:/);
+  assert.match(payload.embeds[0].data.description, /старые users без локальной history-базы/i);
   assert.equal(payload.embeds.length, 2);
-  assert.equal(payload.embeds[1].data.title, "Activity Panel • Что важно");
+  assert.equal(payload.embeds[1].data.title, "Activity Panel • Фокус оператора");
   assert.equal(payload.components.length, 3);
   assert.deepEqual(payload.components[0].components.map((component) => component.data.custom_id), [
     "activity_panel_view_overview",
@@ -132,34 +133,59 @@ test("buildActivityOperatorPanelPayload separates overview, channels, roles, and
     "activity_panel_view_runtime",
     "activity_panel_back",
   ]);
+  assert.deepEqual(payload.components[0].components.map((component) => component.data.label), [
+    "Сводка",
+    "Каналы",
+    "Роли",
+    "Процессы",
+    "В мод-панель",
+  ]);
   assert.deepEqual(payload.components[1].components.map((component) => component.data.custom_id), [
     "activity_panel_refresh_overview",
     "activity_panel_historical_import",
     "activity_panel_rebuild_metrics",
     "activity_panel_sync_roles",
   ]);
+  assert.deepEqual(payload.components[1].components.map((component) => component.data.label), [
+    "Обновить вид",
+    "Запустить импорт",
+    "Пересчитать и выдать",
+    "Только выдать роли",
+  ]);
   assert.deepEqual(payload.components[2].components.map((component) => component.data.custom_id), [
+    "activity_panel_config_watch_save",
     "activity_panel_config_access",
     "activity_panel_config_roles_primary",
     "activity_panel_config_roles_secondary",
-    "activity_panel_config_watch_save",
+    "activity_panel_inspect_user",
+  ]);
+  assert.deepEqual(payload.components[2].components.map((component) => component.data.label), [
+    "Каналы",
+    "Кто управляет",
+    "Основные роли",
+    "Доп. роли",
+    "Проверить юзера",
   ]);
   const fieldTexts = payload.embeds[0].data.fields.map((field) => `${field.name}: ${field.value}`).join("\n");
-  assert.match(fieldTexts, /Watched channels: \*\*1\*\*/);
-  assert.match(fieldTexts, /Mapped roles: \*\*2\*\*/);
-  assert.match(fieldTexts, /Пересчитать метрики: пересобирает activity snapshots/);
-  assert.match(fieldTexts, /Синхронизировать роли: только выравнивает роли/);
-  assert.match(fieldTexts, /Последний полный rebuild\+sync:/);
-  assert.match(fieldTexts, /Последний roles-only sync:/);
-  assert.match(fieldTexts, /Need import rerun for old history: \*\*1\*\*/);
-  assert.match(fieldTexts, /Open sessions: \*\*1\*\*/);
-  assert.match(fieldTexts, /Snapshots gated\/boosted: \*\*1\*\* \/ \*\*1\*\*/);
+  assert.match(fieldTexts, /Каналов в tracking: \*\*1\*\*/);
+  assert.match(fieldTexts, /Привязано activity-ролей: \*\*2\*\*/);
+  assert.match(fieldTexts, /Полный цикл:/);
+  assert.match(fieldTexts, /Только роли:/);
+  assert.match(fieldTexts, /Gate \/ boost snapshots: \*\*1\*\* \/ \*\*1\*\*/);
+  assert.match(fieldTexts, /Импорт истории:/);
+  assert.match(fieldTexts, /Запустить импорт: добирает старые сообщения/);
+  assert.match(fieldTexts, /Пересчитать и выдать: пересобирает snapshots/);
+  assert.match(fieldTexts, /Только выдать роли: синхронизирует Discord-роли/);
+  assert.match(fieldTexts, /Открытых сессий: \*\*1\*\*/);
+  assert.match(fieldTexts, /Готовых snapshots: \*\*2\*\*/i);
   assert.match(fieldTexts, /Готово\./);
   const overviewDiagnosticTexts = payload.embeds[1].data.fields.map((field) => `${field.name}: ${field.value}`).join("\n");
   assert.match(overviewDiagnosticTexts, /Ошибки runtime: \*\*0\*\*/);
   assert.match(overviewDiagnosticTexts, /Каналов без import checkpoint: \*\*1\*\*/);
-  assert.match(overviewDiagnosticTexts, /без изменений: \*\*1\*\*/i);
-  assert.match(overviewDiagnosticTexts, /Есть users без локальной истории: запусти «Импорт истории» перед sync roles\./);
+  assert.match(overviewDiagnosticTexts, /Нужен добор старой истории: \*\*1\*\*/);
+  assert.match(overviewDiagnosticTexts, /Причины пропуска:/);
+  assert.match(overviewDiagnosticTexts, /уже совпадает: \*\*1\*\*/i);
+  assert.match(overviewDiagnosticTexts, /Есть users без локальной истории: сначала импорт истории, потом выдача ролей\./);
 
   const channelsPayload = buildActivityOperatorPanelPayload({
     db,
@@ -167,22 +193,35 @@ test("buildActivityOperatorPanelPayload separates overview, channels, roles, and
   });
   assert.equal(channelsPayload.embeds[0].data.title, "Activity Panel • Каналы и импорт");
   assert.equal(channelsPayload.embeds.length, 2);
-  assert.equal(channelsPayload.embeds[1].data.title, "Activity Panel • Каналы • Диагностика");
+  assert.match(channelsPayload.embeds[0].data.description, /Статус раздела:/);
+  assert.equal(channelsPayload.embeds[1].data.title, "Activity Panel • Каналы • Фокус");
   assert.deepEqual(channelsPayload.components[1].components.map((component) => component.data.custom_id), [
     "activity_panel_refresh_channels",
     "activity_panel_historical_import",
     "activity_panel_config_watch_save",
     "activity_panel_config_watch_remove",
+    "activity_panel_inspect_user",
+  ]);
+  assert.deepEqual(channelsPayload.components[1].components.map((component) => component.data.label), [
+    "Обновить вид",
+    "Запустить импорт",
+    "Список каналов",
+    "Убрать 1 канал",
+    "Проверить юзера",
   ]);
   const channelFieldTexts = channelsPayload.embeds[0].data.fields.map((field) => `${field.name}: ${field.value}`).join("\n");
-  assert.match(channelFieldTexts, /Последний запуск: \*\*historical_import\*\*/);
+  assert.match(channelFieldTexts, /Каналов в tracking: \*\*1\*\*/);
+  assert.match(channelFieldTexts, /С import cursor: \*\*0\*\*/);
+  assert.match(channelFieldTexts, /Без checkpoint-а: \*\*1\*\*/);
+  assert.match(channelFieldTexts, /Режим: \*\*historical_import\*\*/);
   assert.match(channelFieldTexts, /main-1 \(main-1\)/);
-  assert.match(channelFieldTexts, /Кнопка «Редактировать» открывает полный список каналов и сохраняет его целиком\./);
+  assert.match(channelFieldTexts, /Список каналов: открывает и сохраняет полный текущий список целиком\./);
   const channelDiagnosticTexts = channelsPayload.embeds[1].data.fields.map((field) => `${field.name}: ${field.value}`).join("\n");
-  assert.match(channelDiagnosticTexts, /Каналов с import cursor: \*\*0\*\*/);
   assert.match(channelDiagnosticTexts, /Каналов без import checkpoint: \*\*1\*\*/);
   assert.match(channelDiagnosticTexts, /Ошибки import\/runtime: \*\*0\*\*/);
-  assert.match(channelDiagnosticTexts, /У 1 каналов ещё нет import checkpoint: после проверки списка запусти «Импорт истории»\./);
+  assert.match(channelDiagnosticTexts, /Импорт не меняет список каналов сам по себе\./);
+  assert.match(channelDiagnosticTexts, /Редактор каналов заменяет список целиком\./);
+  assert.match(channelDiagnosticTexts, /У 1 каналов ещё нет checkpoint-а: после проверки списка запусти импорт истории\./);
 
   const rolesPayload = buildActivityOperatorPanelPayload({
     db,
@@ -190,28 +229,45 @@ test("buildActivityOperatorPanelPayload separates overview, channels, roles, and
   });
   assert.equal(rolesPayload.embeds[0].data.title, "Activity Panel • Роли и правила");
   assert.equal(rolesPayload.embeds.length, 2);
-  assert.equal(rolesPayload.embeds[1].data.title, "Activity Panel • Роли • Диагностика");
+  assert.match(rolesPayload.embeds[0].data.description, /Статус раздела:/);
+  assert.equal(rolesPayload.embeds[1].data.title, "Activity Panel • Роли • Фокус");
   assert.deepEqual(rolesPayload.components[1].components.map((component) => component.data.custom_id), [
     "activity_panel_refresh_roles",
     "activity_panel_sync_roles",
+  ]);
+  assert.deepEqual(rolesPayload.components[1].components.map((component) => component.data.label), [
+    "Обновить вид",
+    "Только выдать роли",
+  ]);
+  assert.deepEqual(rolesPayload.components[2].components.map((component) => component.data.custom_id), [
     "activity_panel_config_access",
     "activity_panel_config_roles_primary",
     "activity_panel_config_roles_secondary",
+    "activity_panel_inspect_user",
+  ]);
+  assert.deepEqual(rolesPayload.components[2].components.map((component) => component.data.label), [
+    "Кто управляет",
+    "Основные роли",
+    "Доп. роли",
+    "Проверить юзера",
   ]);
   const roleFieldTexts = rolesPayload.embeds[0].data.fields.map((field) => `${field.name}: ${field.value}`).join("\n");
-  assert.match(roleFieldTexts, /Role gate: after \*\*3\*\* days on server/);
-  assert.match(roleFieldTexts, /Newcomer boost: \*\*x1\.15\*\* -> x1\.00 by day \*\*7\*\*/);
-  assert.match(roleFieldTexts, /Последний полный rebuild\+sync:/);
-  assert.match(roleFieldTexts, /Последний roles-only sync:/);
-  assert.match(roleFieldTexts, /Activity moderators:/);
+  assert.match(roleFieldTexts, /Роль можно выдавать после \*\*3\*\* дней на сервере/);
+  assert.match(roleFieldTexts, /Буст новичка: \*\*x1\.15\*\* -> x1\.00 к дню \*\*7\*\*/);
+  assert.match(roleFieldTexts, /Привязано activity-ролей: \*\*2\*\*/);
+  assert.match(roleFieldTexts, /Последний режим: \*\*Только выдача ролей по готовым данным\*\*/);
+  assert.match(roleFieldTexts, /Полный цикл:/);
+  assert.match(roleFieldTexts, /Только роли:/);
+  assert.match(roleFieldTexts, /Модераторы Activity:/);
+  assert.match(roleFieldTexts, /Основные:/);
+  assert.match(roleFieldTexts, /Дополнительные:/);
   const roleDiagnosticTexts = rolesPayload.embeds[1].data.fields.map((field) => `${field.name}: ${field.value}`).join("\n");
-  assert.match(roleDiagnosticTexts, /Full rebuild \+ sync:/);
-  assert.match(roleDiagnosticTexts, /Roles-only sync:/);
-  assert.match(roleDiagnosticTexts, /skipped: \*\*1\*\*/i);
-  assert.match(roleDiagnosticTexts, /без изменений: \*\*1\*\*/i);
-  assert.match(roleDiagnosticTexts, /Need import rerun for old history: \*\*1\*\*/);
-  assert.match(roleDiagnosticTexts, /Есть 1 users без локальной истории: сначала historical import, потом sync roles\./);
-  assert.match(fieldTexts, /Snapshots: \*\*2\*\*/);
+  assert.match(roleDiagnosticTexts, /Что мешает выдаче/);
+  assert.match(roleDiagnosticTexts, /пропущено: \*\*1\*\*/i);
+  assert.match(roleDiagnosticTexts, /Причины пропуска/);
+  assert.match(roleDiagnosticTexts, /уже совпадает: \*\*1\*\*/i);
+  assert.match(roleDiagnosticTexts, /Нужен добор старой истории: \*\*1\*\*/);
+  assert.match(roleDiagnosticTexts, /Есть 1 users без локальной истории: сначала импорт истории, потом только выдача ролей\./);
 
   const runtimePayload = buildActivityOperatorPanelPayload({
     db,
@@ -219,21 +275,27 @@ test("buildActivityOperatorPanelPayload separates overview, channels, roles, and
   });
   assert.equal(runtimePayload.embeds[0].data.title, "Activity Panel • Процессы");
   assert.equal(runtimePayload.embeds.length, 2);
-  assert.equal(runtimePayload.embeds[1].data.title, "Activity Panel • Процессы • Диагностика");
+  assert.match(runtimePayload.embeds[0].data.description, /Статус раздела:/);
+  assert.equal(runtimePayload.embeds[1].data.title, "Activity Panel • Процессы • Фокус");
   assert.deepEqual(runtimePayload.components[1].components.map((component) => component.data.custom_id), [
     "activity_panel_refresh_runtime",
     "activity_panel_rebuild_metrics",
+    "activity_panel_inspect_user",
+  ]);
+  assert.deepEqual(runtimePayload.components[1].components.map((component) => component.data.label), [
+    "Обновить вид",
+    "Пересчитать и выдать",
+    "Проверить юзера",
   ]);
   const runtimeFieldTexts = runtimePayload.embeds[0].data.fields.map((field) => `${field.name}: ${field.value}`).join("\n");
-  assert.match(runtimeFieldTexts, /Analyzed messages: \*\*12\*\*/);
-  assert.match(runtimeFieldTexts, /Weighted messages: \*\*12\*\*/);
-  assert.match(runtimeFieldTexts, /Last flush result: 2 users, 1 finalized sessions/);
+  assert.match(runtimeFieldTexts, /Проанализировано сообщений: \*\*12\*\*/);
+  assert.match(runtimeFieldTexts, /Взвешенных сообщений: \*\*12\*\*/);
+  assert.match(runtimeFieldTexts, /Итог flush: пересобрано 2, завершено сессий 1/);
   assert.match(runtimeFieldTexts, /Ошибок не зафиксировано\./);
   const runtimeDiagnosticTexts = runtimePayload.embeds[1].data.fields.map((field) => `${field.name}: ${field.value}`).join("\n");
-  assert.match(runtimeDiagnosticTexts, /Последний полный rebuild\+sync:/);
-  assert.match(runtimeDiagnosticTexts, /Finalized sessions: \*\*1\*\*/);
-  assert.match(runtimeDiagnosticTexts, /Ошибки runtime: \*\*0\*\*/);
-  assert.match(runtimeDiagnosticTexts, /Runtime ещё живой: дождись flush или обнови раздел позже, если нужна самая свежая картина\./);
+  assert.match(runtimeDiagnosticTexts, /Полный пересчёт \+ выдача:/);
+  assert.match(runtimeDiagnosticTexts, /Flush: пересобрано \*\*2\*\*, завершено сессий \*\*1\*\*/);
+  assert.match(runtimeDiagnosticTexts, /Runtime ещё живой: дождись flush или просто обнови вид позже, если нужна финальная картина\./);
 });
 
 test("handleActivityPanelButtonInteraction navigates views and routes rebuild vs sync actions separately", async () => {
@@ -245,7 +307,7 @@ test("handleActivityPanelButtonInteraction navigates views and routes rebuild vs
       calls.push(["update", payload]);
     },
     async showModal(modal) {
-      calls.push(["showModal", modal.data.custom_id]);
+      calls.push(["showModal", modal.data.custom_id, modal.data.title]);
     },
     async deferUpdate() {
       calls.push(["deferUpdate"]);
@@ -285,58 +347,64 @@ test("handleActivityPanelButtonInteraction navigates views and routes rebuild vs
   const handledRefresh = await handleActivityPanelButtonInteraction(buildArgs());
 
   assert.equal(handledRefresh, true);
-  assert.deepEqual(calls[2], ["update", { content: "channels|Панель обновлена." }]);
+  assert.deepEqual(calls[2], ["update", { content: "channels|Вид обновлён." }]);
 
   interaction.customId = "activity_panel_config_access";
   const handledAccessConfig = await handleActivityPanelButtonInteraction(buildArgs());
 
   assert.equal(handledAccessConfig, true);
-  assert.deepEqual(calls[3], ["showModal", "activity_panel_config_access_modal"]);
+  assert.deepEqual(calls[3], ["showModal", "activity_panel_config_access_modal", "Кто управляет Activity"]);
 
   interaction.customId = "activity_panel_config_roles_primary";
   const handledPrimaryRoleConfig = await handleActivityPanelButtonInteraction(buildArgs());
 
   assert.equal(handledPrimaryRoleConfig, true);
-  assert.deepEqual(calls[4], ["showModal", "activity_panel_config_roles_primary_modal"]);
+  assert.deepEqual(calls[4], ["showModal", "activity_panel_config_roles_primary_modal", "Роли Activity • Основные"]);
 
   interaction.customId = "activity_panel_config_watch_save";
   const handledWatchSave = await handleActivityPanelButtonInteraction(buildArgs());
 
   assert.equal(handledWatchSave, true);
-  assert.deepEqual(calls[5], ["showModal", "activity_panel_config_watch_save_modal"]);
+  assert.deepEqual(calls[5], ["showModal", "activity_panel_config_watch_save_modal", "Каналы для Activity"]);
 
   interaction.customId = "activity_panel_config_watch_remove";
   const handledWatchRemove = await handleActivityPanelButtonInteraction(buildArgs());
 
   assert.equal(handledWatchRemove, true);
-  assert.deepEqual(calls[6], ["showModal", "activity_panel_config_watch_remove_modal"]);
+  assert.deepEqual(calls[6], ["showModal", "activity_panel_config_watch_remove_modal", "Убрать канал из Activity"]);
+
+  interaction.customId = "activity_panel_inspect_user";
+  const handledInspectUser = await handleActivityPanelButtonInteraction(buildArgs());
+
+  assert.equal(handledInspectUser, true);
+  assert.deepEqual(calls[7], ["showModal", "activity_panel_inspect_user_modal", "Проверить пользователя"]);
 
   interaction.customId = "activity_panel_historical_import";
   const handledImport = await handleActivityPanelButtonInteraction(buildArgs());
 
   assert.equal(handledImport, true);
-  assert.deepEqual(calls[7], ["deferUpdate"]);
-  assert.deepEqual(calls[8], ["editReply", { content: "channels|Импорт истории завершён. Импортировано 4, пропущено 1. Все каналы обработаны без ошибок." }]);
+  assert.deepEqual(calls[8], ["deferUpdate"]);
+  assert.deepEqual(calls[9], ["editReply", { content: "channels|Импорт истории завершён. Импортировано 4, пропущено 1. Все каналы обработаны без ошибок." }]);
 
   interaction.customId = "activity_panel_rebuild_metrics";
   const handledRebuild = await handleActivityPanelButtonInteraction(buildArgs());
 
   assert.equal(handledRebuild, true);
-  assert.deepEqual(calls[9], ["deferUpdate"]);
-  assert.deepEqual(calls[10], ["editReply", { content: "runtime|Пересчёт метрик завершён. Пересобрано 3, роли применены 2, пропущено 1." }]);
+  assert.deepEqual(calls[10], ["deferUpdate"]);
+  assert.deepEqual(calls[11], ["editReply", { content: "runtime|Полный пересчёт завершён. Пересобрано 3, роли применены 2, пропущено 1." }]);
 
   interaction.customId = "activity_panel_sync_roles";
   const handledSyncRoles = await handleActivityPanelButtonInteraction(buildArgs());
 
   assert.equal(handledSyncRoles, true);
-  assert.deepEqual(calls[11], ["deferUpdate"]);
-  assert.deepEqual(calls[12], ["editReply", { content: "roles|Синхронизация ролей завершена. Применено 4, пропущено 2. Score не пересчитывался." }]);
+  assert.deepEqual(calls[12], ["deferUpdate"]);
+  assert.deepEqual(calls[13], ["editReply", { content: "roles|Выдача ролей по готовым данным завершена. Применено 4, пропущено 2. Score не пересчитывался." }]);
 
   interaction.customId = "activity_panel_back";
   const handledBack = await handleActivityPanelButtonInteraction(buildArgs());
 
   assert.equal(handledBack, true);
-  assert.deepEqual(calls[13], ["update", { content: "main" }]);
+  assert.deepEqual(calls[14], ["update", { content: "main" }]);
 });
 
 test("handleActivityPanelButtonInteraction rejects non-moderators before opening the panel", async () => {
@@ -407,7 +475,7 @@ test("handleActivityPanelModalSubmitInteraction updates access roles and activit
   assert.equal(handledAccess, true);
   assert.deepEqual(ensureActivityState(db).config.moderatorRoleIds, ["111", "222"]);
   assert.deepEqual(ensureActivityState(db).config.adminRoleIds, ["333"]);
-  assert.match(replies[0][1], /Activity access обновлён/);
+  assert.match(replies[0][1], /Доступ к Activity обновлён/);
 
   const handledRoles = await handleActivityPanelModalSubmitInteraction({
     interaction: {
@@ -449,7 +517,7 @@ test("handleActivityPanelModalSubmitInteraction updates access roles and activit
   assert.equal(ensureActivityState(db).config.activityRoleIds.floating, "444");
   assert.equal(ensureActivityState(db).config.activityRoleIds.weak, "555");
   assert.equal(ensureActivityState(db).config.activityRoleIds.dead, null);
-  assert.match(replies[1][1], /Activity role mapping обновлён/);
+  assert.match(replies[1][1], /Роли Activity обновлены/);
   assert.equal(saved.length, 2);
 });
 
@@ -519,7 +587,7 @@ test("handleActivityPanelModalSubmitInteraction saves and removes watched channe
   assert.equal(ensureActivityState(db).watchedChannels.find((entry) => entry.channelId === "123456789012345678").channelType, "normal_chat");
   assert.equal(ensureActivityState(db).watchedChannels.find((entry) => entry.channelId === "123456789012345678").channelWeight, 1);
   assert.equal(ensureActivityState(db).watchedChannels.find((entry) => entry.channelId === "123456789012345678").countForTrust, true);
-  assert.match(replies[0][1], /Список каналов сохранён/);
+  assert.match(replies[0][1], /Каналы Activity сохранены/);
 
   const handledRemove = await handleActivityPanelModalSubmitInteraction({
     interaction: {
@@ -561,6 +629,98 @@ test("handleActivityPanelModalSubmitInteraction saves and removes watched channe
   assert.equal(handledRemove, true);
   assert.equal(ensureActivityState(db).watchedChannels.length, 1);
   assert.equal(ensureActivityState(db).watchedChannels[0].channelId, "987654321098765432");
-  assert.match(replies[1][1], /Watched channel удалён/);
+  assert.match(replies[1][1], /Канал убран из Activity/);
   assert.equal(saved.length, 2);
+});
+
+test("handleActivityPanelModalSubmitInteraction returns a rich inspection payload for a requested user", async () => {
+  const replies = [];
+  const db = {
+    profiles: {
+      "123456789012345678": {
+        userId: "123456789012345678",
+        displayName: "Mirror User",
+        domains: {
+          activity: {
+            activityScore: 31,
+            baseActivityScore: 27,
+            activityScoreMultiplier: 1.15,
+            desiredActivityRoleKey: "weak",
+            appliedActivityRoleKey: null,
+            roleEligibilityStatus: "eligible",
+            roleEligibleForActivityRole: true,
+            messages7d: 12,
+            messages30d: 48,
+            messages90d: 75,
+            sessions7d: 3,
+            sessions30d: 9,
+            sessions90d: 12,
+            activeDays7d: 3,
+            activeDays30d: 8,
+            activeDays90d: 11,
+            activeWatchedChannels30d: 2,
+            weightedMessages30d: 52,
+            globalEffectiveSessions30d: 9,
+            effectiveActiveDays30d: 8,
+            daysAbsent: 0,
+            daysSinceGuildJoin: 5,
+            guildJoinedAt: "2026-05-04T12:00:00.000Z",
+            recalculatedAt: "2026-05-09T12:00:00.000Z",
+            lastSeenAt: "2026-05-09T11:50:00.000Z",
+          },
+        },
+      },
+    },
+  };
+
+  updateActivityConfig(db, {
+    activityRoleIds: {
+      weak: "role-weak",
+    },
+  });
+
+  const handled = await handleActivityPanelModalSubmitInteraction({
+    interaction: {
+      customId: "activity_panel_inspect_user_modal",
+      member: { id: "mod-1" },
+      user: { id: "mod-1" },
+      fields: {
+        getTextInputValue(fieldId) {
+          if (fieldId === "activity_inspect_user_id") return "<@123456789012345678>";
+          return "";
+        },
+      },
+    },
+    db,
+    isModerator: () => true,
+    replyNoPermission: async () => {
+      throw new Error("should not run");
+    },
+    replyError: async (_interaction, text) => {
+      replies.push(["error", text]);
+    },
+    replySuccess: async (_interaction, payload) => {
+      replies.push(["success", payload]);
+    },
+    parseRequestedUserId(value) {
+      const text = String(value || "").trim();
+      const mentionMatch = text.match(/^<@!?(\d+)>$/);
+      const candidate = mentionMatch ? mentionMatch[1] : text;
+      return /^\d+$/.test(candidate) ? candidate : "";
+    },
+    resolveMemberRoleIds() {
+      return ["role-weak", "role-extra"];
+    },
+  });
+
+  assert.equal(handled, true);
+  assert.equal(replies.length, 1);
+  assert.equal(replies[0][0], "success");
+  assert.equal(Array.isArray(replies[0][1].embeds), true);
+  assert.equal(replies[0][1].embeds.length, 2);
+  assert.match(replies[0][1].embeds[0].data.title, /Mirror User/);
+  const inspectionText = replies[0][1].embeds[0].data.fields.map((field) => `${field.name}: ${field.value}`).join("\n");
+  assert.match(inspectionText, /profile mirror/i);
+  assert.match(inspectionText, /roles-only sync/i);
+  assert.match(inspectionText, /<@&role-weak>/);
 });

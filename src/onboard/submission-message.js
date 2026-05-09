@@ -39,7 +39,22 @@ function resolveEffectiveSubmittedKills(input, suggestedKills = null) {
   };
 }
 
+function normalizeMainCharacterIds(values = []) {
+  return [...new Set(
+    (Array.isArray(values) ? values : [])
+      .map((value) => String(value || "").trim())
+      .filter(Boolean)
+  )].slice(0, 2);
+}
+
+function resolveResumableMainCharacterIds({ storedMainCharacterIds = [], liveMainCharacterIds = [] } = {}) {
+  const stored = normalizeMainCharacterIds(storedMainCharacterIds);
+  if (stored.length) return stored;
+  return normalizeMainCharacterIds(liveMainCharacterIds);
+}
+
 module.exports = {
   parseKillsFromSubmittedText,
   resolveEffectiveSubmittedKills,
+  resolveResumableMainCharacterIds,
 };
