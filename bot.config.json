@@ -48,10 +48,10 @@
     "missingTierlistImagePath": ""
   },
   "roblox": {
-    "metadataRefreshEnabled": true,
+    "metadataRefreshEnabled": false,
     "metadataRefreshHours": 24,
     "playtimeTrackingEnabled": true,
-    "playtimePollMinutes": 2,
+    "playtimePollMinutes": 3,
     "runtimeFlushEnabled": true,
     "flushIntervalMinutes": 10,
     "jjsUniverseId": 3508322461,
