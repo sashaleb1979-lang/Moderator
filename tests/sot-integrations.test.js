@@ -68,5 +68,31 @@ test("resolveAllIntegrationRecords returns both integration slots", () => {
   const result = resolveAllIntegrationRecords(createContext());
 
   assert.equal(result.elo.status, "idle");
+  assert.deepEqual(result.roblox, {});
   assert.equal(result.tierlist.dashboard.channelId, "tierlist-dashboard-channel");
+});
+
+test("resolveIntegrationRecord supports persisted roblox overrides", () => {
+  const result = resolveIntegrationRecord({
+    slot: "roblox",
+    db: {
+      sot: {
+        integrations: {
+          roblox: {
+            playtimeTrackingEnabled: true,
+            playtimePollMinutes: 3,
+            runtimeFlushEnabled: false,
+          },
+        },
+      },
+      config: {
+        integrations: {},
+      },
+    },
+    appConfig: {},
+  });
+
+  assert.equal(result.playtimeTrackingEnabled, true);
+  assert.equal(result.playtimePollMinutes, 3);
+  assert.equal(result.runtimeFlushEnabled, false);
 });

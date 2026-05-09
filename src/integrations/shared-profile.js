@@ -614,6 +614,56 @@ function applyRobloxAccountSnapshot(profile = {}, snapshot = {}, options = {}) {
   return nextRoblox;
 }
 
+function clearRobloxRefreshDiagnostics(profile = {}) {
+  const ensured = ensureSharedProfile(profile, profile?.userId);
+  const targetProfile = ensured.profile;
+  const current = normalizeRobloxDomainState(targetProfile?.domains?.roblox || buildLegacyRobloxSource(targetProfile));
+  const hadDiagnostics = Boolean(current.refreshError) || current.refreshStatus === "error";
+
+  if (!hadDiagnostics) {
+    return {
+      mutated: ensured.mutated,
+      cleared: false,
+      profile: targetProfile,
+    };
+  }
+
+  targetProfile.domains.roblox = normalizeRobloxDomainState({
+    ...current,
+    refreshError: null,
+    refreshStatus: current.refreshStatus === "error" ? null : current.refreshStatus,
+  });
+  targetProfile.summary = buildSharedProfileSummary(targetProfile, targetProfile.domains);
+
+  return {
+    mutated: true,
+    cleared: true,
+    profile: targetProfile,
+  };
+}
+
+function clearAllRobloxRefreshDiagnostics(profiles = {}) {
+  const source = profiles && typeof profiles === "object" && !Array.isArray(profiles) ? profiles : {};
+  let clearedCount = 0;
+  let mutated = false;
+
+  for (const [userId, rawProfile] of Object.entries(source)) {
+    const result = clearRobloxRefreshDiagnostics({
+      ...(rawProfile && typeof rawProfile === "object" ? rawProfile : {}),
+      userId: cleanString(rawProfile?.userId || userId, 80),
+    });
+    source[userId] = result.profile;
+    if (result.cleared) clearedCount += 1;
+    mutated ||= result.mutated;
+  }
+
+  return {
+    clearedCount,
+    mutated,
+    profiles: source,
+  };
+}
+
 function buildSharedProfileSummary(profile = {}, domains = {}) {
   const onboarding = domains.onboarding || normalizeOnboardingDomainState(profile);
   const elo = domains.elo || normalizeEloDomainState(profile?.domains?.elo);
@@ -986,6 +1036,8 @@ function deriveProfileMainView(profile = {}, characterEntries = []) {
 module.exports = {
   applyRobloxAccountSnapshot,
   buildRobloxProfileUrl,
+  clearAllRobloxRefreshDiagnostics,
+  clearRobloxRefreshDiagnostics,
   configureSharedProfileRuntime,
   deriveProfileMainView,
   INTEGRATION_MODE_DORMANT,

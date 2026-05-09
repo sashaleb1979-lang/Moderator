@@ -218,6 +218,7 @@ function createEmptySotState() {
     },
     integrations: {
       elo: {},
+      roblox: {},
       tierlist: {},
       verification: {},
     },
@@ -367,6 +368,7 @@ function buildPanelMap(dbConfig = {}) {
 function buildIntegrationState(dbConfig = {}, appConfig = {}) {
   const integrations = dbConfig.integrations && typeof dbConfig.integrations === "object" ? dbConfig.integrations : {};
   const eloIntegration = integrations.elo && typeof integrations.elo === "object" ? integrations.elo : {};
+  const robloxIntegration = integrations.roblox && typeof integrations.roblox === "object" ? integrations.roblox : {};
   const tierlistIntegration = integrations.tierlist && typeof integrations.tierlist === "object" ? integrations.tierlist : {};
   const verificationIntegration = integrations.verification && typeof integrations.verification === "object" ? integrations.verification : {};
   const appVerification = appConfig.verification && typeof appConfig.verification === "object" && !Array.isArray(appConfig.verification)
@@ -397,6 +399,7 @@ function buildIntegrationState(dbConfig = {}, appConfig = {}) {
       submitPanel: clone(eloIntegration.submitPanel || {}),
       graphicBoard: clone(eloIntegration.graphicBoard || {}),
     },
+    roblox: clone(robloxIntegration || {}),
     tierlist: {
       sourcePath: cleanString(tierlistIntegration.sourcePath, 500),
       mode: cleanString(tierlistIntegration.mode, 40),
@@ -534,7 +537,10 @@ function normalizeSotState(value = {}) {
   }
 
   next.presentation = clone(source.presentation && typeof source.presentation === "object" ? source.presentation : next.presentation);
-  next.integrations = clone(source.integrations && typeof source.integrations === "object" ? source.integrations : next.integrations);
+  next.integrations = {
+    ...clone(next.integrations),
+    ...clone(source.integrations && typeof source.integrations === "object" ? source.integrations : {}),
+  };
   next.activity = normalizeActivityState(source.activity);
   next.influence = normalizeInfluence(source.influence);
   next.modes.onboard = normalizeRecord(source.modes?.onboard, "configured");

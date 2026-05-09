@@ -6,6 +6,7 @@ const assert = require("node:assert/strict");
 const {
   applyRobloxAccountSnapshot,
   buildRobloxProfileUrl,
+  clearAllRobloxRefreshDiagnostics,
   INTEGRATION_MODE_DORMANT,
   SHARED_PROFILE_VERSION,
   deriveProfileMainView,
@@ -733,4 +734,30 @@ test("applyRobloxAccountSnapshot preserves existing verification timestamp when 
   assert.equal(result.verifiedAt, "2026-05-01T00:00:00.000Z");
   assert.equal(result.lastReviewedAt, "2026-05-10T00:00:00.000Z");
   assert.equal(result.reviewedBy, "mod#0001");
+});
+
+test("clearAllRobloxRefreshDiagnostics clears persisted refresh failures and refreshes summary", () => {
+  const profiles = {
+    user_1: ensureSharedProfile({
+      userId: "user_1",
+      displayName: "Gojo",
+      domains: {
+        roblox: {
+          username: "GojoRb",
+          userId: "1",
+          verificationStatus: "verified",
+          refreshStatus: "error",
+          refreshError: "Roblox API request failed (429)",
+        },
+      },
+    }, "user_1").profile,
+  };
+
+  const result = clearAllRobloxRefreshDiagnostics(profiles);
+
+  assert.equal(result.clearedCount, 1);
+  assert.equal(result.mutated, true);
+  assert.equal(profiles.user_1.domains.roblox.refreshError, null);
+  assert.equal(profiles.user_1.domains.roblox.refreshStatus, null);
+  assert.equal(profiles.user_1.summary.roblox.refreshError, null);
 });

@@ -143,6 +143,38 @@ test("resolveCharacterRecord falls through stale configured role ids to a verifi
   assert.equal(result.verifiedAt, "2026-05-03T12:25:00.000Z");
 });
 
+test("resolveCharacterRecord uses explicit configured role ids for canonical character bindings", () => {
+  const result = resolveCharacterRecord({
+    characterId: "aspiring_mangaka",
+    db: {
+      config: {
+        generatedRoles: {
+          characterLabels: {
+            aspiring_mangaka: "Мангака",
+          },
+        },
+      },
+    },
+    appConfig: {
+      characters: [
+        { id: "aspiring_mangaka", label: "Aspiring Mangaka", roleId: "1501962966432485499" },
+      ],
+    },
+    verifiedRoleIds: ["1501962966432485499"],
+    verifiedAt: "2026-05-09T12:00:00.000Z",
+  });
+
+  assert.deepEqual(result, {
+    id: "aspiring_mangaka",
+    label: "Мангака",
+    englishLabel: "Aspiring Mangaka",
+    roleId: "1501962966432485499",
+    source: "configured",
+    verifiedAt: "2026-05-09T12:00:00.000Z",
+    evidence: undefined,
+  });
+});
+
 test("resolveCharacterRecord ignores stale generated fallback when persisted native SoT record owns the slot", () => {
   const result = resolveCharacterRecord({
     characterId: "vessel",

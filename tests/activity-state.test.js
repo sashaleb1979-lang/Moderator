@@ -29,6 +29,10 @@ test("createEmptyActivityState seeds config and empty activity collections", () 
   assert.deepEqual(state.watchedChannels, []);
   assert.deepEqual(state.globalUserSessions, []);
   assert.deepEqual(state.runtime.dirtyUsers, []);
+  assert.equal(state.runtime.lastRebuildAndRoleSyncAt, null);
+  assert.equal(state.runtime.lastRebuildAndRoleSyncStats, null);
+  assert.equal(state.runtime.lastRolesOnlySyncAt, null);
+  assert.equal(state.runtime.lastRolesOnlySyncStats, null);
   assert.deepEqual(state.ops.moderationAuditLog, []);
 });
 

@@ -4,9 +4,11 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const {
+  buildRobloxPeriodicJobs,
   buildClientReadyPeriodicJobs,
   ClientReadyCoreError,
   runClientReadyCore,
+  schedulePeriodicJobs,
   scheduleClientReadyIntervals,
 } = require("../src/runtime/client-ready-core");
 
@@ -162,6 +164,44 @@ test("buildClientReadyPeriodicJobs applies Roblox default poll and flush cadence
     "Roblox runtime flush failed",
   ]);
   assert.deepEqual(robloxJobs.map((job) => job.intervalMs), [86400000, 120000, 600000]);
+});
+
+test("buildRobloxPeriodicJobs keeps runtime flush scheduled when playtime tracking is disabled", () => {
+  const jobs = buildRobloxPeriodicJobs({
+    syncRobloxPlaytime() {},
+    flushRobloxRuntime() {},
+    roblox: {
+      playtimeTrackingEnabled: false,
+      runtimeFlushEnabled: true,
+      flushIntervalMinutes: 8,
+    },
+  });
+
+  assert.deepEqual(jobs.map((job) => job.key), ["roblox.runtimeFlush"]);
+  assert.equal(jobs[0].intervalMs, 480000);
+});
+
+test("buildRobloxPeriodicJobs builds only Roblox-owned descriptors with configured cadences", () => {
+  const jobs = buildRobloxPeriodicJobs({
+    runRobloxProfileRefreshJob() {},
+    syncRobloxPlaytime() {},
+    flushRobloxRuntime() {},
+    roblox: {
+      metadataRefreshEnabled: true,
+      metadataRefreshHours: 6,
+      playtimeTrackingEnabled: true,
+      playtimePollMinutes: 3,
+      runtimeFlushEnabled: true,
+      flushIntervalMinutes: 8,
+    },
+  });
+
+  assert.deepEqual(jobs.map((job) => job.key), [
+    "roblox.profileRefresh",
+    "roblox.playtimeSync",
+    "roblox.runtimeFlush",
+  ]);
+  assert.deepEqual(jobs.map((job) => job.intervalMs), [21600000, 180000, 480000]);
 });
 
 test("buildClientReadyPeriodicJobs adds verification deadline sweep only when verification is enabled", () => {
@@ -583,6 +623,43 @@ test("scheduleClientReadyIntervals logs auto-resend and summary refresh failures
     "Activity runtime flush failed: activity flush failed",
     "Roblox playtime sync failed: playtime failed",
   ]);
+});
+
+test("schedulePeriodicJobs returns handles and logs runner failures", async () => {
+  const scheduled = [];
+  const errors = [];
+
+  const handles = schedulePeriodicJobs({ id: "client" }, {
+    periodicJobs: [
+      {
+        run(client) {
+          scheduled.push(["run", client]);
+        },
+        intervalMs: 100,
+        errorLabel: "ok-job failed",
+      },
+      {
+        async run() {
+          throw new Error("boom");
+        },
+        intervalMs: 200,
+        errorLabel: "bad-job failed",
+      },
+    ],
+    setIntervalFn(handler, intervalMs) {
+      scheduled.push(["schedule", intervalMs, handler]);
+      return `timer:${intervalMs}`;
+    },
+    logError: (...args) => errors.push(args.join(" ")),
+  });
+
+  assert.deepEqual(handles, ["timer:100", "timer:200"]);
+
+  await scheduled[0][2]();
+  await scheduled[1][2]();
+
+  assert.deepEqual(scheduled.slice(2), [["run", { id: "client" }]]);
+  assert.deepEqual(errors, ["bad-job failed: boom"]);
 });
 
 test("scheduleClientReadyIntervals skips summary refresh when tierlist source path is missing", async () => {

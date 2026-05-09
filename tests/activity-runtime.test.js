@@ -255,8 +255,8 @@ test("rebuildActivityUserSnapshot computes 7/30/90 metrics and a desired role fr
   assert.equal(snapshot.guildJoinedAt, null);
   assert.equal(snapshot.daysSinceGuildJoin, null);
   assert.equal(snapshot.roleEligibilityStatus, "join_age_unknown");
-  assert.equal(snapshot.roleEligibleForActivityRole, true);
-  assert.equal(snapshot.desiredActivityRoleKey, "weak");
+  assert.equal(snapshot.roleEligibleForActivityRole, false);
+  assert.equal(snapshot.desiredActivityRoleKey, null);
   assert.equal(snapshot.trustScore, 540);
   assert.equal(snapshot.manualOverride, true);
   assert.equal(snapshot.autoRoleFrozen, true);
@@ -415,10 +415,52 @@ test("flushActivityRuntime finalizes stale sessions, keeps fresh sessions open, 
   assert.equal(db.sot.activity.runtime.openSessions["user-stale"], undefined);
   assert.equal(Boolean(db.sot.activity.runtime.openSessions["user-fresh"]), true);
   assert.equal(db.profiles["user-stale"].domains.activity.messages30d, 2);
-  assert.equal(db.profiles["user-stale"].summary.activity.desiredActivityRoleKey, "weak");
+  assert.equal(db.profiles["user-stale"].summary.activity.roleEligibilityStatus, "join_age_unknown");
+  assert.equal(db.profiles["user-stale"].summary.activity.desiredActivityRoleKey, null);
   assert.equal(db.profiles["user-fresh"].domains.activity.messages30d, 1);
   assert.equal(db.profiles["user-fresh"].summary.activity.sessions30d, 1);
   assert.equal(db.sot.activity.runtime.lastFlushAt, "2026-05-09T12:50:00.000Z");
+});
+
+test("flushActivityRuntime records member metadata lookup failures and keeps unknown join age role-safe", async () => {
+  const db = {
+    profiles: {
+      "user-stale": { userId: "user-stale", username: "stale" },
+    },
+  };
+  seedWatchedChannels(db);
+
+  recordActivityMessage({
+    db,
+    message: {
+      guildId: "guild-1",
+      userId: "user-stale",
+      channelId: "main-1",
+      messageId: "stale-1",
+      createdAt: "2026-05-09T10:00:00.000Z",
+    },
+  });
+
+  const result = await flushActivityRuntime({
+    db,
+    now: "2026-05-09T12:50:00.000Z",
+    resolveMemberActivityMeta() {
+      throw new Error("discord member fetch failed");
+    },
+  });
+
+  assert.equal(result.rebuiltUserCount, 1);
+  assert.equal(db.profiles["user-stale"].domains.activity.roleEligibilityStatus, "join_age_unknown");
+  assert.equal(db.profiles["user-stale"].domains.activity.roleEligibleForActivityRole, false);
+  assert.equal(db.profiles["user-stale"].domains.activity.desiredActivityRoleKey, null);
+  assert.deepEqual(db.sot.activity.runtime.errors, [
+    {
+      scope: "member_activity_meta",
+      userId: "user-stale",
+      createdAt: "2026-05-09T12:50:00.000Z",
+      reason: "discord member fetch failed",
+    },
+  ]);
 });
 
 test("resumeActivityRuntime normalizes state and stamps resume time", async () => {

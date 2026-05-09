@@ -329,8 +329,12 @@ function createEmptyActivityState() {
       lastFlushStats: null,
       lastResumeAt: null,
       lastFullRecalcAt: null,
+      lastRebuildAndRoleSyncAt: null,
+      lastRebuildAndRoleSyncStats: null,
       lastDailyRoleSyncAt: null,
       lastDailyRoleSyncStats: null,
+      lastRolesOnlySyncAt: null,
+      lastRolesOnlySyncStats: null,
       errors: [],
     },
   };
@@ -427,11 +431,23 @@ function normalizeActivityState(value = {}) {
       : null,
     lastResumeAt: normalizeNullableString(source.runtime?.lastResumeAt, 80),
     lastFullRecalcAt: normalizeNullableString(source.runtime?.lastFullRecalcAt, 80),
+    lastRebuildAndRoleSyncAt: normalizeNullableString(source.runtime?.lastRebuildAndRoleSyncAt, 80),
+    lastRebuildAndRoleSyncStats: source.runtime?.lastRebuildAndRoleSyncStats
+      && typeof source.runtime.lastRebuildAndRoleSyncStats === "object"
+      && !Array.isArray(source.runtime.lastRebuildAndRoleSyncStats)
+      ? clone(source.runtime.lastRebuildAndRoleSyncStats)
+      : null,
     lastDailyRoleSyncAt: normalizeNullableString(source.runtime?.lastDailyRoleSyncAt, 80),
     lastDailyRoleSyncStats: source.runtime?.lastDailyRoleSyncStats
       && typeof source.runtime.lastDailyRoleSyncStats === "object"
       && !Array.isArray(source.runtime.lastDailyRoleSyncStats)
       ? clone(source.runtime.lastDailyRoleSyncStats)
+      : null,
+    lastRolesOnlySyncAt: normalizeNullableString(source.runtime?.lastRolesOnlySyncAt, 80),
+    lastRolesOnlySyncStats: source.runtime?.lastRolesOnlySyncStats
+      && typeof source.runtime.lastRolesOnlySyncStats === "object"
+      && !Array.isArray(source.runtime.lastRolesOnlySyncStats)
+      ? clone(source.runtime.lastRolesOnlySyncStats)
       : null,
     errors: Array.isArray(source.runtime?.errors) ? clone(source.runtime.errors) : [],
   };

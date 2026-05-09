@@ -242,6 +242,7 @@ test("getRobloxStatsPanelSnapshot hides refresh blockers in passive-only mode", 
   assert.equal(snapshot.config.metadataRefreshEnabled, false);
   assert.equal(snapshot.totals.refreshErrorUsers, 0);
   assert.equal(snapshot.issues.length, 0);
+  assert.doesNotMatch(snapshot.topEntries[0].note, /обновления профиля/i);
 });
 
 test("buildRobloxStatsPanelPayload renders manual controls and blocker field", () => {
@@ -272,16 +273,60 @@ test("buildRobloxStatsPanelPayload renders manual controls and blocker field", (
     statusText: "manual refresh completed",
   });
 
+  assert.equal(payload.components.length, 4);
   assert.equal(payload.components[0].components.length, 5);
   assert.equal(payload.components[0].components[0].data.custom_id, "roblox_stats_refresh");
   assert.equal(payload.components[0].components[4].data.custom_id, "roblox_stats_back");
-  assert.equal(payload.components[0].components[1].data.label, "Обновить профили");
-  assert.equal(payload.components[0].components[1].data.disabled, true);
-  assert.equal(payload.components[0].components[2].data.label, "Синк playtime");
-  assert.equal(payload.components[0].components[3].data.label, "Сохранить runtime");
+  assert.equal(payload.components[0].components[1].data.label, "Синк сейчас");
+  assert.equal(payload.components[0].components[2].data.label, "Сохранить runtime");
+  assert.equal(payload.components[0].components[3].data.label, "Обновить профили");
+  assert.equal(payload.components[0].components[3].data.disabled, true);
+  assert.equal(payload.components[1].components[0].data.custom_id, "roblox_stats_toggle_playtime");
+  assert.equal(payload.components[2].components[1].data.custom_id, "roblox_stats_set_poll_3");
+  assert.equal(payload.components[3].components[0].data.custom_id, "roblox_stats_clear_refresh_errors");
   assert.equal(payload.embeds[0].data.fields.at(-1).name, "Последнее действие");
-  assert.match(payload.embeds[0].data.fields[3].value, /Gojo/);
-  assert.match(payload.embeds[0].data.fields[4].value, /JJS IDs/i);
+  assert.match(payload.embeds[0].data.fields[4].value, /Gojo/);
+  assert.match(payload.embeds[0].data.fields[5].value, /JJS IDs/i);
+});
+
+test("buildRobloxStatsPanelPayload hides stale playtime and runtime job truth when those features are disabled", async () => {
+  const telemetry = createRobloxPanelTelemetry({
+    now: createNowQueue([
+      "2026-05-09T12:00:00.000Z",
+      "2026-05-09T12:00:01.000Z",
+      "2026-05-09T12:01:00.000Z",
+      "2026-05-09T12:01:01.000Z",
+    ]),
+  });
+
+  await telemetry.wrapJob("playtime_sync", async () => {
+    throw new Error("playtime failed");
+  })().catch(() => null);
+  await telemetry.wrapJob("runtime_flush", async () => {
+    throw new Error("flush failed");
+  })().catch(() => null);
+
+  const payload = buildRobloxStatsPanelPayload({
+    telemetry,
+    appConfig: {
+      roblox: {
+        playtimeTrackingEnabled: false,
+        runtimeFlushEnabled: false,
+        metadataRefreshEnabled: true,
+        jjsUniverseId: 0,
+        jjsRootPlaceId: 0,
+        jjsPlaceId: 0,
+      },
+    },
+  });
+
+  const fieldTexts = payload.embeds[0].data.fields.map((field) => `${field.name}: ${field.value}`).join("\n");
+  assert.match(fieldTexts, /Последний синк playtime: выключен в настройках/);
+  assert.match(fieldTexts, /Синк playtime: выключено в настройках/);
+  assert.match(fieldTexts, /Сохранение runtime: выключено в настройках/);
+  assert.doesNotMatch(fieldTexts, /playtime failed/i);
+  assert.doesNotMatch(fieldTexts, /flush failed/i);
+  assert.doesNotMatch(fieldTexts, /JJS IDs/i);
 });
 
 test("handleRobloxStatsPanelButtonInteraction gates permissions and delegates manual actions", async () => {
@@ -332,6 +377,79 @@ test("handleRobloxStatsPanelButtonInteraction gates permissions and delegates ma
   assert.equal(playtimeRuns, 1);
   assert.equal(manual.calls.deferred, 1);
   assert.match(manual.calls.edits[0].content, /Активных в JJS: 2, затронуто профилей: 3, ошибок пользователей: 1/i);
+
+  const togglePlaytime = createInteraction("roblox_stats_toggle_playtime");
+  const toggleCalls = [];
+  await handleRobloxStatsPanelButtonInteraction({
+    interaction: togglePlaytime.interaction,
+    client: {},
+    db: {},
+    runtimeState: {},
+    appConfig: { roblox: { playtimeTrackingEnabled: true } },
+    telemetry: createRobloxPanelTelemetry(),
+    isModerator: () => true,
+    replyNoPermission: () => togglePlaytime.interaction.reply({ content: "Нет прав." }),
+    buildModeratorPanelPayload: async () => ({ content: "main" }),
+    buildRobloxPanelPayload: ({ statusText = "" } = {}) => ({ content: statusText }),
+    updateRobloxSettings: async (patch) => {
+      toggleCalls.push(patch);
+      return { mutated: true };
+    },
+    clearRefreshDiagnostics: async () => ({ clearedCount: 0 }),
+    runProfileRefreshJob: async () => ({}),
+    runPlaytimeSyncJob: async () => ({}),
+    runRuntimeFlush: async () => ({}),
+  });
+
+  assert.deepEqual(toggleCalls, [{ playtimeTrackingEnabled: false }]);
+  assert.match(togglePlaytime.calls.edits[0].content, /выключен/i);
+
+  const setPoll = createInteraction("roblox_stats_set_poll_5");
+  const pollCalls = [];
+  await handleRobloxStatsPanelButtonInteraction({
+    interaction: setPoll.interaction,
+    client: {},
+    db: {},
+    runtimeState: {},
+    appConfig: { roblox: { playtimePollMinutes: 3 } },
+    telemetry: createRobloxPanelTelemetry(),
+    isModerator: () => true,
+    replyNoPermission: () => setPoll.interaction.reply({ content: "Нет прав." }),
+    buildModeratorPanelPayload: async () => ({ content: "main" }),
+    buildRobloxPanelPayload: ({ statusText = "" } = {}) => ({ content: statusText }),
+    updateRobloxSettings: async (patch) => {
+      pollCalls.push(patch);
+      return { mutated: true };
+    },
+    clearRefreshDiagnostics: async () => ({ clearedCount: 0 }),
+    runProfileRefreshJob: async () => ({}),
+    runPlaytimeSyncJob: async () => ({}),
+    runRuntimeFlush: async () => ({}),
+  });
+
+  assert.deepEqual(pollCalls, [{ playtimePollMinutes: 5 }]);
+  assert.match(setPoll.calls.edits[0].content, /5 мин/i);
+
+  const clearErrors = createInteraction("roblox_stats_clear_refresh_errors");
+  await handleRobloxStatsPanelButtonInteraction({
+    interaction: clearErrors.interaction,
+    client: {},
+    db: {},
+    runtimeState: {},
+    appConfig: { roblox: {} },
+    telemetry: createRobloxPanelTelemetry(),
+    isModerator: () => true,
+    replyNoPermission: () => clearErrors.interaction.reply({ content: "Нет прав." }),
+    buildModeratorPanelPayload: async () => ({ content: "main" }),
+    buildRobloxPanelPayload: ({ statusText = "" } = {}) => ({ content: statusText }),
+    updateRobloxSettings: async () => ({ mutated: false }),
+    clearRefreshDiagnostics: async () => ({ clearedCount: 7 }),
+    runProfileRefreshJob: async () => ({}),
+    runPlaytimeSyncJob: async () => ({}),
+    runRuntimeFlush: async () => ({}),
+  });
+
+  assert.match(clearErrors.calls.edits[0].content, /7 профилей/i);
 
   const disabledRefresh = createInteraction("roblox_stats_run_profile_refresh");
   let profileRuns = 0;

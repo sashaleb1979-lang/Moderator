@@ -53,7 +53,7 @@ function resolveActivityRoleTiming({ currentTime, joinedAt, config = {} }) {
       guildJoinedAt: null,
       daysSinceGuildJoin: null,
       roleEligibilityStatus: "join_age_unknown",
-      roleEligibleForActivityRole: true,
+      roleEligibleForActivityRole: false,
       activityScoreMultiplier: 1,
     };
   }
@@ -624,15 +624,39 @@ function mirrorActivitySnapshotToProfile(db, userId, snapshot) {
   return db.profiles[userId];
 }
 
+function appendActivityRuntimeError(state, { scope = "runtime", userId = null, createdAt, reason = "unknown error" } = {}) {
+  const existingErrors = Array.isArray(state.runtime?.errors) ? state.runtime.errors : [];
+  const nextError = {
+    scope: cleanString(scope, 80) || "runtime",
+    userId: cleanString(userId, 80) || null,
+    createdAt: normalizeIsoTimestamp(createdAt, new Date().toISOString()),
+    reason: cleanString(reason, 500) || "unknown error",
+  };
+
+  state.runtime = {
+    ...(state.runtime || {}),
+    errors: [...existingErrors.slice(-9), nextError],
+  };
+}
+
 async function safelyResolveMemberActivityMeta(resolveMemberActivityMeta, userId) {
   if (typeof resolveMemberActivityMeta !== "function") {
-    return null;
+    return {
+      memberActivityMeta: null,
+      error: null,
+    };
   }
 
   try {
-    return await Promise.resolve(resolveMemberActivityMeta(userId));
-  } catch {
-    return null;
+    return {
+      memberActivityMeta: await Promise.resolve(resolveMemberActivityMeta(userId)),
+      error: null,
+    };
+  } catch (error) {
+    return {
+      memberActivityMeta: null,
+      error,
+    };
   }
 }
 
@@ -648,7 +672,15 @@ async function rebuildActivitySnapshots({ db = {}, userIds = [], now, saveDb, ru
     )];
 
     for (const userId of targetUserIds) {
-      const memberActivityMeta = await safelyResolveMemberActivityMeta(resolveMemberActivityMeta, userId);
+      const { memberActivityMeta, error } = await safelyResolveMemberActivityMeta(resolveMemberActivityMeta, userId);
+      if (error) {
+        appendActivityRuntimeError(state, {
+          scope: "member_activity_meta",
+          userId,
+          createdAt: currentTime,
+          reason: error?.message || error,
+        });
+      }
       const snapshot = rebuildActivityUserSnapshot({
         db,
         userId,
@@ -740,7 +772,15 @@ async function flushActivityRuntime({ db = {}, now, saveDb, runSerialized, resol
 
     const rebuiltUsers = [];
     for (const userId of [...dirtyUsers]) {
-      const memberActivityMeta = await safelyResolveMemberActivityMeta(resolveMemberActivityMeta, userId);
+      const { memberActivityMeta, error } = await safelyResolveMemberActivityMeta(resolveMemberActivityMeta, userId);
+      if (error) {
+        appendActivityRuntimeError(state, {
+          scope: "member_activity_meta",
+          userId,
+          createdAt: currentTime,
+          reason: error?.message || error,
+        });
+      }
       const snapshot = rebuildActivityUserSnapshot({ db, userId, now: currentTime, memberActivityMeta });
       mirrorActivitySnapshotToProfile(db, userId, snapshot);
       rebuiltUsers.push(userId);

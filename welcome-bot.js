@@ -60,7 +60,14 @@ const {
   runSotStartupAlerts,
   scheduleSotAlertTicks,
 } = require("./src/sot/runtime-alerts");
-const { buildClientReadyPeriodicJobs, runClientReadyCore, scheduleClientReadyIntervals } = require("./src/runtime/client-ready-core");
+const { createSerializedMutationRunner } = require("./src/runtime/serialized-task-runner");
+const {
+  clearIntervalHandles,
+  mergeRobloxRuntimeConfig,
+  normalizeRobloxPanelSettingsPatch,
+  rebuildRobloxIntervalHandles,
+} = require("./src/runtime/roblox-runtime-support");
+const { buildClientReadyPeriodicJobs, buildRobloxPeriodicJobs, runClientReadyCore, scheduleClientReadyIntervals, schedulePeriodicJobs } = require("./src/runtime/client-ready-core");
 const {
   syncLegacyGraphicTierlistBoardSnapshot,
   syncLegacyPanelSnapshot,
@@ -200,6 +207,7 @@ const {
 } = require("./src/onboard/channel-owner");
 const {
   applyRobloxAccountSnapshot,
+  clearAllRobloxRefreshDiagnostics,
   configureSharedProfileRuntime,
   createDefaultIntegrationState,
   deriveProfileMainView,
@@ -726,7 +734,6 @@ function validateRuntimeConfig(config) {
 const fileConfig = loadJsonFile(CONFIG_PATH, {});
 const appConfig = buildRuntimeConfig(fileConfig);
 validateRuntimeConfig(appConfig);
-configureSharedProfileRuntime({ roblox: appConfig?.roblox });
 
 function buildSotLegacyOptions(currentDb) {
   const liveTierlistState = getLiveLegacyTierlistState(currentDb);
@@ -828,12 +835,18 @@ function loadDb() {
 }
 
 const db = loadDb();
+configureSharedProfileRuntime({ roblox: getEffectiveRobloxConfig() });
 const robloxApiClient = createRobloxApiClient();
 const robloxJobCoordinator = createRobloxJobCoordinator({
   logError: (...args) => console.error(...args),
 });
+const runSerializedDbMutation = createSerializedMutationRunner({
+  logError: (...args) => console.error(...args),
+});
 const robloxRuntimeState = createRobloxRuntimeState();
 const robloxPanelTelemetry = createRobloxPanelTelemetry({ now: nowIso });
+let readyClient = null;
+let robloxIntervalHandles = [];
 
 logSotDrift(db, "startup-load");
 
@@ -862,7 +875,7 @@ const syncRobloxPlaytime = robloxPanelTelemetry.wrapJob("playtime_sync", robloxJ
   db,
   runtimeState: robloxRuntimeState,
   now: nowIso,
-  roblox: appConfig?.roblox,
+  roblox: getEffectiveRobloxConfig(),
   fetchUserPresences: robloxApiClient.fetchUserPresences.bind(robloxApiClient),
   logError: (...args) => console.error(...args),
 })));
@@ -878,6 +891,42 @@ function cloneJsonValue(value) {
   return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
 }
 
+function getEffectiveRobloxConfig(currentDb = db) {
+  return mergeRobloxRuntimeConfig(
+    appConfig?.roblox || {},
+    getResolvedIntegrationRecord("roblox", currentDb) || {}
+  );
+}
+
+function getEffectiveAppConfig(currentDb = db) {
+  return {
+    ...appConfig,
+    roblox: getEffectiveRobloxConfig(currentDb),
+  };
+}
+
+function rescheduleRobloxIntervals(client = readyClient) {
+  if (!client) {
+    return [];
+  }
+
+  const robloxConfig = getEffectiveRobloxConfig();
+  robloxIntervalHandles = rebuildRobloxIntervalHandles({
+    client,
+    currentHandles: robloxIntervalHandles,
+    clearIntervalFn: clearInterval,
+    buildRobloxPeriodicJobs,
+    schedulePeriodicJobs,
+    configureSharedProfileRuntime,
+    runRobloxProfileRefreshJob: runScheduledRobloxProfileRefreshJob,
+    syncRobloxPlaytime,
+    flushRobloxRuntime,
+    robloxConfig,
+    logError: (...args) => console.error(...args),
+  });
+  return robloxIntervalHandles;
+}
+
 function restoreRecordValue(container, key, previousValue, hadValue) {
   if (!container || typeof container !== "object") return;
   if (hadValue) {
@@ -889,6 +938,45 @@ function restoreRecordValue(container, key, previousValue, hadValue) {
 
 function formatRuntimeError(error) {
   return String(error?.message || error || "неизвестная ошибка").trim() || "неизвестная ошибка";
+}
+
+function captureRobloxIntegrationSnapshot(currentDb = db) {
+  const sotIntegrations = currentDb?.sot?.integrations;
+  const legacyIntegrations = currentDb?.config?.integrations;
+
+  return {
+    hadSotRoblox: Boolean(sotIntegrations) && Object.prototype.hasOwnProperty.call(sotIntegrations, "roblox"),
+    hadLegacyRoblox: Boolean(legacyIntegrations) && Object.prototype.hasOwnProperty.call(legacyIntegrations, "roblox"),
+    sotRoblox: cloneJsonValue(sotIntegrations?.roblox),
+    legacyRoblox: cloneJsonValue(legacyIntegrations?.roblox),
+  };
+}
+
+function restoreRobloxIntegrationSnapshot(snapshot = {}, currentDb = db) {
+  currentDb.sot ||= {};
+  currentDb.sot.integrations ||= {};
+  currentDb.config ||= {};
+  currentDb.config.integrations ||= {};
+
+  if (snapshot.hadSotRoblox) {
+    currentDb.sot.integrations.roblox = cloneJsonValue(snapshot.sotRoblox) || {};
+  } else {
+    delete currentDb.sot.integrations.roblox;
+  }
+
+  if (snapshot.hadLegacyRoblox) {
+    currentDb.config.integrations.roblox = cloneJsonValue(snapshot.legacyRoblox) || {};
+  } else {
+    delete currentDb.config.integrations.roblox;
+  }
+}
+
+function captureProfilesSnapshot(currentDb = db) {
+  return cloneJsonValue(currentDb?.profiles || {});
+}
+
+function restoreProfilesSnapshot(snapshot = {}, currentDb = db) {
+  currentDb.profiles = cloneJsonValue(snapshot) || {};
 }
 
 function isDiscordMissingResourceError(error) {
@@ -4132,16 +4220,37 @@ async function resolveActivityMemberMeta(client, userId, guildHint = null) {
   return joinedAt ? { joinedAt } : null;
 }
 
+async function listActivityRoleHolderUserIds(client, guildHint = null) {
+  const guild = guildHint || await getGuild(client).catch(() => null);
+  if (!guild) return [];
+
+  await guild.members.fetch().catch(() => null);
+
+  const managedRoleIds = Object.values(ensureActivityState(db).config?.activityRoleIds || {})
+    .map((roleId) => String(roleId || "").trim())
+    .filter(Boolean);
+  if (!managedRoleIds.length) return [];
+
+  return [...guild.members.cache.values()]
+    .filter((member) => managedRoleIds.some((roleId) => member.roles.cache.has(roleId)))
+    .map((member) => String(member.id || "").trim())
+    .filter(Boolean);
+}
+
 async function applyActivityMemberRoleChanges(client, { userId, addRoleIds = [], removeRoleIds = [], reason = "activity role sync", guildHint = null } = {}) {
   const member = await getActivityGuildMember(client, userId, guildHint);
   if (!member) return false;
-  if (removeRoleIds.length) {
-    await member.roles.remove(removeRoleIds, reason);
+  try {
+    if (removeRoleIds.length) {
+      await member.roles.remove(removeRoleIds, reason);
+    }
+    if (addRoleIds.length) {
+      await member.roles.add(addRoleIds, reason);
+    }
+    return true;
+  } catch {
+    return false;
   }
-  if (addRoleIds.length) {
-    await member.roles.add(addRoleIds, reason);
-  }
-  return true;
 }
 
 function isModerator(member) {
@@ -11382,6 +11491,7 @@ client.once("clientReady", async () => {
       resumeActivityRuntime: () => resumeActivityRuntime({
         db,
         saveDb,
+        runSerialized: runSerializedDbMutation,
       }),
       logError: (...args) => console.error(...args),
     }));
@@ -11476,6 +11586,7 @@ client.once("clientReady", async () => {
   }
 
   console.log("Welcome onboarding bot is ready");
+  readyClient = client;
 
   const periodicJobs = buildClientReadyPeriodicJobs({
     runAutoResendTick,
@@ -11485,12 +11596,15 @@ client.once("clientReady", async () => {
     flushActivityRuntime: () => flushActivityRuntime({
       db,
       saveDb,
+      runSerialized: runSerializedDbMutation,
       resolveMemberActivityMeta: (userId) => resolveActivityMemberMeta(client, userId),
     }),
     activityFlushIntervalMs: ACTIVITY_RUNTIME_FLUSH_INTERVAL_MS,
     runDailyActivityRoleSync: () => runDailyActivityRoleSync({
       db,
       saveDb,
+      runSerialized: runSerializedDbMutation,
+      listManagedActivityRoleUserIds: () => listActivityRoleHolderUserIds(client),
       resolveMemberRoleIds: (userId) => resolveActivityMemberRoleIds(client, userId),
       resolveMemberActivityMeta: (userId) => resolveActivityMemberMeta(client, userId),
       applyRoleChanges: ({ userId, addRoleIds, removeRoleIds }) => applyActivityMemberRoleChanges(client, {
@@ -11506,12 +11620,15 @@ client.once("clientReady", async () => {
     flushRobloxRuntime,
     runVerificationDeadlineSweep: (currentClient) => runVerificationDeadlineSweep(currentClient),
     getResolvedIntegrationSourcePath,
-    roblox: appConfig?.roblox,
+    roblox: getEffectiveRobloxConfig(),
     verification: getVerificationIntegrationState(),
   });
 
+  const nonRobloxPeriodicJobs = periodicJobs.filter((job) => !String(job?.key || "").startsWith("roblox."));
+  const startupRobloxPeriodicJobs = periodicJobs.filter((job) => String(job?.key || "").startsWith("roblox."));
+
   scheduleClientReadyIntervals(client, {
-    periodicJobs,
+    periodicJobs: nonRobloxPeriodicJobs,
     scheduleSotAlertTicks: (currentClient) => scheduleSotAlertTicks(currentClient, {
       maybeLogSotCharacterHealthAlert,
       maybeLogSotDriftAlert,
@@ -11519,6 +11636,12 @@ client.once("clientReady", async () => {
       driftPeriodicMs: SOT_CHARACTER_ALERT_PERIODIC_MS,
       logError: (...args) => console.error(...args),
     }),
+    logError: (...args) => console.error(...args),
+  });
+
+  clearIntervalHandles(robloxIntervalHandles);
+  robloxIntervalHandles = schedulePeriodicJobs(client, {
+    periodicJobs: startupRobloxPeriodicJobs,
     logError: (...args) => console.error(...args),
   });
 });
@@ -13313,9 +13436,10 @@ client.on("interactionCreate", async (interaction) => {
       isModerator: hasActivityPanelAccess,
       replyNoPermission: () => interaction.reply(ephemeralPayload({ content: "Нет прав." })),
       buildModeratorPanelPayload,
-      buildActivityPanelPayload: ({ statusText = "" } = {}) => buildActivityOperatorPanelPayload({
+      buildActivityPanelPayload: ({ statusText = "", view = "overview" } = {}) => buildActivityOperatorPanelPayload({
         db,
         statusText,
+        view,
       }),
       fetchChannel: async (channelId) => {
         const guild = interaction.guild || await getGuild(client).catch(() => null);
@@ -13325,6 +13449,7 @@ client.on("interactionCreate", async (interaction) => {
       },
       resolveMemberRoleIds: (userId) => resolveActivityMemberRoleIds(client, userId, interaction.guild || null),
       resolveMemberActivityMeta: (userId) => resolveActivityMemberMeta(client, userId, interaction.guild || null),
+      listManagedActivityRoleUserIds: () => listActivityRoleHolderUserIds(client, interaction.guild || null),
       applyRoleChanges: ({ userId, addRoleIds, removeRoleIds }) => applyActivityMemberRoleChanges(client, {
         userId,
         addRoleIds,
@@ -13333,6 +13458,7 @@ client.on("interactionCreate", async (interaction) => {
         reason: `activity role sync by ${interaction.user?.tag || interaction.user?.id || "unknown"}`,
       }),
       saveDb,
+      runSerialized: runSerializedDbMutation,
     })) {
       return;
     }
@@ -13343,7 +13469,7 @@ client.on("interactionCreate", async (interaction) => {
       db,
       runtimeState: robloxRuntimeState,
       telemetry: robloxPanelTelemetry,
-      appConfig,
+      appConfig: getEffectiveAppConfig(),
       isModerator,
       replyNoPermission: () => interaction.reply(ephemeralPayload({ content: "Нет прав." })),
       buildModeratorPanelPayload,
@@ -13351,9 +13477,37 @@ client.on("interactionCreate", async (interaction) => {
         db,
         runtimeState: robloxRuntimeState,
         telemetry: robloxPanelTelemetry,
-        appConfig,
+        appConfig: getEffectiveAppConfig(),
         statusText,
       }),
+      updateRobloxSettings: (patch = {}) => {
+        const previousSnapshot = captureRobloxIntegrationSnapshot();
+        return runSerializedDbMutation({
+        label: "roblox-panel-settings",
+        mutate: () => writeNativeIntegrationSnapshot(db, {
+          slot: "roblox",
+          patch: normalizeRobloxPanelSettingsPatch(patch),
+        }),
+        shouldPersist: (result) => result?.mutated === true,
+        persist: () => saveDb(),
+        rollback: () => restoreRobloxIntegrationSnapshot(previousSnapshot),
+        afterPersist: (result) => {
+          if (result?.mutated !== true) return;
+          configureSharedProfileRuntime({ roblox: getEffectiveRobloxConfig() });
+          rescheduleRobloxIntervals();
+        },
+      });
+      },
+      clearRefreshDiagnostics: () => {
+        const previousProfiles = captureProfilesSnapshot();
+        return runSerializedDbMutation({
+        label: "roblox-panel-clear-refresh-diagnostics",
+        mutate: () => clearAllRobloxRefreshDiagnostics(db.profiles),
+        shouldPersist: (result) => result?.mutated === true,
+        persist: () => saveDb(),
+        rollback: () => restoreProfilesSnapshot(previousProfiles),
+      });
+      },
       runProfileRefreshJob: runScheduledRobloxProfileRefreshJob,
       runPlaytimeSyncJob: syncRobloxPlaytime,
       runRuntimeFlush: flushRobloxRuntime,
@@ -16551,6 +16705,7 @@ client.on("interactionCreate", async (interaction) => {
         return client.channels.fetch(channelId).catch(() => null);
       },
       saveDb,
+      runSerialized: runSerializedDbMutation,
     })) {
       return;
     }

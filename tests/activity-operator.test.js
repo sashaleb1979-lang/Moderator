@@ -9,6 +9,7 @@ const {
   buildActivityRoleAssignmentPlan,
   importHistoricalActivity,
   importHistoricalActivityFromWatchedChannels,
+  runActivityRoleSyncFromSnapshots,
   runDailyActivityRoleSync,
 } = require("../src/activity/operator");
 const { ensureActivityState, updateActivityConfig, upsertWatchedChannel } = require("../src/activity/state");
@@ -79,6 +80,11 @@ test("importHistoricalActivity replays history, finalizes imported sessions, rec
     resolveMemberRoleIds(userId) {
       assert.equal(userId, "user-1");
       return ["role-floating"];
+    },
+    resolveMemberActivityMeta() {
+      return {
+        joinedAt: "2026-04-01T10:00:00.000Z",
+      };
     },
     async applyRoleChanges(change) {
       roleChanges.push(change);
@@ -168,6 +174,7 @@ test("applyInitialActivityRoleAssignments skips manual, frozen, unmapped, and un
   const roleChanges = [];
   const result = await applyInitialActivityRoleAssignments({
     db,
+    userIds: ["manual", "frozen", "unmapped", "unchanged"],
     resolveMemberRoleIds(userId) {
       if (userId === "unchanged") return ["role-weak"];
       return [];
@@ -186,6 +193,373 @@ test("applyInitialActivityRoleAssignments skips manual, frozen, unmapped, and un
   assert.equal(db.profiles.frozen.domains.activity.appliedActivityRoleKey, null);
   assert.equal(db.profiles.unmapped.domains.activity.appliedActivityRoleKey, null);
   assert.equal(db.profiles.unchanged.domains.activity.appliedActivityRoleKey, "weak");
+});
+
+test("buildActivityRoleAssignmentPlan removes stale managed roles when desired role is missing or unmapped", () => {
+  const db = {
+    profiles: {
+      missing: {
+        userId: "missing",
+        domains: {
+          activity: {
+            desiredActivityRoleKey: null,
+            appliedActivityRoleKey: "weak",
+          },
+        },
+      },
+      unmapped: {
+        userId: "unmapped",
+        domains: {
+          activity: {
+            desiredActivityRoleKey: "stable",
+            appliedActivityRoleKey: "weak",
+          },
+        },
+      },
+    },
+  };
+
+  updateActivityConfig(db, {
+    activityRoleIds: {
+      weak: "role-weak",
+      floating: "role-floating",
+    },
+  });
+
+  const missingPlan = buildActivityRoleAssignmentPlan({
+    db,
+    userId: "missing",
+    memberRoleIds: ["role-weak", "role-floating"],
+  });
+  assert.equal(missingPlan.shouldApply, true);
+  assert.deepEqual(missingPlan.addRoleIds, []);
+  assert.deepEqual(missingPlan.removeRoleIds.slice().sort(), ["role-floating", "role-weak"]);
+
+  const unmappedPlan = buildActivityRoleAssignmentPlan({
+    db,
+    userId: "unmapped",
+    memberRoleIds: ["role-weak"],
+  });
+  assert.equal(unmappedPlan.shouldApply, true);
+  assert.equal(unmappedPlan.desiredRoleKey, "stable");
+  assert.equal(unmappedPlan.desiredRoleId, null);
+  assert.deepEqual(unmappedPlan.addRoleIds, []);
+  assert.deepEqual(unmappedPlan.removeRoleIds, ["role-weak"]);
+});
+
+test("applyInitialActivityRoleAssignments cleans duplicate managed roles when desired role is missing", async () => {
+  const db = {
+    profiles: {
+      duplicate: {
+        userId: "duplicate",
+        domains: {
+          activity: {
+            desiredActivityRoleKey: null,
+            appliedActivityRoleKey: "weak",
+          },
+        },
+      },
+    },
+  };
+
+  updateActivityConfig(db, {
+    activityRoleIds: {
+      weak: "role-weak",
+      floating: "role-floating",
+    },
+  });
+
+  const roleChanges = [];
+  const result = await applyInitialActivityRoleAssignments({
+    db,
+    userIds: ["duplicate"],
+    resolveMemberRoleIds() {
+      return ["role-weak", "role-floating"];
+    },
+    async applyRoleChanges(change) {
+      roleChanges.push(change);
+      return true;
+    },
+    now: "2026-05-09T12:00:00.000Z",
+  });
+
+  assert.equal(result.appliedCount, 1);
+  assert.equal(result.skippedCount, 0);
+  assert.deepEqual(roleChanges, [
+    {
+      userId: "duplicate",
+      desiredRoleKey: null,
+      desiredRoleId: null,
+      addRoleIds: [],
+      removeRoleIds: ["role-floating", "role-weak"],
+    },
+  ]);
+  assert.equal(db.profiles.duplicate.domains.activity.appliedActivityRoleKey, null);
+});
+
+test("runDailyActivityRoleSync targets activity-owned users instead of every profile record", async () => {
+  const db = {
+    profiles: {
+      profileOnly: {
+        userId: "profileOnly",
+        username: "todo",
+      },
+      activeUser: {
+        userId: "activeUser",
+        username: "todo",
+      },
+    },
+    sot: {
+      activity: {
+        config: {},
+        watchedChannels: [],
+        globalUserSessions: [
+          {
+            guildId: "guild-1",
+            userId: "activeUser",
+            startedAt: "2026-05-08T12:00:00.000Z",
+            endedAt: "2026-05-08T12:10:00.000Z",
+            effectiveValue: 1,
+          },
+        ],
+        userChannelDailyStats: [
+          {
+            guildId: "guild-1",
+            channelId: "main-1",
+            userId: "activeUser",
+            date: "2026-05-08",
+            messagesCount: 8,
+            weightedMessagesCount: 8,
+            sessionsCount: 1,
+            effectiveSessionsCount: 1,
+            firstMessageAt: "2026-05-08T12:00:00.000Z",
+            lastMessageAt: "2026-05-08T12:10:00.000Z",
+          },
+        ],
+        userSnapshots: {
+          activeUser: {
+            desiredActivityRoleKey: "weak",
+          },
+        },
+        calibrationRuns: [],
+        ops: { moderationAuditLog: [] },
+        runtime: { openSessions: {}, dirtyUsers: [] },
+      },
+    },
+  };
+
+  updateActivityConfig(db, {
+    activityRoleIds: {
+      weak: "role-weak",
+    },
+  });
+
+  const resolvedUserIds = [];
+  const result = await runDailyActivityRoleSync({
+    db,
+    now: "2026-05-09T12:00:00.000Z",
+    resolveMemberRoleIds(userId) {
+      resolvedUserIds.push(userId);
+      return userId === "activeUser" ? ["role-weak"] : [];
+    },
+    resolveMemberActivityMeta() {
+      return {
+        joinedAt: "2026-05-01T12:00:00.000Z",
+      };
+    },
+    async applyRoleChanges() {
+      return true;
+    },
+  });
+
+  assert.equal(result.targetUserCount, 1);
+  assert.equal(result.rebuiltUserCount, 1);
+  assert.deepEqual(resolvedUserIds, ["activeUser"]);
+  assert.equal(db.profiles.profileOnly?.domains?.activity ?? null, null);
+  assert.equal(db.sot.activity.runtime.lastDailyRoleSyncStats.targetUserCount, 1);
+  assert.equal(db.sot.activity.runtime.lastDailyRoleSyncStats.managedRoleHolderCount, 0);
+  assert.equal(db.sot.activity.runtime.lastDailyRoleSyncStats.localActivityTargetCount, 1);
+  assert.equal(db.sot.activity.runtime.lastDailyRoleSyncStats.missingLocalHistoryUserCount, 0);
+  assert.equal(db.sot.activity.runtime.lastRebuildAndRoleSyncAt, "2026-05-09T12:00:00.000Z");
+  assert.deepEqual(db.sot.activity.runtime.lastRebuildAndRoleSyncStats, db.sot.activity.runtime.lastDailyRoleSyncStats);
+});
+
+test("runDailyActivityRoleSync reports managed-role holders without local history without auto-demoting them", async () => {
+  const db = {
+    profiles: {
+      staleHolder: {
+        userId: "staleHolder",
+        domains: {
+          activity: {
+            desiredActivityRoleKey: null,
+            appliedActivityRoleKey: "weak",
+          },
+        },
+      },
+    },
+    sot: {
+      activity: {
+        config: {},
+        watchedChannels: [],
+        globalUserSessions: [],
+        userChannelDailyStats: [],
+        userSnapshots: {},
+        calibrationRuns: [],
+        ops: { moderationAuditLog: [] },
+        runtime: { openSessions: {}, dirtyUsers: [] },
+      },
+    },
+  };
+
+  updateActivityConfig(db, {
+    activityRoleIds: {
+      weak: "role-weak",
+      floating: "role-floating",
+    },
+  });
+
+  const roleChanges = [];
+  const result = await runDailyActivityRoleSync({
+    db,
+    now: "2026-05-09T12:00:00.000Z",
+    listManagedActivityRoleUserIds() {
+      return ["staleHolder"];
+    },
+    resolveMemberRoleIds() {
+      return ["role-weak", "role-floating"];
+    },
+    resolveMemberActivityMeta() {
+      return {
+        joinedAt: "2026-05-01T12:00:00.000Z",
+      };
+    },
+    async applyRoleChanges(change) {
+      roleChanges.push(change);
+      return true;
+    },
+  });
+
+  assert.equal(result.targetUserCount, 0);
+  assert.equal(result.rebuiltUserCount, 0);
+  assert.equal(result.roleAssignment.appliedCount, 0);
+  assert.deepEqual(roleChanges, []);
+  assert.deepEqual(db.sot.activity.runtime.lastDailyRoleSyncStats, {
+    targetUserCount: 0,
+    managedRoleHolderCount: 1,
+    localActivityTargetCount: 0,
+    missingLocalHistoryUserCount: 1,
+    rebuiltUserCount: 0,
+    appliedCount: 0,
+    skippedCount: 0,
+    skipReasonCounts: {},
+    syncMode: "rebuild_and_sync",
+  });
+});
+
+test("runActivityRoleSyncFromSnapshots aligns roles only for saved snapshots and skips missing-snapshot holders", async () => {
+  const db = {
+    profiles: {
+      snapshotUser: {
+        userId: "snapshotUser",
+        domains: {
+          activity: {
+            desiredActivityRoleKey: "weak",
+            appliedActivityRoleKey: null,
+          },
+        },
+      },
+      staleHolder: {
+        userId: "staleHolder",
+        domains: {
+          activity: {
+            desiredActivityRoleKey: null,
+            appliedActivityRoleKey: "weak",
+          },
+        },
+      },
+    },
+    sot: {
+      activity: {
+        config: {},
+        watchedChannels: [],
+        globalUserSessions: [],
+        userChannelDailyStats: [],
+        userSnapshots: {
+          snapshotUser: {
+            desiredActivityRoleKey: "weak",
+          },
+        },
+        calibrationRuns: [],
+        ops: { moderationAuditLog: [] },
+        runtime: {
+          openSessions: {
+            runtimeOnly: {
+              userId: "runtimeOnly",
+              guildId: "guild-1",
+              startedAt: "2026-05-09T11:55:00.000Z",
+              endedAt: "2026-05-09T11:59:00.000Z",
+              messageCount: 2,
+              weightedMessageCount: 2,
+              sessionMessageCount: 2,
+              channelBreakdown: {},
+              dayBreakdown: {},
+            },
+          },
+          dirtyUsers: ["runtimeOnly"],
+          lastFullRecalcAt: "2026-05-08T12:00:00.000Z",
+        },
+      },
+    },
+  };
+
+  updateActivityConfig(db, {
+    activityRoleIds: {
+      weak: "role-weak",
+      floating: "role-floating",
+    },
+  });
+
+  const roleChanges = [];
+  const result = await runActivityRoleSyncFromSnapshots({
+    db,
+    now: "2026-05-09T12:00:00.000Z",
+    listManagedActivityRoleUserIds() {
+      return ["staleHolder"];
+    },
+    resolveMemberRoleIds(userId) {
+      return userId === "staleHolder" ? ["role-weak"] : [];
+    },
+    async applyRoleChanges(change) {
+      roleChanges.push(change);
+      return true;
+    },
+  });
+
+  assert.equal(result.targetUserCount, 1);
+  assert.equal(result.roleAssignment.appliedCount, 1);
+  assert.equal(db.sot.activity.runtime.lastFullRecalcAt, "2026-05-08T12:00:00.000Z");
+  assert.deepEqual(db.sot.activity.runtime.lastDailyRoleSyncStats, {
+    targetUserCount: 1,
+    managedRoleHolderCount: 1,
+    localActivityTargetCount: 1,
+    missingLocalHistoryUserCount: 1,
+    rebuiltUserCount: 0,
+    appliedCount: 1,
+    skippedCount: 0,
+    skipReasonCounts: {},
+    syncMode: "roles_only",
+  });
+  assert.equal(db.sot.activity.runtime.lastRolesOnlySyncAt, "2026-05-09T12:00:00.000Z");
+  assert.deepEqual(db.sot.activity.runtime.lastRolesOnlySyncStats, db.sot.activity.runtime.lastDailyRoleSyncStats);
+  assert.deepEqual(roleChanges, [
+    {
+      userId: "snapshotUser",
+      desiredRoleKey: "weak",
+      desiredRoleId: "role-weak",
+      addRoleIds: ["role-weak"],
+      removeRoleIds: [],
+    },
+  ]);
 });
 
 test("buildActivityRoleAssignmentPlan removes managed activity roles from gated new members", () => {
@@ -309,12 +683,19 @@ test("runDailyActivityRoleSync rebuilds snapshots with member age metadata and a
   assert.equal(db.profiles["user-1"].domains.activity.desiredActivityRoleKey, "weak");
   assert.equal(db.profiles["user-1"].domains.activity.appliedActivityRoleKey, "weak");
   assert.equal(db.sot.activity.runtime.lastDailyRoleSyncAt, "2026-05-09T12:00:00.000Z");
+  assert.equal(db.sot.activity.runtime.lastRebuildAndRoleSyncAt, "2026-05-09T12:00:00.000Z");
   assert.deepEqual(db.sot.activity.runtime.lastDailyRoleSyncStats, {
     targetUserCount: 1,
+    managedRoleHolderCount: 0,
+    localActivityTargetCount: 1,
+    missingLocalHistoryUserCount: 0,
     rebuiltUserCount: 1,
     appliedCount: 1,
     skippedCount: 0,
+    skipReasonCounts: {},
+    syncMode: "rebuild_and_sync",
   });
+  assert.deepEqual(db.sot.activity.runtime.lastRebuildAndRoleSyncStats, db.sot.activity.runtime.lastDailyRoleSyncStats);
   assert.deepEqual(roleChanges, [
     {
       userId: "user-1",
@@ -373,6 +754,11 @@ test("importHistoricalActivityFromWatchedChannels paginates channel history, res
     },
     resolveMemberRoleIds() {
       return [];
+    },
+    resolveMemberActivityMeta() {
+      return {
+        joinedAt: "2026-04-01T10:00:00.000Z",
+      };
     },
     async applyRoleChanges() {
       return true;

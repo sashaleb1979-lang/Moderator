@@ -431,7 +431,7 @@ function syncLegacyIntegrationWrites(db = {}) {
   const nextIntegrations = buildLegacyIntegrationState({ db });
   const writtenSlots = [];
 
-  for (const slot of ["elo", "tierlist", "verification"]) {
+  for (const slot of ["elo", "roblox", "tierlist", "verification"]) {
     const nextRecord = mergeLegacyObject(nextSot.integrations?.[slot], nextIntegrations?.[slot]);
     if (isEqual(nextSot.integrations?.[slot], nextRecord)) continue;
     nextSot.integrations[slot] = nextRecord;

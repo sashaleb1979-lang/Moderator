@@ -35,6 +35,56 @@ function normalizeIntervalMs(value, fallbackMs) {
   return Number.isFinite(numeric) && numeric > 0 ? numeric : fallbackMs;
 }
 
+function buildRobloxPeriodicJobs(options = {}) {
+  const {
+    runRobloxProfileRefreshJob,
+    flushRobloxRuntime,
+    syncRobloxPlaytime,
+    roblox = {},
+  } = options;
+
+  if (runRobloxProfileRefreshJob != null) {
+    assertFunction(runRobloxProfileRefreshJob, "runRobloxProfileRefreshJob");
+  }
+  if (syncRobloxPlaytime != null) {
+    assertFunction(syncRobloxPlaytime, "syncRobloxPlaytime");
+  }
+  if (flushRobloxRuntime != null) {
+    assertFunction(flushRobloxRuntime, "flushRobloxRuntime");
+  }
+
+  const periodicJobs = [];
+
+  if (roblox?.metadataRefreshEnabled !== false && typeof runRobloxProfileRefreshJob === "function") {
+    periodicJobs.push({
+      key: "roblox.profileRefresh",
+      run: runRobloxProfileRefreshJob,
+      intervalMs: Math.max(1, Number(roblox?.metadataRefreshHours) || 24) * 60 * 60 * 1000,
+      errorLabel: "Roblox metadata refresh failed",
+    });
+  }
+
+  if (roblox?.playtimeTrackingEnabled !== false && typeof syncRobloxPlaytime === "function") {
+    periodicJobs.push({
+      key: "roblox.playtimeSync",
+      run: syncRobloxPlaytime,
+      intervalMs: Math.max(1, Number(roblox?.playtimePollMinutes) || 2) * 60 * 1000,
+      errorLabel: "Roblox playtime sync failed",
+    });
+  }
+
+  if (roblox?.runtimeFlushEnabled !== false && typeof flushRobloxRuntime === "function") {
+    periodicJobs.push({
+      key: "roblox.runtimeFlush",
+      run: flushRobloxRuntime,
+      intervalMs: Math.max(1, Number(roblox?.flushIntervalMinutes) || 10) * 60 * 1000,
+      errorLabel: "Roblox runtime flush failed",
+    });
+  }
+
+  return periodicJobs;
+}
+
 function buildClientReadyPeriodicJobs(options = {}) {
   const {
     runAutoResendTick,
@@ -56,9 +106,6 @@ function buildClientReadyPeriodicJobs(options = {}) {
 
   assertFunction(runAutoResendTick, "runAutoResendTick");
   assertFunction(refreshLegacyTierlistSummaryMessage, "refreshLegacyTierlistSummaryMessage");
-  if (runRobloxProfileRefreshJob != null) {
-    assertFunction(runRobloxProfileRefreshJob, "runRobloxProfileRefreshJob");
-  }
   if (runVerificationDeadlineSweep != null) {
     assertFunction(runVerificationDeadlineSweep, "runVerificationDeadlineSweep");
   }
@@ -67,12 +114,6 @@ function buildClientReadyPeriodicJobs(options = {}) {
   }
   if (runDailyActivityRoleSync != null) {
     assertFunction(runDailyActivityRoleSync, "runDailyActivityRoleSync");
-  }
-  if (syncRobloxPlaytime != null) {
-    assertFunction(syncRobloxPlaytime, "syncRobloxPlaytime");
-  }
-  if (flushRobloxRuntime != null) {
-    assertFunction(flushRobloxRuntime, "flushRobloxRuntime");
   }
   if (getResolvedIntegrationSourcePath != null) {
     assertFunction(getResolvedIntegrationSourcePath, "getResolvedIntegrationSourcePath");
@@ -121,29 +162,12 @@ function buildClientReadyPeriodicJobs(options = {}) {
     });
   }
 
-  if (roblox?.metadataRefreshEnabled !== false && typeof runRobloxProfileRefreshJob === "function") {
-    periodicJobs.push({
-      run: runRobloxProfileRefreshJob,
-      intervalMs: Math.max(1, Number(roblox?.metadataRefreshHours) || 24) * 60 * 60 * 1000,
-      errorLabel: "Roblox metadata refresh failed",
-    });
-  }
-
-  if (roblox?.playtimeTrackingEnabled !== false && typeof syncRobloxPlaytime === "function") {
-    periodicJobs.push({
-      run: syncRobloxPlaytime,
-      intervalMs: Math.max(1, Number(roblox?.playtimePollMinutes) || 2) * 60 * 1000,
-      errorLabel: "Roblox playtime sync failed",
-    });
-  }
-
-  if (roblox?.playtimeTrackingEnabled !== false && roblox?.runtimeFlushEnabled !== false && typeof flushRobloxRuntime === "function") {
-    periodicJobs.push({
-      run: flushRobloxRuntime,
-      intervalMs: Math.max(1, Number(roblox?.flushIntervalMinutes) || 10) * 60 * 1000,
-      errorLabel: "Roblox runtime flush failed",
-    });
-  }
+  periodicJobs.push(...buildRobloxPeriodicJobs({
+    runRobloxProfileRefreshJob,
+    flushRobloxRuntime,
+    syncRobloxPlaytime,
+    roblox,
+  }));
 
   return periodicJobs;
 }
@@ -235,14 +259,29 @@ function scheduleClientReadyIntervals(client, options = {}) {
   assertFunction(scheduleSotAlertTicks, "scheduleSotAlertTicks");
   assertFunction(setIntervalFn, "setIntervalFn");
   assertFunction(logError, "logError");
-  const jobs = normalizePeriodicJobs(periodicJobs);
-
   const intervalHandles = [];
 
   const alertHandles = scheduleSotAlertTicks(client);
   if (Array.isArray(alertHandles)) {
     intervalHandles.push(...alertHandles);
   }
+
+  intervalHandles.push(...schedulePeriodicJobs(client, { periodicJobs, setIntervalFn, logError }));
+
+  return intervalHandles;
+}
+
+function schedulePeriodicJobs(client, options = {}) {
+  const {
+    periodicJobs = [],
+    setIntervalFn = setInterval,
+    logError = () => {},
+  } = options;
+
+  assertFunction(setIntervalFn, "setIntervalFn");
+  assertFunction(logError, "logError");
+  const jobs = normalizePeriodicJobs(periodicJobs);
+  const intervalHandles = [];
 
   for (const job of jobs) {
     intervalHandles.push(setIntervalFn(() => {
@@ -256,8 +295,10 @@ function scheduleClientReadyIntervals(client, options = {}) {
 }
 
 module.exports = {
+  buildRobloxPeriodicJobs,
   buildClientReadyPeriodicJobs,
   ClientReadyCoreError,
   runClientReadyCore,
+  schedulePeriodicJobs,
   scheduleClientReadyIntervals,
 };

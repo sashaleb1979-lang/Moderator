@@ -169,6 +169,7 @@ test("createEmptySotState seeds all core domains for v1", () => {
   assert.deepEqual(Object.keys(sot.channels), CHANNEL_SLOTS);
   assert.deepEqual(Object.keys(sot.panels.tierlistText.messageIds), ["main", "summary", "pages"]);
   assert.equal(sot.modes.onboard, null);
+  assert.deepEqual(sot.integrations.roblox, {});
   assert.equal(sot.influence.tiers[5], 4);
 });
 
@@ -266,6 +267,7 @@ test("ensureSotState normalizes existing v1 state without remigrating", () => {
   assert.deepEqual(db.sot, normalized);
   assert.equal(db.sot.channels.welcome.value, "welcome-channel");
   assert.equal(db.sot.panels.tierlistText.messageIds.summary, null);
+  assert.deepEqual(db.sot.integrations.roblox, {});
   assert.equal(db.sot.influence.tiers[1], 2);
   assert.equal(db.sot.influence.tiers[5], 10);
 });
