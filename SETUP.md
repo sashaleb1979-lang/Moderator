@@ -154,6 +154,12 @@ SNAPSHOT_OUTPUT_DIR=./backups
 - graphicTierlist.title — заголовок верхнего graphic-board
 - graphicTierlist.subtitle — подзаголовок верхнего graphic-board
 - graphicTierlist.tierColors — цвета карточек по tier в верхнем graphic-board
+- roblox.metadataRefreshEnabled / roblox.metadataRefreshHours — включает и настраивает 24h refresh Roblox metadata
+- roblox.playtimeTrackingEnabled / roblox.playtimePollMinutes — включает estimated JJS playtime tracking; стартовый безопасный poll — 2 минуты
+- roblox.runtimeFlushEnabled / roblox.flushIntervalMinutes — cadence для периодического flush Roblox runtime агрегатов; стартовый safe flush — 10 минут
+- roblox.jjsUniverseId / roblox.jjsRootPlaceId / roblox.jjsPlaceId — IDs JJS для presence matching и co-play aggregation
+- roblox.links.friendRequestsUrl / roblox.links.jjsGameUrl — stable links для friend requests и JJS entrypoint
+- roblox.frequentNonFriendMinutes / roblox.frequentNonFriendSessions — пороги для frequent non-friend interactions read model
 
 Каждый персонаж в characters имеет вид:
 
@@ -168,6 +174,36 @@ SNAPSHOT_OUTPUT_DIR=./backups
 id — внутренний ключ.
 label — то, что видит пользователь в select menu.
 roleId — необязателен. Если пустой, бот сам найдёт или создаст роль по label.
+
+Опциональный Roblox block для backend-only social/profile runtime:
+
+```json
+{
+  "roblox": {
+    "metadataRefreshEnabled": true,
+    "metadataRefreshHours": 24,
+    "playtimeTrackingEnabled": true,
+    "playtimePollMinutes": 2,
+    "runtimeFlushEnabled": true,
+    "flushIntervalMinutes": 10,
+    "jjsUniverseId": 0,
+    "jjsRootPlaceId": 0,
+    "jjsPlaceId": 0,
+    "frequentNonFriendMinutes": 60,
+    "frequentNonFriendSessions": 2,
+    "links": {
+      "friendRequestsUrl": "https://www.roblox.com/users/friends#!/friend-requests",
+      "jjsGameUrl": ""
+    }
+  }
+}
+```
+
+- jjsUniverseId — предпочтительный идентификатор experience для match по presence
+- jjsRootPlaceId — запасной идентификатор root place, если Universe не хватает
+- jjsPlaceId — дополнительный точечный place id, если хотите матчить по конкретному place
+- friendRequestsUrl — стабильная ссылка на входящие friend requests Roblox
+- jjsGameUrl — каноническая ссылка на JJS place или experience, которую потом можно показывать в профиле
 
 ## 4. Добавь всех персонажей
 

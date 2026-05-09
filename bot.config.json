@@ -46,6 +46,23 @@
     "missingTierlistImageUrl": "",
     "missingTierlistImagePath": ""
   },
+  "roblox": {
+    "metadataRefreshEnabled": true,
+    "metadataRefreshHours": 24,
+    "playtimeTrackingEnabled": true,
+    "playtimePollMinutes": 2,
+    "runtimeFlushEnabled": true,
+    "flushIntervalMinutes": 10,
+    "jjsUniverseId": 0,
+    "jjsRootPlaceId": 0,
+    "jjsPlaceId": 0,
+    "frequentNonFriendMinutes": 60,
+    "frequentNonFriendSessions": 2,
+    "links": {
+      "friendRequestsUrl": "https://www.roblox.com/users/friends#!/friend-requests",
+      "jjsGameUrl": ""
+    }
+  },
   "killTierLabels": {
     "1": "Низший ранг",
     "2": "Средний ранг",

@@ -186,6 +186,15 @@ function normalizeRobloxGroupMembership(value = {}) {
   };
 }
 
+function normalizeRobloxUsernameHistoryEntry(value = {}) {
+  const source = value && typeof value === "object" ? value : {};
+  const name = normalizeNullableString(source.name ?? source.username ?? source.value, 120);
+  if (!name) return null;
+  return {
+    name,
+  };
+}
+
 class RobloxApiError extends Error {
   constructor(message, details = {}) {
     super(message);
@@ -250,6 +259,21 @@ function createRobloxApiClient(options = {}) {
     return normalizeRobloxUserProfile(payload);
   }
 
+  async function fetchUserUsernameHistory(userId, options = {}) {
+    const normalizedUserId = normalizeNullableInteger(userId, { min: 1 });
+    if (!normalizedUserId) return [];
+    const query = new URLSearchParams({
+      limit: String(Math.max(1, Math.min(100, Number(options.limit) || 100))),
+      sortOrder: cleanString(options.sortOrder || "Desc", 10) || "Desc",
+    });
+    const payload = await requestJson(`${bases.users}/v1/users/${normalizedUserId}/username-history?${query.toString()}`);
+    return Array.isArray(payload?.data)
+      ? payload.data
+        .map((entry) => normalizeRobloxUsernameHistoryEntry(entry))
+        .filter(Boolean)
+      : [];
+  }
+
   async function fetchUserAvatarHeadshots(userIds = [], options = {}) {
     const normalizedUserIds = normalizeIntegerArray(userIds, { limit: 100 });
     if (!normalizedUserIds.length) return [];
@@ -268,6 +292,13 @@ function createRobloxApiClient(options = {}) {
     if (!normalizedUserId) return [];
     const payload = await requestJson(`${bases.friends}/v1/users/${normalizedUserId}/friends`);
     return Array.isArray(payload?.data) ? payload.data.map((entry) => normalizeRobloxFriendRecord(entry)) : [];
+  }
+
+  async function fetchUserFriendCount(userId) {
+    const normalizedUserId = normalizeNullableInteger(userId, { min: 1 });
+    if (!normalizedUserId) return 0;
+    const payload = await requestJson(`${bases.friends}/v1/users/${normalizedUserId}/friends/count`);
+    return normalizeNonNegativeInteger(payload?.count, 0);
   }
 
   async function fetchFriendStatuses(userId, targetUserIds = []) {
@@ -307,10 +338,12 @@ function createRobloxApiClient(options = {}) {
   return {
     fetchFriendStatuses,
     fetchUserAvatarHeadshots,
+    fetchUserFriendCount,
     fetchUserFriends,
     fetchUserGroups,
     fetchUserPresences,
     fetchUserProfile,
+    fetchUserUsernameHistory,
     fetchUsersByUsernames,
   };
 }
@@ -325,6 +358,7 @@ module.exports = {
   normalizeRobloxFriendStatusRecord,
   normalizeRobloxGroupMembership,
   normalizeRobloxPresenceRecord,
+  normalizeRobloxUsernameHistoryEntry,
   normalizeRobloxUserProfile,
   splitIntoBatches,
 };

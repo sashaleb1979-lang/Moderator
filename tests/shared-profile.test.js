@@ -87,6 +87,7 @@ test("ensureSharedProfile migrates onboarding fields into domains and summary", 
       sessionCount: 0,
       currentSessionStartedAt: null,
       lastSeenInJjsAt: null,
+      dailyBuckets: {},
     },
     coPlay: {
       peers: [],
@@ -150,6 +151,86 @@ test("syncSharedProfiles backfills missing shared state and keeps onboarding sna
   assert.equal(db.profiles["100"].domains.onboarding.approvedKills, 7000);
   assert.equal(db.profiles["100"].domains.onboarding.killTier, 4);
   assert.equal(db.profiles["100"].summary.onboarding.mainsCount, 2);
+});
+
+test("ensureSharedProfile normalizes the activity domain and exposes an activity summary", () => {
+  const result = ensureSharedProfile({
+    userId: "300",
+    username: "todo",
+    domains: {
+      activity: {
+        activityScore: "72",
+        trustScore: "540",
+        messages7d: "28",
+        messages30d: "110",
+        messages90d: "180",
+        sessions7d: 6,
+        sessions30d: 18,
+        sessions90d: 31,
+        activeDays7d: 5,
+        activeDays30d: 12,
+        activeDays90d: 20,
+        activeWatchedChannels30d: 3,
+        weightedMessages30d: "120.5",
+        globalEffectiveSessions30d: "19.25",
+        effectiveActiveDays30d: 11.5,
+        daysAbsent: 2,
+        lastSeenAt: "2026-05-08T10:00:00.000Z",
+        desiredActivityRoleKey: "stable",
+        appliedActivityRoleKey: "active",
+        manualOverride: true,
+        autoRoleFrozen: true,
+        recalculatedAt: "2026-05-09T12:00:00.000Z",
+        lastRoleAppliedAt: "2026-05-08T15:00:00.000Z",
+      },
+    },
+  }, "300");
+
+  assert.equal(result.profile.domains.activity.activityScore, 72);
+  assert.equal(result.profile.domains.activity.trustScore, 540);
+  assert.equal(result.profile.domains.activity.messages7d, 28);
+  assert.equal(result.profile.domains.activity.messages30d, 110);
+  assert.equal(result.profile.domains.activity.messages90d, 180);
+  assert.equal(result.profile.domains.activity.sessions7d, 6);
+  assert.equal(result.profile.domains.activity.sessions30d, 18);
+  assert.equal(result.profile.domains.activity.sessions90d, 31);
+  assert.equal(result.profile.domains.activity.activeDays7d, 5);
+  assert.equal(result.profile.domains.activity.activeDays30d, 12);
+  assert.equal(result.profile.domains.activity.activeDays90d, 20);
+  assert.equal(result.profile.domains.activity.activeWatchedChannels30d, 3);
+  assert.equal(result.profile.domains.activity.weightedMessages30d, 120.5);
+  assert.equal(result.profile.domains.activity.globalEffectiveSessions30d, 19.25);
+  assert.equal(result.profile.domains.activity.effectiveActiveDays30d, 11.5);
+  assert.equal(result.profile.domains.activity.daysAbsent, 2);
+  assert.equal(result.profile.domains.activity.lastSeenAt, "2026-05-08T10:00:00.000Z");
+  assert.equal(result.profile.domains.activity.desiredActivityRoleKey, "stable");
+  assert.equal(result.profile.domains.activity.appliedActivityRoleKey, "active");
+  assert.equal(result.profile.domains.activity.manualOverride, true);
+  assert.equal(result.profile.domains.activity.autoRoleFrozen, true);
+  assert.equal(result.profile.domains.activity.recalculatedAt, "2026-05-09T12:00:00.000Z");
+  assert.equal(result.profile.domains.activity.lastRoleAppliedAt, "2026-05-08T15:00:00.000Z");
+  assert.equal(result.profile.summary.activity.activityScore, 72);
+  assert.equal(result.profile.summary.activity.trustScore, 540);
+  assert.equal(result.profile.summary.activity.messages7d, 28);
+  assert.equal(result.profile.summary.activity.messages30d, 110);
+  assert.equal(result.profile.summary.activity.messages90d, 180);
+  assert.equal(result.profile.summary.activity.sessions7d, 6);
+  assert.equal(result.profile.summary.activity.sessions30d, 18);
+  assert.equal(result.profile.summary.activity.sessions90d, 31);
+  assert.equal(result.profile.summary.activity.activeDays7d, 5);
+  assert.equal(result.profile.summary.activity.activeDays30d, 12);
+  assert.equal(result.profile.summary.activity.activeDays90d, 20);
+  assert.equal(result.profile.summary.activity.weightedMessages30d, 120.5);
+  assert.equal(result.profile.summary.activity.globalEffectiveSessions30d, 19.25);
+  assert.equal(result.profile.summary.activity.effectiveActiveDays30d, 11.5);
+  assert.equal(result.profile.summary.activity.daysAbsent, 2);
+  assert.equal(result.profile.summary.activity.lastSeenAt, "2026-05-08T10:00:00.000Z");
+  assert.equal(result.profile.summary.activity.desiredActivityRoleKey, "stable");
+  assert.equal(result.profile.summary.activity.appliedActivityRoleKey, "active");
+  assert.equal(result.profile.summary.activity.manualOverride, true);
+  assert.equal(result.profile.summary.activity.autoRoleFrozen, true);
+  assert.equal(result.profile.summary.activity.recalculatedAt, "2026-05-09T12:00:00.000Z");
+  assert.equal(result.profile.summary.activity.lastRoleAppliedAt, "2026-05-08T15:00:00.000Z");
 });
 
 test("deriveProfileMainView recalculates labels and role ids from current character entries", () => {
@@ -259,6 +340,7 @@ test("normalizeRobloxDomainState defaults to unverified when binding is missing"
       sessionCount: 0,
       currentSessionStartedAt: null,
       lastSeenInJjsAt: null,
+      dailyBuckets: {},
     },
     coPlay: {
       peers: [],
@@ -278,6 +360,92 @@ test("ensureSharedProfile does not leak Discord identity fields into Roblox doma
   assert.equal(result.profile.domains.roblox.displayName, null);
   assert.equal(result.profile.summary.roblox.hasVerifiedAccount, false);
   assert.equal(result.profile.summary.roblox.username, null);
+});
+
+test("ensureSharedProfile summary exposes rename, server friend, and frequent non-friend Roblox read fields", () => {
+  const result = ensureSharedProfile({
+    userId: "300",
+    domains: {
+      roblox: {
+        username: "CurrentName",
+        displayName: "Current Display",
+        userId: "777",
+        verificationStatus: "verified",
+        usernameHistory: [
+          { name: "CurrentName", firstSeenAt: null, lastSeenAt: null },
+          { name: "OldName", firstSeenAt: "2026-05-01T00:00:00.000Z", lastSeenAt: "2026-05-08T00:00:00.000Z" },
+        ],
+        displayNameHistory: [
+          { name: "Current Display", firstSeenAt: null, lastSeenAt: null },
+          { name: "Old Display", firstSeenAt: "2026-05-02T00:00:00.000Z", lastSeenAt: "2026-05-09T00:00:00.000Z" },
+        ],
+        serverFriends: {
+          userIds: ["friend-1", "friend-2"],
+          computedAt: "2026-05-09T10:00:00.000Z",
+        },
+        playtime: {
+          totalJjsMinutes: 180,
+          jjsMinutes7d: 60,
+          jjsMinutes30d: 120,
+          sessionCount: 3,
+          currentSessionStartedAt: "2026-05-09T12:00:00.000Z",
+          lastSeenInJjsAt: "2026-05-09T12:10:00.000Z",
+          dailyBuckets: {},
+        },
+        coPlay: {
+          computedAt: "2026-05-09T12:12:00.000Z",
+          peers: [
+            {
+              peerUserId: "infrequent-non-friend",
+              isRobloxFriend: false,
+              minutesTogether: 15,
+              sessionsTogether: 1,
+              sharedJjsSessionCount: 1,
+              lastSeenTogetherAt: "2026-05-09T12:11:00.000Z",
+            },
+            {
+              peerUserId: "frequent-non-friend",
+              isRobloxFriend: false,
+              minutesTogether: 75,
+              sessionsTogether: 1,
+              sharedJjsSessionCount: 1,
+              lastSeenTogetherAt: "2026-05-09T12:12:00.000Z",
+            },
+            {
+              peerUserId: "friend-peer",
+              isRobloxFriend: true,
+              minutesTogether: 90,
+              sessionsTogether: 3,
+              sharedJjsSessionCount: 3,
+              lastSeenTogetherAt: "2026-05-09T12:13:00.000Z",
+            },
+          ],
+        },
+      },
+    },
+  }, "300");
+
+  assert.equal(result.profile.summary.roblox.currentUsername, "CurrentName");
+  assert.equal(result.profile.summary.roblox.currentDisplayName, "Current Display");
+  assert.equal(result.profile.summary.roblox.previousUsername, "OldName");
+  assert.equal(result.profile.summary.roblox.previousDisplayName, "Old Display");
+  assert.equal(result.profile.summary.roblox.renameCount, 1);
+  assert.equal(result.profile.summary.roblox.displayRenameCount, 1);
+  assert.equal(result.profile.summary.roblox.lastRenameSeenAt, "2026-05-09T00:00:00.000Z");
+  assert.deepEqual(result.profile.summary.roblox.serverFriendsUserIds, ["friend-1", "friend-2"]);
+  assert.equal(result.profile.summary.roblox.serverFriendsCount, 2);
+  assert.equal(result.profile.summary.roblox.serverFriendsComputedAt, "2026-05-09T10:00:00.000Z");
+  assert.equal(result.profile.summary.roblox.nonFriendPeerCount, 2);
+  assert.equal(result.profile.summary.roblox.frequentNonFriendCount, 1);
+  assert.equal(result.profile.summary.roblox.sessionCount, 3);
+  assert.equal(result.profile.summary.roblox.currentSessionStartedAt, "2026-05-09T12:00:00.000Z");
+  assert.deepEqual(result.profile.summary.roblox.topCoPlayPeers.map((entry) => entry.peerUserId), [
+    "friend-peer",
+    "frequent-non-friend",
+    "infrequent-non-friend",
+  ]);
+  assert.equal(result.profile.summary.roblox.topCoPlayPeers[1].isFrequentNonFriend, true);
+  assert.equal(result.profile.summary.roblox.topCoPlayPeers[2].isFrequentNonFriend, false);
 });
 
 test("normalizeRobloxDomainState keeps current names first and normalizes social and playtime scaffolding", () => {
@@ -302,6 +470,7 @@ test("normalizeRobloxDomainState keeps current names first and normalizes social
       sessionCount: 8,
       currentSessionStartedAt: "2026-05-04T00:00:00.000Z",
       lastSeenInJjsAt: "2026-05-05T00:00:00.000Z",
+      dailyBuckets: {},
     },
     robloxCoPlay: {
       computedAt: "2026-05-06T00:00:00.000Z",
@@ -353,6 +522,7 @@ test("applyRobloxAccountSnapshot writes canonical pending Roblox state and prese
           sessionCount: 2,
           currentSessionStartedAt: null,
           lastSeenInJjsAt: "2026-05-03T00:00:00.000Z",
+          dailyBuckets: {},
         },
         coPlay: {
           peers: [{ peerUserId: "peer-1", minutesTogether: 10 }],

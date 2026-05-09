@@ -1,5 +1,6 @@
 "use strict";
 
+const { createEmptyActivityState, normalizeActivityState } = require("../activity/state");
 const { getCharacterAliasNames } = require("./character-aliases");
 const { buildHistoricalManagedCharacterRoleIds } = require("./recovery/plan");
 
@@ -218,6 +219,7 @@ function createEmptySotState() {
       elo: {},
       tierlist: {},
     },
+    activity: createEmptyActivityState(),
     influence: normalizeInfluence(DEFAULT_INFLUENCE),
   };
 }
@@ -497,6 +499,7 @@ function normalizeSotState(value = {}) {
 
   next.presentation = clone(source.presentation && typeof source.presentation === "object" ? source.presentation : next.presentation);
   next.integrations = clone(source.integrations && typeof source.integrations === "object" ? source.integrations : next.integrations);
+  next.activity = normalizeActivityState(source.activity);
   next.influence = normalizeInfluence(source.influence);
   next.modes.onboard = normalizeRecord(source.modes?.onboard, "configured");
 
@@ -541,6 +544,10 @@ function refreshSotStateFromLegacy(db = {}, options = {}) {
 
   if (existing?.characters) {
     refreshed.characters = mergeCharactersAcrossLegacyRefresh(existing.characters, refreshed.characters);
+  }
+
+  if (existing?.activity) {
+    refreshed.activity = normalizeActivityState(existing.activity);
   }
 
   if (existing?.lastVerifiedAt && !options.lastVerifiedAt) {
@@ -596,12 +603,14 @@ module.exports = {
   DEFAULT_INFLUENCE,
   PANEL_MESSAGE_SLOTS,
   SOT_VERSION,
+  createEmptyActivityState,
   createCharacterRecord,
   createEmptySotState,
   createPanelRecord,
   createRecord,
   ensureSotState,
   migrateLegacyState,
+  normalizeActivityState,
   normalizeCharacterRecord,
   normalizeInfluence,
   normalizePanelRecord,

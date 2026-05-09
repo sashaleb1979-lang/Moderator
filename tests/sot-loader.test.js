@@ -249,6 +249,115 @@ test("syncSotShadowState preserves discovered SoT records without reviving compa
   assert.equal(db.sot.characters.legacy_only, undefined);
 });
 
+test("syncSotShadowState preserves activity SoT state during legacy refresh", () => {
+  const schemaOptions = {
+    appConfig: {
+      channels: {
+        welcomeChannelId: "welcome-channel",
+        reviewChannelId: "review-a",
+        tierlistChannelId: "",
+        logChannelId: "",
+      },
+      roles: {},
+      characters: [],
+    },
+  };
+  const db = {
+    config: {
+      welcomePanel: { channelId: "welcome-channel", messageId: "welcome-message" },
+      reviewChannelId: "review-a",
+      tierlistBoard: {
+        text: { channelId: "", messageId: "" },
+        graphic: { channelId: "", messageId: "", lastUpdated: null },
+      },
+      generatedRoles: {
+        characters: {},
+        characterLabels: {},
+        tiers: {},
+      },
+      integrations: {},
+    },
+    sot: {
+      sotVersion: 1,
+      activity: {
+        config: {
+          sessionGapMinutes: 45,
+          scoreWindowDays: 30,
+        },
+        watchedChannels: [
+          {
+            channelId: "channel-1",
+            enabled: true,
+            channelWeight: 1,
+          },
+        ],
+        userSnapshots: {
+          user_1: {
+            activityScore: 55,
+            trustScore: 320,
+          },
+        },
+        ops: {
+          moderationAuditLog: [
+            {
+              actionType: "watch_channel_add",
+              moderatorUserId: "mod-1",
+            },
+          ],
+        },
+        runtime: {
+          dirtyUsers: ["user_1"],
+          lastFlushAt: "2026-05-09T10:00:00.000Z",
+        },
+      },
+    },
+  };
+
+  syncSotShadowState(db, schemaOptions);
+
+  assert.equal(db.sot.activity.config.sessionGapMinutes, 45);
+  assert.equal(db.sot.activity.config.scoreWindowDays, 30);
+  assert.equal(db.sot.activity.config.channelWeightPresets.main_chat, 1);
+  assert.equal(db.sot.activity.config.channelWeightPresets.flood, 0.35);
+  assert.equal(db.sot.activity.config.activityRoleThresholds.core, 85);
+  assert.equal(db.sot.activity.config.activityRoleThresholds.dead, 0);
+  assert.deepEqual(db.sot.activity.watchedChannels, [
+    {
+      guildId: null,
+      channelId: "channel-1",
+      channelNameCache: "",
+      enabled: true,
+      channelType: "normal_chat",
+      channelWeight: 1,
+      countMessages: true,
+      countSessions: true,
+      countForTrust: true,
+      countForRoles: true,
+      importedUntilMessageId: "",
+      lastScannedMessageId: "",
+      lastImportAt: null,
+      createdAt: null,
+      updatedAt: null,
+    },
+  ]);
+  assert.deepEqual(db.sot.activity.userSnapshots, {
+    user_1: {
+      activityScore: 55,
+      trustScore: 320,
+    },
+  });
+  assert.deepEqual(db.sot.activity.ops.moderationAuditLog, [
+    {
+      actionType: "watch_channel_add",
+      moderatorUserId: "mod-1",
+    },
+  ]);
+  assert.deepEqual(db.sot.activity.runtime.dirtyUsers, ["user_1"]);
+  assert.equal(db.sot.activity.runtime.lastFlushAt, "2026-05-09T10:00:00.000Z");
+  assert.deepEqual(db.sot.activity.globalUserSessions, []);
+  assert.deepEqual(db.sot.activity.calibrationRuns, []);
+});
+
 test("saveSotState ensures db.sot, runs beforeWrite, and persists the full db atomically", () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "moderator-sot-save-"));
   const dbPath = path.join(tempDir, "welcome-db.json");

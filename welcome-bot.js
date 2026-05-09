@@ -58,7 +58,7 @@ const {
   runSotStartupAlerts,
   scheduleSotAlertTicks,
 } = require("./src/sot/runtime-alerts");
-const { runClientReadyCore, scheduleClientReadyIntervals } = require("./src/runtime/client-ready-core");
+const { buildClientReadyPeriodicJobs, runClientReadyCore, scheduleClientReadyIntervals } = require("./src/runtime/client-ready-core");
 const {
   syncLegacyGraphicTierlistBoardSnapshot,
   syncLegacyPanelSnapshot,
@@ -116,6 +116,15 @@ const {
 } = require("./src/role-panel");
 const { commitMutation } = require("./src/onboard/refresh-runner");
 const {
+  buildActivityOperatorPanelPayload,
+  handleActivityPanelButtonInteraction,
+} = require("./src/activity/operator");
+  const {
+    flushActivityRuntime,
+    recordActivityMessage,
+    resumeActivityRuntime,
+  } = require("./src/activity/runtime");
+const {
   ONBOARD_ACCESS_MODES,
   createOnboardModeState,
   getOnboardAccessModeLabel,
@@ -158,9 +167,15 @@ const {
   syncSharedProfiles,
 } = require("./src/integrations/shared-profile");
 const {
-  normalizeRobloxAvatarHeadshot,
-  normalizeRobloxUserProfile,
+  createRobloxApiClient,
 } = require("./src/integrations/roblox-service");
+const {
+  createRobloxJobCoordinator,
+  createRobloxRuntimeState,
+  flushRobloxRuntime: flushRobloxRuntimeState,
+  runRobloxProfileRefreshJob: runRobloxProfileRefreshJobCore,
+  runRobloxPlaytimeSyncJob,
+} = require("./src/runtime/roblox-jobs");
 const {
   buildHistoricalManagedCharacterRoleIds,
   buildManagedCharacterRoleRecoveryPlan,
@@ -355,6 +370,7 @@ const WELCOME_CLEANUP_BOT_REPLY_GRACE_MS = 20 * 1000;
 const NON_GGS_CAPTCHA_EXPIRE_MS = 10 * 60 * 1000;
 const NON_GGS_CAPTCHA_STAGES = 2;
 const LEGACY_TIERLIST_SUMMARY_REFRESH_MS = 20 * 60 * 1000;
+const ACTIVITY_RUNTIME_FLUSH_INTERVAL_MS = 5 * 60 * 1000;
 const LEGACY_TIERLIST_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 const LEGACY_TIERLIST_MAIN_SELECT_PAGE_SIZE = 25;
 const SOT_CHARACTER_ALERT_STALE_HOURS = 24;
@@ -428,6 +444,21 @@ function envText(name, fallback = "") {
   return String(raw).trim();
 }
 
+function envBoolean(name, fallback = false) {
+  const raw = envText(name, "");
+  if (!raw) return Boolean(fallback);
+  if (/^(1|true|yes|on)$/i.test(raw)) return true;
+  if (/^(0|false|no|off)$/i.test(raw)) return false;
+  return Boolean(fallback);
+}
+
+function envInteger(name, fallback = 0, minimum = 0) {
+  const raw = envText(name, "");
+  if (!raw) return Number(fallback) || 0;
+  const numeric = Number(raw);
+  return Number.isSafeInteger(numeric) && numeric >= minimum ? numeric : Number(fallback) || 0;
+}
+
 function isPlaceholder(value) {
   const text = String(value || "").trim();
   return !text || text.startsWith("REPLACE_") || text.startsWith("YOUR_");
@@ -448,6 +479,7 @@ function buildRuntimeConfig(fileConfig = {}) {
   const fileCharacters = Array.isArray(fileConfig?.characters) ? fileConfig.characters : [];
   const envCharacters = envText("CHARACTER_CONFIG_JSON", "");
   const characters = envCharacters ? parseCharacterConfig(envCharacters) : fileCharacters;
+  const fileRoblox = fileConfig?.roblox && typeof fileConfig.roblox === "object" ? fileConfig.roblox : {};
 
   return {
     channels: {
@@ -534,6 +566,26 @@ function buildRuntimeConfig(fileConfig = {}) {
       3: String(fileConfig?.killTierLabels?.["3"] || "Высший ранг").trim(),
       4: String(fileConfig?.killTierLabels?.["4"] || "Особый ранг").trim(),
       5: String(fileConfig?.killTierLabels?.["5"] || "Абсолютный ранг").trim(),
+    },
+    roblox: {
+      metadataRefreshEnabled: envBoolean("ROBLOX_METADATA_REFRESH_ENABLED", fileRoblox.metadataRefreshEnabled !== false),
+      metadataRefreshHours: envInteger("ROBLOX_METADATA_REFRESH_HOURS", fileRoblox.metadataRefreshHours || 24, 1),
+      playtimeTrackingEnabled: envBoolean("ROBLOX_PLAYTIME_TRACKING_ENABLED", fileRoblox.playtimeTrackingEnabled !== false),
+      playtimePollMinutes: envInteger("ROBLOX_PLAYTIME_POLL_MINUTES", fileRoblox.playtimePollMinutes || 2, 1),
+      runtimeFlushEnabled: envBoolean("ROBLOX_RUNTIME_FLUSH_ENABLED", fileRoblox.runtimeFlushEnabled !== false),
+      flushIntervalMinutes: envInteger("ROBLOX_FLUSH_INTERVAL_MINUTES", fileRoblox.flushIntervalMinutes || 10, 1),
+      jjsUniverseId: envInteger("ROBLOX_JJS_UNIVERSE_ID", fileRoblox.jjsUniverseId || 0, 0),
+      jjsRootPlaceId: envInteger("ROBLOX_JJS_ROOT_PLACE_ID", fileRoblox.jjsRootPlaceId || 0, 0),
+      jjsPlaceId: envInteger("ROBLOX_JJS_PLACE_ID", fileRoblox.jjsPlaceId || 0, 0),
+      frequentNonFriendMinutes: envInteger("ROBLOX_FREQUENT_NON_FRIEND_MINUTES", fileRoblox.frequentNonFriendMinutes || 60, 1),
+      frequentNonFriendSessions: envInteger("ROBLOX_FREQUENT_NON_FRIEND_SESSIONS", fileRoblox.frequentNonFriendSessions || 2, 1),
+      links: {
+        friendRequestsUrl: envText(
+          "ROBLOX_FRIEND_REQUESTS_URL",
+          fileRoblox?.links?.friendRequestsUrl || "https://www.roblox.com/users/friends#!/friend-requests"
+        ),
+        jjsGameUrl: envText("ROBLOX_JJS_GAME_URL", fileRoblox?.links?.jjsGameUrl || ""),
+      },
     },
     characters,
   };
@@ -708,6 +760,11 @@ function loadDb() {
 }
 
 const db = loadDb();
+const robloxApiClient = createRobloxApiClient();
+const robloxJobCoordinator = createRobloxJobCoordinator({
+  logError: (...args) => console.error(...args),
+});
+const robloxRuntimeState = createRobloxRuntimeState();
 
 logSotDrift(db, "startup-load");
 
@@ -722,6 +779,31 @@ if (db.__needsSaveAfterLoad) saveDb();
 function nowIso() {
   return new Date().toISOString();
 }
+
+const runScheduledRobloxProfileRefreshJob = robloxJobCoordinator.createRunner("profile_refresh", () => runRobloxProfileRefreshJobCore({
+  db,
+  now: nowIso,
+  fetchUserProfile: robloxApiClient.fetchUserProfile.bind(robloxApiClient),
+  fetchUserAvatarHeadshots: robloxApiClient.fetchUserAvatarHeadshots.bind(robloxApiClient),
+  fetchUserUsernameHistory: robloxApiClient.fetchUserUsernameHistory.bind(robloxApiClient),
+  logError: (...args) => console.error(...args),
+}));
+
+const syncRobloxPlaytime = robloxJobCoordinator.createRunner("playtime_sync", () => runRobloxPlaytimeSyncJob({
+  db,
+  runtimeState: robloxRuntimeState,
+  now: nowIso,
+  roblox: appConfig?.roblox,
+  fetchUserPresences: robloxApiClient.fetchUserPresences.bind(robloxApiClient),
+  logError: (...args) => console.error(...args),
+}));
+
+const flushRobloxRuntime = robloxJobCoordinator.createRunner("runtime_flush", () => flushRobloxRuntimeState({
+  db,
+  runtimeState: robloxRuntimeState,
+  now: nowIso,
+  saveDb,
+}));
 
 function cloneJsonValue(value) {
   return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
@@ -3033,6 +3115,73 @@ function finalizeStoredProfile(userId) {
   return db.profiles[userId];
 }
 
+function hasOwnRecordKey(value, key) {
+  return Boolean(value) && Object.prototype.hasOwnProperty.call(value, key);
+}
+
+function readRobloxBindingField(source, keys = []) {
+  const input = source && typeof source === "object" ? source : {};
+  for (const key of Array.isArray(keys) ? keys : []) {
+    if (hasOwnRecordKey(input, key)) {
+      return {
+        found: true,
+        value: input[key],
+      };
+    }
+  }
+
+  return {
+    found: false,
+    value: undefined,
+  };
+}
+
+function buildCanonicalRobloxBindingSnapshot(source = {}) {
+  const input = source && typeof source === "object" ? source : {};
+  const snapshot = {};
+
+  const username = readRobloxBindingField(input, ["username", "name", "robloxUsername"]);
+  if (username.found) snapshot.username = String(username.value || "").trim();
+
+  const userId = readRobloxBindingField(input, ["userId", "id", "robloxUserId"]);
+  if (userId.found) snapshot.userId = String(userId.value || "").trim();
+
+  const displayName = readRobloxBindingField(input, ["displayName", "robloxDisplayName"]);
+  if (displayName.found) snapshot.displayName = String(displayName.value || "").trim();
+
+  const extraFields = [
+    ["avatarUrl", ["avatarUrl"]],
+    ["profileUrl", ["profileUrl"]],
+    ["createdAt", ["createdAt"]],
+    ["description", ["description"]],
+    ["hasVerifiedBadge", ["hasVerifiedBadge"]],
+    ["accountStatus", ["accountStatus"]],
+  ];
+
+  for (const [targetKey, sourceKeys] of extraFields) {
+    const field = readRobloxBindingField(input, sourceKeys);
+    if (field.found) {
+      snapshot[targetKey] = field.value;
+    }
+  }
+
+  return snapshot;
+}
+
+function writeCanonicalRobloxBinding(userId, profile, source = {}, options = {}) {
+  const snapshot = buildCanonicalRobloxBindingSnapshot(source);
+  if (!snapshot.username || !snapshot.userId) {
+    return null;
+  }
+
+  const nextRoblox = applyRobloxAccountSnapshot(profile, snapshot, options);
+  finalizeStoredProfile(userId);
+  return {
+    snapshot,
+    roblox: nextRoblox,
+  };
+}
+
 function scheduleDeleteMessage(message, delayMs = TEMP_MESSAGE_DELETE_MS) {
   if (!message) return;
   setTimeout(() => {
@@ -3111,44 +3260,31 @@ async function resolveRobloxUserByUsername(username) {
     throw new Error("Roblox username должен содержать от 3 до 20 символов: буквы, цифры или _.");
   }
 
-  const payload = await fetchJson("https://users.roblox.com/v1/usernames/users", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      usernames: [normalizedUsername],
-      excludeBannedUsers: false,
-    }),
+  const matches = await robloxApiClient.fetchUsersByUsernames([normalizedUsername], {
+    excludeBannedUsers: false,
   });
+  const match = Array.isArray(matches) ? matches[0] : null;
+  if (!match?.userId) return null;
 
-  const match = Array.isArray(payload?.data) ? payload.data[0] : null;
-  if (!match?.id) return null;
-
-  const [profilePayload, avatarPayload] = await Promise.all([
-    fetchJson(`https://users.roblox.com/v1/users/${match.id}`),
-    fetchJson(
-      `https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds=${match.id}&size=150x150&format=Png&isCircular=false`
-    ).catch(() => null),
+  const [profile, avatars] = await Promise.all([
+    robloxApiClient.fetchUserProfile(match.userId),
+    robloxApiClient.fetchUserAvatarHeadshots([match.userId]).catch(() => []),
   ]);
-
-  const profile = normalizeRobloxUserProfile(profilePayload);
-  const avatar = Array.isArray(avatarPayload?.data) && avatarPayload.data.length
-    ? normalizeRobloxAvatarHeadshot(avatarPayload.data[0])
-    : null;
+  const avatar = Array.isArray(avatars) ? avatars[0] : null;
+  const resolvedProfile = profile || match;
 
   return {
-    id: String(profile.userId || match.id),
-    name: String(profile.username || match.name || normalizedUsername).trim(),
-    displayName: String(profile.displayName || profile.username || match.displayName || match.name || normalizedUsername).trim(),
+    id: String(resolvedProfile.userId || match.userId),
+    name: String(resolvedProfile.username || match.username || normalizedUsername).trim(),
+    displayName: String(resolvedProfile.displayName || resolvedProfile.username || match.displayName || match.username || normalizedUsername).trim(),
     avatarUrl: avatar?.imageUrl || null,
-    profileUrl: profile.profileUrl,
-    createdAt: profile.createdAt,
-    description: profile.description,
-    hasVerifiedBadge: profile.hasVerifiedBadge,
-    accountStatus: profile.isBanned === true
+    profileUrl: resolvedProfile.profileUrl || null,
+    createdAt: resolvedProfile.createdAt || null,
+    description: resolvedProfile.description || null,
+    hasVerifiedBadge: resolvedProfile.hasVerifiedBadge,
+    accountStatus: resolvedProfile.isBanned === true
       ? "banned-or-unavailable"
-      : profile.isBanned === false
+      : resolvedProfile.isBanned === false
         ? "active"
         : null,
   };
@@ -5925,11 +6061,7 @@ async function createPendingSubmissionFromAttachment(client, input) {
     profile.lastSubmissionStatus = "pending";
     profile.updatedAt = nowIso();
     if (submission.robloxUsername && submission.robloxUserId) {
-      applyRobloxAccountSnapshot(profile, {
-        username: submission.robloxUsername,
-        userId: submission.robloxUserId,
-        displayName: submission.robloxDisplayName,
-      }, {
+      writeCanonicalRobloxBinding(input.user.id, profile, submission, {
         verificationStatus: "pending",
         verifiedAt: null,
         updatedAt: profile.updatedAt,
@@ -5938,7 +6070,6 @@ async function createPendingSubmissionFromAttachment(client, input) {
         reviewedBy: null,
         source: "onboarding",
       });
-      finalizeStoredProfile(input.user.id);
     }
     setSubmitCooldown(input.user.id);
     saveDb();
@@ -6032,11 +6163,7 @@ async function approveSubmission(client, submission, moderatorTag) {
   profile.lastReviewedAt = submission.reviewedAt;
   profile.updatedAt = nowIso();
   if (submission.robloxUsername && submission.robloxUserId) {
-    applyRobloxAccountSnapshot(profile, {
-      username: submission.robloxUsername,
-      userId: submission.robloxUserId,
-      displayName: submission.robloxDisplayName,
-    }, {
+    writeCanonicalRobloxBinding(submission.userId, profile, submission, {
       verificationStatus: "verified",
       verifiedAt: submission.reviewedAt,
       updatedAt: profile.updatedAt,
@@ -6045,7 +6172,6 @@ async function approveSubmission(client, submission, moderatorTag) {
       reviewedBy: moderatorTag,
       source: "onboarding",
     });
-    finalizeStoredProfile(submission.userId);
   }
 
   try {
@@ -6101,11 +6227,7 @@ async function rejectSubmission(client, submission, moderatorTag, reason) {
   profile.lastReviewedAt = submission.reviewedAt;
   profile.updatedAt = nowIso();
   if (submission.robloxUsername && submission.robloxUserId) {
-    applyRobloxAccountSnapshot(profile, {
-      username: submission.robloxUsername,
-      userId: submission.robloxUserId,
-      displayName: submission.robloxDisplayName,
-    }, {
+    writeCanonicalRobloxBinding(submission.userId, profile, submission, {
       verificationStatus: "failed",
       updatedAt: profile.updatedAt,
       lastSubmissionId: submission.id,
@@ -6113,7 +6235,6 @@ async function rejectSubmission(client, submission, moderatorTag, reason) {
       reviewedBy: moderatorTag,
       source: "onboarding",
     });
-    finalizeStoredProfile(submission.userId);
   }
 
   try {
@@ -6173,22 +6294,8 @@ async function updatePendingSubmissionRobloxIdentity(client, submission, robloxU
   const profile = getProfile(submission.userId);
   const previousProfile = cloneJsonValue(profile);
 
-  submission.robloxUsername = robloxUser.name;
-  submission.robloxUserId = robloxUser.id;
-  submission.robloxDisplayName = robloxUser.displayName;
-
   profile.updatedAt = nowIso();
-  applyRobloxAccountSnapshot(profile, {
-    username: robloxUser.name,
-    userId: robloxUser.id,
-    displayName: robloxUser.displayName,
-    avatarUrl: robloxUser.avatarUrl,
-    profileUrl: robloxUser.profileUrl,
-    createdAt: robloxUser.createdAt,
-    description: robloxUser.description,
-    hasVerifiedBadge: robloxUser.hasVerifiedBadge,
-    accountStatus: robloxUser.accountStatus,
-  }, {
+  const bindingResult = writeCanonicalRobloxBinding(submission.userId, profile, robloxUser, {
     verificationStatus: "pending",
     verifiedAt: null,
     updatedAt: profile.updatedAt,
@@ -6197,7 +6304,9 @@ async function updatePendingSubmissionRobloxIdentity(client, submission, robloxU
     reviewedBy: moderatorTag,
     source: "onboarding",
   });
-  finalizeStoredProfile(submission.userId);
+  submission.robloxUsername = bindingResult?.snapshot?.username || "";
+  submission.robloxUserId = bindingResult?.snapshot?.userId || "";
+  submission.robloxDisplayName = bindingResult?.snapshot?.displayName || "";
 
   try {
     saveDb();
@@ -7108,7 +7217,7 @@ async function buildModeratorPanelPayload(client, statusText = "", includeFlags 
       new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId("panel_add_character").setLabel("Добавить персонажа").setStyle(ButtonStyle.Success),
         new ButtonBuilder().setCustomId("panel_sot_report").setLabel("SoT Report").setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId("panel_cleanup_orphan_characters").setLabel("Очистить orphan").setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId("panel_open_activity").setLabel("Activity Panel").setStyle(ButtonStyle.Secondary),
         new ButtonBuilder().setCustomId("welcome_editor").setLabel("Редактор UI").setStyle(ButtonStyle.Secondary),
         new ButtonBuilder().setCustomId("welcome_editor_jjs").setLabel("Редактировать JJS").setStyle(ButtonStyle.Secondary)
       ),
@@ -10594,6 +10703,10 @@ client.once("clientReady", async () => {
       syncApprovedTierRoles,
       refreshWelcomePanel,
       refreshAllTierlists,
+      resumeActivityRuntime: () => resumeActivityRuntime({
+        db,
+        saveDb,
+      }),
       logError: (...args) => console.error(...args),
     }));
   } catch (error) {
@@ -10675,9 +10788,25 @@ client.once("clientReady", async () => {
   console.log(`Managed roles ready. Characters: ${generated.characterRoles}, resolved: ${generated.resolvedCharacters}, recovered: ${generated.recoveredCharacters}, ambiguous: ${generated.ambiguousCharacters}, unresolved: ${generated.unresolvedCharacters}, tiers: ${generated.tierRoles}`);
   console.log("Welcome onboarding bot is ready");
 
-  scheduleClientReadyIntervals(client, {
+  const periodicJobs = buildClientReadyPeriodicJobs({
     runAutoResendTick,
-    autoResendTickMs: ROLE_PANEL_AUTO_RESEND_TICK_MS,
+    rolePanelAutoResendTickMs: ROLE_PANEL_AUTO_RESEND_TICK_MS,
+    refreshLegacyTierlistSummaryMessage,
+    legacyTierlistSummaryRefreshMs: LEGACY_TIERLIST_SUMMARY_REFRESH_MS,
+    flushActivityRuntime: () => flushActivityRuntime({
+      db,
+      saveDb,
+    }),
+    activityFlushIntervalMs: ACTIVITY_RUNTIME_FLUSH_INTERVAL_MS,
+    runRobloxProfileRefreshJob: runScheduledRobloxProfileRefreshJob,
+    syncRobloxPlaytime,
+    flushRobloxRuntime,
+    getResolvedIntegrationSourcePath,
+    roblox: appConfig?.roblox,
+  });
+
+  scheduleClientReadyIntervals(client, {
+    periodicJobs,
     scheduleSotAlertTicks: (currentClient) => scheduleSotAlertTicks(currentClient, {
       maybeLogSotCharacterHealthAlert,
       maybeLogSotDriftAlert,
@@ -10685,9 +10814,6 @@ client.once("clientReady", async () => {
       driftPeriodicMs: SOT_CHARACTER_ALERT_PERIODIC_MS,
       logError: (...args) => console.error(...args),
     }),
-    getResolvedIntegrationSourcePath,
-    refreshLegacyTierlistSummaryMessage,
-    legacyTierlistSummaryRefreshMs: LEGACY_TIERLIST_SUMMARY_REFRESH_MS,
     logError: (...args) => console.error(...args),
   });
 });
@@ -10757,6 +10883,21 @@ client.on("guildMemberAdd", async (member) => {
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
   if (message.guildId !== GUILD_ID) return;
+
+  try {
+    recordActivityMessage({
+      db,
+      message: {
+        guildId: message.guildId,
+        userId: message.author.id,
+        channelId: message.channelId,
+        createdAt: message.createdAt,
+      },
+    });
+  } catch (error) {
+    console.error("Activity runtime message ingest failed:", error?.message || error);
+  }
+
   const legacyEloState = getLiveLegacyEloState();
   const legacyEloSubmitChannelId = legacyEloState.ok
     ? String(getResolvedEloSubmitPanelSnapshot().channelId || getLegacyEloSubmitPanelState(legacyEloState.rawDb).channelId || "").trim()
@@ -11372,17 +11513,7 @@ client.on("interactionCreate", async (interaction) => {
         profile.displayName = getProfileDisplayName(target.id, profile);
         profile.username = target.username;
         profile.updatedAt = reviewedAt;
-        applyRobloxAccountSnapshot(profile, {
-          username: robloxUser.name,
-          userId: robloxUser.id,
-          displayName: robloxUser.displayName,
-          avatarUrl: robloxUser.avatarUrl,
-          profileUrl: robloxUser.profileUrl,
-          createdAt: robloxUser.createdAt,
-          description: robloxUser.description,
-          hasVerifiedBadge: robloxUser.hasVerifiedBadge,
-          accountStatus: robloxUser.accountStatus,
-        }, {
+        writeCanonicalRobloxBinding(target.id, profile, robloxUser, {
           verificationStatus: "verified",
           verifiedAt: reviewedAt,
           updatedAt: reviewedAt,
@@ -11391,7 +11522,6 @@ client.on("interactionCreate", async (interaction) => {
           reviewedBy: interaction.user.tag,
           source: "manual_moderator",
         });
-        finalizeStoredProfile(target.id);
         saveDb();
       } catch (error) {
         restoreRecordValue(db.profiles, target.id, previousProfile, hadProfile);
@@ -12322,6 +12452,48 @@ client.on("interactionCreate", async (interaction) => {
       interaction,
       isModerator,
       replyNoPermission: () => interaction.reply(ephemeralPayload({ content: "Нет прав." })),
+    })) {
+      return;
+    }
+
+    if (await handleActivityPanelButtonInteraction({
+      interaction,
+      client,
+      db,
+      isModerator,
+      replyNoPermission: () => interaction.reply(ephemeralPayload({ content: "Нет прав." })),
+      buildModeratorPanelPayload,
+      buildActivityPanelPayload: ({ statusText = "" } = {}) => buildActivityOperatorPanelPayload({
+        db,
+        statusText,
+      }),
+      fetchChannel: async (channelId) => {
+        const guild = interaction.guild || await getGuild(client).catch(() => null);
+        const cachedChannel = guild?.channels?.cache?.get(channelId) || client.channels?.cache?.get?.(channelId) || null;
+        if (cachedChannel) return cachedChannel;
+        return client.channels.fetch(channelId).catch(() => null);
+      },
+      resolveMemberRoleIds: async (userId) => {
+        const guild = interaction.guild || await getGuild(client).catch(() => null);
+        if (!guild) return [];
+        const member = guild.members?.cache?.get(userId) || await guild.members.fetch(userId).catch(() => null);
+        return member ? [...member.roles.cache.keys()] : [];
+      },
+      applyRoleChanges: async ({ userId, addRoleIds, removeRoleIds }) => {
+        const guild = interaction.guild || await getGuild(client).catch(() => null);
+        if (!guild) return false;
+        const member = guild.members?.cache?.get(userId) || await guild.members.fetch(userId).catch(() => null);
+        if (!member) return false;
+        const reason = `activity initial role assignment by ${interaction.user?.tag || interaction.user?.id || "unknown"}`;
+        if (removeRoleIds.length) {
+          await member.roles.remove(removeRoleIds, reason);
+        }
+        if (addRoleIds.length) {
+          await member.roles.add(addRoleIds, reason);
+        }
+        return true;
+      },
+      saveDb,
     })) {
       return;
     }

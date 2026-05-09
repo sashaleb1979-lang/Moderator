@@ -9,6 +9,7 @@ const {
   createRobloxApiClient,
   normalizeRobloxFriendRecord,
   normalizeRobloxPresenceRecord,
+  normalizeRobloxUsernameHistoryEntry,
   normalizeRobloxUserProfile,
   splitIntoBatches,
 } = require("../src/integrations/roblox-service");
@@ -88,6 +89,13 @@ test("normalizeRobloxPresenceRecord maps JJS-relevant fields from presence", () 
   });
 });
 
+test("normalizeRobloxUsernameHistoryEntry keeps canonical rename history shape", () => {
+  assert.deepEqual(normalizeRobloxUsernameHistoryEntry({ name: "OldName" }), {
+    name: "OldName",
+  });
+  assert.equal(normalizeRobloxUsernameHistoryEntry({ name: "   " }), null);
+});
+
 test("createRobloxApiClient shapes username and presence requests and normalizes responses", async () => {
   const calls = [];
   const client = createRobloxApiClient({
@@ -148,4 +156,42 @@ test("createRobloxApiClient throws RobloxApiError with upstream details on failu
       return true;
     }
   );
+});
+
+test("createRobloxApiClient shapes username history and friend count requests", async () => {
+  const calls = [];
+  const client = createRobloxApiClient({
+    fetchImpl: async (url) => {
+      calls.push(String(url));
+      if (String(url).includes("/username-history")) {
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({
+            data: [
+              { name: "CurrentName" },
+              { name: "OldName" },
+            ],
+          }),
+        };
+      }
+
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ count: 42 }),
+      };
+    },
+  });
+
+  const history = await client.fetchUserUsernameHistory(123, { limit: 10, sortOrder: "Asc" });
+  const friendCount = await client.fetchUserFriendCount(123);
+
+  assert.match(calls[0], /users\.roblox\.com\/v1\/users\/123\/username-history\?limit=10&sortOrder=Asc$/);
+  assert.match(calls[1], /friends\.roblox\.com\/v1\/users\/123\/friends\/count$/);
+  assert.deepEqual(history, [
+    { name: "CurrentName" },
+    { name: "OldName" },
+  ]);
+  assert.equal(friendCount, 42);
 });

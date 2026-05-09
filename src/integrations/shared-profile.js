@@ -9,6 +9,10 @@ const ROBLOX_ACCOUNT_STATUSES = new Set(["active", "banned-or-unavailable", "loo
 const ROBLOX_NAME_HISTORY_LIMIT = 20;
 const ROBLOX_SERVER_FRIEND_LIMIT = 500;
 const ROBLOX_COPLAY_PEER_LIMIT = 50;
+const ROBLOX_TOP_COPLAY_PEER_LIMIT = 5;
+const ROBLOX_FREQUENT_NON_FRIEND_MINUTES = 60;
+const ROBLOX_FREQUENT_NON_FRIEND_SESSIONS = 2;
+const ROBLOX_PLAYTIME_BUCKET_LIMIT = 40;
 
 function cleanString(value, limit = 2000) {
   return String(value || "").trim().slice(0, Math.max(0, Number(limit) || 0));
@@ -55,6 +59,15 @@ function normalizeNullableInteger(value, options = {}) {
   if (value === null || value === undefined || value === "") return null;
   const amount = Number(value);
   if (!Number.isSafeInteger(amount)) return null;
+  if (Number.isFinite(options.min) && amount < options.min) return null;
+  if (Number.isFinite(options.max) && amount > options.max) return null;
+  return amount;
+}
+
+function normalizeNullableNumber(value, options = {}) {
+  if (value === null || value === undefined || value === "") return null;
+  const amount = Number(value);
+  if (!Number.isFinite(amount)) return null;
   if (Number.isFinite(options.min) && amount < options.min) return null;
   if (Number.isFinite(options.max) && amount > options.max) return null;
   return amount;
@@ -123,6 +136,35 @@ function normalizeTierlistDomainState(value = {}) {
   };
 }
 
+function normalizeActivityDomainState(value = {}) {
+  const source = value && typeof value === "object" ? value : {};
+  return {
+    activityScore: normalizeNullableInteger(source.activityScore, { min: 0 }),
+    trustScore: normalizeNullableInteger(source.trustScore, { min: 0 }),
+    messages7d: normalizeNullableInteger(source.messages7d, { min: 0 }),
+    messages30d: normalizeNullableInteger(source.messages30d, { min: 0 }),
+    messages90d: normalizeNullableInteger(source.messages90d, { min: 0 }),
+    sessions7d: normalizeNullableInteger(source.sessions7d, { min: 0 }),
+    sessions30d: normalizeNullableInteger(source.sessions30d, { min: 0 }),
+    sessions90d: normalizeNullableInteger(source.sessions90d, { min: 0 }),
+    activeDays7d: normalizeNullableInteger(source.activeDays7d, { min: 0 }),
+    activeDays30d: normalizeNullableInteger(source.activeDays30d, { min: 0 }),
+    activeDays90d: normalizeNullableInteger(source.activeDays90d, { min: 0 }),
+    activeWatchedChannels30d: normalizeNullableInteger(source.activeWatchedChannels30d, { min: 0 }),
+    weightedMessages30d: normalizeNullableNumber(source.weightedMessages30d, { min: 0 }),
+    globalEffectiveSessions30d: normalizeNullableNumber(source.globalEffectiveSessions30d, { min: 0 }),
+    effectiveActiveDays30d: normalizeNullableNumber(source.effectiveActiveDays30d, { min: 0 }),
+    daysAbsent: normalizeNullableInteger(source.daysAbsent, { min: 0 }),
+    lastSeenAt: normalizeNullableString(source.lastSeenAt, 80),
+    desiredActivityRoleKey: normalizeNullableString(source.desiredActivityRoleKey, 80),
+    appliedActivityRoleKey: normalizeNullableString(source.appliedActivityRoleKey, 80),
+    manualOverride: normalizeNullableBoolean(source.manualOverride),
+    autoRoleFrozen: normalizeNullableBoolean(source.autoRoleFrozen),
+    recalculatedAt: normalizeNullableString(source.recalculatedAt, 80),
+    lastRoleAppliedAt: normalizeNullableString(source.lastRoleAppliedAt, 80),
+  };
+}
+
 function buildRobloxProfileUrl(userId) {
   const normalizedUserId = normalizeNullableString(userId, 40);
   return normalizedUserId ? `https://www.roblox.com/users/${normalizedUserId}/profile` : null;
@@ -179,6 +221,17 @@ function normalizeRobloxServerFriendsState(value = {}) {
   };
 }
 
+function normalizeRobloxPlaytimeDailyBuckets(value = {}) {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  return Object.fromEntries(
+    Object.entries(source)
+      .map(([dateKey, minutes]) => [cleanString(dateKey, 20), normalizeNonNegativeInteger(minutes, 0)])
+      .filter(([dateKey, minutes]) => /^\d{4}-\d{2}-\d{2}$/.test(dateKey) && minutes > 0)
+      .sort((left, right) => left[0].localeCompare(right[0]))
+      .slice(-ROBLOX_PLAYTIME_BUCKET_LIMIT)
+  );
+}
+
 function normalizeRobloxPlaytimeState(value = {}) {
   const source = value && typeof value === "object" ? value : {};
   return {
@@ -188,6 +241,7 @@ function normalizeRobloxPlaytimeState(value = {}) {
     sessionCount: normalizeNonNegativeInteger(source.sessionCount, 0),
     currentSessionStartedAt: normalizeNullableString(source.currentSessionStartedAt, 80),
     lastSeenInJjsAt: normalizeNullableString(source.lastSeenInJjsAt, 80),
+    dailyBuckets: normalizeRobloxPlaytimeDailyBuckets(source.dailyBuckets),
   };
 }
 
@@ -299,6 +353,78 @@ function getRobloxRenameCount(currentName, history = []) {
 
   if (!current) return Math.max(0, unique.length - 1);
   return unique.filter((value) => value.toLowerCase() !== current.toLowerCase()).length;
+}
+
+function getRobloxLastRenameSeenAt(currentName, history = []) {
+  const current = normalizeNullableString(currentName, 120);
+  let latest = null;
+
+  for (const entry of Array.isArray(history) ? history : []) {
+    const name = normalizeNullableString(entry?.name, 120);
+    if (!name) continue;
+    if (current && name.toLowerCase() === current.toLowerCase()) continue;
+    const seenAt = normalizeNullableString(entry?.lastSeenAt, 80);
+    if (!seenAt) continue;
+    if (!latest || seenAt > latest) latest = seenAt;
+  }
+
+  return latest;
+}
+
+function getLatestTimestamp(values = []) {
+  let latest = null;
+  for (const value of Array.isArray(values) ? values : []) {
+    const normalized = normalizeNullableString(value, 80);
+    if (!normalized) continue;
+    if (!latest || normalized > latest) latest = normalized;
+  }
+  return latest;
+}
+
+function getRobloxSharedSessionCount(peer = {}) {
+  return Math.max(
+    normalizeNonNegativeInteger(peer?.sharedJjsSessionCount, 0),
+    normalizeNonNegativeInteger(peer?.sessionsTogether, 0)
+  );
+}
+
+function isFrequentRobloxNonFriendPeer(peer = {}) {
+  if (peer?.isRobloxFriend !== false) return false;
+  return normalizeNonNegativeInteger(peer?.minutesTogether, 0) >= ROBLOX_FREQUENT_NON_FRIEND_MINUTES
+    || getRobloxSharedSessionCount(peer) >= ROBLOX_FREQUENT_NON_FRIEND_SESSIONS;
+}
+
+function buildRobloxTopCoPlayPeers(peers = [], limit = ROBLOX_TOP_COPLAY_PEER_LIMIT) {
+  return (Array.isArray(peers) ? peers : [])
+    .slice()
+    .sort((left, right) => {
+      const minutesDiff = normalizeNonNegativeInteger(right?.minutesTogether, 0)
+        - normalizeNonNegativeInteger(left?.minutesTogether, 0);
+      if (minutesDiff) return minutesDiff;
+
+      const sessionsDiff = getRobloxSharedSessionCount(right) - getRobloxSharedSessionCount(left);
+      if (sessionsDiff) return sessionsDiff;
+
+      const daysDiff = normalizeNonNegativeInteger(right?.daysTogether, 0)
+        - normalizeNonNegativeInteger(left?.daysTogether, 0);
+      if (daysDiff) return daysDiff;
+
+      const rightSeenAt = normalizeNullableString(right?.lastSeenTogetherAt, 80) || "";
+      const leftSeenAt = normalizeNullableString(left?.lastSeenTogetherAt, 80) || "";
+      return rightSeenAt.localeCompare(leftSeenAt);
+    })
+    .slice(0, Math.max(0, normalizeNonNegativeInteger(limit, ROBLOX_TOP_COPLAY_PEER_LIMIT)))
+    .map((peer) => ({
+      peerUserId: normalizeNullableString(peer?.peerUserId, 80),
+      isRobloxFriend: normalizeNullableBoolean(peer?.isRobloxFriend),
+      minutesTogether: normalizeNonNegativeInteger(peer?.minutesTogether, 0),
+      sessionsTogether: normalizeNonNegativeInteger(peer?.sessionsTogether, 0),
+      daysTogether: normalizeNonNegativeInteger(peer?.daysTogether, 0),
+      sharedJjsSessionCount: normalizeNonNegativeInteger(peer?.sharedJjsSessionCount, 0),
+      lastSeenTogetherAt: normalizeNullableString(peer?.lastSeenTogetherAt, 80),
+      isFrequentNonFriend: isFrequentRobloxNonFriendPeer(peer),
+    }))
+    .filter((peer) => Boolean(peer.peerUserId));
 }
 
 function normalizeRobloxDomainState(value = {}) {
@@ -420,11 +546,18 @@ function buildSharedProfileSummary(profile = {}, domains = {}) {
   const onboarding = domains.onboarding || normalizeOnboardingDomainState(profile);
   const elo = domains.elo || normalizeEloDomainState(profile?.domains?.elo);
   const tierlist = domains.tierlist || normalizeTierlistDomainState(profile?.domains?.tierlist);
+  const activity = domains.activity || normalizeActivityDomainState(profile?.domains?.activity || profile?.activity);
   const roblox = domains.roblox || normalizeRobloxDomainState(profile?.domains?.roblox || profile);
   const previousUsername = getRobloxPreviousName(roblox.username, roblox.usernameHistory);
   const previousDisplayName = getRobloxPreviousName(roblox.displayName, roblox.displayNameHistory);
   const serverFriendsCount = roblox.serverFriends.userIds.length;
-  const frequentNonFriendCount = roblox.coPlay.peers.filter((entry) => entry.isRobloxFriend === false).length;
+  const nonFriendPeerCount = roblox.coPlay.peers.filter((entry) => entry.isRobloxFriend === false).length;
+  const frequentNonFriendCount = roblox.coPlay.peers.filter((entry) => isFrequentRobloxNonFriendPeer(entry)).length;
+  const topCoPlayPeers = buildRobloxTopCoPlayPeers(roblox.coPlay.peers);
+  const lastRenameSeenAt = getLatestTimestamp([
+    getRobloxLastRenameSeenAt(roblox.username, roblox.usernameHistory),
+    getRobloxLastRenameSeenAt(roblox.displayName, roblox.displayNameHistory),
+  ]);
 
   return {
     preferredDisplayName: cleanString(profile.displayName, 200) || cleanString(profile.username, 120) || cleanString(profile.userId, 80),
@@ -447,27 +580,69 @@ function buildSharedProfileSummary(profile = {}, domains = {}) {
       mainName: tierlist.mainName,
       influenceMultiplier: tierlist.influenceMultiplier,
     },
+    activity: {
+      activityScore: activity.activityScore,
+      trustScore: activity.trustScore,
+      messages7d: activity.messages7d,
+      messages30d: activity.messages30d,
+      messages90d: activity.messages90d,
+      sessions7d: activity.sessions7d,
+      sessions30d: activity.sessions30d,
+      sessions90d: activity.sessions90d,
+      activeDays7d: activity.activeDays7d,
+      activeDays30d: activity.activeDays30d,
+      activeDays90d: activity.activeDays90d,
+      activeWatchedChannels30d: activity.activeWatchedChannels30d,
+      weightedMessages30d: activity.weightedMessages30d,
+      globalEffectiveSessions30d: activity.globalEffectiveSessions30d,
+      effectiveActiveDays30d: activity.effectiveActiveDays30d,
+      daysAbsent: activity.daysAbsent,
+      lastSeenAt: activity.lastSeenAt,
+      desiredActivityRoleKey: activity.desiredActivityRoleKey,
+      appliedActivityRoleKey: activity.appliedActivityRoleKey,
+      manualOverride: activity.manualOverride,
+      autoRoleFrozen: activity.autoRoleFrozen,
+      recalculatedAt: activity.recalculatedAt,
+      lastRoleAppliedAt: activity.lastRoleAppliedAt,
+    },
     roblox: {
       hasVerifiedAccount: roblox.verificationStatus === "verified" && Boolean(roblox.userId),
+      currentUsername: roblox.username,
+      currentDisplayName: roblox.displayName,
       username: roblox.username,
       displayName: roblox.displayName,
       userId: roblox.userId,
+      avatarUrl: roblox.avatarUrl,
       profileUrl: roblox.profileUrl,
       createdAt: roblox.createdAt,
+      description: roblox.description,
+      hasVerifiedBadge: roblox.hasVerifiedBadge,
       accountStatus: roblox.accountStatus,
       verificationStatus: roblox.verificationStatus,
+      verifiedAt: roblox.verifiedAt,
+      updatedAt: roblox.updatedAt,
+      reviewedBy: roblox.reviewedBy,
+      source: roblox.source,
       previousUsername,
       previousDisplayName,
       renameCount: getRobloxRenameCount(roblox.username, roblox.usernameHistory),
       displayRenameCount: getRobloxRenameCount(roblox.displayName, roblox.displayNameHistory),
+      lastRenameSeenAt,
+      serverFriendsUserIds: roblox.serverFriends.userIds,
       serverFriendsCount,
+      serverFriendsComputedAt: roblox.serverFriends.computedAt,
+      nonFriendPeerCount,
       frequentNonFriendCount,
+      topCoPlayPeers,
       totalJjsMinutes: roblox.playtime.totalJjsMinutes,
       jjsMinutes7d: roblox.playtime.jjsMinutes7d,
       jjsMinutes30d: roblox.playtime.jjsMinutes30d,
+      sessionCount: roblox.playtime.sessionCount,
+      currentSessionStartedAt: roblox.playtime.currentSessionStartedAt,
       lastSeenInJjsAt: roblox.playtime.lastSeenInJjsAt,
       lastRefreshAt: roblox.lastRefreshAt,
       refreshStatus: roblox.refreshStatus,
+      refreshError: roblox.refreshError,
     },
   };
 }
@@ -477,6 +652,7 @@ function ensureSharedProfile(profile = {}, userId = "") {
   const onboarding = normalizeOnboardingDomainState(source);
   const elo = normalizeEloDomainState(source?.domains?.elo);
   const tierlist = normalizeTierlistDomainState(source?.domains?.tierlist);
+  const activity = normalizeActivityDomainState(source?.domains?.activity || source?.activity);
   const roblox = normalizeRobloxDomainState(source?.domains?.roblox || buildLegacyRobloxSource(source));
 
   const next = {
@@ -501,6 +677,7 @@ function ensureSharedProfile(profile = {}, userId = "") {
       onboarding,
       elo,
       tierlist,
+      activity,
       roblox,
     },
   };
@@ -658,6 +835,7 @@ module.exports = {
   SHARED_PROFILE_VERSION,
   createDefaultIntegrationState,
   ensureSharedProfile,
+  normalizeActivityDomainState,
   normalizeIntegrationState,
   normalizeRobloxDomainState,
   syncSharedProfiles,
