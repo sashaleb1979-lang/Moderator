@@ -96,10 +96,10 @@ test("buildVerificationPanelPayload summarizes autonomous verification config", 
   assert.equal(configRow[1].custom_id, VERIFY_PANEL_CONFIG_RISK_ID);
   assert.equal(configRow[2].custom_id, VERIFY_PANEL_CONFIG_TEXTS_ID);
   assert.equal(configRow[3].custom_id, VERIFY_PANEL_RESEND_REPORT_ID);
-  assert.equal(payload.embeds[0].data.title, "Verification Panel");
-  assert.match(payload.embeds[0].data.fields[1].value, /Pending: \*\*3\*\*/);
+  assert.equal(payload.embeds[0].data.title, "Панель проверки доступа");
+  assert.match(payload.embeds[0].data.fields[1].value, /Ожидают проверки: \*\*3\*\*/);
   assert.match(payload.embeds[0].data.fields[2].value, /<@&verify-role>/);
-  assert.match(payload.embeds[0].data.fields[3].value, /Enemy guilds: \*\*2\*\*/);
+  assert.match(payload.embeds[0].data.fields[3].value, /Вражеские серверы: \*\*2\*\*/);
   assert.match(payload.embeds[0].data.fields[5].value, /7 дн\./);
 });
 
@@ -117,7 +117,7 @@ test("buildVerificationEntryPayload exposes user-facing OAuth and status buttons
   });
 
   const row = payload.components[0].toJSON().components;
-  assert.equal(payload.embeds[0].data.title, "Verification Access");
+  assert.equal(payload.embeds[0].data.title, "Проверка доступа");
   assert.equal(row[0].custom_id, VERIFY_ENTRY_START_ID);
   assert.equal(row[1].custom_id, VERIFY_ENTRY_STATUS_ID);
   assert.equal(row[2].custom_id, VERIFY_ENTRY_GUIDE_ID);
@@ -145,10 +145,10 @@ test("buildVerificationGuidePayload returns separate moderator and participant g
     },
   });
 
-  assert.equal(moderatorPayload.embeds[0].data.title, "Verification Moderator Guide");
-  assert.equal(participantPayload.embeds[0].data.title, "Verification Guide");
+  assert.equal(moderatorPayload.embeds[0].data.title, "Инструкция для модераторов");
+  assert.equal(participantPayload.embeds[0].data.title, "Как пройти проверку");
   assert.equal(participantPayload.components[0].toJSON().components[0].custom_id, VERIFY_ENTRY_START_ID);
-  assert.match(moderatorPayload.embeds[0].data.description, /pending 4/i);
+  assert.match(moderatorPayload.embeds[0].data.description, /ожидают 4/i);
   assert.match(participantPayload.embeds[0].data.description, /7 дн\./);
 });
 
@@ -189,11 +189,11 @@ test("buildVerificationQueuePayload and buildVerificationRuntimePayload expose q
     },
   });
 
-  assert.equal(queuePayload.embeds[0].data.title, "Verification Queue");
+  assert.equal(queuePayload.embeds[0].data.title, "Очередь проверки");
   assert.match(queuePayload.embeds[0].data.fields[1].value, /<@1>/);
-  assert.equal(runtimePayload.embeds[0].data.title, "Verification Runtime");
-  assert.match(runtimePayload.embeds[0].data.fields[0].value, /report channel: \*\*missing\*\*/i);
-  assert.match(runtimePayload.embeds[0].data.fields[2].value, /report channel missing/i);
+  assert.equal(runtimePayload.embeds[0].data.title, "Состояние системы");
+  assert.match(runtimePayload.embeds[0].data.fields[0].value, /Канал отчётов: \*\*не настроен\*\*/i);
+  assert.match(runtimePayload.embeds[0].data.fields[2].value, /не настроен канал отчётов/i);
 });
 
 test("verification config modals expose infra, risk, and stage editors", () => {
@@ -282,7 +282,7 @@ test("buildVerificationReportPayload and parseVerificationReportAction round-tri
   });
 
   const row = payload.components[0].toJSON().components;
-  assert.equal(payload.embeds[0].data.title, "Verification Manual Review");
+  assert.equal(payload.embeds[0].data.title, "Ручная проверка доступа");
   assert.deepEqual(parseVerificationReportAction(row[0].custom_id), { action: "approve", userId: "user-1" });
   assert.deepEqual(parseVerificationReportAction(row[1].custom_id), { action: "reject", userId: "user-1" });
 });

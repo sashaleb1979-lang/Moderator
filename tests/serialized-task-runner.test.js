@@ -4,6 +4,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const {
+  createSerializedMutationTaskAdapter,
   createSerializedMutationRunner,
   createSerializedTaskRunner,
 } = require("../src/runtime/serialized-task-runner");
@@ -110,4 +111,23 @@ test("createSerializedMutationRunner persists and runs afterPersist on success",
   assert.deepEqual(result, { mutated: true, value: 7 });
   assert.equal(state.persisted, true);
   assert.equal(state.completed, true);
+});
+
+test("createSerializedMutationTaskAdapter adapts mutation runner to task-style activity callers", async () => {
+  const calls = [];
+  const runSerializedTask = createSerializedMutationTaskAdapter((options = {}) => {
+    calls.push(options);
+    return Promise.resolve().then(options.mutate);
+  });
+
+  const value = await runSerializedTask(async () => "ok", "activity-role-sync-from-snapshots");
+
+  assert.equal(value, "ok");
+  assert.deepEqual(calls, [
+    {
+      label: "activity-role-sync-from-snapshots",
+      mutate: calls[0].mutate,
+      shouldPersist: false,
+    },
+  ]);
 });

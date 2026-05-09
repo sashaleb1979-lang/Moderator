@@ -83,7 +83,22 @@ function createSerializedMutationRunner({ logError = () => {} } = {}) {
   };
 }
 
+function createSerializedMutationTaskAdapter(runSerializedMutation) {
+  if (typeof runSerializedMutation !== "function") {
+    throw new TypeError("runSerializedMutation must be a function");
+  }
+
+  return function runSerializedTask(task, label = "task") {
+    return runSerializedMutation({
+      label,
+      mutate: task,
+      shouldPersist: false,
+    });
+  };
+}
+
 module.exports = {
+  createSerializedMutationTaskAdapter,
   createSerializedMutationRunner,
   createSerializedTaskRunner,
 };

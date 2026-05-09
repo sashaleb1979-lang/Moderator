@@ -57,6 +57,34 @@ const VERIFY_PANEL_MODAL_IDS = Object.freeze([
   VERIFY_PANEL_RESEND_REPORT_MODAL_ID,
 ]);
 
+const VERIFICATION_STATUS_LABELS = Object.freeze({
+  not_started: "не начато",
+  pending: "ожидает проверки",
+  manual_review: "нужна ручная проверка",
+  verified: "подтверждён",
+  rejected: "отклонён",
+  failed: "ошибка OAuth",
+  configured: "настроено",
+  in_progress: "в работе",
+  none: "нет",
+});
+
+const VERIFICATION_DECISION_LABELS = Object.freeze({
+  none: "нет",
+  approved: "одобрено",
+  manual_review: "нужна ручная проверка",
+  rejected: "отклонено",
+});
+
+const VERIFICATION_ISSUE_LABELS = Object.freeze({
+  "verification disabled in config": "система выключена в настройках",
+  "OAuth env is not configured": "не заполнены OAuth-переменные окружения",
+  "verify-role is missing": "не настроена verify-роль",
+  "verification room is missing": "не настроен канал проверки",
+  "report channel is missing": "не настроен канал отчётов",
+  "report channel missing": "не настроен канал отчётов",
+});
+
 function cleanString(value, limit = 2000) {
   return String(value || "").trim().slice(0, Math.max(0, Number(limit) || 0));
 }
@@ -99,6 +127,42 @@ function formatCount(value) {
   return `**${Math.max(0, Number(value) || 0)}**`;
 }
 
+function formatVerificationStatus(value, fallback = "—") {
+  const text = cleanString(value, 80).toLowerCase();
+  return VERIFICATION_STATUS_LABELS[text] || text || fallback;
+}
+
+function formatVerificationDecision(value, fallback = "—") {
+  const text = cleanString(value, 80).toLowerCase();
+  return VERIFICATION_DECISION_LABELS[text] || formatVerificationStatus(text, fallback);
+}
+
+function formatVerificationIssue(entry) {
+  const text = cleanString(entry, 200);
+  return VERIFICATION_ISSUE_LABELS[text] || text || "неизвестная проблема";
+}
+
+function formatVerificationQueueEntry(entry) {
+  const replacements = [
+    [/report sent/gi, "отчёт отправлен"],
+    [/overdue/gi, "просрочено"],
+    [/waiting/gi, "ожидает"],
+    [/manual_review/gi, "ручная проверка"],
+    [/not_started/gi, "не начато"],
+    [/verified/gi, "подтверждён"],
+    [/rejected/gi, "отклонён"],
+    [/pending/gi, "ожидает проверки"],
+    [/failed/gi, "ошибка OAuth"],
+    [/\bdue\b/gi, "срок"],
+  ];
+
+  let text = cleanString(entry, 240);
+  for (const [pattern, replacement] of replacements) {
+    text = text.replace(pattern, replacement);
+  }
+  return text;
+}
+
 function normalizeVerificationSnapshot(value = {}) {
   const snapshot = value && typeof value === "object" && !Array.isArray(value) ? value : {};
   const totals = snapshot.totals && typeof snapshot.totals === "object" && !Array.isArray(snapshot.totals)
@@ -139,10 +203,10 @@ function normalizeVerificationSnapshot(value = {}) {
 
 function buildVerificationPanelNavRow(currentView = "home") {
   return new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(VERIFY_PANEL_HOME_ID).setLabel("Home").setStyle(currentView === "home" ? ButtonStyle.Primary : ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(VERIFY_PANEL_QUEUE_ID).setLabel("Queue").setStyle(currentView === "queue" ? ButtonStyle.Primary : ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(VERIFY_PANEL_RUNTIME_ID).setLabel("Runtime").setStyle(currentView === "runtime" ? ButtonStyle.Primary : ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(VERIFY_PANEL_GUIDE_ID).setLabel("Guide").setStyle(currentView === "guide" ? ButtonStyle.Primary : ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(VERIFY_PANEL_HOME_ID).setLabel("Обзор").setStyle(currentView === "home" ? ButtonStyle.Primary : ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(VERIFY_PANEL_QUEUE_ID).setLabel("Очередь").setStyle(currentView === "queue" ? ButtonStyle.Primary : ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(VERIFY_PANEL_RUNTIME_ID).setLabel("Система").setStyle(currentView === "runtime" ? ButtonStyle.Primary : ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(VERIFY_PANEL_GUIDE_ID).setLabel("Инструкция").setStyle(currentView === "guide" ? ButtonStyle.Primary : ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(VERIFY_PANEL_BACK_ID).setLabel("Назад").setStyle(ButtonStyle.Secondary)
   );
 }
@@ -150,17 +214,17 @@ function buildVerificationPanelNavRow(currentView = "home") {
 function buildVerificationPanelActionRow() {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId(VERIFY_PANEL_REFRESH_ID).setLabel("Обновить").setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(VERIFY_PANEL_PUBLISH_ENTRY_ID).setLabel("Переопубликовать entry").setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(VERIFY_PANEL_RUN_SWEEP_ID).setLabel("Запустить sweep").setStyle(ButtonStyle.Secondary)
+    new ButtonBuilder().setCustomId(VERIFY_PANEL_PUBLISH_ENTRY_ID).setLabel("Обновить входное сообщение").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(VERIFY_PANEL_RUN_SWEEP_ID).setLabel("Проверить просроченные").setStyle(ButtonStyle.Secondary)
   );
 }
 
 function buildVerificationPanelConfigRow() {
   return new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(VERIFY_PANEL_CONFIG_INFRA_ID).setLabel("Infra").setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(VERIFY_PANEL_CONFIG_RISK_ID).setLabel("Risk rules").setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(VERIFY_PANEL_CONFIG_TEXTS_ID).setLabel("Stage texts").setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(VERIFY_PANEL_RESEND_REPORT_ID).setLabel("Resend report").setStyle(ButtonStyle.Secondary)
+    new ButtonBuilder().setCustomId(VERIFY_PANEL_CONFIG_INFRA_ID).setLabel("Основа").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(VERIFY_PANEL_CONFIG_RISK_ID).setLabel("Риски").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(VERIFY_PANEL_CONFIG_TEXTS_ID).setLabel("Тексты").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(VERIFY_PANEL_RESEND_REPORT_ID).setLabel("Повторить отчёт").setStyle(ButtonStyle.Secondary)
   );
 }
 
@@ -176,21 +240,21 @@ function buildVerificationInfraConfigModal(options = {}) {
 
   return new ModalBuilder()
     .setCustomId(VERIFY_PANEL_CONFIG_INFRA_MODAL_ID)
-    .setTitle("Verification Infra")
+    .setTitle("Базовые настройки проверки")
     .addComponents(
       new ActionRowBuilder().addComponents(
         new TextInputBuilder()
           .setCustomId("verification_enabled")
-          .setLabel("Enabled (yes/no)")
+          .setLabel("Система включена? (да/нет)")
           .setStyle(TextInputStyle.Short)
           .setRequired(true)
           .setMaxLength(10)
-          .setValue(integration.enabled === true ? "yes" : "no")
+          .setValue(integration.enabled === true ? "да" : "нет")
       ),
       new ActionRowBuilder().addComponents(
         new TextInputBuilder()
           .setCustomId("verification_callback_base_url")
-          .setLabel("Callback URL")
+          .setLabel("Ссылка callback страницы")
           .setStyle(TextInputStyle.Short)
           .setRequired(false)
           .setMaxLength(500)
@@ -199,7 +263,7 @@ function buildVerificationInfraConfigModal(options = {}) {
       new ActionRowBuilder().addComponents(
         new TextInputBuilder()
           .setCustomId("verification_verify_role")
-          .setLabel("Verify role ID or mention")
+          .setLabel("ID verify-роли или mention")
           .setStyle(TextInputStyle.Short)
           .setRequired(false)
           .setMaxLength(80)
@@ -208,7 +272,7 @@ function buildVerificationInfraConfigModal(options = {}) {
       new ActionRowBuilder().addComponents(
         new TextInputBuilder()
           .setCustomId("verification_room_channel")
-          .setLabel("Verification room channel")
+          .setLabel("Канал проверки: ID или mention")
           .setStyle(TextInputStyle.Short)
           .setRequired(false)
           .setMaxLength(80)
@@ -217,7 +281,7 @@ function buildVerificationInfraConfigModal(options = {}) {
       new ActionRowBuilder().addComponents(
         new TextInputBuilder()
           .setCustomId("verification_report_channel")
-          .setLabel("Report channel")
+          .setLabel("Канал отчётов: ID или mention")
           .setStyle(TextInputStyle.Short)
           .setRequired(false)
           .setMaxLength(80)
@@ -237,12 +301,12 @@ function buildVerificationRiskRulesModal(options = {}) {
 
   return new ModalBuilder()
     .setCustomId(VERIFY_PANEL_CONFIG_RISK_MODAL_ID)
-    .setTitle("Verification Risk Rules")
+    .setTitle("Правила риска")
     .addComponents(
       new ActionRowBuilder().addComponents(
         new TextInputBuilder()
           .setCustomId("verification_enemy_guild_ids")
-          .setLabel("Enemy guild IDs")
+          .setLabel("ID вражеских серверов")
           .setStyle(TextInputStyle.Paragraph)
           .setRequired(false)
           .setMaxLength(4000)
@@ -251,7 +315,7 @@ function buildVerificationRiskRulesModal(options = {}) {
       new ActionRowBuilder().addComponents(
         new TextInputBuilder()
           .setCustomId("verification_enemy_user_ids")
-          .setLabel("Enemy user IDs")
+          .setLabel("ID подозрительных пользователей")
           .setStyle(TextInputStyle.Paragraph)
           .setRequired(false)
           .setMaxLength(4000)
@@ -260,7 +324,7 @@ function buildVerificationRiskRulesModal(options = {}) {
       new ActionRowBuilder().addComponents(
         new TextInputBuilder()
           .setCustomId("verification_enemy_invite_codes")
-          .setLabel("Enemy invite codes")
+          .setLabel("Коды опасных invite")
           .setStyle(TextInputStyle.Paragraph)
           .setRequired(false)
           .setMaxLength(4000)
@@ -269,7 +333,7 @@ function buildVerificationRiskRulesModal(options = {}) {
       new ActionRowBuilder().addComponents(
         new TextInputBuilder()
           .setCustomId("verification_enemy_inviter_user_ids")
-          .setLabel("Enemy inviter user IDs")
+          .setLabel("ID пригласивших из риска")
           .setStyle(TextInputStyle.Paragraph)
           .setRequired(false)
           .setMaxLength(4000)
@@ -278,7 +342,7 @@ function buildVerificationRiskRulesModal(options = {}) {
       new ActionRowBuilder().addComponents(
         new TextInputBuilder()
           .setCustomId("verification_manual_tags")
-          .setLabel("Manual tags")
+          .setLabel("Теги для ручной проверки")
           .setStyle(TextInputStyle.Paragraph)
           .setRequired(false)
           .setMaxLength(4000)
@@ -297,12 +361,12 @@ function buildVerificationStageTextsModal(options = {}) {
 
   return new ModalBuilder()
     .setCustomId(VERIFY_PANEL_CONFIG_TEXTS_MODAL_ID)
-    .setTitle("Verification Stage Texts")
+    .setTitle("Тексты и сроки")
     .addComponents(
       new ActionRowBuilder().addComponents(
         new TextInputBuilder()
           .setCustomId("verification_stage_entry")
-          .setLabel("Entry text")
+          .setLabel("Текст входного сообщения")
           .setStyle(TextInputStyle.Paragraph)
           .setRequired(false)
           .setMaxLength(4000)
@@ -311,7 +375,7 @@ function buildVerificationStageTextsModal(options = {}) {
       new ActionRowBuilder().addComponents(
         new TextInputBuilder()
           .setCustomId("verification_stage_manual_review")
-          .setLabel("Manual review text")
+          .setLabel("Текст для ручной проверки")
           .setStyle(TextInputStyle.Paragraph)
           .setRequired(false)
           .setMaxLength(4000)
@@ -320,7 +384,7 @@ function buildVerificationStageTextsModal(options = {}) {
       new ActionRowBuilder().addComponents(
         new TextInputBuilder()
           .setCustomId("verification_stage_approved")
-          .setLabel("Approved text")
+          .setLabel("Текст после одобрения")
           .setStyle(TextInputStyle.Paragraph)
           .setRequired(false)
           .setMaxLength(4000)
@@ -329,7 +393,7 @@ function buildVerificationStageTextsModal(options = {}) {
       new ActionRowBuilder().addComponents(
         new TextInputBuilder()
           .setCustomId("verification_stage_rejected")
-          .setLabel("Rejected text")
+          .setLabel("Текст после отказа")
           .setStyle(TextInputStyle.Paragraph)
           .setRequired(false)
           .setMaxLength(4000)
@@ -338,7 +402,7 @@ function buildVerificationStageTextsModal(options = {}) {
       new ActionRowBuilder().addComponents(
         new TextInputBuilder()
           .setCustomId("verification_pending_days")
-          .setLabel("Pending days")
+          .setLabel("Сколько дней ждать до отчёта")
           .setStyle(TextInputStyle.Short)
           .setRequired(true)
           .setMaxLength(10)
@@ -350,12 +414,12 @@ function buildVerificationStageTextsModal(options = {}) {
 function buildVerificationResendReportModal() {
   return new ModalBuilder()
     .setCustomId(VERIFY_PANEL_RESEND_REPORT_MODAL_ID)
-    .setTitle("Verification Resend Report")
+    .setTitle("Повторная отправка отчёта")
     .addComponents(
       new ActionRowBuilder().addComponents(
         new TextInputBuilder()
           .setCustomId("verification_resend_user")
-          .setLabel("Target user ID or mention")
+          .setLabel("Кому отправить отчёт")
           .setStyle(TextInputStyle.Short)
           .setRequired(true)
           .setMaxLength(80)
@@ -364,35 +428,35 @@ function buildVerificationResendReportModal() {
       new ActionRowBuilder().addComponents(
         new TextInputBuilder()
           .setCustomId("verification_resend_note")
-          .setLabel("Moderator note")
+          .setLabel("Комментарий модератора")
           .setStyle(TextInputStyle.Paragraph)
           .setRequired(false)
           .setMaxLength(1000)
-          .setValue("Ручной resend verification report.")
+          .setValue("Ручная повторная отправка отчёта.")
       )
     );
 }
 
 function buildParticipantGuideText(integration = {}) {
   return [
-    "1. Зайди в verification room и нажми кнопку OAuth.",
-    "2. Авторизуйся тем же Discord-аккаунтом, который находится на сервере.",
-    "3. После callback бот либо сразу снимет verify-role, либо отправит кейс модераторам.",
-    `4. Если автоматическое решение не получится, тебя оставят в очереди до ручной проверки и дедлайна **${Math.max(1, Number(integration.deadline?.pendingDays) || 7)} дн.**.`,
-    `5. После approve применяется текст: ${cleanString(integration.stageTexts?.approved, 200) || "бот снимет verify-role и выдаст стартовый доступ."}`,
-    `6. После reject применяется текст: ${cleanString(integration.stageTexts?.rejected, 200) || "доступ не будет выдан."}`,
+    "1. Открой канал проверки и нажми кнопку запуска OAuth.",
+    "2. Авторизуйся тем же Discord-аккаунтом, который сейчас находится на сервере.",
+    "3. После возврата с сайта бот либо сразу завершит проверку, либо отправит кейс модераторам.",
+    `4. Если автоматическое решение не сработает, кейс останется в очереди до ручной проверки и дедлайна **${Math.max(1, Number(integration.deadline?.pendingDays) || 7)} дн.**.`,
+    `5. После одобрения участник увидит: ${cleanString(integration.stageTexts?.approved, 200) || "бот снимет verify-роль и выдаст стартовый доступ."}`,
+    `6. После отказа участник увидит: ${cleanString(integration.stageTexts?.rejected, 200) || "доступ выдан не будет."}`,
   ].join("\n");
 }
 
 function buildModeratorGuideText(integration = {}, snapshot = {}) {
   const normalizedSnapshot = normalizeVerificationSnapshot(snapshot);
   return [
-    "1. Home показывает readiness OAuth, verify-role, verification room и report channel.",
-    "2. Queue показывает текущие состояния участников: pending, manual review, failed, overdue.",
-    "3. Runtime actions нужны для republish entry message и ручного запуска overdue sweep.",
-    "4. Manual review report остаётся местом для approve/reject, а панель должна давать ту же картину по очереди.",
-    `5. Сейчас в queue: pending ${normalizedSnapshot.totals.pending}, manual review ${normalizedSnapshot.totals.manualReview}, overdue ${normalizedSnapshot.totals.overdue}.`,
-    `6. Дедлайн escalation: ${Math.max(1, Number(integration.deadline?.pendingDays) || 7)} дн. без auto-kick.`
+    "1. Раздел «Обзор» показывает, всё ли готово: OAuth, verify-роль, канал проверки и канал отчётов.",
+    "2. Раздел «Очередь» показывает, кто ждёт решения, ушёл в ручную проверку, упал с ошибкой или просрочен.",
+    "3. Раздел «Система» нужен для обновления входного сообщения, ручной проверки просроченных кейсов и повторной отправки отчётов.",
+    "4. Отчёт в канал модераторов остаётся местом, где принимается решение: одобрить или отклонить.",
+    `5. Сейчас в очереди: ожидают ${normalizedSnapshot.totals.pending}, ручная проверка ${normalizedSnapshot.totals.manualReview}, просрочено ${normalizedSnapshot.totals.overdue}.`,
+    `6. Дедлайн до отправки отчёта: ${Math.max(1, Number(integration.deadline?.pendingDays) || 7)} дн. Автокика здесь нет.`
   ].join("\n");
 }
 
@@ -409,7 +473,7 @@ function buildVerificationEntryPayload(options = {}) {
   const statusText = cleanString(options.statusText, 1000);
 
   const embed = new EmbedBuilder()
-    .setTitle("Verification Access")
+    .setTitle("Проверка доступа")
     .setColor(0x2563EB)
     .setDescription([
       entryText,
@@ -424,9 +488,9 @@ function buildVerificationEntryPayload(options = {}) {
     embeds: [embed],
     components: [
       new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(VERIFY_ENTRY_START_ID).setLabel("Открыть OAuth").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId(VERIFY_ENTRY_START_ID).setLabel("Начать проверку").setStyle(ButtonStyle.Primary),
         new ButtonBuilder().setCustomId(VERIFY_ENTRY_STATUS_ID).setLabel("Мой статус").setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId(VERIFY_ENTRY_GUIDE_ID).setLabel("Гайд").setStyle(ButtonStyle.Secondary)
+        new ButtonBuilder().setCustomId(VERIFY_ENTRY_GUIDE_ID).setLabel("Как это работает").setStyle(ButtonStyle.Secondary)
       ),
     ],
   };
@@ -441,7 +505,7 @@ function buildVerificationGuidePayload(options = {}) {
   const statusText = cleanString(options.statusText, 1000);
 
   const embed = new EmbedBuilder()
-    .setTitle(audience === "participant" ? "Verification Guide" : "Verification Moderator Guide")
+    .setTitle(audience === "participant" ? "Как пройти проверку" : "Инструкция для модераторов")
     .setColor(audience === "participant" ? 0x2563EB : 0x0F766E)
     .setDescription(
       audience === "participant"
@@ -458,7 +522,7 @@ function buildVerificationGuidePayload(options = {}) {
     components: audience === "participant"
       ? [
           new ActionRowBuilder().addComponents(
-            new ButtonBuilder().setCustomId(VERIFY_ENTRY_START_ID).setLabel("Открыть OAuth").setStyle(ButtonStyle.Primary),
+            new ButtonBuilder().setCustomId(VERIFY_ENTRY_START_ID).setLabel("Начать проверку").setStyle(ButtonStyle.Primary),
             new ButtonBuilder().setCustomId(VERIFY_ENTRY_STATUS_ID).setLabel("Мой статус").setStyle(ButtonStyle.Secondary)
           ),
         ]
@@ -482,14 +546,14 @@ function buildVerificationLaunchPayload(options = {}) {
   return {
     embeds: [
       new EmbedBuilder()
-        .setTitle("Verification OAuth")
+        .setTitle("Авторизация Discord")
         .setColor(0x2563EB)
         .setDescription(description),
     ],
     components: [
       new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setStyle(ButtonStyle.Link).setLabel("Открыть Discord OAuth").setURL(authorizeUrl),
-        new ButtonBuilder().setCustomId(VERIFY_ENTRY_STATUS_ID).setLabel("Обновить статус").setStyle(ButtonStyle.Secondary)
+        new ButtonBuilder().setStyle(ButtonStyle.Link).setLabel("Открыть страницу авторизации").setURL(authorizeUrl),
+        new ButtonBuilder().setCustomId(VERIFY_ENTRY_STATUS_ID).setLabel("Проверить статус").setStyle(ButtonStyle.Secondary)
       ),
     ],
   };
@@ -536,41 +600,41 @@ function buildVerificationReportPayload(options = {}) {
     : {};
   const userId = cleanString(options.userId || profile.userId, 80);
   const riskLines = [
-    `Enemy guild matches: **${Number(summary.matchedEnemyGuildCount) || 0}**`,
-    `Enemy user matches: **${Number(summary.matchedEnemyUserCount) || 0}**`,
-    `Enemy invite matches: **${Number(summary.matchedEnemyInviteCount) || 0}**`,
-    `Enemy inviter matches: **${Number(summary.matchedEnemyInviterCount) || 0}**`,
-    `Manual tags: **${Number(summary.manualTagCount) || 0}**`,
+    `Совпадения по серверам: **${Number(summary.matchedEnemyGuildCount) || 0}**`,
+    `Совпадения по пользователям: **${Number(summary.matchedEnemyUserCount) || 0}**`,
+    `Совпадения по invite: **${Number(summary.matchedEnemyInviteCount) || 0}**`,
+    `Совпадения по inviter: **${Number(summary.matchedEnemyInviterCount) || 0}**`,
+    `Ручные теги: **${Number(summary.manualTagCount) || 0}**`,
   ];
   const detailsLines = [
-    `OAuth username: **${cleanString(summary.oauthUsername || verification.oauthUsername, 120) || "—"}**`,
-    `Observed guilds: **${Number(summary.observedGuildCount) || 0}**`,
-    `Status: **${cleanString(summary.status || verification.status, 40) || "not_started"}**`,
-    `Decision: **${cleanString(summary.decision || verification.decision, 40) || "none"}**`,
-    `Report due: **${cleanString(summary.reportDueAt || verification.reportDueAt, 80) || "—"}**`,
+    `OAuth-аккаунт: **${cleanString(summary.oauthUsername || verification.oauthUsername, 120) || "—"}**`,
+    `Замечено серверов: **${Number(summary.observedGuildCount) || 0}**`,
+    `Статус: **${formatVerificationStatus(summary.status || verification.status, "не начато")}**`,
+    `Решение: **${formatVerificationDecision(summary.decision || verification.decision, "нет")}**`,
+    `Дедлайн отчёта: **${cleanString(summary.reportDueAt || verification.reportDueAt, 80) || "—"}**`,
   ];
 
   const embed = new EmbedBuilder()
-    .setTitle("Verification Manual Review")
+    .setTitle("Ручная проверка доступа")
     .setColor(0xD97706)
     .setDescription(userId ? `Участник: <@${userId}>` : "Участник не найден.")
     .addFields(
       { name: "Проверка", value: detailsLines.join("\n"), inline: false },
-      { name: "Risk summary", value: riskLines.join("\n"), inline: false },
+      { name: "Сводка риска", value: riskLines.join("\n"), inline: false },
       {
         name: "Точные совпадения",
         value: [
-          `Guild IDs: ${normalizeStringArray(verification.matchedEnemyGuildIds, 20, 80).join(", ") || "—"}`,
-          `User IDs: ${normalizeStringArray(verification.matchedEnemyUserIds, 20, 80).join(", ") || "—"}`,
-          `Invite codes: ${normalizeStringArray(verification.matchedEnemyInviteCodes, 20, 80).join(", ") || "—"}`,
-          `Inviter IDs: ${normalizeStringArray(verification.matchedEnemyInviterUserIds, 20, 80).join(", ") || "—"}`,
+          `Серверы: ${normalizeStringArray(verification.matchedEnemyGuildIds, 20, 80).join(", ") || "—"}`,
+          `Пользователи: ${normalizeStringArray(verification.matchedEnemyUserIds, 20, 80).join(", ") || "—"}`,
+          `Invite-коды: ${normalizeStringArray(verification.matchedEnemyInviteCodes, 20, 80).join(", ") || "—"}`,
+          `Inviter ID: ${normalizeStringArray(verification.matchedEnemyInviterUserIds, 20, 80).join(", ") || "—"}`,
         ].join("\n"),
         inline: false,
       }
     );
 
   if (statusNote) {
-    embed.addFields({ name: "Moderator note", value: statusNote, inline: false });
+    embed.addFields({ name: "Комментарий модератора", value: statusNote, inline: false });
   }
 
   return {
@@ -578,8 +642,8 @@ function buildVerificationReportPayload(options = {}) {
     components: userId && !disableActions
       ? [
           new ActionRowBuilder().addComponents(
-            new ButtonBuilder().setCustomId(buildVerificationReportCustomId("approve", userId)).setLabel("Approve").setStyle(ButtonStyle.Success),
-            new ButtonBuilder().setCustomId(buildVerificationReportCustomId("reject", userId)).setLabel("Reject").setStyle(ButtonStyle.Danger)
+            new ButtonBuilder().setCustomId(buildVerificationReportCustomId("approve", userId)).setLabel("Одобрить").setStyle(ButtonStyle.Success),
+            new ButtonBuilder().setCustomId(buildVerificationReportCustomId("reject", userId)).setLabel("Отклонить").setStyle(ButtonStyle.Danger)
           ),
         ]
       : [],
@@ -606,78 +670,78 @@ function buildVerificationPanelPayload(options = {}) {
   const stageTextCount = Object.keys(integration.stageTexts && typeof integration.stageTexts === "object" ? integration.stageTexts : {}).length;
   const missingConfig = [];
 
-  if (!oauthConfigured) missingConfig.push("OAuth env");
-  if (!verifyRoleId) missingConfig.push("verify-role");
-  if (!verificationChannelId) missingConfig.push("verification-room");
+  if (!oauthConfigured) missingConfig.push("OAuth-переменные");
+  if (!verifyRoleId) missingConfig.push("verify-роль");
+  if (!verificationChannelId) missingConfig.push("канал проверки");
 
   const embed = new EmbedBuilder()
-    .setTitle("Verification Panel")
+    .setTitle("Панель проверки доступа")
     .setColor(missingConfig.length ? 0xC62828 : 0x2E7D32)
     .setDescription([
-      "Автономная Discord OAuth verification-система.",
-      "Подсистема должна изолировать участника verify-ролью и вмешиваться в onboarding только на blocker seam и финальном handoff.",
+      "Отсюда управляется отдельная Discord OAuth-проверка участников.",
+      "Панель показывает, что готово, кто застрял в очереди и какие действия нужны модератору прямо сейчас.",
     ].join("\n"))
     .addFields(
       {
-        name: "Система",
+        name: "Общее состояние",
         value: [
-          `Enabled: **${integration.enabled === true ? "да" : "нет"}**`,
+          `Система включена: **${integration.enabled === true ? "да" : "нет"}**`,
           `OAuth: **${oauthConfigured ? "готов" : "не настроен"}**`,
-          `Статус: **${cleanString(integration.status, 40) || "not_started"}**`,
-          missingConfig.length ? `Проблемы конфигурации: **${missingConfig.join(", ")}**` : "Критичные зависимости для foundation-среза найдены.",
+          `Текущий статус: **${formatVerificationStatus(cleanString(integration.status, 40), "не начато")}**`,
+          missingConfig.length ? `Нужно настроить: **${missingConfig.join(", ")}**` : "Критичных пробелов в базовой настройке не найдено.",
         ].join("\n"),
         inline: false,
       },
       {
-        name: "Очередь и состояния",
+        name: "Очередь и результаты",
         value: [
-          `Pending: ${formatCount(snapshot.totals.pending)}`,
-          `Manual review: ${formatCount(snapshot.totals.manualReview)}`,
-          `Failed: ${formatCount(snapshot.totals.failed)}`,
-          `Overdue: ${formatCount(snapshot.totals.overdue)}`,
-          `Verified / rejected: ${formatCount(snapshot.totals.verified)} / ${formatCount(snapshot.totals.rejected)}`,
+          `Ожидают проверки: ${formatCount(snapshot.totals.pending)}`,
+          `Нужна ручная проверка: ${formatCount(snapshot.totals.manualReview)}`,
+          `Ошибки OAuth: ${formatCount(snapshot.totals.failed)}`,
+          `Просрочено: ${formatCount(snapshot.totals.overdue)}`,
+          `Подтверждены / отклонены: ${formatCount(snapshot.totals.verified)} / ${formatCount(snapshot.totals.rejected)}`,
         ].join("\n"),
         inline: false,
       },
       {
-        name: "Изоляция и выход",
+        name: "Роли и каналы",
         value: [
-          `Verify-role: ${formatRoleMention(verifyRoleId)}`,
-          `Verification room: ${formatChannelMention(verificationChannelId)}`,
-          `Base access: ${formatRoleMention(options.accessRoleId)}`,
-          `Wartime access: ${formatRoleMention(options.wartimeAccessRoleId)}`,
-          `Report channel: ${formatChannelMention(reportChannelId)}`,
+          `Verify-роль: ${formatRoleMention(verifyRoleId)}`,
+          `Канал проверки: ${formatChannelMention(verificationChannelId)}`,
+          `Базовый доступ: ${formatRoleMention(options.accessRoleId)}`,
+          `Военный доступ: ${formatRoleMention(options.wartimeAccessRoleId)}`,
+          `Канал отчётов: ${formatChannelMention(reportChannelId)}`,
         ].join("\n"),
         inline: false,
       },
       {
-        name: "Risk rules",
+        name: "Правила риска",
         value: [
-          `Enemy guilds: **${countRiskItems(riskRules, "enemyGuildIds")}**`,
-          `Enemy users: **${countRiskItems(riskRules, "enemyUserIds")}**`,
-          `Enemy invites: **${countRiskItems(riskRules, "enemyInviteCodes")}**`,
-          `Enemy inviters: **${countRiskItems(riskRules, "enemyInviterUserIds")}**`,
-          `Manual tags: **${countRiskItems(riskRules, "manualTags")}**`,
+          `Вражеские серверы: **${countRiskItems(riskRules, "enemyGuildIds")}**`,
+          `Подозрительные пользователи: **${countRiskItems(riskRules, "enemyUserIds")}**`,
+          `Опасные invite: **${countRiskItems(riskRules, "enemyInviteCodes")}**`,
+          `Подозрительные inviter: **${countRiskItems(riskRules, "enemyInviterUserIds")}**`,
+          `Теги ручной проверки: **${countRiskItems(riskRules, "manualTags")}**`,
         ].join("\n"),
         inline: false,
       },
       {
-        name: "Runtime health",
+        name: "Что сейчас готово",
         value: [
           `Callback server: **${snapshot.runtime.callbackReady ? "готов" : "не готов"}**`,
-          `Join gate: **${snapshot.runtime.joinGateReady ? "готов" : "не готов"}**`,
-          `Entry message: **${snapshot.runtime.entryMessagePublished ? "опубликовано" : "не опубликовано"}**`,
-          `Report channel: **${snapshot.runtime.reportChannelReady ? "готов" : "не готов"}**`,
-          snapshot.runtime.lastSweepAt ? `Последний sweep: ${formatDateTime(snapshot.runtime.lastSweepAt)}` : "Последний sweep: —",
+          `Изоляция до проверки: **${snapshot.runtime.joinGateReady ? "готова" : "не готова"}**`,
+          `Входное сообщение: **${snapshot.runtime.entryMessagePublished ? "опубликовано" : "не опубликовано"}**`,
+          `Канал отчётов: **${snapshot.runtime.reportChannelReady ? "готов" : "не готов"}**`,
+          snapshot.runtime.lastSweepAt ? `Последняя проверка просроченных: ${formatDateTime(snapshot.runtime.lastSweepAt)}` : "Последняя проверка просроченных: —",
         ].join("\n"),
         inline: false,
       },
       {
-        name: "Тексты и дедлайн",
+        name: "Тексты и срок",
         value: [
           `Настроено текстовых этапов: **${stageTextCount}**`,
-          `Дедлайн без auto-kick: **${pendingDays} дн.**`,
-          "Через дедлайн система шлёт только overdue-отчёт модерам; auto-kick здесь не включён.",
+          `Срок до отчёта модераторам: **${pendingDays} дн.**`,
+          "После истечения срока система отправляет отчёт модераторам. Автокика в этом контуре нет.",
         ].join("\n"),
         inline: false,
       }
@@ -685,8 +749,8 @@ function buildVerificationPanelPayload(options = {}) {
 
   if (snapshot.issues.length) {
     embed.addFields({
-      name: "Внимание",
-      value: snapshot.issues.map((entry, index) => `${index + 1}. ${entry}`).join("\n"),
+      name: "Что требует внимания",
+      value: snapshot.issues.map((entry, index) => `${index + 1}. ${formatVerificationIssue(entry)}`).join("\n"),
       inline: false,
     });
   }
@@ -709,27 +773,27 @@ function buildVerificationQueuePayload(options = {}) {
   const snapshot = normalizeVerificationSnapshot(options.snapshot);
   const statusText = cleanString(options.statusText, 1000);
   const queueLines = snapshot.queueEntries.length
-    ? snapshot.queueEntries.map((entry, index) => `${index + 1}. ${entry}`).join("\n")
-    : "Активная очередь verification сейчас пустая.";
+    ? snapshot.queueEntries.map((entry, index) => `${index + 1}. ${formatVerificationQueueEntry(entry)}`).join("\n")
+    : "Сейчас в очереди проверки никого нет.";
 
   const embed = new EmbedBuilder()
-    .setTitle("Verification Queue")
+    .setTitle("Очередь проверки")
     .setColor(0x7C3AED)
-    .setDescription("Эта view нужна, чтобы быстро оценить объём pending/manual review/failed кейсов без чтения сырых профилей.")
+    .setDescription("Здесь видно, кто ещё ждёт решения, ушёл в ручную проверку, упал с ошибкой или уже просрочен.")
     .addFields(
       {
-        name: "Когорты",
+        name: "Сводка",
         value: [
-          `Pending: ${formatCount(snapshot.totals.pending)}`,
-          `Manual review: ${formatCount(snapshot.totals.manualReview)}`,
-          `Failed: ${formatCount(snapshot.totals.failed)}`,
-          `Overdue: ${formatCount(snapshot.totals.overdue)}`,
-          `Blocked by verify-role: ${formatCount(snapshot.totals.blocked)}`,
+          `Ожидают проверки: ${formatCount(snapshot.totals.pending)}`,
+          `Нужна ручная проверка: ${formatCount(snapshot.totals.manualReview)}`,
+          `Ошибки OAuth: ${formatCount(snapshot.totals.failed)}`,
+          `Просрочено: ${formatCount(snapshot.totals.overdue)}`,
+          `Всё ещё заблокированы verify-ролью: ${formatCount(snapshot.totals.blocked)}`,
         ].join("\n"),
         inline: false,
       },
       {
-        name: "Preview",
+        name: "Ближайшие кейсы",
         value: queueLines,
         inline: false,
       }
@@ -757,28 +821,28 @@ function buildVerificationRuntimePayload(options = {}) {
   const statusText = cleanString(options.statusText, 1000);
 
   const embed = new EmbedBuilder()
-    .setTitle("Verification Runtime")
+    .setTitle("Состояние системы")
     .setColor(0xEA580C)
-    .setDescription("Операционный runtime view для publish/refresh/sweep и проверки binding health.")
+    .setDescription("Здесь видно, готов ли callback, опубликовано ли входное сообщение и куда сейчас уходят отчёты.")
     .addFields(
       {
-        name: "Runtime",
+        name: "Готовность",
         value: [
-          `Callback server: **${snapshot.runtime.callbackReady ? "ready" : "missing"}**`,
-          `Verify-role binding: **${snapshot.runtime.verifyRoleReady ? "ready" : "missing"}**`,
-          `Verification room: **${snapshot.runtime.verificationRoomReady ? "ready" : "missing"}**`,
-          `Report channel: **${snapshot.runtime.reportChannelReady ? "ready" : "missing"}**`,
-          `Entry message: **${snapshot.runtime.entryMessagePublished ? "published" : "missing"}**`,
+          `Callback-сервер: **${snapshot.runtime.callbackReady ? "готов" : "не готов"}**`,
+          `Verify-роль: **${snapshot.runtime.verifyRoleReady ? "настроена" : "не настроена"}**`,
+          `Канал проверки: **${snapshot.runtime.verificationRoomReady ? "настроен" : "не настроен"}**`,
+          `Канал отчётов: **${snapshot.runtime.reportChannelReady ? "настроен" : "не настроен"}**`,
+          `Входное сообщение: **${snapshot.runtime.entryMessagePublished ? "опубликовано" : "не опубликовано"}**`,
         ].join("\n"),
         inline: false,
       },
       {
-        name: "Publish state",
+        name: "Входное сообщение и отчёты",
         value: [
-          `Entry channel: ${formatChannelMention(snapshot.runtime.entryMessageChannelId || integration.entryMessage?.channelId)}`,
-          `Entry message id: **${snapshot.runtime.entryMessageId || cleanString(integration.entryMessage?.messageId, 80) || "—"}**`,
-          snapshot.runtime.lastReportSentAt ? `Last report sent: ${formatDateTime(snapshot.runtime.lastReportSentAt)}` : "Last report sent: —",
-          snapshot.runtime.lastSweepAt ? `Last sweep: ${formatDateTime(snapshot.runtime.lastSweepAt)}` : "Last sweep: —",
+          `Канал входного сообщения: ${formatChannelMention(snapshot.runtime.entryMessageChannelId || integration.entryMessage?.channelId)}`,
+          `ID входного сообщения: **${snapshot.runtime.entryMessageId || cleanString(integration.entryMessage?.messageId, 80) || "—"}**`,
+          snapshot.runtime.lastReportSentAt ? `Последний отправленный отчёт: ${formatDateTime(snapshot.runtime.lastReportSentAt)}` : "Последний отправленный отчёт: —",
+          snapshot.runtime.lastSweepAt ? `Последняя проверка просроченных: ${formatDateTime(snapshot.runtime.lastSweepAt)}` : "Последняя проверка просроченных: —",
         ].join("\n"),
         inline: false,
       }
@@ -786,8 +850,8 @@ function buildVerificationRuntimePayload(options = {}) {
 
   if (snapshot.issues.length) {
     embed.addFields({
-      name: "Blocking issues",
-      value: snapshot.issues.map((entry, index) => `${index + 1}. ${entry}`).join("\n"),
+      name: "Проблемы",
+      value: snapshot.issues.map((entry, index) => `${index + 1}. ${formatVerificationIssue(entry)}`).join("\n"),
       inline: false,
     });
   }
@@ -837,7 +901,7 @@ async function handleVerificationPanelButtonInteraction(options = {}) {
   };
 
   if (viewByButtonId[customId]) {
-    const statusText = customId === VERIFY_PANEL_REFRESH_ID ? "Verification panel обновлён." : "";
+    const statusText = customId === VERIFY_PANEL_REFRESH_ID ? "Панель проверки обновлена." : "";
     await interaction.update(await options.buildView(viewByButtonId[customId], statusText, false));
     return true;
   }
