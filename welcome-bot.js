@@ -118,12 +118,14 @@ const { commitMutation } = require("./src/onboard/refresh-runner");
 const {
   buildActivityOperatorPanelPayload,
   handleActivityPanelButtonInteraction,
+  handleActivityPanelModalSubmitInteraction,
 } = require("./src/activity/operator");
   const {
     flushActivityRuntime,
     recordActivityMessage,
     resumeActivityRuntime,
   } = require("./src/activity/runtime");
+const { ensureActivityState } = require("./src/activity/state");
 const {
   ONBOARD_ACCESS_MODES,
   createOnboardModeState,
@@ -170,6 +172,10 @@ const {
 const {
   createRobloxApiClient,
 } = require("./src/integrations/roblox-service");
+const {
+  createRobloxPanelTelemetry,
+  handleRobloxStatsPanelButtonInteraction,
+} = require("./src/integrations/roblox-panel");
 const {
   createRobloxJobCoordinator,
   createRobloxRuntimeState,
@@ -783,30 +789,32 @@ function nowIso() {
   return new Date().toISOString();
 }
 
-const runScheduledRobloxProfileRefreshJob = robloxJobCoordinator.createRunner("profile_refresh", () => runRobloxProfileRefreshJobCore({
+const robloxPanelTelemetry = createRobloxPanelTelemetry({ now: nowIso });
+
+const runScheduledRobloxProfileRefreshJob = robloxPanelTelemetry.wrapJob("profile_refresh", robloxJobCoordinator.createRunner("profile_refresh", () => runRobloxProfileRefreshJobCore({
   db,
   now: nowIso,
   fetchUserProfile: robloxApiClient.fetchUserProfile.bind(robloxApiClient),
   fetchUserAvatarHeadshots: robloxApiClient.fetchUserAvatarHeadshots.bind(robloxApiClient),
   fetchUserUsernameHistory: robloxApiClient.fetchUserUsernameHistory.bind(robloxApiClient),
   logError: (...args) => console.error(...args),
-}));
+})));
 
-const syncRobloxPlaytime = robloxJobCoordinator.createRunner("playtime_sync", () => runRobloxPlaytimeSyncJob({
+const syncRobloxPlaytime = robloxPanelTelemetry.wrapJob("playtime_sync", robloxJobCoordinator.createRunner("playtime_sync", () => runRobloxPlaytimeSyncJob({
   db,
   runtimeState: robloxRuntimeState,
   now: nowIso,
   roblox: appConfig?.roblox,
   fetchUserPresences: robloxApiClient.fetchUserPresences.bind(robloxApiClient),
   logError: (...args) => console.error(...args),
-}));
+})));
 
-const flushRobloxRuntime = robloxJobCoordinator.createRunner("runtime_flush", () => flushRobloxRuntimeState({
+const flushRobloxRuntime = robloxPanelTelemetry.wrapJob("runtime_flush", robloxJobCoordinator.createRunner("runtime_flush", () => flushRobloxRuntimeState({
   db,
   runtimeState: robloxRuntimeState,
   now: nowIso,
   saveDb,
-}));
+})));
 
 function cloneJsonValue(value) {
   return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
@@ -4050,6 +4058,19 @@ function isModerator(member) {
   return member.roles?.cache?.has?.(getModeratorRoleId()) || false;
 }
 
+function hasActivityPanelAccess(member) {
+  if (isModerator(member)) return true;
+  if (!member) return false;
+
+  const activityConfig = ensureActivityState(db).config || {};
+  const accessRoleIds = [...new Set([
+    ...(Array.isArray(activityConfig.moderatorRoleIds) ? activityConfig.moderatorRoleIds : []),
+    ...(Array.isArray(activityConfig.adminRoleIds) ? activityConfig.adminRoleIds : []),
+  ].map((roleId) => String(roleId || "").trim()).filter(Boolean))];
+
+  return accessRoleIds.some((roleId) => member.roles?.cache?.has?.(roleId));
+}
+
 function getComboGuideEditorRoleIds(guideState = db.comboGuide) {
   return normalizeComboGuideEditorRoleIds(guideState?.editorRoleIds);
 }
@@ -7189,7 +7210,8 @@ async function buildModeratorPanelPayload(client, statusText = "", includeFlags 
       new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId("panel_refresh_welcome").setLabel("Обновить welcome").setStyle(ButtonStyle.Primary),
         new ButtonBuilder().setCustomId("panel_refresh_tierlists").setLabel("Обновить тир-листы").setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId("panel_sync_roles").setLabel("Синк ролей").setStyle(ButtonStyle.Secondary)
+        new ButtonBuilder().setCustomId("panel_sync_roles").setLabel("Синк ролей").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("panel_open_roblox_stats").setLabel("Roblox Panel").setStyle(ButtonStyle.Secondary)
       ),
       new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId("panel_remind_missing").setLabel("Напомнить отсутствующим").setStyle(ButtonStyle.Danger),
@@ -12483,11 +12505,28 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
+    if (await handleRobloxStatsPanelButtonInteraction({
+      interaction,
+      client,
+      db,
+      runtimeState: robloxRuntimeState,
+      telemetry: robloxPanelTelemetry,
+      appConfig,
+      isModerator,
+      replyNoPermission: () => interaction.reply(ephemeralPayload({ content: "Нет прав." })),
+      buildModeratorPanelPayload,
+      runProfileRefreshJob: runScheduledRobloxProfileRefreshJob,
+      runPlaytimeSyncJob: syncRobloxPlaytime,
+      runRuntimeFlush: flushRobloxRuntime,
+    })) {
+      return;
+    }
+
     if (await handleActivityPanelButtonInteraction({
       interaction,
       client,
       db,
-      isModerator,
+      isModerator: hasActivityPanelAccess,
       replyNoPermission: () => interaction.reply(ephemeralPayload({ content: "Нет прав." })),
       buildModeratorPanelPayload,
       buildActivityPanelPayload: ({ statusText = "" } = {}) => buildActivityOperatorPanelPayload({
@@ -15537,6 +15576,19 @@ client.on("interactionCreate", async (interaction) => {
       applyGroundTruthReportChannelLink,
       clearNativeRoleRecord: (options) => clearNativeRoleRecord(db, options),
       writeNativeRoleRecord: (options) => writeNativeRoleRecord(db, options),
+    })) {
+      return;
+    }
+
+    if (await handleActivityPanelModalSubmitInteraction({
+      interaction,
+      db,
+      isModerator: hasActivityPanelAccess,
+      replyNoPermission: () => interaction.reply(ephemeralPayload({ content: "Нет прав." })),
+      replyError: (_interaction, text) => interaction.reply(ephemeralPayload({ content: text })),
+      replySuccess: (_interaction, text) => interaction.reply(ephemeralPayload({ content: text })),
+      parseRequestedRoleId,
+      saveDb,
     })) {
       return;
     }

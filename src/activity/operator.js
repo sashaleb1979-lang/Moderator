@@ -5,10 +5,33 @@ const {
   ButtonBuilder,
   ButtonStyle,
   EmbedBuilder,
+  ModalBuilder,
+  TextInputBuilder,
+  TextInputStyle,
 } = require("discord.js");
 const { ensureSharedProfile } = require("../integrations/shared-profile");
 const { flushActivityRuntime, recordActivityMessage } = require("./runtime");
-const { ensureActivityState } = require("./state");
+const { ensureActivityState, updateActivityConfig } = require("./state");
+
+const ACTIVITY_PANEL_BUTTON_IDS = Object.freeze([
+  "panel_open_activity",
+  "activity_panel_refresh",
+  "activity_panel_historical_import",
+  "activity_panel_assign_roles",
+  "activity_panel_config_access",
+  "activity_panel_config_roles_primary",
+  "activity_panel_config_roles_secondary",
+  "activity_panel_back",
+]);
+
+const ACTIVITY_PANEL_MODAL_IDS = Object.freeze([
+  "activity_panel_config_access_modal",
+  "activity_panel_config_roles_primary_modal",
+  "activity_panel_config_roles_secondary_modal",
+]);
+
+const ACTIVITY_ROLE_MAPPING_PRIMARY_KEYS = Object.freeze(["core", "stable", "active"]);
+const ACTIVITY_ROLE_MAPPING_SECONDARY_KEYS = Object.freeze(["floating", "weak", "dead"]);
 
 function clone(value) {
   if (value === undefined) return undefined;
@@ -52,6 +75,12 @@ function resolveNowIso(now) {
   return normalizeIsoTimestamp(now, new Date().toISOString());
 }
 
+function assertFunction(value, name) {
+  if (typeof value !== "function") {
+    throw new TypeError(`${name} must be a function`);
+  }
+}
+
 function formatDateTime(value) {
   const timestamp = Date.parse(value || "");
   if (!Number.isFinite(timestamp)) return "—";
@@ -64,6 +93,121 @@ function getActivitySessionGapMs(config = {}) {
 
 function listActivityManagedRoleIds(config = {}) {
   return normalizeStringArray(Object.values(config.activityRoleIds || {}));
+}
+
+function formatRoleIdPreview(roleId) {
+  return cleanString(roleId, 80) || "—";
+}
+
+function formatRoleIdListPreview(roleIds = []) {
+  const normalized = normalizeStringArray(roleIds, 25, 80);
+  return normalized.length ? normalized.join(", ") : "—";
+}
+
+function buildActivityRoleMappingPreview(config = {}, roleKeys = []) {
+  return roleKeys
+    .map((roleKey) => `${roleKey}: ${formatRoleIdPreview(config.activityRoleIds?.[roleKey])}`)
+    .join(" • ");
+}
+
+function parseRequestedRoleIds(value = "", parseRequestedRoleId) {
+  const text = cleanString(value, 4000);
+  if (!text) {
+    return {
+      roleIds: [],
+      invalidTokens: [],
+    };
+  }
+
+  const normalized = [];
+  const seen = new Set();
+  const invalidTokens = [];
+  for (const token of text.split(/[\s,;|]+/).map((entry) => entry.trim()).filter(Boolean)) {
+    const roleId = parseRequestedRoleId(token, "");
+    if (!roleId) {
+      invalidTokens.push(token);
+      continue;
+    }
+    if (seen.has(roleId)) continue;
+    seen.add(roleId);
+    normalized.push(roleId);
+  }
+
+  return {
+    roleIds: normalized,
+    invalidTokens,
+  };
+}
+
+function parseOptionalRequestedRoleId(value = "", parseRequestedRoleId) {
+  const text = cleanString(value, 120);
+  if (!text) {
+    return {
+      roleId: "",
+      invalidToken: null,
+    };
+  }
+
+  const roleId = parseRequestedRoleId(text, "");
+  return {
+    roleId,
+    invalidToken: roleId ? null : text,
+  };
+}
+
+function buildActivityAccessConfigModal(config = {}) {
+  return new ModalBuilder()
+    .setCustomId("activity_panel_config_access_modal")
+    .setTitle("Activity access")
+    .addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId("activity_access_moderator_roles")
+          .setLabel("Activity moderators")
+          .setStyle(TextInputStyle.Paragraph)
+          .setRequired(false)
+          .setMaxLength(1000)
+          .setPlaceholder("Role IDs или <@&...>, несколько через пробел/запятую/новую строку")
+          .setValue(normalizeStringArray(config.moderatorRoleIds, 25, 80).join("\n"))
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId("activity_access_admin_roles")
+          .setLabel("Activity admins")
+          .setStyle(TextInputStyle.Paragraph)
+          .setRequired(false)
+          .setMaxLength(1000)
+          .setPlaceholder("Role IDs или <@&...>, несколько через пробел/запятую/новую строку")
+          .setValue(normalizeStringArray(config.adminRoleIds, 25, 80).join("\n"))
+      )
+    );
+}
+
+function buildActivityRoleMappingModal({ config = {}, modalId = "", title = "", roleKeys = [] } = {}) {
+  return new ModalBuilder()
+    .setCustomId(cleanString(modalId, 80))
+    .setTitle(cleanString(title, 45) || "Activity roles")
+    .addComponents(
+      ...roleKeys.map((roleKey) => new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId(`activity_role_${roleKey}`)
+          .setLabel(`Role for ${roleKey}`)
+          .setStyle(TextInputStyle.Short)
+          .setRequired(false)
+          .setMaxLength(80)
+          .setPlaceholder("Role ID или <@&...>, пусто = сброс")
+          .setValue(cleanString(config.activityRoleIds?.[roleKey], 80))
+      ))
+    );
+}
+
+function appendActivityAuditLog(db, entry = {}) {
+  const state = ensureActivityState(db);
+  state.ops ||= {};
+  state.ops.moderationAuditLog ||= [];
+  state.ops.moderationAuditLog.push(clone(entry));
+  db.sot.activity = state;
+  return state;
 }
 
 function ensureProfileRecord(db, userId) {
@@ -118,8 +262,9 @@ function collectActivityAssignmentTargetUserIds(db, explicitUserIds = []) {
 
 function buildActivityOperatorPanelPayload({ db = {}, statusText = "" } = {}) {
   const state = ensureActivityState(db);
+  const config = state.config || {};
   const watchedChannelCount = Array.isArray(state.watchedChannels) ? state.watchedChannels.length : 0;
-  const mappedRoleCount = listActivityManagedRoleIds(state.config || {}).length;
+  const mappedRoleCount = listActivityManagedRoleIds(config).length;
   const snapshotCount = Object.keys(state.userSnapshots || {}).length;
   const openSessionCount = Object.keys(state.runtime?.openSessions || {}).length;
   const dirtyUserCount = Array.isArray(state.runtime?.dirtyUsers) ? state.runtime.dirtyUsers.length : 0;
@@ -168,6 +313,16 @@ function buildActivityOperatorPanelPayload({ db = {}, statusText = "" } = {}) {
           ].join("\n")
           : "Исторический import ещё не запускался.",
         inline: false,
+      },
+      {
+        name: "Config",
+        value: [
+          `Activity moderators: ${formatRoleIdListPreview(config.moderatorRoleIds)}`,
+          `Activity admins: ${formatRoleIdListPreview(config.adminRoleIds)}`,
+          buildActivityRoleMappingPreview(config, ACTIVITY_ROLE_MAPPING_PRIMARY_KEYS),
+          buildActivityRoleMappingPreview(config, ACTIVITY_ROLE_MAPPING_SECONDARY_KEYS),
+        ].join("\n"),
+        inline: false,
       }
     );
 
@@ -186,7 +341,12 @@ function buildActivityOperatorPanelPayload({ db = {}, statusText = "" } = {}) {
         new ButtonBuilder().setCustomId("activity_panel_refresh").setLabel("Обновить").setStyle(ButtonStyle.Primary),
         new ButtonBuilder().setCustomId("activity_panel_historical_import").setLabel("Historical Import").setStyle(ButtonStyle.Secondary),
         new ButtonBuilder().setCustomId("activity_panel_assign_roles").setLabel("Initial roles").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("activity_panel_config_access").setLabel("Доступ").setStyle(ButtonStyle.Secondary),
         new ButtonBuilder().setCustomId("activity_panel_back").setLabel("Назад").setStyle(ButtonStyle.Secondary)
+      ),
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("activity_panel_config_roles_primary").setLabel("Роли 1/2").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("activity_panel_config_roles_secondary").setLabel("Роли 2/2").setStyle(ButtonStyle.Secondary)
       ),
     ],
   };
@@ -627,7 +787,7 @@ async function handleActivityPanelButtonInteraction({
   runSerialized,
 } = {}) {
   const customId = String(interaction?.customId || "").trim();
-  if (!["panel_open_activity", "activity_panel_refresh", "activity_panel_historical_import", "activity_panel_assign_roles", "activity_panel_back"].includes(customId)) {
+  if (!ACTIVITY_PANEL_BUTTON_IDS.includes(customId)) {
     return false;
   }
 
@@ -664,6 +824,31 @@ async function handleActivityPanelButtonInteraction({
     return true;
   }
 
+  if (customId === "activity_panel_config_access") {
+    await interaction.showModal(buildActivityAccessConfigModal(ensureActivityState(db).config || {}));
+    return true;
+  }
+
+  if (customId === "activity_panel_config_roles_primary") {
+    await interaction.showModal(buildActivityRoleMappingModal({
+      config: ensureActivityState(db).config || {},
+      modalId: "activity_panel_config_roles_primary_modal",
+      title: "Activity roles 1/2",
+      roleKeys: ACTIVITY_ROLE_MAPPING_PRIMARY_KEYS,
+    }));
+    return true;
+  }
+
+  if (customId === "activity_panel_config_roles_secondary") {
+    await interaction.showModal(buildActivityRoleMappingModal({
+      config: ensureActivityState(db).config || {},
+      modalId: "activity_panel_config_roles_secondary_modal",
+      title: "Activity roles 2/2",
+      roleKeys: ACTIVITY_ROLE_MAPPING_SECONDARY_KEYS,
+    }));
+    return true;
+  }
+
   await interaction.deferUpdate();
   if (customId === "activity_panel_historical_import") {
     const result = await runHistoricalImport({
@@ -697,11 +882,155 @@ async function handleActivityPanelButtonInteraction({
   return true;
 }
 
+async function handleActivityPanelModalSubmitInteraction({
+  interaction,
+  db,
+  isModerator,
+  replyNoPermission,
+  replyError,
+  replySuccess,
+  parseRequestedRoleId,
+  saveDb,
+  runSerialized,
+  now,
+} = {}) {
+  const customId = String(interaction?.customId || "").trim();
+  if (!ACTIVITY_PANEL_MODAL_IDS.includes(customId)) {
+    return false;
+  }
+
+  assertFunction(isModerator, "isModerator");
+  assertFunction(replyNoPermission, "replyNoPermission");
+  assertFunction(replyError, "replyError");
+  assertFunction(replySuccess, "replySuccess");
+  assertFunction(parseRequestedRoleId, "parseRequestedRoleId");
+
+  if (!isModerator(interaction?.member)) {
+    await replyNoPermission(interaction);
+    return true;
+  }
+
+  const execute = async () => {
+    const changedAt = resolveNowIso(now);
+    const requestedByUserId = normalizeNullableString(interaction?.user?.id, 80);
+
+    if (customId === "activity_panel_config_access_modal") {
+      const moderatorRoles = parseRequestedRoleIds(
+        interaction.fields.getTextInputValue("activity_access_moderator_roles"),
+        parseRequestedRoleId
+      );
+      const adminRoles = parseRequestedRoleIds(
+        interaction.fields.getTextInputValue("activity_access_admin_roles"),
+        parseRequestedRoleId
+      );
+      const invalidTokens = [...moderatorRoles.invalidTokens, ...adminRoles.invalidTokens];
+      if (invalidTokens.length) {
+        return {
+          ok: false,
+          message: `Некорректные role tokens: ${invalidTokens.join(", ")}. Используй Role ID или <@&...>.`,
+        };
+      }
+
+      const updateResult = updateActivityConfig(db, {
+        moderatorRoleIds: moderatorRoles.roleIds,
+        adminRoleIds: adminRoles.roleIds,
+      });
+
+      if (!updateResult.mutated) {
+        return {
+          ok: true,
+          message: "Activity access без изменений.",
+        };
+      }
+
+      appendActivityAuditLog(db, {
+        actionType: "activity_access_config_update",
+        moderatorUserId: requestedByUserId,
+        createdAt: changedAt,
+        moderatorRoleIds: moderatorRoles.roleIds,
+        adminRoleIds: adminRoles.roleIds,
+      });
+      if (typeof saveDb === "function") {
+        saveDb();
+      }
+
+      return {
+        ok: true,
+        message: `Activity access обновлён. Moderator roles: ${moderatorRoles.roleIds.length}, admin roles: ${adminRoles.roleIds.length}. Нажми «Обновить» в Activity Panel.`,
+      };
+    }
+
+    const roleKeys = customId === "activity_panel_config_roles_primary_modal"
+      ? ACTIVITY_ROLE_MAPPING_PRIMARY_KEYS
+      : ACTIVITY_ROLE_MAPPING_SECONDARY_KEYS;
+    const activityRoleIds = {};
+    const invalidRoleInputs = [];
+    for (const roleKey of roleKeys) {
+      const parsed = parseOptionalRequestedRoleId(
+        interaction.fields.getTextInputValue(`activity_role_${roleKey}`),
+        parseRequestedRoleId
+      );
+      if (parsed.invalidToken) {
+        invalidRoleInputs.push(`${roleKey}=${parsed.invalidToken}`);
+        continue;
+      }
+      activityRoleIds[roleKey] = parsed.roleId || null;
+    }
+
+    if (invalidRoleInputs.length) {
+      return {
+        ok: false,
+        message: `Некорректные role inputs: ${invalidRoleInputs.join(", ")}. Используй Role ID или <@&...>.`,
+      };
+    }
+
+    const updateResult = updateActivityConfig(db, {
+      activityRoleIds,
+    });
+
+    if (!updateResult.mutated) {
+      return {
+        ok: true,
+        message: "Activity role mapping без изменений.",
+      };
+    }
+
+    appendActivityAuditLog(db, {
+      actionType: "activity_role_mapping_update",
+      moderatorUserId: requestedByUserId,
+      createdAt: changedAt,
+      activityRoleIds,
+      updatedRoleKeys: roleKeys,
+    });
+    if (typeof saveDb === "function") {
+      saveDb();
+    }
+
+    return {
+      ok: true,
+      message: `Activity role mapping обновлён. Total mapped roles: ${listActivityManagedRoleIds(updateResult.config).length}. Нажми «Обновить» в Activity Panel.`,
+    };
+  };
+
+  const result = typeof runSerialized === "function"
+    ? await runSerialized(execute, `activity-config-submit:${customId}`)
+    : await execute();
+
+  if (!result.ok) {
+    await replyError(interaction, result.message);
+    return true;
+  }
+
+  await replySuccess(interaction, result.message);
+  return true;
+}
+
 module.exports = {
   applyInitialActivityRoleAssignments,
   buildActivityRoleAssignmentPlan,
   buildActivityOperatorPanelPayload,
   handleActivityPanelButtonInteraction,
+  handleActivityPanelModalSubmitInteraction,
   importHistoricalActivity,
   importHistoricalActivityFromWatchedChannels,
 };

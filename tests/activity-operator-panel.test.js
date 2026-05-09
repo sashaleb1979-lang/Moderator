@@ -6,6 +6,7 @@ const assert = require("node:assert/strict");
 const {
   buildActivityOperatorPanelPayload,
   handleActivityPanelButtonInteraction,
+  handleActivityPanelModalSubmitInteraction,
 } = require("../src/activity/operator");
 const { ensureActivityState, updateActivityConfig, upsertWatchedChannel } = require("../src/activity/state");
 
@@ -55,12 +56,17 @@ test("buildActivityOperatorPanelPayload summarizes runtime, calibration, and rol
 
   assert.equal(payload.embeds[0].data.title, "Activity Panel");
   assert.match(payload.embeds[0].data.description, /Закрытая мод-панель активности/);
-  assert.equal(payload.components.length, 1);
+  assert.equal(payload.components.length, 2);
   assert.deepEqual(payload.components[0].components.map((component) => component.data.custom_id), [
     "activity_panel_refresh",
     "activity_panel_historical_import",
     "activity_panel_assign_roles",
+    "activity_panel_config_access",
     "activity_panel_back",
+  ]);
+  assert.deepEqual(payload.components[1].components.map((component) => component.data.custom_id), [
+    "activity_panel_config_roles_primary",
+    "activity_panel_config_roles_secondary",
   ]);
   const fieldTexts = payload.embeds[0].data.fields.map((field) => `${field.name}: ${field.value}`).join("\n");
   assert.match(fieldTexts, /Watched channels: \*\*1\*\*/);
@@ -69,16 +75,21 @@ test("buildActivityOperatorPanelPayload summarizes runtime, calibration, and rol
   assert.match(fieldTexts, /Open sessions: \*\*1\*\*/);
   assert.match(fieldTexts, /historical_import/);
   assert.match(fieldTexts, /24 entries/);
+  assert.match(fieldTexts, /Activity moderators:/);
+  assert.match(fieldTexts, /weak: role-weak/);
   assert.match(fieldTexts, /Готово\./);
 });
 
-test("handleActivityPanelButtonInteraction opens, refreshes, assigns, and returns to the main moderator panel", async () => {
+test("handleActivityPanelButtonInteraction opens, refreshes, config modals, assigns, and returns to the main moderator panel", async () => {
   const calls = [];
   const interaction = {
     customId: "panel_open_activity",
     member: { id: "mod-1" },
     async update(payload) {
       calls.push(["update", payload]);
+    },
+    async showModal(modal) {
+      calls.push(["showModal", modal.data.custom_id]);
     },
     async deferUpdate() {
       calls.push(["deferUpdate"]);
@@ -105,6 +116,42 @@ test("handleActivityPanelButtonInteraction opens, refreshes, assigns, and return
   assert.equal(handledOpen, true);
   assert.deepEqual(calls[0], ["update", { content: "activity" }]);
 
+  interaction.customId = "activity_panel_config_access";
+  const handledAccessConfig = await handleActivityPanelButtonInteraction({
+    interaction,
+    client: { id: "client" },
+    db: {},
+    isModerator: () => true,
+    replyNoPermission: async () => {
+      throw new Error("should not run");
+    },
+    buildModeratorPanelPayload: async () => ({ content: "main" }),
+    buildActivityPanelPayload: () => ({ content: "activity" }),
+    runHistoricalImport: async () => ({ importedEntryCount: 4, ignoredEntryCount: 1 }),
+    runInitialRoleAssignment: async () => ({ appliedCount: 2, skippedCount: 1 }),
+  });
+
+  assert.equal(handledAccessConfig, true);
+  assert.deepEqual(calls[1], ["showModal", "activity_panel_config_access_modal"]);
+
+  interaction.customId = "activity_panel_config_roles_primary";
+  const handledPrimaryRoleConfig = await handleActivityPanelButtonInteraction({
+    interaction,
+    client: { id: "client" },
+    db: {},
+    isModerator: () => true,
+    replyNoPermission: async () => {
+      throw new Error("should not run");
+    },
+    buildModeratorPanelPayload: async () => ({ content: "main" }),
+    buildActivityPanelPayload: () => ({ content: "activity" }),
+    runHistoricalImport: async () => ({ importedEntryCount: 4, ignoredEntryCount: 1 }),
+    runInitialRoleAssignment: async () => ({ appliedCount: 2, skippedCount: 1 }),
+  });
+
+  assert.equal(handledPrimaryRoleConfig, true);
+  assert.deepEqual(calls[2], ["showModal", "activity_panel_config_roles_primary_modal"]);
+
   interaction.customId = "activity_panel_historical_import";
   const handledImport = await handleActivityPanelButtonInteraction({
     interaction,
@@ -121,8 +168,8 @@ test("handleActivityPanelButtonInteraction opens, refreshes, assigns, and return
   });
 
   assert.equal(handledImport, true);
-  assert.deepEqual(calls[1], ["deferUpdate"]);
-  assert.deepEqual(calls[2], ["editReply", { content: "Historical import завершён. Imported 4, ignored 1." }]);
+  assert.deepEqual(calls[3], ["deferUpdate"]);
+  assert.deepEqual(calls[4], ["editReply", { content: "Historical import завершён. Imported 4, ignored 1." }]);
 
   interaction.customId = "activity_panel_assign_roles";
   const handledAssign = await handleActivityPanelButtonInteraction({
@@ -140,8 +187,8 @@ test("handleActivityPanelButtonInteraction opens, refreshes, assigns, and return
   });
 
   assert.equal(handledAssign, true);
-  assert.deepEqual(calls[3], ["deferUpdate"]);
-  assert.deepEqual(calls[4], ["editReply", { content: "Initial role assignment завершён. Applied 2, skipped 1." }]);
+  assert.deepEqual(calls[5], ["deferUpdate"]);
+  assert.deepEqual(calls[6], ["editReply", { content: "Initial role assignment завершён. Applied 2, skipped 1." }]);
 
   interaction.customId = "activity_panel_back";
   const handledBack = await handleActivityPanelButtonInteraction({
@@ -159,7 +206,7 @@ test("handleActivityPanelButtonInteraction opens, refreshes, assigns, and return
   });
 
   assert.equal(handledBack, true);
-  assert.deepEqual(calls[5], ["update", { content: "main" }]);
+  assert.deepEqual(calls[7], ["update", { content: "main" }]);
 });
 
 test("handleActivityPanelButtonInteraction rejects non-moderators before opening the panel", async () => {
@@ -184,4 +231,93 @@ test("handleActivityPanelButtonInteraction rejects non-moderators before opening
 
   assert.equal(handled, true);
   assert.deepEqual(replies, ["no-permission"]);
+});
+
+test("handleActivityPanelModalSubmitInteraction updates access roles and activity role mappings", async () => {
+  const db = {};
+  const replies = [];
+  const saved = [];
+
+  const handledAccess = await handleActivityPanelModalSubmitInteraction({
+    interaction: {
+      customId: "activity_panel_config_access_modal",
+      member: { id: "mod-1" },
+      user: { id: "mod-1" },
+      fields: {
+        getTextInputValue(fieldId) {
+          if (fieldId === "activity_access_moderator_roles") return "<@&111> 222";
+          if (fieldId === "activity_access_admin_roles") return "333";
+          return "";
+        },
+      },
+    },
+    db,
+    isModerator: () => true,
+    replyNoPermission: async () => {
+      throw new Error("should not run");
+    },
+    replyError: async (_interaction, text) => {
+      replies.push(["error", text]);
+    },
+    replySuccess: async (_interaction, text) => {
+      replies.push(["success", text]);
+    },
+    parseRequestedRoleId(value) {
+      const text = String(value || "").trim();
+      const mentionMatch = text.match(/^<@&(\d+)>$/);
+      const candidate = mentionMatch ? mentionMatch[1] : text;
+      return /^\d+$/.test(candidate) ? candidate : "";
+    },
+    saveDb() {
+      saved.push("saved");
+    },
+  });
+
+  assert.equal(handledAccess, true);
+  assert.deepEqual(ensureActivityState(db).config.moderatorRoleIds, ["111", "222"]);
+  assert.deepEqual(ensureActivityState(db).config.adminRoleIds, ["333"]);
+  assert.match(replies[0][1], /Activity access обновлён/);
+
+  const handledRoles = await handleActivityPanelModalSubmitInteraction({
+    interaction: {
+      customId: "activity_panel_config_roles_secondary_modal",
+      member: { id: "mod-1" },
+      user: { id: "mod-1" },
+      fields: {
+        getTextInputValue(fieldId) {
+          if (fieldId === "activity_role_floating") return "444";
+          if (fieldId === "activity_role_weak") return "<@&555>";
+          if (fieldId === "activity_role_dead") return "";
+          return "";
+        },
+      },
+    },
+    db,
+    isModerator: () => true,
+    replyNoPermission: async () => {
+      throw new Error("should not run");
+    },
+    replyError: async (_interaction, text) => {
+      replies.push(["error", text]);
+    },
+    replySuccess: async (_interaction, text) => {
+      replies.push(["success", text]);
+    },
+    parseRequestedRoleId(value) {
+      const text = String(value || "").trim();
+      const mentionMatch = text.match(/^<@&(\d+)>$/);
+      const candidate = mentionMatch ? mentionMatch[1] : text;
+      return /^\d+$/.test(candidate) ? candidate : "";
+    },
+    saveDb() {
+      saved.push("saved");
+    },
+  });
+
+  assert.equal(handledRoles, true);
+  assert.equal(ensureActivityState(db).config.activityRoleIds.floating, "444");
+  assert.equal(ensureActivityState(db).config.activityRoleIds.weak, "555");
+  assert.equal(ensureActivityState(db).config.activityRoleIds.dead, null);
+  assert.match(replies[1][1], /Activity role mapping обновлён/);
+  assert.equal(saved.length, 2);
 });

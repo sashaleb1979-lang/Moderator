@@ -343,6 +343,11 @@ test("runRobloxPlaytimeSyncJob updates rolling JJS minutes and co-play state in 
 
   assert.deepEqual(result, {
     totalCandidates: 2,
+    totalBatches: 1,
+    processedBatches: 1,
+    failedBatches: 0,
+    processedUserIds: 2,
+    failedUserIds: 0,
     activeJjsUsers: 2,
     touchedUserCount: 2,
     startedSessionCount: 0,
@@ -425,6 +430,11 @@ test("runRobloxPlaytimeSyncJob keeps active sessions open when presence polling 
 
   assert.deepEqual(result, {
     totalCandidates: 2,
+    totalBatches: 1,
+    processedBatches: 0,
+    failedBatches: 1,
+    processedUserIds: 0,
+    failedUserIds: 2,
     activeJjsUsers: 0,
     touchedUserCount: 0,
     startedSessionCount: 0,
@@ -490,6 +500,11 @@ test("runRobloxPlaytimeSyncJob clears stale persisted session markers after rest
 
   assert.deepEqual(result, {
     totalCandidates: 1,
+    totalBatches: 1,
+    processedBatches: 1,
+    failedBatches: 0,
+    processedUserIds: 1,
+    failedUserIds: 0,
     activeJjsUsers: 0,
     touchedUserCount: 1,
     startedSessionCount: 0,

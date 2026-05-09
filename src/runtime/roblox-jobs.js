@@ -455,6 +455,11 @@ async function runRobloxPlaytimeSyncJob(options = {}) {
   if (!trackingConfig.jjsUniverseId && !trackingConfig.jjsRootPlaceId && !trackingConfig.jjsPlaceId) {
     return {
       totalCandidates: 0,
+      totalBatches: 0,
+      processedBatches: 0,
+      failedBatches: 0,
+      processedUserIds: 0,
+      failedUserIds: 0,
       activeJjsUsers: 0,
       touchedUserCount: 0,
       startedSessionCount: 0,
@@ -469,7 +474,7 @@ async function runRobloxPlaytimeSyncJob(options = {}) {
   const presenceByRobloxUserId = new Map();
   const failedRobloxUserIds = new Set();
 
-  await runRobloxPlaytimeCycle({
+  const cycleSummary = await runRobloxPlaytimeCycle({
     userIds: candidates.map((candidate) => candidate.robloxUserId),
     batchSize: options.batchSize,
     fetchPresenceBatch: fetchUserPresences,
@@ -626,6 +631,11 @@ async function runRobloxPlaytimeSyncJob(options = {}) {
 
   return {
     totalCandidates: candidates.length,
+    totalBatches: cycleSummary.totalBatches,
+    processedBatches: cycleSummary.processedBatches,
+    failedBatches: cycleSummary.failedBatches,
+    processedUserIds: cycleSummary.processedUserIds,
+    failedUserIds: cycleSummary.failedUserIds,
     activeJjsUsers: [...activeUsersByGameId.values()].reduce((sum, users) => sum + users.length, 0),
     touchedUserCount: touchedDiscordUserIds.size,
     startedSessionCount,
