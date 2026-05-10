@@ -49,6 +49,15 @@ BOT_DATA_DIR=./data
 DB_PATH=welcome-db.json
 CONFIG_PATH=./bot.config.json
 
+VERIFICATION_ENABLED=false
+DISCORD_OAUTH_CLIENT_ID=
+DISCORD_OAUTH_CLIENT_SECRET=
+DISCORD_OAUTH_REDIRECT_URI=
+VERIFICATION_CHANNEL_ID=
+VERIFICATION_REPORT_CHANNEL_ID=
+VERIFICATION_REPORT_SWEEP_MINUTES=60
+VERIFICATION_PENDING_DAYS=7
+
 WELCOME_CHANNEL_ID=
 REVIEW_CHANNEL_ID=
 TIERLIST_CHANNEL_ID=
@@ -118,6 +127,14 @@ SNAPSHOT_OUTPUT_DIR=./backups
 - KILL_TIER_LABEL_1 ... KILL_TIER_LABEL_5 — названия tier-ролей в интерфейсе
 - CHARACTER_CONFIG_JSON — JSON-массив со всеми персонажами; roleId внутри можно не указывать
 - SNAPSHOT_OUTPUT_DIR — опциональная папка для snapshot-ов; по умолчанию backups/<ISO> в корне репозитория
+- VERIFICATION_ENABLED — включает автономную verification-систему через env override
+- DISCORD_OAUTH_CLIENT_ID — Application ID Discord-приложения, через которое работает OAuth
+- DISCORD_OAUTH_CLIENT_SECRET — Client Secret того же Discord-приложения
+- DISCORD_OAUTH_REDIRECT_URI — полный callback URL вида https://<твой-domain>/verification/callback
+- VERIFICATION_CHANNEL_ID — опциональный override канала проверки; обычно удобнее задать через /verify panel
+- VERIFICATION_REPORT_CHANNEL_ID — опциональный override канала отчётов; обычно удобнее задать через /verify panel
+- VERIFICATION_REPORT_SWEEP_MINUTES — как часто бот проверяет просроченные кейсы и шлёт scary-report модераторам
+- VERIFICATION_PENDING_DAYS — через сколько дней pending verification считается просроченным
 
 Пример CHARACTER_CONFIG_JSON:
 
@@ -218,6 +235,39 @@ roleId — необязателен. Если пустой, бот сам най
 - View Channels
 - Send Messages
 - Manage Messages
+
+## Verification на Railway
+
+Если хочешь запустить автономную verification-систему, делай это в таком порядке:
+
+1. В Railway открой сервис Moderator и создай public domain. Для Discord OAuth нужен внешний HTTPS URL; localhost и railway internal domain не подходят.
+2. В Discord Developer Portal открой приложение этого бота.
+3. В разделе OAuth2 добавь Redirects URL вида `https://<твой-public-domain>/verification/callback`.
+4. Оттуда же скопируй Application ID и Client Secret.
+5. В Railway Variables добавь:
+
+```env
+VERIFICATION_ENABLED=true
+DISCORD_OAUTH_CLIENT_ID=...
+DISCORD_OAUTH_CLIENT_SECRET=...
+DISCORD_OAUTH_REDIRECT_URI=https://<твой-public-domain>/verification/callback
+```
+
+6. Перезапусти deploy.
+7. В Discord открой `/verify panel` и в базовой модалке укажи:
+  - enabled = да
+  - verify-роль
+  - канал проверки
+  - канал отчётов
+8. После сохранения панель сама попробует поднять callback-runtime и сразу опубликовать входное сообщение в канале проверки.
+9. Потом используй `/verify add`, чтобы вручную поставить участника на verification и выдать ему verify-роль.
+
+Подводные камни:
+
+- Без `DISCORD_OAUTH_CLIENT_SECRET` OAuth не заработает, даже если бот и панель уже открываются.
+- Если Redirect URL в Discord не совпадает с `DISCORD_OAUTH_REDIRECT_URI` в Railway символ в символ, callback будет ломаться.
+- Система не раздаёт Discord permission overwrites автоматически: доступ verify-роли к одному каналу нужно настроить руками в самом Discord.
+- Сейчас Discord OAuth даёт только `identify` и `guilds`, поэтому бот видит список серверов пользователя, но не список его каналов на чужих серверах.
 - Manage Roles
 - Attach Files
 - Embed Links

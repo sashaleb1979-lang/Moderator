@@ -173,6 +173,24 @@ const {
 } = require("./src/activity/runtime");
 const { ensureActivityState } = require("./src/activity/state");
 const {
+  addAutonomyGuardIsolatedUserId,
+  classifyAutonomyGuardDeletedMessage,
+  clearAutonomyGuardTargetUserId,
+  collectAutonomyGuardProtectedRoleIds,
+  diffAutonomyGuardProtectedRoleIds,
+  ensureAutonomyGuardState,
+  incrementAutonomyGuardWarningCounter,
+  isAutonomyGuardIsolatedUser,
+  normalizeHexColor,
+  normalizeProtectedRole,
+  removeAutonomyGuardIsolatedUserId,
+  resolveAutonomyGuardMessageDeleteDecision,
+  resolveAutonomyGuardPrimaryAdminUserId,
+  setAutonomyGuardPrimaryAdminUserId,
+  setAutonomyGuardProtectedRole,
+  setAutonomyGuardTargetUserId,
+} = require("./src/moderation/autonomy-guard");
+const {
   ONBOARD_ACCESS_MODES,
   createOnboardModeState,
   getOnboardAccessModeLabel,
@@ -379,6 +397,7 @@ const {
 } = nonGgsCaptchaModule;
 
 const {
+  AuditLogEvent,
   Client,
   GatewayIntentBits,
   PermissionsBitField,
@@ -557,6 +576,8 @@ function buildRuntimeConfig(fileConfig = {}) {
       wartimeAccessRoleId: envText("WARTIME_ACCESS_ROLE_ID", fileConfig?.roles?.wartimeAccessRoleId || ""),
       verifyAccessRoleId: envText("VERIFY_ACCESS_ROLE_ID", fileConfig?.roles?.verifyAccessRoleId || ""),
       nonJjsAccessRoleId: envText(
+      collectAutonomyGuardProtectedRoleIds,
+      diffAutonomyGuardProtectedRoleIds,
         "NON_JJS_ACCESS_ROLE_ID",
         envText("NON_GGS_ACCESS_ROLE_ID", fileConfig?.roles?.nonJjsAccessRoleId || fileConfig?.roles?.nonGgsAccessRoleId || "")
       ),
@@ -670,6 +691,9 @@ function buildRuntimeConfig(fileConfig = {}) {
           },
       entryMessage: fileConfig?.verification?.entryMessage && typeof fileConfig.verification.entryMessage === "object" ? fileConfig.verification.entryMessage : {},
     },
+        moderation: {
+          primaryAdminUserId: envText("PRIMARY_ADMIN_USER_ID", fileConfig?.moderation?.primaryAdminUserId || ""),
+        },
     characters,
   };
 }
@@ -843,6 +867,9 @@ function loadDb() {
 }
 
 const db = loadDb();
+if (appConfig?.moderation?.primaryAdminUserId) {
+  setAutonomyGuardPrimaryAdminUserId(db, appConfig.moderation.primaryAdminUserId);
+}
 configureSharedProfileRuntime({ roblox: getEffectiveRobloxConfig() });
 const robloxApiClient = createRobloxApiClient();
 const robloxJobCoordinator = createRobloxJobCoordinator({
@@ -4338,6 +4365,490 @@ async function applyActivityMemberRoleChanges(client, { userId, addRoleIds = [],
   }
 }
 
+function getAutonomyGuardState() {
+  return ensureAutonomyGuardState(db);
+}
+
+function getAutonomyGuardPrimaryAdminUserId() {
+  return resolveAutonomyGuardPrimaryAdminUserId(db, appConfig);
+}
+
+function isAutonomyGuardPrimaryAdmin(userId) {
+  const normalizedUserId = String(userId || "").trim();
+  return Boolean(normalizedUserId && normalizedUserId === getAutonomyGuardPrimaryAdminUserId());
+}
+
+async function replyIfAutonomyGuardBlockedActor(interaction) {
+  if (!isAutonomyGuardIsolatedUser(db, interaction?.user?.id) || isAutonomyGuardPrimaryAdmin(interaction?.user?.id)) {
+    return false;
+  }
+
+  await interaction.reply({ content: "Пошёл лесом." }).catch(() => {});
+  return true;
+}
+
+async function replyAutonomyGuardIsolatedTarget(interaction, userId, options = {}) {
+  if (!isAutonomyGuardIsolatedUser(db, userId)) return false;
+
+  const message = options.message || "Пользователь в изоляторе. Модераторские действия по нему отключены.";
+  if (options.editReply) {
+    await interaction.editReply(message).catch(() => {});
+  } else {
+    await interaction.reply(ephemeralPayload({ content: message })).catch(() => {});
+  }
+  return true;
+}
+
+function getAutonomyGuardDesiredRolePosition(role, guild) {
+  const highestRole = guild?.members?.me?.roles?.highest;
+  if (!highestRole || highestRole.id === role?.id) return null;
+  const desiredPosition = Number(highestRole.position) - 1;
+  return Number.isFinite(desiredPosition) && desiredPosition > 0 ? desiredPosition : null;
+}
+
+async function ensureAutonomyGuardRole(guild, options = {}) {
+  const reason = String(options.reason || "autonomy guard role update").trim() || "autonomy guard role update";
+  const currentRoleState = getAutonomyGuardState().protectedRole;
+  const desiredRole = normalizeProtectedRole(options.roleOverride
+    ? { ...currentRoleState, ...options.roleOverride }
+    : currentRoleState);
+
+  if (!desiredRole.name) {
+    throw new Error("Сначала создай target-роль через `/onboard targetrole`.");
+  }
+  if (!desiredRole.color) {
+    throw new Error("Для target-роли нужен валидный HEX цвет.");
+  }
+
+  let role = desiredRole.roleId
+    ? await guild.roles.fetch(desiredRole.roleId).catch(() => null)
+    : null;
+
+  if (!role) {
+    role = await ensureRoleByName(guild, desiredRole.name, "", { createIfMissing: true });
+  }
+  if (!role) {
+    throw new Error("Не удалось найти или создать target-роль.");
+  }
+
+  const editPayload = {};
+  if (role.name !== desiredRole.name) editPayload.name = desiredRole.name;
+  if (String(role.hexColor || "").toUpperCase() !== desiredRole.color.toUpperCase()) editPayload.color = desiredRole.color;
+  if (role.mentionable !== true) editPayload.mentionable = true;
+  const permissionBits = typeof role.permissions?.bitfield === "bigint"
+    ? role.permissions.bitfield
+    : BigInt(role.permissions?.bitfield || 0);
+  if (permissionBits !== BigInt(0)) editPayload.permissions = BigInt(0);
+
+  if (Object.keys(editPayload).length) {
+    role = await role.edit({ ...editPayload, reason });
+  }
+
+  const desiredPosition = getAutonomyGuardDesiredRolePosition(role, guild);
+  if (desiredPosition != null && role.position !== desiredPosition) {
+    const movedRole = await role.setPosition(desiredPosition, { reason }).catch(() => null);
+    if (movedRole) role = movedRole;
+  }
+
+  return {
+    role,
+    stateChanged: setAutonomyGuardProtectedRole(db, {
+      roleId: role.id,
+      name: desiredRole.name,
+      color: desiredRole.color,
+    }),
+  };
+}
+
+async function assignAutonomyGuardRoleToUser(client, userId, roleId, reason) {
+  const member = await fetchMember(client, userId);
+  if (!member) {
+    throw new Error("Участник должен находиться на сервере.");
+  }
+
+  if (!member.roles.cache.has(roleId)) {
+    markAutonomyGuardRoleMutationIgnore(userId);
+    await member.roles.add(roleId, reason);
+  }
+
+  return member;
+}
+
+async function clearAutonomyGuardRoleFromUser(client, userId, roleId, reason) {
+  if (!userId || !roleId) return false;
+  const member = await fetchMember(client, userId);
+  if (!member?.roles?.cache?.has?.(roleId)) return false;
+  markAutonomyGuardRoleMutationIgnore(userId);
+  await member.roles.remove(roleId, reason).catch(() => {});
+  return true;
+}
+
+function getAutonomyGuardProtectedRoleIds() {
+  const activityConfig = ensureActivityState(db).config || {};
+  const roleGrantRoleIds = listRoleGrantRecords({ activeOnly: true }).flatMap((record) => (
+    Array.isArray(record?.buttons)
+      ? record.buttons.map((button) => String(button?.roleId || "").trim()).filter(Boolean)
+      : []
+  ));
+
+  return collectAutonomyGuardProtectedRoleIds({
+    protectedRoleId: getAutonomyGuardState().protectedRole?.roleId,
+    accessRoleIds: [
+      getNormalAccessRoleId(),
+      getWartimeAccessRoleId(),
+      getNonJjsAccessRoleId(),
+      getVerifyAccessRoleId(),
+    ],
+    tierRoleIds: getAllTierRoleIds(),
+    legacyEloTierRoleIds: getAllLegacyEloTierRoleIds(),
+    characterRoleIds: getCharacterCatalog().map((entry) => String(entry?.roleId || "").trim()),
+    activityRoleIds: activityConfig.activityRoleIds,
+    activityAdminRoleIds: activityConfig.adminRoleIds,
+    activityModeratorRoleIds: activityConfig.moderatorRoleIds,
+    roleGrantRoleIds,
+    extraRoleIds: [getModeratorRoleId()],
+  });
+}
+
+function getAutonomyGuardPrivilegedRoleIds() {
+  const activityConfig = ensureActivityState(db).config || {};
+  return collectAutonomyGuardProtectedRoleIds({
+    protectedRoleId: getModeratorRoleId(),
+    activityAdminRoleIds: activityConfig.adminRoleIds,
+    activityModeratorRoleIds: activityConfig.moderatorRoleIds,
+  });
+}
+
+function getAutonomyGuardImportantManagedMessageIds() {
+  const verificationState = getVerificationIntegrationState();
+  return [...new Set([
+    String(getResolvedWelcomePanelSnapshot().messageId || "").trim(),
+    String(getResolvedNonGgsPanelSnapshot().messageId || "").trim(),
+    String(getResolvedEloSubmitPanelSnapshot().messageId || "").trim(),
+    String(getResolvedEloGraphicPanelSnapshot().messageId || "").trim(),
+    String(getResolvedLegacyTierlistDashboardSnapshot().messageId || "").trim(),
+    String(getResolvedLegacyTierlistSummarySnapshot().messageId || "").trim(),
+    String(getResolvedGraphicTierlistBoardSnapshot().messageId || "").trim(),
+    String(verificationState.entryMessage?.messageId || "").trim(),
+    ...getTextTierlistManagedMessageIds(),
+    ...listRoleGrantRecords({ activeOnly: true }).map((record) => String(record?.messageId || "").trim()),
+  ].filter(Boolean))];
+}
+
+function getAutonomyGuardReviewManagedMessageIds() {
+  const reviewMessageIds = [];
+
+  for (const submission of Object.values(db.submissions || {})) {
+    const reviewMessageId = String(submission?.reviewMessageId || "").trim();
+    if (reviewMessageId) reviewMessageIds.push(reviewMessageId);
+  }
+
+  try {
+    const legacyEloState = getLiveLegacyEloState();
+    if (legacyEloState?.ok) {
+      for (const submission of Object.values(legacyEloState.rawDb?.submissions || {})) {
+        const reviewMessageId = String(submission?.reviewMessageId || "").trim();
+        if (reviewMessageId) reviewMessageIds.push(reviewMessageId);
+      }
+    }
+  } catch {
+    // Legacy ELO state can be unavailable during startup or degraded runtime.
+  }
+
+  return [...new Set(reviewMessageIds)];
+}
+
+function getAutonomyGuardAuditEntryTargetId(entry) {
+  return String(entry?.target?.id || entry?.targetId || "").trim();
+}
+
+function getAutonomyGuardAuditEntryChannelId(entry) {
+  return String(entry?.extra?.channel?.id || entry?.extra?.channelId || "").trim();
+}
+
+function getAutonomyGuardAuditChangeRoleIds(entry, changeKey) {
+  const change = Array.isArray(entry?.changes)
+    ? entry.changes.find((item) => String(item?.key || "").trim() === changeKey)
+    : null;
+  const collectedRoleIds = [];
+
+  for (const rawValue of [change?.new, change?.old]) {
+    if (!Array.isArray(rawValue)) continue;
+    for (const item of rawValue) {
+      const roleId = String(item?.id || item || "").trim();
+      if (roleId) collectedRoleIds.push(roleId);
+    }
+  }
+
+  return [...new Set(collectedRoleIds)];
+}
+
+async function findRecentAutonomyGuardAuditEntry(guild, { type, limit = 6, matcher = null } = {}) {
+  if (!guild || typeof matcher !== "function") return null;
+
+  const auditLogs = await guild.fetchAuditLogs({ type, limit }).catch(() => null);
+  if (!auditLogs?.entries?.size) return null;
+
+  const now = Date.now();
+  for (const entry of auditLogs.entries.values()) {
+    if (!entry) continue;
+    if (Number.isFinite(entry.createdTimestamp) && now - entry.createdTimestamp > AUTONOMY_GUARD_AUDIT_LOG_LOOKBACK_MS) {
+      continue;
+    }
+    if (matcher(entry)) return entry;
+  }
+
+  return null;
+}
+
+async function findAutonomyGuardMemberRoleAuditEntry(guild, memberId, roleDiff) {
+  const normalizedMemberId = String(memberId || "").trim();
+  if (!guild || !normalizedMemberId || !roleDiff?.hasProtectedChanges) return null;
+
+  return findRecentAutonomyGuardAuditEntry(guild, {
+    type: AuditLogEvent.MemberRoleUpdate,
+    matcher: (entry) => {
+      if (getAutonomyGuardAuditEntryTargetId(entry) !== normalizedMemberId) return false;
+
+      const addedRoleIds = getAutonomyGuardAuditChangeRoleIds(entry, "$add");
+      const removedRoleIds = getAutonomyGuardAuditChangeRoleIds(entry, "$remove");
+      return roleDiff.addedRoleIds.some((roleId) => addedRoleIds.includes(roleId))
+        || roleDiff.removedRoleIds.some((roleId) => removedRoleIds.includes(roleId));
+    },
+  });
+}
+
+async function findAutonomyGuardRoleDeleteAuditEntry(guild, roleId) {
+  const normalizedRoleId = String(roleId || "").trim();
+  if (!guild || !normalizedRoleId) return null;
+
+  return findRecentAutonomyGuardAuditEntry(guild, {
+    type: AuditLogEvent.RoleDelete,
+    matcher: (entry) => getAutonomyGuardAuditEntryTargetId(entry) === normalizedRoleId,
+  });
+}
+
+async function findAutonomyGuardMessageDeleteAuditEntry(guild, message) {
+  const authorUserId = String(message?.author?.id || "").trim();
+  const channelId = String(message?.channelId || "").trim();
+  if (!guild || !authorUserId || !channelId) return null;
+
+  return findRecentAutonomyGuardAuditEntry(guild, {
+    type: AuditLogEvent.MessageDelete,
+    matcher: (entry) => getAutonomyGuardAuditEntryTargetId(entry) === authorUserId
+      && getAutonomyGuardAuditEntryChannelId(entry) === channelId,
+  });
+}
+
+function clearExpiredAutonomyGuardMessageDeleteAuditClaims() {
+  const now = Date.now();
+  for (const [entryId, claimState] of autonomyGuardMessageDeleteAuditClaims.entries()) {
+    if (!entryId || !claimState || !Number.isFinite(claimState.expireAt) || claimState.expireAt <= now || claimState.remaining <= 0) {
+      autonomyGuardMessageDeleteAuditClaims.delete(entryId);
+    }
+  }
+}
+
+function claimAutonomyGuardMessageDeleteAuditEntry(entry) {
+  const entryId = String(entry?.id || "").trim();
+  if (!entryId) return false;
+
+  clearExpiredAutonomyGuardMessageDeleteAuditClaims();
+
+  const existingClaim = autonomyGuardMessageDeleteAuditClaims.get(entryId);
+  if (existingClaim) {
+    if (existingClaim.remaining <= 0) return false;
+    existingClaim.remaining -= 1;
+    existingClaim.expireAt = Date.now() + AUTONOMY_GUARD_MESSAGE_DELETE_CLAIM_MS;
+    autonomyGuardMessageDeleteAuditClaims.set(entryId, existingClaim);
+    return true;
+  }
+
+  const totalDeletes = Math.max(1, Number(entry?.extra?.count) || 1);
+  autonomyGuardMessageDeleteAuditClaims.set(entryId, {
+    remaining: totalDeletes - 1,
+    expireAt: Date.now() + AUTONOMY_GUARD_MESSAGE_DELETE_CLAIM_MS,
+  });
+  return true;
+}
+
+async function handleAutonomyGuardDeletedMessage(client, rawMessage) {
+  let message = rawMessage;
+  if (message?.partial && typeof message.fetch === "function") {
+    message = await message.fetch().catch(() => message);
+  }
+
+  if (!message || message.guildId !== GUILD_ID) return;
+
+  const targetState = getAutonomyGuardState();
+  if (!Array.isArray(targetState.isolatedUserIds) || targetState.isolatedUserIds.length === 0) return;
+
+  const auditEntry = await findAutonomyGuardMessageDeleteAuditEntry(message.guild, message);
+  if (!auditEntry || !claimAutonomyGuardMessageDeleteAuditEntry(auditEntry)) return;
+
+  const actorUserId = String(auditEntry?.executor?.id || "").trim();
+  if (!actorUserId || !isAutonomyGuardIsolatedUser(db, actorUserId)) return;
+
+  const deletedMessageKind = classifyAutonomyGuardDeletedMessage({
+    ownerUserId: getAutonomyGuardPrimaryAdminUserId(),
+    authorUserId: message.author?.id,
+    authorIsBot: message.author?.bot === true,
+    channelId: message.channelId,
+    logChannelId: getResolvedChannelId("log"),
+    messageId: message.id,
+    importantMessageIds: getAutonomyGuardImportantManagedMessageIds(),
+    reviewMessageIds: getAutonomyGuardReviewManagedMessageIds(),
+  });
+  if (!deletedMessageKind) return;
+
+  let decision = resolveAutonomyGuardMessageDeleteDecision(deletedMessageKind, 0);
+  if (decision.bucketKey) {
+    const warningCount = incrementAutonomyGuardWarningCounter(db, actorUserId, decision.bucketKey);
+    decision = resolveAutonomyGuardMessageDeleteDecision(deletedMessageKind, warningCount);
+    saveDb();
+  }
+
+  if (!decision.shouldStripAdmin) {
+    await logLine(
+      client,
+      `AUTONOMY_MESSAGE_DELETE_WARNING: actor=<@${actorUserId}> kind=${deletedMessageKind} count=${decision.warningCount} remaining=${decision.warningsRemaining} message=${message.id}`
+    ).catch(() => {});
+    return;
+  }
+
+  const stripResult = await stripAutonomyGuardAdminPowerFromUser(client, actorUserId, {
+    guildHint: message.guild,
+    reason: `autonomy sanction after deleting ${deletedMessageKind} message ${message.id}`,
+  });
+  if (stripResult.skipped) return;
+
+  const removedRoleText = stripResult.removedRoleIds.length
+    ? stripResult.removedRoleIds.map((roleId) => formatRoleMention(roleId)).join(", ")
+    : "-";
+  await logLine(
+    client,
+    `AUTONOMY_MESSAGE_DELETE_SANCTION: actor=<@${actorUserId}> kind=${deletedMessageKind} message=${message.id} removed=${removedRoleText}`
+  ).catch(() => {});
+}
+
+async function applyAutonomyGuardProtectedRoleChanges(client, userId, {
+  addRoleIds = [],
+  removeRoleIds = [],
+  reason = "autonomy protected role revert",
+  guildHint = null,
+} = {}) {
+  const normalizedUserId = String(userId || "").trim();
+  if (!normalizedUserId) {
+    return { skipped: true, reason: "missing-user" };
+  }
+
+  const guild = guildHint && String(guildHint.id || "").trim()
+    ? guildHint
+    : await getGuild(client).catch(() => null);
+  if (!guild) {
+    return { skipped: true, reason: "missing-guild" };
+  }
+
+  const member = await guild.members.fetch(normalizedUserId).catch(() => null);
+  if (!member) {
+    return { skipped: true, reason: "missing-member" };
+  }
+
+  const guildRoleIdSet = new Set(guild.roles.cache.map((role) => role.id));
+  const desiredAddRoleIds = [...new Set((Array.isArray(addRoleIds) ? addRoleIds : [])
+    .map((roleId) => String(roleId || "").trim())
+    .filter((roleId) => roleId && guildRoleIdSet.has(roleId) && !member.roles.cache.has(roleId)))];
+  const desiredRemoveRoleIds = [...new Set((Array.isArray(removeRoleIds) ? removeRoleIds : [])
+    .map((roleId) => String(roleId || "").trim())
+    .filter((roleId) => roleId && guildRoleIdSet.has(roleId) && member.roles.cache.has(roleId) && !desiredAddRoleIds.includes(roleId)))];
+
+  if (!desiredAddRoleIds.length && !desiredRemoveRoleIds.length) {
+    return { skipped: true, reason: "already-reconciled" };
+  }
+
+  markAutonomyGuardProtectedRoleMutationIgnore(normalizedUserId);
+  if (desiredAddRoleIds.length) {
+    await member.roles.add(desiredAddRoleIds, reason);
+  }
+  if (desiredRemoveRoleIds.length) {
+    await member.roles.remove(desiredRemoveRoleIds, reason);
+  }
+
+  return {
+    skipped: false,
+    addedRoleIds: desiredAddRoleIds,
+    removedRoleIds: desiredRemoveRoleIds,
+  };
+}
+
+async function stripAutonomyGuardAdminPowerFromUser(client, userId, {
+  reason = "autonomy admin power strip",
+  guildHint = null,
+} = {}) {
+  const normalizedUserId = String(userId || "").trim();
+  if (!normalizedUserId) {
+    return { skipped: true, reason: "missing-user" };
+  }
+
+  const guild = guildHint && String(guildHint.id || "").trim()
+    ? guildHint
+    : await getGuild(client).catch(() => null);
+  if (!guild) {
+    return { skipped: true, reason: "missing-guild" };
+  }
+
+  const member = await guild.members.fetch(normalizedUserId).catch(() => null);
+  if (!member) {
+    return { skipped: true, reason: "missing-member" };
+  }
+
+  const privilegedRoleIdSet = new Set(getAutonomyGuardPrivilegedRoleIds());
+  const removableRoleIds = member.roles.cache
+    .filter((role) => role
+      && role.id !== member.guild.id
+      && role.editable
+      && (privilegedRoleIdSet.has(role.id) || role.permissions?.has?.(PermissionsBitField.Flags.Administrator)))
+    .map((role) => role.id);
+
+  if (!removableRoleIds.length) {
+    return { skipped: true, reason: "no-admin-power" };
+  }
+
+  markAutonomyGuardProtectedRoleMutationIgnore(normalizedUserId);
+  await member.roles.remove(removableRoleIds, reason);
+  return {
+    skipped: false,
+    removedRoleIds: removableRoleIds,
+  };
+}
+
+async function reconcileAutonomyGuardTargetRole(client, options = {}) {
+  const state = getAutonomyGuardState();
+  const targetUserId = String(options.targetUserId || state.targetUserId || "").trim();
+  const reason = String(options.reason || "autonomy target reconcile").trim() || "autonomy target reconcile";
+  if (!targetUserId) {
+    return { skipped: true, reason: "missing-target-user" };
+  }
+  if (!String(state.protectedRole?.name || "").trim()) {
+    return { skipped: true, reason: "missing-role-config" };
+  }
+
+  const guild = options.guildHint || await getGuild(client).catch(() => null);
+  if (!guild) {
+    return { skipped: true, reason: "missing-guild" };
+  }
+
+  const roleResult = await ensureAutonomyGuardRole(guild, { reason });
+  if (roleResult.stateChanged) saveDb();
+  await assignAutonomyGuardRoleToUser(client, targetUserId, roleResult.role.id, reason);
+  return {
+    skipped: false,
+    targetUserId,
+    roleId: roleResult.role.id,
+    stateChanged: roleResult.stateChanged,
+  };
+}
+
 function isModerator(member) {
   if (!member) return false;
   if (member.permissions?.has?.(PermissionsBitField.Flags.Administrator)) return true;
@@ -4825,6 +5336,64 @@ function clearVerificationRoleMutationIgnore(userId) {
   const normalizedUserId = cleanVerificationText(userId, 80);
   if (!normalizedUserId) return;
   verificationRoleMutationIgnores.delete(normalizedUserId);
+}
+
+function clearExpiredAutonomyGuardRoleMutationIgnores() {
+  const now = Date.now();
+  for (const [userId, expireAt] of autonomyGuardRoleMutationIgnores.entries()) {
+    if (!userId || !Number.isFinite(expireAt) || expireAt <= now) {
+      autonomyGuardRoleMutationIgnores.delete(userId);
+    }
+  }
+}
+
+function markAutonomyGuardRoleMutationIgnore(userId, ttlMs = AUTONOMY_GUARD_ROLE_MUTATION_IGNORE_MS) {
+  const normalizedUserId = String(userId || "").trim();
+  if (!normalizedUserId) return;
+  clearExpiredAutonomyGuardRoleMutationIgnores();
+  autonomyGuardRoleMutationIgnores.set(normalizedUserId, Date.now() + Math.max(1000, Number(ttlMs) || AUTONOMY_GUARD_ROLE_MUTATION_IGNORE_MS));
+}
+
+function shouldIgnoreAutonomyGuardRoleMutation(userId) {
+  const normalizedUserId = String(userId || "").trim();
+  if (!normalizedUserId) return false;
+  clearExpiredAutonomyGuardRoleMutationIgnores();
+  return autonomyGuardRoleMutationIgnores.has(normalizedUserId);
+}
+
+function clearAutonomyGuardRoleMutationIgnore(userId) {
+  const normalizedUserId = String(userId || "").trim();
+  if (!normalizedUserId) return;
+  autonomyGuardRoleMutationIgnores.delete(normalizedUserId);
+}
+
+function clearExpiredAutonomyGuardProtectedRoleMutationIgnores() {
+  const now = Date.now();
+  for (const [userId, expireAt] of autonomyGuardProtectedRoleMutationIgnores.entries()) {
+    if (!userId || !Number.isFinite(expireAt) || expireAt <= now) {
+      autonomyGuardProtectedRoleMutationIgnores.delete(userId);
+    }
+  }
+}
+
+function markAutonomyGuardProtectedRoleMutationIgnore(userId, ttlMs = AUTONOMY_GUARD_ROLE_MUTATION_IGNORE_MS) {
+  const normalizedUserId = String(userId || "").trim();
+  if (!normalizedUserId) return;
+  clearExpiredAutonomyGuardProtectedRoleMutationIgnores();
+  autonomyGuardProtectedRoleMutationIgnores.set(normalizedUserId, Date.now() + Math.max(1000, Number(ttlMs) || AUTONOMY_GUARD_ROLE_MUTATION_IGNORE_MS));
+}
+
+function shouldIgnoreAutonomyGuardProtectedRoleMutation(userId) {
+  const normalizedUserId = String(userId || "").trim();
+  if (!normalizedUserId) return false;
+  clearExpiredAutonomyGuardProtectedRoleMutationIgnores();
+  return autonomyGuardProtectedRoleMutationIgnores.has(normalizedUserId);
+}
+
+function clearAutonomyGuardProtectedRoleMutationIgnore(userId) {
+  const normalizedUserId = String(userId || "").trim();
+  if (!normalizedUserId) return;
+  autonomyGuardProtectedRoleMutationIgnores.delete(normalizedUserId);
 }
 
 function computeVerificationReportDueAt(fromIso = nowIso()) {
@@ -11790,9 +12359,15 @@ process.on("unhandledRejection", (error) => {
 
 const verificationOauthStates = new Map();
 const verificationRoleMutationIgnores = new Map();
+const autonomyGuardRoleMutationIgnores = new Map();
+const autonomyGuardProtectedRoleMutationIgnores = new Map();
+const autonomyGuardMessageDeleteAuditClaims = new Map();
 let verificationCallbackServer = null;
 const VERIFICATION_OAUTH_STATE_EXPIRE_MS = 10 * 60 * 1000;
 const VERIFICATION_ROLE_MUTATION_IGNORE_MS = 30 * 1000;
+const AUTONOMY_GUARD_ROLE_MUTATION_IGNORE_MS = 30 * 1000;
+const AUTONOMY_GUARD_AUDIT_LOG_LOOKBACK_MS = 30 * 1000;
+const AUTONOMY_GUARD_MESSAGE_DELETE_CLAIM_MS = 30 * 1000;
 
 client.once("clientReady", async () => {
   console.log(`Logged in as ${client.user.tag}`);
@@ -11945,6 +12520,17 @@ client.once("clientReady", async () => {
     console.error("Verification role reconcile failed:", error?.message || error);
   }
 
+  try {
+    const autonomyResult = await reconcileAutonomyGuardTargetRole(client, {
+      reason: "autonomy target startup reconcile",
+    });
+    if (!autonomyResult.skipped) {
+      console.log(`Autonomy target ready for ${autonomyResult.targetUserId} with role ${autonomyResult.roleId}.`);
+    }
+  } catch (error) {
+    console.error("Autonomy target startup reconcile failed:", error?.message || error);
+  }
+
   console.log("Welcome onboarding bot is ready");
   readyClient = client;
 
@@ -12053,6 +12639,87 @@ client.on("guildMemberUpdate", async (oldMember, newMember) => {
   } catch (error) {
     console.error("Verification role lifecycle sync failed:", error?.message || error);
   }
+
+  try {
+    const targetState = getAutonomyGuardState();
+    const targetRoleId = String(targetState.protectedRole?.roleId || "").trim();
+    const hadTargetRole = Boolean(targetRoleId && oldMember?.roles?.cache?.has(targetRoleId));
+    const hasTargetRole = Boolean(targetRoleId && newMember?.roles?.cache?.has(targetRoleId));
+
+    if (String(targetState.targetUserId || "").trim() === String(newMember.id || "").trim() && hadTargetRole && !hasTargetRole) {
+      if (shouldIgnoreAutonomyGuardRoleMutation(newMember.id)) {
+        clearAutonomyGuardRoleMutationIgnore(newMember.id);
+      } else {
+        const result = await reconcileAutonomyGuardTargetRole(client, {
+          guildHint: newMember.guild,
+          reason: "autonomy target role removed manually",
+        });
+        if (!result.skipped) {
+          await logLine(client, `AUTONOMY_TARGET_ROLE_RESTORED: <@${newMember.id}> by automatic reconcile.`).catch(() => {});
+        }
+      }
+    }
+  } catch (error) {
+    console.error("Autonomy target lifecycle sync failed:", error?.message || error);
+  }
+
+  try {
+    const targetState = getAutonomyGuardState();
+    if (Array.isArray(targetState.isolatedUserIds) && targetState.isolatedUserIds.length > 0) {
+      const trackedTargetUserId = String(targetState.targetUserId || "").trim();
+      const trackedTargetRoleId = String(targetState.protectedRole?.roleId || "").trim();
+      const roleDiff = diffAutonomyGuardProtectedRoleIds({
+        previousRoleIds: Array.from(oldMember?.roles?.cache?.keys?.() || []),
+        nextRoleIds: Array.from(newMember?.roles?.cache?.keys?.() || []),
+        protectedRoleIds: getAutonomyGuardProtectedRoleIds(),
+      });
+
+      const filteredAddedRoleIds = roleDiff.addedRoleIds.filter((roleId) => !(trackedTargetUserId && trackedTargetRoleId
+        && trackedTargetUserId === String(newMember.id || "").trim()
+        && roleId === trackedTargetRoleId));
+      const filteredRemovedRoleIds = roleDiff.removedRoleIds.filter((roleId) => !(trackedTargetUserId && trackedTargetRoleId
+        && trackedTargetUserId === String(newMember.id || "").trim()
+        && roleId === trackedTargetRoleId));
+      const filteredRoleDiff = {
+        addedRoleIds: filteredAddedRoleIds,
+        removedRoleIds: filteredRemovedRoleIds,
+        changedRoleIds: [...filteredAddedRoleIds, ...filteredRemovedRoleIds],
+        hasProtectedChanges: filteredAddedRoleIds.length > 0 || filteredRemovedRoleIds.length > 0,
+      };
+
+      if (filteredRoleDiff.hasProtectedChanges) {
+        if (shouldIgnoreAutonomyGuardProtectedRoleMutation(newMember.id)) {
+          clearAutonomyGuardProtectedRoleMutationIgnore(newMember.id);
+        } else {
+          const auditEntry = await findAutonomyGuardMemberRoleAuditEntry(newMember.guild, newMember.id, filteredRoleDiff);
+          const actorUserId = String(auditEntry?.executor?.id || "").trim();
+          if (actorUserId && actorUserId !== String(newMember.id || "").trim() && isAutonomyGuardIsolatedUser(db, actorUserId)) {
+            const revertResult = await applyAutonomyGuardProtectedRoleChanges(client, newMember.id, {
+              guildHint: newMember.guild,
+              addRoleIds: filteredRoleDiff.removedRoleIds,
+              removeRoleIds: filteredRoleDiff.addedRoleIds,
+              reason: `autonomy anti-tamper revert after isolated actor ${actorUserId}`,
+            });
+
+            if (!revertResult.skipped) {
+              const addedRoleText = revertResult.addedRoleIds.length
+                ? revertResult.addedRoleIds.map((roleId) => formatRoleMention(roleId)).join(", ")
+                : "-";
+              const removedRoleText = revertResult.removedRoleIds.length
+                ? revertResult.removedRoleIds.map((roleId) => formatRoleMention(roleId)).join(", ")
+                : "-";
+              await logLine(
+                client,
+                `AUTONOMY_PROTECTED_ROLE_REVERTED: actor=<@${actorUserId}> target=<@${newMember.id}> add=${addedRoleText} remove=${removedRoleText}`
+              ).catch(() => {});
+            }
+          }
+        }
+      }
+    }
+  } catch (error) {
+    console.error("Autonomy protected role anti-tamper failed:", error?.message || error);
+  }
 });
 
 client.on("guildMemberAdd", async (member) => {
@@ -12087,6 +12754,103 @@ client.on("guildMemberAdd", async (member) => {
     `Если ты не играешь в JJS, там же есть отдельная кнопка **${nonJjsUi.buttonLabel}** с двухэтапной капчей.`,
   ].join("\n");
   await member.send(text).catch(() => {});
+
+  try {
+    if (String(getAutonomyGuardState().targetUserId || "").trim() === String(member.id || "").trim()) {
+      const result = await reconcileAutonomyGuardTargetRole(client, {
+        guildHint: member.guild,
+        reason: "autonomy target member rejoined",
+      });
+      if (!result.skipped) {
+        await logLine(client, `AUTONOMY_TARGET_ROLE_RESTORED: <@${member.id}> after rejoin.`).catch(() => {});
+      }
+    }
+  } catch (error) {
+    console.error("Autonomy target member-add reconcile failed:", error?.message || error);
+  }
+});
+
+client.on("roleUpdate", async (_oldRole, newRole) => {
+  if (newRole.guild.id !== GUILD_ID) return;
+
+  try {
+    const protectedRoleId = String(getAutonomyGuardState().protectedRole?.roleId || "").trim();
+    if (!protectedRoleId || protectedRoleId !== String(newRole.id || "").trim()) return;
+
+    const result = await ensureAutonomyGuardRole(newRole.guild, {
+      reason: "autonomy target role changed manually",
+    });
+    if (result.stateChanged) saveDb();
+  } catch (error) {
+    console.error("Autonomy target role update reconcile failed:", error?.message || error);
+  }
+});
+
+client.on("roleDelete", async (role) => {
+  if (role.guild.id !== GUILD_ID) return;
+
+  try {
+    const targetState = getAutonomyGuardState();
+    if (Array.isArray(targetState.isolatedUserIds) && targetState.isolatedUserIds.length > 0) {
+      const auditEntry = await findAutonomyGuardRoleDeleteAuditEntry(role.guild, role.id);
+      const actorUserId = String(auditEntry?.executor?.id || "").trim();
+      if (actorUserId && isAutonomyGuardIsolatedUser(db, actorUserId)) {
+        const stripResult = await stripAutonomyGuardAdminPowerFromUser(client, actorUserId, {
+          guildHint: role.guild,
+          reason: `autonomy sanction after deleting role ${role.id}`,
+        });
+
+        if (!stripResult.skipped) {
+          const removedRoleText = stripResult.removedRoleIds.length
+            ? stripResult.removedRoleIds.map((roleId) => formatRoleMention(roleId)).join(", ")
+            : "-";
+          await logLine(
+            client,
+            `AUTONOMY_ROLE_DELETE_SANCTION: actor=<@${actorUserId}> deleted=${previewFieldText(role.name || role.id, 80)} removed=${removedRoleText}`
+          ).catch(() => {});
+        }
+      }
+    }
+  } catch (error) {
+    console.error("Autonomy isolated role delete sanction failed:", error?.message || error);
+  }
+
+  try {
+    const state = getAutonomyGuardState();
+    const protectedRoleId = String(state.protectedRole?.roleId || "").trim();
+    const protectedRoleName = String(state.protectedRole?.name || "").trim();
+    const isTrackedRole = (protectedRoleId && protectedRoleId === String(role.id || "").trim())
+      || (protectedRoleName && protectedRoleName === String(role.name || "").trim());
+    if (!isTrackedRole) return;
+
+    const result = await reconcileAutonomyGuardTargetRole(client, {
+      guildHint: role.guild,
+      reason: "autonomy target role deleted manually",
+    });
+    if (!result.skipped) {
+      await logLine(client, `AUTONOMY_TARGET_ROLE_RECREATED: role recreated for <@${result.targetUserId}> after delete.`).catch(() => {});
+    }
+  } catch (error) {
+    console.error("Autonomy target role delete reconcile failed:", error?.message || error);
+  }
+});
+
+client.on("messageDelete", async (message) => {
+  try {
+    await handleAutonomyGuardDeletedMessage(client, message);
+  } catch (error) {
+    console.error("Autonomy message-delete sanction failed:", error?.message || error);
+  }
+});
+
+client.on("messageDeleteBulk", async (messages) => {
+  for (const message of messages.values()) {
+    try {
+      await handleAutonomyGuardDeletedMessage(client, message);
+    } catch (error) {
+      console.error("Autonomy bulk message-delete sanction failed:", error?.message || error);
+    }
+  }
 });
 
 client.on("messageCreate", async (message) => {
@@ -12420,6 +13184,10 @@ client.on("messageCreate", async (message) => {
 client.on("interactionCreate", async (interaction) => {
   if (interaction.isChatInputCommand()) {
     if (interaction.commandName === ROLE_PANEL_COMMAND_NAME) {
+      if (await replyIfAutonomyGuardBlockedActor(interaction)) {
+        return;
+      }
+
       if (!isModerator(interaction.member)) {
         await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
         return;
@@ -12430,6 +13198,10 @@ client.on("interactionCreate", async (interaction) => {
     }
 
     if (interaction.commandName === VERIFY_COMMAND_NAME) {
+      if (await replyIfAutonomyGuardBlockedActor(interaction)) {
+        return;
+      }
+
       if (!isModerator(interaction.member)) {
         await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
         return;
@@ -12444,6 +13216,10 @@ client.on("interactionCreate", async (interaction) => {
       if (subcommand === "add") {
         const target = interaction.options.getUser("target", true);
         const note = cleanVerificationText(interaction.options.getString("note"), 500);
+
+        if (await replyAutonomyGuardIsolatedTarget(interaction, target.id)) {
+          return;
+        }
 
         await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
@@ -12491,6 +13267,10 @@ client.on("interactionCreate", async (interaction) => {
     }
 
     if (interaction.commandName === "combo") {
+      if (await replyIfAutonomyGuardBlockedActor(interaction)) {
+        return;
+      }
+
       const sub = interaction.options.getSubcommand();
 
       if (sub === "panel") {
@@ -12523,7 +13303,6 @@ client.on("interactionCreate", async (interaction) => {
 
           const comboText = comboBuffer.toString("utf8");
           const techsText = techsBuffer.toString("utf8");
-
           const state = await publishGuideOrdered({
             channel: targetChannel,
             comboText,
@@ -12611,9 +13390,24 @@ client.on("interactionCreate", async (interaction) => {
     }
     if (interaction.commandName !== "onboard") return;
 
-    const subcommand = interaction.options.getSubcommand();
+    if (await replyIfAutonomyGuardBlockedActor(interaction)) {
+      return;
+    }
 
-    if (!isModerator(interaction.member)) {
+    const subcommand = interaction.options.getSubcommand();
+    const primaryAdminUserId = getAutonomyGuardPrimaryAdminUserId();
+    const isIsolatorCommand = subcommand === "isolator" || subcommand === "isolatoroff";
+
+    if (isIsolatorCommand) {
+      if (!primaryAdminUserId) {
+        await interaction.reply(ephemeralPayload({ content: "PRIMARY_ADMIN_USER_ID не настроен. Добавь его в env и перезапусти бота." }));
+        return;
+      }
+      if (!isAutonomyGuardPrimaryAdmin(interaction.user.id)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+    } else if (!isModerator(interaction.member)) {
       await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
       return;
     }
@@ -12688,6 +13482,169 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
+    if (subcommand === "targetrole") {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+      const roleName = String(interaction.options.getString("name", true) || "").trim().slice(0, 100);
+      const roleColor = normalizeHexColor(interaction.options.getString("color", true));
+      if (!roleName) {
+        await interaction.editReply("Название target-роли не должно быть пустым.");
+        return;
+      }
+      if (!roleColor) {
+        await interaction.editReply("Цвет должен быть HEX вида #FF5500.");
+        return;
+      }
+
+      const guild = interaction.guild || await getGuild(client).catch(() => null);
+      if (!guild) {
+        await interaction.editReply("Не удалось получить guild.");
+        return;
+      }
+
+      try {
+        const roleResult = await ensureAutonomyGuardRole(guild, {
+          roleOverride: { name: roleName, color: roleColor },
+          reason: `autonomy target role updated by ${interaction.user.tag}`,
+        });
+        if (roleResult.stateChanged) saveDb();
+
+        const lines = [
+          `Target-роль готова: ${formatRoleMention(roleResult.role.id)}.`,
+          `Цвет: ${roleColor}. Роль поднята настолько высоко, насколько боту позволяет иерархия.`,
+        ];
+
+        const activeTargetUserId = getAutonomyGuardState().targetUserId;
+        if (activeTargetUserId) {
+          try {
+            await assignAutonomyGuardRoleToUser(client, activeTargetUserId, roleResult.role.id, `autonomy target role sync by ${interaction.user.tag}`);
+            lines.push(`Активная цель <@${activeTargetUserId}> синхронизирована с target-ролью.`);
+          } catch (error) {
+            lines.push(`Предупреждение: target-роль сохранена, но текущую цель не удалось синхронизировать: ${String(error?.message || error).slice(0, 220)}`);
+          }
+        }
+
+        await interaction.editReply(lines.join("\n"));
+      } catch (error) {
+        await interaction.editReply(`Не удалось подготовить target-роль: ${String(error?.message || error || "неизвестная ошибка").slice(0, 260)}`);
+      }
+      return;
+    }
+
+    if (subcommand === "target") {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+      const target = interaction.options.getUser("target", true);
+      if (await replyAutonomyGuardIsolatedTarget(interaction, target.id, { editReply: true })) {
+        return;
+      }
+
+      const guild = interaction.guild || await getGuild(client).catch(() => null);
+      if (!guild) {
+        await interaction.editReply("Не удалось получить guild.");
+        return;
+      }
+
+      try {
+        const roleResult = await ensureAutonomyGuardRole(guild, {
+          reason: `autonomy target role ensured by ${interaction.user.tag}`,
+        });
+        if (roleResult.stateChanged) saveDb();
+
+        const previousTargetUserId = getAutonomyGuardState().targetUserId;
+        const targetChanged = setAutonomyGuardTargetUserId(db, target.id);
+
+        try {
+          await assignAutonomyGuardRoleToUser(client, target.id, roleResult.role.id, `autonomy target set by ${interaction.user.tag}`);
+          if (previousTargetUserId && previousTargetUserId !== target.id) {
+            await clearAutonomyGuardRoleFromUser(client, previousTargetUserId, roleResult.role.id, `autonomy target moved by ${interaction.user.tag}`);
+          }
+        } catch (error) {
+          if (targetChanged) {
+            setAutonomyGuardTargetUserId(db, previousTargetUserId);
+          }
+          await interaction.editReply(`Не удалось назначить цель: ${String(error?.message || error || "неизвестная ошибка").slice(0, 260)}`);
+          return;
+        }
+
+        if (targetChanged) saveDb();
+        await logLine(client, `AUTONOMY_TARGET_SET: <@${target.id}> by ${interaction.user.tag}`).catch(() => {});
+        await interaction.editReply(`Текущая автономная цель: <@${target.id}>. Target-роль ${formatRoleMention(roleResult.role.id)} выдана и защита активна.`);
+      } catch (error) {
+        await interaction.editReply(`Не удалось подготовить автономную цель: ${String(error?.message || error || "неизвестная ошибка").slice(0, 260)}`);
+      }
+      return;
+    }
+
+    if (subcommand === "targetclear") {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+      const state = getAutonomyGuardState();
+      const previousTargetUserId = state.targetUserId;
+      if (!previousTargetUserId) {
+        await interaction.editReply("Активная автономная цель не задана.");
+        return;
+      }
+
+      const roleId = state.protectedRole.roleId;
+      clearAutonomyGuardTargetUserId(db);
+      saveDb();
+
+      const clearedRole = await clearAutonomyGuardRoleFromUser(client, previousTargetUserId, roleId, `autonomy target cleared by ${interaction.user.tag}`);
+      await logLine(client, `AUTONOMY_TARGET_CLEARED: <@${previousTargetUserId}> by ${interaction.user.tag}`).catch(() => {});
+      await interaction.editReply([
+        `Автономная цель снята с <@${previousTargetUserId}>.`,
+        clearedRole ? "Target-роль с участника снята." : "Target-роль у участника уже отсутствовала или участник недоступен.",
+        "Конфиг target-роли сохранён и может быть переиспользован позже.",
+      ].join("\n"));
+      return;
+    }
+
+    if (subcommand === "isolator") {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+      const target = interaction.options.getUser("target", true);
+      if (target.id === primaryAdminUserId) {
+        await interaction.editReply("Главного админа нельзя отправить в изолятор.");
+        return;
+      }
+      if (target.id === client.user.id) {
+        await interaction.editReply("Бота нельзя отправить в изолятор.");
+        return;
+      }
+      if (target.id === getAutonomyGuardState().targetUserId) {
+        await interaction.editReply("Сначала сними текущую автономную цель, потом уже отправляй пользователя в изолятор.");
+        return;
+      }
+
+      const added = addAutonomyGuardIsolatedUserId(db, target.id);
+      if (!added) {
+        await interaction.editReply(`<@${target.id}> уже находится в изоляторе.`);
+        return;
+      }
+
+      saveDb();
+      await logLine(client, `AUTONOMY_ISOLATOR_ON: <@${target.id}> by ${interaction.user.tag}`).catch(() => {});
+      await interaction.editReply(`<@${target.id}> добавлен в изолятор.`);
+      return;
+    }
+
+    if (subcommand === "isolatoroff") {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+      const target = interaction.options.getUser("target", true);
+      const removed = removeAutonomyGuardIsolatedUserId(db, target.id);
+      if (!removed) {
+        await interaction.editReply(`<@${target.id}> не находится в изоляторе.`);
+        return;
+      }
+
+      saveDb();
+      await logLine(client, `AUTONOMY_ISOLATOR_OFF: <@${target.id}> by ${interaction.user.tag}`).catch(() => {});
+      await interaction.editReply(`<@${target.id}> убран из изолятора.`);
+      return;
+    }
+
     if (subcommand === "modset") {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
@@ -12710,6 +13667,10 @@ client.on("interactionCreate", async (interaction) => {
       }
       if (!target) {
         await interaction.editReply("Укажи `target` (пользователь в сервере) или `user_id` (для тех, кто вышел).");
+        return;
+      }
+
+      if (await replyAutonomyGuardIsolatedTarget(interaction, target.id, { editReply: true })) {
         return;
       }
 
@@ -12777,6 +13738,10 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
+      if (await replyAutonomyGuardIsolatedTarget(interaction, target.id, { editReply: true })) {
+        return;
+      }
+
       let robloxUser = null;
       try {
         robloxUser = await resolveRobloxUserByUsername(robloxUsernameInput);
@@ -12839,6 +13804,11 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.editReply("Укажи `target` или `user_id`.");
         return;
       }
+
+      if (await replyAutonomyGuardIsolatedTarget(interaction, targetId, { editReply: true })) {
+        return;
+      }
+
       const result = await purgeUserProfile(client, targetId, interaction.user.tag);
       const refreshed = await refreshAllTierlists(client);
       const refreshText = buildTierlistRefreshReply(refreshed);
@@ -12868,6 +13838,11 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.editReply("Укажи `target` или `user_id`.");
         return;
       }
+
+      if (await replyAutonomyGuardIsolatedTarget(interaction, targetId, { editReply: true })) {
+        return;
+      }
+
       const profile = getProfile(targetId);
 
       profile.approvedKills = null;

@@ -6,6 +6,20 @@ const AUTONOMY_GUARD_WARNING_BUCKET_KEYS = Object.freeze([
   "reviewMessageDeletes",
 ]);
 
+const AUTONOMY_GUARD_MESSAGE_DELETE_KINDS = Object.freeze([
+  "owner",
+  "log",
+  "review",
+  "important",
+]);
+
+const AUTONOMY_GUARD_MESSAGE_DELETE_POLICIES = Object.freeze({
+  owner: Object.freeze({ bucketKey: "ownerMessageDeletes", warningsBeforeStrip: 5, immediateStrip: false }),
+  log: Object.freeze({ bucketKey: "logMessageDeletes", warningsBeforeStrip: 5, immediateStrip: false }),
+  review: Object.freeze({ bucketKey: "reviewMessageDeletes", warningsBeforeStrip: 1, immediateStrip: false }),
+  important: Object.freeze({ bucketKey: "", warningsBeforeStrip: 0, immediateStrip: true }),
+});
+
 function trimText(value, limit = 200) {
   return String(value || "").trim().slice(0, limit);
 }
@@ -76,6 +90,63 @@ function normalizeDiscordIdList(rawValue, limit = 50) {
   return [...new Set(rawValue.map((value) => normalizeDiscordId(value)).filter(Boolean))].slice(0, limit);
 }
 
+function collectAutonomyGuardProtectedRoleIds(options = {}) {
+  const source = options && typeof options === "object" && !Array.isArray(options) ? options : {};
+  const collectedRoleIds = [];
+
+  function pushRoleIds(value) {
+    if (!value) return;
+    if (Array.isArray(value)) {
+      for (const entry of value) pushRoleIds(entry);
+      return;
+    }
+    if (typeof value === "object") {
+      for (const entry of Object.values(value)) pushRoleIds(entry);
+      return;
+    }
+    const normalizedRoleId = normalizeDiscordId(value);
+    if (normalizedRoleId) collectedRoleIds.push(normalizedRoleId);
+  }
+
+  pushRoleIds(source.protectedRoleId);
+  pushRoleIds(source.accessRoleIds);
+  pushRoleIds(source.tierRoleIds);
+  pushRoleIds(source.legacyEloTierRoleIds);
+  pushRoleIds(source.characterRoleIds);
+  pushRoleIds(source.activityRoleIds);
+  pushRoleIds(source.activityAdminRoleIds);
+  pushRoleIds(source.activityModeratorRoleIds);
+  pushRoleIds(source.roleGrantRoleIds);
+  pushRoleIds(source.extraRoleIds);
+
+  return [...new Set(collectedRoleIds)];
+}
+
+function diffAutonomyGuardProtectedRoleIds(options = {}) {
+  const source = options && typeof options === "object" && !Array.isArray(options) ? options : {};
+  const protectedRoleIdSet = new Set(normalizeDiscordIdList(source.protectedRoleIds, 500));
+  const previousRoleIdSet = new Set(normalizeDiscordIdList(source.previousRoleIds, 500));
+  const nextRoleIdSet = new Set(normalizeDiscordIdList(source.nextRoleIds, 500));
+  const addedRoleIds = [];
+  const removedRoleIds = [];
+
+  for (const roleId of protectedRoleIdSet) {
+    if (!previousRoleIdSet.has(roleId) && nextRoleIdSet.has(roleId)) {
+      addedRoleIds.push(roleId);
+    }
+    if (previousRoleIdSet.has(roleId) && !nextRoleIdSet.has(roleId)) {
+      removedRoleIds.push(roleId);
+    }
+  }
+
+  return {
+    addedRoleIds,
+    removedRoleIds,
+    changedRoleIds: [...addedRoleIds, ...removedRoleIds],
+    hasProtectedChanges: addedRoleIds.length > 0 || removedRoleIds.length > 0,
+  };
+}
+
 function resolveAutonomyGuardPrimaryAdminUserId(db, appConfig = {}) {
   const fromConfig = normalizeDiscordId(appConfig?.moderation?.primaryAdminUserId);
   if (fromConfig) return fromConfig;
@@ -136,12 +207,102 @@ function isAutonomyGuardIsolatedUser(db, userId) {
   return ensureAutonomyGuardState(db).isolatedUserIds.includes(normalizedUserId);
 }
 
+function getAutonomyGuardMessageDeletePolicy(kind) {
+  const normalizedKind = trimText(kind, 40).toLowerCase();
+  return AUTONOMY_GUARD_MESSAGE_DELETE_POLICIES[normalizedKind] || null;
+}
+
+function classifyAutonomyGuardDeletedMessage(options = {}) {
+  const source = options && typeof options === "object" && !Array.isArray(options) ? options : {};
+  const ownerUserId = normalizeDiscordId(source.ownerUserId);
+  const authorUserId = normalizeDiscordId(source.authorUserId);
+  const channelId = normalizeDiscordId(source.channelId);
+  const logChannelId = normalizeDiscordId(source.logChannelId);
+  const messageId = normalizeDiscordId(source.messageId);
+  const importantMessageIdSet = new Set(normalizeDiscordIdList(source.importantMessageIds, 500));
+  const reviewMessageIdSet = new Set(normalizeDiscordIdList(source.reviewMessageIds, 500));
+
+  if (messageId && importantMessageIdSet.has(messageId)) {
+    return "important";
+  }
+  if (ownerUserId && authorUserId && ownerUserId === authorUserId) {
+    return "owner";
+  }
+  if (messageId && reviewMessageIdSet.has(messageId)) {
+    return "review";
+  }
+  if (source.authorIsBot === true && channelId && logChannelId && channelId === logChannelId) {
+    return "log";
+  }
+  return "";
+}
+
+function incrementAutonomyGuardWarningCounter(db, userId, bucketKey) {
+  const normalizedUserId = normalizeDiscordId(userId);
+  if (!normalizedUserId || !AUTONOMY_GUARD_WARNING_BUCKET_KEYS.includes(bucketKey)) {
+    return 0;
+  }
+
+  const state = ensureAutonomyGuardState(db);
+  const currentBucket = state.warningCounters[normalizedUserId];
+  const normalizedBucket = currentBucket && typeof currentBucket === "object" && !Array.isArray(currentBucket)
+    ? normalizeWarningCounters({ [normalizedUserId]: currentBucket })[normalizedUserId]
+    : normalizeWarningCounters({ [normalizedUserId]: {} })[normalizedUserId];
+
+  normalizedBucket[bucketKey] += 1;
+  state.warningCounters[normalizedUserId] = normalizedBucket;
+  return normalizedBucket[bucketKey];
+}
+
+function resolveAutonomyGuardMessageDeleteDecision(kind, warningCount = 0) {
+  const policy = getAutonomyGuardMessageDeletePolicy(kind);
+  if (!policy) {
+    return {
+      action: "ignore",
+      bucketKey: "",
+      kind: "",
+      warningCount: 0,
+      warningsRemaining: 0,
+      shouldStripAdmin: false,
+    };
+  }
+
+  if (policy.immediateStrip) {
+    return {
+      action: "strip-admin",
+      bucketKey: policy.bucketKey,
+      kind: trimText(kind, 40).toLowerCase(),
+      warningCount: 0,
+      warningsRemaining: 0,
+      shouldStripAdmin: true,
+    };
+  }
+
+  const normalizedWarningCount = Math.max(0, Number(warningCount) || 0);
+  const shouldStripAdmin = normalizedWarningCount > policy.warningsBeforeStrip;
+  return {
+    action: shouldStripAdmin ? "strip-admin" : "warn",
+    bucketKey: policy.bucketKey,
+    kind: trimText(kind, 40).toLowerCase(),
+    warningCount: normalizedWarningCount,
+    warningsRemaining: Math.max(policy.warningsBeforeStrip - normalizedWarningCount, 0),
+    shouldStripAdmin,
+  };
+}
+
 module.exports = {
+  AUTONOMY_GUARD_MESSAGE_DELETE_KINDS,
+  AUTONOMY_GUARD_MESSAGE_DELETE_POLICIES,
   AUTONOMY_GUARD_WARNING_BUCKET_KEYS,
   addAutonomyGuardIsolatedUserId,
+  classifyAutonomyGuardDeletedMessage,
   clearAutonomyGuardTargetUserId,
+  collectAutonomyGuardProtectedRoleIds,
   createAutonomyGuardState,
+  diffAutonomyGuardProtectedRoleIds,
   ensureAutonomyGuardState,
+  getAutonomyGuardMessageDeletePolicy,
+  incrementAutonomyGuardWarningCounter,
   isAutonomyGuardIsolatedUser,
   normalizeDiscordId,
   normalizeDiscordIdList,
@@ -149,6 +310,7 @@ module.exports = {
   normalizeProtectedRole,
   normalizeWarningCounters,
   removeAutonomyGuardIsolatedUserId,
+  resolveAutonomyGuardMessageDeleteDecision,
   resolveAutonomyGuardPrimaryAdminUserId,
   setAutonomyGuardPrimaryAdminUserId,
   setAutonomyGuardProtectedRole,
