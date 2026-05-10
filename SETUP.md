@@ -374,6 +374,13 @@ npm run snapshot:db
 - если эти legacy-файлы существуют, копирует их в тот же snapshot
 - пишет manifest.json с путями источников и статусами copied, missing или not-configured
 
+Важно:
+
+- snapshot из backups/<ISO> считается локальным operational backup, а не файлом для git
+- временные DB dump вида .tmp.production-welcome-db.json не коммить
+- если нужен clean deploy artifact, собирай его вне репозитория, а не как второе tracked-дерево рядом с корнем
+- локальные deploy-деревья вида .deploy-* не держи в rollout-контексте; `railway up` по умолчанию уважает .gitignore, а флаг --no-gitignore для этого репозитория использовать нельзя
+
 По умолчанию snapshot ложится в backups/<ISO>. Если нужна другая папка, задай SNAPSHOT_OUTPUT_DIR. Для относительного пути база берётся от корня репозитория.
 
 Минимальная процедура перед deploy:

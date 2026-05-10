@@ -1,0 +1,4 @@
+/node_modules/
+/backups/
+/.deploy-*/
+/.tmp.production-welcome-db.json
