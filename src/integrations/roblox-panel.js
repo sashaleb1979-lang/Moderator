@@ -105,6 +105,7 @@ function summarizeTelemetryResult(kind, result = {}) {
       processedUserIds: normalizeNonNegativeInteger(summary.processedUserIds, 0),
       failedUserIds: normalizeNonNegativeInteger(summary.failedUserIds, 0),
       activeJjsUsers: normalizeNonNegativeInteger(summary.activeJjsUsers, 0),
+      opaqueInGameUsers: normalizeNonNegativeInteger(summary.opaqueInGameUsers, 0),
       touchedUserCount: normalizeNonNegativeInteger(summary.touchedUserCount, 0),
       startedSessionCount: normalizeNonNegativeInteger(summary.startedSessionCount, 0),
       closedSessionCount: normalizeNonNegativeInteger(summary.closedSessionCount, 0),
@@ -380,6 +381,8 @@ function buildRobloxPanelIssues(snapshot = {}) {
     issues.push(
       `Синк playtime потерял пачки: ${snapshot.jobs.playtimeSync.summary.failedBatches} шт., пользователей с ошибкой: ${normalizeNonNegativeInteger(snapshot.jobs?.playtimeSync?.summary?.failedUserIds, 0)}.`
     );
+  } else if (playtimeTrackingEnabled && normalizeNonNegativeInteger(snapshot.jobs?.playtimeSync?.summary?.opaqueInGameUsers, 0) > 0) {
+    issues.push(`Roblox API вернула in_game без universe/root/place ids для ${snapshot.jobs.playtimeSync.summary.opaqueInGameUsers} профилей; JJS матч по ним сейчас недоказуем.`);
   }
 
   if (runtimeFlushEnabled && snapshot.jobs?.runtimeFlush?.status === "error") {
@@ -497,9 +500,14 @@ function buildPlaytimeSyncStatusText(result = {}) {
 
   const totalCandidates = normalizeNonNegativeInteger(result.totalCandidates, 0);
   const activeJjsUsers = normalizeNonNegativeInteger(result.activeJjsUsers, 0);
+  const opaqueInGameUsers = normalizeNonNegativeInteger(result.opaqueInGameUsers, 0);
   const touchedUserCount = normalizeNonNegativeInteger(result.touchedUserCount, 0);
   const failedUserIds = normalizeNonNegativeInteger(result.failedUserIds, 0);
   const baseText = `Синк playtime завершён. Кандидатов: ${totalCandidates}, активных в JJS: ${activeJjsUsers}, затронуто профилей: ${touchedUserCount}, ошибок пользователей: ${failedUserIds}.`;
+
+  if (opaqueInGameUsers > 0) {
+    return `${baseText} Roblox API видит in-game у ${opaqueInGameUsers} профилей, но не отдала universe/root/place ids, поэтому JJS матч для них не подтверждён.`;
+  }
 
   if (totalCandidates > 0 && activeJjsUsers === 0 && failedUserIds === 0) {
     return `${baseText} В configured JJS сейчас никого не видно.`;

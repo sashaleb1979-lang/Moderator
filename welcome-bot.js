@@ -2723,14 +2723,6 @@ async function respondToOnboardError(interaction, message) {
   await interaction.followUp(payload).catch(() => {});
 }
 
-async function respondToModeratorPanelError(interaction, customId, error, messagePrefix) {
-  console.error(`moderator panel interaction failed (${customId}):`, formatRuntimeError(error));
-  await respondToOnboardError(
-    interaction,
-    `${messagePrefix}: ${String(error?.message || error || "неизвестная ошибка").slice(0, 220)}`
-  );
-}
-
 async function fallbackToManualMainSelection(interaction, mode = "full", error = null) {
   const message = String(error?.message || error || "").trim();
   if (message) {
@@ -4776,6 +4768,65 @@ function isVerificationEnabled() {
   return getVerificationIntegrationState().enabled === true;
 }
 
+function isVerificationActiveStatus(value) {
+  return ["pending", "manual_review", "failed"].includes(cleanVerificationText(value, 40));
+}
+
+function getVerificationProfileState(profile = {}) {
+  return profile.summary?.verification && typeof profile.summary.verification === "object"
+    ? profile.summary.verification
+    : profile.domains?.verification && typeof profile.domains.verification === "object"
+      ? profile.domains.verification
+      : {};
+}
+
+function normalizeVerificationObservedGuilds(value = []) {
+  if (!Array.isArray(value)) return [];
+  const normalized = [];
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const id = cleanVerificationText(entry.id, 80);
+    if (!id) continue;
+    normalized.push({
+      id,
+      name: cleanVerificationText(entry.name, 120),
+      owner: entry.owner === true,
+      permissions: cleanVerificationText(entry.permissions, 40),
+    });
+    if (normalized.length >= 20) break;
+  }
+  return normalized;
+}
+
+function clearExpiredVerificationRoleMutationIgnores() {
+  const now = Date.now();
+  for (const [userId, expireAt] of verificationRoleMutationIgnores.entries()) {
+    if (!userId || !Number.isFinite(expireAt) || expireAt <= now) {
+      verificationRoleMutationIgnores.delete(userId);
+    }
+  }
+}
+
+function markVerificationRoleMutationIgnore(userId, ttlMs = VERIFICATION_ROLE_MUTATION_IGNORE_MS) {
+  const normalizedUserId = cleanVerificationText(userId, 80);
+  if (!normalizedUserId) return;
+  clearExpiredVerificationRoleMutationIgnores();
+  verificationRoleMutationIgnores.set(normalizedUserId, Date.now() + Math.max(1000, Number(ttlMs) || VERIFICATION_ROLE_MUTATION_IGNORE_MS));
+}
+
+function shouldIgnoreVerificationRoleMutation(userId) {
+  const normalizedUserId = cleanVerificationText(userId, 80);
+  if (!normalizedUserId) return false;
+  clearExpiredVerificationRoleMutationIgnores();
+  return verificationRoleMutationIgnores.has(normalizedUserId);
+}
+
+function clearVerificationRoleMutationIgnore(userId) {
+  const normalizedUserId = cleanVerificationText(userId, 80);
+  if (!normalizedUserId) return;
+  verificationRoleMutationIgnores.delete(normalizedUserId);
+}
+
 function computeVerificationReportDueAt(fromIso = nowIso()) {
   const date = new Date(fromIso);
   if (!Number.isFinite(date.getTime())) return null;
@@ -4824,6 +4875,163 @@ function ensureVerificationPendingProfile(userId, patch = {}, options = {}) {
     reportDueAt,
     ...patch,
   }, options);
+}
+
+function stopVerificationCycle(userId, reason = "verify role removed", options = {}) {
+  const profile = finalizeStoredProfile(userId);
+  const verification = getVerificationProfileState(profile);
+  const status = cleanVerificationText(verification.status, 40);
+  if (!isVerificationActiveStatus(status)) {
+    return { updated: false, status };
+  }
+
+  const stopReason = cleanVerificationText(reason, 200) || "verify role removed";
+  const stoppedAt = nowIso();
+  const nextProfile = updateVerificationProfile(userId, {
+    status: "not_started",
+    decision: "none",
+    assignedAt: "",
+    startedAt: "",
+    reportDueAt: "",
+    reportSentAt: "",
+    completedAt: "",
+    reviewedAt: "",
+    reviewedBy: "",
+    decisionReason: stopReason,
+    lastError: "",
+    oauthUserId: "",
+    oauthUsername: "",
+    oauthAvatarUrl: "",
+    observedGuilds: [],
+    observedGuildIds: [],
+    observedGuildNames: [],
+    matchedEnemyGuildIds: [],
+    matchedEnemyUserIds: [],
+    matchedEnemyInviteCodes: [],
+    matchedEnemyInviterUserIds: [],
+    stoppedAt,
+    stopReason,
+  }, options);
+
+  return { updated: true, profile: nextProfile, status, stoppedAt, reason: stopReason };
+}
+
+async function reconcileVerificationAssignmentForMember(client, userId, member = null, options = {}) {
+  const profile = finalizeStoredProfile(userId);
+  const verification = getVerificationProfileState(profile);
+  const status = cleanVerificationText(verification.status, 40);
+  if (!isVerificationActiveStatus(status)) {
+    return { userId, active: false, stopped: false, status };
+  }
+
+  const verifyRoleId = cleanVerificationText(getVerifyAccessRoleId(), 80);
+  if (!verifyRoleId) {
+    const stopResult = stopVerificationCycle(userId, cleanVerificationText(options.reason, 200) || "verify role is not configured anymore");
+    return { userId, active: true, stopped: stopResult.updated === true, status };
+  }
+
+  const resolvedMember = member || await fetchMember(client, userId);
+  if (resolvedMember?.roles?.cache?.has(verifyRoleId)) {
+    return { userId, active: true, stopped: false, status };
+  }
+
+  const stopResult = stopVerificationCycle(userId, cleanVerificationText(options.reason, 200) || "verify role removed manually");
+  return { userId, active: true, stopped: stopResult.updated === true, status };
+}
+
+async function reconcileVerificationAssignments(client, options = {}) {
+  let checked = 0;
+  let stopped = 0;
+
+  for (const userId of Object.keys(db.profiles || {})) {
+    const result = await reconcileVerificationAssignmentForMember(client, userId, null, options);
+    if (!result.active) continue;
+    checked += 1;
+    if (result.stopped) stopped += 1;
+  }
+
+  return { checked, stopped };
+}
+
+async function grantVerifyAccessRole(client, userId, reason = "verification assigned") {
+  const verifyRoleId = cleanVerificationText(getVerifyAccessRoleId(), 80);
+  if (!verifyRoleId) {
+    throw new Error("Не настроена verify-роль. Укажи её через панель проверки.");
+  }
+
+  const member = await fetchMember(client, userId);
+  if (!member) {
+    throw new Error("Участник не найден на сервере. Выдать verify-роль не удалось.");
+  }
+
+  if (member.roles.cache.has(verifyRoleId)) {
+    return { granted: false, roleId: verifyRoleId, member };
+  }
+
+  try {
+    await member.roles.add(verifyRoleId, reason);
+  } catch (error) {
+    throw new Error(`Не удалось выдать verify-роль ${verifyRoleId} пользователю ${userId}: ${formatRuntimeError(error)}`);
+  }
+
+  return { granted: true, roleId: verifyRoleId, member };
+}
+
+async function assignUserToVerification(client, userId, options = {}) {
+  const assignmentReason = cleanVerificationText(options.reason, 200) || "verification moderator assign";
+  const assignedBy = cleanVerificationText(options.assignedBy, 120);
+  const assignmentNote = cleanVerificationText(options.note, 500);
+  const assignedAt = nowIso();
+  const roleResult = await grantVerifyAccessRole(client, userId, assignmentReason);
+  const reportDueAt = computeVerificationReportDueAt(assignedAt);
+  const profile = ensureVerificationPendingProfile(userId, {
+    status: "pending",
+    decision: "none",
+    assignedAt,
+    startedAt: assignedAt,
+    reportDueAt,
+    reportSentAt: "",
+    completedAt: "",
+    reviewedAt: "",
+    reviewedBy: "",
+    decisionReason: "",
+    lastError: "",
+    assignedBy,
+    assignmentNote,
+    stoppedAt: "",
+    stopReason: "",
+    oauthUserId: "",
+    oauthUsername: "",
+    oauthAvatarUrl: "",
+    observedGuilds: [],
+    observedGuildIds: [],
+    observedGuildNames: [],
+    matchedEnemyGuildIds: [],
+    matchedEnemyUserIds: [],
+    matchedEnemyInviteCodes: [],
+    matchedEnemyInviterUserIds: [],
+  });
+
+  const verificationChannelId = cleanVerificationText(getVerificationIntegrationState().verificationChannelId, 80);
+  let entryMessageEnsured = false;
+  let entryMessageWarning = "";
+  if (verificationChannelId) {
+    try {
+      await ensureVerificationEntryMessage(client);
+      entryMessageEnsured = true;
+    } catch (error) {
+      entryMessageWarning = cleanVerificationText(error?.message || error, 300);
+    }
+  }
+
+  return {
+    roleResult,
+    profile,
+    verificationChannelId,
+    reportDueAt: cleanVerificationText(profile.domains?.verification?.reportDueAt, 80) || reportDueAt,
+    entryMessageEnsured,
+    entryMessageWarning,
+  };
 }
 
 function buildVerificationStatusText(userId) {
@@ -5064,6 +5272,7 @@ async function completeVerificationApprovedAccess(client, userId, reason = "veri
   if (verifyRoleId) {
     const member = await fetchMember(client, userId);
     if (member?.roles?.cache?.has(verifyRoleId)) {
+      markVerificationRoleMutationIgnore(userId);
       await member.roles.remove(verifyRoleId, reason).catch(() => {});
     }
   }
@@ -5146,6 +5355,7 @@ async function handleVerificationApprovedCallback(client, payload = {}) {
     oauthUserId: cleanVerificationText(payload.oauthUser?.id, 80),
     oauthUsername: buildVerificationOauthUsername(payload.oauthUser),
     oauthAvatarUrl: cleanVerificationText(payload.oauthUser?.avatar ? `https://cdn.discordapp.com/avatars/${payload.oauthUser.id}/${payload.oauthUser.avatar}.png` : "", 2000),
+    observedGuilds: normalizeVerificationObservedGuilds(risk.observedGuilds),
     observedGuildIds: Array.isArray(risk.observedGuildIds) ? risk.observedGuildIds : [],
     observedGuildNames: Array.isArray(risk.observedGuildNames) ? risk.observedGuildNames : [],
     matchedEnemyGuildIds: Array.isArray(risk.matchedEnemyGuildIds) ? risk.matchedEnemyGuildIds : [],
@@ -5167,6 +5377,7 @@ async function handleVerificationManualReviewCallback(client, payload = {}) {
     startedAt: nowIso(),
     oauthUserId: cleanVerificationText(payload.oauthUser?.id, 80),
     oauthUsername: buildVerificationOauthUsername(payload.oauthUser),
+    observedGuilds: normalizeVerificationObservedGuilds(risk.observedGuilds),
     observedGuildIds: Array.isArray(risk.observedGuildIds) ? risk.observedGuildIds : [],
     observedGuildNames: Array.isArray(risk.observedGuildNames) ? risk.observedGuildNames : [],
     matchedEnemyGuildIds: Array.isArray(risk.matchedEnemyGuildIds) ? risk.matchedEnemyGuildIds : [],
@@ -11568,8 +11779,10 @@ process.on("unhandledRejection", (error) => {
 });
 
 const verificationOauthStates = new Map();
+const verificationRoleMutationIgnores = new Map();
 let verificationCallbackServer = null;
 const VERIFICATION_OAUTH_STATE_EXPIRE_MS = 10 * 60 * 1000;
+const VERIFICATION_ROLE_MUTATION_IGNORE_MS = 30 * 1000;
 
 client.once("clientReady", async () => {
   console.log(`Logged in as ${client.user.tag}`);
@@ -11711,6 +11924,17 @@ client.once("clientReady", async () => {
     console.error("Verification runtime startup failed:", error?.message || error);
   }
 
+  try {
+    const verificationReconcile = await reconcileVerificationAssignments(client, {
+      reason: "verify role missing after startup",
+    });
+    if (verificationReconcile.stopped > 0) {
+      console.log(`Verification reconcile stopped ${verificationReconcile.stopped}/${verificationReconcile.checked} active assignments without verify-role.`);
+    }
+  } catch (error) {
+    console.error("Verification role reconcile failed:", error?.message || error);
+  }
+
   console.log("Welcome onboarding bot is ready");
   readyClient = client;
 
@@ -11772,7 +11996,7 @@ client.once("clientReady", async () => {
   });
 });
 
-client.on("guildMemberUpdate", async (_oldMember, newMember) => {
+client.on("guildMemberUpdate", async (oldMember, newMember) => {
   if (newMember.guild.id !== GUILD_ID) return;
 
   try {
@@ -11797,6 +12021,27 @@ client.on("guildMemberUpdate", async (_oldMember, newMember) => {
     }
   } catch (error) {
     console.error("Legacy Tierlist mains sync failed:", error?.message || error);
+  }
+
+  try {
+    const verifyRoleId = cleanVerificationText(getVerifyAccessRoleId(), 80);
+    const hadVerifyRole = Boolean(verifyRoleId && oldMember?.roles?.cache?.has(verifyRoleId));
+    const hasVerifyRole = Boolean(verifyRoleId && newMember?.roles?.cache?.has(verifyRoleId));
+
+    if (hadVerifyRole && !hasVerifyRole) {
+      if (shouldIgnoreVerificationRoleMutation(newMember.id)) {
+        clearVerificationRoleMutationIgnore(newMember.id);
+      } else {
+        const result = await reconcileVerificationAssignmentForMember(client, newMember.id, newMember, {
+          reason: "verify role removed manually",
+        });
+        if (result.stopped) {
+          await logLine(client, `VERIFICATION_STOPPED: <@${newMember.id}> verify-role снята вручную, отсчёт остановлен.`).catch(() => {});
+        }
+      }
+    }
+  } catch (error) {
+    console.error("Verification role lifecycle sync failed:", error?.message || error);
   }
 });
 
@@ -12185,6 +12430,54 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.reply(await buildVerificationPanelReply());
         return;
       }
+
+      if (subcommand === "add") {
+        const target = interaction.options.getUser("target", true);
+        const note = cleanVerificationText(interaction.options.getString("note"), 500);
+
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+        try {
+          const result = await assignUserToVerification(client, target.id, {
+            assignedBy: interaction.user.tag,
+            note,
+            reason: `verification assigned by ${interaction.user.tag}`,
+          });
+
+          await logLine(
+            client,
+            `VERIFICATION_ASSIGNED: <@${target.id}> by ${interaction.user.tag}${note ? ` note=${note}` : ""}`
+          ).catch(() => {});
+
+          const lines = [
+            `<@${target.id}> поставлен на проверку.`,
+            result.roleResult.granted
+              ? `Выдана verify-роль ${formatRoleMention(result.roleResult.roleId)}.`
+              : `Verify-роль ${formatRoleMention(result.roleResult.roleId)} уже была у участника.`,
+            result.reportDueAt
+              ? `Отсчёт запущен до ${formatDateTime(result.reportDueAt)}.`
+              : "Отсчёт запущен.",
+          ];
+
+          if (result.verificationChannelId) {
+            lines.push(`Канал проверки: ${formatChannelMention(result.verificationChannelId)}.`);
+          }
+          if (result.entryMessageEnsured) {
+            lines.push("Входное сообщение проверки опубликовано или обновлено автоматически.");
+          }
+          if (note) {
+            lines.push(`Заметка: ${note}`);
+          }
+          if (result.entryMessageWarning) {
+            lines.push(`Предупреждение: ${result.entryMessageWarning}`);
+          }
+
+          await interaction.editReply(lines.join("\n"));
+        } catch (error) {
+          await interaction.editReply(`Не удалось поставить участника на проверку: ${cleanVerificationText(error?.message || error, 300)}`);
+        }
+        return;
+      }
     }
 
     if (interaction.commandName === "combo") {
@@ -12317,10 +12610,12 @@ client.on("interactionCreate", async (interaction) => {
 
     if (subcommand === "panel") {
       try {
-        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-        await interaction.editReply(await buildModeratorPanelPayload(client, "", false));
+        await interaction.reply(await buildModeratorPanelPayload(client));
       } catch (error) {
-        await respondToModeratorPanelError(interaction, "onboard:panel", error, "Не удалось открыть мод-панель");
+        console.error("onboard panel failed:", error);
+        await interaction.reply(ephemeralPayload({
+          content: `Не удалось открыть мод-панель: ${String(error?.message || error || "неизвестная ошибка").slice(0, 220)}`,
+        })).catch(() => {});
       }
       return;
     }
@@ -13666,11 +13961,7 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.reply(ephemeralPayload({ content: "Нет прав. Только модераторы могут редактировать." }));
         return;
       }
-      try {
-        await interaction.reply(buildWelcomeEditorPayload());
-      } catch (error) {
-        await respondToModeratorPanelError(interaction, interaction.customId, error, "Не удалось открыть редактор UI");
-      }
+      await interaction.reply(buildWelcomeEditorPayload());
       return;
     }
 
@@ -13729,11 +14020,7 @@ client.on("interactionCreate", async (interaction) => {
         new ActionRowBuilder().addComponents(graphicTierlistInput),
         new ActionRowBuilder().addComponents(noticesInput)
       );
-      try {
-        await interaction.showModal(modal);
-      } catch (error) {
-        await respondToModeratorPanelError(interaction, interaction.customId, error, "Не удалось открыть форму каналов");
-      }
+      await interaction.showModal(modal);
       return;
     }
 
@@ -13926,11 +14213,7 @@ client.on("interactionCreate", async (interaction) => {
             .setPlaceholder("https://cdn.discordapp.com/.../image.png")
         )
       );
-      try {
-        await interaction.showModal(modal);
-      } catch (error) {
-        await respondToModeratorPanelError(interaction, interaction.customId, error, "Не удалось открыть форму персонажа");
-      }
+      await interaction.showModal(modal);
       return;
     }
 
@@ -13940,11 +14223,7 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
-      try {
-        await interaction.update(buildModeratorApocalypseConfirmPayload("Подтверди включение перед применением.", false));
-      } catch (error) {
-        await respondToModeratorPanelError(interaction, interaction.customId, error, "Не удалось открыть подтверждение режима");
-      }
+      await interaction.update(buildModeratorApocalypseConfirmPayload("Подтверди включение перед применением.", false));
       return;
     }
 
@@ -13984,11 +14263,7 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
-      try {
-        await interaction.update(buildDormantEloPanelPayload("", false));
-      } catch (error) {
-        await respondToModeratorPanelError(interaction, interaction.customId, error, "Не удалось открыть ELO-панель");
-      }
+      await interaction.update(buildDormantEloPanelPayload("", false));
       return;
     }
 
@@ -13998,11 +14273,7 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
-      try {
-        await interaction.update(buildDormantTierlistPanelPayload("", false));
-      } catch (error) {
-        await respondToModeratorPanelError(interaction, interaction.customId, error, "Не удалось открыть Tierlist-панель");
-      }
+      await interaction.update(buildDormantTierlistPanelPayload("", false));
       return;
     }
 

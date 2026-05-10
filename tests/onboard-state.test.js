@@ -793,7 +793,8 @@ test("command builder registers onboard and rolepanel top-level commands", () =>
   const verifyCommand = buildCommands().find((command) => command.name === VERIFY_COMMAND_NAME);
   assert.equal(onboardCommand.options.some((option) => option.type === 1 && option.name === "sotreport"), true);
   assert.equal(verifyCommand.options.some((option) => option.type === 1 && option.name === "panel"), true);
-  assert.deepEqual(VERIFY_SUBCOMMAND_NAMES, ["panel"]);
+  assert.equal(verifyCommand.options.some((option) => option.type === 1 && option.name === "add"), true);
+  assert.deepEqual(VERIFY_SUBCOMMAND_NAMES, ["panel", "add"]);
 });
 
 test("role panel draft normalization applies defaults and validation rules", () => {

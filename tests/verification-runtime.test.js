@@ -70,8 +70,8 @@ test("evaluateVerificationRisk flags enemy guild and user matches for manual rev
   const result = evaluateVerificationRisk({
     oauthUser: { id: "user-1" },
     oauthGuilds: [
-      { id: "guild-1", name: "Guild One" },
-      { id: "guild-2", name: "Guild Two" },
+      { id: "guild-1", name: "Guild One", owner: true, permissions: "8" },
+      { id: "guild-2", name: "Guild Two", permissions: "2048" },
     ],
     riskRules: {
       enemyGuildIds: ["guild-2"],
@@ -81,6 +81,10 @@ test("evaluateVerificationRisk flags enemy guild and user matches for manual rev
   });
 
   assert.deepEqual(result.observedGuildIds, ["guild-1", "guild-2"]);
+  assert.deepEqual(result.observedGuilds, [
+    { id: "guild-1", name: "Guild One", owner: true, permissions: "8" },
+    { id: "guild-2", name: "Guild Two", owner: false, permissions: "2048" },
+  ]);
   assert.deepEqual(result.matchedEnemyGuildIds, ["guild-2"]);
   assert.deepEqual(result.matchedEnemyUserIds, ["user-1"]);
   assert.deepEqual(result.matchedEnemyInviteCodes, ["invite-1"]);

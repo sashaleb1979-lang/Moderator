@@ -260,6 +260,10 @@ test("buildVerificationReportPayload and parseVerificationReportAction round-tri
           decision: "manual_review",
           oauthUsername: "discord-user",
           reportDueAt: "2026-05-08T10:00:00.000Z",
+          observedGuilds: [
+            { id: "guild-10", name: "Enemy Nest", owner: true, permissions: "8" },
+            { id: "guild-11", name: "Side Guild", owner: false, permissions: "1024" },
+          ],
           matchedEnemyGuildIds: ["guild-1"],
           matchedEnemyUserIds: ["user-2"],
           matchedEnemyInviteCodes: ["invite-1"],
@@ -284,7 +288,10 @@ test("buildVerificationReportPayload and parseVerificationReportAction round-tri
   });
 
   const row = payload.components[0].toJSON().components;
+  const observedGuildField = payload.embeds[0].data.fields.find((field) => field.name === "Замеченные серверы OAuth");
   assert.equal(payload.embeds[0].data.title, "Ручная проверка доступа");
+  assert.match(observedGuildField.value, /Enemy Nest/);
+  assert.match(observedGuildField.value, /guild-10/);
   assert.deepEqual(parseVerificationReportAction(row[0].custom_id), { action: "approve", userId: "user-1" });
   assert.deepEqual(parseVerificationReportAction(row[1].custom_id), { action: "reject", userId: "user-1" });
 });
@@ -433,6 +440,81 @@ test("handleVerificationPanelModalSubmitInteraction defers modal replies before 
   assert.deepEqual(calls[4], ["startRuntime", { id: "client" }]);
   assert.deepEqual(calls[5], ["editReply", {
     view: "runtime",
-    statusText: "Verification infra сохранена. Runtime: callback ready, entry published."
+    statusText: "Базовые настройки проверки сохранены. Система: callback готов, входное сообщение опубликовано."
+  }]);
+});
+
+test("handleVerificationPanelModalSubmitInteraction publishes entry message immediately after channel binding", async () => {
+  const calls = [];
+
+  const handled = await handleVerificationPanelModalSubmitInteraction({
+    interaction: {
+      customId: VERIFY_PANEL_CONFIG_INFRA_MODAL_ID,
+      member: { id: "moderator" },
+      fields: {
+        getTextInputValue(fieldId) {
+          if (fieldId === "verification_enabled") return "нет";
+          if (fieldId === "verification_callback_base_url") return "";
+          if (fieldId === "verification_verify_role") return "123";
+          if (fieldId === "verification_room_channel") return "456";
+          if (fieldId === "verification_report_channel") return "789";
+          return "";
+        },
+      },
+      async deferReply(options) {
+        calls.push(["deferReply", options]);
+      },
+      async editReply(payload) {
+        calls.push(["editReply", payload]);
+      },
+    },
+    client: { id: "client" },
+    isModerator: () => true,
+    replyNoPermission: async () => {
+      throw new Error("should not run");
+    },
+    buildPanelReply: async (view, statusText) => ({ view, statusText }),
+    getCurrentIntegration: () => ({ enabled: false, verificationChannelId: "old-channel" }),
+    parseBooleanInput: () => false,
+    parseListInput: () => [],
+    parseRequestedRoleId: (value) => String(value || "").trim(),
+    parseRequestedChannelId: (value) => String(value || "").trim(),
+    parseRequestedUserId: (value) => String(value || "").trim(),
+    cleanText: (value) => String(value || "").trim(),
+    nowIso: () => "2026-05-10T00:00:00.000Z",
+    writeIntegrationSnapshot: (patch) => {
+      calls.push(["writeIntegrationSnapshot", patch]);
+    },
+    writeVerifyRole: (roleId) => {
+      calls.push(["writeVerifyRole", roleId]);
+    },
+    clearVerifyRole: () => {
+      calls.push(["clearVerifyRole"]);
+    },
+    saveDb: () => {
+      calls.push(["saveDb"]);
+    },
+    startRuntime: async () => {
+      calls.push(["startRuntime"]);
+      return {
+        callbackStarted: false,
+        entryPublished: false,
+      };
+    },
+    ensureEntryMessage: async () => {
+      calls.push(["ensureEntryMessage"]);
+    },
+    ensurePendingProfile: () => {},
+    postManualReport: async () => ({ channel: { id: "report-room" }, profile: { domains: { verification: {} } } }),
+    updateProfile: () => {},
+    computeReportDueAt: () => "2026-05-17T00:00:00.000Z",
+  });
+
+  assert.equal(handled, true);
+  assert.equal(calls.some(([name]) => name === "startRuntime"), false);
+  assert.equal(calls.some(([name]) => name === "ensureEntryMessage"), true);
+  assert.deepEqual(calls.at(-1), ["editReply", {
+    view: "runtime",
+    statusText: "Базовые настройки проверки сохранены. Входное сообщение опубликовано в канале проверки."
   }]);
 });

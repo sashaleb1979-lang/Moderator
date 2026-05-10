@@ -367,6 +367,7 @@ test("handleRobloxStatsPanelButtonInteraction gates permissions and delegates ma
       return {
         totalCandidates: 4,
         activeJjsUsers: 2,
+        opaqueInGameUsers: 0,
         touchedUserCount: 3,
         failedUserIds: 1,
       };
@@ -378,6 +379,31 @@ test("handleRobloxStatsPanelButtonInteraction gates permissions and delegates ma
   assert.equal(playtimeRuns, 1);
   assert.equal(manual.calls.deferred, 1);
   assert.match(manual.calls.edits[0].content, /Кандидатов: 4, активных в JJS: 2, затронуто профилей: 3, ошибок пользователей: 1/i);
+
+  const opaqueManual = createInteraction("roblox_stats_run_playtime_sync");
+  await handleRobloxStatsPanelButtonInteraction({
+    interaction: opaqueManual.interaction,
+    client: {},
+    db: {},
+    runtimeState: {},
+    appConfig: {},
+    telemetry: createRobloxPanelTelemetry(),
+    isModerator: () => true,
+    replyNoPermission: () => opaqueManual.interaction.reply({ content: "Нет прав." }),
+    buildModeratorPanelPayload: async () => ({ content: "main" }),
+    buildRobloxPanelPayload: ({ statusText = "" } = {}) => ({ content: statusText }),
+    runProfileRefreshJob: async () => ({}),
+    runPlaytimeSyncJob: async () => ({
+      totalCandidates: 8,
+      activeJjsUsers: 0,
+      opaqueInGameUsers: 1,
+      touchedUserCount: 0,
+      failedUserIds: 0,
+    }),
+    runRuntimeFlush: async () => ({}),
+  });
+
+  assert.match(opaqueManual.calls.edits[0].content, /Roblox API видит in-game у 1 профилей/i);
 
   const togglePlaytime = createInteraction("roblox_stats_toggle_playtime");
   const toggleCalls = [];

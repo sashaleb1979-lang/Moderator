@@ -90,6 +90,13 @@ function buildCommands() {
       .setDescription("Открыть автономную verification-панель")
       .addSubcommand((subcommand) =>
         subcommand.setName("panel").setDescription("Открыть verification-панель")
+      )
+      .addSubcommand((subcommand) =>
+        subcommand
+          .setName("add")
+          .setDescription("Поставить участника на verification и выдать verify-роль")
+          .addUserOption((option) => option.setName("target").setDescription("Участник сервера").setRequired(true))
+          .addStringOption((option) => option.setName("note").setDescription("Заметка модератора для запуска проверки"))
       ),
   ].map((command) => command.toJSON());
 }

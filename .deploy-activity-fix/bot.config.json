@@ -1,0 +1,199 @@
+{
+  "channels": {
+    "welcomeChannelId": "REPLACE_WELCOME_CHANNEL_ID",
+    "reviewChannelId": "REPLACE_REVIEW_CHANNEL_ID",
+    "tierlistChannelId": "REPLACE_TIERLIST_CHANNEL_ID",
+    "logChannelId": ""
+  },
+  "roles": {
+    "moderatorRoleId": "REPLACE_MODERATOR_ROLE_ID",
+    "accessRoleId": "REPLACE_ACCESS_ROLE_ID",
+    "wartimeAccessRoleId": "1496376994966011954",
+    "verifyAccessRoleId": "",
+    "nonJjsAccessRoleId": "",
+    "killTierRoleIds": {
+      "1": "",
+      "2": "",
+      "3": "",
+      "4": "",
+      "5": ""
+    }
+  },
+  "ui": {
+    "welcomeTitle": "Jujutsu Shinigans Onboarding",
+    "welcomeDescription": "Нажми кнопку ниже, выбери 1 или 2 мейнов, затем отправь одним сообщением точное количество kills и один скрин, на котором одновременно видны kills и твой Roblox username. Если текущий режим требует дополнительной проверки, бот после этого попросит отдельно указать Roblox username для сверки. Kill-tier роль прилетит после проверки модератором.",
+    "getRoleButtonLabel": "Получить роль",
+    "nonJjsTitle": "Я не играю в JJS",
+    "nonJjsDescription": "Если ты не играешь в JJS, нажми кнопку ниже. Бот запустит 2 этапа капчи и после успешного прохождения выдаст отдельную роль доступа.",
+    "nonJjsButtonLabel": "Я не играю в JJS",
+    "onboardingProofExampleImageUrl": "",
+    "onboardingProofExampleImagePath": "assets/onboarding-proof-example.png",
+    "tierlistButtonLabel": "Текстовый тир-лист",
+    "tierlistTitle": "Текстовый тир-лист"
+  },
+  "graphicTierlist": {
+    "title": "Графический тир-лист",
+    "subtitle": "Подтверждённые игроки и текущая расстановка по kills",
+    "tierColors": {
+      "1": "#4d96ff",
+      "2": "#43aa8b",
+      "3": "#f9c74f",
+      "4": "#f46036",
+      "5": "#d7263d"
+    }
+  },
+  "reminders": {
+    "missingTierlistText": "Враг народа избегает получения роли!!! Не будь врагом!!! Стань товарищем!!!",
+    "missingTierlistImageUrl": "",
+    "missingTierlistImagePath": ""
+  },
+  "roblox": {
+    "metadataRefreshEnabled": false,
+    "metadataRefreshHours": 24,
+    "playtimeTrackingEnabled": true,
+    "playtimePollMinutes": 3,
+    "runtimeFlushEnabled": true,
+    "flushIntervalMinutes": 10,
+    "jjsUniverseId": 3508322461,
+    "jjsRootPlaceId": 9391468976,
+    "jjsPlaceId": 9391468976,
+    "frequentNonFriendMinutes": 60,
+    "frequentNonFriendSessions": 2,
+    "links": {
+      "friendRequestsUrl": "https://www.roblox.com/users/friends#!/friend-requests",
+      "jjsGameUrl": "https://www.roblox.com/games/9391468976"
+    }
+  },
+  "verification": {
+    "enabled": false,
+    "callbackBaseUrl": "",
+    "verificationChannelId": "",
+    "reportChannelId": "",
+    "reportSweepMinutes": 60,
+    "stageTexts": {
+      "entry": "Нажми кнопку, авторизуйся через Discord OAuth и дождись результата.",
+      "manualReview": "Если система не может принять решение автоматически, она отправит отчёт модераторам.",
+      "approved": "После успешной проверки бот снимет verify-role и выдаст стартовый доступ.",
+      "rejected": "Если модератор отклонит проверку, доступ не будет выдан."
+    },
+    "riskRules": {
+      "enemyGuildIds": [],
+      "enemyUserIds": [],
+      "enemyInviteCodes": [],
+      "enemyInviterUserIds": [],
+      "manualTags": []
+    },
+    "deadline": {
+      "pendingDays": 7,
+      "reportOnly": true
+    },
+    "entryMessage": {
+      "channelId": "",
+      "messageId": ""
+    }
+  },
+  "killTierLabels": {
+    "1": "Низший ранг",
+    "2": "Средний ранг",
+    "3": "Высший ранг",
+    "4": "Особый ранг",
+    "5": "Абсолютный ранг"
+  },
+  "characters": [
+    {
+      "id": "honored_one",
+      "label": "Honored One",
+      "roleId": ""
+    },
+    {
+      "id": "vessel",
+      "label": "Vessel",
+      "roleId": ""
+    },
+    {
+      "id": "restless_gambler",
+      "label": "Restless Gambler",
+      "roleId": ""
+    },
+    {
+      "id": "ten_shadows",
+      "label": "Ten Shadows",
+      "roleId": ""
+    },
+    {
+      "id": "perfection",
+      "label": "Perfection",
+      "roleId": ""
+    },
+    {
+      "id": "blood_manipulator",
+      "label": "Blood Manipulator",
+      "roleId": ""
+    },
+    {
+      "id": "switcher",
+      "label": "Switcher",
+      "roleId": ""
+    },
+    {
+      "id": "defense_attorney",
+      "label": "Defense Attorney",
+      "roleId": ""
+    },
+    {
+      "id": "cursed_partners",
+      "label": "Cursed Partners",
+      "roleId": ""
+    },
+    {
+      "id": "head_of_the_hei",
+      "label": "Head of the Hei",
+      "roleId": ""
+    },
+    {
+      "id": "puppet_master",
+      "label": "Puppet Master",
+      "roleId": ""
+    },
+    {
+      "id": "salaryman",
+      "label": "Salaryman",
+      "roleId": ""
+    },
+    {
+      "id": "locust_guy",
+      "label": "Locust Guy",
+      "roleId": ""
+    },
+    {
+      "id": "star_rage",
+      "label": "Star Rage",
+      "roleId": ""
+    },
+    {
+      "id": "aspiring_mangaka",
+      "label": "Aspiring Mangaka",
+      "roleId": ""
+    },
+    {
+      "id": "lucky_coward",
+      "label": "Lucky Coward",
+      "roleId": ""
+    },
+    {
+      "id": "disaster_plants",
+      "label": "Disaster Plants",
+      "roleId": ""
+    },
+    {
+      "id": "crow_charmer",
+      "label": "Crow Charmer",
+      "roleId": ""
+    },
+    {
+      "id": "ryu",
+      "label": "Ryu",
+      "roleId": ""
+    }
+  ]
+}

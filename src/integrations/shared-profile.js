@@ -14,6 +14,11 @@ const ROBLOX_FREQUENT_NON_FRIEND_MINUTES = 60;
 const ROBLOX_FREQUENT_NON_FRIEND_SESSIONS = 2;
 const ROBLOX_PLAYTIME_BUCKET_LIMIT = 40;
 
+const sharedProfileRuntimeConfig = {
+  frequentNonFriendMinutes: ROBLOX_FREQUENT_NON_FRIEND_MINUTES,
+  frequentNonFriendSessions: ROBLOX_FREQUENT_NON_FRIEND_SESSIONS,
+};
+
 function cleanString(value, limit = 2000) {
   return String(value || "").trim().slice(0, Math.max(0, Number(limit) || 0));
 }
@@ -85,6 +90,27 @@ function normalizeNonNegativeInteger(value, fallback = 0) {
   return Number.isSafeInteger(amount) && amount >= 0 ? amount : fallback;
 }
 
+function configureSharedProfileRuntime(value = {}) {
+  const source = value && typeof value === "object" ? value : {};
+  const roblox = source.roblox && typeof source.roblox === "object" ? source.roblox : {};
+
+  sharedProfileRuntimeConfig.frequentNonFriendMinutes = normalizeNonNegativeInteger(
+    roblox.frequentNonFriendMinutes,
+    ROBLOX_FREQUENT_NON_FRIEND_MINUTES
+  );
+  sharedProfileRuntimeConfig.frequentNonFriendSessions = normalizeNonNegativeInteger(
+    roblox.frequentNonFriendSessions,
+    ROBLOX_FREQUENT_NON_FRIEND_SESSIONS
+  );
+
+  return {
+    roblox: {
+      frequentNonFriendMinutes: sharedProfileRuntimeConfig.frequentNonFriendMinutes,
+      frequentNonFriendSessions: sharedProfileRuntimeConfig.frequentNonFriendSessions,
+    },
+  };
+}
+
 function normalizeOnboardingDomainState(profile = {}) {
   const raw = normalizeOnboardingRawSnapshot(profile, profile?.domains?.onboarding?.raw);
   return {
@@ -139,7 +165,9 @@ function normalizeTierlistDomainState(value = {}) {
 function normalizeActivityDomainState(value = {}) {
   const source = value && typeof value === "object" ? value : {};
   return {
+    baseActivityScore: normalizeNullableInteger(source.baseActivityScore, { min: 0 }),
     activityScore: normalizeNullableInteger(source.activityScore, { min: 0 }),
+    activityScoreMultiplier: normalizeNullableNumber(source.activityScoreMultiplier, { min: 0 }),
     trustScore: normalizeNullableInteger(source.trustScore, { min: 0 }),
     messages7d: normalizeNullableInteger(source.messages7d, { min: 0 }),
     messages30d: normalizeNullableInteger(source.messages30d, { min: 0 }),
@@ -155,7 +183,11 @@ function normalizeActivityDomainState(value = {}) {
     globalEffectiveSessions30d: normalizeNullableNumber(source.globalEffectiveSessions30d, { min: 0 }),
     effectiveActiveDays30d: normalizeNullableNumber(source.effectiveActiveDays30d, { min: 0 }),
     daysAbsent: normalizeNullableInteger(source.daysAbsent, { min: 0 }),
+    guildJoinedAt: normalizeNullableString(source.guildJoinedAt, 80),
+    daysSinceGuildJoin: normalizeNullableNumber(source.daysSinceGuildJoin, { min: 0 }),
     lastSeenAt: normalizeNullableString(source.lastSeenAt, 80),
+    roleEligibilityStatus: normalizeNullableString(source.roleEligibilityStatus, 80),
+    roleEligibleForActivityRole: normalizeNullableBoolean(source.roleEligibleForActivityRole),
     desiredActivityRoleKey: normalizeNullableString(source.desiredActivityRoleKey, 80),
     appliedActivityRoleKey: normalizeNullableString(source.appliedActivityRoleKey, 80),
     manualOverride: normalizeNullableBoolean(source.manualOverride),
@@ -390,8 +422,8 @@ function getRobloxSharedSessionCount(peer = {}) {
 
 function isFrequentRobloxNonFriendPeer(peer = {}) {
   if (peer?.isRobloxFriend !== false) return false;
-  return normalizeNonNegativeInteger(peer?.minutesTogether, 0) >= ROBLOX_FREQUENT_NON_FRIEND_MINUTES
-    || getRobloxSharedSessionCount(peer) >= ROBLOX_FREQUENT_NON_FRIEND_SESSIONS;
+  return normalizeNonNegativeInteger(peer?.minutesTogether, 0) >= sharedProfileRuntimeConfig.frequentNonFriendMinutes
+    || getRobloxSharedSessionCount(peer) >= sharedProfileRuntimeConfig.frequentNonFriendSessions;
 }
 
 function buildRobloxTopCoPlayPeers(peers = [], limit = ROBLOX_TOP_COPLAY_PEER_LIMIT) {
@@ -546,7 +578,7 @@ function buildSharedProfileSummary(profile = {}, domains = {}) {
   const onboarding = domains.onboarding || normalizeOnboardingDomainState(profile);
   const elo = domains.elo || normalizeEloDomainState(profile?.domains?.elo);
   const tierlist = domains.tierlist || normalizeTierlistDomainState(profile?.domains?.tierlist);
-  const activity = domains.activity || normalizeActivityDomainState(profile?.domains?.activity || profile?.activity);
+  const activity = domains.activity || normalizeActivityDomainState(profile?.domains?.activity || profile?.activity || profile?.summary?.activity);
   const roblox = domains.roblox || normalizeRobloxDomainState(profile?.domains?.roblox || profile);
   const previousUsername = getRobloxPreviousName(roblox.username, roblox.usernameHistory);
   const previousDisplayName = getRobloxPreviousName(roblox.displayName, roblox.displayNameHistory);
@@ -581,7 +613,9 @@ function buildSharedProfileSummary(profile = {}, domains = {}) {
       influenceMultiplier: tierlist.influenceMultiplier,
     },
     activity: {
+      baseActivityScore: activity.baseActivityScore,
       activityScore: activity.activityScore,
+      activityScoreMultiplier: activity.activityScoreMultiplier,
       trustScore: activity.trustScore,
       messages7d: activity.messages7d,
       messages30d: activity.messages30d,
@@ -597,7 +631,11 @@ function buildSharedProfileSummary(profile = {}, domains = {}) {
       globalEffectiveSessions30d: activity.globalEffectiveSessions30d,
       effectiveActiveDays30d: activity.effectiveActiveDays30d,
       daysAbsent: activity.daysAbsent,
+      guildJoinedAt: activity.guildJoinedAt,
+      daysSinceGuildJoin: activity.daysSinceGuildJoin,
       lastSeenAt: activity.lastSeenAt,
+      roleEligibilityStatus: activity.roleEligibilityStatus,
+      roleEligibleForActivityRole: activity.roleEligibleForActivityRole,
       desiredActivityRoleKey: activity.desiredActivityRoleKey,
       appliedActivityRoleKey: activity.appliedActivityRoleKey,
       manualOverride: activity.manualOverride,
@@ -652,7 +690,7 @@ function ensureSharedProfile(profile = {}, userId = "") {
   const onboarding = normalizeOnboardingDomainState(source);
   const elo = normalizeEloDomainState(source?.domains?.elo);
   const tierlist = normalizeTierlistDomainState(source?.domains?.tierlist);
-  const activity = normalizeActivityDomainState(source?.domains?.activity || source?.activity);
+  const activity = normalizeActivityDomainState(source?.domains?.activity || source?.activity || source?.summary?.activity);
   const roblox = normalizeRobloxDomainState(source?.domains?.roblox || buildLegacyRobloxSource(source));
 
   const next = {
@@ -830,6 +868,7 @@ function deriveProfileMainView(profile = {}, characterEntries = []) {
 module.exports = {
   applyRobloxAccountSnapshot,
   buildRobloxProfileUrl,
+  configureSharedProfileRuntime,
   deriveProfileMainView,
   INTEGRATION_MODE_DORMANT,
   SHARED_PROFILE_VERSION,

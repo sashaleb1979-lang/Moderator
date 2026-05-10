@@ -12,7 +12,7 @@ const {
 } = require("discord.js");
 
 const VERIFY_COMMAND_NAME = "verify";
-const VERIFY_SUBCOMMAND_NAMES = ["panel"];
+const VERIFY_SUBCOMMAND_NAMES = ["panel", "add"];
 const VERIFY_PANEL_REFRESH_ID = "verification_panel_refresh";
 const VERIFY_PANEL_HOME_ID = "verification_panel_home";
 const VERIFY_PANEL_QUEUE_ID = "verification_panel_queue";
@@ -168,6 +168,56 @@ function formatVerificationQueueEntry(entry) {
     text = text.replace(pattern, replacement);
   }
   return text;
+}
+
+function normalizeObservedGuildEntries(verification = {}) {
+  const source = verification && typeof verification === "object" && !Array.isArray(verification)
+    ? verification
+    : {};
+  const directEntries = Array.isArray(source.observedGuilds) ? source.observedGuilds : [];
+  const normalized = [];
+
+  for (const entry of directEntries) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const id = cleanString(entry.id, 80);
+    if (!id) continue;
+    normalized.push({
+      id,
+      name: cleanString(entry.name, 120),
+      owner: entry.owner === true,
+      permissions: cleanString(entry.permissions, 40),
+    });
+    if (normalized.length >= 20) return normalized;
+  }
+
+  if (normalized.length) {
+    return normalized;
+  }
+
+  const ids = normalizeStringArray(source.observedGuildIds, 20, 80);
+  const names = Array.isArray(source.observedGuildNames)
+    ? source.observedGuildNames.map((entry) => cleanString(entry, 120)).filter(Boolean)
+    : [];
+
+  return ids.map((id, index) => ({
+    id,
+    name: names[index] || "",
+    owner: false,
+    permissions: "",
+  }));
+}
+
+function formatObservedGuildLine(entry, index) {
+  const name = cleanString(entry?.name, 120) || "Без названия";
+  const id = cleanString(entry?.id, 80) || "—";
+  const parts = [`${index + 1}. ${name}`, `ID ${id}`];
+  if (entry?.owner === true) {
+    parts.push("owner");
+  }
+  if (cleanString(entry?.permissions, 40)) {
+    parts.push(`perm ${cleanString(entry.permissions, 40)}`);
+  }
+  return parts.join(" • ");
 }
 
 function normalizeVerificationSnapshot(value = {}) {
@@ -606,6 +656,7 @@ function buildVerificationReportPayload(options = {}) {
     ? profile.summary.verification
     : {};
   const userId = cleanString(options.userId || profile.userId, 80);
+  const observedGuildEntries = normalizeObservedGuildEntries(verification);
   const riskLines = [
     `Совпадения по серверам: **${Number(summary.matchedEnemyGuildCount) || 0}**`,
     `Совпадения по пользователям: **${Number(summary.matchedEnemyUserCount) || 0}**`,
@@ -636,6 +687,13 @@ function buildVerificationReportPayload(options = {}) {
           `Invite-коды: ${normalizeStringArray(verification.matchedEnemyInviteCodes, 20, 80).join(", ") || "—"}`,
           `Inviter ID: ${normalizeStringArray(verification.matchedEnemyInviterUserIds, 20, 80).join(", ") || "—"}`,
         ].join("\n"),
+        inline: false,
+      },
+      {
+        name: "Замеченные серверы OAuth",
+        value: observedGuildEntries.length
+          ? observedGuildEntries.map((entry, index) => formatObservedGuildLine(entry, index)).join("\n")
+          : "Discord OAuth не вернул список серверов для этого участника.",
         inline: false,
       }
     );
@@ -1057,13 +1115,25 @@ async function handleVerificationPanelModalSubmitInteraction(options = {}) {
       }
       saveDb();
 
-      const statusParts = ["Verification infra сохранена."];
+      const statusParts = ["Базовые настройки проверки сохранены."];
+      let entryPublished = false;
       if (enabled) {
         try {
           const runtimeState = await startRuntime(client);
-          statusParts.push(`Runtime: callback ${runtimeState.callbackStarted ? "ready" : "degraded"}, entry ${runtimeState.entryPublished ? "published" : "not published"}.`);
+          entryPublished = runtimeState.entryPublished === true;
+          statusParts.push(`Система: callback ${runtimeState.callbackStarted ? "готов" : "работает с ограничениями"}, входное сообщение ${entryPublished ? "опубликовано" : "не опубликовано"}.`);
         } catch (error) {
-          statusParts.push(`Runtime warning: ${cleanText(error?.message || error, 200)}`);
+          statusParts.push(`Предупреждение системы: ${cleanText(error?.message || error, 200)}`);
+        }
+      }
+
+      if (verificationChannelId && !entryPublished) {
+        try {
+          await ensureEntryMessage(client);
+          entryPublished = true;
+          statusParts.push("Входное сообщение опубликовано в канале проверки.");
+        } catch (error) {
+          statusParts.push(`Предупреждение по входному сообщению: ${cleanText(error?.message || error, 200)}`);
         }
       }
 

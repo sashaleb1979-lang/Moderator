@@ -6,6 +6,7 @@ const assert = require("node:assert/strict");
 const {
   applyRobloxAccountSnapshot,
   buildRobloxProfileUrl,
+  configureSharedProfileRuntime,
   INTEGRATION_MODE_DORMANT,
   SHARED_PROFILE_VERSION,
   deriveProfileMainView,
@@ -14,6 +15,109 @@ const {
   normalizeIntegrationState,
   syncSharedProfiles,
 } = require("../src/integrations/shared-profile");
+
+test("configureSharedProfileRuntime exports and applies Roblox frequent peer thresholds", () => {
+  assert.deepEqual(configureSharedProfileRuntime({
+    roblox: {
+      frequentNonFriendMinutes: 90,
+      frequentNonFriendSessions: 4,
+    },
+  }), {
+    roblox: {
+      frequentNonFriendMinutes: 90,
+      frequentNonFriendSessions: 4,
+    },
+  });
+
+  const profile = ensureSharedProfile({
+    userId: "100",
+    displayName: "Sukuna",
+    domains: {
+      roblox: {
+        userId: "123456",
+        username: "RynexV",
+        verificationStatus: "verified",
+        coPlay: {
+          peers: [
+            {
+              peerUserId: "peer-1",
+              isRobloxFriend: false,
+              minutesTogether: 70,
+              sharedJjsSessionCount: 2,
+            },
+          ],
+        },
+      },
+    },
+  }, "100").profile;
+
+  assert.equal(profile.summary.roblox.frequentNonFriendCount, 0);
+
+  configureSharedProfileRuntime({
+    roblox: {
+      frequentNonFriendMinutes: 60,
+      frequentNonFriendSessions: 2,
+    },
+  });
+});
+
+test("ensureSharedProfile preserves activity role timing fields in domains and summary", () => {
+  const result = ensureSharedProfile({
+    userId: "100",
+    domains: {
+      activity: {
+        baseActivityScore: 26,
+        activityScore: 30,
+        activityScoreMultiplier: 1.15,
+        guildJoinedAt: "2026-05-04T12:00:00.000Z",
+        daysSinceGuildJoin: 5,
+        roleEligibilityStatus: "boosted_new_member",
+        roleEligibleForActivityRole: true,
+        desiredActivityRoleKey: "trusted",
+        recalculatedAt: "2026-05-09T12:50:00.000Z",
+      },
+    },
+  }, "100");
+
+  assert.equal(result.profile.domains.activity.baseActivityScore, 26);
+  assert.equal(result.profile.domains.activity.activityScoreMultiplier, 1.15);
+  assert.equal(result.profile.domains.activity.guildJoinedAt, "2026-05-04T12:00:00.000Z");
+  assert.equal(result.profile.domains.activity.daysSinceGuildJoin, 5);
+  assert.equal(result.profile.domains.activity.roleEligibilityStatus, "boosted_new_member");
+  assert.equal(result.profile.domains.activity.roleEligibleForActivityRole, true);
+  assert.equal(result.profile.summary.activity.baseActivityScore, 26);
+  assert.equal(result.profile.summary.activity.activityScoreMultiplier, 1.15);
+  assert.equal(result.profile.summary.activity.guildJoinedAt, "2026-05-04T12:00:00.000Z");
+  assert.equal(result.profile.summary.activity.daysSinceGuildJoin, 5);
+  assert.equal(result.profile.summary.activity.roleEligibilityStatus, "boosted_new_member");
+  assert.equal(result.profile.summary.activity.roleEligibleForActivityRole, true);
+});
+
+test("ensureSharedProfile backfills legacy summary-only activity mirrors into domains", () => {
+  const result = ensureSharedProfile({
+    userId: "101",
+    summary: {
+      activity: {
+        activityScore: 91,
+        baseActivityScore: 88,
+        desiredActivityRoleKey: "core",
+        appliedActivityRoleKey: null,
+        roleEligibilityStatus: "eligible",
+        roleEligibleForActivityRole: true,
+        recalculatedAt: "2026-05-08T12:00:00.000Z",
+        lastSeenAt: "2026-05-08T11:50:00.000Z",
+      },
+    },
+  }, "101");
+
+  assert.equal(result.profile.domains.activity.activityScore, 91);
+  assert.equal(result.profile.domains.activity.baseActivityScore, 88);
+  assert.equal(result.profile.domains.activity.desiredActivityRoleKey, "core");
+  assert.equal(result.profile.domains.activity.roleEligibilityStatus, "eligible");
+  assert.equal(result.profile.domains.activity.roleEligibleForActivityRole, true);
+  assert.equal(result.profile.summary.activity.activityScore, 91);
+  assert.equal(result.profile.summary.activity.desiredActivityRoleKey, "core");
+});
 
 test("ensureSharedProfile migrates onboarding fields into domains and summary", () => {
   const legacyProfile = {

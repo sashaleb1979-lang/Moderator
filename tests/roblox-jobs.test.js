@@ -298,6 +298,7 @@ test("runRobloxPlaytimeSyncJob reports missing verified candidates explicitly", 
     processedUserIds: 0,
     failedUserIds: 0,
     activeJjsUsers: 0,
+    opaqueInGameUsers: 0,
     touchedUserCount: 0,
     startedSessionCount: 0,
     closedSessionCount: 0,
@@ -391,6 +392,7 @@ test("runRobloxPlaytimeSyncJob updates rolling JJS minutes and co-play state in 
     processedUserIds: 2,
     failedUserIds: 0,
     activeJjsUsers: 2,
+    opaqueInGameUsers: 0,
     touchedUserCount: 2,
     startedSessionCount: 0,
     closedSessionCount: 0,
@@ -478,6 +480,7 @@ test("runRobloxPlaytimeSyncJob keeps active sessions open when presence polling 
     processedUserIds: 0,
     failedUserIds: 2,
     activeJjsUsers: 0,
+    opaqueInGameUsers: 0,
     touchedUserCount: 0,
     startedSessionCount: 0,
     closedSessionCount: 0,
@@ -548,6 +551,7 @@ test("runRobloxPlaytimeSyncJob clears stale persisted session markers after rest
     processedUserIds: 1,
     failedUserIds: 0,
     activeJjsUsers: 0,
+    opaqueInGameUsers: 0,
     touchedUserCount: 1,
     startedSessionCount: 0,
     closedSessionCount: 0,
@@ -555,6 +559,56 @@ test("runRobloxPlaytimeSyncJob clears stale persisted session markers after rest
   });
   assert.equal(db.profiles.user_a.domains.roblox.playtime.currentSessionStartedAt, null);
   assert.equal(runtimeState.dirtyDiscordUserIds.has("user_a"), true);
+});
+
+test("runRobloxPlaytimeSyncJob reports opaque in-game presences separately from confirmed JJS matches", async () => {
+  const result = await runRobloxPlaytimeSyncJob({
+    db: {
+      profiles: {
+        user_a: {
+          userId: "user_a",
+          domains: {
+            roblox: {
+              username: "AlphaRb",
+              userId: "101",
+              verificationStatus: "verified",
+            },
+          },
+        },
+      },
+    },
+    runtimeState: createRobloxRuntimeState(),
+    now: () => "2026-05-09T12:02:00.000Z",
+    roblox: {
+      jjsUniverseId: 999,
+      playtimePollMinutes: 2,
+    },
+    async fetchUserPresences(userIds) {
+      return userIds.map((userId) => ({
+        userId,
+        presenceType: "in_game",
+        universeId: null,
+        rootPlaceId: null,
+        placeId: null,
+        gameId: null,
+      }));
+    },
+  });
+
+  assert.deepEqual(result, {
+    totalCandidates: 1,
+    totalBatches: 1,
+    processedBatches: 1,
+    failedBatches: 0,
+    processedUserIds: 1,
+    failedUserIds: 0,
+    activeJjsUsers: 0,
+    opaqueInGameUsers: 1,
+    touchedUserCount: 0,
+    startedSessionCount: 0,
+    closedSessionCount: 0,
+    activeCoPlayPairCount: 0,
+  });
 });
 
 test("flushRobloxRuntime persists only when playtime runtime marked profiles dirty", () => {

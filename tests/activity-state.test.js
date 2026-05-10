@@ -183,3 +183,15 @@ test("ensureActivityState keeps the terminal freshness bucket open-ended after n
   assert.equal(state.config.freshnessBuckets.at(-1).maxDays, Number.POSITIVE_INFINITY);
   assert.equal(state.config.freshnessBuckets.at(-1).score, 0);
 });
+
+test("ensureActivityState reuses an already normalized activity object", () => {
+  const db = {};
+
+  const first = ensureActivityState(db);
+  first.runtime.lastFlushAt = "2026-05-10T00:00:00.000Z";
+
+  const second = ensureActivityState(db);
+
+  assert.equal(second, first);
+  assert.equal(second.runtime.lastFlushAt, "2026-05-10T00:00:00.000Z");
+});

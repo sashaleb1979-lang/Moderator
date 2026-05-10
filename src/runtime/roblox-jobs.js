@@ -164,6 +164,13 @@ function isPresenceInConfiguredJjs(presence = {}, config = {}) {
     || (normalized.jjsPlaceId && Number(presence?.placeId) === normalized.jjsPlaceId);
 }
 
+function isOpaqueInGamePresence(presence = {}) {
+  if (presence?.presenceType !== "in_game") return false;
+  return !(Number.isSafeInteger(Number(presence?.universeId)) && Number(presence?.universeId) > 0)
+    && !(Number.isSafeInteger(Number(presence?.rootPlaceId)) && Number(presence?.rootPlaceId) > 0)
+    && !(Number.isSafeInteger(Number(presence?.placeId)) && Number(presence?.placeId) > 0);
+}
+
 function resolvePairKey(leftUserId, rightUserId) {
   return [String(leftUserId || "").trim(), String(rightUserId || "").trim()].sort().join(":");
 }
@@ -479,6 +486,7 @@ async function runRobloxPlaytimeSyncJob(options = {}) {
       processedUserIds: 0,
       failedUserIds: 0,
       activeJjsUsers: 0,
+      opaqueInGameUsers: 0,
       touchedUserCount: 0,
       startedSessionCount: 0,
       closedSessionCount: 0,
@@ -513,6 +521,7 @@ async function runRobloxPlaytimeSyncJob(options = {}) {
   const activeUsersByGameId = new Map();
   const touchedDiscordUserIds = new Set();
   const failedDiscordUserIds = new Set();
+  const opaqueInGameDiscordUserIds = new Set();
   let startedSessionCount = 0;
   let closedSessionCount = 0;
 
@@ -529,6 +538,9 @@ async function runRobloxPlaytimeSyncJob(options = {}) {
 
     const presence = presenceByRobloxUserId.get(candidate.robloxUserId) || null;
     const inJjs = isPresenceInConfiguredJjs(presence, trackingConfig);
+    if (isOpaqueInGamePresence(presence)) {
+      opaqueInGameDiscordUserIds.add(candidate.discordUserId);
+    }
     const profile = candidate.profile;
     const playtime = profile.domains.roblox.playtime;
     const activeSession = runtimeState.activeSessionsByDiscordUserId[candidate.discordUserId] || null;
@@ -654,6 +666,7 @@ async function runRobloxPlaytimeSyncJob(options = {}) {
     processedUserIds: cycleSummary.processedUserIds,
     failedUserIds: cycleSummary.failedUserIds,
     activeJjsUsers: [...activeUsersByGameId.values()].reduce((sum, users) => sum + users.length, 0),
+    opaqueInGameUsers: opaqueInGameDiscordUserIds.size,
     touchedUserCount: touchedDiscordUserIds.size,
     startedSessionCount,
     closedSessionCount,

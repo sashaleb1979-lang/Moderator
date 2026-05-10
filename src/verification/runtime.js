@@ -83,6 +83,8 @@ function normalizeOauthGuildRecord(value = {}) {
   return {
     id: cleanString(source.id, 80),
     name: cleanString(source.name, 120),
+    owner: source.owner === true,
+    permissions: cleanString(source.permissions_new || source.permissions, 40),
   };
 }
 
@@ -110,6 +112,7 @@ function evaluateVerificationRisk(options = {}) {
     : [];
 
   return {
+    observedGuilds,
     observedGuildIds: observedGuilds.map((entry) => entry.id),
     observedGuildNames: observedGuilds.map((entry) => entry.name).filter(Boolean),
     matchedEnemyGuildIds,
