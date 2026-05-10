@@ -430,6 +430,81 @@ test("rebuildActivitySnapshots preserves rebuilt snapshot index on db.sot.activi
   assert.equal(db.sot.activity.userSnapshots["user-1"].roleEligibilityStatus, "boosted_new_member");
 });
 
+test("rebuildActivitySnapshots records member metadata lookup failures on activity runtime state", async () => {
+  const db = {
+    profiles: {
+      "user-1": {
+        userId: "user-1",
+        username: "todo",
+      },
+    },
+    sot: {
+      activity: {
+        config: {},
+        watchedChannels: [
+          {
+            channelId: "main-1",
+            channelType: "main_chat",
+            enabled: true,
+            channelWeight: 1,
+            countMessages: true,
+            countSessions: true,
+            countForTrust: true,
+            countForRoles: true,
+          },
+        ],
+        globalUserSessions: [
+          {
+            guildId: "guild-1",
+            userId: "user-1",
+            startedAt: "2026-05-08T12:00:00.000Z",
+            endedAt: "2026-05-08T12:10:00.000Z",
+            effectiveValue: 1,
+          },
+        ],
+        userChannelDailyStats: [
+          {
+            guildId: "guild-1",
+            channelId: "main-1",
+            userId: "user-1",
+            date: "2026-05-08",
+            messagesCount: 8,
+            weightedMessagesCount: 8,
+            sessionsCount: 1,
+            effectiveSessionsCount: 1,
+            firstMessageAt: "2026-05-08T12:00:00.000Z",
+            lastMessageAt: "2026-05-08T12:10:00.000Z",
+          },
+        ],
+        userSnapshots: {},
+        calibrationRuns: [],
+        ops: { moderationAuditLog: [] },
+        runtime: { openSessions: {}, dirtyUsers: [] },
+      },
+    },
+  };
+
+  const result = await rebuildActivitySnapshots({
+    db,
+    userIds: ["user-1"],
+    now: "2026-05-09T12:00:00.000Z",
+    resolveMemberActivityMeta() {
+      throw new Error("meta boom");
+    },
+  });
+
+  assert.equal(result.rebuiltUserCount, 1);
+  assert.deepEqual(db.runtime, undefined);
+  assert.deepEqual(db.sot.activity.runtime.errors, [
+    {
+      scope: "member_activity_meta",
+      userId: "user-1",
+      createdAt: "2026-05-09T12:00:00.000Z",
+      reason: "meta boom",
+    },
+  ]);
+});
+
 test("flushActivityRuntime finalizes stale sessions, keeps fresh sessions open, and mirrors activity snapshots into profiles", async () => {
   const db = {
     profiles: {

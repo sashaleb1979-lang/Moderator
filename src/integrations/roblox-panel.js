@@ -233,6 +233,17 @@ function getPlaytimePollMinutes(appConfig = {}) {
   return Math.max(1, normalizeNonNegativeInteger(appConfig?.roblox?.playtimePollMinutes, 2) || 2);
 }
 
+function resolvePanelAppConfig(appConfig = {}, getAppConfig = null) {
+  if (typeof getAppConfig === "function") {
+    const resolved = getAppConfig();
+    if (resolved && typeof resolved === "object" && !Array.isArray(resolved)) {
+      return resolved;
+    }
+  }
+
+  return appConfig && typeof appConfig === "object" && !Array.isArray(appConfig) ? appConfig : {};
+}
+
 function shouldIncludeRobloxEntry(roblox = {}) {
   return Boolean(
     cleanString(roblox.userId, 40)
@@ -475,6 +486,28 @@ function getPollButtonStyle(currentMinutes, buttonMinutes) {
   return Number(currentMinutes) === Number(buttonMinutes) ? ButtonStyle.Success : ButtonStyle.Secondary;
 }
 
+function buildPlaytimeSyncStatusText(result = {}) {
+  const skippedReason = cleanString(result.skippedReason, 80) || null;
+  if (skippedReason === "jjs_ids_not_configured") {
+    return "Синк playtime пропущен: JJS IDs не настроены.";
+  }
+  if (skippedReason === "no_verified_candidates") {
+    return "Синк playtime пропущен: нет ни одной подтверждённой Roblox-привязки с userId.";
+  }
+
+  const totalCandidates = normalizeNonNegativeInteger(result.totalCandidates, 0);
+  const activeJjsUsers = normalizeNonNegativeInteger(result.activeJjsUsers, 0);
+  const touchedUserCount = normalizeNonNegativeInteger(result.touchedUserCount, 0);
+  const failedUserIds = normalizeNonNegativeInteger(result.failedUserIds, 0);
+  const baseText = `Синк playtime завершён. Кандидатов: ${totalCandidates}, активных в JJS: ${activeJjsUsers}, затронуто профилей: ${touchedUserCount}, ошибок пользователей: ${failedUserIds}.`;
+
+  if (totalCandidates > 0 && activeJjsUsers === 0 && failedUserIds === 0) {
+    return `${baseText} В configured JJS сейчас никого не видно.`;
+  }
+
+  return baseText;
+}
+
 function buildRobloxStatsPanelPayload({ db = {}, runtimeState = {}, telemetry = null, appConfig = {}, statusText = "" } = {}) {
   const snapshot = getRobloxStatsPanelSnapshot({ db, runtimeState, telemetry, appConfig });
   const metadataRefreshEnabled = snapshot.config.metadataRefreshEnabled !== false;
@@ -589,6 +622,7 @@ async function handleRobloxStatsPanelButtonInteraction({
   runtimeState,
   telemetry,
   appConfig,
+  getAppConfig,
   isModerator,
   replyNoPermission,
   buildModeratorPanelPayload,
@@ -628,6 +662,9 @@ async function handleRobloxStatsPanelButtonInteraction({
   if (typeof buildModeratorPanelPayload !== "function") {
     throw new TypeError("buildModeratorPanelPayload must be a function");
   }
+  if (getAppConfig != null && typeof getAppConfig !== "function") {
+    throw new TypeError("getAppConfig must be a function");
+  }
   if (updateRobloxSettings != null && typeof updateRobloxSettings !== "function") {
     throw new TypeError("updateRobloxSettings must be a function");
   }
@@ -635,13 +672,15 @@ async function handleRobloxStatsPanelButtonInteraction({
     throw new TypeError("clearRefreshDiagnostics must be a function");
   }
 
+  const readAppConfig = () => resolvePanelAppConfig(appConfig, getAppConfig);
+
   const renderPanel = typeof buildRobloxPanelPayload === "function"
     ? buildRobloxPanelPayload
     : ({ statusText = "" } = {}) => buildRobloxStatsPanelPayload({
       db,
       runtimeState,
       telemetry,
-      appConfig,
+      appConfig: readAppConfig(),
       statusText,
     });
 
@@ -666,7 +705,7 @@ async function handleRobloxStatsPanelButtonInteraction({
   }
 
   if (customId === "roblox_stats_toggle_playtime") {
-    const nextValue = !isPlaytimeTrackingEnabled(appConfig);
+    const nextValue = !isPlaytimeTrackingEnabled(readAppConfig());
     await interaction.deferUpdate();
     await updateRobloxSettings({ playtimeTrackingEnabled: nextValue });
     await interaction.editReply(renderPanel({
@@ -676,7 +715,7 @@ async function handleRobloxStatsPanelButtonInteraction({
   }
 
   if (customId === "roblox_stats_toggle_metadata") {
-    const nextValue = !isMetadataRefreshEnabled(appConfig);
+    const nextValue = !isMetadataRefreshEnabled(readAppConfig());
     await interaction.deferUpdate();
     await updateRobloxSettings({ metadataRefreshEnabled: nextValue });
     await interaction.editReply(renderPanel({
@@ -686,7 +725,7 @@ async function handleRobloxStatsPanelButtonInteraction({
   }
 
   if (customId === "roblox_stats_toggle_flush") {
-    const nextValue = !isRuntimeFlushEnabled(appConfig);
+    const nextValue = !isRuntimeFlushEnabled(readAppConfig());
     await interaction.deferUpdate();
     await updateRobloxSettings({ runtimeFlushEnabled: nextValue });
     await interaction.editReply(renderPanel({
@@ -714,7 +753,7 @@ async function handleRobloxStatsPanelButtonInteraction({
     return true;
   }
 
-  if (customId === "roblox_stats_run_profile_refresh" && !isMetadataRefreshEnabled(appConfig)) {
+  if (customId === "roblox_stats_run_profile_refresh" && !isMetadataRefreshEnabled(readAppConfig())) {
     await interaction.update(renderPanel({
       statusText: "Обновление профилей выключено. Для пассивного учёта JJS оно не нужно.",
     }));
@@ -728,7 +767,7 @@ async function handleRobloxStatsPanelButtonInteraction({
     },
     roblox_stats_run_playtime_sync: {
       runner: runPlaytimeSyncJob,
-      successText: (result = {}) => `Синк playtime завершён. Активных в JJS: ${normalizeNonNegativeInteger(result.activeJjsUsers, 0)}, затронуто профилей: ${normalizeNonNegativeInteger(result.touchedUserCount, 0)}, ошибок пользователей: ${normalizeNonNegativeInteger(result.failedUserIds, 0)}.`,
+      successText: (result = {}) => buildPlaytimeSyncStatusText(result),
     },
     roblox_stats_run_flush: {
       runner: runRuntimeFlush,

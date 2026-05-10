@@ -35,85 +35,28 @@ function normalizeIntervalMs(value, fallbackMs) {
   return Number.isFinite(numeric) && numeric > 0 ? numeric : fallbackMs;
 }
 
-function buildRobloxPeriodicJobs(options = {}) {
-  const {
-    runRobloxProfileRefreshJob,
-    flushRobloxRuntime,
-    syncRobloxPlaytime,
-    roblox = {},
-  } = options;
-
-  if (runRobloxProfileRefreshJob != null) {
-    assertFunction(runRobloxProfileRefreshJob, "runRobloxProfileRefreshJob");
-  }
-  if (syncRobloxPlaytime != null) {
-    assertFunction(syncRobloxPlaytime, "syncRobloxPlaytime");
-  }
-  if (flushRobloxRuntime != null) {
-    assertFunction(flushRobloxRuntime, "flushRobloxRuntime");
-  }
-
-  const periodicJobs = [];
-
-  if (roblox?.metadataRefreshEnabled !== false && typeof runRobloxProfileRefreshJob === "function") {
-    periodicJobs.push({
-      key: "roblox.profileRefresh",
-      run: runRobloxProfileRefreshJob,
-      intervalMs: Math.max(1, Number(roblox?.metadataRefreshHours) || 24) * 60 * 60 * 1000,
-      errorLabel: "Roblox metadata refresh failed",
-    });
-  }
-
-  if (roblox?.playtimeTrackingEnabled !== false && typeof syncRobloxPlaytime === "function") {
-    periodicJobs.push({
-      key: "roblox.playtimeSync",
-      run: syncRobloxPlaytime,
-      intervalMs: Math.max(1, Number(roblox?.playtimePollMinutes) || 2) * 60 * 1000,
-      errorLabel: "Roblox playtime sync failed",
-    });
-  }
-
-  if (roblox?.runtimeFlushEnabled !== false && typeof flushRobloxRuntime === "function") {
-    periodicJobs.push({
-      key: "roblox.runtimeFlush",
-      run: flushRobloxRuntime,
-      intervalMs: Math.max(1, Number(roblox?.flushIntervalMinutes) || 10) * 60 * 1000,
-      errorLabel: "Roblox runtime flush failed",
-    });
-  }
-
-  return periodicJobs;
-}
-
 function buildClientReadyPeriodicJobs(options = {}) {
   const {
     runAutoResendTick,
     refreshLegacyTierlistSummaryMessage,
-    runVerificationDeadlineSweep,
     runRobloxProfileRefreshJob,
     flushActivityRuntime,
-    runDailyActivityRoleSync,
-    flushRobloxRuntime,
     syncRobloxPlaytime,
     getResolvedIntegrationSourcePath = null,
     rolePanelAutoResendTickMs = 0,
     legacyTierlistSummaryRefreshMs = 0,
     activityFlushIntervalMs = 0,
-    activityRoleSyncHours = 24,
     roblox = {},
-    verification = {},
   } = options;
 
   assertFunction(runAutoResendTick, "runAutoResendTick");
   assertFunction(refreshLegacyTierlistSummaryMessage, "refreshLegacyTierlistSummaryMessage");
-  if (runVerificationDeadlineSweep != null) {
-    assertFunction(runVerificationDeadlineSweep, "runVerificationDeadlineSweep");
+  assertFunction(flushActivityRuntime, "flushActivityRuntime");
+  if (runRobloxProfileRefreshJob != null) {
+    assertFunction(runRobloxProfileRefreshJob, "runRobloxProfileRefreshJob");
   }
-  if (flushActivityRuntime != null) {
-    assertFunction(flushActivityRuntime, "flushActivityRuntime");
-  }
-  if (runDailyActivityRoleSync != null) {
-    assertFunction(runDailyActivityRoleSync, "runDailyActivityRoleSync");
+  if (syncRobloxPlaytime != null) {
+    assertFunction(syncRobloxPlaytime, "syncRobloxPlaytime");
   }
   if (getResolvedIntegrationSourcePath != null) {
     assertFunction(getResolvedIntegrationSourcePath, "getResolvedIntegrationSourcePath");
@@ -136,38 +79,28 @@ function buildClientReadyPeriodicJobs(options = {}) {
       intervalMs: normalizeIntervalMs(legacyTierlistSummaryRefreshMs, 0),
       errorLabel: "Legacy Tierlist summary refresh failed",
     },
-  ];
-
-  if (typeof flushActivityRuntime === "function") {
-    periodicJobs.push({
+    {
       run: flushActivityRuntime,
       intervalMs: normalizeIntervalMs(activityFlushIntervalMs, 0),
       errorLabel: "Activity runtime flush failed",
-    });
-  }
+    },
+  ];
 
-  if (typeof runDailyActivityRoleSync === "function") {
+  if (roblox?.metadataRefreshEnabled !== false && typeof runRobloxProfileRefreshJob === "function") {
     periodicJobs.push({
-      run: runDailyActivityRoleSync,
-      intervalMs: Math.max(1, Number(activityRoleSyncHours) || 24) * 60 * 60 * 1000,
-      errorLabel: "Activity daily role sync failed",
+      run: runRobloxProfileRefreshJob,
+      intervalMs: Math.max(1, Number(roblox?.metadataRefreshHours) || 24) * 60 * 60 * 1000,
+      errorLabel: "Roblox metadata refresh failed",
     });
   }
 
-  if (verification?.enabled === true && typeof runVerificationDeadlineSweep === "function") {
+  if (roblox?.playtimeTrackingEnabled !== false && typeof syncRobloxPlaytime === "function") {
     periodicJobs.push({
-      run: runVerificationDeadlineSweep,
-      intervalMs: Math.max(5, Number(verification?.reportSweepMinutes) || 60) * 60 * 1000,
-      errorLabel: "Verification deadline sweep failed",
+      run: syncRobloxPlaytime,
+      intervalMs: Math.max(1, Number(roblox?.playtimePollMinutes) || 5) * 60 * 1000,
+      errorLabel: "Roblox playtime sync failed",
     });
   }
-
-  periodicJobs.push(...buildRobloxPeriodicJobs({
-    runRobloxProfileRefreshJob,
-    flushRobloxRuntime,
-    syncRobloxPlaytime,
-    roblox,
-  }));
 
   return periodicJobs;
 }
@@ -216,8 +149,6 @@ async function runClientReadyCore(client, options = {}) {
     assertFunction(resumeActivityRuntime, "resumeActivityRuntime");
   }
 
-  const degraded = [];
-
   await Promise.resolve(registerGuildCommands(client)).catch((error) => {
     throw new ClientReadyCoreError("registerGuildCommands", error);
   });
@@ -245,13 +176,9 @@ async function runClientReadyCore(client, options = {}) {
   if (typeof resumeActivityRuntime === "function") {
     await Promise.resolve(resumeActivityRuntime(client)).catch((error) => {
       logError("Activity runtime resume failed:", formatErrorText(error));
-      degraded.push({
-        step: "resumeActivityRuntime",
-        message: String(formatErrorText(error) || "unknown error"),
-      });
     });
   }
-  return { generated, degraded };
+  return { generated };
 }
 
 function scheduleClientReadyIntervals(client, options = {}) {
@@ -265,6 +192,8 @@ function scheduleClientReadyIntervals(client, options = {}) {
   assertFunction(scheduleSotAlertTicks, "scheduleSotAlertTicks");
   assertFunction(setIntervalFn, "setIntervalFn");
   assertFunction(logError, "logError");
+  const jobs = normalizePeriodicJobs(periodicJobs);
+
   const intervalHandles = [];
 
   const alertHandles = scheduleSotAlertTicks(client);
@@ -272,65 +201,20 @@ function scheduleClientReadyIntervals(client, options = {}) {
     intervalHandles.push(...alertHandles);
   }
 
-  intervalHandles.push(...schedulePeriodicJobs(client, { periodicJobs, setIntervalFn, logError }));
-
-  return intervalHandles;
-}
-
-function schedulePeriodicJobs(client, options = {}) {
-  const {
-    periodicJobs = [],
-    setIntervalFn = setInterval,
-    logError = () => {},
-  } = options;
-
-  assertFunction(setIntervalFn, "setIntervalFn");
-  assertFunction(logError, "logError");
-  const jobs = normalizePeriodicJobs(periodicJobs);
-  const intervalHandles = [];
-
   for (const job of jobs) {
-    let running = false;
-    let rerunRequested = false;
-    let activeRunPromise = null;
-
-    const runJob = () => {
-      if (running) {
-        rerunRequested = true;
-        return activeRunPromise;
-      }
-
-      running = true;
-      activeRunPromise = (async () => {
-        try {
-          do {
-            rerunRequested = false;
-            try {
-              await Promise.resolve(job.run(client));
-            } catch (error) {
-              logError(`${job.errorLabel}:`, formatErrorText(error));
-            }
-          } while (rerunRequested);
-        } finally {
-          running = false;
-          activeRunPromise = null;
-        }
-      })();
-
-      return activeRunPromise;
-    };
-
-    intervalHandles.push(setIntervalFn(() => runJob(), job.intervalMs));
+    intervalHandles.push(setIntervalFn(() => {
+      Promise.resolve(job.run(client)).catch((error) => {
+        logError(`${job.errorLabel}:`, formatErrorText(error));
+      });
+    }, job.intervalMs));
   }
 
   return intervalHandles;
 }
 
 module.exports = {
-  buildRobloxPeriodicJobs,
   buildClientReadyPeriodicJobs,
   ClientReadyCoreError,
   runClientReadyCore,
-  schedulePeriodicJobs,
   scheduleClientReadyIntervals,
 };

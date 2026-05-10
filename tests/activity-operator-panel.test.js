@@ -536,6 +536,39 @@ test("handleActivityPanelButtonInteraction rejects non-moderators before opening
   assert.deepEqual(replies, ["no-permission"]);
 });
 
+test("handleActivityPanelButtonInteraction falls back to an ephemeral error when opening the panel throws", async () => {
+  const replies = [];
+
+  const handled = await handleActivityPanelButtonInteraction({
+    interaction: {
+      customId: "panel_open_activity",
+      member: { id: "mod-1" },
+      async reply(payload) {
+        replies.push(payload);
+      },
+    },
+    client: { id: "client" },
+    db: {},
+    isModerator: () => true,
+    replyNoPermission: async () => {
+      throw new Error("should not run");
+    },
+    buildModeratorPanelPayload: async () => ({ content: "main" }),
+    buildActivityPanelPayload: () => {
+      throw new Error("broken activity state");
+    },
+    runHistoricalImport: async () => ({ importedEntryCount: 0, ignoredEntryCount: 0 }),
+    runRebuildMetrics: async () => ({ rebuiltUserCount: 0, roleAssignment: { appliedCount: 0, skippedCount: 0 } }),
+    runSyncRoles: async () => ({ roleAssignment: { appliedCount: 0, skippedCount: 0 } }),
+  });
+
+  assert.equal(handled, true);
+  assert.equal(replies.length, 1);
+  assert.equal(replies[0].flags, MessageFlags.Ephemeral);
+  assert.match(replies[0].content, /Не удалось открыть Activity Panel/i);
+  assert.match(replies[0].content, /broken activity state/i);
+});
+
 test("handleActivityPanelModalSubmitInteraction updates access roles and activity role mappings", async () => {
   const db = {};
   const replies = [];

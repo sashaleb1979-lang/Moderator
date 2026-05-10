@@ -6,14 +6,12 @@ const assert = require("node:assert/strict");
 const {
   applyRobloxAccountSnapshot,
   buildRobloxProfileUrl,
-  clearAllRobloxRefreshDiagnostics,
   INTEGRATION_MODE_DORMANT,
   SHARED_PROFILE_VERSION,
   deriveProfileMainView,
   ensureSharedProfile,
   normalizeRobloxDomainState,
   normalizeIntegrationState,
-  normalizeVerificationDomainState,
   syncSharedProfiles,
 } = require("../src/integrations/shared-profile");
 
@@ -161,9 +159,7 @@ test("ensureSharedProfile normalizes the activity domain and exposes an activity
     username: "todo",
     domains: {
       activity: {
-        baseActivityScore: "64",
         activityScore: "72",
-        activityScoreMultiplier: "1.125",
         trustScore: "540",
         messages7d: "28",
         messages30d: "110",
@@ -179,11 +175,7 @@ test("ensureSharedProfile normalizes the activity domain and exposes an activity
         globalEffectiveSessions30d: "19.25",
         effectiveActiveDays30d: 11.5,
         daysAbsent: 2,
-        guildJoinedAt: "2026-05-01T10:00:00.000Z",
-        daysSinceGuildJoin: "8.5",
         lastSeenAt: "2026-05-08T10:00:00.000Z",
-        roleEligibilityStatus: "eligible",
-        roleEligibleForActivityRole: true,
         desiredActivityRoleKey: "stable",
         appliedActivityRoleKey: "active",
         manualOverride: true,
@@ -194,9 +186,7 @@ test("ensureSharedProfile normalizes the activity domain and exposes an activity
     },
   }, "300");
 
-  assert.equal(result.profile.domains.activity.baseActivityScore, 64);
   assert.equal(result.profile.domains.activity.activityScore, 72);
-  assert.equal(result.profile.domains.activity.activityScoreMultiplier, 1.125);
   assert.equal(result.profile.domains.activity.trustScore, 540);
   assert.equal(result.profile.domains.activity.messages7d, 28);
   assert.equal(result.profile.domains.activity.messages30d, 110);
@@ -212,20 +202,14 @@ test("ensureSharedProfile normalizes the activity domain and exposes an activity
   assert.equal(result.profile.domains.activity.globalEffectiveSessions30d, 19.25);
   assert.equal(result.profile.domains.activity.effectiveActiveDays30d, 11.5);
   assert.equal(result.profile.domains.activity.daysAbsent, 2);
-  assert.equal(result.profile.domains.activity.guildJoinedAt, "2026-05-01T10:00:00.000Z");
-  assert.equal(result.profile.domains.activity.daysSinceGuildJoin, 8.5);
   assert.equal(result.profile.domains.activity.lastSeenAt, "2026-05-08T10:00:00.000Z");
-  assert.equal(result.profile.domains.activity.roleEligibilityStatus, "eligible");
-  assert.equal(result.profile.domains.activity.roleEligibleForActivityRole, true);
   assert.equal(result.profile.domains.activity.desiredActivityRoleKey, "stable");
   assert.equal(result.profile.domains.activity.appliedActivityRoleKey, "active");
   assert.equal(result.profile.domains.activity.manualOverride, true);
   assert.equal(result.profile.domains.activity.autoRoleFrozen, true);
   assert.equal(result.profile.domains.activity.recalculatedAt, "2026-05-09T12:00:00.000Z");
   assert.equal(result.profile.domains.activity.lastRoleAppliedAt, "2026-05-08T15:00:00.000Z");
-  assert.equal(result.profile.summary.activity.baseActivityScore, 64);
   assert.equal(result.profile.summary.activity.activityScore, 72);
-  assert.equal(result.profile.summary.activity.activityScoreMultiplier, 1.125);
   assert.equal(result.profile.summary.activity.trustScore, 540);
   assert.equal(result.profile.summary.activity.messages7d, 28);
   assert.equal(result.profile.summary.activity.messages30d, 110);
@@ -240,121 +224,13 @@ test("ensureSharedProfile normalizes the activity domain and exposes an activity
   assert.equal(result.profile.summary.activity.globalEffectiveSessions30d, 19.25);
   assert.equal(result.profile.summary.activity.effectiveActiveDays30d, 11.5);
   assert.equal(result.profile.summary.activity.daysAbsent, 2);
-  assert.equal(result.profile.summary.activity.guildJoinedAt, "2026-05-01T10:00:00.000Z");
-  assert.equal(result.profile.summary.activity.daysSinceGuildJoin, 8.5);
   assert.equal(result.profile.summary.activity.lastSeenAt, "2026-05-08T10:00:00.000Z");
-  assert.equal(result.profile.summary.activity.roleEligibilityStatus, "eligible");
-  assert.equal(result.profile.summary.activity.roleEligibleForActivityRole, true);
   assert.equal(result.profile.summary.activity.desiredActivityRoleKey, "stable");
   assert.equal(result.profile.summary.activity.appliedActivityRoleKey, "active");
   assert.equal(result.profile.summary.activity.manualOverride, true);
   assert.equal(result.profile.summary.activity.autoRoleFrozen, true);
   assert.equal(result.profile.summary.activity.recalculatedAt, "2026-05-09T12:00:00.000Z");
   assert.equal(result.profile.summary.activity.lastRoleAppliedAt, "2026-05-08T15:00:00.000Z");
-});
-
-test("ensureSharedProfile backfills legacy summary.activity into domains.activity", () => {
-  const result = ensureSharedProfile({
-    userId: "301",
-    username: "legacy-activity",
-    summary: {
-      activity: {
-        activityScore: 91,
-        baseActivityScore: 88,
-        roleEligibilityStatus: "eligible",
-        roleEligibleForActivityRole: true,
-        desiredActivityRoleKey: "core",
-        appliedActivityRoleKey: "stable",
-        recalculatedAt: "2026-05-09T12:00:00.000Z",
-        lastSeenAt: "2026-05-09T11:00:00.000Z",
-      },
-    },
-  }, "301");
-
-  assert.equal(result.profile.domains.activity.activityScore, 91);
-  assert.equal(result.profile.domains.activity.baseActivityScore, 88);
-  assert.equal(result.profile.domains.activity.roleEligibilityStatus, "eligible");
-  assert.equal(result.profile.domains.activity.roleEligibleForActivityRole, true);
-  assert.equal(result.profile.domains.activity.desiredActivityRoleKey, "core");
-  assert.equal(result.profile.domains.activity.appliedActivityRoleKey, "stable");
-  assert.equal(result.profile.summary.activity.activityScore, 91);
-  assert.equal(result.profile.summary.activity.desiredActivityRoleKey, "core");
-});
-
-test("normalizeVerificationDomainState keeps autonomous verification state separate from onboarding and roblox", () => {
-  assert.deepEqual(normalizeVerificationDomainState({
-    status: "manual_review",
-    decision: "manual_review",
-    assignedAt: "2026-05-01T10:00:00.000Z",
-    startedAt: "2026-05-01T10:05:00.000Z",
-    completedAt: "2026-05-01T10:10:00.000Z",
-    reportDueAt: "2026-05-08T10:00:00.000Z",
-    reportSentAt: "2026-05-08T12:00:00.000Z",
-    oauthUserId: "oauth-1",
-    oauthUsername: "discord-user",
-    observedGuildIds: ["guild-1", "guild-1", "guild-2"],
-    matchedEnemyGuildIds: ["enemy-1", "enemy-1"],
-    matchedEnemyUserIds: ["user-1"],
-    matchedEnemyInviteCodes: ["invite-1"],
-    matchedEnemyInviterUserIds: ["inviter-1"],
-    manualTags: ["fresh", "fresh", "watch"],
-    reviewedBy: "mod#1",
-    reviewedAt: "2026-05-08T12:01:00.000Z",
-    decisionReason: "manual check",
-    lastError: "none",
-  }), {
-    status: "manual_review",
-    decision: "manual_review",
-    assignedAt: "2026-05-01T10:00:00.000Z",
-    startedAt: "2026-05-01T10:05:00.000Z",
-    completedAt: "2026-05-01T10:10:00.000Z",
-    reportDueAt: "2026-05-08T10:00:00.000Z",
-    reportSentAt: "2026-05-08T12:00:00.000Z",
-    lastState: null,
-    oauthUserId: "oauth-1",
-    oauthUsername: "discord-user",
-    oauthAvatarUrl: null,
-    matchedEnemyGuildIds: ["enemy-1"],
-    matchedEnemyUserIds: ["user-1"],
-    matchedEnemyInviteCodes: ["invite-1"],
-    matchedEnemyInviterUserIds: ["inviter-1"],
-    manualTags: ["fresh", "watch"],
-    observedGuildIds: ["guild-1", "guild-2"],
-    observedGuildNames: [],
-    reviewedBy: "mod#1",
-    reviewedAt: "2026-05-08T12:01:00.000Z",
-    decisionReason: "manual check",
-    lastError: "none",
-  });
-});
-
-test("ensureSharedProfile exposes verification summary without leaking it into onboarding or roblox", () => {
-  const result = ensureSharedProfile({
-    userId: "400",
-    domains: {
-      verification: {
-        status: "pending",
-        decision: "none",
-        assignedAt: "2026-05-01T10:00:00.000Z",
-        reportDueAt: "2026-05-08T10:00:00.000Z",
-        oauthUsername: "verify-user",
-        observedGuildIds: ["guild-1", "guild-2", "guild-3"],
-        matchedEnemyGuildIds: ["enemy-1"],
-        manualTags: ["watch"],
-      },
-    },
-  }, "400");
-
-  assert.equal(result.profile.sharedProfileVersion, SHARED_PROFILE_VERSION);
-  assert.equal(result.profile.domains.verification.status, "pending");
-  assert.equal(result.profile.domains.onboarding.accessGrantedAt, null);
-  assert.equal(result.profile.domains.roblox.userId, null);
-  assert.equal(result.profile.summary.verification.isBlocked, true);
-  assert.equal(result.profile.summary.verification.isApproved, false);
-  assert.equal(result.profile.summary.verification.oauthUsername, "verify-user");
-  assert.equal(result.profile.summary.verification.observedGuildCount, 3);
-  assert.equal(result.profile.summary.verification.matchedEnemyGuildCount, 1);
-  assert.equal(result.profile.summary.verification.manualTagCount, 1);
 });
 
 test("deriveProfileMainView recalculates labels and role ids from current character entries", () => {
@@ -398,7 +274,7 @@ test("deriveProfileMainView keeps label fallback for missing entries but drops s
   assert.deepEqual(derived.characterRoleIds, []);
 });
 
-test("normalizeIntegrationState creates dormant elo, tierlist, and verification scaffolding", () => {
+test("normalizeIntegrationState creates dormant elo and tierlist scaffolding", () => {
   const result = normalizeIntegrationState({
     elo: {
       mode: "active",
@@ -412,30 +288,6 @@ test("normalizeIntegrationState creates dormant elo, tierlist, and verification 
       dashboard: { channelId: "999", messageId: "888" },
       summary: { channelId: "777", messageId: "666", lastUpdated: "2026-05-01T12:30:00.000Z" },
     },
-    verification: {
-      enabled: true,
-      status: "in_progress",
-      callbackBaseUrl: "https://example.com/oauth/discord",
-      verificationChannelId: "verify-room",
-      reportChannelId: "report-room",
-      lastSyncAt: "2026-05-09T09:00:00.000Z",
-      stageTexts: {
-        entry: "Пройди verify",
-      },
-      riskRules: {
-        enemyGuildIds: ["guild-1", "guild-1", "guild-2"],
-        manualTags: ["fresh", "fresh", "watch"],
-      },
-      deadline: {
-        pendingDays: 7,
-        reportOnly: true,
-      },
-      entryMessage: {
-        channelId: "verify-room",
-        messageId: "verify-message",
-        lastUpdated: "2026-05-09T10:00:00.000Z",
-      },
-    },
   });
 
   assert.equal(result.integrations.elo.mode, INTEGRATION_MODE_DORMANT);
@@ -446,16 +298,6 @@ test("normalizeIntegrationState creates dormant elo, tierlist, and verification 
   assert.equal(result.integrations.tierlist.status, "not_started");
   assert.equal(result.integrations.tierlist.dashboard.channelId, "999");
   assert.equal(result.integrations.tierlist.summary.messageId, "666");
-  assert.equal(result.integrations.verification.mode, INTEGRATION_MODE_DORMANT);
-  assert.equal(result.integrations.verification.status, "in_progress");
-  assert.equal(result.integrations.verification.enabled, true);
-  assert.equal(result.integrations.verification.callbackBaseUrl, "https://example.com/oauth/discord");
-  assert.equal(result.integrations.verification.verificationChannelId, "verify-room");
-  assert.equal(result.integrations.verification.entryMessage.messageId, "verify-message");
-  assert.deepEqual(result.integrations.verification.riskRules.enemyGuildIds, ["guild-1", "guild-2"]);
-  assert.deepEqual(result.integrations.verification.riskRules.manualTags, ["fresh", "watch"]);
-  assert.equal(result.integrations.verification.deadline.pendingDays, 7);
-  assert.equal(result.integrations.verification.deadline.reportOnly, true);
 });
 
 test("normalizeRobloxDomainState defaults to unverified when binding is missing", () => {
@@ -762,30 +604,4 @@ test("applyRobloxAccountSnapshot preserves existing verification timestamp when 
   assert.equal(result.verifiedAt, "2026-05-01T00:00:00.000Z");
   assert.equal(result.lastReviewedAt, "2026-05-10T00:00:00.000Z");
   assert.equal(result.reviewedBy, "mod#0001");
-});
-
-test("clearAllRobloxRefreshDiagnostics clears persisted refresh failures and refreshes summary", () => {
-  const profiles = {
-    user_1: ensureSharedProfile({
-      userId: "user_1",
-      displayName: "Gojo",
-      domains: {
-        roblox: {
-          username: "GojoRb",
-          userId: "1",
-          verificationStatus: "verified",
-          refreshStatus: "error",
-          refreshError: "Roblox API request failed (429)",
-        },
-      },
-    }, "user_1").profile,
-  };
-
-  const result = clearAllRobloxRefreshDiagnostics(profiles);
-
-  assert.equal(result.clearedCount, 1);
-  assert.equal(result.mutated, true);
-  assert.equal(profiles.user_1.domains.roblox.refreshError, null);
-  assert.equal(profiles.user_1.domains.roblox.refreshStatus, null);
-  assert.equal(profiles.user_1.summary.roblox.refreshError, null);
 });

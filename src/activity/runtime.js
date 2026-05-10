@@ -673,7 +673,7 @@ async function rebuildActivitySnapshots({ db = {}, userIds = [], now, saveDb, ru
     for (const userId of targetUserIds) {
       const { memberActivityMeta, error } = await safelyResolveMemberActivityMeta(resolveMemberActivityMeta, userId);
       if (error) {
-        appendActivityRuntimeError(db, {
+        appendActivityRuntimeError(ensureActivityState(db), {
           scope: "member_activity_meta",
           userId,
           createdAt: currentTime,

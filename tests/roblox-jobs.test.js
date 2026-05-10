@@ -264,6 +264,48 @@ test("runRobloxProfileRefreshJob marks refresh errors without dropping verified 
   assert.equal(errors.length, 1);
 });
 
+test("runRobloxPlaytimeSyncJob reports missing verified candidates explicitly", async () => {
+  const result = await runRobloxPlaytimeSyncJob({
+    db: {
+      profiles: {
+        discord_1: {
+          userId: "discord_1",
+          domains: {
+            roblox: {
+              username: "PendingName",
+              userId: "999",
+              verificationStatus: "pending",
+            },
+          },
+        },
+      },
+    },
+    runtimeState: createRobloxRuntimeState(),
+    roblox: {
+      jjsUniverseId: 3508322461,
+      playtimePollMinutes: 3,
+    },
+    async fetchUserPresences() {
+      throw new Error("should not fetch presences without verified candidates");
+    },
+  });
+
+  assert.deepEqual(result, {
+    totalCandidates: 0,
+    totalBatches: 0,
+    processedBatches: 0,
+    failedBatches: 0,
+    processedUserIds: 0,
+    failedUserIds: 0,
+    activeJjsUsers: 0,
+    touchedUserCount: 0,
+    startedSessionCount: 0,
+    closedSessionCount: 0,
+    activeCoPlayPairCount: 0,
+    skippedReason: "no_verified_candidates",
+  });
+});
+
 test("runRobloxPlaytimeSyncJob updates rolling JJS minutes and co-play state in memory", async () => {
   const runtimeState = createRobloxRuntimeState();
   const db = {

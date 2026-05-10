@@ -345,7 +345,11 @@ const {
   paginateRecentKillChanges,
   summarizeRecentKillChange,
 } = require("./src/onboard/tierlist-ranking");
-const { parseKillsFromSubmittedText, resolveEffectiveSubmittedKills } = require("./src/onboard/submission-message");
+const {
+  parseKillsFromSubmittedText,
+  resolveEffectiveSubmittedKills,
+  resolveResumableMainCharacterIds,
+} = require("./src/onboard/submission-message");
 let nonGgsCaptchaModule = null;
 try {
   nonGgsCaptchaModule = require("./src/onboard/non-jjs-captcha");
@@ -2719,6 +2723,14 @@ async function respondToOnboardError(interaction, message) {
   await interaction.followUp(payload).catch(() => {});
 }
 
+async function respondToModeratorPanelError(interaction, customId, error, messagePrefix) {
+  console.error(`moderator panel interaction failed (${customId}):`, formatRuntimeError(error));
+  await respondToOnboardError(
+    interaction,
+    `${messagePrefix}: ${String(error?.message || error || "неизвестная ошибка").slice(0, 220)}`
+  );
+}
+
 async function fallbackToManualMainSelection(interaction, mode = "full", error = null) {
   const message = String(error?.message || error || "").trim();
   if (message) {
@@ -3452,6 +3464,54 @@ function getSubmitSession(userId) {
 
 function clearSubmitSession(userId) {
   submitSessions.delete(userId);
+}
+
+function getValidatedLiveMainCharacterIds(characterIds = []) {
+  return [...new Set(
+    getSelectedCharacterEntries(characterIds)
+      .filter((entry) => isLiveCharacterEntry(entry))
+      .map((entry) => entry.id)
+      .filter(Boolean)
+  )].slice(0, 2);
+}
+
+function getStoredProfileMainCharacterIds(userId) {
+  const existingProfile = db.profiles?.[userId];
+  if (!existingProfile || typeof existingProfile !== "object") return [];
+
+  const ensuredProfile = ensureSharedProfile(existingProfile, userId).profile;
+  const derived = getDerivedProfileMainFields(ensuredProfile);
+  return getValidatedLiveMainCharacterIds(derived.mainCharacterIds);
+}
+
+function getLiveMemberMainCharacterIds(member) {
+  if (!member?.roles?.cache) return [];
+  return getValidatedLiveMainCharacterIds(
+    getCharacterEntries()
+      .filter((entry) => isLiveCharacterEntry(entry) && member.roles.cache.has(entry.roleId))
+      .map((entry) => entry.id)
+  );
+}
+
+function buildSubmitSessionBootstrap(userId, member) {
+  const mainCharacterIds = resolveResumableMainCharacterIds({
+    storedMainCharacterIds: getStoredProfileMainCharacterIds(userId),
+    liveMainCharacterIds: getLiveMemberMainCharacterIds(member),
+  });
+  if (!mainCharacterIds.length) return null;
+
+  const existingProfile = db.profiles?.[userId];
+  const ensuredProfile = existingProfile && typeof existingProfile === "object"
+    ? ensureSharedProfile(existingProfile, userId).profile
+    : null;
+  const robloxSnapshot = buildCanonicalRobloxBindingSnapshot(ensuredProfile?.domains?.roblox || ensuredProfile || {});
+
+  return {
+    mainCharacterIds,
+    robloxUsername: robloxSnapshot.username || "",
+    robloxUserId: robloxSnapshot.userId || "",
+    robloxDisplayName: robloxSnapshot.displayName || "",
+  };
 }
 
 function normalizeRobloxUsernameInput(value) {
@@ -11945,9 +12005,25 @@ client.on("messageCreate", async (message) => {
 
   if (message.channelId !== getResolvedChannelId("welcome")) return;
 
-  const session = getSubmitSession(message.author.id);
+  let session = getSubmitSession(message.author.id);
+  const bootstrapMember = session
+    ? null
+    : (message.member?.roles?.cache ? message.member : await fetchMember(client, message.author.id).catch(() => null));
+  const canResumeWithAccessRole = !session && memberHasManagedStartAccessRole(bootstrapMember);
+  if (!session && canResumeWithAccessRole) {
+    const bootstrapSession = buildSubmitSessionBootstrap(message.author.id, bootstrapMember);
+    if (bootstrapSession?.mainCharacterIds?.length) {
+      setSubmitSession(message.author.id, bootstrapSession);
+      session = getSubmitSession(message.author.id);
+    }
+  }
+
   if (!session) {
-    const reply = await message.reply("В этом канале принимается только заявка одним сообщением после кнопки «Получить роль»: текст с точным числом kills и скрин во вложении. Остальные сообщения удаляются.").catch(() => null);
+    const reply = await message.reply(
+      canResumeWithAccessRole
+        ? "Не удалось восстановить твоих мейнов автоматически. Нажми «Получить роль» и выбери их заново, затем отправь kills и скрин одним сообщением."
+        : "В этом канале принимается только заявка одним сообщением после кнопки «Получить роль»: текст с точным числом kills и скрин во вложении. Остальные сообщения удаляются."
+    ).catch(() => null);
     if (reply) scheduleDeleteMessage(reply);
     await message.delete().catch(() => {});
     return;
@@ -12241,12 +12317,10 @@ client.on("interactionCreate", async (interaction) => {
 
     if (subcommand === "panel") {
       try {
-        await interaction.reply(await buildModeratorPanelPayload(client));
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+        await interaction.editReply(await buildModeratorPanelPayload(client, "", false));
       } catch (error) {
-        console.error("onboard panel failed:", error);
-        await interaction.reply(ephemeralPayload({
-          content: `Не удалось открыть мод-панель: ${String(error?.message || error || "неизвестная ошибка").slice(0, 220)}`,
-        })).catch(() => {});
+        await respondToModeratorPanelError(interaction, "onboard:panel", error, "Не удалось открыть мод-панель");
       }
       return;
     }
@@ -13541,6 +13615,7 @@ client.on("interactionCreate", async (interaction) => {
       runtimeState: robloxRuntimeState,
       telemetry: robloxPanelTelemetry,
       appConfig: getEffectiveAppConfig(),
+      getAppConfig: () => getEffectiveAppConfig(),
       isModerator,
       replyNoPermission: () => interaction.reply(ephemeralPayload({ content: "Нет прав." })),
       buildModeratorPanelPayload,
@@ -13591,7 +13666,11 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.reply(ephemeralPayload({ content: "Нет прав. Только модераторы могут редактировать." }));
         return;
       }
-      await interaction.reply(buildWelcomeEditorPayload());
+      try {
+        await interaction.reply(buildWelcomeEditorPayload());
+      } catch (error) {
+        await respondToModeratorPanelError(interaction, interaction.customId, error, "Не удалось открыть редактор UI");
+      }
       return;
     }
 
@@ -13650,7 +13729,11 @@ client.on("interactionCreate", async (interaction) => {
         new ActionRowBuilder().addComponents(graphicTierlistInput),
         new ActionRowBuilder().addComponents(noticesInput)
       );
-      await interaction.showModal(modal);
+      try {
+        await interaction.showModal(modal);
+      } catch (error) {
+        await respondToModeratorPanelError(interaction, interaction.customId, error, "Не удалось открыть форму каналов");
+      }
       return;
     }
 
@@ -13843,7 +13926,11 @@ client.on("interactionCreate", async (interaction) => {
             .setPlaceholder("https://cdn.discordapp.com/.../image.png")
         )
       );
-      await interaction.showModal(modal);
+      try {
+        await interaction.showModal(modal);
+      } catch (error) {
+        await respondToModeratorPanelError(interaction, interaction.customId, error, "Не удалось открыть форму персонажа");
+      }
       return;
     }
 
@@ -13853,7 +13940,11 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
-      await interaction.update(buildModeratorApocalypseConfirmPayload("Подтверди включение перед применением.", false));
+      try {
+        await interaction.update(buildModeratorApocalypseConfirmPayload("Подтверди включение перед применением.", false));
+      } catch (error) {
+        await respondToModeratorPanelError(interaction, interaction.customId, error, "Не удалось открыть подтверждение режима");
+      }
       return;
     }
 
@@ -13893,7 +13984,11 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
-      await interaction.update(buildDormantEloPanelPayload("", false));
+      try {
+        await interaction.update(buildDormantEloPanelPayload("", false));
+      } catch (error) {
+        await respondToModeratorPanelError(interaction, interaction.customId, error, "Не удалось открыть ELO-панель");
+      }
       return;
     }
 
@@ -13903,7 +13998,11 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
-      await interaction.update(buildDormantTierlistPanelPayload("", false));
+      try {
+        await interaction.update(buildDormantTierlistPanelPayload("", false));
+      } catch (error) {
+        await respondToModeratorPanelError(interaction, interaction.customId, error, "Не удалось открыть Tierlist-панель");
+      }
       return;
     }
 
@@ -15650,10 +15749,17 @@ client.on("interactionCreate", async (interaction) => {
         const pending = getPendingSubmissionForUser(interaction.user.id);
         const draft = getMainDraft(interaction.user.id);
         const cooldownLeft = getSubmitCooldownLeftSeconds(interaction.user.id);
+        const beginMember = interaction.member?.roles?.cache
+          ? interaction.member
+          : await fetchMember(client, interaction.user.id).catch(() => null);
+        const accessResumeSession = !session && !pending && memberHasManagedStartAccessRole(beginMember)
+          ? buildSubmitSessionBootstrap(interaction.user.id, beginMember)
+          : null;
         const beginRoute = resolveOnboardBeginRoute({
           hasPendingProof: Boolean(session?.mainCharacterIds?.length && Number.isSafeInteger(session?.pendingKills) && session?.pendingScreenshotUrl),
           hasPendingMissingRoblox: Boolean(pending && (!pending.robloxUsername || !pending.robloxUserId)),
           hasPendingSubmission: Boolean(pending),
+          hasResumableAccessSubmit: Boolean(accessResumeSession?.mainCharacterIds?.length),
           cooldownLeft,
           hasSubmitSession: Boolean(session),
           hasMainDraft: Boolean(draft?.characterIds?.length),
@@ -15690,6 +15796,10 @@ client.on("interactionCreate", async (interaction) => {
         }
 
         if (beginRoute.type === ONBOARD_BEGIN_ROUTES.SUBMIT) {
+          if (!session?.mainCharacterIds?.length && accessResumeSession?.mainCharacterIds?.length) {
+            setSubmitSession(interaction.user.id, accessResumeSession);
+          }
+
           const welcomeChannelId = getResolvedChannelId("welcome");
           if (!welcomeChannelId) {
             await interaction.reply(ephemeralPayload({

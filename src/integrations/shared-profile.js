@@ -1,11 +1,9 @@
 "use strict";
 
-const SHARED_PROFILE_VERSION = 4;
+const SHARED_PROFILE_VERSION = 3;
 const INTEGRATION_STATE_VERSION = 1;
 const INTEGRATION_MODE_DORMANT = "dormant";
 const INTEGRATION_STATUSES = new Set(["not_started", "in_progress", "migrated"]);
-const VERIFICATION_DOMAIN_STATUSES = new Set(["not_started", "pending", "manual_review", "verified", "rejected", "failed"]);
-const VERIFICATION_DOMAIN_DECISIONS = new Set(["none", "approved", "manual_review", "rejected"]);
 const ROBLOX_VERIFICATION_STATUSES = new Set(["unverified", "pending", "verified", "failed"]);
 const ROBLOX_ACCOUNT_STATUSES = new Set(["active", "banned-or-unavailable", "lookup-failed"]);
 const ROBLOX_NAME_HISTORY_LIMIT = 20;
@@ -15,10 +13,6 @@ const ROBLOX_TOP_COPLAY_PEER_LIMIT = 5;
 const ROBLOX_FREQUENT_NON_FRIEND_MINUTES = 60;
 const ROBLOX_FREQUENT_NON_FRIEND_SESSIONS = 2;
 const ROBLOX_PLAYTIME_BUCKET_LIMIT = 40;
-const sharedProfileRuntimeConfig = {
-  frequentNonFriendMinutes: ROBLOX_FREQUENT_NON_FRIEND_MINUTES,
-  frequentNonFriendSessions: ROBLOX_FREQUENT_NON_FRIEND_SESSIONS,
-};
 
 function cleanString(value, limit = 2000) {
   return String(value || "").trim().slice(0, Math.max(0, Number(limit) || 0));
@@ -91,35 +85,6 @@ function normalizeNonNegativeInteger(value, fallback = 0) {
   return Number.isSafeInteger(amount) && amount >= 0 ? amount : fallback;
 }
 
-function normalizePositiveInteger(value, fallback = 1) {
-  if (value === null || value === undefined || value === "") return fallback;
-  const amount = Number(value);
-  return Number.isSafeInteger(amount) && amount > 0 ? amount : fallback;
-}
-
-function configureSharedProfileRuntime(options = {}) {
-  const source = options && typeof options === "object" && !Array.isArray(options) ? options : {};
-  const roblox = source.roblox && typeof source.roblox === "object" && !Array.isArray(source.roblox)
-    ? source.roblox
-    : source;
-
-  sharedProfileRuntimeConfig.frequentNonFriendMinutes = normalizePositiveInteger(
-    roblox.frequentNonFriendMinutes,
-    ROBLOX_FREQUENT_NON_FRIEND_MINUTES
-  );
-  sharedProfileRuntimeConfig.frequentNonFriendSessions = normalizePositiveInteger(
-    roblox.frequentNonFriendSessions,
-    ROBLOX_FREQUENT_NON_FRIEND_SESSIONS
-  );
-
-  return {
-    roblox: {
-      frequentNonFriendMinutes: sharedProfileRuntimeConfig.frequentNonFriendMinutes,
-      frequentNonFriendSessions: sharedProfileRuntimeConfig.frequentNonFriendSessions,
-    },
-  };
-}
-
 function normalizeOnboardingDomainState(profile = {}) {
   const raw = normalizeOnboardingRawSnapshot(profile, profile?.domains?.onboarding?.raw);
   return {
@@ -174,9 +139,7 @@ function normalizeTierlistDomainState(value = {}) {
 function normalizeActivityDomainState(value = {}) {
   const source = value && typeof value === "object" ? value : {};
   return {
-    baseActivityScore: normalizeNullableInteger(source.baseActivityScore, { min: 0 }),
     activityScore: normalizeNullableInteger(source.activityScore, { min: 0 }),
-    activityScoreMultiplier: normalizeNullableNumber(source.activityScoreMultiplier, { min: 0 }),
     trustScore: normalizeNullableInteger(source.trustScore, { min: 0 }),
     messages7d: normalizeNullableInteger(source.messages7d, { min: 0 }),
     messages30d: normalizeNullableInteger(source.messages30d, { min: 0 }),
@@ -192,53 +155,13 @@ function normalizeActivityDomainState(value = {}) {
     globalEffectiveSessions30d: normalizeNullableNumber(source.globalEffectiveSessions30d, { min: 0 }),
     effectiveActiveDays30d: normalizeNullableNumber(source.effectiveActiveDays30d, { min: 0 }),
     daysAbsent: normalizeNullableInteger(source.daysAbsent, { min: 0 }),
-    guildJoinedAt: normalizeNullableString(source.guildJoinedAt, 80),
-    daysSinceGuildJoin: normalizeNullableNumber(source.daysSinceGuildJoin, { min: 0 }),
     lastSeenAt: normalizeNullableString(source.lastSeenAt, 80),
-    roleEligibilityStatus: normalizeNullableString(source.roleEligibilityStatus, 80),
-    roleEligibleForActivityRole: normalizeNullableBoolean(source.roleEligibleForActivityRole),
     desiredActivityRoleKey: normalizeNullableString(source.desiredActivityRoleKey, 80),
     appliedActivityRoleKey: normalizeNullableString(source.appliedActivityRoleKey, 80),
     manualOverride: normalizeNullableBoolean(source.manualOverride),
     autoRoleFrozen: normalizeNullableBoolean(source.autoRoleFrozen),
     recalculatedAt: normalizeNullableString(source.recalculatedAt, 80),
     lastRoleAppliedAt: normalizeNullableString(source.lastRoleAppliedAt, 80),
-  };
-}
-
-function getLegacyActivitySource(profile = {}) {
-  const source = profile && typeof profile === "object" ? profile : {};
-  return source?.domains?.activity || source?.activity || source?.summary?.activity || {};
-}
-
-function normalizeVerificationDomainState(value = {}) {
-  const source = value && typeof value === "object" ? value : {};
-  const rawStatus = cleanString(source.status, 40).toLowerCase();
-  const rawDecision = cleanString(source.decision, 40).toLowerCase();
-
-  return {
-    status: VERIFICATION_DOMAIN_STATUSES.has(rawStatus) ? rawStatus : "not_started",
-    decision: VERIFICATION_DOMAIN_DECISIONS.has(rawDecision) ? rawDecision : "none",
-    assignedAt: normalizeNullableString(source.assignedAt, 80),
-    startedAt: normalizeNullableString(source.startedAt, 80),
-    completedAt: normalizeNullableString(source.completedAt, 80),
-    reportDueAt: normalizeNullableString(source.reportDueAt, 80),
-    reportSentAt: normalizeNullableString(source.reportSentAt, 80),
-    lastState: normalizeNullableString(source.lastState, 120),
-    oauthUserId: normalizeNullableString(source.oauthUserId, 80),
-    oauthUsername: normalizeNullableString(source.oauthUsername, 120),
-    oauthAvatarUrl: normalizeNullableString(source.oauthAvatarUrl, 2000),
-    matchedEnemyGuildIds: normalizeStringArray(source.matchedEnemyGuildIds, 100, 80),
-    matchedEnemyUserIds: normalizeStringArray(source.matchedEnemyUserIds, 100, 80),
-    matchedEnemyInviteCodes: normalizeStringArray(source.matchedEnemyInviteCodes, 100, 80),
-    matchedEnemyInviterUserIds: normalizeStringArray(source.matchedEnemyInviterUserIds, 100, 80),
-    manualTags: normalizeStringArray(source.manualTags, 100, 80),
-    observedGuildIds: normalizeStringArray(source.observedGuildIds, 200, 80),
-    observedGuildNames: normalizeStringArray(source.observedGuildNames, 200, 120),
-    reviewedBy: normalizeNullableString(source.reviewedBy, 120),
-    reviewedAt: normalizeNullableString(source.reviewedAt, 80),
-    decisionReason: normalizeNullableString(source.decisionReason, 500),
-    lastError: normalizeNullableString(source.lastError, 500),
   };
 }
 
@@ -467,8 +390,8 @@ function getRobloxSharedSessionCount(peer = {}) {
 
 function isFrequentRobloxNonFriendPeer(peer = {}) {
   if (peer?.isRobloxFriend !== false) return false;
-  return normalizeNonNegativeInteger(peer?.minutesTogether, 0) >= sharedProfileRuntimeConfig.frequentNonFriendMinutes
-    || getRobloxSharedSessionCount(peer) >= sharedProfileRuntimeConfig.frequentNonFriendSessions;
+  return normalizeNonNegativeInteger(peer?.minutesTogether, 0) >= ROBLOX_FREQUENT_NON_FRIEND_MINUTES
+    || getRobloxSharedSessionCount(peer) >= ROBLOX_FREQUENT_NON_FRIEND_SESSIONS;
 }
 
 function buildRobloxTopCoPlayPeers(peers = [], limit = ROBLOX_TOP_COPLAY_PEER_LIMIT) {
@@ -619,62 +542,11 @@ function applyRobloxAccountSnapshot(profile = {}, snapshot = {}, options = {}) {
   return nextRoblox;
 }
 
-function clearRobloxRefreshDiagnostics(profile = {}) {
-  const ensured = ensureSharedProfile(profile, profile?.userId);
-  const targetProfile = ensured.profile;
-  const current = normalizeRobloxDomainState(targetProfile?.domains?.roblox || buildLegacyRobloxSource(targetProfile));
-  const hadDiagnostics = Boolean(current.refreshError) || current.refreshStatus === "error";
-
-  if (!hadDiagnostics) {
-    return {
-      mutated: ensured.mutated,
-      cleared: false,
-      profile: targetProfile,
-    };
-  }
-
-  targetProfile.domains.roblox = normalizeRobloxDomainState({
-    ...current,
-    refreshError: null,
-    refreshStatus: current.refreshStatus === "error" ? null : current.refreshStatus,
-  });
-  targetProfile.summary = buildSharedProfileSummary(targetProfile, targetProfile.domains);
-
-  return {
-    mutated: true,
-    cleared: true,
-    profile: targetProfile,
-  };
-}
-
-function clearAllRobloxRefreshDiagnostics(profiles = {}) {
-  const source = profiles && typeof profiles === "object" && !Array.isArray(profiles) ? profiles : {};
-  let clearedCount = 0;
-  let mutated = false;
-
-  for (const [userId, rawProfile] of Object.entries(source)) {
-    const result = clearRobloxRefreshDiagnostics({
-      ...(rawProfile && typeof rawProfile === "object" ? rawProfile : {}),
-      userId: cleanString(rawProfile?.userId || userId, 80),
-    });
-    source[userId] = result.profile;
-    if (result.cleared) clearedCount += 1;
-    mutated ||= result.mutated;
-  }
-
-  return {
-    clearedCount,
-    mutated,
-    profiles: source,
-  };
-}
-
 function buildSharedProfileSummary(profile = {}, domains = {}) {
   const onboarding = domains.onboarding || normalizeOnboardingDomainState(profile);
   const elo = domains.elo || normalizeEloDomainState(profile?.domains?.elo);
   const tierlist = domains.tierlist || normalizeTierlistDomainState(profile?.domains?.tierlist);
-  const activity = domains.activity || normalizeActivityDomainState(getLegacyActivitySource(profile));
-  const verification = domains.verification || normalizeVerificationDomainState(profile?.domains?.verification);
+  const activity = domains.activity || normalizeActivityDomainState(profile?.domains?.activity || profile?.activity);
   const roblox = domains.roblox || normalizeRobloxDomainState(profile?.domains?.roblox || profile);
   const previousUsername = getRobloxPreviousName(roblox.username, roblox.usernameHistory);
   const previousDisplayName = getRobloxPreviousName(roblox.displayName, roblox.displayNameHistory);
@@ -709,9 +581,7 @@ function buildSharedProfileSummary(profile = {}, domains = {}) {
       influenceMultiplier: tierlist.influenceMultiplier,
     },
     activity: {
-      baseActivityScore: activity.baseActivityScore,
       activityScore: activity.activityScore,
-      activityScoreMultiplier: activity.activityScoreMultiplier,
       trustScore: activity.trustScore,
       messages7d: activity.messages7d,
       messages30d: activity.messages30d,
@@ -727,40 +597,13 @@ function buildSharedProfileSummary(profile = {}, domains = {}) {
       globalEffectiveSessions30d: activity.globalEffectiveSessions30d,
       effectiveActiveDays30d: activity.effectiveActiveDays30d,
       daysAbsent: activity.daysAbsent,
-      guildJoinedAt: activity.guildJoinedAt,
-      daysSinceGuildJoin: activity.daysSinceGuildJoin,
       lastSeenAt: activity.lastSeenAt,
-      roleEligibilityStatus: activity.roleEligibilityStatus,
-      roleEligibleForActivityRole: activity.roleEligibleForActivityRole,
       desiredActivityRoleKey: activity.desiredActivityRoleKey,
       appliedActivityRoleKey: activity.appliedActivityRoleKey,
       manualOverride: activity.manualOverride,
       autoRoleFrozen: activity.autoRoleFrozen,
       recalculatedAt: activity.recalculatedAt,
       lastRoleAppliedAt: activity.lastRoleAppliedAt,
-    },
-    verification: {
-      isBlocked: ["pending", "manual_review", "failed"].includes(verification.status),
-      isApproved: verification.decision === "approved" || verification.status === "verified",
-      status: verification.status,
-      decision: verification.decision,
-      assignedAt: verification.assignedAt,
-      startedAt: verification.startedAt,
-      completedAt: verification.completedAt,
-      reportDueAt: verification.reportDueAt,
-      reportSentAt: verification.reportSentAt,
-      oauthUserId: verification.oauthUserId,
-      oauthUsername: verification.oauthUsername,
-      observedGuildCount: verification.observedGuildIds.length,
-      matchedEnemyGuildCount: verification.matchedEnemyGuildIds.length,
-      matchedEnemyUserCount: verification.matchedEnemyUserIds.length,
-      matchedEnemyInviteCount: verification.matchedEnemyInviteCodes.length,
-      matchedEnemyInviterCount: verification.matchedEnemyInviterUserIds.length,
-      manualTagCount: verification.manualTags.length,
-      reviewedBy: verification.reviewedBy,
-      reviewedAt: verification.reviewedAt,
-      decisionReason: verification.decisionReason,
-      lastError: verification.lastError,
     },
     roblox: {
       hasVerifiedAccount: roblox.verificationStatus === "verified" && Boolean(roblox.userId),
@@ -809,8 +652,7 @@ function ensureSharedProfile(profile = {}, userId = "") {
   const onboarding = normalizeOnboardingDomainState(source);
   const elo = normalizeEloDomainState(source?.domains?.elo);
   const tierlist = normalizeTierlistDomainState(source?.domains?.tierlist);
-  const activity = normalizeActivityDomainState(getLegacyActivitySource(source));
-  const verification = normalizeVerificationDomainState(source?.domains?.verification);
+  const activity = normalizeActivityDomainState(source?.domains?.activity || source?.activity);
   const roblox = normalizeRobloxDomainState(source?.domains?.roblox || buildLegacyRobloxSource(source));
 
   const next = {
@@ -836,7 +678,6 @@ function ensureSharedProfile(profile = {}, userId = "") {
       elo,
       tierlist,
       activity,
-      verification,
       roblox,
     },
   };
@@ -900,19 +741,6 @@ function createDefaultIntegrationState() {
         lastUpdated: null,
       },
     },
-    verification: {
-      mode: INTEGRATION_MODE_DORMANT,
-      status: "not_started",
-      enabled: false,
-      callbackBaseUrl: "",
-      verificationChannelId: "",
-      reportChannelId: "",
-      lastSyncAt: null,
-      stageTexts: {},
-      riskRules: normalizeVerificationRiskRules(),
-      deadline: normalizeVerificationDeadline(),
-      entryMessage: normalizeBoardState(),
-    },
   };
 }
 
@@ -925,31 +753,11 @@ function normalizeBoardState(value = {}) {
   };
 }
 
-function normalizeVerificationRiskRules(value = {}) {
-  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
-  return {
-    enemyGuildIds: normalizeStringArray(source.enemyGuildIds, 100, 80),
-    enemyUserIds: normalizeStringArray(source.enemyUserIds, 100, 80),
-    enemyInviteCodes: normalizeStringArray(source.enemyInviteCodes, 100, 80),
-    enemyInviterUserIds: normalizeStringArray(source.enemyInviterUserIds, 100, 80),
-    manualTags: normalizeStringArray(source.manualTags, 100, 80),
-  };
-}
-
-function normalizeVerificationDeadline(value = {}) {
-  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
-  return {
-    pendingDays: normalizePositiveInteger(source.pendingDays, 7),
-    reportOnly: source.reportOnly !== false,
-  };
-}
-
 function normalizeIntegrationState(value = {}) {
   const source = value && typeof value === "object" ? value : {};
 
   const eloStatus = cleanString(source?.elo?.status, 40);
   const tierlistStatus = cleanString(source?.tierlist?.status, 40);
-  const verificationStatus = cleanString(source?.verification?.status, 40);
   const next = {
     integrationStateVersion: INTEGRATION_STATE_VERSION,
     elo: {
@@ -973,25 +781,6 @@ function normalizeIntegrationState(value = {}) {
       lastSyncAt: normalizeNullableString(source?.tierlist?.lastSyncAt, 80),
       dashboard: normalizeBoardState(source?.tierlist?.dashboard),
       summary: normalizeBoardState(source?.tierlist?.summary),
-    },
-    verification: {
-      mode: INTEGRATION_MODE_DORMANT,
-      status: INTEGRATION_STATUSES.has(verificationStatus) ? verificationStatus : "not_started",
-      enabled: source?.verification?.enabled === true,
-      callbackBaseUrl: cleanString(source?.verification?.callbackBaseUrl, 500),
-      verificationChannelId: cleanString(source?.verification?.verificationChannelId, 40),
-      reportChannelId: cleanString(source?.verification?.reportChannelId, 40),
-      lastSyncAt: normalizeNullableString(source?.verification?.lastSyncAt, 80),
-      stageTexts: source?.verification?.stageTexts && typeof source.verification.stageTexts === "object" && !Array.isArray(source.verification.stageTexts)
-        ? Object.fromEntries(
-            Object.entries(source.verification.stageTexts)
-              .map(([key, text]) => [cleanString(key, 80), cleanString(text, 4000)])
-              .filter(([key, text]) => key && text)
-          )
-        : {},
-      riskRules: normalizeVerificationRiskRules(source?.verification?.riskRules),
-      deadline: normalizeVerificationDeadline(source?.verification?.deadline),
-      entryMessage: normalizeBoardState(source?.verification?.entryMessage),
     },
   };
 
@@ -1041,9 +830,6 @@ function deriveProfileMainView(profile = {}, characterEntries = []) {
 module.exports = {
   applyRobloxAccountSnapshot,
   buildRobloxProfileUrl,
-  clearAllRobloxRefreshDiagnostics,
-  clearRobloxRefreshDiagnostics,
-  configureSharedProfileRuntime,
   deriveProfileMainView,
   INTEGRATION_MODE_DORMANT,
   SHARED_PROFILE_VERSION,
@@ -1051,7 +837,6 @@ module.exports = {
   ensureSharedProfile,
   normalizeActivityDomainState,
   normalizeIntegrationState,
-  normalizeVerificationDomainState,
   normalizeRobloxDomainState,
   syncSharedProfiles,
 };

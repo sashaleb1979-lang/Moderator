@@ -145,6 +145,53 @@ const ACTIVITY_PANEL_BUTTON_IDS = Object.freeze([
       }
     }
 
+    async function replyActivityPanelError(interaction, replyError, message) {
+      const payload = {
+        content: cleanString(message, 500) || "Не удалось обработать действие Activity Panel.",
+        flags: MessageFlags.Ephemeral,
+      };
+
+      if (typeof replyError === "function") {
+        await replyError(interaction, payload);
+        return;
+      }
+
+      if (interaction?.deferred && typeof interaction.editReply === "function") {
+        await interaction.editReply(payload).catch(() => {});
+        return;
+      }
+
+      if (interaction?.replied && typeof interaction.followUp === "function") {
+        await interaction.followUp(payload).catch(() => {});
+        return;
+      }
+
+      if (typeof interaction?.reply === "function") {
+        await interaction.reply(payload).catch(() => {});
+      }
+    }
+
+    async function runActivityPanelInteractionAction({
+      interaction,
+      replyError,
+      customId,
+      errorPrefix,
+      action,
+    }) {
+      try {
+        await action();
+        return true;
+      } catch (error) {
+        console.error(`Activity panel interaction failed (${customId}):`, error?.message || error);
+        await replyActivityPanelError(
+          interaction,
+          replyError,
+          `${errorPrefix}: ${cleanString(error?.message || error, 300) || "unknown error"}.`
+        );
+        return true;
+      }
+    }
+
     function formatDateTime(value) {
       const timestamp = Date.parse(value || "");
       if (!Number.isFinite(timestamp)) return "—";
@@ -2545,6 +2592,7 @@ async function handleActivityPanelButtonInteraction({
   db = {},
   isModerator,
   replyNoPermission,
+  replyError = null,
   buildModeratorPanelPayload,
   buildActivityPanelPayload,
   runHistoricalImport = importHistoricalActivityFromWatchedChannels,
@@ -2579,72 +2627,142 @@ async function handleActivityPanelButtonInteraction({
   }
 
   if (customId === "panel_open_activity") {
-    await interaction.update(buildActivityPanelPayload({ db, statusText: "", view: ACTIVITY_PANEL_DEFAULT_VIEW }));
-    return true;
+    return runActivityPanelInteractionAction({
+      interaction,
+      replyError,
+      customId,
+      errorPrefix: "Не удалось открыть Activity Panel",
+      action: async () => {
+        await interaction.update(buildActivityPanelPayload({ db, statusText: "", view: ACTIVITY_PANEL_DEFAULT_VIEW }));
+      },
+    });
   }
 
   const requestedView = parseActivityPanelButtonView(customId);
   if (customId.startsWith("activity_panel_view_") && requestedView) {
-    await interaction.update(buildActivityPanelPayload({
-      db,
-      view: requestedView,
-      statusText: "",
-    }));
-    return true;
+    return runActivityPanelInteractionAction({
+      interaction,
+      replyError,
+      customId,
+      errorPrefix: "Не удалось открыть раздел Activity Panel",
+      action: async () => {
+        await interaction.update(buildActivityPanelPayload({
+          db,
+          view: requestedView,
+          statusText: "",
+        }));
+      },
+    });
   }
 
   if (customId.startsWith("activity_panel_refresh_") && requestedView) {
-    await interaction.update(buildActivityPanelPayload({
-      db,
-      view: requestedView,
-      statusText: "Вид обновлён.",
-    }));
-    return true;
+    return runActivityPanelInteractionAction({
+      interaction,
+      replyError,
+      customId,
+      errorPrefix: "Не удалось обновить Activity Panel",
+      action: async () => {
+        await interaction.update(buildActivityPanelPayload({
+          db,
+          view: requestedView,
+          statusText: "Вид обновлён.",
+        }));
+      },
+    });
   }
 
   if (customId === "activity_panel_back") {
-    await interaction.update(await buildModeratorPanelPayload(client, "", false));
-    return true;
+    return runActivityPanelInteractionAction({
+      interaction,
+      replyError,
+      customId,
+      errorPrefix: "Не удалось вернуться в мод-панель",
+      action: async () => {
+        await interaction.update(await buildModeratorPanelPayload(client, "", false));
+      },
+    });
   }
 
   if (customId === "activity_panel_config_access") {
-    await interaction.showModal(buildActivityAccessConfigModal(ensureActivityState(db).config || {}));
-    return true;
+    return runActivityPanelInteractionAction({
+      interaction,
+      replyError,
+      customId,
+      errorPrefix: "Не удалось открыть форму Activity Panel",
+      action: async () => {
+        await interaction.showModal(buildActivityAccessConfigModal(ensureActivityState(db).config || {}));
+      },
+    });
   }
 
   if (customId === "activity_panel_config_roles_primary") {
-    await interaction.showModal(buildActivityRoleMappingModal({
-      config: ensureActivityState(db).config || {},
-      modalId: "activity_panel_config_roles_primary_modal",
-      title: "Роли Activity • Основные",
-      roleKeys: ACTIVITY_ROLE_MAPPING_PRIMARY_KEYS,
-    }));
-    return true;
+    return runActivityPanelInteractionAction({
+      interaction,
+      replyError,
+      customId,
+      errorPrefix: "Не удалось открыть форму Activity Panel",
+      action: async () => {
+        await interaction.showModal(buildActivityRoleMappingModal({
+          config: ensureActivityState(db).config || {},
+          modalId: "activity_panel_config_roles_primary_modal",
+          title: "Роли Activity • Основные",
+          roleKeys: ACTIVITY_ROLE_MAPPING_PRIMARY_KEYS,
+        }));
+      },
+    });
   }
 
   if (customId === "activity_panel_config_roles_secondary") {
-    await interaction.showModal(buildActivityRoleMappingModal({
-      config: ensureActivityState(db).config || {},
-      modalId: "activity_panel_config_roles_secondary_modal",
-      title: "Роли Activity • Доп. роли",
-      roleKeys: ACTIVITY_ROLE_MAPPING_SECONDARY_KEYS,
-    }));
-    return true;
+    return runActivityPanelInteractionAction({
+      interaction,
+      replyError,
+      customId,
+      errorPrefix: "Не удалось открыть форму Activity Panel",
+      action: async () => {
+        await interaction.showModal(buildActivityRoleMappingModal({
+          config: ensureActivityState(db).config || {},
+          modalId: "activity_panel_config_roles_secondary_modal",
+          title: "Роли Activity • Доп. роли",
+          roleKeys: ACTIVITY_ROLE_MAPPING_SECONDARY_KEYS,
+        }));
+      },
+    });
   }
 
   if (customId === "activity_panel_config_watch_save") {
-    await interaction.showModal(buildWatchedChannelSaveModal(ensureActivityState(db)));
-    return true;
+    return runActivityPanelInteractionAction({
+      interaction,
+      replyError,
+      customId,
+      errorPrefix: "Не удалось открыть форму Activity Panel",
+      action: async () => {
+        await interaction.showModal(buildWatchedChannelSaveModal(ensureActivityState(db)));
+      },
+    });
   }
 
   if (customId === "activity_panel_config_watch_remove") {
-    await interaction.showModal(buildWatchedChannelRemoveModal());
-    return true;
+    return runActivityPanelInteractionAction({
+      interaction,
+      replyError,
+      customId,
+      errorPrefix: "Не удалось открыть форму Activity Panel",
+      action: async () => {
+        await interaction.showModal(buildWatchedChannelRemoveModal());
+      },
+    });
   }
 
   if (customId === "activity_panel_inspect_user") {
-    await interaction.showModal(buildActivityUserInspectionModal());
-    return true;
+    return runActivityPanelInteractionAction({
+      interaction,
+      replyError,
+      customId,
+      errorPrefix: "Не удалось открыть форму Activity Panel",
+      action: async () => {
+        await interaction.showModal(buildActivityUserInspectionModal());
+      },
+    });
   }
 
   await interaction.deferUpdate();

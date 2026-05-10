@@ -470,6 +470,23 @@ async function runRobloxPlaytimeSyncJob(options = {}) {
   }
 
   const candidates = buildRobloxVerifiedCandidates(db);
+  if (!candidates.length) {
+    return {
+      totalCandidates: 0,
+      totalBatches: 0,
+      processedBatches: 0,
+      failedBatches: 0,
+      processedUserIds: 0,
+      failedUserIds: 0,
+      activeJjsUsers: 0,
+      touchedUserCount: 0,
+      startedSessionCount: 0,
+      closedSessionCount: 0,
+      activeCoPlayPairCount: 0,
+      skippedReason: "no_verified_candidates",
+    };
+  }
+
   const candidateByRobloxUserId = new Map(candidates.map((candidate) => [candidate.robloxUserId, candidate]));
   const presenceByRobloxUserId = new Map();
   const failedRobloxUserIds = new Set();

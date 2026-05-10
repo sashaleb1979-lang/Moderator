@@ -365,6 +365,7 @@ test("handleRobloxStatsPanelButtonInteraction gates permissions and delegates ma
     runPlaytimeSyncJob: async () => {
       playtimeRuns += 1;
       return {
+        totalCandidates: 4,
         activeJjsUsers: 2,
         touchedUserCount: 3,
         failedUserIds: 1,
@@ -376,7 +377,7 @@ test("handleRobloxStatsPanelButtonInteraction gates permissions and delegates ma
   assert.equal(manualHandled, true);
   assert.equal(playtimeRuns, 1);
   assert.equal(manual.calls.deferred, 1);
-  assert.match(manual.calls.edits[0].content, /Активных в JJS: 2, затронуто профилей: 3, ошибок пользователей: 1/i);
+  assert.match(manual.calls.edits[0].content, /Кандидатов: 4, активных в JJS: 2, затронуто профилей: 3, ошибок пользователей: 1/i);
 
   const togglePlaytime = createInteraction("roblox_stats_toggle_playtime");
   const toggleCalls = [];
@@ -403,6 +404,58 @@ test("handleRobloxStatsPanelButtonInteraction gates permissions and delegates ma
 
   assert.deepEqual(toggleCalls, [{ playtimeTrackingEnabled: false }]);
   assert.match(togglePlaytime.calls.edits[0].content, /выключен/i);
+
+  const liveConfigToggle = createInteraction("roblox_stats_toggle_metadata");
+  let currentAppConfig = {
+    roblox: {
+      metadataRefreshEnabled: false,
+      playtimeTrackingEnabled: true,
+      runtimeFlushEnabled: true,
+      playtimePollMinutes: 3,
+      jjsUniverseId: 3508322461,
+    },
+  };
+
+  await handleRobloxStatsPanelButtonInteraction({
+    interaction: liveConfigToggle.interaction,
+    client: {},
+    db: {},
+    runtimeState: {},
+    appConfig: {
+      roblox: {
+        metadataRefreshEnabled: false,
+        playtimeTrackingEnabled: true,
+        runtimeFlushEnabled: true,
+        playtimePollMinutes: 3,
+        jjsUniverseId: 3508322461,
+      },
+    },
+    getAppConfig: () => currentAppConfig,
+    telemetry: createRobloxPanelTelemetry(),
+    isModerator: () => true,
+    replyNoPermission: () => liveConfigToggle.interaction.reply({ content: "Нет прав." }),
+    buildModeratorPanelPayload: async () => ({ content: "main" }),
+    updateRobloxSettings: async (patch) => {
+      currentAppConfig = {
+        ...currentAppConfig,
+        roblox: {
+          ...(currentAppConfig.roblox || {}),
+          ...patch,
+        },
+      };
+      return { mutated: true };
+    },
+    clearRefreshDiagnostics: async () => ({ clearedCount: 0 }),
+    runProfileRefreshJob: async () => ({}),
+    runPlaytimeSyncJob: async () => ({}),
+    runRuntimeFlush: async () => ({}),
+  });
+
+  const liveConfigPayload = liveConfigToggle.calls.edits[0];
+  const liveModeField = liveConfigPayload.embeds[0].data.fields.find((field) => field.name === "Режим");
+  assert.match(liveModeField.value, /Обновление профилей: \*\*включено\*\*/i);
+  assert.equal(liveConfigPayload.components[0].components[3].data.disabled, false);
+  assert.equal(liveConfigPayload.components[1].components[1].data.label, "Профили: ВКЛ");
 
   const setPoll = createInteraction("roblox_stats_set_poll_5");
   const pollCalls = [];
