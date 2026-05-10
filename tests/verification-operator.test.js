@@ -84,20 +84,14 @@ test("buildVerificationPanelPayload summarizes autonomous verification config", 
   });
 
   const navRow = payload.components[0].toJSON().components;
-  const actionRow = payload.components[1].toJSON().components;
-  const configRow = payload.components[2].toJSON().components;
+  const configRow = payload.components[1].toJSON().components;
   assert.equal(navRow[0].custom_id, VERIFY_PANEL_HOME_ID);
   assert.equal(navRow[1].custom_id, VERIFY_PANEL_QUEUE_ID);
   assert.equal(navRow[2].custom_id, VERIFY_PANEL_RUNTIME_ID);
   assert.equal(navRow[3].custom_id, VERIFY_PANEL_GUIDE_ID);
-  assert.equal(navRow[4].custom_id, VERIFY_PANEL_BACK_ID);
-  assert.equal(actionRow[0].custom_id, VERIFY_PANEL_REFRESH_ID);
-  assert.equal(actionRow[1].custom_id, VERIFY_PANEL_PUBLISH_ENTRY_ID);
-  assert.equal(actionRow[2].custom_id, VERIFY_PANEL_RUN_SWEEP_ID);
   assert.equal(configRow[0].custom_id, VERIFY_PANEL_CONFIG_INFRA_ID);
   assert.equal(configRow[1].custom_id, VERIFY_PANEL_CONFIG_RISK_ID);
   assert.equal(configRow[2].custom_id, VERIFY_PANEL_CONFIG_TEXTS_ID);
-  assert.equal(configRow[3].custom_id, VERIFY_PANEL_RESEND_REPORT_ID);
   assert.equal(payload.embeds[0].data.title, "Панель проверки доступа");
   assert.match(payload.embeds[0].data.fields[1].value, /Ожидают проверки: \*\*3\*\*/);
   assert.match(payload.embeds[0].data.fields[2].value, /<@&verify-role>/);
@@ -440,7 +434,7 @@ test("handleVerificationPanelModalSubmitInteraction defers modal replies before 
   assert.deepEqual(calls[4], ["startRuntime", { id: "client" }]);
   assert.deepEqual(calls[5], ["editReply", {
     view: "runtime",
-    statusText: "Базовые настройки проверки сохранены. Система: callback готов, входное сообщение опубликовано."
+    statusText: "Базовые настройки проверки сохранены: verify-роль <@&123>, канал проверки <#456>, канал отчётов <#789>. Система: callback готов, входное сообщение опубликовано."
   }]);
 });
 
@@ -515,6 +509,80 @@ test("handleVerificationPanelModalSubmitInteraction publishes entry message imme
   assert.equal(calls.some(([name]) => name === "ensureEntryMessage"), true);
   assert.deepEqual(calls.at(-1), ["editReply", {
     view: "runtime",
-    statusText: "Базовые настройки проверки сохранены. Входное сообщение опубликовано в канале проверки."
+    statusText: "Базовые настройки проверки сохранены: verify-роль <@&123>, канал проверки <#456>, канал отчётов <#789>. Входное сообщение опубликовано в канале проверки."
   }]);
+});
+
+test("handleVerificationPanelModalSubmitInteraction resolves exact role and channel names", async () => {
+  const calls = [];
+
+  const handled = await handleVerificationPanelModalSubmitInteraction({
+    interaction: {
+      customId: VERIFY_PANEL_CONFIG_INFRA_MODAL_ID,
+      member: { id: "moderator" },
+      fields: {
+        getTextInputValue(fieldId) {
+          if (fieldId === "verification_enabled") return "да";
+          if (fieldId === "verification_callback_base_url") return "https://example.com/callback";
+          if (fieldId === "verification_verify_role") return "Проверка";
+          if (fieldId === "verification_room_channel") return "verification";
+          if (fieldId === "verification_report_channel") return "review";
+          return "";
+        },
+      },
+      async deferReply(options) {
+        calls.push(["deferReply", options]);
+      },
+      async editReply(payload) {
+        calls.push(["editReply", payload]);
+      },
+    },
+    client: { id: "client" },
+    isModerator: () => true,
+    replyNoPermission: async () => {
+      throw new Error("should not run");
+    },
+    buildPanelReply: async (view, statusText) => ({ view, statusText }),
+    getCurrentIntegration: () => ({ enabled: false, verificationChannelId: "" }),
+    parseBooleanInput: () => true,
+    parseListInput: () => [],
+    parseRequestedRoleId: () => "",
+    parseRequestedChannelId: () => "",
+    resolveRequestedRoleId: async () => "123",
+    resolveRequestedChannelId: async (value) => value === "review" ? "789" : "456",
+    parseRequestedUserId: (value) => String(value || "").trim(),
+    cleanText: (value) => String(value || "").trim(),
+    nowIso: () => "2026-05-10T00:00:00.000Z",
+    writeIntegrationSnapshot: (patch) => {
+      calls.push(["writeIntegrationSnapshot", patch]);
+    },
+    writeVerifyRole: (roleId) => {
+      calls.push(["writeVerifyRole", roleId]);
+    },
+    clearVerifyRole: () => {
+      calls.push(["clearVerifyRole"]);
+    },
+    saveDb: () => {
+      calls.push(["saveDb"]);
+    },
+    startRuntime: async () => ({ callbackStarted: true, entryPublished: false }),
+    ensureEntryMessage: async () => {
+      calls.push(["ensureEntryMessage"]);
+    },
+    ensurePendingProfile: () => {},
+    postManualReport: async () => ({ channel: { id: "report-room" }, profile: { domains: { verification: {} } } }),
+    updateProfile: () => {},
+    computeReportDueAt: () => "2026-05-17T00:00:00.000Z",
+  });
+
+  assert.equal(handled, true);
+  assert.deepEqual(calls[1], ["writeIntegrationSnapshot", {
+    enabled: true,
+    callbackBaseUrl: "https://example.com/callback",
+    verificationChannelId: "456",
+    reportChannelId: "789",
+    lastSyncAt: "2026-05-10T00:00:00.000Z",
+    entryMessage: { channelId: "", messageId: "" },
+  }]);
+  assert.deepEqual(calls[2], ["writeVerifyRole", "123"]);
 });

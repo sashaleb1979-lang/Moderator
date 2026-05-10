@@ -263,26 +263,58 @@ function buildVerificationPanelNavRow(currentView = "home") {
     new ButtonBuilder().setCustomId(VERIFY_PANEL_HOME_ID).setLabel("Обзор").setStyle(currentView === "home" ? ButtonStyle.Primary : ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(VERIFY_PANEL_QUEUE_ID).setLabel("Очередь").setStyle(currentView === "queue" ? ButtonStyle.Primary : ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(VERIFY_PANEL_RUNTIME_ID).setLabel("Система").setStyle(currentView === "runtime" ? ButtonStyle.Primary : ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(VERIFY_PANEL_GUIDE_ID).setLabel("Инструкция").setStyle(currentView === "guide" ? ButtonStyle.Primary : ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(VERIFY_PANEL_BACK_ID).setLabel("Назад").setStyle(ButtonStyle.Secondary)
+    new ButtonBuilder().setCustomId(VERIFY_PANEL_GUIDE_ID).setLabel("Инструкция").setStyle(currentView === "guide" ? ButtonStyle.Primary : ButtonStyle.Secondary)
   );
 }
 
-function buildVerificationPanelActionRow() {
+function buildVerificationHomeRow() {
   return new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(VERIFY_PANEL_REFRESH_ID).setLabel("Обновить").setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(VERIFY_PANEL_PUBLISH_ENTRY_ID).setLabel("Обновить входное сообщение").setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(VERIFY_PANEL_RUN_SWEEP_ID).setLabel("Проверить просроченные").setStyle(ButtonStyle.Secondary)
-  );
-}
-
-function buildVerificationPanelConfigRow() {
-  return new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(VERIFY_PANEL_CONFIG_INFRA_ID).setLabel("Основа").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(VERIFY_PANEL_CONFIG_INFRA_ID).setLabel("Основные").setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(VERIFY_PANEL_CONFIG_RISK_ID).setLabel("Риски").setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(VERIFY_PANEL_CONFIG_TEXTS_ID).setLabel("Тексты").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(VERIFY_PANEL_CONFIG_TEXTS_ID).setLabel("Тексты").setStyle(ButtonStyle.Secondary)
+  );
+}
+
+function buildVerificationQueueRow() {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(VERIFY_PANEL_RUN_SWEEP_ID).setLabel("Проверить дедлайны").setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(VERIFY_PANEL_RESEND_REPORT_ID).setLabel("Повторить отчёт").setStyle(ButtonStyle.Secondary)
   );
+}
+
+function buildVerificationRuntimeRow() {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(VERIFY_PANEL_CONFIG_INFRA_ID).setLabel("Основные").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(VERIFY_PANEL_PUBLISH_ENTRY_ID).setLabel("Опубликовать кнопку").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(VERIFY_PANEL_RUN_SWEEP_ID).setLabel("Проверить дедлайны").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(VERIFY_PANEL_RESEND_REPORT_ID).setLabel("Повторить отчёт").setStyle(ButtonStyle.Secondary)
+  );
+}
+
+function buildVerificationGuideRow() {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(VERIFY_PANEL_CONFIG_INFRA_ID).setLabel("Основные").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(VERIFY_PANEL_CONFIG_RISK_ID).setLabel("Риски").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(VERIFY_PANEL_CONFIG_TEXTS_ID).setLabel("Тексты").setStyle(ButtonStyle.Secondary)
+  );
+}
+
+function buildVerificationPanelRows(currentView = "home") {
+  const rows = [buildVerificationPanelNavRow(currentView)];
+  if (currentView === "runtime") {
+    rows.push(buildVerificationRuntimeRow());
+    return rows;
+  }
+  if (currentView === "queue") {
+    rows.push(buildVerificationQueueRow());
+    return rows;
+  }
+  if (currentView === "guide") {
+    rows.push(buildVerificationGuideRow());
+    return rows;
+  }
+  rows.push(buildVerificationHomeRow());
+  return rows;
 }
 
 function normalizeModalValue(value, fallback = "", limit = 4000) {
@@ -297,7 +329,7 @@ function buildVerificationInfraConfigModal(options = {}) {
 
   return new ModalBuilder()
     .setCustomId(VERIFY_PANEL_CONFIG_INFRA_MODAL_ID)
-    .setTitle("Базовые настройки проверки")
+    .setTitle("Основные настройки")
     .addComponents(
       new ActionRowBuilder().addComponents(
         new TextInputBuilder()
@@ -307,42 +339,47 @@ function buildVerificationInfraConfigModal(options = {}) {
           .setRequired(true)
           .setMaxLength(10)
           .setValue(integration.enabled === true ? "да" : "нет")
+          .setPlaceholder("да")
       ),
       new ActionRowBuilder().addComponents(
         new TextInputBuilder()
           .setCustomId("verification_callback_base_url")
-          .setLabel("Ссылка callback страницы")
+          .setLabel("Callback URL")
           .setStyle(TextInputStyle.Short)
           .setRequired(false)
           .setMaxLength(500)
           .setValue(normalizeModalValue(integration.callbackBaseUrl, ""))
+          .setPlaceholder("https://example.com/verification/callback")
       ),
       new ActionRowBuilder().addComponents(
         new TextInputBuilder()
           .setCustomId("verification_verify_role")
-          .setLabel("ID verify-роли или mention")
+          .setLabel("Verify-роль: ID/mention/название")
           .setStyle(TextInputStyle.Short)
           .setRequired(false)
-          .setMaxLength(80)
+          .setMaxLength(120)
           .setValue(normalizeModalValue(options.verifyRoleId, ""))
+          .setPlaceholder("например, Проверка")
       ),
       new ActionRowBuilder().addComponents(
         new TextInputBuilder()
           .setCustomId("verification_room_channel")
-          .setLabel("Канал проверки: ID или mention")
+          .setLabel("Канал проверки: ID/mention/название")
           .setStyle(TextInputStyle.Short)
           .setRequired(false)
-          .setMaxLength(80)
+          .setMaxLength(120)
           .setValue(normalizeModalValue(integration.verificationChannelId, ""))
+          .setPlaceholder("например, verification")
       ),
       new ActionRowBuilder().addComponents(
         new TextInputBuilder()
           .setCustomId("verification_report_channel")
-          .setLabel("Канал отчётов: ID или mention")
+          .setLabel("Канал отчётов: ID/mention/название")
           .setStyle(TextInputStyle.Short)
           .setRequired(false)
-          .setMaxLength(80)
+          .setMaxLength(120)
           .setValue(normalizeModalValue(integration.reportChannelId, ""))
+          .setPlaceholder("например, review")
       )
     );
 }
@@ -583,11 +620,7 @@ function buildVerificationGuidePayload(options = {}) {
             new ButtonBuilder().setCustomId(VERIFY_ENTRY_STATUS_ID).setLabel("Мой статус").setStyle(ButtonStyle.Secondary)
           ),
         ]
-      : [
-          buildVerificationPanelNavRow("guide"),
-          buildVerificationPanelActionRow(),
-          buildVerificationPanelConfigRow(),
-        ],
+      : buildVerificationPanelRows("guide"),
   };
 }
 
@@ -826,11 +859,7 @@ function buildVerificationPanelPayload(options = {}) {
 
   return {
     embeds: [embed],
-    components: [
-      buildVerificationPanelNavRow("home"),
-      buildVerificationPanelActionRow(),
-      buildVerificationPanelConfigRow(),
-    ],
+    components: buildVerificationPanelRows("home"),
   };
 }
 
@@ -870,11 +899,7 @@ function buildVerificationQueuePayload(options = {}) {
 
   return {
     embeds: [embed],
-    components: [
-      buildVerificationPanelNavRow("queue"),
-      buildVerificationPanelActionRow(),
-      buildVerificationPanelConfigRow(),
-    ],
+    components: buildVerificationPanelRows("queue"),
   };
 }
 
@@ -927,11 +952,7 @@ function buildVerificationRuntimePayload(options = {}) {
 
   return {
     embeds: [embed],
-    components: [
-      buildVerificationPanelNavRow("runtime"),
-      buildVerificationPanelActionRow(),
-      buildVerificationPanelConfigRow(),
-    ],
+    components: buildVerificationPanelRows("runtime"),
   };
 }
 
@@ -1012,6 +1033,8 @@ async function handleVerificationPanelModalSubmitInteraction(options = {}) {
     parseListInput,
     parseRequestedRoleId,
     parseRequestedChannelId,
+    resolveRequestedRoleId,
+    resolveRequestedChannelId,
     parseRequestedUserId,
     cleanText,
     nowIso,
@@ -1064,6 +1087,12 @@ async function handleVerificationPanelModalSubmitInteraction(options = {}) {
   const editPayload = async (payload) => {
     await interaction.editReply(payload);
   };
+  const resolveRoleId = typeof resolveRequestedRoleId === "function"
+    ? resolveRequestedRoleId
+    : async (value, fallbackRoleId = "") => parseRequestedRoleId(value, fallbackRoleId);
+  const resolveChannelId = typeof resolveRequestedChannelId === "function"
+    ? resolveRequestedChannelId
+    : async (value, fallbackChannelId = "") => parseRequestedChannelId(value, fallbackChannelId);
 
   try {
     if (customId === VERIFY_PANEL_CONFIG_INFRA_MODAL_ID) {
@@ -1080,19 +1109,19 @@ async function handleVerificationPanelModalSubmitInteraction(options = {}) {
         return true;
       }
 
-      const verifyRoleId = parseRequestedRoleId(verifyRoleRaw, "");
-      const verificationChannelId = parseRequestedChannelId(verificationRoomRaw, "");
-      const reportChannelId = parseRequestedChannelId(reportChannelRaw, "");
+      const verifyRoleId = await resolveRoleId(verifyRoleRaw, "");
+      const verificationChannelId = await resolveChannelId(verificationRoomRaw, "");
+      const reportChannelId = await resolveChannelId(reportChannelRaw, "");
       if (cleanText(verifyRoleRaw, 80) && !verifyRoleId) {
-        await editPayload({ content: "Verify role должен быть ID роли или mention вида <@&...>." });
+        await editPayload({ content: "Verify-роль должна быть ID, mention или точным названием существующей роли." });
         return true;
       }
       if (cleanText(verificationRoomRaw, 80) && !verificationChannelId) {
-        await editPayload({ content: "Verification room должен быть ID канала или mention вида <#...>." });
+        await editPayload({ content: "Канал проверки должен быть ID, mention или точным названием существующего текстового канала." });
         return true;
       }
       if (cleanText(reportChannelRaw, 80) && !reportChannelId) {
-        await editPayload({ content: "Report channel должен быть ID канала или mention вида <#...>." });
+        await editPayload({ content: "Канал отчётов должен быть ID, mention или точным названием существующего текстового канала." });
         return true;
       }
 
@@ -1115,7 +1144,13 @@ async function handleVerificationPanelModalSubmitInteraction(options = {}) {
       }
       saveDb();
 
-      const statusParts = ["Базовые настройки проверки сохранены."];
+      const savedTargets = [];
+      if (verifyRoleId) savedTargets.push(`verify-роль ${formatRoleMention(verifyRoleId)}`);
+      if (verificationChannelId) savedTargets.push(`канал проверки ${formatChannelMention(verificationChannelId)}`);
+      if (reportChannelId) savedTargets.push(`канал отчётов ${formatChannelMention(reportChannelId)}`);
+      const statusParts = [savedTargets.length
+        ? `Базовые настройки проверки сохранены: ${savedTargets.join(", ")}.`
+        : "Базовые настройки проверки сохранены."];
       let entryPublished = false;
       if (enabled) {
         try {

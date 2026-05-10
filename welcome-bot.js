@@ -11540,6 +11540,57 @@ function parseRequestedRoleId(value, fallbackRoleId = "") {
   return /^\d{5,25}$/.test(candidate) ? candidate : "";
 }
 
+function normalizeRequestedEntityName(value, prefixes = []) {
+  let normalized = String(value || "").trim().toLowerCase();
+  for (const prefix of prefixes) {
+    if (normalized.startsWith(prefix)) {
+      normalized = normalized.slice(prefix.length).trim();
+    }
+  }
+  return normalized.replace(/\s+/g, " ");
+}
+
+async function resolveRequestedChannelIdFromGuild(client, value, fallbackChannelId = "") {
+  const directChannelId = parseRequestedChannelId(value, fallbackChannelId);
+  const rawValue = String(value || "").trim();
+  if (directChannelId || !rawValue) return directChannelId;
+
+  const guild = await getGuild(client).catch(() => null);
+  if (!guild) return "";
+
+  await guild.channels.fetch().catch(() => null);
+  const requestedName = normalizeRequestedEntityName(rawValue, ["#"]);
+  if (!requestedName) return "";
+
+  const matches = [...guild.channels.cache.values()].filter((channel) => {
+    if (!channel || typeof channel.name !== "string") return false;
+    if (typeof channel.isTextBased === "function" && !channel.isTextBased()) return false;
+    return normalizeRequestedEntityName(channel.name) === requestedName;
+  });
+
+  return matches.length === 1 ? String(matches[0].id || "").trim() : "";
+}
+
+async function resolveRequestedRoleIdFromGuild(client, value, fallbackRoleId = "") {
+  const directRoleId = parseRequestedRoleId(value, fallbackRoleId);
+  const rawValue = String(value || "").trim();
+  if (directRoleId || !rawValue) return directRoleId;
+
+  const guild = await getGuild(client).catch(() => null);
+  if (!guild) return "";
+
+  await guild.roles.fetch().catch(() => null);
+  const requestedName = normalizeRequestedEntityName(rawValue, ["@"]);
+  if (!requestedName) return "";
+
+  const matches = [...guild.roles.cache.values()].filter((role) => {
+    if (!role || typeof role.name !== "string") return false;
+    return normalizeRequestedEntityName(role.name) === requestedName;
+  });
+
+  return matches.length === 1 ? String(matches[0].id || "").trim() : "";
+}
+
 function parseVerificationBooleanInput(value, fallback = false) {
   const text = cleanVerificationText(value, 20).toLowerCase();
   if (!text) return fallback;
@@ -17793,6 +17844,8 @@ client.on("interactionCreate", async (interaction) => {
       parseListInput: parseVerificationListInput,
       parseRequestedRoleId,
       parseRequestedChannelId,
+      resolveRequestedRoleId: (value, fallbackRoleId = "") => resolveRequestedRoleIdFromGuild(client, value, fallbackRoleId),
+      resolveRequestedChannelId: (value, fallbackChannelId = "") => resolveRequestedChannelIdFromGuild(client, value, fallbackChannelId),
       parseRequestedUserId,
       cleanText: cleanVerificationText,
       nowIso,
