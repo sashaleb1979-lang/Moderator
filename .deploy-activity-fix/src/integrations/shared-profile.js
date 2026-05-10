@@ -742,6 +742,57 @@ function syncSharedProfiles(db = {}) {
   return { mutated, profiles: nextProfiles };
 }
 
+function clearAllRobloxRefreshDiagnostics(profiles = {}) {
+  if (!profiles || typeof profiles !== "object" || Array.isArray(profiles)) {
+    return {
+      mutated: false,
+      clearedCount: 0,
+      profiles,
+    };
+  }
+
+  let mutated = false;
+  let clearedCount = 0;
+
+  for (const [userId, rawProfile] of Object.entries(profiles)) {
+    const ensured = ensureSharedProfile(rawProfile, userId);
+    const profile = ensured.profile;
+    const roblox = profile?.domains?.roblox;
+    const hadRefreshDiagnostic = Boolean(roblox?.refreshError) || roblox?.refreshStatus === "error";
+
+    if (!hadRefreshDiagnostic) {
+      if (ensured.mutated) {
+        profiles[userId] = profile;
+        mutated = true;
+      }
+      continue;
+    }
+
+    applyRobloxAccountSnapshot(profile, {}, {
+      verificationStatus: roblox.verificationStatus,
+      verifiedAt: roblox.verifiedAt,
+      updatedAt: roblox.updatedAt,
+      lastSubmissionId: roblox.lastSubmissionId,
+      lastReviewedAt: roblox.lastReviewedAt,
+      reviewedBy: roblox.reviewedBy,
+      source: roblox.source,
+      lastRefreshAt: roblox.lastRefreshAt,
+      refreshStatus: null,
+      refreshError: null,
+    });
+
+    profiles[userId] = ensureSharedProfile(profile, userId).profile;
+    mutated = true;
+    clearedCount += 1;
+  }
+
+  return {
+    mutated,
+    clearedCount,
+    profiles,
+  };
+}
+
 function createDefaultIntegrationState() {
   return {
     integrationStateVersion: INTEGRATION_STATE_VERSION,
@@ -868,6 +919,7 @@ function deriveProfileMainView(profile = {}, characterEntries = []) {
 module.exports = {
   applyRobloxAccountSnapshot,
   buildRobloxProfileUrl,
+  clearAllRobloxRefreshDiagnostics,
   configureSharedProfileRuntime,
   deriveProfileMainView,
   INTEGRATION_MODE_DORMANT,

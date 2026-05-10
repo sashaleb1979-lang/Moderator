@@ -62,6 +62,7 @@ function formatJobStatus(status) {
   if (normalized === "running") return "в работе";
   if (normalized === "ok") return "успешно";
   if (normalized === "error") return "ошибка";
+  if (normalized === "pending_flush") return "ожидает flush";
   return "ожидание";
 }
 
@@ -276,7 +277,7 @@ function buildRobloxEntryNote(entry = {}, options = {}) {
   }
 
   if (entry.dirtyRuntime) {
-    parts.push("есть несохранённый runtime");
+    parts.push("ожидает сохранения runtime");
   }
 
   if (!parts.length && entry.lastSeenInJjsAt) {
@@ -465,6 +466,26 @@ function formatRobloxJobLine(job = {}) {
   return pieces.join(" | ");
 }
 
+function formatRobloxRuntimeFlushLine(job = {}) {
+  const runtimeDirtyUserCount = Math.max(
+    normalizeNonNegativeInteger(job.summary?.dirtyUserCount, 0),
+    normalizeNonNegativeInteger(job.runtime?.dirtyUserCount, 0)
+  );
+  const normalizedStatus = cleanString(job.status, 40) || "idle";
+  const effectiveStatus = runtimeDirtyUserCount > 0 && ["idle", "ok"].includes(normalizedStatus)
+    ? "pending_flush"
+    : normalizedStatus;
+
+  return formatRobloxJobLine({
+    ...job,
+    status: effectiveStatus,
+    summary: {
+      ...(job.summary || {}),
+      dirtyUserCount: runtimeDirtyUserCount,
+    },
+  });
+}
+
 function formatTopEntry(entry = {}, index = 0) {
   const label = entry.robloxUsername
     ? `${entry.displayName} -> ${entry.robloxUsername}`
@@ -569,7 +590,7 @@ function buildRobloxStatsPanelPayload({ db = {}, runtimeState = {}, telemetry = 
         value: [
           `Обновление профилей: ${metadataRefreshEnabled ? formatRobloxJobLine(snapshot.jobs.profileRefresh) : "выключено для passive tracking"}`,
           `Синк playtime: ${playtimeTrackingEnabled ? formatRobloxJobLine(snapshot.jobs.playtimeSync) : "выключено в настройках"}`,
-          `Сохранение runtime: ${runtimeFlushEnabled ? formatRobloxJobLine(snapshot.jobs.runtimeFlush) : "выключено в настройках"}`,
+          `Сохранение runtime: ${runtimeFlushEnabled ? formatRobloxRuntimeFlushLine(snapshot.jobs.runtimeFlush) : "выключено в настройках"}`,
         ].join("\n"),
         inline: false,
       },
@@ -768,14 +789,39 @@ async function handleRobloxStatsPanelButtonInteraction({
     return true;
   }
 
+  if (customId === "roblox_stats_run_playtime_sync") {
+    await interaction.deferUpdate();
+    try {
+      const result = await runPlaytimeSyncJob();
+      const touchedUserCount = normalizeNonNegativeInteger(result?.touchedUserCount, 0);
+      let statusText = buildPlaytimeSyncStatusText(result);
+
+      if (touchedUserCount > 0) {
+        if (isRuntimeFlushEnabled(readAppConfig()) && typeof runRuntimeFlush === "function") {
+          try {
+            const flushResult = await runRuntimeFlush();
+            statusText = `${statusText} Runtime сразу сохранён: ${flushResult?.saved === true ? "да" : "нет"}, профилей: ${normalizeNonNegativeInteger(flushResult?.dirtyUserCount, 0)}.`;
+          } catch (error) {
+            statusText = `${statusText} Автосохранение runtime упало: ${truncateText(error?.message || error, 160) || "неизвестная ошибка"}. Изменения остались в памяти.`;
+          }
+        } else {
+          statusText = `${statusText} Изменения остались в runtime до следующего сохранения.`;
+        }
+      }
+
+      await interaction.editReply(renderPanel({ statusText }));
+    } catch (error) {
+      await interaction.editReply(renderPanel({
+        statusText: `Операция завершилась ошибкой: ${truncateText(error?.message || error, 240) || "неизвестная ошибка"}`,
+      }));
+    }
+    return true;
+  }
+
   const actionMap = {
     roblox_stats_run_profile_refresh: {
       runner: runProfileRefreshJob,
       successText: (result = {}) => `Обновление профилей завершено. Обновлено: ${normalizeNonNegativeInteger(result.refreshedCount, 0)}, с ошибками: ${normalizeNonNegativeInteger(result.failedCount, 0)}.`,
-    },
-    roblox_stats_run_playtime_sync: {
-      runner: runPlaytimeSyncJob,
-      successText: (result = {}) => buildPlaytimeSyncStatusText(result),
     },
     roblox_stats_run_flush: {
       runner: runRuntimeFlush,

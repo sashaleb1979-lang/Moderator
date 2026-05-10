@@ -329,6 +329,25 @@ test("buildRobloxStatsPanelPayload hides stale playtime and runtime job truth wh
   assert.doesNotMatch(fieldTexts, /JJS IDs/i);
 });
 
+test("buildRobloxStatsPanelPayload shows pending runtime flush when dirty runtime users exist", () => {
+  const payload = buildRobloxStatsPanelPayload({
+    runtimeState: {
+      dirtyDiscordUserIds: new Set(["user_1", "user_2"]),
+    },
+    telemetry: createRobloxPanelTelemetry(),
+    appConfig: {
+      roblox: {
+        playtimeTrackingEnabled: true,
+        runtimeFlushEnabled: true,
+        jjsUniverseId: 3508322461,
+      },
+    },
+  });
+
+  const fieldTexts = payload.embeds[0].data.fields.map((field) => `${field.name}: ${field.value}`).join("\n");
+  assert.match(fieldTexts, /Сохранение runtime: ожидает flush \| грязных 2/i);
+});
+
 test("handleRobloxStatsPanelButtonInteraction gates permissions and delegates manual actions", async () => {
   const denied = createInteraction("panel_open_roblox_stats", {
     member: { roles: { cache: new Set() } },
@@ -350,6 +369,7 @@ test("handleRobloxStatsPanelButtonInteraction gates permissions and delegates ma
 
   const manual = createInteraction("roblox_stats_run_playtime_sync");
   let playtimeRuns = 0;
+  let runtimeFlushRuns = 0;
   const manualHandled = await handleRobloxStatsPanelButtonInteraction({
     interaction: manual.interaction,
     client: {},
@@ -372,13 +392,21 @@ test("handleRobloxStatsPanelButtonInteraction gates permissions and delegates ma
         failedUserIds: 1,
       };
     },
-    runRuntimeFlush: async () => ({}),
+    runRuntimeFlush: async () => {
+      runtimeFlushRuns += 1;
+      return {
+        saved: true,
+        dirtyUserCount: 3,
+      };
+    },
   });
 
   assert.equal(manualHandled, true);
   assert.equal(playtimeRuns, 1);
+  assert.equal(runtimeFlushRuns, 1);
   assert.equal(manual.calls.deferred, 1);
   assert.match(manual.calls.edits[0].content, /Кандидатов: 4, активных в JJS: 2, затронуто профилей: 3, ошибок пользователей: 1/i);
+  assert.match(manual.calls.edits[0].content, /Runtime сразу сохранён: да, профилей: 3/i);
 
   const opaqueManual = createInteraction("roblox_stats_run_playtime_sync");
   await handleRobloxStatsPanelButtonInteraction({

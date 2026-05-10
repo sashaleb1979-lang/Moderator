@@ -6,6 +6,7 @@ const assert = require("node:assert/strict");
 const {
   applyRobloxAccountSnapshot,
   buildRobloxProfileUrl,
+  clearAllRobloxRefreshDiagnostics,
   configureSharedProfileRuntime,
   INTEGRATION_MODE_DORMANT,
   SHARED_PROFILE_VERSION,
@@ -255,6 +256,66 @@ test("syncSharedProfiles backfills missing shared state and keeps onboarding sna
   assert.equal(db.profiles["100"].domains.onboarding.approvedKills, 7000);
   assert.equal(db.profiles["100"].domains.onboarding.killTier, 4);
   assert.equal(db.profiles["100"].summary.onboarding.mainsCount, 2);
+});
+
+test("clearAllRobloxRefreshDiagnostics clears persisted Roblox refresh errors without dropping account state", () => {
+  const profiles = {
+    user_1: {
+      userId: "user_1",
+      displayName: "Gojo",
+      domains: {
+        roblox: {
+          username: "GojoRb",
+          userId: "101",
+          verificationStatus: "verified",
+          lastRefreshAt: "2026-05-10T12:00:00.000Z",
+          refreshStatus: "error",
+          refreshError: "429 rate limit",
+        },
+      },
+    },
+    user_2: {
+      userId: "user_2",
+      displayName: "Yuji",
+      domains: {
+        roblox: {
+          username: "YujiRb",
+          userId: "202",
+          verificationStatus: "verified",
+          lastRefreshAt: "2026-05-10T12:05:00.000Z",
+          refreshStatus: "error",
+          refreshError: null,
+        },
+      },
+    },
+    user_3: {
+      userId: "user_3",
+      displayName: "Megumi",
+      domains: {
+        roblox: {
+          username: "MegumiRb",
+          userId: "303",
+          verificationStatus: "verified",
+          lastRefreshAt: "2026-05-10T12:10:00.000Z",
+          refreshStatus: "ok",
+          refreshError: null,
+        },
+      },
+    },
+  };
+
+  const result = clearAllRobloxRefreshDiagnostics(profiles);
+
+  assert.equal(result.mutated, true);
+  assert.equal(result.clearedCount, 2);
+  assert.equal(profiles.user_1.domains.roblox.refreshStatus, null);
+  assert.equal(profiles.user_1.domains.roblox.refreshError, null);
+  assert.equal(profiles.user_1.summary.roblox.refreshStatus, null);
+  assert.equal(profiles.user_1.summary.roblox.refreshError, null);
+  assert.equal(profiles.user_1.domains.roblox.userId, "101");
+  assert.equal(profiles.user_2.domains.roblox.refreshStatus, null);
+  assert.equal(profiles.user_2.domains.roblox.refreshError, null);
+  assert.equal(profiles.user_3.domains.roblox.refreshStatus, "ok");
 });
 
 test("ensureSharedProfile normalizes the activity domain and exposes an activity summary", () => {
