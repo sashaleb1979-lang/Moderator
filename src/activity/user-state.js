@@ -27,6 +27,18 @@ function normalizeStringArray(value, limit = 2000) {
   return normalized;
 }
 
+function createExplicitActivityUserIdFilter(explicitUserIds = []) {
+  const normalizedUserIds = normalizeStringArray(explicitUserIds, 5000);
+  return normalizedUserIds.length ? new Set(normalizedUserIds) : null;
+}
+
+function addFilteredActivityUserId(targetUserIds, explicitUserIdFilter, userId) {
+  const normalizedUserId = cleanString(userId, 80);
+  if (!normalizedUserId) return;
+  if (explicitUserIdFilter && !explicitUserIdFilter.has(normalizedUserId)) return;
+  targetUserIds.add(normalizedUserId);
+}
+
 function clone(value) {
   if (value === undefined) return undefined;
   return JSON.parse(JSON.stringify(value));
@@ -53,36 +65,59 @@ function hasPersistedActivitySnapshotLikeData(activity = null) {
   return false;
 }
 
+function getActivitySnapshotIntegrityIssue(snapshot = null) {
+  if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) {
+    return null;
+  }
+
+  const roleEligibilityStatus = cleanString(snapshot.roleEligibilityStatus, 80) || null;
+  const desiredRoleKey = cleanString(snapshot.desiredActivityRoleKey, 80) || null;
+  const roleEligibleForActivityRole = snapshot.roleEligibleForActivityRole === true;
+
+  if (
+    (roleEligibilityStatus === "join_age_unknown" || roleEligibilityStatus === "gated_new_member")
+    && (roleEligibleForActivityRole || desiredRoleKey !== null)
+  ) {
+    return "blocked_role_status_has_role_output";
+  }
+
+  if (
+    (roleEligibilityStatus === "eligible" || roleEligibilityStatus === "boosted_new_member")
+    && snapshot.roleEligibleForActivityRole === false
+  ) {
+    return "eligible_status_missing_role_eligibility";
+  }
+
+  return null;
+}
+
 function collectActivityAssignmentTargetUserIds(db, explicitUserIds = [], managedRoleUserIds = []) {
   const state = ensureActivityState(db);
-  const targetUserIds = new Set([
-    ...normalizeStringArray(explicitUserIds, 5000),
-    ...normalizeStringArray(managedRoleUserIds, 5000),
-  ]);
+  const explicitUserIdFilter = createExplicitActivityUserIdFilter(explicitUserIds);
+  const targetUserIds = new Set();
+
+  for (const userId of normalizeStringArray(managedRoleUserIds, 5000)) {
+    addFilteredActivityUserId(targetUserIds, explicitUserIdFilter, userId);
+  }
 
   for (const userId of Object.keys(state.userSnapshots || {})) {
-    const normalizedUserId = cleanString(userId, 80);
-    if (normalizedUserId) targetUserIds.add(normalizedUserId);
+    addFilteredActivityUserId(targetUserIds, explicitUserIdFilter, userId);
   }
 
   for (const userId of Object.keys(state.runtime?.openSessions || {})) {
-    const normalizedUserId = cleanString(userId, 80);
-    if (normalizedUserId) targetUserIds.add(normalizedUserId);
+    addFilteredActivityUserId(targetUserIds, explicitUserIdFilter, userId);
   }
 
   for (const userId of Array.isArray(state.runtime?.dirtyUsers) ? state.runtime.dirtyUsers : []) {
-    const normalizedUserId = cleanString(userId, 80);
-    if (normalizedUserId) targetUserIds.add(normalizedUserId);
+    addFilteredActivityUserId(targetUserIds, explicitUserIdFilter, userId);
   }
 
   for (const session of Array.isArray(state.globalUserSessions) ? state.globalUserSessions : []) {
-    const normalizedUserId = cleanString(session?.userId, 80);
-    if (normalizedUserId) targetUserIds.add(normalizedUserId);
+    addFilteredActivityUserId(targetUserIds, explicitUserIdFilter, session?.userId);
   }
 
   for (const row of Array.isArray(state.userChannelDailyStats) ? state.userChannelDailyStats : []) {
-    const normalizedUserId = cleanString(row?.userId, 80);
-    if (normalizedUserId) targetUserIds.add(normalizedUserId);
+    addFilteredActivityUserId(targetUserIds, explicitUserIdFilter, row?.userId);
   }
 
   return [...targetUserIds];
@@ -90,26 +125,23 @@ function collectActivityAssignmentTargetUserIds(db, explicitUserIds = [], manage
 
 function collectActivityHistoryTargetUserIds(db, explicitUserIds = []) {
   const state = ensureActivityState(db);
-  const targetUserIds = new Set(normalizeStringArray(explicitUserIds, 5000));
+  const explicitUserIdFilter = createExplicitActivityUserIdFilter(explicitUserIds);
+  const targetUserIds = new Set();
 
   for (const userId of Object.keys(state.runtime?.openSessions || {})) {
-    const normalizedUserId = cleanString(userId, 80);
-    if (normalizedUserId) targetUserIds.add(normalizedUserId);
+    addFilteredActivityUserId(targetUserIds, explicitUserIdFilter, userId);
   }
 
   for (const userId of Array.isArray(state.runtime?.dirtyUsers) ? state.runtime.dirtyUsers : []) {
-    const normalizedUserId = cleanString(userId, 80);
-    if (normalizedUserId) targetUserIds.add(normalizedUserId);
+    addFilteredActivityUserId(targetUserIds, explicitUserIdFilter, userId);
   }
 
   for (const session of Array.isArray(state.globalUserSessions) ? state.globalUserSessions : []) {
-    const normalizedUserId = cleanString(session?.userId, 80);
-    if (normalizedUserId) targetUserIds.add(normalizedUserId);
+    addFilteredActivityUserId(targetUserIds, explicitUserIdFilter, session?.userId);
   }
 
   for (const row of Array.isArray(state.userChannelDailyStats) ? state.userChannelDailyStats : []) {
-    const normalizedUserId = cleanString(row?.userId, 80);
-    if (normalizedUserId) targetUserIds.add(normalizedUserId);
+    addFilteredActivityUserId(targetUserIds, explicitUserIdFilter, row?.userId);
   }
 
   return [...targetUserIds];
@@ -117,16 +149,18 @@ function collectActivityHistoryTargetUserIds(db, explicitUserIds = []) {
 
 function collectActivityProfileMirrorTargetUserIds(db = {}, explicitUserIds = []) {
   const state = ensureActivityState(db);
+  const explicitUserIdFilter = createExplicitActivityUserIdFilter(explicitUserIds);
   const indexedSnapshotUserIds = new Set(
     Object.keys(state.userSnapshots || {})
       .map((entry) => cleanString(entry, 80))
       .filter(Boolean)
   );
-  const targetUserIds = new Set(normalizeStringArray(explicitUserIds, 5000));
+  const targetUserIds = new Set();
 
   for (const [userId, profile] of Object.entries(db.profiles || {})) {
     const normalizedUserId = cleanString(userId, 80);
     if (!normalizedUserId || indexedSnapshotUserIds.has(normalizedUserId)) continue;
+    if (explicitUserIdFilter && !explicitUserIdFilter.has(normalizedUserId)) continue;
     if (!hasPersistedActivitySnapshotLikeData(getActivityProfileMirror(profile))) continue;
     targetUserIds.add(normalizedUserId);
   }
@@ -136,14 +170,14 @@ function collectActivityProfileMirrorTargetUserIds(db = {}, explicitUserIds = []
 
 function collectActivitySnapshotTargetUserIds(db, explicitUserIds = []) {
   const state = ensureActivityState(db);
-  const targetUserIds = new Set(normalizeStringArray(explicitUserIds, 5000));
+  const explicitUserIdFilter = createExplicitActivityUserIdFilter(explicitUserIds);
+  const targetUserIds = new Set();
 
   for (const userId of Object.keys(state.userSnapshots || {})) {
-    const normalizedUserId = cleanString(userId, 80);
-    if (normalizedUserId) targetUserIds.add(normalizedUserId);
+    addFilteredActivityUserId(targetUserIds, explicitUserIdFilter, userId);
   }
 
-  for (const userId of collectActivityProfileMirrorTargetUserIds(db)) {
+  for (const userId of collectActivityProfileMirrorTargetUserIds(db, explicitUserIds)) {
     targetUserIds.add(userId);
   }
 
@@ -219,6 +253,7 @@ function resolveActivityUserInspectionDiagnosis({
   snapshot = null,
   snapshotSource = "none",
   hasLocalHistory = false,
+  integrityIssue = null,
   roleAssignmentPlan = null,
 } = {}) {
   const roleEligibilityStatus = cleanString(snapshot?.roleEligibilityStatus, 80) || null;
@@ -229,6 +264,16 @@ function resolveActivityUserInspectionDiagnosis({
       statusCode: "no_local_data",
       summary: "Локальные activity-данные по пользователю не найдены.",
       recommendedAction: "Сначала проверь tracking-каналы и исторический импорт.",
+    };
+  }
+
+  if (integrityIssue) {
+    return {
+      statusCode: "contradictory_persisted_state",
+      summary: "Сохранённый activity snapshot противоречит правилам gate/eligibility и не выглядит надёжным источником правды.",
+      recommendedAction: hasLocalHistory
+        ? "Сначала запусти полный rebuild+sync с валидным member metadata, чтобы переписать конфликтный snapshot."
+        : "Roles-only sync по этому persisted state небезопасен: сначала проверь member metadata и восстанови локальную history-базу или источник mirror-а.",
     };
   }
 
@@ -351,6 +396,7 @@ function getActivityUserInspection({
 
   const persistedSnapshot = getActivityPersistedSnapshotRecord(db, normalizedUserId);
   const history = getActivityUserLocalHistoryStats(db, normalizedUserId);
+  const integrityIssue = getActivitySnapshotIntegrityIssue(persistedSnapshot.snapshot);
   const normalizedMemberRoleIds = normalizeStringArray(memberRoleIds, 5000);
   const roleAssignmentPlan = typeof resolveRoleAssignmentPlan === "function"
     ? resolveRoleAssignmentPlan({
@@ -366,6 +412,7 @@ function getActivityUserInspection({
     snapshotSource: persistedSnapshot.source,
     hasSnapshotIndex: persistedSnapshot.hasSnapshotIndex,
     hasProfileMirror: persistedSnapshot.hasProfileMirror,
+    integrityIssue,
     history,
     visibility: {
       canRunRebuildAndSync: history.hasLocalHistory,
@@ -376,6 +423,7 @@ function getActivityUserInspection({
       snapshot: persistedSnapshot.snapshot,
       snapshotSource: persistedSnapshot.source,
       hasLocalHistory: history.hasLocalHistory,
+      integrityIssue,
       roleAssignmentPlan,
     }),
   };
@@ -385,5 +433,7 @@ module.exports = {
   collectActivityAssignmentTargetUserIds,
   collectActivityHistoryTargetUserIds,
   collectActivitySnapshotTargetUserIds,
+  getActivityPersistedSnapshotRecord,
+  getActivitySnapshotIntegrityIssue,
   getActivityUserInspection,
 };

@@ -5,6 +5,7 @@ const {
   ButtonBuilder,
   ButtonStyle,
   EmbedBuilder,
+  MessageFlags,
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
@@ -87,6 +88,12 @@ const VERIFICATION_ISSUE_LABELS = Object.freeze({
 
 function cleanString(value, limit = 2000) {
   return String(value || "").trim().slice(0, Math.max(0, Number(limit) || 0));
+}
+
+function assertFunction(value, name) {
+  if (typeof value !== "function") {
+    throw new TypeError(`${name} must be a function`);
+  }
 }
 
 function normalizeStringArray(value, limit = 500, itemLimit = 120) {
@@ -935,6 +942,217 @@ async function handleVerificationPanelButtonInteraction(options = {}) {
   return true;
 }
 
+async function handleVerificationPanelModalSubmitInteraction(options = {}) {
+  const {
+    interaction,
+    client,
+    isModerator,
+    replyNoPermission,
+    buildPanelReply,
+    getCurrentIntegration,
+    parseBooleanInput,
+    parseListInput,
+    parseRequestedRoleId,
+    parseRequestedChannelId,
+    parseRequestedUserId,
+    cleanText,
+    nowIso,
+    writeIntegrationSnapshot,
+    writeVerifyRole,
+    clearVerifyRole,
+    saveDb,
+    startRuntime,
+    ensureEntryMessage,
+    ensurePendingProfile,
+    postManualReport,
+    updateProfile,
+    computeReportDueAt,
+  } = options;
+
+  const customId = cleanString(interaction?.customId, 120);
+  if (!VERIFY_PANEL_MODAL_IDS.includes(customId)) {
+    return false;
+  }
+
+  assertFunction(isModerator, "isModerator");
+  assertFunction(replyNoPermission, "replyNoPermission");
+  assertFunction(buildPanelReply, "buildPanelReply");
+  assertFunction(getCurrentIntegration, "getCurrentIntegration");
+  assertFunction(parseBooleanInput, "parseBooleanInput");
+  assertFunction(parseListInput, "parseListInput");
+  assertFunction(parseRequestedRoleId, "parseRequestedRoleId");
+  assertFunction(parseRequestedChannelId, "parseRequestedChannelId");
+  assertFunction(parseRequestedUserId, "parseRequestedUserId");
+  assertFunction(cleanText, "cleanText");
+  assertFunction(nowIso, "nowIso");
+  assertFunction(writeIntegrationSnapshot, "writeIntegrationSnapshot");
+  assertFunction(writeVerifyRole, "writeVerifyRole");
+  assertFunction(clearVerifyRole, "clearVerifyRole");
+  assertFunction(saveDb, "saveDb");
+  assertFunction(startRuntime, "startRuntime");
+  assertFunction(ensureEntryMessage, "ensureEntryMessage");
+  assertFunction(ensurePendingProfile, "ensurePendingProfile");
+  assertFunction(postManualReport, "postManualReport");
+  assertFunction(updateProfile, "updateProfile");
+  assertFunction(computeReportDueAt, "computeReportDueAt");
+
+  if (!isModerator(interaction?.member)) {
+    await replyNoPermission(interaction);
+    return true;
+  }
+
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+  const editPayload = async (payload) => {
+    await interaction.editReply(payload);
+  };
+
+  try {
+    if (customId === VERIFY_PANEL_CONFIG_INFRA_MODAL_ID) {
+      const currentIntegration = getCurrentIntegration();
+      const enabledRaw = interaction.fields.getTextInputValue("verification_enabled");
+      const callbackBaseUrl = cleanText(interaction.fields.getTextInputValue("verification_callback_base_url"), 500);
+      const verifyRoleRaw = interaction.fields.getTextInputValue("verification_verify_role");
+      const verificationRoomRaw = interaction.fields.getTextInputValue("verification_room_channel");
+      const reportChannelRaw = interaction.fields.getTextInputValue("verification_report_channel");
+
+      const enabled = parseBooleanInput(enabledRaw, currentIntegration.enabled === true);
+      if (enabled === null) {
+        await editPayload({ content: "Enabled должно быть yes/no, true/false или да/нет." });
+        return true;
+      }
+
+      const verifyRoleId = parseRequestedRoleId(verifyRoleRaw, "");
+      const verificationChannelId = parseRequestedChannelId(verificationRoomRaw, "");
+      const reportChannelId = parseRequestedChannelId(reportChannelRaw, "");
+      if (cleanText(verifyRoleRaw, 80) && !verifyRoleId) {
+        await editPayload({ content: "Verify role должен быть ID роли или mention вида <@&...>." });
+        return true;
+      }
+      if (cleanText(verificationRoomRaw, 80) && !verificationChannelId) {
+        await editPayload({ content: "Verification room должен быть ID канала или mention вида <#...>." });
+        return true;
+      }
+      if (cleanText(reportChannelRaw, 80) && !reportChannelId) {
+        await editPayload({ content: "Report channel должен быть ID канала или mention вида <#...>." });
+        return true;
+      }
+
+      const patch = {
+        enabled,
+        callbackBaseUrl,
+        verificationChannelId,
+        reportChannelId,
+        lastSyncAt: nowIso(),
+      };
+      if (cleanText(currentIntegration.verificationChannelId, 80) !== verificationChannelId) {
+        patch.entryMessage = { channelId: "", messageId: "" };
+      }
+      writeIntegrationSnapshot(patch);
+
+      if (verifyRoleId) {
+        writeVerifyRole(verifyRoleId);
+      } else {
+        clearVerifyRole();
+      }
+      saveDb();
+
+      const statusParts = ["Verification infra сохранена."];
+      if (enabled) {
+        try {
+          const runtimeState = await startRuntime(client);
+          statusParts.push(`Runtime: callback ${runtimeState.callbackStarted ? "ready" : "degraded"}, entry ${runtimeState.entryPublished ? "published" : "not published"}.`);
+        } catch (error) {
+          statusParts.push(`Runtime warning: ${cleanText(error?.message || error, 200)}`);
+        }
+      }
+
+      await editPayload(await buildPanelReply("runtime", statusParts.join(" ")));
+      return true;
+    }
+
+    if (customId === VERIFY_PANEL_CONFIG_RISK_MODAL_ID) {
+      writeIntegrationSnapshot({
+        riskRules: {
+          enemyGuildIds: parseListInput(interaction.fields.getTextInputValue("verification_enemy_guild_ids")),
+          enemyUserIds: parseListInput(interaction.fields.getTextInputValue("verification_enemy_user_ids")),
+          enemyInviteCodes: parseListInput(interaction.fields.getTextInputValue("verification_enemy_invite_codes")),
+          enemyInviterUserIds: parseListInput(interaction.fields.getTextInputValue("verification_enemy_inviter_user_ids")),
+          manualTags: parseListInput(interaction.fields.getTextInputValue("verification_manual_tags")),
+        },
+        lastSyncAt: nowIso(),
+      });
+      saveDb();
+      await editPayload(await buildPanelReply("home", "Verification risk rules сохранены."));
+      return true;
+    }
+
+    if (customId === VERIFY_PANEL_RESEND_REPORT_MODAL_ID) {
+      const targetRaw = interaction.fields.getTextInputValue("verification_resend_user");
+      const targetUserId = parseRequestedUserId(targetRaw, "");
+      if (!targetUserId) {
+        await editPayload({ content: "Target user должен быть Discord user ID или mention вида <@...>." });
+        return true;
+      }
+
+      const moderatorNote = cleanText(interaction.fields.getTextInputValue("verification_resend_note"), 1000)
+        || "Ручной resend verification report.";
+      ensurePendingProfile(targetUserId, {
+        status: "manual_review",
+        decision: "manual_review",
+      });
+      const result = await postManualReport(client, targetUserId, moderatorNote);
+      updateProfile(targetUserId, {
+        status: "manual_review",
+        decision: "manual_review",
+        reportSentAt: nowIso(),
+        reportDueAt: cleanText(result.profile?.domains?.verification?.reportDueAt, 80) || computeReportDueAt(),
+      });
+      await editPayload(await buildPanelReply(
+        "runtime",
+        `Verification report повторно отправлен для <@${targetUserId}> в <#${result.channel.id}>.`
+      ));
+      return true;
+    }
+
+    const pendingDaysValue = Number.parseInt(interaction.fields.getTextInputValue("verification_pending_days"), 10);
+    if (!Number.isSafeInteger(pendingDaysValue) || pendingDaysValue < 1 || pendingDaysValue > 60) {
+      await editPayload({ content: "Pending days должен быть целым числом от 1 до 60." });
+      return true;
+    }
+
+    writeIntegrationSnapshot({
+      stageTexts: {
+        entry: cleanText(interaction.fields.getTextInputValue("verification_stage_entry"), 4000),
+        manualReview: cleanText(interaction.fields.getTextInputValue("verification_stage_manual_review"), 4000),
+        approved: cleanText(interaction.fields.getTextInputValue("verification_stage_approved"), 4000),
+        rejected: cleanText(interaction.fields.getTextInputValue("verification_stage_rejected"), 4000),
+      },
+      deadline: {
+        pendingDays: pendingDaysValue,
+      },
+      lastSyncAt: nowIso(),
+    });
+    saveDb();
+
+    const currentIntegration = getCurrentIntegration();
+    let statusText = "Verification stage texts сохранены.";
+    if (cleanText(currentIntegration.verificationChannelId, 80)) {
+      try {
+        await ensureEntryMessage(client);
+        statusText = `${statusText} Entry message обновлено.`;
+      } catch (error) {
+        statusText = `${statusText} Entry warning: ${cleanText(error?.message || error, 200)}`;
+      }
+    }
+    await editPayload(await buildPanelReply("home", statusText));
+    return true;
+  } catch (error) {
+    await editPayload({ content: `Не удалось сохранить verification config: ${cleanText(error?.message || error, 300)}` });
+    return true;
+  }
+}
+
 module.exports = {
   VERIFY_COMMAND_NAME,
   VERIFY_ENTRY_START_ID,
@@ -974,5 +1192,6 @@ module.exports = {
   buildVerificationRuntimePayload,
   buildVerificationStageTextsModal,
   handleVerificationPanelButtonInteraction,
+  handleVerificationPanelModalSubmitInteraction,
   parseVerificationReportAction,
 };

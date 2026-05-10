@@ -381,6 +381,9 @@ test("runDailyActivityRoleSync targets activity-owned users instead of every pro
   assert.equal(db.sot.activity.runtime.lastDailyRoleSyncStats.managedRoleHolderCount, 0);
   assert.equal(db.sot.activity.runtime.lastDailyRoleSyncStats.localActivityTargetCount, 1);
   assert.equal(db.sot.activity.runtime.lastDailyRoleSyncStats.missingLocalHistoryUserCount, 0);
+  assert.equal(db.sot.activity.runtime.lastDailyRoleSyncStats.snapshotWithoutLocalHistoryUserCount, 0);
+  assert.equal(db.sot.activity.runtime.lastDailyRoleSyncStats.mirrorOnlyPersistedUserCount, 0);
+  assert.equal(db.sot.activity.runtime.lastDailyRoleSyncStats.managedRoleHolderWithoutPersistedActivityUserCount, 0);
   assert.equal(db.sot.activity.runtime.lastRebuildAndRoleSyncAt, "2026-05-09T12:00:00.000Z");
   assert.deepEqual(db.sot.activity.runtime.lastRebuildAndRoleSyncStats, db.sot.activity.runtime.lastDailyRoleSyncStats);
 });
@@ -449,6 +452,199 @@ test("runDailyActivityRoleSync reports managed-role holders without local histor
     managedRoleHolderCount: 1,
     localActivityTargetCount: 0,
     missingLocalHistoryUserCount: 1,
+    snapshotWithoutLocalHistoryUserCount: 0,
+    mirrorOnlyPersistedUserCount: 0,
+    managedRoleHolderWithoutPersistedActivityUserCount: 1,
+    rebuiltUserCount: 0,
+    appliedCount: 0,
+    skippedCount: 0,
+    skipReasonCounts: {},
+    syncMode: "rebuild_and_sync",
+  });
+});
+
+test("runDailyActivityRoleSync applies canonical saved snapshots without rebuilding mirror-only fallback users", async () => {
+  const db = {
+    profiles: {
+      mirrorOnly: {
+        userId: "mirrorOnly",
+        domains: {
+          activity: {
+            activityScore: 26,
+            baseActivityScore: 26,
+            desiredActivityRoleKey: "weak",
+            appliedActivityRoleKey: null,
+            roleEligibilityStatus: "eligible",
+            roleEligibleForActivityRole: true,
+            recalculatedAt: "2026-05-08T12:00:00.000Z",
+            lastSeenAt: "2026-05-08T11:50:00.000Z",
+          },
+        },
+      },
+    },
+    sot: {
+      activity: {
+        config: {},
+        watchedChannels: [],
+        globalUserSessions: [],
+        userChannelDailyStats: [],
+        userSnapshots: {
+          snapshotOnly: {
+            activityScore: 26,
+            baseActivityScore: 26,
+            desiredActivityRoleKey: "weak",
+            appliedActivityRoleKey: null,
+            roleEligibilityStatus: "eligible",
+            roleEligibleForActivityRole: true,
+            recalculatedAt: "2026-05-08T12:00:00.000Z",
+            lastSeenAt: "2026-05-08T11:50:00.000Z",
+          },
+        },
+        calibrationRuns: [],
+        ops: { moderationAuditLog: [] },
+        runtime: { openSessions: {}, dirtyUsers: [] },
+      },
+    },
+  };
+
+  updateActivityConfig(db, {
+    activityRoleIds: {
+      weak: "role-weak",
+    },
+  });
+
+  const resolvedRoleUserIds = [];
+  const resolvedMetaUserIds = [];
+  const roleChanges = [];
+  const result = await runDailyActivityRoleSync({
+    db,
+    now: "2026-05-09T12:00:00.000Z",
+    resolveMemberRoleIds(userId) {
+      resolvedRoleUserIds.push(userId);
+      return [];
+    },
+    resolveMemberActivityMeta(userId) {
+      resolvedMetaUserIds.push(userId);
+      return {
+        joinedAt: "2026-05-01T12:00:00.000Z",
+      };
+    },
+    async applyRoleChanges(change) {
+      roleChanges.push(change);
+      return true;
+    },
+  });
+
+  assert.equal(result.targetUserCount, 1);
+  assert.equal(result.localActivityTargetCount, 0);
+  assert.equal(result.missingLocalHistoryUserCount, 1);
+  assert.equal(result.rebuiltUserCount, 0);
+  assert.deepEqual(resolvedMetaUserIds, []);
+  assert.deepEqual(resolvedRoleUserIds, ["snapshotOnly"]);
+  assert.deepEqual(roleChanges, [
+    {
+      userId: "snapshotOnly",
+      desiredRoleKey: "weak",
+      desiredRoleId: "role-weak",
+      addRoleIds: ["role-weak"],
+      removeRoleIds: [],
+    },
+  ]);
+  assert.equal(db.profiles.snapshotOnly.domains.activity.appliedActivityRoleKey, "weak");
+  assert.equal(db.profiles.mirrorOnly.domains.activity.appliedActivityRoleKey, null);
+  assert.deepEqual(db.sot.activity.runtime.lastDailyRoleSyncStats, {
+    targetUserCount: 1,
+    managedRoleHolderCount: 0,
+    localActivityTargetCount: 0,
+    missingLocalHistoryUserCount: 1,
+    snapshotWithoutLocalHistoryUserCount: 1,
+    mirrorOnlyPersistedUserCount: 0,
+    managedRoleHolderWithoutPersistedActivityUserCount: 0,
+    rebuiltUserCount: 0,
+    appliedCount: 1,
+    skippedCount: 0,
+    skipReasonCounts: {},
+    syncMode: "rebuild_and_sync",
+  });
+});
+
+test("runDailyActivityRoleSync ignores explicit users without local history or canonical snapshots", async () => {
+  const db = {
+    profiles: {
+      mirrorOnly: {
+        userId: "mirrorOnly",
+        domains: {
+          activity: {
+            activityScore: 26,
+            baseActivityScore: 26,
+            desiredActivityRoleKey: "weak",
+            appliedActivityRoleKey: null,
+            roleEligibilityStatus: "eligible",
+            roleEligibleForActivityRole: true,
+            recalculatedAt: "2026-05-08T12:00:00.000Z",
+            lastSeenAt: "2026-05-08T11:50:00.000Z",
+          },
+        },
+      },
+    },
+    sot: {
+      activity: {
+        config: {},
+        watchedChannels: [],
+        globalUserSessions: [],
+        userChannelDailyStats: [],
+        userSnapshots: {},
+        calibrationRuns: [],
+        ops: { moderationAuditLog: [] },
+        runtime: { openSessions: {}, dirtyUsers: [] },
+      },
+    },
+  };
+
+  updateActivityConfig(db, {
+    activityRoleIds: {
+      weak: "role-weak",
+    },
+  });
+
+  const resolvedRoleUserIds = [];
+  const resolvedMetaUserIds = [];
+  const roleChanges = [];
+  const result = await runDailyActivityRoleSync({
+    db,
+    userIds: ["missingUser", "mirrorOnly"],
+    now: "2026-05-09T12:00:00.000Z",
+    resolveMemberRoleIds(userId) {
+      resolvedRoleUserIds.push(userId);
+      return [];
+    },
+    resolveMemberActivityMeta(userId) {
+      resolvedMetaUserIds.push(userId);
+      return {
+        joinedAt: "2026-05-01T12:00:00.000Z",
+      };
+    },
+    async applyRoleChanges(change) {
+      roleChanges.push(change);
+      return true;
+    },
+  });
+
+  assert.equal(result.targetUserCount, 0);
+  assert.equal(result.localActivityTargetCount, 0);
+  assert.equal(result.missingLocalHistoryUserCount, 0);
+  assert.equal(result.rebuiltUserCount, 0);
+  assert.deepEqual(resolvedMetaUserIds, []);
+  assert.deepEqual(resolvedRoleUserIds, []);
+  assert.deepEqual(roleChanges, []);
+  assert.deepEqual(db.sot.activity.runtime.lastDailyRoleSyncStats, {
+    targetUserCount: 0,
+    managedRoleHolderCount: 0,
+    localActivityTargetCount: 0,
+    missingLocalHistoryUserCount: 0,
+    snapshotWithoutLocalHistoryUserCount: 0,
+    mirrorOnlyPersistedUserCount: 0,
+    managedRoleHolderWithoutPersistedActivityUserCount: 0,
     rebuiltUserCount: 0,
     appliedCount: 0,
     skippedCount: 0,
@@ -544,6 +740,9 @@ test("runActivityRoleSyncFromSnapshots aligns roles only for saved snapshots and
     managedRoleHolderCount: 1,
     localActivityTargetCount: 1,
     missingLocalHistoryUserCount: 1,
+    snapshotWithoutLocalHistoryUserCount: 1,
+    mirrorOnlyPersistedUserCount: 0,
+    managedRoleHolderWithoutPersistedActivityUserCount: 1,
     rebuiltUserCount: 0,
     appliedCount: 1,
     skippedCount: 0,
@@ -622,6 +821,9 @@ test("runActivityRoleSyncFromSnapshots also targets persisted profile mirrors wh
   assert.equal(result.localActivityTargetCount, 1);
   assert.equal(result.missingLocalHistoryUserCount, 0);
   assert.equal(result.roleAssignment.appliedCount, 1);
+  assert.equal(db.sot.activity.runtime.lastDailyRoleSyncStats.snapshotWithoutLocalHistoryUserCount, 0);
+  assert.equal(db.sot.activity.runtime.lastDailyRoleSyncStats.mirrorOnlyPersistedUserCount, 1);
+  assert.equal(db.sot.activity.runtime.lastDailyRoleSyncStats.managedRoleHolderWithoutPersistedActivityUserCount, 0);
   assert.deepEqual(roleChanges, [
     {
       userId: "mirrorOnly",
@@ -842,6 +1044,55 @@ test("getActivityUserInspection explains mirror-only users and their recovery pa
   assert.match(inspection.diagnosis.recommendedAction, /roles-only sync/i);
 });
 
+test("getActivityUserInspection marks contradictory persisted mirror states as a separate recovery bucket", () => {
+  const db = {
+    profiles: {
+      contradictoryMirror: {
+        userId: "contradictoryMirror",
+        domains: {
+          activity: {
+            activityScore: 12,
+            baseActivityScore: 12,
+            desiredActivityRoleKey: "dead",
+            appliedActivityRoleKey: null,
+            roleEligibilityStatus: "join_age_unknown",
+            roleEligibleForActivityRole: true,
+            recalculatedAt: "2026-05-08T12:00:00.000Z",
+            lastSeenAt: "2026-05-08T11:50:00.000Z",
+          },
+        },
+      },
+    },
+    sot: {
+      activity: {
+        config: {},
+        watchedChannels: [],
+        globalUserSessions: [],
+        userChannelDailyStats: [],
+        userSnapshots: {},
+        calibrationRuns: [],
+        ops: { moderationAuditLog: [] },
+        runtime: {
+          openSessions: {},
+          dirtyUsers: [],
+        },
+      },
+    },
+  };
+
+  const inspection = getActivityUserInspection({
+    db,
+    userId: "contradictoryMirror",
+    memberRoleIds: [],
+  });
+
+  assert.equal(inspection.snapshotSource, "profile_mirror");
+  assert.equal(inspection.integrityIssue, "blocked_role_status_has_role_output");
+  assert.equal(inspection.diagnosis.statusCode, "contradictory_persisted_state");
+  assert.match(inspection.diagnosis.summary, /противоречит правилам gate\/eligibility/i);
+  assert.match(inspection.diagnosis.recommendedAction, /roles-only sync .* небезопасен/i);
+});
+
 test("buildActivityRoleAssignmentPlan removes managed activity roles from gated new members", () => {
   const db = {
     profiles: {
@@ -969,6 +1220,9 @@ test("runDailyActivityRoleSync rebuilds snapshots with member age metadata and a
     managedRoleHolderCount: 0,
     localActivityTargetCount: 1,
     missingLocalHistoryUserCount: 0,
+    snapshotWithoutLocalHistoryUserCount: 0,
+    mirrorOnlyPersistedUserCount: 0,
+    managedRoleHolderWithoutPersistedActivityUserCount: 0,
     rebuiltUserCount: 1,
     appliedCount: 1,
     skippedCount: 0,

@@ -5,6 +5,7 @@ const {
   ButtonBuilder,
   ButtonStyle,
   EmbedBuilder,
+  MessageFlags,
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
@@ -23,6 +24,8 @@ const {
   collectActivityAssignmentTargetUserIds,
   collectActivityHistoryTargetUserIds,
   collectActivitySnapshotTargetUserIds,
+  getActivityPersistedSnapshotRecord,
+  getActivitySnapshotIntegrityIssue,
   getActivityUserInspection: inspectActivityUser,
 } = require("./user-state");
 
@@ -308,6 +311,10 @@ const ACTIVITY_PANEL_BUTTON_IDS = Object.freeze([
       runtimeErrorCount = 0,
       channelsWithoutImportCheckpointCount = 0,
       missingLocalHistoryUserCount = 0,
+      snapshotWithoutLocalHistoryUserCount = 0,
+      mirrorOnlyPersistedUserCount = 0,
+      managedRoleHolderWithoutPersistedActivityUserCount = 0,
+      contradictoryPersistedStateCount = 0,
       openSessionCount = 0,
       dirtyUserCount = 0,
     } = {}) {
@@ -321,16 +328,38 @@ const ACTIVITY_PANEL_BUTTON_IDS = Object.freeze([
       }
 
       if (normalizedView === "roles") {
-        if (!mappedRoleCount || missingLocalHistoryUserCount > 0) return ACTIVITY_PANEL_COLORS.warning;
+        if (
+          !mappedRoleCount
+          || missingLocalHistoryUserCount > 0
+          || snapshotWithoutLocalHistoryUserCount > 0
+          || mirrorOnlyPersistedUserCount > 0
+          || managedRoleHolderWithoutPersistedActivityUserCount > 0
+          || contradictoryPersistedStateCount > 0
+        ) {
+          return ACTIVITY_PANEL_COLORS.warning;
+        }
         return ACTIVITY_PANEL_COLORS.healthy;
       }
 
       if (normalizedView === "runtime") {
+        if (
+          contradictoryPersistedStateCount > 0
+          || mirrorOnlyPersistedUserCount > 0
+          || managedRoleHolderWithoutPersistedActivityUserCount > 0
+        ) return ACTIVITY_PANEL_COLORS.warning;
         if (openSessionCount > 0 || dirtyUserCount > 0) return ACTIVITY_PANEL_COLORS.neutral;
         return ACTIVITY_PANEL_COLORS.healthy;
       }
 
-      if (!watchedChannelCount || !mappedRoleCount || missingLocalHistoryUserCount > 0) {
+      if (
+        !watchedChannelCount
+        || !mappedRoleCount
+        || missingLocalHistoryUserCount > 0
+        || snapshotWithoutLocalHistoryUserCount > 0
+        || mirrorOnlyPersistedUserCount > 0
+        || managedRoleHolderWithoutPersistedActivityUserCount > 0
+        || contradictoryPersistedStateCount > 0
+      ) {
         return ACTIVITY_PANEL_COLORS.warning;
       }
 
@@ -359,6 +388,10 @@ const ACTIVITY_PANEL_BUTTON_IDS = Object.freeze([
       runtimeErrorCount = 0,
       channelsWithoutImportCheckpointCount = 0,
       missingLocalHistoryUserCount = 0,
+      snapshotWithoutLocalHistoryUserCount = 0,
+      mirrorOnlyPersistedUserCount = 0,
+      managedRoleHolderWithoutPersistedActivityUserCount = 0,
+      contradictoryPersistedStateCount = 0,
       openSessionCount = 0,
       dirtyUserCount = 0,
       lastCalibrationRun = null,
@@ -386,6 +419,18 @@ const ACTIVITY_PANEL_BUTTON_IDS = Object.freeze([
         if (!mappedRoleCount) {
           return "Сначала привяжи activity-роли, иначе кнопка «Только выдать роли» ничего не применит.";
         }
+        if (contradictoryPersistedStateCount > 0) {
+          return `Есть ${contradictoryPersistedStateCount} противоречивых persisted states: сначала inspect-user и полный rebuild+sync, roles-only sync по ним небезопасен.`;
+        }
+        if (managedRoleHolderWithoutPersistedActivityUserCount > 0) {
+          return `Есть ${managedRoleHolderWithoutPersistedActivityUserCount} live holders без saved activity: сначала recovery/inspect-user, потом синхронизация ролей.`;
+        }
+        if (mirrorOnlyPersistedUserCount > 0) {
+          return `Есть ${mirrorOnlyPersistedUserCount} mirror-only persisted users: roles-only sync допустим, но для надёжного rebuild нужен import или нормализация данных.`;
+        }
+        if (snapshotWithoutLocalHistoryUserCount > 0) {
+          return `Есть ${snapshotWithoutLocalHistoryUserCount} canonical snapshots без local history: roles-only sync безопасен, а полный rebuild требует import старой истории.`;
+        }
         if (missingLocalHistoryUserCount > 0) {
           return `Есть ${missingLocalHistoryUserCount} users без локальной истории: сначала импорт истории, потом только выдача ролей.`;
         }
@@ -399,6 +444,15 @@ const ACTIVITY_PANEL_BUTTON_IDS = Object.freeze([
         if (runtimeErrorCount > 0) {
           return "Сначала проверь последние ошибки runtime. Полный пересчёт имеет смысл только после устранения блокеров.";
         }
+        if (contradictoryPersistedStateCount > 0) {
+          return `Есть ${contradictoryPersistedStateCount} противоречивых persisted states: сначала rebuild+sync с валидным member metadata, потом повторная проверка.`;
+        }
+        if (managedRoleHolderWithoutPersistedActivityUserCount > 0) {
+          return `Есть ${managedRoleHolderWithoutPersistedActivityUserCount} live holders без saved activity: сначала восстанови persisted state, затем повтори sync.`;
+        }
+        if (mirrorOnlyPersistedUserCount > 0) {
+          return `Есть ${mirrorOnlyPersistedUserCount} mirror-only persisted users: это compat bucket, а не полноценный rebuild target.`;
+        }
         if (openSessionCount > 0 || dirtyUserCount > 0) {
           return "Runtime ещё живой: дождись flush или просто обнови вид позже, если нужна финальная картина.";
         }
@@ -410,6 +464,18 @@ const ACTIVITY_PANEL_BUTTON_IDS = Object.freeze([
       }
       if (!mappedRoleCount) {
         return "Потом открой «Роли и правила» и привяжи activity-роли, иначе выдача будет неполной.";
+      }
+      if (contradictoryPersistedStateCount > 0) {
+        return "Есть противоречивые persisted states: сначала разбери их через inspect-user и rebuild+sync, потом считай panel truth надёжной.";
+      }
+      if (managedRoleHolderWithoutPersistedActivityUserCount > 0) {
+        return "Есть live holders без saved activity: сначала восстанови persisted state, потом считай sync результат правдой.";
+      }
+      if (mirrorOnlyPersistedUserCount > 0) {
+        return "Есть mirror-only persisted users: держи их отдельно от canonical snapshots и не считай их безопасным rebuild target.";
+      }
+      if (snapshotWithoutLocalHistoryUserCount > 0) {
+        return "Есть canonical snapshots без local history: roles-only sync возможен, но полный rebuild требует import истории.";
       }
       if (missingLocalHistoryUserCount > 0) {
         return "Есть users без локальной истории: сначала импорт истории, потом выдача ролей.";
@@ -813,6 +879,12 @@ function formatActivityInspectionSnapshotSource(source = "none") {
   return "нет сохранённого snapshot-а";
 }
 
+function formatActivityInspectionIntegrityState(issue = null) {
+  if (issue === "blocked_role_status_has_role_output") return "конфликт gate/eligibility";
+  if (issue === "eligible_status_missing_role_eligibility") return "конфликт eligibility flag";
+  return "ok";
+}
+
 function formatActivityInspectionRolePreview(roleIds = []) {
   const normalizedRoleIds = normalizeStringArray(roleIds, 50, 80);
   if (!normalizedRoleIds.length) return "—";
@@ -862,6 +934,7 @@ function buildActivityUserInspectionPayload({ db = {}, userId = "", memberRoleId
         name: "Откуда взяты данные",
         value: [
           `Источник snapshot-а: **${formatActivityInspectionSnapshotSource(inspection.snapshotSource)}**`,
+          `Согласованность snapshot-а: **${formatActivityInspectionIntegrityState(inspection.integrityIssue)}**`,
           `Есть snapshot index: **${inspection.hasSnapshotIndex ? "да" : "нет"}**`,
           `Есть profile mirror: **${inspection.hasProfileMirror ? "да" : "нет"}**`,
           `Локальная history-база: **${inspection.history.hasLocalHistory ? "да" : "нет"}**`,
@@ -929,6 +1002,44 @@ function getActivitySyncStatsRecord(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : null;
 }
 
+function summarizeActivityRecoveryBuckets({
+  db = {},
+  persistedTargetUserIds = [],
+  historyTargetUserIds = [],
+  managedRoleUserIds = [],
+} = {}) {
+  const persistedTargetUserIdSet = new Set(normalizeStringArray(persistedTargetUserIds, 5000));
+  const historyTargetUserIdSet = new Set(normalizeStringArray(historyTargetUserIds, 5000));
+
+  let snapshotWithoutLocalHistoryUserCount = 0;
+  let mirrorOnlyPersistedUserCount = 0;
+
+  for (const userId of persistedTargetUserIdSet) {
+    const persistedSnapshot = getActivityPersistedSnapshotRecord(db, userId);
+    if (persistedSnapshot.source === "profile_mirror") {
+      mirrorOnlyPersistedUserCount += 1;
+      continue;
+    }
+
+    if (persistedSnapshot.source === "state_snapshot" && !historyTargetUserIdSet.has(userId)) {
+      snapshotWithoutLocalHistoryUserCount += 1;
+    }
+  }
+
+  let managedRoleHolderWithoutPersistedActivityUserCount = 0;
+  for (const userId of normalizeStringArray(managedRoleUserIds, 5000)) {
+    if (!persistedTargetUserIdSet.has(userId)) {
+      managedRoleHolderWithoutPersistedActivityUserCount += 1;
+    }
+  }
+
+  return {
+    snapshotWithoutLocalHistoryUserCount,
+    mirrorOnlyPersistedUserCount,
+    managedRoleHolderWithoutPersistedActivityUserCount,
+  };
+}
+
 function resolveActivitySyncHistory(runtime = {}) {
   const latestRoleSyncAt = cleanString(runtime?.lastDailyRoleSyncAt, 80) || null;
   const latestRoleSyncStats = getActivitySyncStatsRecord(runtime?.lastDailyRoleSyncStats);
@@ -977,6 +1088,23 @@ function buildActivitySyncOperationLines(label, at, stats, options = {}) {
     lines.push(`Нужен добор старой истории: **${missingLocalHistoryUserCount}**`);
   }
 
+  const snapshotWithoutLocalHistoryUserCount = Number(normalizedStats.snapshotWithoutLocalHistoryUserCount || 0);
+  if (snapshotWithoutLocalHistoryUserCount > 0) {
+    lines.push(`Canonical snapshots без local history: **${snapshotWithoutLocalHistoryUserCount}**`);
+  }
+
+  const mirrorOnlyPersistedUserCount = Number(normalizedStats.mirrorOnlyPersistedUserCount || 0);
+  if (mirrorOnlyPersistedUserCount > 0) {
+    lines.push(`Mirror-only persisted fallback: **${mirrorOnlyPersistedUserCount}**`);
+  }
+
+  const managedRoleHolderWithoutPersistedActivityUserCount = Number(
+    normalizedStats.managedRoleHolderWithoutPersistedActivityUserCount || 0
+  );
+  if (managedRoleHolderWithoutPersistedActivityUserCount > 0) {
+    lines.push(`Live holders без saved activity: **${managedRoleHolderWithoutPersistedActivityUserCount}**`);
+  }
+
   if (options.includeSkipReasons) {
     lines.push(`Причины пропуска:\n${buildActivitySkipReasonPreview(normalizedStats.skipReasonCounts)}`);
   }
@@ -994,6 +1122,59 @@ function buildActivityPanelField(name, value, inline = false) {
     value: lines.length ? lines.join("\n") : "—",
     inline,
   };
+}
+
+function normalizeActivityPanelStartupHealth(startupHealth = {}) {
+  const label = cleanString(startupHealth?.label, 40).toUpperCase() || "UNKNOWN";
+  const completedAt = normalizeIsoTimestamp(startupHealth?.completedAt, null);
+  const degraded = Array.isArray(startupHealth?.degraded)
+    ? startupHealth.degraded
+      .map((entry) => {
+        const step = cleanString(entry?.step, 80) || "unknown";
+        const message = cleanString(entry?.message, 160) || "unknown error";
+        return step || message ? { step, message } : null;
+      })
+      .filter(Boolean)
+    : [];
+
+  if (!completedAt && label === "UNKNOWN" && degraded.length === 0) {
+    return null;
+  }
+
+  return {
+    label,
+    completedAt,
+    degraded,
+  };
+}
+
+function buildActivityPanelStartupHealthLines(startupHealth = null) {
+  if (!startupHealth) {
+    return [];
+  }
+
+  const lines = [
+    `Ready-core startup: **${startupHealth.label}**`,
+    `Последний ready-core: ${formatDateTime(startupHealth.completedAt)}`,
+  ];
+
+  if (startupHealth.degraded.length) {
+    lines.push(`Degraded шагов: **${startupHealth.degraded.length}**`);
+  }
+
+  return lines;
+}
+
+function buildActivityPanelStartupDegradedLines(startupHealth = null) {
+  if (!startupHealth || !startupHealth.degraded.length) {
+    return [];
+  }
+
+  const preview = startupHealth.degraded.slice(0, 4).map((entry) => `• ${entry.step}: ${entry.message}`);
+  if (startupHealth.degraded.length > preview.length) {
+    preview.push(`• ... и ещё ${startupHealth.degraded.length - preview.length}`);
+  }
+  return preview;
 }
 
 function buildActivityCompactSyncLine(label, at, stats, options = {}) {
@@ -1022,6 +1203,10 @@ function resolveActivityPanelStatusSnapshot({
   runtimeErrorCount = 0,
   channelsWithoutImportCheckpointCount = 0,
   missingLocalHistoryUserCount = 0,
+  snapshotWithoutLocalHistoryUserCount = 0,
+  mirrorOnlyPersistedUserCount = 0,
+  managedRoleHolderWithoutPersistedActivityUserCount = 0,
+  contradictoryPersistedStateCount = 0,
   openSessionCount = 0,
   dirtyUserCount = 0,
   lastCalibrationRun = null,
@@ -1064,6 +1249,34 @@ function resolveActivityPanelStatusSnapshot({
         label: "ВНИМАНИЕ",
         headline: "Role mapping ещё не закрыт.",
         summary: "Пока роли не привязаны, roles-only sync будет пропускать часть или все target tiers.",
+      };
+    }
+    if (contradictoryPersistedStateCount > 0) {
+      return {
+        label: "ВНИМАНИЕ",
+        headline: "Есть противоречивые persisted activity states.",
+        summary: "Пока они не пересобраны, roles-only sync и mirror-based диагностику нельзя считать полностью надёжными.",
+      };
+    }
+    if (managedRoleHolderWithoutPersistedActivityUserCount > 0) {
+      return {
+        label: "ВНИМАНИЕ",
+        headline: "Есть live holders без сохранённого activity state.",
+        summary: "Пока этот recovery bucket не разобран, часть ролей может выглядеть случайно живой или случайно сломанной.",
+      };
+    }
+    if (mirrorOnlyPersistedUserCount > 0) {
+      return {
+        label: "ВНИМАНИЕ",
+        headline: "Часть persisted activity живёт только в profile mirrors.",
+        summary: "Это compat surface, а не полноценный snapshot index. Roles-only sync здесь возможен, но rebuild truth остаётся слабой.",
+      };
+    }
+    if (snapshotWithoutLocalHistoryUserCount > 0) {
+      return {
+        label: "ВНИМАНИЕ",
+        headline: "Есть canonical snapshots без локальной history-базы.",
+        summary: "Роли можно выровнять по сохранённым данным, но для безопасного полного rebuild сначала нужен import истории.",
       };
     }
     if (missingLocalHistoryUserCount > 0) {
@@ -1111,6 +1324,38 @@ function resolveActivityPanelStatusSnapshot({
     };
   }
 
+  if (contradictoryPersistedStateCount > 0) {
+    return {
+      label: "ВНИМАНИЕ",
+      headline: "Есть противоречивые persisted activity states.",
+      summary: "Это отдельный recovery bucket: сначала нужен inspect-user и rebuild+sync, а не слепой roles-only sync.",
+    };
+  }
+
+  if (managedRoleHolderWithoutPersistedActivityUserCount > 0) {
+    return {
+      label: "ВНИМАНИЕ",
+      headline: "Есть live holders без сохранённого activity state.",
+      summary: "Это отдельный recovery bucket: сначала восстанови persisted state, а уже потом делай выводы по sync результату.",
+    };
+  }
+
+  if (mirrorOnlyPersistedUserCount > 0) {
+    return {
+      label: "ВНИМАНИЕ",
+      headline: "Часть persisted activity живёт только в profile mirrors.",
+      summary: "Это не ломает roles-only compat path, но делает rebuild truth слабее, пока snapshot index не восстановлен.",
+    };
+  }
+
+  if (snapshotWithoutLocalHistoryUserCount > 0) {
+    return {
+      label: "ВНИМАНИЕ",
+      headline: "Есть canonical snapshots без локальной history-базы.",
+      summary: "Роли можно выравнивать по сохранённым snapshots, но rebuild требует import старой истории.",
+    };
+  }
+
   if (missingLocalHistoryUserCount > 0) {
     return {
       label: "ВНИМАНИЕ",
@@ -1134,19 +1379,26 @@ function resolveActivityPanelStatusSnapshot({
   };
 }
 
-function buildActivityPanelStatusDescription(status = {}) {
+function buildActivityPanelStatusDescription(status = {}, startupHealth = null) {
   return [
     `Статус раздела: **${cleanString(status.label, 40) || "—"}**`,
     cleanString(status.headline, 300),
     cleanString(status.summary, 500),
+    startupHealth ? `Ready-core startup: **${startupHealth.label}** / ${formatDateTime(startupHealth.completedAt)}` : "",
   ].filter(Boolean).join("\n");
 }
 
-function buildActivityOperatorPanelPayload({ db = {}, statusText = "", view = ACTIVITY_PANEL_DEFAULT_VIEW } = {}) {
+function buildActivityOperatorPanelPayload({
+  db = {},
+  statusText = "",
+  view = ACTIVITY_PANEL_DEFAULT_VIEW,
+  startupHealth = null,
+} = {}) {
   const state = ensureActivityState(db);
   const config = state.config || {};
   const syncHistory = resolveActivitySyncHistory(state.runtime || {});
   const normalizedView = normalizeActivityPanelView(view);
+  const normalizedStartupHealth = normalizeActivityPanelStartupHealth(startupHealth);
   const watchedChannels = Array.isArray(state.watchedChannels) ? state.watchedChannels : [];
   const watchedChannelCount = Array.isArray(state.watchedChannels) ? state.watchedChannels.length : 0;
   const mappedRoleCount = listActivityManagedRoleIds(config).length;
@@ -1159,6 +1411,7 @@ function buildActivityOperatorPanelPayload({ db = {}, statusText = "", view = AC
     ? state.calibrationRuns[state.calibrationRuns.length - 1]
     : null;
   const snapshotRecords = Object.values(state.userSnapshots || {}).filter((entry) => entry && typeof entry === "object");
+  const persistedSnapshotTargetUserIds = collectActivitySnapshotTargetUserIds(db);
   const analyzedMessageCount = (
     (Array.isArray(state.userChannelDailyStats) ? state.userChannelDailyStats : [])
       .reduce((sum, entry) => sum + Number(entry?.messagesCount || 0), 0)
@@ -1170,6 +1423,15 @@ function buildActivityOperatorPanelPayload({ db = {}, statusText = "", view = AC
   const finalizedSessionCount = Array.isArray(state.globalUserSessions) ? state.globalUserSessions.length : 0;
   const gatedSnapshotCount = snapshotRecords.filter((entry) => entry.roleEligibilityStatus === "gated_new_member").length;
   const boostedSnapshotCount = snapshotRecords.filter((entry) => entry.roleEligibilityStatus === "boosted_new_member").length;
+  const persistedRecoveryBuckets = summarizeActivityRecoveryBuckets({
+    db,
+    persistedTargetUserIds: persistedSnapshotTargetUserIds,
+    historyTargetUserIds: collectActivityHistoryTargetUserIds(db),
+  });
+  const contradictoryPersistedStateCount = persistedSnapshotTargetUserIds.reduce((count, userId) => {
+    const { snapshot } = getActivityPersistedSnapshotRecord(db, userId);
+    return count + (getActivitySnapshotIntegrityIssue(snapshot) ? 1 : 0);
+  }, 0);
   const flushStats = state.runtime?.lastFlushStats && typeof state.runtime.lastFlushStats === "object"
     ? state.runtime.lastFlushStats
     : null;
@@ -1189,6 +1451,26 @@ function buildActivityOperatorPanelPayload({ db = {}, statusText = "", view = AC
     || fullRebuildAndRoleSyncStats?.missingLocalHistoryUserCount
     || 0
   );
+  const snapshotWithoutLocalHistoryUserCount = Number(
+    dailyRoleSyncStats?.snapshotWithoutLocalHistoryUserCount
+    ?? rolesOnlySyncStats?.snapshotWithoutLocalHistoryUserCount
+    ?? fullRebuildAndRoleSyncStats?.snapshotWithoutLocalHistoryUserCount
+    ?? persistedRecoveryBuckets.snapshotWithoutLocalHistoryUserCount
+    ?? 0
+  );
+  const mirrorOnlyPersistedUserCount = Number(
+    dailyRoleSyncStats?.mirrorOnlyPersistedUserCount
+    ?? rolesOnlySyncStats?.mirrorOnlyPersistedUserCount
+    ?? fullRebuildAndRoleSyncStats?.mirrorOnlyPersistedUserCount
+    ?? persistedRecoveryBuckets.mirrorOnlyPersistedUserCount
+    ?? 0
+  );
+  const managedRoleHolderWithoutPersistedActivityUserCount = Number(
+    dailyRoleSyncStats?.managedRoleHolderWithoutPersistedActivityUserCount
+    ?? rolesOnlySyncStats?.managedRoleHolderWithoutPersistedActivityUserCount
+    ?? fullRebuildAndRoleSyncStats?.managedRoleHolderWithoutPersistedActivityUserCount
+    ?? 0
+  );
   const supportEmbeds = [];
   const panelColor = resolveActivityPanelColor({
     view: normalizedView,
@@ -1197,6 +1479,10 @@ function buildActivityOperatorPanelPayload({ db = {}, statusText = "", view = AC
     runtimeErrorCount,
     channelsWithoutImportCheckpointCount,
     missingLocalHistoryUserCount,
+    snapshotWithoutLocalHistoryUserCount,
+    mirrorOnlyPersistedUserCount,
+    managedRoleHolderWithoutPersistedActivityUserCount,
+    contradictoryPersistedStateCount,
     openSessionCount,
     dirtyUserCount,
   });
@@ -1207,6 +1493,10 @@ function buildActivityOperatorPanelPayload({ db = {}, statusText = "", view = AC
     runtimeErrorCount,
     channelsWithoutImportCheckpointCount,
     missingLocalHistoryUserCount,
+    snapshotWithoutLocalHistoryUserCount,
+    mirrorOnlyPersistedUserCount,
+    managedRoleHolderWithoutPersistedActivityUserCount,
+    contradictoryPersistedStateCount,
     openSessionCount,
     dirtyUserCount,
     lastCalibrationRun,
@@ -1215,7 +1505,7 @@ function buildActivityOperatorPanelPayload({ db = {}, statusText = "", view = AC
   const embed = new EmbedBuilder()
     .setTitle(`Activity Panel • ${getActivityPanelViewTitle(normalizedView)}`)
     .setColor(panelColor)
-    .setDescription(buildActivityPanelStatusDescription(panelStatus));
+    .setDescription(buildActivityPanelStatusDescription(panelStatus, normalizedStartupHealth));
 
   if (normalizedView === "channels") {
     embed.addFields(
@@ -1274,6 +1564,10 @@ function buildActivityOperatorPanelPayload({ db = {}, statusText = "", view = AC
           runtimeErrorCount,
           channelsWithoutImportCheckpointCount,
           missingLocalHistoryUserCount,
+          snapshotWithoutLocalHistoryUserCount,
+          mirrorOnlyPersistedUserCount,
+          managedRoleHolderWithoutPersistedActivityUserCount,
+          contradictoryPersistedStateCount,
           openSessionCount,
           dirtyUserCount,
           lastCalibrationRun,
@@ -1291,6 +1585,10 @@ function buildActivityOperatorPanelPayload({ db = {}, statusText = "", view = AC
       buildActivityPanelField("Контур выдачи", [
         `Привязано activity-ролей: **${mappedRoleCount}**`,
         `Нужен добор старой истории: **${missingLocalHistoryUserCount}**`,
+        `Canonical snapshots без local history: **${snapshotWithoutLocalHistoryUserCount}**`,
+        `Mirror-only persisted fallback: **${mirrorOnlyPersistedUserCount}**`,
+        `Live holders без saved activity: **${managedRoleHolderWithoutPersistedActivityUserCount}**`,
+        `Противоречивых persisted states: **${contradictoryPersistedStateCount}**`,
         `Ошибки runtime: **${runtimeErrorCount}**`,
         `Последний режим: **${formatActivityRoleSyncMode(syncMode)}**`,
       ], true),
@@ -1317,6 +1615,10 @@ function buildActivityOperatorPanelPayload({ db = {}, statusText = "", view = AC
         buildActivityPanelField("Что мешает выдаче", [
           `Привязано activity-ролей: **${mappedRoleCount}**`,
           `Нужен добор старой истории: **${missingLocalHistoryUserCount}**`,
+          `Canonical snapshots без local history: **${snapshotWithoutLocalHistoryUserCount}**`,
+          `Mirror-only persisted fallback: **${mirrorOnlyPersistedUserCount}**`,
+          `Live holders без saved activity: **${managedRoleHolderWithoutPersistedActivityUserCount}**`,
+          `Противоречивых persisted states: **${contradictoryPersistedStateCount}**`,
           `Ошибки runtime: **${runtimeErrorCount}**`,
         ], false),
         buildActivityPanelField("Причины пропуска", dailyRoleSyncStats
@@ -1333,6 +1635,10 @@ function buildActivityOperatorPanelPayload({ db = {}, statusText = "", view = AC
           runtimeErrorCount,
           channelsWithoutImportCheckpointCount,
           missingLocalHistoryUserCount,
+          snapshotWithoutLocalHistoryUserCount,
+          mirrorOnlyPersistedUserCount,
+          managedRoleHolderWithoutPersistedActivityUserCount,
+          contradictoryPersistedStateCount,
           openSessionCount,
           dirtyUserCount,
           lastCalibrationRun,
@@ -1359,6 +1665,9 @@ function buildActivityOperatorPanelPayload({ db = {}, statusText = "", view = AC
         `Взвешенных сообщений: **${Number(analyzedWeightedMessageCount.toFixed(2))}**`,
         `Сообщений в открытых сессиях: **${openSessions.reduce((sum, entry) => sum + Number(entry?.messageCount || 0), 0)}**`,
         `Профилей с activity: **${activityProfileCount}**`,
+        `Mirror-only persisted fallback: **${mirrorOnlyPersistedUserCount}**`,
+        `Live holders без saved activity: **${managedRoleHolderWithoutPersistedActivityUserCount}**`,
+        `Противоречивых persisted states: **${contradictoryPersistedStateCount}**`,
       ], true),
       buildActivityPanelField("Последние ошибки", buildActivityRuntimeErrorPreview(state), false)
     );
@@ -1369,6 +1678,7 @@ function buildActivityOperatorPanelPayload({ db = {}, statusText = "", view = AC
       fields: [
         buildActivityPanelField("Последний полный цикл", [
           `Последний полный пересчёт: ${formatDateTime(state.runtime?.lastFullRecalcAt)}`,
+          `Противоречивых persisted states: **${contradictoryPersistedStateCount}**`,
           ...buildActivitySyncOperationLines(
             "Полный пересчёт + выдача",
             syncHistory.lastRebuildAndRoleSyncAt,
@@ -1386,6 +1696,10 @@ function buildActivityOperatorPanelPayload({ db = {}, statusText = "", view = AC
           runtimeErrorCount,
           channelsWithoutImportCheckpointCount,
           missingLocalHistoryUserCount,
+          snapshotWithoutLocalHistoryUserCount,
+          mirrorOnlyPersistedUserCount,
+          managedRoleHolderWithoutPersistedActivityUserCount,
+          contradictoryPersistedStateCount,
           openSessionCount,
           dirtyUserCount,
           lastCalibrationRun,
@@ -1411,6 +1725,10 @@ function buildActivityOperatorPanelPayload({ db = {}, statusText = "", view = AC
         `Пользователей в очереди flush: **${dirtyUserCount}**`,
         `Проанализировано сообщений: **${analyzedMessageCount}**`,
         `Gate / boost snapshots: **${gatedSnapshotCount}** / **${boostedSnapshotCount}**`,
+        `Canonical snapshots без local history: **${snapshotWithoutLocalHistoryUserCount}**`,
+        `Mirror-only persisted fallback: **${mirrorOnlyPersistedUserCount}**`,
+        `Live holders без saved activity: **${managedRoleHolderWithoutPersistedActivityUserCount}**`,
+        `Противоречивых persisted states: **${contradictoryPersistedStateCount}**`,
       ], true),
       buildActivityPanelField("Последний импорт", lastCalibrationRun
         ? [
@@ -1438,6 +1756,10 @@ function buildActivityOperatorPanelPayload({ db = {}, statusText = "", view = AC
           `Ошибки runtime: **${runtimeErrorCount}**`,
           `Каналов без import checkpoint: **${channelsWithoutImportCheckpointCount}**`,
           `Нужен добор старой истории: **${missingLocalHistoryUserCount}**`,
+          `Canonical snapshots без local history: **${snapshotWithoutLocalHistoryUserCount}**`,
+          `Mirror-only persisted fallback: **${mirrorOnlyPersistedUserCount}**`,
+          `Live holders без saved activity: **${managedRoleHolderWithoutPersistedActivityUserCount}**`,
+          `Противоречивых persisted states: **${contradictoryPersistedStateCount}**`,
           `Привязано activity-ролей: **${mappedRoleCount}**`,
         ], false),
         buildActivityPanelField("Последняя выдача", dailyRoleSyncStats
@@ -1455,6 +1777,10 @@ function buildActivityOperatorPanelPayload({ db = {}, statusText = "", view = AC
           runtimeErrorCount,
           channelsWithoutImportCheckpointCount,
           missingLocalHistoryUserCount,
+          snapshotWithoutLocalHistoryUserCount,
+          mirrorOnlyPersistedUserCount,
+          managedRoleHolderWithoutPersistedActivityUserCount,
+          contradictoryPersistedStateCount,
           openSessionCount,
           dirtyUserCount,
           lastCalibrationRun,
@@ -1462,6 +1788,15 @@ function buildActivityOperatorPanelPayload({ db = {}, statusText = "", view = AC
         }), false),
       ],
     }));
+  }
+
+  if (normalizedStartupHealth) {
+    embed.addFields(buildActivityPanelField("Startup", buildActivityPanelStartupHealthLines(normalizedStartupHealth), true));
+  }
+
+  const startupDegradedLines = buildActivityPanelStartupDegradedLines(normalizedStartupHealth);
+  if (startupDegradedLines.length && supportEmbeds[0]) {
+    supportEmbeds[0].addFields(buildActivityPanelField("Ready-core degraded", startupDegradedLines, false));
   }
 
   if (statusText) {
@@ -1861,26 +2196,38 @@ async function runDailyActivityRoleSync({
 } = {}) {
   const execute = async () => {
     const syncedAt = resolveNowIso(now);
-    const localActivityTargetUserIds = collectActivityHistoryTargetUserIds(db, userIds);
+    const explicitUserIdScope = normalizeStringArray(userIds, 5000);
+    const explicitUserIdFilter = explicitUserIdScope.length ? new Set(explicitUserIdScope) : null;
+    const rebuildTargetUserIds = collectActivityHistoryTargetUserIds(db, userIds);
     const managedRoleUserIds = typeof listManagedActivityRoleUserIds === "function"
       ? await Promise.resolve(listManagedActivityRoleUserIds())
       : [];
-    const normalizedManagedRoleUserIds = normalizeStringArray(managedRoleUserIds, 5000);
-    const targetUserIds = [...localActivityTargetUserIds];
-    const localActivityTargetUserIdSet = new Set(localActivityTargetUserIds);
-    const missingLocalHistoryUserIds = normalizedManagedRoleUserIds.filter((userId) => !localActivityTargetUserIdSet.has(userId));
+    const normalizedManagedRoleUserIds = normalizeStringArray(managedRoleUserIds, 5000)
+      .filter((userId) => !explicitUserIdFilter || explicitUserIdFilter.has(userId));
+    const rebuildTargetUserIdSet = new Set(rebuildTargetUserIds);
     const rebuildResult = await rebuildActivitySnapshots({
       db,
-      userIds: targetUserIds,
+      userIds: rebuildTargetUserIds,
       now: syncedAt,
       resolveMemberActivityMeta,
     });
+    const roleTargetUserIds = collectActivityAssignmentTargetUserIds(db, userIds);
+    const missingLocalHistoryUserIds = normalizeStringArray([
+      ...roleTargetUserIds.filter((userId) => !rebuildTargetUserIdSet.has(userId)),
+      ...normalizedManagedRoleUserIds.filter((userId) => !rebuildTargetUserIdSet.has(userId)),
+    ], 5000);
     const roleAssignment = await applyInitialActivityRoleAssignments({
       db,
-      userIds: targetUserIds,
+      userIds: roleTargetUserIds,
       resolveMemberRoleIds,
       applyRoleChanges,
       now: syncedAt,
+    });
+    const recoveryBuckets = summarizeActivityRecoveryBuckets({
+      db,
+      persistedTargetUserIds: roleTargetUserIds,
+      historyTargetUserIds: rebuildTargetUserIds,
+      managedRoleUserIds: normalizedManagedRoleUserIds,
     });
 
     const state = ensureActivityState(db);
@@ -1888,10 +2235,13 @@ async function runDailyActivityRoleSync({
     state.runtime.lastRebuildAndRoleSyncAt = syncedAt;
     state.runtime.lastDailyRoleSyncAt = syncedAt;
     state.runtime.lastDailyRoleSyncStats = {
-      targetUserCount: targetUserIds.length,
+      targetUserCount: roleTargetUserIds.length,
       managedRoleHolderCount: normalizedManagedRoleUserIds.length,
-      localActivityTargetCount: localActivityTargetUserIds.length,
+      localActivityTargetCount: rebuildTargetUserIds.length,
       missingLocalHistoryUserCount: missingLocalHistoryUserIds.length,
+      snapshotWithoutLocalHistoryUserCount: recoveryBuckets.snapshotWithoutLocalHistoryUserCount,
+      mirrorOnlyPersistedUserCount: recoveryBuckets.mirrorOnlyPersistedUserCount,
+      managedRoleHolderWithoutPersistedActivityUserCount: recoveryBuckets.managedRoleHolderWithoutPersistedActivityUserCount,
       rebuiltUserCount: rebuildResult.rebuiltUserCount,
       appliedCount: roleAssignment.appliedCount,
       skippedCount: roleAssignment.skippedCount,
@@ -1906,7 +2256,9 @@ async function runDailyActivityRoleSync({
 
     return {
       syncedAt,
-      targetUserCount: targetUserIds.length,
+      targetUserCount: roleTargetUserIds.length,
+      localActivityTargetCount: rebuildTargetUserIds.length,
+      missingLocalHistoryUserCount: missingLocalHistoryUserIds.length,
       rebuiltUserCount: rebuildResult.rebuiltUserCount,
       rebuiltUsers: rebuildResult.rebuiltUsers,
       roleAssignment,
@@ -1931,11 +2283,15 @@ async function runActivityRoleSyncFromSnapshots({
 } = {}) {
   const execute = async () => {
     const syncedAt = resolveNowIso(now);
+    const explicitUserIdScope = normalizeStringArray(userIds, 5000);
+    const explicitUserIdFilter = explicitUserIdScope.length ? new Set(explicitUserIdScope) : null;
     const localActivityTargetUserIds = collectActivitySnapshotTargetUserIds(db, userIds);
+    const historyTargetUserIds = collectActivityHistoryTargetUserIds(db, userIds);
     const managedRoleUserIds = typeof listManagedActivityRoleUserIds === "function"
       ? await Promise.resolve(listManagedActivityRoleUserIds())
       : [];
-    const normalizedManagedRoleUserIds = normalizeStringArray(managedRoleUserIds, 5000);
+    const normalizedManagedRoleUserIds = normalizeStringArray(managedRoleUserIds, 5000)
+      .filter((userId) => !explicitUserIdFilter || explicitUserIdFilter.has(userId));
     const targetUserIds = [...localActivityTargetUserIds];
     const localActivityTargetUserIdSet = new Set(localActivityTargetUserIds);
     const missingLocalHistoryUserIds = normalizedManagedRoleUserIds.filter((userId) => !localActivityTargetUserIdSet.has(userId));
@@ -1946,6 +2302,12 @@ async function runActivityRoleSyncFromSnapshots({
       applyRoleChanges,
       now: syncedAt,
     });
+    const recoveryBuckets = summarizeActivityRecoveryBuckets({
+      db,
+      persistedTargetUserIds: targetUserIds,
+      historyTargetUserIds,
+      managedRoleUserIds: normalizedManagedRoleUserIds,
+    });
 
     const state = ensureActivityState(db);
     state.runtime.lastRolesOnlySyncAt = syncedAt;
@@ -1955,6 +2317,9 @@ async function runActivityRoleSyncFromSnapshots({
       managedRoleHolderCount: normalizedManagedRoleUserIds.length,
       localActivityTargetCount: localActivityTargetUserIds.length,
       missingLocalHistoryUserCount: missingLocalHistoryUserIds.length,
+      snapshotWithoutLocalHistoryUserCount: recoveryBuckets.snapshotWithoutLocalHistoryUserCount,
+      mirrorOnlyPersistedUserCount: recoveryBuckets.mirrorOnlyPersistedUserCount,
+      managedRoleHolderWithoutPersistedActivityUserCount: recoveryBuckets.managedRoleHolderWithoutPersistedActivityUserCount,
       rebuiltUserCount: 0,
       appliedCount: roleAssignment.appliedCount,
       skippedCount: roleAssignment.skippedCount,
@@ -2411,6 +2776,27 @@ async function handleActivityPanelModalSubmitInteraction({
     return true;
   }
 
+  let usedDeferredReply = false;
+  const replyModalResult = async (kind, payload) => {
+    if (usedDeferredReply && typeof interaction?.editReply === "function") {
+      const normalizedPayload = typeof payload === "string" ? { content: payload } : payload;
+      await interaction.editReply(normalizedPayload);
+      return;
+    }
+
+    if (kind === "error") {
+      await replyError(interaction, payload);
+      return;
+    }
+
+    await replySuccess(interaction, payload);
+  };
+
+  if (typeof interaction?.deferReply === "function" && !interaction.deferred && !interaction.replied) {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    usedDeferredReply = true;
+  }
+
   const execute = async () => {
     const changedAt = resolveNowIso(now);
     const requestedByUserId = normalizeNullableString(interaction?.user?.id, 80);
@@ -2676,11 +3062,11 @@ async function handleActivityPanelModalSubmitInteraction({
     : await execute();
 
   if (!result.ok) {
-    await replyError(interaction, result.message);
+    await replyModalResult("error", result.message);
     return true;
   }
 
-  await replySuccess(interaction, result.payload || result.message);
+  await replyModalResult("success", result.payload || result.message);
   return true;
 }
 

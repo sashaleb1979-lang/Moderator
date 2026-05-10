@@ -662,7 +662,6 @@ async function safelyResolveMemberActivityMeta(resolveMemberActivityMeta, userId
 
 async function rebuildActivitySnapshots({ db = {}, userIds = [], now, saveDb, runSerialized, resolveMemberActivityMeta } = {}) {
   const execute = async () => {
-    const state = ensureActivityState(db);
     const currentTime = getActivityRuntimeNow({ now });
     const rebuiltUsers = [];
     const targetUserIds = [...new Set(
@@ -674,7 +673,7 @@ async function rebuildActivitySnapshots({ db = {}, userIds = [], now, saveDb, ru
     for (const userId of targetUserIds) {
       const { memberActivityMeta, error } = await safelyResolveMemberActivityMeta(resolveMemberActivityMeta, userId);
       if (error) {
-        appendActivityRuntimeError(state, {
+        appendActivityRuntimeError(db, {
           scope: "member_activity_meta",
           userId,
           createdAt: currentTime,
@@ -691,6 +690,7 @@ async function rebuildActivitySnapshots({ db = {}, userIds = [], now, saveDb, ru
       rebuiltUsers.push(userId);
     }
 
+    const state = ensureActivityState(db);
     state.runtime.lastFullRecalcAt = currentTime;
     db.sot.activity = state;
     if (typeof saveDb === "function") {

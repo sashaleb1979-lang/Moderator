@@ -2,6 +2,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const { MessageFlags } = require("discord.js");
 
 const {
   VERIFY_ENTRY_START_ID,
@@ -35,6 +36,7 @@ const {
   buildVerificationRuntimePayload,
   buildVerificationStageTextsModal,
   handleVerificationPanelButtonInteraction,
+  handleVerificationPanelModalSubmitInteraction,
   parseVerificationReportAction,
 } = require("../src/verification/operator");
 
@@ -345,4 +347,92 @@ test("handleVerificationPanelButtonInteraction opens config modal actions", asyn
 
   assert.equal(handled, true);
   assert.deepEqual(calls[0], ["showModal", { customId: VERIFY_PANEL_CONFIG_INFRA_ID }]);
+});
+
+test("handleVerificationPanelModalSubmitInteraction defers modal replies before slow runtime work and finishes with editReply", async () => {
+  const calls = [];
+
+  const handled = await handleVerificationPanelModalSubmitInteraction({
+    interaction: {
+      customId: VERIFY_PANEL_CONFIG_INFRA_MODAL_ID,
+      member: { id: "moderator" },
+      deferred: false,
+      replied: false,
+      fields: {
+        getTextInputValue(fieldId) {
+          if (fieldId === "verification_enabled") return "да";
+          if (fieldId === "verification_callback_base_url") return "https://example.com/callback";
+          if (fieldId === "verification_verify_role") return "123";
+          if (fieldId === "verification_room_channel") return "456";
+          if (fieldId === "verification_report_channel") return "789";
+          return "";
+        },
+      },
+      async deferReply(options) {
+        calls.push(["deferReply", options]);
+        this.deferred = true;
+      },
+      async editReply(payload) {
+        calls.push(["editReply", payload]);
+      },
+    },
+    client: { id: "client" },
+    isModerator: () => true,
+    replyNoPermission: async () => {
+      throw new Error("should not run");
+    },
+    buildPanelReply: async (view, statusText) => ({ view, statusText }),
+    getCurrentIntegration: () => ({ enabled: false, verificationChannelId: "old-channel" }),
+    parseBooleanInput: () => true,
+    parseListInput: () => [],
+    parseRequestedRoleId: (value) => String(value || "").trim(),
+    parseRequestedChannelId: (value) => String(value || "").trim(),
+    parseRequestedUserId: (value) => String(value || "").trim(),
+    cleanText: (value) => String(value || "").trim(),
+    nowIso: () => "2026-05-10T00:00:00.000Z",
+    writeIntegrationSnapshot: (patch) => {
+      calls.push(["writeIntegrationSnapshot", patch]);
+    },
+    writeVerifyRole: (roleId) => {
+      calls.push(["writeVerifyRole", roleId]);
+    },
+    clearVerifyRole: () => {
+      calls.push(["clearVerifyRole"]);
+    },
+    saveDb: () => {
+      calls.push(["saveDb"]);
+    },
+    startRuntime: async (client) => {
+      calls.push(["startRuntime", client]);
+      return {
+        callbackStarted: true,
+        entryPublished: true,
+      };
+    },
+    ensureEntryMessage: async () => {
+      calls.push(["ensureEntryMessage"]);
+    },
+    ensurePendingProfile: () => {
+      calls.push(["ensurePendingProfile"]);
+    },
+    postManualReport: async () => {
+      calls.push(["postManualReport"]);
+      return { channel: { id: "report-room" }, profile: { domains: { verification: {} } } };
+    },
+    updateProfile: () => {
+      calls.push(["updateProfile"]);
+    },
+    computeReportDueAt: () => "2026-05-17T00:00:00.000Z",
+  });
+
+  assert.equal(handled, true);
+  assert.deepEqual(calls[0], ["deferReply", { flags: MessageFlags.Ephemeral }]);
+  assert.deepEqual(calls[1][0], "writeIntegrationSnapshot");
+  assert.deepEqual(calls[2], ["writeVerifyRole", "123"]);
+  assert.deepEqual(calls[3], ["saveDb"]);
+  assert.deepEqual(calls[4], ["startRuntime", { id: "client" }]);
+  assert.deepEqual(calls[5], ["editReply", {
+    view: "runtime",
+    statusText: "Verification infra сохранена. Runtime: callback ready, entry published."
+  }]);
 });

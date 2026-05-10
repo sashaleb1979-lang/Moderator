@@ -4,12 +4,54 @@ function formatErrorText(error) {
   return error?.message || error;
 }
 
-function createSerializedTaskRunner({ logError = () => {} } = {}) {
+function normalizePositiveInteger(value, fallback = 0) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric > 0 ? Math.floor(numeric) : fallback;
+}
+
+function createSerializedTaskRunner({
+  logError = () => {},
+  logWarning = () => {},
+  taskTimeoutMs = 0,
+  queueWarningThreshold = 0,
+  setTimeoutFn = setTimeout,
+  clearTimeoutFn = clearTimeout,
+} = {}) {
   if (typeof logError !== "function") {
     throw new TypeError("logError must be a function");
   }
+  if (typeof logWarning !== "function") {
+    throw new TypeError("logWarning must be a function");
+  }
+  if (typeof setTimeoutFn !== "function") {
+    throw new TypeError("setTimeoutFn must be a function");
+  }
+  if (typeof clearTimeoutFn !== "function") {
+    throw new TypeError("clearTimeoutFn must be a function");
+  }
 
   let queueTail = Promise.resolve();
+  let pendingTasks = 0;
+  let queueDepthWarningActive = false;
+  const normalizedTaskTimeoutMs = normalizePositiveInteger(taskTimeoutMs, 0);
+  const normalizedQueueWarningThreshold = normalizePositiveInteger(queueWarningThreshold, 0);
+
+  const updateQueueDepthState = (taskLabel) => {
+    if (normalizedQueueWarningThreshold <= 0) {
+      return;
+    }
+
+    if (!queueDepthWarningActive && pendingTasks > normalizedQueueWarningThreshold) {
+      queueDepthWarningActive = true;
+      logWarning(`Serialized task queue depth high [${taskLabel}]:`, String(pendingTasks));
+      return;
+    }
+
+    if (queueDepthWarningActive && pendingTasks <= normalizedQueueWarningThreshold) {
+      queueDepthWarningActive = false;
+      logWarning("Serialized task queue depth recovered:", String(pendingTasks));
+    }
+  };
 
   return function runSerializedTask(task, label = "task") {
     if (typeof task !== "function") {
@@ -17,22 +59,66 @@ function createSerializedTaskRunner({ logError = () => {} } = {}) {
     }
 
     const taskLabel = String(label || "task").trim() || "task";
+    pendingTasks += 1;
+    updateQueueDepthState(taskLabel);
+
     const scheduledTask = queueTail.then(
-      () => Promise.resolve().then(task),
-      () => Promise.resolve().then(task)
+      () => {
+        let timeoutHandle = null;
+        if (normalizedTaskTimeoutMs > 0) {
+          timeoutHandle = setTimeoutFn(() => {
+            logWarning(`Serialized task still running [${taskLabel}] after ${normalizedTaskTimeoutMs}ms`);
+          }, normalizedTaskTimeoutMs);
+          if (typeof timeoutHandle?.unref === "function") {
+            timeoutHandle.unref();
+          }
+        }
+
+        return Promise.resolve()
+          .then(task)
+          .finally(() => {
+            if (timeoutHandle != null) {
+              clearTimeoutFn(timeoutHandle);
+            }
+          });
+      },
+      () => {
+        let timeoutHandle = null;
+        if (normalizedTaskTimeoutMs > 0) {
+          timeoutHandle = setTimeoutFn(() => {
+            logWarning(`Serialized task still running [${taskLabel}] after ${normalizedTaskTimeoutMs}ms`);
+          }, normalizedTaskTimeoutMs);
+          if (typeof timeoutHandle?.unref === "function") {
+            timeoutHandle.unref();
+          }
+        }
+
+        return Promise.resolve()
+          .then(task)
+          .finally(() => {
+            if (timeoutHandle != null) {
+              clearTimeoutFn(timeoutHandle);
+            }
+          });
+      }
     );
 
-    queueTail = scheduledTask.catch((error) => {
-      logError(`Serialized task failed [${taskLabel}]:`, formatErrorText(error));
-      return null;
-    });
+    queueTail = scheduledTask
+      .catch((error) => {
+        logError(`Serialized task failed [${taskLabel}]:`, formatErrorText(error));
+        return null;
+      })
+      .finally(() => {
+        pendingTasks = Math.max(0, pendingTasks - 1);
+        updateQueueDepthState(taskLabel);
+      });
 
     return scheduledTask;
   };
 }
 
-function createSerializedMutationRunner({ logError = () => {} } = {}) {
-  const runSerializedTask = createSerializedTaskRunner({ logError });
+function createSerializedMutationRunner(options = {}) {
+  const runSerializedTask = createSerializedTaskRunner(options);
 
   return function runSerializedMutation({
     label = "mutation",
@@ -83,22 +169,7 @@ function createSerializedMutationRunner({ logError = () => {} } = {}) {
   };
 }
 
-function createSerializedMutationTaskAdapter(runSerializedMutation) {
-  if (typeof runSerializedMutation !== "function") {
-    throw new TypeError("runSerializedMutation must be a function");
-  }
-
-  return function runSerializedTask(task, label = "task") {
-    return runSerializedMutation({
-      label,
-      mutate: task,
-      shouldPersist: false,
-    });
-  };
-}
-
 module.exports = {
-  createSerializedMutationTaskAdapter,
   createSerializedMutationRunner,
   createSerializedTaskRunner,
 };

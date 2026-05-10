@@ -216,6 +216,8 @@ async function runClientReadyCore(client, options = {}) {
     assertFunction(resumeActivityRuntime, "resumeActivityRuntime");
   }
 
+  const degraded = [];
+
   await Promise.resolve(registerGuildCommands(client)).catch((error) => {
     throw new ClientReadyCoreError("registerGuildCommands", error);
   });
@@ -243,9 +245,13 @@ async function runClientReadyCore(client, options = {}) {
   if (typeof resumeActivityRuntime === "function") {
     await Promise.resolve(resumeActivityRuntime(client)).catch((error) => {
       logError("Activity runtime resume failed:", formatErrorText(error));
+      degraded.push({
+        step: "resumeActivityRuntime",
+        message: String(formatErrorText(error) || "unknown error"),
+      });
     });
   }
-  return { generated };
+  return { generated, degraded };
 }
 
 function scheduleClientReadyIntervals(client, options = {}) {
@@ -284,11 +290,37 @@ function schedulePeriodicJobs(client, options = {}) {
   const intervalHandles = [];
 
   for (const job of jobs) {
-    intervalHandles.push(setIntervalFn(() => {
-      Promise.resolve(job.run(client)).catch((error) => {
-        logError(`${job.errorLabel}:`, formatErrorText(error));
-      });
-    }, job.intervalMs));
+    let running = false;
+    let rerunRequested = false;
+    let activeRunPromise = null;
+
+    const runJob = () => {
+      if (running) {
+        rerunRequested = true;
+        return activeRunPromise;
+      }
+
+      running = true;
+      activeRunPromise = (async () => {
+        try {
+          do {
+            rerunRequested = false;
+            try {
+              await Promise.resolve(job.run(client));
+            } catch (error) {
+              logError(`${job.errorLabel}:`, formatErrorText(error));
+            }
+          } while (rerunRequested);
+        } finally {
+          running = false;
+          activeRunPromise = null;
+        }
+      })();
+
+      return activeRunPromise;
+    };
+
+    intervalHandles.push(setIntervalFn(() => runJob(), job.intervalMs));
   }
 
   return intervalHandles;

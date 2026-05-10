@@ -2,6 +2,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const { MessageFlags } = require("discord.js");
 
 const {
   buildActivityOperatorPanelPayload,
@@ -54,6 +55,9 @@ test("buildActivityOperatorPanelPayload separates overview, channels, roles, and
     targetUserCount: 3,
     localActivityTargetCount: 2,
     missingLocalHistoryUserCount: 1,
+    snapshotWithoutLocalHistoryUserCount: 1,
+    mirrorOnlyPersistedUserCount: 0,
+    managedRoleHolderWithoutPersistedActivityUserCount: 0,
     rebuiltUserCount: 3,
     appliedCount: 2,
     skippedCount: 1,
@@ -67,6 +71,9 @@ test("buildActivityOperatorPanelPayload separates overview, channels, roles, and
     targetUserCount: 2,
     localActivityTargetCount: 1,
     missingLocalHistoryUserCount: 1,
+    snapshotWithoutLocalHistoryUserCount: 1,
+    mirrorOnlyPersistedUserCount: 0,
+    managedRoleHolderWithoutPersistedActivityUserCount: 0,
     rebuiltUserCount: 0,
     appliedCount: 1,
     skippedCount: 1,
@@ -80,6 +87,9 @@ test("buildActivityOperatorPanelPayload separates overview, channels, roles, and
     targetUserCount: 2,
     localActivityTargetCount: 1,
     missingLocalHistoryUserCount: 1,
+    snapshotWithoutLocalHistoryUserCount: 1,
+    mirrorOnlyPersistedUserCount: 0,
+    managedRoleHolderWithoutPersistedActivityUserCount: 0,
     rebuiltUserCount: 0,
     appliedCount: 1,
     skippedCount: 1,
@@ -122,7 +132,7 @@ test("buildActivityOperatorPanelPayload separates overview, channels, roles, and
 
   assert.equal(payload.embeds[0].data.title, "Activity Panel • Обзор");
   assert.match(payload.embeds[0].data.description, /Статус раздела:/);
-  assert.match(payload.embeds[0].data.description, /старые users без локальной history-базы/i);
+  assert.match(payload.embeds[0].data.description, /canonical snapshots без локальной history-базы/i);
   assert.equal(payload.embeds.length, 2);
   assert.equal(payload.embeds[1].data.title, "Activity Panel • Фокус оператора");
   assert.equal(payload.components.length, 3);
@@ -183,9 +193,13 @@ test("buildActivityOperatorPanelPayload separates overview, channels, roles, and
   assert.match(overviewDiagnosticTexts, /Ошибки runtime: \*\*0\*\*/);
   assert.match(overviewDiagnosticTexts, /Каналов без import checkpoint: \*\*1\*\*/);
   assert.match(overviewDiagnosticTexts, /Нужен добор старой истории: \*\*1\*\*/);
+  assert.match(overviewDiagnosticTexts, /Canonical snapshots без local history: \*\*1\*\*/);
+  assert.match(overviewDiagnosticTexts, /Mirror-only persisted fallback: \*\*0\*\*/);
+  assert.match(overviewDiagnosticTexts, /Live holders без saved activity: \*\*0\*\*/);
+  assert.match(overviewDiagnosticTexts, /Противоречивых persisted states: \*\*0\*\*/);
   assert.match(overviewDiagnosticTexts, /Причины пропуска:/);
   assert.match(overviewDiagnosticTexts, /уже совпадает: \*\*1\*\*/i);
-  assert.match(overviewDiagnosticTexts, /Есть users без локальной истории: сначала импорт истории, потом выдача ролей\./);
+  assert.match(overviewDiagnosticTexts, /canonical snapshots без local history: roles-only sync возможен, но полный rebuild требует import истории\./i);
 
   const channelsPayload = buildActivityOperatorPanelPayload({
     db,
@@ -267,7 +281,11 @@ test("buildActivityOperatorPanelPayload separates overview, channels, roles, and
   assert.match(roleDiagnosticTexts, /Причины пропуска/);
   assert.match(roleDiagnosticTexts, /уже совпадает: \*\*1\*\*/i);
   assert.match(roleDiagnosticTexts, /Нужен добор старой истории: \*\*1\*\*/);
-  assert.match(roleDiagnosticTexts, /Есть 1 users без локальной истории: сначала импорт истории, потом только выдача ролей\./);
+  assert.match(roleDiagnosticTexts, /Canonical snapshots без local history: \*\*1\*\*/);
+  assert.match(roleDiagnosticTexts, /Mirror-only persisted fallback: \*\*0\*\*/);
+  assert.match(roleDiagnosticTexts, /Live holders без saved activity: \*\*0\*\*/);
+  assert.match(roleDiagnosticTexts, /Противоречивых persisted states: \*\*0\*\*/);
+  assert.match(roleDiagnosticTexts, /Есть 1 canonical snapshots без local history: roles-only sync безопасен, а полный rebuild требует import старой истории\./);
 
   const runtimePayload = buildActivityOperatorPanelPayload({
     db,
@@ -294,8 +312,94 @@ test("buildActivityOperatorPanelPayload separates overview, channels, roles, and
   assert.match(runtimeFieldTexts, /Ошибок не зафиксировано\./);
   const runtimeDiagnosticTexts = runtimePayload.embeds[1].data.fields.map((field) => `${field.name}: ${field.value}`).join("\n");
   assert.match(runtimeDiagnosticTexts, /Полный пересчёт \+ выдача:/);
+  assert.match(runtimeDiagnosticTexts, /Canonical snapshots без local history: \*\*1\*\*/);
+  assert.match(runtimeDiagnosticTexts, /Противоречивых persisted states: \*\*0\*\*/);
   assert.match(runtimeDiagnosticTexts, /Flush: пересобрано \*\*2\*\*, завершено сессий \*\*1\*\*/);
   assert.match(runtimeDiagnosticTexts, /Runtime ещё живой: дождись flush или просто обнови вид позже, если нужна финальная картина\./);
+});
+
+test("buildActivityOperatorPanelPayload surfaces ready-core startup health in the operator view", () => {
+  const payload = buildActivityOperatorPanelPayload({
+    db: {},
+    startupHealth: {
+      label: "degraded",
+      completedAt: "2026-05-10T08:40:00.000Z",
+      degraded: [
+        {
+          step: "resumeActivityRuntime",
+          message: "activity snapshots require rebuild",
+        },
+      ],
+    },
+  });
+
+  assert.match(payload.embeds[0].data.description, /Ready-core startup: \*\*DEGRADED\*\*/);
+  const fieldTexts = payload.embeds[0].data.fields.map((field) => `${field.name}: ${field.value}`).join("\n");
+  assert.match(fieldTexts, /Startup: Ready-core startup: \*\*DEGRADED\*\*/);
+  assert.match(fieldTexts, /Degraded шагов: \*\*1\*\*/);
+  const diagnosticTexts = payload.embeds[1].data.fields.map((field) => `${field.name}: ${field.value}`).join("\n");
+  assert.match(diagnosticTexts, /Ready-core degraded: • resumeActivityRuntime: activity snapshots require rebuild/i);
+});
+
+test("buildActivityOperatorPanelPayload surfaces contradictory persisted mirror states even when snapshot index is empty", () => {
+  const db = {
+    profiles: {
+      contradictoryMirror: {
+        userId: "contradictoryMirror",
+        domains: {
+          activity: {
+            activityScore: 12,
+            baseActivityScore: 12,
+            desiredActivityRoleKey: "dead",
+            appliedActivityRoleKey: null,
+            roleEligibilityStatus: "join_age_unknown",
+            roleEligibleForActivityRole: true,
+            recalculatedAt: "2026-05-08T12:00:00.000Z",
+            lastSeenAt: "2026-05-08T11:50:00.000Z",
+          },
+        },
+      },
+    },
+    sot: {
+      activity: {
+        config: {},
+        watchedChannels: [
+          {
+            channelId: "main-1",
+            channelType: "main_chat",
+            enabled: true,
+          },
+        ],
+        globalUserSessions: [],
+        userChannelDailyStats: [],
+        userSnapshots: {},
+        calibrationRuns: [],
+        ops: { moderationAuditLog: [] },
+        runtime: {
+          openSessions: {},
+          dirtyUsers: [],
+        },
+      },
+    },
+  };
+
+  updateActivityConfig(db, {
+    activityRoleIds: {
+      weak: "role-weak",
+    },
+  });
+
+  const payload = buildActivityOperatorPanelPayload({ db });
+  const fieldTexts = payload.embeds[0].data.fields.map((field) => `${field.name}: ${field.value}`).join("\n");
+  const overviewDiagnosticTexts = payload.embeds[1].data.fields.map((field) => `${field.name}: ${field.value}`).join("\n");
+
+  assert.match(payload.embeds[0].data.description, /противоречивые persisted activity states/i);
+  assert.match(fieldTexts, /Готовых snapshots: \*\*0\*\*/i);
+  assert.match(fieldTexts, /Mirror-only persisted fallback: \*\*1\*\*/);
+  assert.match(fieldTexts, /Противоречивых persisted states: \*\*1\*\*/);
+  assert.match(overviewDiagnosticTexts, /Mirror-only persisted fallback: \*\*1\*\*/);
+  assert.match(overviewDiagnosticTexts, /Противоречивых persisted states: \*\*1\*\*/);
+  assert.match(overviewDiagnosticTexts, /inspect-user и rebuild\+sync/i);
 });
 
 test("handleActivityPanelButtonInteraction navigates views and routes rebuild vs sync actions separately", async () => {
@@ -723,4 +827,99 @@ test("handleActivityPanelModalSubmitInteraction returns a rich inspection payloa
   assert.match(inspectionText, /profile mirror/i);
   assert.match(inspectionText, /roles-only sync/i);
   assert.match(inspectionText, /<@&role-weak>/);
+});
+
+test("handleActivityPanelModalSubmitInteraction returns validation error for bad inspect-user input", async () => {
+  const replies = [];
+
+  const handled = await handleActivityPanelModalSubmitInteraction({
+    interaction: {
+      customId: "activity_panel_inspect_user_modal",
+      member: { id: "mod-1" },
+      user: { id: "mod-1" },
+      fields: {
+        getTextInputValue(fieldId) {
+          if (fieldId === "activity_inspect_user_id") return "not-a-user";
+          return "";
+        },
+      },
+    },
+    db: {},
+    isModerator: () => true,
+    replyNoPermission: async () => {
+      throw new Error("should not run");
+    },
+    replyError: async (_interaction, text) => {
+      replies.push(["error", text]);
+    },
+    replySuccess: async () => {
+      throw new Error("should not run");
+    },
+    parseRequestedUserId() {
+      return "";
+    },
+  });
+
+  assert.equal(handled, true);
+  assert.deepEqual(replies, [["error", "Некорректный user input. Используй Discord user ID или <@...>."]]);
+});
+
+test("handleActivityPanelModalSubmitInteraction defers modal replies before slow work and finishes with editReply", async () => {
+  const db = {};
+  const calls = [];
+
+  const handled = await handleActivityPanelModalSubmitInteraction({
+    interaction: {
+      customId: "activity_panel_config_watch_save_modal",
+      member: { id: "mod-1" },
+      user: { id: "mod-1" },
+      deferred: false,
+      replied: false,
+      fields: {
+        getTextInputValue(fieldId) {
+          if (fieldId === "activity_watch_channel_list") return "123456789012345678";
+          return "";
+        },
+      },
+      async deferReply(options) {
+        calls.push(["deferReply", options]);
+        this.deferred = true;
+      },
+      async editReply(payload) {
+        calls.push(["editReply", payload]);
+      },
+    },
+    db,
+    isModerator: () => true,
+    replyNoPermission: async () => {
+      throw new Error("should not run");
+    },
+    replyError: async () => {
+      calls.push(["replyError"]);
+    },
+    replySuccess: async () => {
+      calls.push(["replySuccess"]);
+    },
+    parseRequestedChannelId(value) {
+      return String(value || "").trim();
+    },
+    async resolveChannel(channelId) {
+      calls.push(["resolveChannel", channelId]);
+      return {
+        id: channelId,
+        name: "main-chat",
+        guildId: "guild-1",
+        isTextBased() {
+          return true;
+        },
+      };
+    },
+  });
+
+  assert.equal(handled, true);
+  assert.deepEqual(calls[0], ["deferReply", { flags: MessageFlags.Ephemeral }]);
+  assert.deepEqual(calls[1], ["resolveChannel", "123456789012345678"]);
+  assert.equal(calls[2][0], "editReply");
+  assert.match(calls[2][1].content, /Каналы Activity сохранены/);
+  assert.equal(calls.some(([type]) => type === "replyError" || type === "replySuccess"), false);
 });

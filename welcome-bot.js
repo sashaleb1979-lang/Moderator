@@ -60,7 +60,7 @@ const {
   runSotStartupAlerts,
   scheduleSotAlertTicks,
 } = require("./src/sot/runtime-alerts");
-const { createSerializedMutationRunner, createSerializedMutationTaskAdapter } = require("./src/runtime/serialized-task-runner");
+const { createSerializedMutationRunner, createSerializedTaskRunner } = require("./src/runtime/serialized-task-runner");
 const {
   clearIntervalHandles,
   mergeRobloxRuntimeConfig,
@@ -151,6 +151,7 @@ const {
   buildVerificationRuntimePayload,
   buildVerificationStageTextsModal,
   handleVerificationPanelButtonInteraction,
+  handleVerificationPanelModalSubmitInteraction,
   parseVerificationReportAction,
 } = require("./src/verification/operator");
 const {
@@ -165,12 +166,12 @@ const {
   handleActivityPanelModalSubmitInteraction,
   runDailyActivityRoleSync,
 } = require("./src/activity/operator");
-const { ensureActivityState } = require("./src/activity/state");
 const {
   flushActivityRuntime,
   recordActivityMessage,
   resumeActivityRuntime,
 } = require("./src/activity/runtime");
+const { ensureActivityState } = require("./src/activity/state");
 const {
   ONBOARD_ACCESS_MODES,
   createOnboardModeState,
@@ -344,11 +345,7 @@ const {
   paginateRecentKillChanges,
   summarizeRecentKillChange,
 } = require("./src/onboard/tierlist-ranking");
-const {
-  parseKillsFromSubmittedText,
-  resolveEffectiveSubmittedKills,
-  resolveResumableMainCharacterIds,
-} = require("./src/onboard/submission-message");
+const { parseKillsFromSubmittedText, resolveEffectiveSubmittedKills } = require("./src/onboard/submission-message");
 let nonGgsCaptchaModule = null;
 try {
   nonGgsCaptchaModule = require("./src/onboard/non-jjs-captcha");
@@ -497,6 +494,8 @@ let lastSotCharacterAlertSignature = "";
 let lastSotCharacterAlertAt = 0;
 let lastSotDriftAlertSignature = "";
 let lastSotDriftAlertAt = 0;
+let lastClientReadyCoreCompletedAt = "";
+let lastClientReadyCoreDegraded = [];
 
 function envText(name, fallback = "") {
   const raw = process.env[name];
@@ -845,10 +844,14 @@ const robloxApiClient = createRobloxApiClient();
 const robloxJobCoordinator = createRobloxJobCoordinator({
   logError: (...args) => console.error(...args),
 });
-const runSerializedDbMutation = createSerializedMutationRunner({
+const serializedDbRunnerOptions = {
   logError: (...args) => console.error(...args),
-});
-const runSerializedActivityTask = createSerializedMutationTaskAdapter(runSerializedDbMutation);
+  logWarning: (...args) => console.warn(...args),
+  taskTimeoutMs: 60 * 1000,
+  queueWarningThreshold: 25,
+};
+const runSerializedDbMutation = createSerializedMutationRunner(serializedDbRunnerOptions);
+const runSerializedDbTask = createSerializedTaskRunner(serializedDbRunnerOptions);
 const robloxRuntimeState = createRobloxRuntimeState();
 const robloxPanelTelemetry = createRobloxPanelTelemetry({ now: nowIso });
 let readyClient = null;
@@ -2744,21 +2747,36 @@ async function completeMainSelection(interaction, selectedEntries, options = {})
   const isQuickSelection = options.mode === "quick";
   const responseMethod = options.responseMethod === "update" ? "update" : "reply";
   const selectedIds = selectedEntries.map((entry) => entry.id);
+  let usedDeferredUpdate = false;
+
+  const sendSelectionError = async (message) => {
+    if (usedDeferredUpdate) {
+      await interaction.followUp(ephemeralPayload({ content: message })).catch(() => {});
+      return;
+    }
+
+    await respondToOnboardError(interaction, message);
+  };
 
   const pending = getPendingSubmissionForUser(interaction.user.id);
   if (!isQuickSelection && pending) {
-    await respondToOnboardError(interaction, "У тебя уже есть pending-заявка. Новую создавать нельзя.");
+    await sendSelectionError("У тебя уже есть pending-заявка. Новую создавать нельзя.");
     return;
   }
 
   if (!selectedIds.length || selectedIds.length > 2) {
-    await respondToOnboardError(interaction, "Нужно выбрать одного или двух мейнов.");
+    await sendSelectionError("Нужно выбрать одного или двух мейнов.");
     return;
+  }
+
+  if (responseMethod === "update" && typeof interaction.deferUpdate === "function" && !interaction.deferred && !interaction.replied) {
+    await interaction.deferUpdate();
+    usedDeferredUpdate = true;
   }
 
   const member = await fetchMember(client, interaction.user.id);
   if (!member) {
-    await respondToOnboardError(interaction, "Не удалось получить твой профиль на сервере.");
+    await sendSelectionError("Не удалось получить твой профиль на сервере.");
     return;
   }
 
@@ -2770,8 +2788,7 @@ async function completeMainSelection(interaction, selectedEntries, options = {})
 
   const unresolvedEntries = resolvedEntries.filter((entry) => !isLiveCharacterEntry(entry));
   if (unresolvedEntries.length) {
-    await respondToOnboardError(
-      interaction,
+    await sendSelectionError(
       `Для ${unresolvedEntries.map((entry) => entry.label).join(", ")} пока не найдена каноническая роль. Попроси модератора нажать «Синк ролей».`
     );
     return;
@@ -2794,8 +2811,7 @@ async function completeMainSelection(interaction, selectedEntries, options = {})
         .filter(Boolean))]
         .map((roleId) => formatRoleMention(roleId));
       const failedRoleText = failedRoleMentions.length ? ` (${failedRoleMentions.join(", ")})` : "";
-      await respondToOnboardError(
-        interaction,
+      await sendSelectionError(
         `Не удалось синхронизировать роли мейнов${failedRoleText}. Попроси модератора проверить права бота и нажать «Синк ролей».`
       );
       return;
@@ -2827,6 +2843,11 @@ async function completeMainSelection(interaction, selectedEntries, options = {})
         : `Мейны обновлены: **${appliedEntries.map((entry) => entry.label).join(", ")}**.`;
 
     if (responseMethod === "update") {
+      if (usedDeferredUpdate) {
+        await interaction.editReply({ content, embeds: [], components: [] });
+        return;
+      }
+
       await interaction.update({ content, embeds: [], components: [] });
       return;
     }
@@ -2843,7 +2864,13 @@ async function completeMainSelection(interaction, selectedEntries, options = {})
   clearMainDraft(interaction.user.id);
   clearMainsPickerSession(interaction.user.id);
   if (responseMethod === "update") {
-    await interaction.update(buildSubmitStepPayload(interaction.user.id, { includeEphemeralFlag: false }));
+    const payload = buildSubmitStepPayload(interaction.user.id, { includeEphemeralFlag: false });
+    if (usedDeferredUpdate) {
+      await interaction.editReply(payload);
+      return;
+    }
+
+    await interaction.update(payload);
     return;
   }
 
@@ -3425,54 +3452,6 @@ function getSubmitSession(userId) {
 
 function clearSubmitSession(userId) {
   submitSessions.delete(userId);
-}
-
-function getValidatedLiveMainCharacterIds(characterIds = []) {
-  return [...new Set(
-    getSelectedCharacterEntries(characterIds)
-      .filter((entry) => isLiveCharacterEntry(entry))
-      .map((entry) => entry.id)
-      .filter(Boolean)
-  )].slice(0, 2);
-}
-
-function getStoredProfileMainCharacterIds(userId) {
-  const existingProfile = db.profiles?.[userId];
-  if (!existingProfile || typeof existingProfile !== "object") return [];
-
-  const ensuredProfile = ensureSharedProfile(existingProfile, userId).profile;
-  const derived = getDerivedProfileMainFields(ensuredProfile);
-  return getValidatedLiveMainCharacterIds(derived.mainCharacterIds);
-}
-
-function getLiveMemberMainCharacterIds(member) {
-  if (!member?.roles?.cache) return [];
-  return getValidatedLiveMainCharacterIds(
-    getCharacterEntries()
-      .filter((entry) => isLiveCharacterEntry(entry) && member.roles.cache.has(entry.roleId))
-      .map((entry) => entry.id)
-  );
-}
-
-function buildSubmitSessionBootstrap(userId, member) {
-  const mainCharacterIds = resolveResumableMainCharacterIds({
-    storedMainCharacterIds: getStoredProfileMainCharacterIds(userId),
-    liveMainCharacterIds: getLiveMemberMainCharacterIds(member),
-  });
-  if (!mainCharacterIds.length) return null;
-
-  const existingProfile = db.profiles?.[userId];
-  const ensuredProfile = existingProfile && typeof existingProfile === "object"
-    ? ensureSharedProfile(existingProfile, userId).profile
-    : null;
-  const robloxSnapshot = buildCanonicalRobloxBindingSnapshot(ensuredProfile?.domains?.roblox || ensuredProfile || {});
-
-  return {
-    mainCharacterIds,
-    robloxUsername: robloxSnapshot.username || "",
-    robloxUserId: robloxSnapshot.userId || "",
-    robloxDisplayName: robloxSnapshot.displayName || "",
-  };
 }
 
 function normalizeRobloxUsernameInput(value) {
@@ -4801,23 +4780,23 @@ function buildVerificationStatusText(userId) {
   const verificationChannelId = cleanVerificationText(getVerificationIntegrationState().verificationChannelId, 80);
 
   if (status === "verified") {
-    return "Статус: подтверждено. Доступ уже выдан или будет выдан после синхронизации роли.";
+    return "Статус: verified. Доступ выдан или будет выдан после sync роли.";
   }
   if (status === "manual_review") {
-    return `Статус: нужна ручная проверка. Кейс уже ушёл модераторам${reportDueAt ? `, дедлайн был ${formatDateTime(reportDueAt)}` : ""}.`;
+    return `Статус: manual review. Кейс уже ушёл модераторам${reportDueAt ? `, дедлайн был ${formatDateTime(reportDueAt)}` : ""}.`;
   }
   if (status === "rejected") {
-    return `Статус: отклонено${reviewedAt ? ` (${formatDateTime(reviewedAt)})` : ""}. Доступ выдан не будет.`;
+    return `Статус: rejected${reviewedAt ? ` (${formatDateTime(reviewedAt)})` : ""}. Доступ не будет выдан.`;
   }
   if (status === "failed") {
-    return `Статус: ошибка проверки. ${lastError || "Последняя попытка OAuth завершилась с ошибкой."}`;
+    return `Статус: failed. ${lastError || "Последняя попытка OAuth завершилась ошибкой."}`;
   }
   if (status === "pending") {
-    return `Статус: ожидает проверки${reportDueAt ? `. Если кейс зависнет, отчёт уйдёт модераторам после ${formatDateTime(reportDueAt)}` : ""}.`;
+    return `Статус: pending${reportDueAt ? `. Если кейс зависнет, escalation уйдёт модераторам после ${formatDateTime(reportDueAt)}` : ""}.`;
   }
   return verificationChannelId
-    ? `Статус: ещё не начато. Открой ${formatChannelMention(verificationChannelId)} и нажми кнопку запуска проверки.`
-    : "Статус: ещё не начато. Канал проверки пока не настроен.";
+    ? `Статус: not started. Открой ${formatChannelMention(verificationChannelId)} и нажми кнопку OAuth.`
+    : "Статус: not started. Verification room пока не настроен.";
 }
 
 function clearExpiredVerificationOauthStates() {
@@ -4985,8 +4964,8 @@ async function ensureVerificationEntryMessage(client) {
   const payload = buildVerificationEntryPayload({
     integration,
     statusText: isVerificationOauthConfigured()
-      ? "OAuth уже готов. Если кейс зависнет, модераторы увидят его в очереди и в канале отчётов."
-      : "OAuth пока не настроен. Инструкция уже доступна, запуск заработает после заполнения переменных окружения.",
+      ? "OAuth runtime готов. Если кейс зависнет, модераторы увидят его в queue/report flow."
+      : "OAuth env пока не настроен. Guide уже доступен, launch станет рабочим после заполнения env.",
   });
 
   const trackedMessageId = cleanVerificationText(integration.entryMessage?.messageId, 80);
@@ -8438,6 +8417,10 @@ async function buildGroundTruthSotReportPayload(client, statusText = "", include
   const channelLiveCount = channelDiagnostics.filter((entry) => entry.exists === true).length;
   const roleConfiguredCount = roleDiagnostics.filter((entry) => entry.id).length;
   const roleLiveCount = roleDiagnostics.filter((entry) => entry.exists === true).length;
+  const startupHealthLabel = lastClientReadyCoreDegraded.length ? "DEGRADED" : "OK";
+  const startupHealthTimeText = lastClientReadyCoreCompletedAt
+    ? formatDateTime(lastClientReadyCoreCompletedAt)
+    : "—";
   const statusLines = [
     "Ground-truth отчёт построен по текущим legacy code-path и db.config. Новый SoT facade здесь не используется.",
     `Guild: **${guild?.name || "не удалось получить"}**`,
@@ -8445,6 +8428,7 @@ async function buildGroundTruthSotReportPayload(client, statusText = "", include
     `Роли: **${roleLiveCount}/${roleConfiguredCount}** live`,
     `Персонажи: bound **${characterDiagnostics.runtimeBound}/${characterDiagnostics.total}**, stale **${characterDiagnostics.staleCount}**, stale verification **${characterDiagnostics.staleVerificationCount}**, ambiguous **${characterDiagnostics.ambiguousCount}**, unresolved **${characterDiagnostics.unresolvedCount}**, recovery candidates **${characterDiagnostics.recoveredCount}**`,
     `Панели tracked: **${panelDiagnostics.trackedCount}**`,
+    `Startup health: **${startupHealthLabel}** / last ready-core ${startupHealthTimeText}`,
   ];
 
   const overviewEmbed = new EmbedBuilder()
@@ -8458,6 +8442,16 @@ async function buildGroundTruthSotReportPayload(client, statusText = "", include
 
   if (statusText) {
     overviewEmbed.addFields({ name: "Последнее действие", value: statusText, inline: false });
+  }
+
+  if (lastClientReadyCoreDegraded.length) {
+    overviewEmbed.addFields({
+      name: "Startup Degraded",
+      value: previewFieldText(lastClientReadyCoreDegraded
+        .map((entry) => `• ${previewFieldText(entry?.step || "unknown", 60)}: ${previewFieldText(entry?.message || "unknown error", 200)}`)
+        .join("\n")),
+      inline: false,
+    });
   }
 
   const infraEmbed = new EmbedBuilder()
@@ -11529,9 +11523,10 @@ client.once("clientReady", async () => {
     unresolvedCharacters: 0,
     tierRoles: 0,
   };
+  let startupDegraded = [];
 
   try {
-    ({ generated } = await runClientReadyCore(client, {
+    ({ generated, degraded: startupDegraded } = await runClientReadyCore(client, {
       ensureManagedRoles,
       runSotStartupAlerts: (currentClient) => runSotStartupAlerts(currentClient, {
         maybeLogSotCharacterHealthAlert,
@@ -11545,7 +11540,7 @@ client.once("clientReady", async () => {
       resumeActivityRuntime: () => resumeActivityRuntime({
         db,
         saveDb,
-        runSerialized: runSerializedActivityTask,
+        runSerialized: runSerializedDbTask,
       }),
       logError: (...args) => console.error(...args),
     }));
@@ -11554,6 +11549,23 @@ client.once("clientReady", async () => {
     process.exitCode = 1;
     client.destroy();
     return;
+  }
+
+  lastClientReadyCoreCompletedAt = nowIso();
+  lastClientReadyCoreDegraded = Array.isArray(startupDegraded)
+    ? startupDegraded.map((entry) => ({
+      step: String(entry?.step || "unknown").trim() || "unknown",
+      message: String(entry?.message || "unknown error").trim() || "unknown error",
+    }))
+    : [];
+
+  if (Array.isArray(startupDegraded) && startupDegraded.length) {
+    console.warn(
+      "Client ready completed in degraded mode:",
+      startupDegraded
+        .map((entry) => `${entry.step}: ${entry.message}`)
+        .join("; ")
+    );
   }
 
   const legacyEloState = getLiveLegacyEloState();
@@ -11650,14 +11662,14 @@ client.once("clientReady", async () => {
     flushActivityRuntime: () => flushActivityRuntime({
       db,
       saveDb,
-      runSerialized: runSerializedActivityTask,
+      runSerialized: runSerializedDbTask,
       resolveMemberActivityMeta: (userId) => resolveActivityMemberMeta(client, userId),
     }),
     activityFlushIntervalMs: ACTIVITY_RUNTIME_FLUSH_INTERVAL_MS,
     runDailyActivityRoleSync: () => runDailyActivityRoleSync({
       db,
       saveDb,
-      runSerialized: runSerializedActivityTask,
+      runSerialized: runSerializedDbTask,
       listManagedActivityRoleUserIds: () => listActivityRoleHolderUserIds(client),
       resolveMemberRoleIds: (userId) => resolveActivityMemberRoleIds(client, userId),
       resolveMemberActivityMeta: (userId) => resolveActivityMemberMeta(client, userId),
@@ -11933,25 +11945,9 @@ client.on("messageCreate", async (message) => {
 
   if (message.channelId !== getResolvedChannelId("welcome")) return;
 
-  let session = getSubmitSession(message.author.id);
-  const bootstrapMember = session
-    ? null
-    : (message.member?.roles?.cache ? message.member : await fetchMember(client, message.author.id).catch(() => null));
-  const canResumeWithAccessRole = !session && memberHasManagedStartAccessRole(bootstrapMember);
-  if (!session && canResumeWithAccessRole) {
-    const bootstrapSession = buildSubmitSessionBootstrap(message.author.id, bootstrapMember);
-    if (bootstrapSession?.mainCharacterIds?.length) {
-      setSubmitSession(message.author.id, bootstrapSession);
-      session = getSubmitSession(message.author.id);
-    }
-  }
-
+  const session = getSubmitSession(message.author.id);
   if (!session) {
-    const reply = await message.reply(
-      canResumeWithAccessRole
-        ? "Не удалось восстановить твоих мейнов автоматически. Нажми «Получить роль» и выбери их заново, затем отправь kills и скрин одним сообщением."
-        : "В этом канале принимается только заявка одним сообщением после кнопки «Получить роль»: текст с точным числом kills и скрин во вложении. Остальные сообщения удаляются."
-    ).catch(() => null);
+    const reply = await message.reply("В этом канале принимается только заявка одним сообщением после кнопки «Получить роль»: текст с точным числом kills и скрин во вложении. Остальные сообщения удаляются.").catch(() => null);
     if (reply) scheduleDeleteMessage(reply);
     await message.delete().catch(() => {});
     return;
@@ -12536,15 +12532,15 @@ client.on("interactionCreate", async (interaction) => {
         try {
           if (action === VERIFY_PANEL_PUBLISH_ENTRY_ID) {
             const result = await ensureVerificationEntryMessage(client);
-            return `Входное сообщение проверки обновлено в <#${result.channelId}>.`;
+            return `Verification entry message опубликовано в <#${result.channelId}>.`;
           }
           if (action === VERIFY_PANEL_RUN_SWEEP_ID) {
             const result = await runVerificationDeadlineSweep(client);
-            return `Проверка просроченных завершена. Просмотрено кейсов: ${result.scanned}, отправлено отчётов: ${result.reported}.`;
+            return `Verification sweep завершён. Проверено: ${result.scanned}, отправлено report: ${result.reported}.`;
           }
-          return "Действие выполнено.";
+          return "Verification action завершён.";
         } catch (error) {
-          return `Не удалось выполнить действие: ${cleanVerificationText(error?.message || error, 300)}`;
+          return `Verification action failed: ${cleanVerificationText(error?.message || error, 300)}`;
         }
       },
     })) {
@@ -12566,7 +12562,7 @@ client.on("interactionCreate", async (interaction) => {
 
     if (interaction.customId === VERIFY_ENTRY_START_ID) {
       if (!isVerificationOauthConfigured()) {
-        await interaction.reply(ephemeralPayload({ content: "OAuth пока не настроен. Сообщи модератору." }));
+        await interaction.reply(ephemeralPayload({ content: "OAuth env пока не настроен. Сообщи модератору." }));
         return;
       }
 
@@ -12598,7 +12594,7 @@ client.on("interactionCreate", async (interaction) => {
         })));
       } catch (error) {
         await interaction.reply(ephemeralPayload({
-          content: `Не удалось запустить проверку через OAuth: ${cleanVerificationText(error?.message || error, 300)}`,
+          content: `Не удалось запустить verification OAuth: ${cleanVerificationText(error?.message || error, 300)}`,
         }));
       }
       return;
@@ -12618,23 +12614,23 @@ client.on("interactionCreate", async (interaction) => {
           await interaction.message.edit(buildVerificationReportPayload({
             userId: verificationReportAction.userId,
             profile,
-            statusNote: `Одобрено модератором ${interaction.user.tag} в ${formatDateTime(profile.domains?.verification?.reviewedAt)}`,
+            statusNote: `Approved by ${interaction.user.tag} at ${formatDateTime(profile.domains?.verification?.reviewedAt)}`,
             disableActions: true,
           }));
-          await interaction.followUp(ephemeralPayload({ content: `Проверка для <@${verificationReportAction.userId}> одобрена.` }));
+          await interaction.followUp(ephemeralPayload({ content: `Verification для <@${verificationReportAction.userId}> одобрена.` }));
         } else {
           const profile = await rejectVerificationUser(verificationReportAction.userId, interaction.user.tag);
           await interaction.message.edit(buildVerificationReportPayload({
             userId: verificationReportAction.userId,
             profile,
-            statusNote: `Отклонено модератором ${interaction.user.tag} в ${formatDateTime(profile.domains?.verification?.reviewedAt)}`,
+            statusNote: `Rejected by ${interaction.user.tag} at ${formatDateTime(profile.domains?.verification?.reviewedAt)}`,
             disableActions: true,
           }));
-          await interaction.followUp(ephemeralPayload({ content: `Проверка для <@${verificationReportAction.userId}> отклонена.` }));
+          await interaction.followUp(ephemeralPayload({ content: `Verification для <@${verificationReportAction.userId}> отклонена.` }));
         }
       } catch (error) {
         await interaction.followUp(ephemeralPayload({
-          content: `Не удалось завершить ручную проверку: ${cleanVerificationText(error?.message || error, 300)}`,
+          content: `Не удалось завершить verification review: ${cleanVerificationText(error?.message || error, 300)}`,
         }));
       }
       return;
@@ -13510,6 +13506,11 @@ client.on("interactionCreate", async (interaction) => {
         db,
         statusText,
         view,
+        startupHealth: {
+          label: lastClientReadyCoreDegraded.length ? "DEGRADED" : "OK",
+          completedAt: lastClientReadyCoreCompletedAt,
+          degraded: lastClientReadyCoreDegraded,
+        },
       }),
       fetchChannel: async (channelId) => {
         const guild = interaction.guild || await getGuild(client).catch(() => null);
@@ -13528,7 +13529,7 @@ client.on("interactionCreate", async (interaction) => {
         reason: `activity role sync by ${interaction.user?.tag || interaction.user?.id || "unknown"}`,
       }),
       saveDb,
-      runSerialized: runSerializedActivityTask,
+      runSerialized: runSerializedDbTask,
     })) {
       return;
     }
@@ -15649,17 +15650,10 @@ client.on("interactionCreate", async (interaction) => {
         const pending = getPendingSubmissionForUser(interaction.user.id);
         const draft = getMainDraft(interaction.user.id);
         const cooldownLeft = getSubmitCooldownLeftSeconds(interaction.user.id);
-        const beginMember = interaction.member?.roles?.cache
-          ? interaction.member
-          : await fetchMember(client, interaction.user.id).catch(() => null);
-        const accessResumeSession = !session && !pending && memberHasManagedStartAccessRole(beginMember)
-          ? buildSubmitSessionBootstrap(interaction.user.id, beginMember)
-          : null;
         const beginRoute = resolveOnboardBeginRoute({
           hasPendingProof: Boolean(session?.mainCharacterIds?.length && Number.isSafeInteger(session?.pendingKills) && session?.pendingScreenshotUrl),
           hasPendingMissingRoblox: Boolean(pending && (!pending.robloxUsername || !pending.robloxUserId)),
           hasPendingSubmission: Boolean(pending),
-          hasResumableAccessSubmit: Boolean(accessResumeSession?.mainCharacterIds?.length),
           cooldownLeft,
           hasSubmitSession: Boolean(session),
           hasMainDraft: Boolean(draft?.characterIds?.length),
@@ -15696,10 +15690,6 @@ client.on("interactionCreate", async (interaction) => {
         }
 
         if (beginRoute.type === ONBOARD_BEGIN_ROUTES.SUBMIT) {
-          if (!session?.mainCharacterIds?.length && accessResumeSession?.mainCharacterIds?.length) {
-            setSubmitSession(interaction.user.id, accessResumeSession);
-          }
-
           const welcomeChannelId = getResolvedChannelId("welcome");
           if (!welcomeChannelId) {
             await interaction.reply(ephemeralPayload({
@@ -16426,162 +16416,32 @@ client.on("interactionCreate", async (interaction) => {
   }
 
   if (interaction.isModalSubmit()) {
-    if (VERIFY_PANEL_MODAL_IDS.includes(interaction.customId)) {
-      if (!isModerator(interaction.member)) {
-        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
-        return;
-      }
-
-      try {
-        if (interaction.customId === VERIFY_PANEL_CONFIG_INFRA_MODAL_ID) {
-          const currentIntegration = getVerificationIntegrationState();
-          const enabledRaw = interaction.fields.getTextInputValue("verification_enabled");
-          const callbackBaseUrl = cleanVerificationText(interaction.fields.getTextInputValue("verification_callback_base_url"), 500);
-          const verifyRoleRaw = interaction.fields.getTextInputValue("verification_verify_role");
-          const verificationRoomRaw = interaction.fields.getTextInputValue("verification_room_channel");
-          const reportChannelRaw = interaction.fields.getTextInputValue("verification_report_channel");
-
-          const enabled = parseVerificationBooleanInput(enabledRaw, currentIntegration.enabled === true);
-          if (enabled === null) {
-            await interaction.reply(ephemeralPayload({ content: "Поле включения должно быть yes/no, true/false или да/нет." }));
-            return;
-          }
-
-          const verifyRoleId = parseRequestedRoleId(verifyRoleRaw, "");
-          const verificationChannelId = parseRequestedChannelId(verificationRoomRaw, "");
-          const reportChannelId = parseRequestedChannelId(reportChannelRaw, "");
-          if (cleanVerificationText(verifyRoleRaw, 80) && !verifyRoleId) {
-            await interaction.reply(ephemeralPayload({ content: "Verify-роль должна быть указана ID роли или mention вида <@&...>." }));
-            return;
-          }
-          if (cleanVerificationText(verificationRoomRaw, 80) && !verificationChannelId) {
-            await interaction.reply(ephemeralPayload({ content: "Канал проверки должен быть указан ID канала или mention вида <#...>." }));
-            return;
-          }
-          if (cleanVerificationText(reportChannelRaw, 80) && !reportChannelId) {
-            await interaction.reply(ephemeralPayload({ content: "Канал отчётов должен быть указан ID канала или mention вида <#...>." }));
-            return;
-          }
-
-          const patch = {
-            enabled,
-            callbackBaseUrl,
-            verificationChannelId,
-            reportChannelId,
-            lastSyncAt: nowIso(),
-          };
-          if (cleanVerificationText(currentIntegration.verificationChannelId, 80) !== verificationChannelId) {
-            patch.entryMessage = { channelId: "", messageId: "" };
-          }
-          writeNativeIntegrationSnapshot(db, { slot: "verification", patch });
-
-          if (verifyRoleId) {
-            writeNativeRoleRecord(db, { slot: "verifyAccess", roleId: verifyRoleId });
-          } else {
-            clearNativeRoleRecord(db, { slot: "verifyAccess" });
-          }
-          saveDb();
-
-          const statusParts = ["Базовые настройки проверки сохранены."];
-          if (enabled) {
-            try {
-              const runtimeState = await startVerificationRuntime(client);
-              statusParts.push(`Система: callback ${runtimeState.callbackStarted ? "готов" : "работает с ограничениями"}, входное сообщение ${runtimeState.entryPublished ? "опубликовано" : "не опубликовано"}.`);
-            } catch (error) {
-              statusParts.push(`Предупреждение: ${cleanVerificationText(error?.message || error, 200)}`);
-            }
-          }
-
-          await interaction.reply(await buildVerificationPanelReply("runtime", statusParts.join(" ")));
-          return;
-        }
-
-        if (interaction.customId === VERIFY_PANEL_CONFIG_RISK_MODAL_ID) {
-          writeNativeIntegrationSnapshot(db, {
-            slot: "verification",
-            patch: {
-              riskRules: {
-                enemyGuildIds: parseVerificationListInput(interaction.fields.getTextInputValue("verification_enemy_guild_ids")),
-                enemyUserIds: parseVerificationListInput(interaction.fields.getTextInputValue("verification_enemy_user_ids")),
-                enemyInviteCodes: parseVerificationListInput(interaction.fields.getTextInputValue("verification_enemy_invite_codes")),
-                enemyInviterUserIds: parseVerificationListInput(interaction.fields.getTextInputValue("verification_enemy_inviter_user_ids")),
-                manualTags: parseVerificationListInput(interaction.fields.getTextInputValue("verification_manual_tags")),
-              },
-              lastSyncAt: nowIso(),
-            },
-          });
-          saveDb();
-          await interaction.reply(await buildVerificationPanelReply("home", "Правила риска сохранены."));
-          return;
-        }
-
-        if (interaction.customId === VERIFY_PANEL_RESEND_REPORT_MODAL_ID) {
-          const targetRaw = interaction.fields.getTextInputValue("verification_resend_user");
-          const targetUserId = parseRequestedUserId(targetRaw, "");
-          if (!targetUserId) {
-            await interaction.reply(ephemeralPayload({ content: "Участник должен быть указан Discord user ID или mention вида <@...>." }));
-            return;
-          }
-
-          const moderatorNote = cleanVerificationText(interaction.fields.getTextInputValue("verification_resend_note"), 1000)
-            || "Ручная повторная отправка отчёта.";
-          ensureVerificationPendingProfile(targetUserId, {
-            status: "manual_review",
-            decision: "manual_review",
-          });
-          const result = await postVerificationManualReport(client, targetUserId, moderatorNote);
-          updateVerificationProfile(targetUserId, {
-            status: "manual_review",
-            decision: "manual_review",
-            reportSentAt: nowIso(),
-            reportDueAt: cleanVerificationText(result.profile?.domains?.verification?.reportDueAt, 80) || computeVerificationReportDueAt(),
-          });
-          await interaction.reply(await buildVerificationPanelReply(
-            "runtime",
-            `Отчёт по проверке повторно отправлен для <@${targetUserId}> в <#${result.channel.id}>.`
-          ));
-          return;
-        }
-
-        const pendingDaysValue = Number.parseInt(interaction.fields.getTextInputValue("verification_pending_days"), 10);
-        if (!Number.isSafeInteger(pendingDaysValue) || pendingDaysValue < 1 || pendingDaysValue > 60) {
-          await interaction.reply(ephemeralPayload({ content: "Срок ожидания должен быть целым числом от 1 до 60 дней." }));
-          return;
-        }
-
-        writeNativeIntegrationSnapshot(db, {
-          slot: "verification",
-          patch: {
-            stageTexts: {
-              entry: cleanVerificationText(interaction.fields.getTextInputValue("verification_stage_entry"), 4000),
-              manualReview: cleanVerificationText(interaction.fields.getTextInputValue("verification_stage_manual_review"), 4000),
-              approved: cleanVerificationText(interaction.fields.getTextInputValue("verification_stage_approved"), 4000),
-              rejected: cleanVerificationText(interaction.fields.getTextInputValue("verification_stage_rejected"), 4000),
-            },
-            deadline: {
-              pendingDays: pendingDaysValue,
-            },
-            lastSyncAt: nowIso(),
-          },
-        });
-        saveDb();
-
-        const currentIntegration = getVerificationIntegrationState();
-        let statusText = "Тексты и срок проверки сохранены.";
-        if (cleanVerificationText(currentIntegration.verificationChannelId, 80)) {
-          try {
-            await ensureVerificationEntryMessage(client);
-            statusText = `${statusText} Входное сообщение обновлено.`;
-          } catch (error) {
-            statusText = `${statusText} Предупреждение: ${cleanVerificationText(error?.message || error, 200)}`;
-          }
-        }
-        await interaction.reply(await buildVerificationPanelReply("home", statusText));
-        return;
-      } catch (error) {
-        await interaction.reply(ephemeralPayload({ content: `Не удалось сохранить настройки проверки: ${cleanVerificationText(error?.message || error, 300)}` }));
-        return;
-      }
+    if (await handleVerificationPanelModalSubmitInteraction({
+      interaction,
+      client,
+      isModerator,
+      replyNoPermission: (currentInteraction) => currentInteraction.reply(ephemeralPayload({ content: "Нет прав." })),
+      buildPanelReply: (view, statusText) => buildVerificationPanelReply(view, statusText, false),
+      getCurrentIntegration: getVerificationIntegrationState,
+      parseBooleanInput: parseVerificationBooleanInput,
+      parseListInput: parseVerificationListInput,
+      parseRequestedRoleId,
+      parseRequestedChannelId,
+      parseRequestedUserId,
+      cleanText: cleanVerificationText,
+      nowIso,
+      writeIntegrationSnapshot: (patch) => writeNativeIntegrationSnapshot(db, { slot: "verification", patch }),
+      writeVerifyRole: (roleId) => writeNativeRoleRecord(db, { slot: "verifyAccess", roleId }),
+      clearVerifyRole: () => clearNativeRoleRecord(db, { slot: "verifyAccess" }),
+      saveDb,
+      startRuntime: startVerificationRuntime,
+      ensureEntryMessage: ensureVerificationEntryMessage,
+      ensurePendingProfile: ensureVerificationPendingProfile,
+      postManualReport: postVerificationManualReport,
+      updateProfile: updateVerificationProfile,
+      computeReportDueAt: computeVerificationReportDueAt,
+    })) {
+      return;
     }
 
     if (["onboard_manual_mains_modal", "onboard_manual_mains_quick_modal"].includes(interaction.customId)) {
@@ -16776,14 +16636,9 @@ client.on("interactionCreate", async (interaction) => {
       isModerator: hasActivityPanelAccess,
       replyNoPermission: () => interaction.reply(ephemeralPayload({ content: "Нет прав." })),
       replyError: (_interaction, text) => interaction.reply(ephemeralPayload({ content: text })),
-      replySuccess: (_interaction, response) => {
-        if (typeof response === "string") {
-          return interaction.reply(ephemeralPayload({ content: response }));
-        }
-        return interaction.reply(ephemeralPayload(response || {}));
-      },
-      parseRequestedRoleId,
+      replySuccess: (_interaction, text) => interaction.reply(ephemeralPayload({ content: text })),
       parseRequestedUserId,
+      parseRequestedRoleId,
       parseRequestedChannelId,
       resolveMemberRoleIds: (userId) => resolveActivityMemberRoleIds(client, userId, interaction.guild || null),
       resolveChannel: async (channelId) => {
@@ -16793,7 +16648,7 @@ client.on("interactionCreate", async (interaction) => {
         return client.channels.fetch(channelId).catch(() => null);
       },
       saveDb,
-      runSerialized: runSerializedActivityTask,
+      runSerialized: runSerializedDbTask,
     })) {
       return;
     }

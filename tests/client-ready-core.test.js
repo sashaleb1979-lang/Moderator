@@ -254,7 +254,7 @@ test("runClientReadyCore preserves startup order for the core prelude", async ()
     ["refreshWelcomePanel", client],
     ["refreshAllTierlists", client],
   ]);
-  assert.deepEqual(result, { generated: { resolvedCharacters: 3 } });
+  assert.deepEqual(result, { generated: { resolvedCharacters: 3 }, degraded: [] });
 });
 
 test("runClientReadyCore throws a critical error when guild command registration fails", async () => {
@@ -325,6 +325,7 @@ test("runClientReadyCore logs ensureManagedRoles failures and still registers st
       unresolvedCharacters: 0,
       tierRoles: 0,
     },
+    degraded: [],
   });
 });
 
@@ -452,7 +453,7 @@ test("runClientReadyCore logs tierlist refresh failures and continues to activit
 test("runClientReadyCore resumes activity runtime after refreshes", async () => {
   const calls = [];
 
-  await runClientReadyCore({ id: "client" }, {
+  const result = await runClientReadyCore({ id: "client" }, {
     async registerGuildCommands() {
       calls.push("registerGuildCommands");
     },
@@ -486,6 +487,35 @@ test("runClientReadyCore resumes activity runtime after refreshes", async () => 
     "refreshAllTierlists",
     "resumeActivityRuntime",
   ]);
+  assert.deepEqual(result, { generated: {}, degraded: [] });
+});
+
+test("runClientReadyCore returns degraded startup status when activity runtime resume fails", async () => {
+  const errors = [];
+
+  const result = await runClientReadyCore({ id: "client" }, {
+    async registerGuildCommands() {},
+    async ensureManagedRoles() {
+      return {};
+    },
+    async runSotStartupAlerts() {},
+    async syncApprovedTierRoles() {},
+    async refreshWelcomePanel() {},
+    async refreshAllTierlists() {},
+    async resumeActivityRuntime() {
+      throw new Error("activity resume failed");
+    },
+    logError: (...args) => errors.push(args.join(" ")),
+  });
+
+  assert.deepEqual(errors, ["Activity runtime resume failed: activity resume failed"]);
+  assert.deepEqual(result, {
+    generated: {},
+    degraded: [{
+      step: "resumeActivityRuntime",
+      message: "activity resume failed",
+    }],
+  });
 });
 
 test("scheduleClientReadyIntervals wires auto-resend, alert ticks, and summary refresh", async () => {
@@ -660,6 +690,62 @@ test("schedulePeriodicJobs returns handles and logs runner failures", async () =
 
   assert.deepEqual(scheduled.slice(2), [["run", { id: "client" }]]);
   assert.deepEqual(errors, ["bad-job failed: boom"]);
+});
+
+test("schedulePeriodicJobs coalesces overlapping ticks into a single rerun", async () => {
+  const scheduled = [];
+  const releases = [];
+  const calls = [];
+
+  const handles = schedulePeriodicJobs({ id: "client" }, {
+    periodicJobs: [
+      {
+        run(client) {
+          const runIndex = calls.filter((entry) => entry[0] === "runStart").length + 1;
+          calls.push(["runStart", runIndex, client]);
+          return new Promise((resolve) => {
+            releases.push(() => {
+              calls.push(["runEnd", runIndex, client]);
+              resolve();
+            });
+          });
+        },
+        intervalMs: 100,
+        errorLabel: "coalesced-job failed",
+      },
+    ],
+    setIntervalFn(handler, intervalMs) {
+      scheduled.push({ handler, intervalMs });
+      return `timer:${intervalMs}`;
+    },
+  });
+
+  assert.deepEqual(handles, ["timer:100"]);
+
+  const firstTick = scheduled[0].handler();
+  const secondTick = scheduled[0].handler();
+  const thirdTick = scheduled[0].handler();
+
+  assert.deepEqual(calls, [["runStart", 1, { id: "client" }]]);
+
+  releases.shift()();
+  await Promise.resolve();
+
+  assert.deepEqual(calls, [
+    ["runStart", 1, { id: "client" }],
+    ["runEnd", 1, { id: "client" }],
+    ["runStart", 2, { id: "client" }],
+  ]);
+
+  releases.shift()();
+  await Promise.all([firstTick, secondTick, thirdTick]);
+
+  assert.deepEqual(calls, [
+    ["runStart", 1, { id: "client" }],
+    ["runEnd", 1, { id: "client" }],
+    ["runStart", 2, { id: "client" }],
+    ["runEnd", 2, { id: "client" }],
+  ]);
 });
 
 test("scheduleClientReadyIntervals skips summary refresh when tierlist source path is missing", async () => {
