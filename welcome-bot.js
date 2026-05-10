@@ -5344,7 +5344,7 @@ async function handleVerificationApprovedCallback(client, payload = {}) {
   if (!userId) throw new Error("Verification callback не содержит userId session.");
   await completeVerificationApprovedAccess(client, userId, "verification oauth approved");
   const risk = payload.risk && typeof payload.risk === "object" ? payload.risk : {};
-  updateVerificationProfile(userId, {
+  const profile = updateVerificationProfile(userId, {
     status: "verified",
     decision: "approved",
     startedAt: nowIso(),
@@ -5364,6 +5364,16 @@ async function handleVerificationApprovedCallback(client, payload = {}) {
     matchedEnemyInviterUserIds: Array.isArray(risk.matchedEnemyInviterUserIds) ? risk.matchedEnemyInviterUserIds : [],
     lastError: "",
   });
+
+  await postVerificationManualReport(
+    client,
+    userId,
+    `Автоматически одобрено системой в ${formatDateTime(profile.domains?.verification?.completedAt)}. Ниже сохранена аудит-сводка по Discord OAuth.`,
+    { disableActions: true }
+  ).catch((error) => {
+    console.warn(`Verification approved report failed for ${userId}: ${formatRuntimeError(error)}`);
+  });
+
   await logLine(client, `VERIFICATION_APPROVED: <@${userId}> oauth=${buildVerificationOauthUsername(payload.oauthUser) || "unknown"}`).catch(() => {});
 }
 

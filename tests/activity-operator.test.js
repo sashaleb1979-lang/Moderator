@@ -541,6 +541,7 @@ test("runDailyActivityRoleSync applies canonical saved snapshots without rebuild
   assert.equal(result.rebuiltUserCount, 0);
   assert.deepEqual(resolvedMetaUserIds, []);
   assert.deepEqual(resolvedRoleUserIds, ["snapshotOnly"]);
+  assert.deepEqual(Object.keys(db.sot.activity.userSnapshots).sort(), ["mirrorOnly", "snapshotOnly"]);
   assert.deepEqual(roleChanges, [
     {
       userId: "snapshotOnly",
@@ -557,7 +558,7 @@ test("runDailyActivityRoleSync applies canonical saved snapshots without rebuild
     managedRoleHolderCount: 0,
     localActivityTargetCount: 0,
     missingLocalHistoryUserCount: 1,
-    snapshotWithoutLocalHistoryUserCount: 1,
+    snapshotWithoutLocalHistoryUserCount: 2,
     mirrorOnlyPersistedUserCount: 0,
     managedRoleHolderWithoutPersistedActivityUserCount: 0,
     rebuiltUserCount: 0,
@@ -637,12 +638,13 @@ test("runDailyActivityRoleSync ignores explicit users without local history or c
   assert.deepEqual(resolvedMetaUserIds, []);
   assert.deepEqual(resolvedRoleUserIds, []);
   assert.deepEqual(roleChanges, []);
+  assert.deepEqual(Object.keys(db.sot.activity.userSnapshots), ["mirrorOnly"]);
   assert.deepEqual(db.sot.activity.runtime.lastDailyRoleSyncStats, {
     targetUserCount: 0,
     managedRoleHolderCount: 0,
     localActivityTargetCount: 0,
     missingLocalHistoryUserCount: 0,
-    snapshotWithoutLocalHistoryUserCount: 0,
+    snapshotWithoutLocalHistoryUserCount: 1,
     mirrorOnlyPersistedUserCount: 0,
     managedRoleHolderWithoutPersistedActivityUserCount: 0,
     rebuiltUserCount: 0,
@@ -1233,6 +1235,133 @@ test("runDailyActivityRoleSync rebuilds snapshots with member age metadata and a
   assert.deepEqual(roleChanges, [
     {
       userId: "user-1",
+      desiredRoleKey: "weak",
+      desiredRoleId: "role-weak",
+      addRoleIds: ["role-weak"],
+      removeRoleIds: [],
+    },
+  ]);
+});
+
+test("runDailyActivityRoleSync promotes mirror-only persisted users into canonical snapshots before role assignment", async () => {
+  const db = {
+    profiles: {
+      historyUser: {
+        userId: "historyUser",
+        username: "todo",
+      },
+      mirrorOnly: {
+        userId: "mirrorOnly",
+        domains: {
+          activity: {
+            activityScore: 61,
+            baseActivityScore: 58,
+            desiredActivityRoleKey: "active",
+            appliedActivityRoleKey: null,
+            roleEligibilityStatus: "eligible",
+            roleEligibleForActivityRole: true,
+            recalculatedAt: "2026-05-08T12:00:00.000Z",
+            lastSeenAt: "2026-05-08T11:50:00.000Z",
+          },
+        },
+        summary: {
+          activity: {
+            activityScore: 61,
+            baseActivityScore: 58,
+            desiredActivityRoleKey: "active",
+            appliedActivityRoleKey: null,
+            roleEligibilityStatus: "eligible",
+            roleEligibleForActivityRole: true,
+            recalculatedAt: "2026-05-08T12:00:00.000Z",
+            lastSeenAt: "2026-05-08T11:50:00.000Z",
+          },
+        },
+      },
+    },
+    sot: {
+      activity: {
+        config: {},
+        watchedChannels: [
+          {
+            channelId: "main-1",
+            channelType: "main_chat",
+            enabled: true,
+            channelWeight: 1,
+            countMessages: true,
+            countSessions: true,
+            countForTrust: true,
+            countForRoles: true,
+          },
+        ],
+        globalUserSessions: [
+          {
+            guildId: "guild-1",
+            userId: "historyUser",
+            startedAt: "2026-05-08T12:00:00.000Z",
+            endedAt: "2026-05-08T12:10:00.000Z",
+            effectiveValue: 1,
+          },
+        ],
+        userChannelDailyStats: [
+          {
+            guildId: "guild-1",
+            channelId: "main-1",
+            userId: "historyUser",
+            date: "2026-05-08",
+            messagesCount: 8,
+            weightedMessagesCount: 8,
+            sessionsCount: 1,
+            effectiveSessionsCount: 1,
+            firstMessageAt: "2026-05-08T12:00:00.000Z",
+            lastMessageAt: "2026-05-08T12:10:00.000Z",
+          },
+        ],
+        userSnapshots: {},
+        calibrationRuns: [],
+        ops: { moderationAuditLog: [] },
+        runtime: { openSessions: {}, dirtyUsers: [] },
+      },
+    },
+  };
+
+  updateActivityConfig(db, {
+    activityRoleIds: {
+      weak: "role-weak",
+      active: "role-active",
+    },
+  });
+
+  const roleChanges = [];
+  const result = await runDailyActivityRoleSync({
+    db,
+    now: "2026-05-09T12:00:00.000Z",
+    resolveMemberRoleIds() {
+      return [];
+    },
+    resolveMemberActivityMeta() {
+      return {
+        joinedAt: "2026-05-01T12:00:00.000Z",
+      };
+    },
+    async applyRoleChanges(change) {
+      roleChanges.push(change);
+      return true;
+    },
+  });
+
+  assert.equal(result.rebuiltUserCount, 1);
+  assert.equal(result.targetUserCount, 1);
+  assert.deepEqual(Object.keys(db.sot.activity.userSnapshots).sort(), ["historyUser", "mirrorOnly"]);
+  assert.equal(db.sot.activity.userSnapshots.mirrorOnly.desiredActivityRoleKey, "active");
+  assert.equal(db.sot.activity.userSnapshots.mirrorOnly.appliedActivityRoleKey, null);
+  assert.equal(db.sot.activity.runtime.lastDailyRoleSyncStats.localActivityTargetCount, 1);
+  assert.equal(db.sot.activity.runtime.lastDailyRoleSyncStats.missingLocalHistoryUserCount, 0);
+  assert.equal(db.sot.activity.runtime.lastDailyRoleSyncStats.snapshotWithoutLocalHistoryUserCount, 1);
+  assert.equal(db.sot.activity.runtime.lastDailyRoleSyncStats.mirrorOnlyPersistedUserCount, 0);
+  assert.equal(db.sot.activity.runtime.lastDailyRoleSyncStats.appliedCount, 1);
+  assert.deepEqual(roleChanges, [
+    {
+      userId: "historyUser",
       desiredRoleKey: "weak",
       desiredRoleId: "role-weak",
       addRoleIds: ["role-weak"],

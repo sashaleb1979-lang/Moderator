@@ -11,7 +11,12 @@ const {
   TextInputStyle,
 } = require("discord.js");
 const { ensureSharedProfile } = require("../integrations/shared-profile");
-const { flushActivityRuntime, rebuildActivitySnapshots, recordActivityMessage } = require("./runtime");
+const {
+  flushActivityRuntime,
+  promotePersistedActivityMirrorsToSnapshots,
+  rebuildActivitySnapshots,
+  recordActivityMessage,
+} = require("./runtime");
 const {
   ACTIVITY_CHANNEL_TYPES,
   ensureActivityState,
@@ -2270,9 +2275,11 @@ async function runDailyActivityRoleSync({
       applyRoleChanges,
       now: syncedAt,
     });
+    promotePersistedActivityMirrorsToSnapshots({ db, userIds });
+    const persistedTargetUserIds = collectActivitySnapshotTargetUserIds(db, userIds);
     const recoveryBuckets = summarizeActivityRecoveryBuckets({
       db,
-      persistedTargetUserIds: roleTargetUserIds,
+      persistedTargetUserIds,
       historyTargetUserIds: rebuildTargetUserIds,
       managedRoleUserIds: normalizedManagedRoleUserIds,
     });

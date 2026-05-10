@@ -541,6 +541,7 @@ test("runDailyActivityRoleSync applies canonical saved snapshots without rebuild
   assert.equal(result.rebuiltUserCount, 0);
   assert.deepEqual(resolvedMetaUserIds, []);
   assert.deepEqual(resolvedRoleUserIds, ["snapshotOnly"]);
+  assert.deepEqual(Object.keys(db.sot.activity.userSnapshots).sort(), ["mirrorOnly", "snapshotOnly"]);
   assert.deepEqual(roleChanges, [
     {
       userId: "snapshotOnly",
@@ -557,7 +558,7 @@ test("runDailyActivityRoleSync applies canonical saved snapshots without rebuild
     managedRoleHolderCount: 0,
     localActivityTargetCount: 0,
     missingLocalHistoryUserCount: 1,
-    snapshotWithoutLocalHistoryUserCount: 1,
+    snapshotWithoutLocalHistoryUserCount: 2,
     mirrorOnlyPersistedUserCount: 0,
     managedRoleHolderWithoutPersistedActivityUserCount: 0,
     rebuiltUserCount: 0,
@@ -637,12 +638,13 @@ test("runDailyActivityRoleSync ignores explicit users without local history or c
   assert.deepEqual(resolvedMetaUserIds, []);
   assert.deepEqual(resolvedRoleUserIds, []);
   assert.deepEqual(roleChanges, []);
+  assert.deepEqual(Object.keys(db.sot.activity.userSnapshots), ["mirrorOnly"]);
   assert.deepEqual(db.sot.activity.runtime.lastDailyRoleSyncStats, {
     targetUserCount: 0,
     managedRoleHolderCount: 0,
     localActivityTargetCount: 0,
     missingLocalHistoryUserCount: 0,
-    snapshotWithoutLocalHistoryUserCount: 0,
+    snapshotWithoutLocalHistoryUserCount: 1,
     mirrorOnlyPersistedUserCount: 0,
     managedRoleHolderWithoutPersistedActivityUserCount: 0,
     rebuiltUserCount: 0,

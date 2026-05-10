@@ -562,22 +562,25 @@ test("runRobloxPlaytimeSyncJob clears stale persisted session markers after rest
 });
 
 test("runRobloxPlaytimeSyncJob reports opaque in-game presences separately from confirmed JJS matches", async () => {
-  const result = await runRobloxPlaytimeSyncJob({
-    db: {
-      profiles: {
-        user_a: {
-          userId: "user_a",
-          domains: {
-            roblox: {
-              username: "AlphaRb",
-              userId: "101",
-              verificationStatus: "verified",
-            },
+  const runtimeState = createRobloxRuntimeState();
+  const db = {
+    profiles: {
+      user_a: {
+        userId: "user_a",
+        domains: {
+          roblox: {
+            username: "AlphaRb",
+            userId: "101",
+            verificationStatus: "verified",
           },
         },
       },
     },
-    runtimeState: createRobloxRuntimeState(),
+  };
+
+  const result = await runRobloxPlaytimeSyncJob({
+    db,
+    runtimeState,
     now: () => "2026-05-09T12:02:00.000Z",
     roblox: {
       jjsUniverseId: 999,
@@ -602,13 +605,104 @@ test("runRobloxPlaytimeSyncJob reports opaque in-game presences separately from 
     failedBatches: 0,
     processedUserIds: 1,
     failedUserIds: 0,
-    activeJjsUsers: 0,
+    activeJjsUsers: 1,
     opaqueInGameUsers: 1,
-    touchedUserCount: 0,
+    touchedUserCount: 1,
+    startedSessionCount: 1,
+    closedSessionCount: 0,
+    activeCoPlayPairCount: 0,
+  });
+  assert.equal(db.profiles.user_a.domains.roblox.playtime.currentSessionStartedAt, "2026-05-09T12:02:00.000Z");
+  assert.equal(runtimeState.activeSessionsByDiscordUserId.user_a.gameId, "opaque:101");
+});
+
+test("runRobloxPlaytimeSyncJob keeps opaque in-game fallback users out of fake co-play groups and accumulates minutes", async () => {
+  const runtimeState = createRobloxRuntimeState();
+  const db = {
+    profiles: {
+      user_a: {
+        userId: "user_a",
+        domains: {
+          roblox: {
+            username: "AlphaRb",
+            userId: "101",
+            verificationStatus: "verified",
+          },
+        },
+      },
+      user_b: {
+        userId: "user_b",
+        domains: {
+          roblox: {
+            username: "BetaRb",
+            userId: "202",
+            verificationStatus: "verified",
+          },
+        },
+      },
+    },
+  };
+
+  await runRobloxPlaytimeSyncJob({
+    db: {
+      profiles: db.profiles,
+    },
+    runtimeState,
+    now: () => "2026-05-09T12:00:00.000Z",
+    roblox: {
+      jjsUniverseId: 999,
+      playtimePollMinutes: 2,
+    },
+    async fetchUserPresences(userIds) {
+      return userIds.map((userId) => ({
+        userId,
+        presenceType: "in_game",
+        universeId: null,
+        rootPlaceId: null,
+        placeId: null,
+        gameId: null,
+      }));
+    },
+  });
+
+  const result = await runRobloxPlaytimeSyncJob({
+    db,
+    runtimeState,
+    now: () => "2026-05-09T12:02:00.000Z",
+    roblox: {
+      jjsUniverseId: 999,
+      playtimePollMinutes: 2,
+    },
+    async fetchUserPresences(userIds) {
+      return userIds.map((userId) => ({
+        userId,
+        presenceType: "in_game",
+        universeId: null,
+        rootPlaceId: null,
+        placeId: null,
+        gameId: null,
+      }));
+    },
+  });
+
+  assert.deepEqual(result, {
+    totalCandidates: 2,
+    totalBatches: 1,
+    processedBatches: 1,
+    failedBatches: 0,
+    processedUserIds: 2,
+    failedUserIds: 0,
+    activeJjsUsers: 2,
+    opaqueInGameUsers: 2,
+    touchedUserCount: 2,
     startedSessionCount: 0,
     closedSessionCount: 0,
     activeCoPlayPairCount: 0,
   });
+  assert.equal(db.profiles.user_a.domains.roblox.playtime.totalJjsMinutes, 2);
+  assert.equal(db.profiles.user_b.domains.roblox.playtime.totalJjsMinutes, 2);
+  assert.equal(db.profiles.user_a.domains.roblox.coPlay.peers.length, 0);
+  assert.equal(db.profiles.user_b.domains.roblox.coPlay.peers.length, 0);
 });
 
 test("flushRobloxRuntime persists only when playtime runtime marked profiles dirty", () => {

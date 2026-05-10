@@ -2,6 +2,10 @@
 
 const { ensureSharedProfile } = require("../integrations/shared-profile");
 const { ensureActivityState } = require("./state");
+const {
+  collectActivitySnapshotTargetUserIds,
+  getActivityPersistedSnapshotRecord,
+} = require("./user-state");
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -624,6 +628,50 @@ function mirrorActivitySnapshotToProfile(db, userId, snapshot) {
   return db.profiles[userId];
 }
 
+function normalizeActivitySnapshotForState(db, userId, snapshot) {
+  const currentProfile = db?.profiles?.[userId] && typeof db.profiles[userId] === "object"
+    ? db.profiles[userId]
+    : { userId };
+  const nextProfile = clone(currentProfile);
+  nextProfile.domains ||= {};
+  const preservedActivity = nextProfile.domains.activity && typeof nextProfile.domains.activity === "object"
+    ? nextProfile.domains.activity
+    : {};
+  nextProfile.domains.activity = {
+    ...clone(preservedActivity),
+    ...clone(snapshot || {}),
+  };
+
+  return clone(ensureSharedProfile(nextProfile, userId).profile.domains.activity || {});
+}
+
+function promotePersistedActivityMirrorsToSnapshots({ db = {}, userIds = [] } = {}) {
+  const targetUserIds = collectActivitySnapshotTargetUserIds(db, userIds);
+  const state = ensureActivityState(db);
+  const promotedUserIds = [];
+
+  state.userSnapshots ||= {};
+
+  for (const userId of targetUserIds) {
+    const persistedSnapshot = getActivityPersistedSnapshotRecord(db, userId);
+    if (persistedSnapshot.source !== "profile_mirror" || !persistedSnapshot.snapshot) {
+      continue;
+    }
+
+    const normalizedSnapshot = normalizeActivitySnapshotForState(db, userId, persistedSnapshot.snapshot);
+    state.userSnapshots[userId] = clone(normalizedSnapshot);
+    mirrorActivitySnapshotToProfile(db, userId, normalizedSnapshot);
+    promotedUserIds.push(userId);
+  }
+
+  db.sot.activity = state;
+
+  return {
+    promotedUserCount: promotedUserIds.length,
+    promotedUserIds,
+  };
+}
+
 function appendActivityRuntimeError(state, { scope = "runtime", userId = null, createdAt, reason = "unknown error" } = {}) {
   const existingErrors = Array.isArray(state.runtime?.errors) ? state.runtime.errors : [];
   const nextError = {
@@ -813,6 +861,7 @@ async function flushActivityRuntime({ db = {}, now, saveDb, runSerialized, resol
 
 async function resumeActivityRuntime({ db = {}, now, saveDb, runSerialized } = {}) {
   const execute = async () => {
+    const promotionResult = promotePersistedActivityMirrorsToSnapshots({ db });
     const state = ensureActivityState(db);
     const resumedAt = getActivityRuntimeNow({ now });
     state.runtime.lastResumeAt = resumedAt;
@@ -823,6 +872,7 @@ async function resumeActivityRuntime({ db = {}, now, saveDb, runSerialized } = {
     return {
       resumedAt,
       openSessionCount: Object.keys(state.runtime.openSessions || {}).length,
+      promotedUserCount: promotionResult.promotedUserCount,
     };
   };
 
@@ -835,6 +885,7 @@ async function resumeActivityRuntime({ db = {}, now, saveDb, runSerialized } = {
 module.exports = {
   flushActivityRuntime,
   getEffectiveSessionBase,
+  promotePersistedActivityMirrorsToSnapshots,
   rebuildActivitySnapshots,
   rebuildActivityUserSnapshot,
   recordActivityMessage,

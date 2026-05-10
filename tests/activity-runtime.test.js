@@ -618,6 +618,63 @@ test("resumeActivityRuntime normalizes state and stamps resume time", async () =
   });
 
   assert.equal(result.resumedAt, "2026-05-09T12:00:00.000Z");
+  assert.equal(result.promotedUserCount, 0);
   assert.equal(db.sot.activity.runtime.lastResumeAt, "2026-05-09T12:00:00.000Z");
   assert.deepEqual(db.sot.activity.runtime.dirtyUsers, []);
+});
+
+test("resumeActivityRuntime promotes persisted activity mirrors into the canonical snapshot index", async () => {
+  const db = {
+    profiles: {
+      mirrorOnly: {
+        userId: "mirrorOnly",
+        domains: {
+          activity: {
+            activityScore: 61,
+            baseActivityScore: 58,
+            desiredActivityRoleKey: "active",
+            appliedActivityRoleKey: null,
+            roleEligibilityStatus: "eligible",
+            roleEligibleForActivityRole: true,
+            recalculatedAt: "2026-05-08T12:00:00.000Z",
+            lastSeenAt: "2026-05-08T11:50:00.000Z",
+          },
+        },
+        summary: {
+          activity: {
+            activityScore: 61,
+            baseActivityScore: 58,
+            desiredActivityRoleKey: "active",
+            appliedActivityRoleKey: null,
+            roleEligibilityStatus: "eligible",
+            roleEligibleForActivityRole: true,
+            recalculatedAt: "2026-05-08T12:00:00.000Z",
+            lastSeenAt: "2026-05-08T11:50:00.000Z",
+          },
+        },
+      },
+    },
+    sot: {
+      activity: {
+        config: {},
+        watchedChannels: [],
+        globalUserSessions: [],
+        userChannelDailyStats: [],
+        userSnapshots: {},
+        calibrationRuns: [],
+        ops: { moderationAuditLog: [] },
+        runtime: { openSessions: {}, dirtyUsers: [] },
+      },
+    },
+  };
+
+  const result = await resumeActivityRuntime({
+    db,
+    now: "2026-05-09T12:00:00.000Z",
+  });
+
+  assert.equal(result.promotedUserCount, 1);
+  assert.deepEqual(Object.keys(db.sot.activity.userSnapshots), ["mirrorOnly"]);
+  assert.equal(db.sot.activity.userSnapshots.mirrorOnly.desiredActivityRoleKey, "active");
+  assert.equal(db.sot.activity.runtime.lastResumeAt, "2026-05-09T12:00:00.000Z");
 });

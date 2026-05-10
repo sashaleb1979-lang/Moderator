@@ -382,7 +382,7 @@ function buildRobloxPanelIssues(snapshot = {}) {
       `Синк playtime потерял пачки: ${snapshot.jobs.playtimeSync.summary.failedBatches} шт., пользователей с ошибкой: ${normalizeNonNegativeInteger(snapshot.jobs?.playtimeSync?.summary?.failedUserIds, 0)}.`
     );
   } else if (playtimeTrackingEnabled && normalizeNonNegativeInteger(snapshot.jobs?.playtimeSync?.summary?.opaqueInGameUsers, 0) > 0) {
-    issues.push(`Roblox API вернула in_game без universe/root/place ids для ${snapshot.jobs.playtimeSync.summary.opaqueInGameUsers} профилей; JJS матч по ним сейчас недоказуем.`);
+    issues.push(`Roblox API вернула in_game без universe/root/place ids для ${snapshot.jobs.playtimeSync.summary.opaqueInGameUsers} профилей; playtime по ним учитывается через fallback и может быть неточным.`);
   }
 
   if (runtimeFlushEnabled && snapshot.jobs?.runtimeFlush?.status === "error") {
@@ -506,7 +506,7 @@ function buildPlaytimeSyncStatusText(result = {}) {
   const baseText = `Синк playtime завершён. Кандидатов: ${totalCandidates}, активных в JJS: ${activeJjsUsers}, затронуто профилей: ${touchedUserCount}, ошибок пользователей: ${failedUserIds}.`;
 
   if (opaqueInGameUsers > 0) {
-    return `${baseText} Roblox API видит in-game у ${opaqueInGameUsers} профилей, но не отдала universe/root/place ids, поэтому JJS матч для них не подтверждён.`;
+    return `${baseText} Roblox API скрыла universe/root/place ids у ${opaqueInGameUsers} in-game профилей, поэтому они учтены через fallback-режим.`;
   }
 
   if (totalCandidates > 0 && activeJjsUsers === 0 && failedUserIds === 0) {

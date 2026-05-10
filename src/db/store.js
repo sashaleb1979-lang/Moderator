@@ -2,6 +2,7 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
+const { createAutonomyGuardState } = require("../moderation/autonomy-guard");
 
 function cloneValue(value) {
   return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
@@ -88,6 +89,7 @@ function createDefaultDbState({
       accessGrant: typeof createOnboardAccessGrantState === "function"
         ? createOnboardAccessGrantState()
         : { mode: "after_submit", changedAt: null, changedBy: "" },
+      autonomyGuard: createAutonomyGuardState({}),
       characters: normalizeCharacterCatalog(appConfig.characters),
     },
     profiles: {},
@@ -150,6 +152,9 @@ function createDbStore({
       : { mode: "after_submit", changedAt: null, changedBy: "" };
     const accessGrantChanged = JSON.stringify(normalizedAccessGrant) !== JSON.stringify(db.config.accessGrant || null);
     db.config.accessGrant = normalizedAccessGrant;
+    const normalizedAutonomyGuard = createAutonomyGuardState(db.config.autonomyGuard);
+    const autonomyGuardChanged = JSON.stringify(normalizedAutonomyGuard) !== JSON.stringify(db.config.autonomyGuard || null);
+    db.config.autonomyGuard = normalizedAutonomyGuard;
     const normalizedIntegrations = normalizeIntegrationState(db.config.integrations);
     const integrationsChanged = normalizedIntegrations.mutated;
     db.config.integrations = normalizedIntegrations.integrations;
@@ -191,6 +196,7 @@ function createDbStore({
       || comboGuideEditorRoleIdsChanged
       || onboardModeChanged
       || accessGrantChanged
+      || autonomyGuardChanged
       || integrationsChanged
       || Boolean(dormantEloImport.mutated)
       || Boolean(dormantTierlistImport.mutated)
@@ -209,6 +215,7 @@ function createDbStore({
       defaultTextTierlistChannelId: appConfig.channels.tierlistChannelId || "",
       defaultGraphicTierColors,
     });
+    workingDb.config.autonomyGuard = createAutonomyGuardState(workingDb.config.autonomyGuard);
     workingDb.config.integrations = normalizeIntegrationState(workingDb.config.integrations).integrations;
     const dualWriteState = typeof dualWriteSotState === "function"
       ? dualWriteSotState(workingDb)

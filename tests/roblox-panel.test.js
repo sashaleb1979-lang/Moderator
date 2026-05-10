@@ -395,15 +395,16 @@ test("handleRobloxStatsPanelButtonInteraction gates permissions and delegates ma
     runProfileRefreshJob: async () => ({}),
     runPlaytimeSyncJob: async () => ({
       totalCandidates: 8,
-      activeJjsUsers: 0,
+      activeJjsUsers: 2,
       opaqueInGameUsers: 1,
-      touchedUserCount: 0,
+      touchedUserCount: 2,
       failedUserIds: 0,
     }),
     runRuntimeFlush: async () => ({}),
   });
 
-  assert.match(opaqueManual.calls.edits[0].content, /Roblox API видит in-game у 1 профилей/i);
+  assert.match(opaqueManual.calls.edits[0].content, /активных в JJS: 2/i);
+  assert.match(opaqueManual.calls.edits[0].content, /учтены через fallback-режим/i);
 
   const togglePlaytime = createInteraction("roblox_stats_toggle_playtime");
   const toggleCalls = [];

@@ -75,6 +75,7 @@ function normalizeRobloxTrackingConfig(config = {}) {
     jjsRootPlaceId: normalizePositiveInteger(source.jjsRootPlaceId, 0),
     jjsPlaceId: normalizePositiveInteger(source.jjsPlaceId, 0),
     playtimePollMinutes: normalizePositiveInteger(source.playtimePollMinutes, 2),
+    opaqueInGameCountsAsJjs: source.opaqueInGameCountsAsJjs !== false,
   };
 }
 
@@ -169,6 +170,11 @@ function isOpaqueInGamePresence(presence = {}) {
   return !(Number.isSafeInteger(Number(presence?.universeId)) && Number(presence?.universeId) > 0)
     && !(Number.isSafeInteger(Number(presence?.rootPlaceId)) && Number(presence?.rootPlaceId) > 0)
     && !(Number.isSafeInteger(Number(presence?.placeId)) && Number(presence?.placeId) > 0);
+}
+
+function shouldTrackOpaqueInGameAsJjs(presence = {}, config = {}) {
+  const normalized = normalizeRobloxTrackingConfig(config);
+  return normalized.opaqueInGameCountsAsJjs === true && isOpaqueInGamePresence(presence);
 }
 
 function resolvePairKey(leftUserId, rightUserId) {
@@ -537,8 +543,9 @@ async function runRobloxPlaytimeSyncJob(options = {}) {
     }
 
     const presence = presenceByRobloxUserId.get(candidate.robloxUserId) || null;
-    const inJjs = isPresenceInConfiguredJjs(presence, trackingConfig);
-    if (isOpaqueInGamePresence(presence)) {
+    const opaqueInGame = isOpaqueInGamePresence(presence);
+    const inJjs = isPresenceInConfiguredJjs(presence, trackingConfig) || shouldTrackOpaqueInGameAsJjs(presence, trackingConfig);
+    if (opaqueInGame) {
       opaqueInGameDiscordUserIds.add(candidate.discordUserId);
     }
     const profile = candidate.profile;
@@ -547,7 +554,9 @@ async function runRobloxPlaytimeSyncJob(options = {}) {
     const hasPersistedSessionMarker = Boolean(playtime.currentSessionStartedAt);
 
     if (inJjs) {
-      const gameId = String(presence?.gameId || "").trim() || `root:${presence?.rootPlaceId || "unknown"}`;
+      const gameId = opaqueInGame
+        ? `opaque:${candidate.robloxUserId}`
+        : String(presence?.gameId || "").trim() || `root:${presence?.rootPlaceId || "unknown"}`;
       const isContinuation = activeSession
         && activeSession.gameId === gameId
         && canContinueTrackedSession(activeSession.lastSeenAt, nowIso, maxGapMs);

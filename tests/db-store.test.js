@@ -14,6 +14,10 @@ const {
   saveJsonFile,
 } = require("../src/db/store");
 const {
+  AUTONOMY_GUARD_WARNING_BUCKET_KEYS,
+  createAutonomyGuardState,
+} = require("../src/moderation/autonomy-guard");
+const {
   createPresentationDefaults,
   ensurePresentationConfig,
 } = require("../src/onboard/presentation");
@@ -109,6 +113,7 @@ test("createDefaultDbState seeds expected onboarding defaults", () => {
   assert.equal(state.config.welcomePanel.channelId, "welcome-1");
   assert.equal(state.config.nonGgsPanel.channelId, "welcome-1");
   assert.deepEqual(state.config.accessGrant, { mode: "after_submit" });
+  assert.deepEqual(state.config.autonomyGuard, createAutonomyGuardState({}));
   assert.deepEqual(state.config.tierlistBoard.text, {
     channelId: "tier-1",
     messageIdSummary: "",
@@ -129,6 +134,20 @@ test("createDbStore.load normalizes legacy db state and marks dirty migrations",
       },
       accessGrant: { mode: "after_approve" },
       onboardMode: { mode: "wartime" },
+      autonomyGuard: {
+        primaryAdminUserId: "invalid",
+        targetUserId: "123456789012345678",
+        protectedRole: {
+          roleId: "987654321098765432",
+          name: "  target role  ",
+          color: "abc123",
+        },
+        isolatedUserIds: ["111111111111111111", "bad", "111111111111111111", "222222222222222222"],
+        warningCounters: {
+          invalid: { ownerMessageDeletes: 99 },
+          "111111111111111111": { ownerMessageDeletes: 2, logMessageDeletes: -1, reviewMessageDeletes: "3" },
+        },
+      },
       characters: [{ id: "gojo", label: "Годжо", roleId: "role-gojo" }],
     },
     roleGrantMessages: { message1: { roleId: "role-1" } },
@@ -179,6 +198,23 @@ test("createDbStore.load normalizes legacy db state and marks dirty migrations",
   assert.equal(db.config.reviewChannelId, "");
   assert.equal(db.config.notificationChannelId, "");
   assert.deepEqual(db.config.accessGrant, { mode: "after_approve" });
+  assert.deepEqual(db.config.autonomyGuard, {
+    primaryAdminUserId: "",
+    targetUserId: "123456789012345678",
+    protectedRole: {
+      roleId: "987654321098765432",
+      name: "target role",
+      color: "#ABC123",
+    },
+    isolatedUserIds: ["111111111111111111", "222222222222222222"],
+    warningCounters: {
+      "111111111111111111": {
+        ownerMessageDeletes: 2,
+        logMessageDeletes: 0,
+        reviewMessageDeletes: 3,
+      },
+    },
+  });
   assert.deepEqual(db.comboGuide.editorRoleIds, ["combo-editor"]);
   assert.equal(db.profiles.synced, true);
   assert.deepEqual(db.sot, { sotVersion: 1 });
@@ -367,4 +403,48 @@ test("createDbStore.save normalizes legacy text tierlist messageId before persis
     messageIdPages: "",
   });
   assert.equal("messageId" in written.config.tierlistBoard.text, false);
+});
+
+test("createAutonomyGuardState normalizes ids, colors and warning buckets", () => {
+  const state = createAutonomyGuardState({
+    primaryAdminUserId: "123456789012345678",
+    targetUserId: "bad-id",
+    protectedRole: {
+      roleId: "876543210987654321",
+      name: "  Sentinel  ",
+      color: "#00ff00",
+    },
+    isolatedUserIds: ["111111111111111111", "invalid", "111111111111111111"],
+    warningCounters: {
+      "111111111111111111": {
+        ownerMessageDeletes: 1,
+        logMessageDeletes: 2,
+        reviewMessageDeletes: 3,
+        ignoredExtraKey: 99,
+      },
+    },
+  });
+
+  assert.deepEqual(state, {
+    primaryAdminUserId: "123456789012345678",
+    targetUserId: "",
+    protectedRole: {
+      roleId: "876543210987654321",
+      name: "Sentinel",
+      color: "#00FF00",
+    },
+    isolatedUserIds: ["111111111111111111"],
+    warningCounters: {
+      "111111111111111111": {
+        ownerMessageDeletes: 1,
+        logMessageDeletes: 2,
+        reviewMessageDeletes: 3,
+      },
+    },
+  });
+  assert.deepEqual(AUTONOMY_GUARD_WARNING_BUCKET_KEYS, [
+    "ownerMessageDeletes",
+    "logMessageDeletes",
+    "reviewMessageDeletes",
+  ]);
 });
