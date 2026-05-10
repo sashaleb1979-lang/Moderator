@@ -439,7 +439,7 @@ test("deriveProfileMainView keeps label fallback for missing entries but drops s
   assert.deepEqual(derived.characterRoleIds, []);
 });
 
-test("normalizeIntegrationState creates dormant elo and tierlist scaffolding", () => {
+test("normalizeIntegrationState preserves verification and roblox compat shadows alongside dormant scaffolding", () => {
   const result = normalizeIntegrationState({
     elo: {
       mode: "active",
@@ -453,6 +453,18 @@ test("normalizeIntegrationState creates dormant elo and tierlist scaffolding", (
       dashboard: { channelId: "999", messageId: "888" },
       summary: { channelId: "777", messageId: "666", lastUpdated: "2026-05-01T12:30:00.000Z" },
     },
+    roblox: {
+      playtimeTrackingEnabled: true,
+      playtimePollMinutes: 3,
+    },
+    verification: {
+      enabled: true,
+      callbackBaseUrl: "https://example.com/verification/callback",
+      verificationChannelId: "verify-room",
+      reportChannelId: "review-room",
+      riskRules: { enemyGuildIds: ["guild-1"] },
+      entryMessage: { channelId: "verify-room", messageId: "entry-message" },
+    },
   });
 
   assert.equal(result.integrations.elo.mode, INTEGRATION_MODE_DORMANT);
@@ -463,6 +475,14 @@ test("normalizeIntegrationState creates dormant elo and tierlist scaffolding", (
   assert.equal(result.integrations.tierlist.status, "not_started");
   assert.equal(result.integrations.tierlist.dashboard.channelId, "999");
   assert.equal(result.integrations.tierlist.summary.messageId, "666");
+  assert.equal(result.integrations.roblox.playtimeTrackingEnabled, true);
+  assert.equal(result.integrations.roblox.playtimePollMinutes, 3);
+  assert.equal(result.integrations.verification.enabled, true);
+  assert.equal(result.integrations.verification.callbackBaseUrl, "https://example.com/verification/callback");
+  assert.equal(result.integrations.verification.verificationChannelId, "verify-room");
+  assert.equal(result.integrations.verification.reportChannelId, "review-room");
+  assert.equal(result.integrations.verification.entryMessage.messageId, "entry-message");
+  assert.deepEqual(result.integrations.verification.riskRules, { enemyGuildIds: ["guild-1"] });
 });
 
 test("normalizeRobloxDomainState defaults to unverified when binding is missing", () => {
@@ -611,6 +631,37 @@ test("ensureSharedProfile summary exposes rename, server friend, and frequent no
   ]);
   assert.equal(result.profile.summary.roblox.topCoPlayPeers[1].isFrequentNonFriend, true);
   assert.equal(result.profile.summary.roblox.topCoPlayPeers[2].isFrequentNonFriend, false);
+});
+
+test("ensureSharedProfile preserves verification domain and derives verification summary", () => {
+  const result = ensureSharedProfile({
+    userId: "verify-100",
+    domains: {
+      verification: {
+        status: "verified",
+        decision: "approved",
+        oauthUserId: "oauth-1",
+        oauthUsername: "discord-user",
+        reportDueAt: "2026-05-12T00:00:00.000Z",
+        completedAt: "2026-05-10T00:00:00.000Z",
+        observedGuilds: [
+          { id: "guild-1", name: "Safe Guild", owner: false, permissions: "1024" },
+        ],
+        matchedEnemyUserIds: ["enemy-user"],
+      },
+    },
+  }, "verify-100");
+
+  assert.equal(result.profile.domains.verification.status, "verified");
+  assert.equal(result.profile.domains.verification.decision, "approved");
+  assert.equal(result.profile.domains.verification.oauthUsername, "discord-user");
+  assert.equal(result.profile.domains.verification.observedGuilds.length, 1);
+  assert.equal(result.profile.summary.verification.status, "verified");
+  assert.equal(result.profile.summary.verification.decision, "approved");
+  assert.equal(result.profile.summary.verification.oauthUserId, "oauth-1");
+  assert.equal(result.profile.summary.verification.oauthUsername, "discord-user");
+  assert.equal(result.profile.summary.verification.observedGuildCount, 1);
+  assert.equal(result.profile.summary.verification.matchedEnemyUserCount, 1);
 });
 
 test("normalizeRobloxDomainState keeps current names first and normalizes social and playtime scaffolding", () => {

@@ -205,6 +205,10 @@ const {
   normalizeOnboardAccessGrantMode,
 } = require("./src/onboard/access-grant-mode");
 const { ONBOARD_BEGIN_ROUTES, resolveOnboardBeginRoute } = require("./src/onboard/begin-state");
+const {
+  canManageWelcomeRobloxIdentity,
+  getWelcomeRobloxIdentityLockText,
+} = require("./src/onboard/roblox-identity");
 const { resolveNonJjsCaptchaMode } = require("./src/onboard/non-jjs-mode");
 const {
   createPresentationDefaults,
@@ -2895,7 +2899,10 @@ async function completeMainSelection(interaction, selectedEntries, options = {})
   clearMainDraft(interaction.user.id);
   clearMainsPickerSession(interaction.user.id);
   if (responseMethod === "update") {
-    const payload = buildSubmitStepPayload(interaction.user.id, { includeEphemeralFlag: false });
+    const payload = buildSubmitStepPayload(interaction.user.id, {
+      includeEphemeralFlag: false,
+      canManageRobloxIdentity: hasAdministratorAccess(interaction.member),
+    });
     if (usedDeferredUpdate) {
       await interaction.editReply(payload);
       return;
@@ -2905,7 +2912,9 @@ async function completeMainSelection(interaction, selectedEntries, options = {})
     return;
   }
 
-  await interaction.reply(buildSubmitStepPayload(interaction.user.id));
+  await interaction.reply(buildSubmitStepPayload(interaction.user.id, {
+    canManageRobloxIdentity: hasAdministratorAccess(interaction.member),
+  }));
 }
 
 function getCharacterById(characterId) {
@@ -4849,9 +4858,13 @@ async function reconcileAutonomyGuardTargetRole(client, options = {}) {
   };
 }
 
+function hasAdministratorAccess(member) {
+  return Boolean(member?.permissions?.has?.(PermissionsBitField.Flags.Administrator));
+}
+
 function isModerator(member) {
   if (!member) return false;
-  if (member.permissions?.has?.(PermissionsBitField.Flags.Administrator)) return true;
+  if (hasAdministratorAccess(member)) return true;
   return member.roles?.cache?.has?.(getModeratorRoleId()) || false;
 }
 
@@ -5218,6 +5231,13 @@ function getManagedStartAccessRoleIds() {
   return [...new Set([getNormalAccessRoleId(), getWartimeAccessRoleId()].filter(Boolean))];
 }
 
+function getVerificationQuarantineRoleIds() {
+  return [...new Set([
+    ...getManagedStartAccessRoleIds(),
+    getNonJjsAccessRoleId(),
+  ].filter(Boolean))];
+}
+
 function getGrantedAccessRoleIdForMode(mode = getCurrentOnboardMode()) {
   const member = arguments.length > 1 ? arguments[1] : null;
   return resolveGrantedAccessRoleId({
@@ -5546,12 +5566,46 @@ async function grantVerifyAccessRole(client, userId, reason = "verification assi
   return { granted: true, roleId: verifyRoleId, member };
 }
 
+async function stripManagedStartAccessRolesForVerification(client, userId, member = null, reason = "verification assigned") {
+  const resolvedMember = member || await fetchMember(client, userId);
+  if (!resolvedMember) {
+    throw new Error("Участник не найден на сервере. Снять стартовый доступ перед verification не удалось.");
+  }
+
+  const accessRoleIds = getVerificationQuarantineRoleIds();
+  const previousAccessRoleIds = getRolePoolSnapshot(resolvedMember, accessRoleIds);
+  if (!previousAccessRoleIds.length) {
+    return { member: resolvedMember, removedRoleIds: [] };
+  }
+
+  try {
+    for (const roleId of previousAccessRoleIds) {
+      if (!resolvedMember.roles.cache.has(roleId)) continue;
+      await resolvedMember.roles.remove(roleId, reason);
+    }
+  } catch (error) {
+    await restoreRolePoolSnapshot(client, userId, accessRoleIds, previousAccessRoleIds, `${reason} rollback`);
+    throw new Error(`Не удалось снять стартовый доступ перед verification для ${userId}: ${formatRuntimeError(error)}`);
+  }
+
+  return { member: resolvedMember, removedRoleIds: previousAccessRoleIds };
+}
+
 async function assignUserToVerification(client, userId, options = {}) {
   const assignmentReason = cleanVerificationText(options.reason, 200) || "verification moderator assign";
   const assignedBy = cleanVerificationText(options.assignedBy, 120);
   const assignmentNote = cleanVerificationText(options.note, 500);
   const assignedAt = nowIso();
   const roleResult = await grantVerifyAccessRole(client, userId, assignmentReason);
+  try {
+    await stripManagedStartAccessRolesForVerification(client, userId, roleResult.member, `${assignmentReason} quarantine`);
+  } catch (error) {
+    if (roleResult.granted && roleResult.member?.roles?.cache?.has(roleResult.roleId)) {
+      markVerificationRoleMutationIgnore(userId);
+      await roleResult.member.roles.remove(roleResult.roleId, `${assignmentReason} rollback`).catch(() => {});
+    }
+    throw error;
+  }
   const reportDueAt = computeVerificationReportDueAt(assignedAt);
   const profile = ensureVerificationPendingProfile(userId, {
     status: "pending",
@@ -5768,14 +5822,162 @@ async function resolveVerificationReportChannel(client) {
   return channel;
 }
 
+function buildVerificationAuditMarkdown(userId, profile = {}, statusNote = "") {
+  const verification = profile.domains?.verification && typeof profile.domains.verification === "object"
+    ? profile.domains.verification
+    : {};
+  const verificationSummary = profile.summary?.verification && typeof profile.summary.verification === "object"
+    ? profile.summary.verification
+    : {};
+  const roblox = profile.domains?.roblox && typeof profile.domains.roblox === "object"
+    ? profile.domains.roblox
+    : {};
+  const robloxSummary = profile.summary?.roblox && typeof profile.summary.roblox === "object"
+    ? profile.summary.roblox
+    : {};
+  const observedGuilds = normalizeVerificationObservedGuilds(verification.observedGuilds);
+  const serverFriendIds = Array.isArray(robloxSummary.serverFriendsUserIds) ? robloxSummary.serverFriendsUserIds : [];
+  const topCoPlayPeers = Array.isArray(robloxSummary.topCoPlayPeers) ? robloxSummary.topCoPlayPeers : [];
+  const usernameHistory = Array.isArray(roblox.usernameHistory) ? roblox.usernameHistory : [];
+  const displayNameHistory = Array.isArray(roblox.displayNameHistory) ? roblox.displayNameHistory : [];
+  const lines = [
+    "# Verification audit",
+    "",
+    `Сформировано: ${formatDateTime(nowIso())}`,
+    `Discord ID: ${cleanVerificationText(userId, 80) || "—"}`,
+    `Discord display: ${cleanVerificationText(profile.displayName || profile.username, 200) || "—"}`,
+  ];
+
+  if (statusNote) {
+    lines.push(`Комментарий: ${cleanVerificationText(statusNote, 500)}`);
+  }
+
+  lines.push(
+    "",
+    "## Состояние проверки",
+    `- Статус: ${cleanVerificationText(verification.status, 40) || "—"}`,
+    `- Решение: ${cleanVerificationText(verification.decision, 40) || "—"}`,
+    `- Причина решения: ${cleanVerificationText(verification.decisionReason, 120) || "—"}`,
+    `- Назначена: ${formatDateTime(verification.assignedAt)}`,
+    `- OAuth завершён: ${formatDateTime(verification.completedAt)}`,
+    `- Дедлайн отчёта: ${formatDateTime(verification.reportDueAt)}`,
+    `- Отчёт отправлен: ${formatDateTime(verification.reportSentAt)}`,
+    `- Последний reviewer: ${cleanVerificationText(verification.reviewedBy, 120) || "—"}`,
+    `- Ошибка: ${cleanVerificationText(verification.lastError, 400) || "—"}`,
+    "",
+    "## Discord OAuth",
+    `- OAuth аккаунт: ${cleanVerificationText(verification.oauthUsername || verificationSummary.oauthUsername, 120) || "—"}`,
+    `- OAuth user ID: ${cleanVerificationText(verification.oauthUserId || verificationSummary.oauthUserId, 80) || "—"}`,
+    `- Замечено серверов: ${Number(verificationSummary.observedGuildCount) || observedGuilds.length || 0}`,
+    `- Совпадения по серверам: ${Number(verificationSummary.matchedEnemyGuildCount) || 0}`,
+    `- Совпадения по пользователям: ${Number(verificationSummary.matchedEnemyUserCount) || 0}`,
+    `- Совпадения по invite: ${Number(verificationSummary.matchedEnemyInviteCount) || 0}`,
+    `- Совпадения по inviter: ${Number(verificationSummary.matchedEnemyInviterCount) || 0}`,
+    "",
+    "### Замеченные серверы OAuth",
+  );
+
+  if (observedGuilds.length) {
+    for (const [index, entry] of observedGuilds.entries()) {
+      lines.push(`${index + 1}. ${cleanVerificationText(entry.name, 120) || "Без названия"} | ID ${cleanVerificationText(entry.id, 80) || "—"} | owner ${entry.owner === true ? "yes" : "no"} | perm ${cleanVerificationText(entry.permissions, 40) || "—"}`);
+    }
+  } else {
+    lines.push("- Discord OAuth не вернул список серверов.");
+  }
+
+  lines.push(
+    "",
+    "### Точные совпадения риска",
+    `- Серверы: ${normalizeStringArray(verification.matchedEnemyGuildIds, 20, 80).join(", ") || "—"}`,
+    `- Пользователи: ${normalizeStringArray(verification.matchedEnemyUserIds, 20, 80).join(", ") || "—"}`,
+    `- Invite-коды: ${normalizeStringArray(verification.matchedEnemyInviteCodes, 20, 80).join(", ") || "—"}`,
+    `- Inviter ID: ${normalizeStringArray(verification.matchedEnemyInviterUserIds, 20, 80).join(", ") || "—"}`,
+    "",
+    "## Roblox / друзья",
+  );
+
+  if (!cleanVerificationText(robloxSummary.userId || roblox.userId, 80)) {
+    lines.push("- Roblox аккаунт не привязан или данные отсутствуют.");
+  } else {
+    lines.push(
+      `- Roblox user ID: ${cleanVerificationText(robloxSummary.userId || roblox.userId, 80) || "—"}`,
+      `- Username: ${cleanVerificationText(robloxSummary.currentUsername || roblox.username, 120) || "—"}`,
+      `- Display name: ${cleanVerificationText(robloxSummary.currentDisplayName || roblox.displayName, 120) || "—"}`,
+      `- Profile URL: ${cleanVerificationText(robloxSummary.profileUrl || roblox.profileUrl, 2000) || "—"}`,
+      `- Account status: ${cleanVerificationText(robloxSummary.accountStatus || roblox.accountStatus, 80) || "—"}`,
+      `- Verified badge: ${robloxSummary.hasVerifiedBadge === true || roblox.hasVerifiedBadge === true ? "yes" : "no"}`,
+      `- Friends on JJS server: ${Number(robloxSummary.serverFriendsCount) || 0}`,
+      `- Friends computed at: ${formatDateTime(robloxSummary.serverFriendsComputedAt)}`,
+      `- Frequent non-friend peers: ${Number(robloxSummary.frequentNonFriendCount) || 0}`,
+      `- Last seen in JJS: ${formatDateTime(robloxSummary.lastSeenInJjsAt)}`,
+      `- Sessions in JJS: ${Number(robloxSummary.sessionCount) || 0}`,
+      `- Previous username: ${cleanVerificationText(robloxSummary.previousUsername, 120) || "—"}`,
+      `- Previous display name: ${cleanVerificationText(robloxSummary.previousDisplayName, 120) || "—"}`,
+      `- Rename count: ${Number(robloxSummary.renameCount) || 0}`,
+      `- Display rename count: ${Number(robloxSummary.displayRenameCount) || 0}`,
+      `- Last rename seen: ${formatDateTime(robloxSummary.lastRenameSeenAt)}`
+    );
+  }
+
+  lines.push("", "### Roblox friends on server");
+  if (serverFriendIds.length) {
+    for (const [index, friendUserId] of serverFriendIds.entries()) {
+      lines.push(`${index + 1}. ${cleanVerificationText(friendUserId, 80)}`);
+    }
+  } else {
+    lines.push("- Не найдены.");
+  }
+
+  lines.push("", "### Частые совместные игроки");
+  if (topCoPlayPeers.length) {
+    for (const [index, peer] of topCoPlayPeers.entries()) {
+      lines.push(
+        `${index + 1}. ${cleanVerificationText(peer.peerUserId, 80) || "—"} | friend ${peer.isRobloxFriend === true ? "yes" : peer.isRobloxFriend === false ? "no" : "unknown"} | minutes ${Math.max(0, Number(peer.minutesTogether) || 0)} | sessions ${Math.max(0, Number(peer.sharedJjsSessionCount || peer.sessionsTogether) || 0)} | days ${Math.max(0, Number(peer.daysTogether) || 0)} | frequent-non-friend ${peer.isFrequentNonFriend === true ? "yes" : "no"} | last seen ${formatDateTime(peer.lastSeenTogetherAt)}`
+      );
+    }
+  } else {
+    lines.push("- Не найдены.");
+  }
+
+  lines.push("", "### История Roblox username");
+  if (usernameHistory.length) {
+    for (const [index, entry] of usernameHistory.entries()) {
+      lines.push(`${index + 1}. ${cleanVerificationText(entry?.name, 120) || "—"} | first ${formatDateTime(entry?.firstSeenAt)} | last ${formatDateTime(entry?.lastSeenAt)}`);
+    }
+  } else {
+    lines.push("- Нет данных.");
+  }
+
+  lines.push("", "### История Roblox display name");
+  if (displayNameHistory.length) {
+    for (const [index, entry] of displayNameHistory.entries()) {
+      lines.push(`${index + 1}. ${cleanVerificationText(entry?.name, 120) || "—"} | first ${formatDateTime(entry?.firstSeenAt)} | last ${formatDateTime(entry?.lastSeenAt)}`);
+    }
+  } else {
+    lines.push("- Нет данных.");
+  }
+
+  return lines.join("\n");
+}
+
+function createVerificationAuditAttachment(userId, profile = {}, statusNote = "") {
+  const safeUserId = cleanVerificationText(userId, 80).replace(/[^a-zA-Z0-9_-]+/g, "_") || "unknown";
+  const content = buildVerificationAuditMarkdown(userId, profile, statusNote);
+  return new AttachmentBuilder(Buffer.from(content, "utf8"), {
+    name: `verification-audit-${safeUserId}.md`,
+  });
+}
+
 async function postVerificationManualReport(client, userId, statusNote = "", options = {}) {
   const channel = await resolveVerificationReportChannel(client);
   const profile = finalizeStoredProfile(userId);
+  const auditAttachment = createVerificationAuditAttachment(userId, profile, statusNote);
   const message = await channel.send(buildVerificationReportPayload({
     userId,
     profile,
     statusNote,
     disableActions: options.disableActions === true,
+    files: [auditAttachment],
   }));
   return { channel, message, profile };
 }
@@ -5835,40 +6037,87 @@ async function ensureVerificationEntryMessage(client) {
   return { channelId: channel.id, messageId: message.id, updated: true };
 }
 
-async function completeVerificationApprovedAccess(client, userId, reason = "verification approved") {
-  const granted = await grantAccessRole(client, userId, reason);
-  const verifyRoleId = getVerifyAccessRoleId();
-  if (verifyRoleId) {
-    const member = await fetchMember(client, userId);
-    if (member?.roles?.cache?.has(verifyRoleId)) {
-      markVerificationRoleMutationIgnore(userId);
-      await member.roles.remove(verifyRoleId, reason).catch(() => {});
-    }
+async function completeVerificationApprovedAccess(client, userId, accessMode = "normal", reason = "verification approved") {
+  const normalizedMode = cleanVerificationText(accessMode, 40) === "wartime" ? "wartime" : "normal";
+  const targetRoleId = normalizedMode === "wartime" ? getWartimeAccessRoleId() : getNormalAccessRoleId();
+  if (!targetRoleId) {
+    throw new Error(normalizedMode === "wartime"
+      ? "Не настроена военная роль доступа для выпуска из verification."
+      : "Не настроена базовая роль доступа для выпуска из verification.");
   }
-  return granted;
+
+  const lifecycle = await reconcileVerificationAssignmentForMember(client, userId, null, {
+    reason: "verification decision skipped because verify-role was removed",
+  });
+  if (!lifecycle.active || lifecycle.stopped) {
+    throw new Error("Участник уже не находится на verification.");
+  }
+
+  const member = await fetchMember(client, userId);
+  if (!member) {
+    throw new Error("Участник не найден на сервере. Выдать доступ после verification не удалось.");
+  }
+
+  const verifyRoleId = cleanVerificationText(getVerifyAccessRoleId(), 80);
+  const releaseRoleIds = getVerificationQuarantineRoleIds();
+  const rolePoolIds = [...new Set([...releaseRoleIds, verifyRoleId].filter(Boolean))];
+  const snapshot = getRolePoolSnapshot(member, rolePoolIds);
+
+  try {
+    for (const roleId of releaseRoleIds) {
+      if (roleId !== targetRoleId && member.roles.cache.has(roleId)) {
+        await member.roles.remove(roleId, reason);
+      }
+    }
+    if (!member.roles.cache.has(targetRoleId)) {
+      await member.roles.add(targetRoleId, reason);
+    }
+    if (verifyRoleId && member.roles.cache.has(verifyRoleId)) {
+      markVerificationRoleMutationIgnore(userId);
+      await member.roles.remove(verifyRoleId, reason);
+    }
+  } catch (error) {
+    await restoreRolePoolSnapshot(client, userId, rolePoolIds, snapshot, `${reason} rollback`);
+    throw new Error(`Не удалось выпустить ${userId} из verification: ${formatRuntimeError(error)}`);
+  }
+
+  return { granted: true, roleId: targetRoleId, accessMode: normalizedMode };
 }
 
-async function approveVerificationUser(client, userId, reviewedBy, reason = "verification moderator approve") {
-  await completeVerificationApprovedAccess(client, userId, reason);
+async function approveVerificationUser(client, userId, reviewedBy, accessMode = "normal", reason = "verification moderator approve") {
+  const release = await completeVerificationApprovedAccess(client, userId, accessMode, reason);
   return updateVerificationProfile(userId, {
     status: "verified",
     decision: "approved",
     completedAt: nowIso(),
     reviewedAt: nowIso(),
     reviewedBy: cleanVerificationText(reviewedBy, 120),
-    decisionReason: reason,
+    decisionReason: `${reason}:${release.accessMode}`,
     lastError: "",
   });
 }
 
-async function rejectVerificationUser(userId, reviewedBy, reason = "verification moderator reject") {
+async function banVerificationUser(client, userId, reviewedBy, reason = "verification moderator ban") {
+  const lifecycle = await reconcileVerificationAssignmentForMember(client, userId, null, {
+    reason: "verification decision skipped because verify-role was removed",
+  });
+  if (!lifecycle.active || lifecycle.stopped) {
+    throw new Error("Участник уже не находится на verification.");
+  }
+
+  const guild = await getGuild(client).catch(() => null);
+  if (!guild) {
+    throw new Error("Не удалось получить guild для verification ban.");
+  }
+
+  await guild.members.ban(userId, { reason });
   return updateVerificationProfile(userId, {
     status: "rejected",
     decision: "rejected",
     completedAt: nowIso(),
     reviewedAt: nowIso(),
     reviewedBy: cleanVerificationText(reviewedBy, 120),
-    decisionReason: reason,
+    decisionReason: `${reason}:ban`,
     lastError: "",
   });
 }
@@ -5889,6 +6138,11 @@ async function runVerificationDeadlineSweep(client) {
         : null;
     if (!verification) continue;
 
+    const lifecycle = await reconcileVerificationAssignmentForMember(client, userId, null, {
+      reason: "verification deadline sweep skipped because verify-role is gone",
+    });
+    if (!lifecycle.active || lifecycle.stopped) continue;
+
     const status = cleanVerificationText(verification.status, 40);
     const reportDueAt = cleanVerificationText(verification.reportDueAt, 80);
     const reportSentAt = cleanVerificationText(verification.reportSentAt, 80);
@@ -5898,8 +6152,11 @@ async function runVerificationDeadlineSweep(client) {
     if (!Number.isFinite(dueAt) || dueAt > Date.now()) continue;
 
     scanned += 1;
-    await postVerificationManualReport(client, userId, "Срок verification истёк. Участник не завершил кейс до дедлайна.");
+    await postVerificationManualReport(client, userId, "Срок verification истёк. Участник всё ещё находится в verify-карантине и не завершил кейс до дедлайна.");
     updateVerificationProfile(userId, {
+      status: "manual_review",
+      decision: "manual_review",
+      decisionReason: "pending_timeout",
       reportSentAt: nowIso(),
     });
     reported += 1;
@@ -5909,18 +6166,37 @@ async function runVerificationDeadlineSweep(client) {
 }
 
 async function handleVerificationApprovedCallback(client, payload = {}) {
+  return handleVerificationManualReviewCallback(client, payload);
+}
+
+async function handleVerificationManualReviewCallback(client, payload = {}) {
   const userId = cleanVerificationText(payload.session?.userId, 80);
   if (!userId) throw new Error("Verification callback не содержит userId session.");
-  await completeVerificationApprovedAccess(client, userId, "verification oauth approved");
   const risk = payload.risk && typeof payload.risk === "object" ? payload.risk : {};
-  const profile = updateVerificationProfile(userId, {
-    status: "verified",
-    decision: "approved",
+  const lifecycle = await reconcileVerificationAssignmentForMember(client, userId, null, {
+    reason: "verification callback ignored because verify-role was removed",
+  });
+  if (!lifecycle.active || lifecycle.stopped) {
+    await logLine(client, `VERIFICATION_CALLBACK_IGNORED: <@${userId}> verify-role уже снята, callback пропущен.`).catch(() => {});
+    return;
+  }
+
+  const decisionReason = risk.missingObservedGuilds
+    ? "oauth_missing_guilds"
+    : risk.requiresManualReview
+      ? "oauth_risk_review"
+      : "oauth_completed_waiting_moderator";
+  const statusNote = risk.missingObservedGuilds
+    ? "Discord OAuth не вернул список серверов. Кейс отправлен на ручную проверку и остаётся в карантине."
+    : risk.requiresManualReview
+      ? "OAuth завершён, система нашла совпадения по рискам. Кейс остаётся в карантине до ручного решения модератора."
+      : "OAuth завершён. Доступ не выдаётся автоматически: кейс остаётся в карантине до ручного решения модератора.";
+
+  updateVerificationProfile(userId, {
+    status: "manual_review",
+    decision: "manual_review",
     startedAt: nowIso(),
     completedAt: nowIso(),
-    reviewedAt: nowIso(),
-    reviewedBy: "verification-oauth",
-    decisionReason: "oauth_auto_approved",
     oauthUserId: cleanVerificationText(payload.oauthUser?.id, 80),
     oauthUsername: buildVerificationOauthUsername(payload.oauthUser),
     oauthAvatarUrl: cleanVerificationText(payload.oauthUser?.avatar ? `https://cdn.discordapp.com/avatars/${payload.oauthUser.id}/${payload.oauthUser.avatar}.png` : "", 2000),
@@ -5931,48 +6207,27 @@ async function handleVerificationApprovedCallback(client, payload = {}) {
     matchedEnemyUserIds: Array.isArray(risk.matchedEnemyUserIds) ? risk.matchedEnemyUserIds : [],
     matchedEnemyInviteCodes: Array.isArray(risk.matchedEnemyInviteCodes) ? risk.matchedEnemyInviteCodes : [],
     matchedEnemyInviterUserIds: Array.isArray(risk.matchedEnemyInviterUserIds) ? risk.matchedEnemyInviterUserIds : [],
-    lastError: "",
-  });
-
-  await postVerificationManualReport(
-    client,
-    userId,
-    `Автоматически одобрено системой в ${formatDateTime(profile.domains?.verification?.completedAt)}. Ниже сохранена аудит-сводка по Discord OAuth.`,
-    { disableActions: true }
-  ).catch((error) => {
-    console.warn(`Verification approved report failed for ${userId}: ${formatRuntimeError(error)}`);
-  });
-
-  await logLine(client, `VERIFICATION_APPROVED: <@${userId}> oauth=${buildVerificationOauthUsername(payload.oauthUser) || "unknown"}`).catch(() => {});
-}
-
-async function handleVerificationManualReviewCallback(client, payload = {}) {
-  const userId = cleanVerificationText(payload.session?.userId, 80);
-  if (!userId) throw new Error("Verification callback не содержит userId session.");
-  const risk = payload.risk && typeof payload.risk === "object" ? payload.risk : {};
-  updateVerificationProfile(userId, {
-    status: "manual_review",
-    decision: "manual_review",
-    startedAt: nowIso(),
-    oauthUserId: cleanVerificationText(payload.oauthUser?.id, 80),
-    oauthUsername: buildVerificationOauthUsername(payload.oauthUser),
-    observedGuilds: normalizeVerificationObservedGuilds(risk.observedGuilds),
-    observedGuildIds: Array.isArray(risk.observedGuildIds) ? risk.observedGuildIds : [],
-    observedGuildNames: Array.isArray(risk.observedGuildNames) ? risk.observedGuildNames : [],
-    matchedEnemyGuildIds: Array.isArray(risk.matchedEnemyGuildIds) ? risk.matchedEnemyGuildIds : [],
-    matchedEnemyUserIds: Array.isArray(risk.matchedEnemyUserIds) ? risk.matchedEnemyUserIds : [],
-    matchedEnemyInviteCodes: Array.isArray(risk.matchedEnemyInviteCodes) ? risk.matchedEnemyInviteCodes : [],
-    matchedEnemyInviterUserIds: Array.isArray(risk.matchedEnemyInviterUserIds) ? risk.matchedEnemyInviterUserIds : [],
+    decisionReason,
     reportSentAt: nowIso(),
     lastError: "",
   });
-  await postVerificationManualReport(client, userId, "Автоматическая проверка пометила профиль как рискованный.");
-  await logLine(client, `VERIFICATION_MANUAL_REVIEW: <@${userId}>`).catch(() => {});
+  await postVerificationManualReport(client, userId, statusNote);
+  await logLine(
+    client,
+    `${risk.requiresManualReview ? "VERIFICATION_MANUAL_REVIEW" : "VERIFICATION_READY_FOR_REVIEW"}: <@${userId}> oauth=${buildVerificationOauthUsername(payload.oauthUser) || "unknown"}`
+  ).catch(() => {});
 }
 
 async function handleVerificationFailedCallback(client, payload = {}) {
   const userId = cleanVerificationText(payload.session?.userId, 80);
   if (!userId) return;
+  const lifecycle = await reconcileVerificationAssignmentForMember(client, userId, null, {
+    reason: "verification failure ignored because verify-role was removed",
+  });
+  if (!lifecycle.active || lifecycle.stopped) {
+    await logLine(client, `VERIFICATION_FAILURE_IGNORED: <@${userId}> verify-role уже снята, ошибка проигнорирована.`).catch(() => {});
+    return;
+  }
   ensureVerificationPendingProfile(userId, {
     status: "failed",
     lastError: cleanVerificationText(payload.error?.message || payload.error, 400),
@@ -6625,6 +6880,7 @@ function buildSubmitStepPayload(userId, options = {}) {
   };
 
   const session = getSubmitSession(userId);
+  const pending = getPendingSubmissionForUser(userId);
   const mainCharacterIds = Array.isArray(options.mainCharacterIds) && options.mainCharacterIds.length
     ? options.mainCharacterIds
     : session?.mainCharacterIds;
@@ -6643,6 +6899,11 @@ function buildSubmitStepPayload(userId, options = {}) {
   const hasExampleImagePath = Boolean(exampleImagePath) && fs.existsSync(exampleImagePath);
   const hasExampleImageUrl = Boolean(exampleImageUrl);
   const hasRobloxIdentity = Boolean(session?.robloxUsername && session?.robloxUserId);
+  const canManageRobloxIdentity = canManageWelcomeRobloxIdentity({
+    session,
+    pending,
+    canManage: options.canManageRobloxIdentity === true,
+  });
   const presentation = getPresentation();
   const submitStepPresentation = presentation.welcome.submitStep || {};
   const exampleNote = hasExampleImagePath || hasExampleImageUrl
@@ -6676,7 +6937,7 @@ function buildSubmitStepPayload(userId, options = {}) {
     ],
   };
 
-  if (hasRobloxIdentity) {
+  if (hasRobloxIdentity && canManageRobloxIdentity) {
     payload.components[0].addComponents(
       new ButtonBuilder().setCustomId("onboard_set_roblox_username").setLabel("Сменить Roblox username").setStyle(ButtonStyle.Secondary)
     );
@@ -14014,24 +14275,33 @@ client.on("interactionCreate", async (interaction) => {
 
       await interaction.deferUpdate();
       try {
-        if (verificationReportAction.action === "approve") {
-          const profile = await approveVerificationUser(client, verificationReportAction.userId, interaction.user.tag);
+        if (verificationReportAction.action === "approve_normal") {
+          const profile = await approveVerificationUser(client, verificationReportAction.userId, interaction.user.tag, "normal", "verification moderator approve normal");
           await interaction.message.edit(buildVerificationReportPayload({
             userId: verificationReportAction.userId,
             profile,
-            statusNote: `Approved by ${interaction.user.tag} at ${formatDateTime(profile.domains?.verification?.reviewedAt)}`,
+            statusNote: `Обычный доступ выдан ${interaction.user.tag} в ${formatDateTime(profile.domains?.verification?.reviewedAt)}.`,
             disableActions: true,
           }));
-          await interaction.followUp(ephemeralPayload({ content: `Verification для <@${verificationReportAction.userId}> одобрена.` }));
+          await interaction.followUp(ephemeralPayload({ content: `Verification для <@${verificationReportAction.userId}> завершена: выдана базовая роль доступа.` }));
+        } else if (verificationReportAction.action === "approve_wartime") {
+          const profile = await approveVerificationUser(client, verificationReportAction.userId, interaction.user.tag, "wartime", "verification moderator approve wartime");
+          await interaction.message.edit(buildVerificationReportPayload({
+            userId: verificationReportAction.userId,
+            profile,
+            statusNote: `Военный доступ выдан ${interaction.user.tag} в ${formatDateTime(profile.domains?.verification?.reviewedAt)}.`,
+            disableActions: true,
+          }));
+          await interaction.followUp(ephemeralPayload({ content: `Verification для <@${verificationReportAction.userId}> завершена: выдана военная роль доступа.` }));
         } else {
-          const profile = await rejectVerificationUser(verificationReportAction.userId, interaction.user.tag);
+          const profile = await banVerificationUser(client, verificationReportAction.userId, interaction.user.tag);
           await interaction.message.edit(buildVerificationReportPayload({
             userId: verificationReportAction.userId,
             profile,
-            statusNote: `Rejected by ${interaction.user.tag} at ${formatDateTime(profile.domains?.verification?.reviewedAt)}`,
+            statusNote: `Участник забанен ${interaction.user.tag} в ${formatDateTime(profile.domains?.verification?.reviewedAt)}.`,
             disableActions: true,
           }));
-          await interaction.followUp(ephemeralPayload({ content: `Verification для <@${verificationReportAction.userId}> отклонена.` }));
+          await interaction.followUp(ephemeralPayload({ content: `Участник <@${verificationReportAction.userId}> забанен из verification отчёта.` }));
         }
       } catch (error) {
         await interaction.followUp(ephemeralPayload({
@@ -17116,6 +17386,7 @@ client.on("interactionCreate", async (interaction) => {
           }
 
           await interaction.reply(buildSubmitStepPayload(interaction.user.id, {
+            canManageRobloxIdentity: hasAdministratorAccess(interaction.member),
             noticeText: `Ты уже на шаге отправки kills. Проверь число и загрузи скрин в <#${welcomeChannelId}>.`,
           }));
           return;
@@ -17124,7 +17395,9 @@ client.on("interactionCreate", async (interaction) => {
         if (beginRoute.type === ONBOARD_BEGIN_ROUTES.DRAFT) {
           setSubmitSession(interaction.user.id, { mainCharacterIds: draft.characterIds });
           clearMainDraft(interaction.user.id);
-          await interaction.reply(buildSubmitStepPayload(interaction.user.id));
+          await interaction.reply(buildSubmitStepPayload(interaction.user.id, {
+            canManageRobloxIdentity: hasAdministratorAccess(interaction.member),
+          }));
           return;
         }
 
@@ -17155,6 +17428,16 @@ client.on("interactionCreate", async (interaction) => {
       const pending = getPendingSubmissionForUser(interaction.user.id);
       if (!session?.mainCharacterIds?.length && !pending?.id) {
         await interaction.reply(ephemeralPayload({ content: "Сессия онбординга истекла. Нажми «Получить роль» заново." }));
+        return;
+      }
+
+      const robloxIdentityLockText = getWelcomeRobloxIdentityLockText({
+        session,
+        pending,
+        canManage: hasAdministratorAccess(interaction.member),
+      });
+      if (robloxIdentityLockText) {
+        await interaction.reply(ephemeralPayload({ content: robloxIdentityLockText }));
         return;
       }
 
@@ -17888,6 +18171,16 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
+      const robloxIdentityLockText = getWelcomeRobloxIdentityLockText({
+        session,
+        pending,
+        canManage: hasAdministratorAccess(interaction.member),
+      });
+      if (robloxIdentityLockText) {
+        await interaction.reply(ephemeralPayload({ content: robloxIdentityLockText }));
+        return;
+      }
+
       const robloxUsernameInput = interaction.fields.getTextInputValue("roblox_username");
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
@@ -18011,6 +18304,7 @@ client.on("interactionCreate", async (interaction) => {
       });
 
       await interaction.editReply(buildSubmitStepPayload(interaction.user.id, {
+        canManageRobloxIdentity: hasAdministratorAccess(interaction.member),
         includeEphemeralFlag: false,
         noticeText: `Roblox username подтверждён: **${robloxUser.name}** (ID ${robloxUser.id}).`,
       }));

@@ -119,7 +119,8 @@ function evaluateVerificationRisk(options = {}) {
     matchedEnemyUserIds,
     matchedEnemyInviteCodes: enemyInviteCodes,
     matchedEnemyInviterUserIds: enemyInviterUserIds,
-    requiresManualReview: matchedEnemyGuildIds.length > 0 || matchedEnemyUserIds.length > 0 || enemyInviteCodes.length > 0 || enemyInviterUserIds.length > 0,
+    missingObservedGuilds: observedGuilds.length === 0,
+    requiresManualReview: observedGuilds.length === 0 || matchedEnemyGuildIds.length > 0 || matchedEnemyUserIds.length > 0 || enemyInviteCodes.length > 0 || enemyInviterUserIds.length > 0,
   };
 }
 
@@ -317,11 +318,11 @@ function createVerificationCallbackHandler(options = {}) {
         return true;
       }
 
-      await onApproved(payload);
+      await onManualReview(payload);
       writeHtmlResponse(response, 200, buildVerificationCallbackHtml({
         title: "Проверка завершена",
-        description: "OAuth успешно завершён. Вернись в Discord: бот должен снять verify-role и выдать стартовый доступ.",
-        color: "#22c55e",
+        description: "OAuth успешно завершён. Данные уже отправлены модераторам, а доступ выдаётся только после их решения. Вернись в Discord и жди ответа.",
+        color: "#2563eb",
       }));
       return true;
     } catch (error) {

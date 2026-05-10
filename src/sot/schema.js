@@ -558,6 +558,43 @@ function shouldPreserveCharacterAcrossLegacyRefresh(record) {
     || source === "name";
 }
 
+function shouldPreserveRoleAcrossLegacyRefresh(record) {
+  const source = cleanString(record?.source, 40);
+  return record?.evidence?.nativeWriter === true || source === "manual";
+}
+
+function mergeRolesAcrossLegacyRefresh(existingRoles = {}, refreshedRoles = {}) {
+  const merged = clone(refreshedRoles && typeof refreshedRoles === "object" && !Array.isArray(refreshedRoles)
+    ? refreshedRoles
+    : {});
+  const currentRoles = existingRoles && typeof existingRoles === "object" && !Array.isArray(existingRoles)
+    ? existingRoles
+    : {};
+  const baseRoleSlots = ["moderator", "accessNormal", "accessWartime", "accessNonJjs", "verifyAccess"];
+
+  for (const slot of baseRoleSlots) {
+    const currentRecord = normalizeRecord(currentRoles?.[slot], "configured");
+    if (!shouldPreserveRoleAcrossLegacyRefresh(currentRecord)) continue;
+    merged[slot] = currentRecord;
+  }
+
+  for (const tier of [1, 2, 3, 4, 5]) {
+    const currentRecord = normalizeRecord(currentRoles?.killTier?.[tier] || currentRoles?.killTier?.[String(tier)], "configured");
+    if (!shouldPreserveRoleAcrossLegacyRefresh(currentRecord)) continue;
+    merged.killTier ||= {};
+    merged.killTier[tier] = currentRecord;
+  }
+
+  for (const tier of [1, 2, 3, 4]) {
+    const currentRecord = normalizeRecord(currentRoles?.legacyEloTier?.[tier] || currentRoles?.legacyEloTier?.[String(tier)], "configured");
+    if (!shouldPreserveRoleAcrossLegacyRefresh(currentRecord)) continue;
+    merged.legacyEloTier ||= {};
+    merged.legacyEloTier[tier] = currentRecord;
+  }
+
+  return normalizeSotState({ roles: merged }).roles;
+}
+
 function mergeCharactersAcrossLegacyRefresh(existingCharacters = {}, refreshedCharacters = {}) {
   const merged = { ...refreshedCharacters };
   const currentEntries = existingCharacters && typeof existingCharacters === "object" && !Array.isArray(existingCharacters)
@@ -586,6 +623,10 @@ function refreshSotStateFromLegacy(db = {}, options = {}) {
 
   if (existing?.characters) {
     refreshed.characters = mergeCharactersAcrossLegacyRefresh(existing.characters, refreshed.characters);
+  }
+
+  if (existing?.roles) {
+    refreshed.roles = mergeRolesAcrossLegacyRefresh(existing.roles, refreshed.roles);
   }
 
   if (existing?.activity) {

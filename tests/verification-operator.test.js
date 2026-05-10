@@ -118,6 +118,7 @@ test("buildVerificationEntryPayload exposes user-facing OAuth and status buttons
   assert.equal(row[1].custom_id, VERIFY_ENTRY_STATUS_ID);
   assert.equal(row[2].custom_id, VERIFY_ENTRY_GUIDE_ID);
   assert.match(payload.embeds[0].data.description, /7 дн\./);
+  assert.match(payload.embeds[0].data.description, /решение всё равно принимает модератор/);
 });
 
 test("buildVerificationGuidePayload returns separate moderator and participant guides", () => {
@@ -243,7 +244,7 @@ test("buildVerificationLaunchPayload returns a link button for Discord OAuth", (
   assert.equal(row[1].custom_id, VERIFY_ENTRY_STATUS_ID);
 });
 
-test("buildVerificationReportPayload and parseVerificationReportAction round-trip manual actions", () => {
+test("buildVerificationReportPayload and parseVerificationReportAction round-trip moderator actions", () => {
   const payload = buildVerificationReportPayload({
     userId: "user-1",
     profile: {
@@ -286,8 +287,10 @@ test("buildVerificationReportPayload and parseVerificationReportAction round-tri
   assert.equal(payload.embeds[0].data.title, "Ручная проверка доступа");
   assert.match(observedGuildField.value, /Enemy Nest/);
   assert.match(observedGuildField.value, /guild-10/);
-  assert.deepEqual(parseVerificationReportAction(row[0].custom_id), { action: "approve", userId: "user-1" });
-  assert.deepEqual(parseVerificationReportAction(row[1].custom_id), { action: "reject", userId: "user-1" });
+  assert.equal(row.length, 3);
+  assert.deepEqual(parseVerificationReportAction(row[0].custom_id), { action: "approve_normal", userId: "user-1" });
+  assert.deepEqual(parseVerificationReportAction(row[1].custom_id), { action: "approve_wartime", userId: "user-1" });
+  assert.deepEqual(parseVerificationReportAction(row[2].custom_id), { action: "ban", userId: "user-1" });
 });
 
 test("handleVerificationPanelButtonInteraction routes panel views and runtime actions", async () => {

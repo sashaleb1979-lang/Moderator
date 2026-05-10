@@ -21,6 +21,8 @@ const {
   createPresentationDefaults,
   ensurePresentationConfig,
 } = require("../src/onboard/presentation");
+const { normalizeIntegrationState } = require("../src/integrations/shared-profile");
+const { syncSotShadowState } = require("../src/sot/loader");
 
 function createDeps(overrides = {}) {
   const defaultCharacters = [
@@ -377,6 +379,68 @@ test("createDbStore.save preserves runtime state when disk write fails", () => {
   assert.throws(() => store.save(db));
   assert.equal(db.__needsSaveAfterLoad, true);
   assert.equal(Boolean(db.sot?.channels?.review), false);
+});
+
+test("createDbStore.save preserves verification shadow and manual verify role across SoT refresh", () => {
+  const appConfig = {
+    channels: {
+      welcomeChannelId: "welcome-1",
+      tierlistChannelId: "tier-1",
+    },
+    roles: {
+      verifyAccessRoleId: "verify-config",
+    },
+    characters: [{ id: "gojo", label: "Годжо", roleId: "" }],
+  };
+  const deps = createDeps({
+    appConfig,
+    normalizeIntegrationState,
+    syncSotState: (db) => syncSotShadowState(db, { appConfig }),
+  });
+  const store = createDbStore(deps);
+  const db = createDefaultDbState({
+    appConfig: deps.appConfig,
+    createDefaultIntegrationState: deps.createDefaultIntegrationState,
+    createOnboardModeState: deps.createOnboardModeState,
+    normalizeCharacterCatalog: deps.normalizeCharacterCatalog,
+  });
+
+  db.config.integrations.verification = {
+    enabled: true,
+    callbackBaseUrl: "https://example.com/verification/callback",
+    verificationChannelId: "verify-room",
+    reportChannelId: "review-room",
+    entryMessage: { channelId: "verify-room", messageId: "entry-message" },
+  };
+  db.sot = {
+    sotVersion: 1,
+    integrations: {
+      verification: {
+        enabled: true,
+        callbackBaseUrl: "https://example.com/verification/callback",
+        verificationChannelId: "verify-room",
+        reportChannelId: "review-room",
+        entryMessage: { channelId: "verify-room", messageId: "entry-message" },
+      },
+    },
+    roles: {
+      verifyAccess: {
+        value: "verify-manual",
+        source: "manual",
+        verifiedAt: null,
+        evidence: { nativeWriter: true, manualOverride: true },
+      },
+    },
+  };
+
+  store.save(db);
+
+  const written = JSON.parse(fs.readFileSync(deps.dbPath, "utf8"));
+  assert.equal(written.config.integrations.verification.verificationChannelId, "verify-room");
+  assert.equal(written.config.integrations.verification.reportChannelId, "review-room");
+  assert.equal(written.sot.integrations.verification.verificationChannelId, "verify-room");
+  assert.equal(written.sot.roles.verifyAccess.value, "verify-manual");
+  assert.equal(written.sot.roles.verifyAccess.source, "manual");
 });
 
 test("createDbStore.save normalizes legacy text tierlist messageId before persist", () => {

@@ -189,6 +189,56 @@ test("syncSotShadowState preserves manual and native-owned character records dur
   assert.equal(db.sot.characters.manual_only.source, "manual");
 });
 
+test("syncSotShadowState preserves manual verifyAccess role overrides during legacy refresh", () => {
+  const schemaOptions = {
+    appConfig: {
+      channels: {
+        welcomeChannelId: "welcome-channel",
+        reviewChannelId: "review-a",
+        tierlistChannelId: "",
+        logChannelId: "",
+      },
+      roles: {
+        verifyAccessRoleId: "verify-config",
+      },
+      characters: [],
+    },
+  };
+  const db = {
+    config: {
+      welcomePanel: { channelId: "welcome-channel", messageId: "welcome-message" },
+      reviewChannelId: "review-a",
+      tierlistBoard: {
+        text: { channelId: "", messageId: "" },
+        graphic: { channelId: "", messageId: "", lastUpdated: null },
+      },
+      generatedRoles: {
+        characters: {},
+        characterLabels: {},
+        tiers: {},
+      },
+      integrations: {},
+    },
+    sot: {
+      sotVersion: 1,
+      roles: {
+        verifyAccess: {
+          value: "verify-manual",
+          source: "manual",
+          verifiedAt: "2026-05-10T00:00:00.000Z",
+          evidence: { nativeWriter: true, manualOverride: true },
+        },
+      },
+    },
+  };
+
+  syncSotShadowState(db, schemaOptions);
+
+  assert.equal(db.sot.roles.verifyAccess.value, "verify-manual");
+  assert.equal(db.sot.roles.verifyAccess.source, "manual");
+  assert.equal(db.sot.roles.verifyAccess.evidence.nativeWriter, true);
+});
+
 test("syncSotShadowState preserves discovered SoT records without reviving compat-only legacy character seeds", () => {
   const schemaOptions = {
     appConfig: {

@@ -19,6 +19,11 @@ const sharedProfileRuntimeConfig = {
   frequentNonFriendSessions: ROBLOX_FREQUENT_NON_FRIEND_SESSIONS,
 };
 
+function cloneValue(value) {
+  if (value === undefined) return undefined;
+  return JSON.parse(JSON.stringify(value));
+}
+
 function cleanString(value, limit = 2000) {
   return String(value || "").trim().slice(0, Math.max(0, Number(limit) || 0));
 }
@@ -194,6 +199,57 @@ function normalizeActivityDomainState(value = {}) {
     autoRoleFrozen: normalizeNullableBoolean(source.autoRoleFrozen),
     recalculatedAt: normalizeNullableString(source.recalculatedAt, 80),
     lastRoleAppliedAt: normalizeNullableString(source.lastRoleAppliedAt, 80),
+  };
+}
+
+function normalizeVerificationObservedGuilds(value = []) {
+  if (!Array.isArray(value)) return [];
+
+  const normalized = [];
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const id = cleanString(entry.id, 80);
+    if (!id) continue;
+    normalized.push({
+      id,
+      name: cleanString(entry.name, 120),
+      owner: entry.owner === true,
+      permissions: cleanString(entry.permissions, 40),
+    });
+    if (normalized.length >= 20) break;
+  }
+
+  return normalized;
+}
+
+function normalizeVerificationDomainState(value = {}) {
+  const source = value && typeof value === "object" ? value : {};
+  return {
+    status: cleanString(source.status, 40) || "not_started",
+    decision: cleanString(source.decision, 40) || "none",
+    assignedAt: normalizeNullableString(source.assignedAt, 80),
+    startedAt: normalizeNullableString(source.startedAt, 80),
+    reportDueAt: normalizeNullableString(source.reportDueAt, 80),
+    reportSentAt: normalizeNullableString(source.reportSentAt, 80),
+    completedAt: normalizeNullableString(source.completedAt, 80),
+    reviewedAt: normalizeNullableString(source.reviewedAt, 80),
+    reviewedBy: normalizeNullableString(source.reviewedBy, 120),
+    decisionReason: normalizeNullableString(source.decisionReason, 120),
+    lastError: normalizeNullableString(source.lastError, 400),
+    assignedBy: normalizeNullableString(source.assignedBy, 120),
+    assignmentNote: normalizeNullableString(source.assignmentNote, 500),
+    stoppedAt: normalizeNullableString(source.stoppedAt, 80),
+    stopReason: normalizeNullableString(source.stopReason, 200),
+    oauthUserId: normalizeNullableString(source.oauthUserId, 80),
+    oauthUsername: normalizeNullableString(source.oauthUsername, 120),
+    oauthAvatarUrl: normalizeNullableString(source.oauthAvatarUrl, 2000),
+    observedGuilds: normalizeVerificationObservedGuilds(source.observedGuilds),
+    observedGuildIds: normalizeStringArray(source.observedGuildIds, 20, 80),
+    observedGuildNames: normalizeStringArray(source.observedGuildNames, 20, 120),
+    matchedEnemyGuildIds: normalizeStringArray(source.matchedEnemyGuildIds, 20, 80),
+    matchedEnemyUserIds: normalizeStringArray(source.matchedEnemyUserIds, 20, 80),
+    matchedEnemyInviteCodes: normalizeStringArray(source.matchedEnemyInviteCodes, 20, 80),
+    matchedEnemyInviterUserIds: normalizeStringArray(source.matchedEnemyInviterUserIds, 20, 80),
   };
 }
 
@@ -580,12 +636,14 @@ function buildSharedProfileSummary(profile = {}, domains = {}) {
   const tierlist = domains.tierlist || normalizeTierlistDomainState(profile?.domains?.tierlist);
   const activity = domains.activity || normalizeActivityDomainState(profile?.domains?.activity || profile?.activity || profile?.summary?.activity);
   const roblox = domains.roblox || normalizeRobloxDomainState(profile?.domains?.roblox || profile);
+  const verification = domains.verification || normalizeVerificationDomainState(profile?.domains?.verification || profile?.verification || profile?.summary?.verification);
   const previousUsername = getRobloxPreviousName(roblox.username, roblox.usernameHistory);
   const previousDisplayName = getRobloxPreviousName(roblox.displayName, roblox.displayNameHistory);
   const serverFriendsCount = roblox.serverFriends.userIds.length;
   const nonFriendPeerCount = roblox.coPlay.peers.filter((entry) => entry.isRobloxFriend === false).length;
   const frequentNonFriendCount = roblox.coPlay.peers.filter((entry) => isFrequentRobloxNonFriendPeer(entry)).length;
   const topCoPlayPeers = buildRobloxTopCoPlayPeers(roblox.coPlay.peers);
+  const observedGuildCount = verification.observedGuilds.length || verification.observedGuildIds.length;
   const lastRenameSeenAt = getLatestTimestamp([
     getRobloxLastRenameSeenAt(roblox.username, roblox.usernameHistory),
     getRobloxLastRenameSeenAt(roblox.displayName, roblox.displayNameHistory),
@@ -682,6 +740,32 @@ function buildSharedProfileSummary(profile = {}, domains = {}) {
       refreshStatus: roblox.refreshStatus,
       refreshError: roblox.refreshError,
     },
+    verification: {
+      status: verification.status,
+      decision: verification.decision,
+      assignedAt: verification.assignedAt,
+      startedAt: verification.startedAt,
+      reportDueAt: verification.reportDueAt,
+      reportSentAt: verification.reportSentAt,
+      completedAt: verification.completedAt,
+      reviewedAt: verification.reviewedAt,
+      reviewedBy: verification.reviewedBy,
+      decisionReason: verification.decisionReason,
+      lastError: verification.lastError,
+      assignedBy: verification.assignedBy,
+      assignmentNote: verification.assignmentNote,
+      stoppedAt: verification.stoppedAt,
+      stopReason: verification.stopReason,
+      oauthUserId: verification.oauthUserId,
+      oauthUsername: verification.oauthUsername,
+      oauthAvatarUrl: verification.oauthAvatarUrl,
+      observedGuildCount,
+      matchedEnemyGuildCount: verification.matchedEnemyGuildIds.length,
+      matchedEnemyUserCount: verification.matchedEnemyUserIds.length,
+      matchedEnemyInviteCount: verification.matchedEnemyInviteCodes.length,
+      matchedEnemyInviterCount: verification.matchedEnemyInviterUserIds.length,
+      manualTagCount: 0,
+    },
   };
 }
 
@@ -692,6 +776,7 @@ function ensureSharedProfile(profile = {}, userId = "") {
   const tierlist = normalizeTierlistDomainState(source?.domains?.tierlist);
   const activity = normalizeActivityDomainState(source?.domains?.activity || source?.activity || source?.summary?.activity);
   const roblox = normalizeRobloxDomainState(source?.domains?.roblox || buildLegacyRobloxSource(source));
+  const verification = normalizeVerificationDomainState(source?.domains?.verification || source?.verification || source?.summary?.verification);
 
   const next = {
     ...source,
@@ -717,6 +802,7 @@ function ensureSharedProfile(profile = {}, userId = "") {
       tierlist,
       activity,
       roblox,
+      verification,
     },
   };
   next.summary = buildSharedProfileSummary(next, next.domains);
@@ -830,6 +916,23 @@ function createDefaultIntegrationState() {
         lastUpdated: null,
       },
     },
+    roblox: {},
+    verification: {
+      enabled: false,
+      status: "",
+      mode: "",
+      callbackBaseUrl: "",
+      reportChannelId: "",
+      verificationChannelId: "",
+      lastSyncAt: null,
+      stageTexts: {},
+      riskRules: {},
+      deadline: {},
+      entryMessage: {
+        channelId: "",
+        messageId: "",
+      },
+    },
   };
 }
 
@@ -870,6 +973,29 @@ function normalizeIntegrationState(value = {}) {
       lastSyncAt: normalizeNullableString(source?.tierlist?.lastSyncAt, 80),
       dashboard: normalizeBoardState(source?.tierlist?.dashboard),
       summary: normalizeBoardState(source?.tierlist?.summary),
+    },
+    roblox: source?.roblox && typeof source.roblox === "object" ? cloneValue(source.roblox) : {},
+    verification: {
+      enabled: source?.verification?.enabled === true,
+      status: cleanString(source?.verification?.status, 40),
+      mode: cleanString(source?.verification?.mode, 40),
+      callbackBaseUrl: cleanString(source?.verification?.callbackBaseUrl, 500),
+      reportChannelId: cleanString(source?.verification?.reportChannelId, 80),
+      verificationChannelId: cleanString(source?.verification?.verificationChannelId, 80),
+      lastSyncAt: normalizeNullableString(source?.verification?.lastSyncAt, 80),
+      stageTexts: source?.verification?.stageTexts && typeof source.verification.stageTexts === "object"
+        ? cloneValue(source.verification.stageTexts)
+        : {},
+      riskRules: source?.verification?.riskRules && typeof source.verification.riskRules === "object"
+        ? cloneValue(source.verification.riskRules)
+        : {},
+      deadline: source?.verification?.deadline && typeof source.verification.deadline === "object"
+        ? cloneValue(source.verification.deadline)
+        : {},
+      entryMessage: {
+        channelId: cleanString(source?.verification?.entryMessage?.channelId, 80),
+        messageId: cleanString(source?.verification?.entryMessage?.messageId, 80),
+      },
     },
   };
 

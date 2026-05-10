@@ -28,8 +28,9 @@ const VERIFY_PANEL_RESEND_REPORT_ID = "verification_panel_resend_report";
 const VERIFY_ENTRY_START_ID = "verification_begin";
 const VERIFY_ENTRY_STATUS_ID = "verification_status";
 const VERIFY_ENTRY_GUIDE_ID = "verification_entry_guide";
-const VERIFY_REPORT_APPROVE_PREFIX = "verification_report_approve:";
-const VERIFY_REPORT_REJECT_PREFIX = "verification_report_reject:";
+const VERIFY_REPORT_APPROVE_NORMAL_PREFIX = "verification_report_approve_normal:";
+const VERIFY_REPORT_APPROVE_WARTIME_PREFIX = "verification_report_approve_wartime:";
+const VERIFY_REPORT_BAN_PREFIX = "verification_report_ban:";
 
 const VERIFY_PANEL_CONFIG_INFRA_MODAL_ID = "verification_panel_config_infra_modal";
 const VERIFY_PANEL_CONFIG_RISK_MODAL_ID = "verification_panel_config_risk_modal";
@@ -535,10 +536,10 @@ function buildParticipantGuideText(integration = {}) {
   return [
     "1. Открой канал проверки и нажми кнопку запуска OAuth.",
     "2. Авторизуйся тем же Discord-аккаунтом, который сейчас находится на сервере.",
-    "3. После возврата с сайта бот либо сразу завершит проверку, либо отправит кейс модераторам.",
-    `4. Если автоматическое решение не сработает, кейс останется в очереди до ручной проверки и дедлайна **${Math.max(1, Number(integration.deadline?.pendingDays) || 7)} дн.**.`,
-    `5. После одобрения участник увидит: ${cleanString(integration.stageTexts?.approved, 200) || "бот снимет verify-роль и выдаст стартовый доступ."}`,
-    `6. После отказа участник увидит: ${cleanString(integration.stageTexts?.rejected, 200) || "доступ выдан не будет."}`,
+    "3. После возврата с сайта бот сохранит данные проверки и отправит кейс модераторам.",
+    `4. Если участник не завершит OAuth сам, через **${Math.max(1, Number(integration.deadline?.pendingDays) || 7)} дн.** модераторы всё равно получат отчёт и примут решение вручную.`,
+    `5. После одобрения участник увидит: ${cleanString(integration.stageTexts?.approved, 200) || "модератор снимет verify-роль и выдаст нужный стартовый доступ."}`,
+    `6. После отказа участник увидит: ${cleanString(integration.stageTexts?.rejected, 200) || "доступ не будет выдан, а модератор может забанить прямо из отчёта."}`,
   ].join("\n");
 }
 
@@ -548,7 +549,7 @@ function buildModeratorGuideText(integration = {}, snapshot = {}) {
     "1. Раздел «Обзор» показывает, всё ли готово: OAuth, verify-роль, канал проверки и канал отчётов.",
     "2. Раздел «Очередь» показывает, кто ждёт решения, ушёл в ручную проверку, упал с ошибкой или просрочен.",
     "3. Раздел «Система» нужен для обновления входного сообщения, ручной проверки просроченных кейсов и повторной отправки отчётов.",
-    "4. Отчёт в канал модераторов остаётся местом, где принимается решение: одобрить или отклонить.",
+    "4. Отчёт в канал модераторов остаётся местом, где принимается решение: выдать обычный доступ, выдать военный доступ или забанить.",
     `5. Сейчас в очереди: ожидают ${normalizedSnapshot.totals.pending}, ручная проверка ${normalizedSnapshot.totals.manualReview}, просрочено ${normalizedSnapshot.totals.overdue}.`,
     `6. Дедлайн до отправки отчёта: ${Math.max(1, Number(integration.deadline?.pendingDays) || 7)} дн. Автокика здесь нет.`
   ].join("\n");
@@ -571,7 +572,7 @@ function buildVerificationEntryPayload(options = {}) {
     .setColor(0x2563EB)
     .setDescription([
       entryText,
-      `Если система не сможет принять решение автоматически, через **${pendingDays} дн.** уйдёт отчёт модераторам.`,
+      `После OAuth решение всё равно принимает модератор. Если участник не завершит проверку сам, через **${pendingDays} дн.** отчёт уйдёт модераторам автоматически.`,
     ].join("\n\n"));
 
   if (statusText) {
@@ -654,23 +655,30 @@ function buildVerificationReportCustomId(action, userId) {
   if (!normalizedUserId) {
     throw new Error("userId обязателен для verification report action.");
   }
-  if (action === "approve") return `${VERIFY_REPORT_APPROVE_PREFIX}${normalizedUserId}`;
-  if (action === "reject") return `${VERIFY_REPORT_REJECT_PREFIX}${normalizedUserId}`;
+  if (action === "approve_normal") return `${VERIFY_REPORT_APPROVE_NORMAL_PREFIX}${normalizedUserId}`;
+  if (action === "approve_wartime") return `${VERIFY_REPORT_APPROVE_WARTIME_PREFIX}${normalizedUserId}`;
+  if (action === "ban") return `${VERIFY_REPORT_BAN_PREFIX}${normalizedUserId}`;
   throw new Error("Неизвестное verification report action.");
 }
 
 function parseVerificationReportAction(customId) {
   const value = cleanString(customId, 200);
-  if (value.startsWith(VERIFY_REPORT_APPROVE_PREFIX)) {
+  if (value.startsWith(VERIFY_REPORT_APPROVE_NORMAL_PREFIX)) {
     return {
-      action: "approve",
-      userId: cleanString(value.slice(VERIFY_REPORT_APPROVE_PREFIX.length), 80),
+      action: "approve_normal",
+      userId: cleanString(value.slice(VERIFY_REPORT_APPROVE_NORMAL_PREFIX.length), 80),
     };
   }
-  if (value.startsWith(VERIFY_REPORT_REJECT_PREFIX)) {
+  if (value.startsWith(VERIFY_REPORT_APPROVE_WARTIME_PREFIX)) {
     return {
-      action: "reject",
-      userId: cleanString(value.slice(VERIFY_REPORT_REJECT_PREFIX.length), 80),
+      action: "approve_wartime",
+      userId: cleanString(value.slice(VERIFY_REPORT_APPROVE_WARTIME_PREFIX.length), 80),
+    };
+  }
+  if (value.startsWith(VERIFY_REPORT_BAN_PREFIX)) {
+    return {
+      action: "ban",
+      userId: cleanString(value.slice(VERIFY_REPORT_BAN_PREFIX.length), 80),
     };
   }
   return null;
@@ -735,13 +743,17 @@ function buildVerificationReportPayload(options = {}) {
     embed.addFields({ name: "Комментарий модератора", value: statusNote, inline: false });
   }
 
+  const files = Array.isArray(options.files) ? options.files.filter(Boolean) : [];
+
   return {
     embeds: [embed],
+    ...(files.length ? { files } : {}),
     components: userId && !disableActions
       ? [
           new ActionRowBuilder().addComponents(
-            new ButtonBuilder().setCustomId(buildVerificationReportCustomId("approve", userId)).setLabel("Одобрить").setStyle(ButtonStyle.Success),
-            new ButtonBuilder().setCustomId(buildVerificationReportCustomId("reject", userId)).setLabel("Отклонить").setStyle(ButtonStyle.Danger)
+            new ButtonBuilder().setCustomId(buildVerificationReportCustomId("approve_normal", userId)).setLabel("Норм роль").setStyle(ButtonStyle.Success),
+            new ButtonBuilder().setCustomId(buildVerificationReportCustomId("approve_wartime", userId)).setLabel("Воен роль").setStyle(ButtonStyle.Primary),
+            new ButtonBuilder().setCustomId(buildVerificationReportCustomId("ban", userId)).setLabel("Забанить").setStyle(ButtonStyle.Danger)
           ),
         ]
       : [],
@@ -839,7 +851,7 @@ function buildVerificationPanelPayload(options = {}) {
         value: [
           `Настроено текстовых этапов: **${stageTextCount}**`,
           `Срок до отчёта модераторам: **${pendingDays} дн.**`,
-          "После истечения срока система отправляет отчёт модераторам. Автокика в этом контуре нет.",
+          "После истечения срока система отправляет отчёт модераторам. Выпуск из карантина и бан делаются только кнопками модератора.",
         ].join("\n"),
         inline: false,
       }
@@ -1281,8 +1293,9 @@ module.exports = {
   VERIFY_PANEL_REFRESH_ID,
   VERIFY_PANEL_RUN_SWEEP_ID,
   VERIFY_PANEL_RUNTIME_ID,
-  VERIFY_REPORT_APPROVE_PREFIX,
-  VERIFY_REPORT_REJECT_PREFIX,
+  VERIFY_REPORT_APPROVE_NORMAL_PREFIX,
+  VERIFY_REPORT_APPROVE_WARTIME_PREFIX,
+  VERIFY_REPORT_BAN_PREFIX,
   VERIFY_SUBCOMMAND_NAMES,
   buildVerificationEntryPayload,
   buildVerificationInfraConfigModal,
