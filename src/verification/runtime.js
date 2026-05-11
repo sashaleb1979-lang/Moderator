@@ -14,6 +14,12 @@ function normalizeStringArray(value, limit = 100, itemLimit = 120) {
   return [...new Set(value.map((entry) => cleanString(entry, itemLimit)).filter(Boolean))].slice(0, limit);
 }
 
+function formatLogToken(value, limit = 12) {
+  const text = cleanString(value, 200);
+  if (!text) return "missing";
+  return text.length > limit ? `${text.slice(0, limit)}...` : text;
+}
+
 function getCallbackPath(value) {
   const text = cleanString(value, 500);
   if (!text) return "/verification/callback";
@@ -309,6 +315,7 @@ function createVerificationCallbackHandler(options = {}) {
       };
 
       if (risk.requiresManualReview) {
+        console.log(`[verification-runtime] CALLBACK_MANUAL_REVIEW user=${cleanString(session.userId, 80) || "unknown"} state=${formatLogToken(state)} guilds=${risk.observedGuilds.length}`);
         await onManualReview(payload);
         writeHtmlResponse(response, 200, buildVerificationCallbackHtml({
           title: "Проверка отправлена модераторам",
@@ -318,6 +325,7 @@ function createVerificationCallbackHandler(options = {}) {
         return true;
       }
 
+      console.log(`[verification-runtime] CALLBACK_READY_FOR_REVIEW user=${cleanString(session.userId, 80) || "unknown"} state=${formatLogToken(state)} guilds=${risk.observedGuilds.length}`);
       await onManualReview(payload);
       writeHtmlResponse(response, 200, buildVerificationCallbackHtml({
         title: "Проверка завершена",
@@ -326,6 +334,7 @@ function createVerificationCallbackHandler(options = {}) {
       }));
       return true;
     } catch (error) {
+      console.warn(`[verification-runtime] CALLBACK_FAILED user=${cleanString(session?.userId, 80) || "unknown"} state=${formatLogToken(state)} error=${cleanString(error?.message || error, 200) || "unknown"}`);
       await onFailure({ session, state, code, error });
       writeHtmlResponse(response, 400, buildVerificationCallbackHtml({
         title: "Проверка не завершена",

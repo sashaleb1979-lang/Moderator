@@ -241,3 +241,33 @@ test("createVerificationCallbackHandler routes empty OAuth guild list into manua
   assert.equal(failures.length, 0);
   assert.match(response.body, /ручной проверки/);
 });
+
+test("createVerificationCallbackHandler reports missing state through onFailure", async () => {
+  const failures = [];
+  const handler = createVerificationCallbackHandler({
+    config: {
+      integration: {
+        enabled: true,
+        callbackBaseUrl: "https://verify.example.com/oauth/discord/callback",
+      },
+      env: {
+        DISCORD_OAUTH_CLIENT_ID: "client-id",
+        DISCORD_OAUTH_CLIENT_SECRET: "secret",
+        DISCORD_OAUTH_REDIRECT_URI: "https://verify.example.com/oauth/discord/callback",
+      },
+    },
+    onFailure: async (payload) => {
+      failures.push(payload);
+    },
+  });
+
+  const response = createResponseRecorder();
+  const handled = await handler({ method: "GET", url: "/oauth/discord/callback" }, response);
+
+  assert.equal(handled, true);
+  assert.equal(response.statusCode, 400);
+  assert.equal(failures.length, 1);
+  assert.equal(failures[0].state, "");
+  assert.match(String(failures[0].error?.message || failures[0].error), /OAuth state отсутствует/);
+  assert.match(response.body, /OAuth state отсутствует/);
+});

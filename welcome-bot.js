@@ -4916,6 +4916,28 @@ async function logLine(client, text) {
   if (channel?.isTextBased()) await channel.send(text).catch(() => {});
 }
 
+function formatVerificationStateLogToken(state) {
+  const normalized = typeof state === "string"
+    ? state.trim()
+    : state == null
+      ? ""
+      : String(state).trim();
+  if (!normalized) return "missing";
+  return normalized.length > 12 ? `${normalized.slice(0, 12)}...` : normalized;
+}
+
+async function logVerificationRuntimeEvent(client, text, level = "info") {
+  const rendered = `[verification] ${text}`;
+  if (level === "error") {
+    console.error(rendered);
+  } else if (level === "warn") {
+    console.warn(rendered);
+  } else {
+    console.log(rendered);
+  }
+  await logLine(client, text).catch(() => {});
+}
+
 async function dmUser(client, userId, text) {
   const user = await client.users.fetch(userId).catch(() => null);
   if (!user) return;
@@ -5268,6 +5290,12 @@ function formatRoleMention(roleId) {
 
 function cleanVerificationText(value, limit = 2000) {
   return String(value || "").trim().slice(0, Math.max(0, Number(limit) || 0));
+}
+
+function normalizeVerificationTextArray(value, limit = 100, itemLimit = 120) {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.map((entry) => cleanVerificationText(entry, itemLimit)).filter(Boolean))]
+    .slice(0, Math.max(0, Number(limit) || 0));
 }
 
 function buildVerificationOauthUsername(oauthUser = {}) {
@@ -5888,10 +5916,10 @@ function buildVerificationAuditMarkdown(userId, profile = {}, statusNote = "") {
   lines.push(
     "",
     "### Точные совпадения риска",
-    `- Серверы: ${normalizeStringArray(verification.matchedEnemyGuildIds, 20, 80).join(", ") || "—"}`,
-    `- Пользователи: ${normalizeStringArray(verification.matchedEnemyUserIds, 20, 80).join(", ") || "—"}`,
-    `- Invite-коды: ${normalizeStringArray(verification.matchedEnemyInviteCodes, 20, 80).join(", ") || "—"}`,
-    `- Inviter ID: ${normalizeStringArray(verification.matchedEnemyInviterUserIds, 20, 80).join(", ") || "—"}`,
+    `- Серверы: ${normalizeVerificationTextArray(verification.matchedEnemyGuildIds, 20, 80).join(", ") || "—"}`,
+    `- Пользователи: ${normalizeVerificationTextArray(verification.matchedEnemyUserIds, 20, 80).join(", ") || "—"}`,
+    `- Invite-коды: ${normalizeVerificationTextArray(verification.matchedEnemyInviteCodes, 20, 80).join(", ") || "—"}`,
+    `- Inviter ID: ${normalizeVerificationTextArray(verification.matchedEnemyInviterUserIds, 20, 80).join(", ") || "—"}`,
     "",
     "## Roblox / друзья",
   );
@@ -5969,17 +5997,28 @@ function createVerificationAuditAttachment(userId, profile = {}, statusNote = ""
 }
 
 async function postVerificationManualReport(client, userId, statusNote = "", options = {}) {
-  const channel = await resolveVerificationReportChannel(client);
-  const profile = finalizeStoredProfile(userId);
-  const auditAttachment = createVerificationAuditAttachment(userId, profile, statusNote);
-  const message = await channel.send(buildVerificationReportPayload({
-    userId,
-    profile,
-    statusNote,
-    disableActions: options.disableActions === true,
-    files: [auditAttachment],
-  }));
-  return { channel, message, profile };
+  let channel = null;
+  try {
+    channel = await resolveVerificationReportChannel(client);
+    const profile = finalizeStoredProfile(userId);
+    const auditAttachment = createVerificationAuditAttachment(userId, profile, statusNote);
+    const message = await channel.send(buildVerificationReportPayload({
+      userId,
+      profile,
+      statusNote,
+      disableActions: options.disableActions === true,
+      files: [auditAttachment],
+    }));
+    await logVerificationRuntimeEvent(client, `VERIFICATION_REPORT_SENT: <@${userId}> channel=${channel.id} message=${message.id}`);
+    return { channel, message, profile };
+  } catch (error) {
+    await logVerificationRuntimeEvent(
+      client,
+      `VERIFICATION_REPORT_FAILED: <@${userId}> channel=${cleanVerificationText(channel?.id, 80) || "unknown"} error=${cleanVerificationText(error?.message || error, 200) || "unknown"}`,
+      "error"
+    );
+    throw error;
+  }
 }
 
 async function ensureVerificationEntryMessage(client) {
@@ -6177,7 +6216,7 @@ async function handleVerificationManualReviewCallback(client, payload = {}) {
     reason: "verification callback ignored because verify-role was removed",
   });
   if (!lifecycle.active || lifecycle.stopped) {
-    await logLine(client, `VERIFICATION_CALLBACK_IGNORED: <@${userId}> verify-role уже снята, callback пропущен.`).catch(() => {});
+    await logVerificationRuntimeEvent(client, `VERIFICATION_CALLBACK_IGNORED: <@${userId}> verify-role уже снята, callback пропущен.`, "warn");
     return;
   }
 
@@ -6212,7 +6251,7 @@ async function handleVerificationManualReviewCallback(client, payload = {}) {
     lastError: "",
   });
   await postVerificationManualReport(client, userId, statusNote);
-  await logLine(
+  await logVerificationRuntimeEvent(
     client,
     `${risk.requiresManualReview ? "VERIFICATION_MANUAL_REVIEW" : "VERIFICATION_READY_FOR_REVIEW"}: <@${userId}> oauth=${buildVerificationOauthUsername(payload.oauthUser) || "unknown"}`
   ).catch(() => {});
@@ -6220,19 +6259,26 @@ async function handleVerificationManualReviewCallback(client, payload = {}) {
 
 async function handleVerificationFailedCallback(client, payload = {}) {
   const userId = cleanVerificationText(payload.session?.userId, 80);
-  if (!userId) return;
+  if (!userId) {
+    await logVerificationRuntimeEvent(
+      client,
+      `VERIFICATION_CALLBACK_FAILED_NO_SESSION: state=${formatVerificationStateLogToken(payload.state)} error=${cleanVerificationText(payload.error?.message || payload.error, 200) || "unknown"}`,
+      "warn"
+    );
+    return;
+  }
   const lifecycle = await reconcileVerificationAssignmentForMember(client, userId, null, {
     reason: "verification failure ignored because verify-role was removed",
   });
   if (!lifecycle.active || lifecycle.stopped) {
-    await logLine(client, `VERIFICATION_FAILURE_IGNORED: <@${userId}> verify-role уже снята, ошибка проигнорирована.`).catch(() => {});
+    await logVerificationRuntimeEvent(client, `VERIFICATION_FAILURE_IGNORED: <@${userId}> verify-role уже снята, ошибка проигнорирована.`, "warn");
     return;
   }
   ensureVerificationPendingProfile(userId, {
     status: "failed",
     lastError: cleanVerificationText(payload.error?.message || payload.error, 400),
   });
-  await logLine(client, `VERIFICATION_FAILED: <@${userId}> ${cleanVerificationText(payload.error?.message || payload.error, 200)}`).catch(() => {});
+  await logVerificationRuntimeEvent(client, `VERIFICATION_FAILED: <@${userId}> ${cleanVerificationText(payload.error?.message || payload.error, 200)}`, "error");
 }
 
 async function startVerificationRuntime(client) {
@@ -12944,7 +12990,7 @@ client.on("guildMemberUpdate", async (oldMember, newMember) => {
           reason: "verify role removed manually",
         });
         if (result.stopped) {
-          await logLine(client, `VERIFICATION_STOPPED: <@${newMember.id}> verify-role снята вручную, отсчёт остановлен.`).catch(() => {});
+          await logVerificationRuntimeEvent(client, `VERIFICATION_STOPPED: <@${newMember.id}> verify-role снята вручную, отсчёт остановлен.`, "warn");
         }
       }
     }
@@ -13542,10 +13588,10 @@ client.on("interactionCreate", async (interaction) => {
             reason: `verification assigned by ${interaction.user.tag}`,
           });
 
-          await logLine(
+          await logVerificationRuntimeEvent(
             client,
             `VERIFICATION_ASSIGNED: <@${target.id}> by ${interaction.user.tag}${note ? ` note=${note}` : ""}`
-          ).catch(() => {});
+          );
 
           const lines = [
             `<@${target.id}> поставлен на проверку.`,
@@ -14246,6 +14292,7 @@ client.on("interactionCreate", async (interaction) => {
           lastError: "",
         });
         const state = createVerificationOauthState(interaction.user.id);
+        await logVerificationRuntimeEvent(client, `VERIFICATION_BEGIN: <@${interaction.user.id}> state=${formatVerificationStateLogToken(state)}`);
         const authorizeUrl = buildDiscordOAuthAuthorizeUrl({
           integration: getVerificationIntegrationState(),
           env: process.env,
