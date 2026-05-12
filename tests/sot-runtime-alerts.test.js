@@ -4,6 +4,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const {
+  buildSotCharacterAlertSignature,
   getActionableSotCharacterAlertState,
   runSotStartupAlerts,
   scheduleSotAlertTicks,
@@ -43,6 +44,28 @@ test("getActionableSotCharacterAlertState keeps actionable unresolved, ambiguous
     issueParts: ["unresolved=1", "ambiguous=1", "staleRole=2", "staleVerification>24h=1"],
     attentionLines: ["line unresolved", "line stale"],
   });
+});
+
+test("buildSotCharacterAlertSignature normalizes stale verification age growth", () => {
+  const first = buildSotCharacterAlertSignature(
+    ["staleVerification>24h=2"],
+    [
+      "Gojo: [recovered; OK] - verification stale 24h",
+      "Yuji: [recovered; OK] - verification stale 25h",
+    ],
+    { staleHours: 24 }
+  );
+
+  const second = buildSotCharacterAlertSignature(
+    ["staleVerification>24h=2"],
+    [
+      "Gojo: [recovered; OK] - verification stale 26h",
+      "Yuji: [recovered; OK] - verification stale 27h",
+    ],
+    { staleHours: 24 }
+  );
+
+  assert.equal(first, second);
 });
 
 test("runSotStartupAlerts logs a character alert failure and still runs drift alert", async () => {

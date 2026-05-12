@@ -91,6 +91,29 @@ function cleanString(value, limit = 2000) {
   return String(value || "").trim().slice(0, Math.max(0, Number(limit) || 0));
 }
 
+function buildEmbedFieldValue(lines, limit = 1024, fallback = "—") {
+  if (!Array.isArray(lines)) return fallback;
+  const max = Math.max(1, Number(limit) || 1024);
+  let value = "";
+
+  for (const entry of lines) {
+    const line = cleanString(entry, 1000);
+    if (!line) continue;
+    const next = value ? `${value}\n${line}` : line;
+    if (next.length > max) {
+      if (!value) {
+        value = cleanString(line, Math.max(1, max - 1)) + "…";
+      } else if ((value.length + 2) <= max) {
+        value = `${value}\n…`;
+      }
+      break;
+    }
+    value = next;
+  }
+
+  return value || fallback;
+}
+
 function assertFunction(value, name) {
   if (typeof value !== "function") {
     throw new TypeError(`${name} must be a function`);
@@ -712,35 +735,37 @@ function buildVerificationReportPayload(options = {}) {
     `Решение: **${formatVerificationDecision(summary.decision || verification.decision, "нет")}**`,
     `Дедлайн отчёта: **${cleanString(summary.reportDueAt || verification.reportDueAt, 80) || "—"}**`,
   ];
+  const exactMatchLines = [
+    `Серверы: ${normalizeStringArray(verification.matchedEnemyGuildIds, 20, 80).join(", ") || "—"}`,
+    `Пользователи: ${normalizeStringArray(verification.matchedEnemyUserIds, 20, 80).join(", ") || "—"}`,
+    `Invite-коды: ${normalizeStringArray(verification.matchedEnemyInviteCodes, 20, 80).join(", ") || "—"}`,
+    `Inviter ID: ${normalizeStringArray(verification.matchedEnemyInviterUserIds, 20, 80).join(", ") || "—"}`,
+  ];
+  const observedGuildLines = observedGuildEntries.length
+    ? observedGuildEntries.map((entry, index) => formatObservedGuildLine(entry, index))
+    : ["Discord OAuth не вернул список серверов для этого участника."];
 
   const embed = new EmbedBuilder()
     .setTitle("Ручная проверка доступа")
     .setColor(0xD97706)
     .setDescription(userId ? `Участник: <@${userId}>` : "Участник не найден.")
     .addFields(
-      { name: "Проверка", value: detailsLines.join("\n"), inline: false },
-      { name: "Сводка риска", value: riskLines.join("\n"), inline: false },
+      { name: "Проверка", value: buildEmbedFieldValue(detailsLines), inline: false },
+      { name: "Сводка риска", value: buildEmbedFieldValue(riskLines), inline: false },
       {
         name: "Точные совпадения",
-        value: [
-          `Серверы: ${normalizeStringArray(verification.matchedEnemyGuildIds, 20, 80).join(", ") || "—"}`,
-          `Пользователи: ${normalizeStringArray(verification.matchedEnemyUserIds, 20, 80).join(", ") || "—"}`,
-          `Invite-коды: ${normalizeStringArray(verification.matchedEnemyInviteCodes, 20, 80).join(", ") || "—"}`,
-          `Inviter ID: ${normalizeStringArray(verification.matchedEnemyInviterUserIds, 20, 80).join(", ") || "—"}`,
-        ].join("\n"),
+        value: buildEmbedFieldValue(exactMatchLines),
         inline: false,
       },
       {
         name: "Замеченные серверы OAuth",
-        value: observedGuildEntries.length
-          ? observedGuildEntries.map((entry, index) => formatObservedGuildLine(entry, index)).join("\n")
-          : "Discord OAuth не вернул список серверов для этого участника.",
+        value: buildEmbedFieldValue(observedGuildLines),
         inline: false,
       }
     );
 
   if (statusNote) {
-    embed.addFields({ name: "Комментарий модератора", value: statusNote, inline: false });
+    embed.addFields({ name: "Комментарий модератора", value: cleanString(statusNote, 1024), inline: false });
   }
 
   const files = Array.isArray(options.files) ? options.files.filter(Boolean) : [];

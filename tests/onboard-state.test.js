@@ -21,6 +21,7 @@ const {
 const { commitMutation } = require("../src/onboard/refresh-runner");
 const {
   ONBOARD_SUBCOMMAND_NAMES,
+  PROFILE_COMMAND_NAME,
   ROLE_PANEL_COMMAND_NAME,
   TOP_LEVEL_COMMAND_NAMES,
   VERIFY_COMMAND_NAME,
@@ -786,14 +787,16 @@ test("command builder includes new admin refresh and editor subcommands", () => 
   );
 });
 
-test("command builder registers onboard and rolepanel top-level commands", () => {
-  assert.deepEqual([...TOP_LEVEL_COMMAND_NAMES].sort(), ["onboard", ROLE_PANEL_COMMAND_NAME, VERIFY_COMMAND_NAME].sort());
-  assert.deepEqual(buildCommands().map((command) => command.name).sort(), ["onboard", ROLE_PANEL_COMMAND_NAME, VERIFY_COMMAND_NAME].sort());
+test("command builder registers onboard, rolepanel, verify, and profile top-level commands", () => {
+  assert.deepEqual([...TOP_LEVEL_COMMAND_NAMES].sort(), ["onboard", ROLE_PANEL_COMMAND_NAME, VERIFY_COMMAND_NAME, PROFILE_COMMAND_NAME].sort());
+  assert.deepEqual(buildCommands().map((command) => command.name).sort(), ["onboard", ROLE_PANEL_COMMAND_NAME, VERIFY_COMMAND_NAME, PROFILE_COMMAND_NAME].sort());
   const onboardCommand = buildCommands().find((command) => command.name === "onboard");
   const verifyCommand = buildCommands().find((command) => command.name === VERIFY_COMMAND_NAME);
+  const profileCommand = buildCommands().find((command) => command.name === PROFILE_COMMAND_NAME);
   assert.equal(onboardCommand.options.some((option) => option.type === 1 && option.name === "sotreport"), true);
   assert.equal(verifyCommand.options.some((option) => option.type === 1 && option.name === "panel"), true);
   assert.equal(verifyCommand.options.some((option) => option.type === 1 && option.name === "add"), true);
+  assert.equal(profileCommand.options.some((option) => option.type === 6 && option.name === "target"), true);
   assert.deepEqual(VERIFY_SUBCOMMAND_NAMES, ["panel", "add"]);
 });
 

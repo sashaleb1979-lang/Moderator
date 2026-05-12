@@ -1,0 +1,185 @@
+"use strict";
+
+const {
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  ContainerBuilder,
+  MessageFlags,
+  SeparatorBuilder,
+  TextDisplayBuilder,
+} = require("discord.js");
+const {
+  buildProfileNavCustomId,
+  buildProfileOpenCustomId,
+} = require("./entry");
+const { buildProfileReadModel } = require("./model");
+
+const PROFILE_VIEWS = Object.freeze(["overview", "activity", "progress", "social"]);
+const PROFILE_VIEW_LABELS = Object.freeze({
+  overview: "Обзор",
+  activity: "Активность",
+  progress: "Прогресс",
+  social: "Соц",
+});
+
+function cleanString(value, limit = 2000) {
+  return String(value || "").trim().slice(0, Math.max(0, Number(limit) || 0));
+}
+
+function normalizeNullableString(value, limit = 2000) {
+  const text = cleanString(value, limit);
+  return text || null;
+}
+
+function buildFieldValue(lines, fallback = "—", limit = 1024) {
+  if (!Array.isArray(lines)) return fallback;
+  let value = "";
+  const max = Math.max(1, Number(limit) || 1024);
+
+  for (const entry of lines) {
+    const line = cleanString(entry, 1000);
+    if (!line) continue;
+    const next = value ? `${value}\n${line}` : line;
+    if (next.length > max) {
+      value = value ? `${value}\n…` : `${cleanString(line, Math.max(1, max - 1))}…`;
+      break;
+    }
+    value = next;
+  }
+
+  return value || fallback;
+}
+
+function buildTextDisplay(title, lines, fallback = "—", limit = 4000) {
+  const heading = cleanString(title, 120) || "Блок";
+  const body = buildFieldValue(lines, fallback, Math.max(64, limit - heading.length - 5));
+  return new TextDisplayBuilder().setContent(`### ${heading}\n${body}`);
+}
+
+function buildLinkButtons({ comboLinks = [], robloxProfileUrl = null } = {}) {
+  const buttons = [];
+
+  for (const link of Array.isArray(comboLinks) ? comboLinks : []) {
+    const url = normalizeNullableString(link?.url, 500);
+    if (!url) continue;
+    buttons.push(
+      new ButtonBuilder()
+        .setStyle(ButtonStyle.Link)
+        .setLabel(cleanString(`Техи: ${link.label}`, 80) || "Техи")
+        .setURL(url)
+    );
+    if (buttons.length >= 4) break;
+  }
+
+  const normalizedRobloxProfileUrl = normalizeNullableString(robloxProfileUrl, 1000);
+  if (normalizedRobloxProfileUrl && buttons.length < 5) {
+    buttons.push(
+      new ButtonBuilder()
+        .setStyle(ButtonStyle.Link)
+        .setLabel("Roblox")
+        .setURL(normalizedRobloxProfileUrl)
+    );
+  }
+
+  return buttons.length ? [new ActionRowBuilder().addComponents(buttons)] : [];
+}
+
+function normalizeProfileView(value) {
+  const normalized = cleanString(value, 40).toLowerCase();
+  return PROFILE_VIEWS.includes(normalized) ? normalized : PROFILE_VIEWS[0];
+}
+
+function buildProfileNavRow({ requesterUserId = "", targetUserId = "", currentView = "overview" } = {}) {
+  const activeView = normalizeProfileView(currentView);
+  return new ActionRowBuilder().addComponents(
+    PROFILE_VIEWS.map((view) => new ButtonBuilder()
+      .setCustomId(buildProfileNavCustomId(requesterUserId, targetUserId, view))
+      .setLabel(PROFILE_VIEW_LABELS[view])
+      .setStyle(view === activeView ? ButtonStyle.Primary : ButtonStyle.Secondary))
+  );
+}
+
+function buildProfileHelperMessagePayload({ requesterUserId = "", targetUserId = "", isSelf = false, targetLabel = "" } = {}) {
+  const label = cleanString(targetLabel, 120) || (isSelf ? "свой профиль" : `профиль <@${cleanString(targetUserId, 80)}>`);
+  return {
+    content: isSelf
+      ? "Нажми кнопку ниже, чтобы открыть свой профиль приватно. Сообщение исчезнет само."
+      : `Нажми кнопку ниже, чтобы открыть приватно ${label}. Сообщение исчезнет само.`,
+    components: [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(buildProfileOpenCustomId(requesterUserId, targetUserId))
+          .setLabel(isSelf ? "Открыть свой профиль" : "Открыть профиль")
+          .setStyle(ButtonStyle.Primary)
+      ),
+    ],
+  };
+}
+
+function buildProfilePayload(options = {}) {
+  const readModel = options.readModel && typeof options.readModel === "object"
+    ? options.readModel
+    : buildProfileReadModel(options);
+  const userId = cleanString(readModel.userId, 80);
+  const displayName = cleanString(readModel.displayName, 200) || `User ${userId}`;
+  const currentView = normalizeProfileView(options.view);
+
+  const container = new ContainerBuilder()
+    .setAccentColor(0x1565C0)
+    .addTextDisplayComponents(
+      new TextDisplayBuilder().setContent(readModel.isSelf ? "# Твой профиль" : `# Профиль • ${displayName}`),
+      new TextDisplayBuilder().setContent(
+        readModel.isSelf ? `Приватный профиль ${displayName}.` : `Приватный просмотр профиля <@${userId}>.`
+      ),
+      new TextDisplayBuilder().setContent(`**Секция:** ${PROFILE_VIEW_LABELS[currentView]}`)
+    )
+    .addActionRowComponents(
+      buildProfileNavRow({
+        requesterUserId: options.requesterUserId,
+        targetUserId: userId,
+        currentView,
+      })
+    )
+    .addSeparatorComponents(new SeparatorBuilder().setDivider(true));
+
+  const sectionBlocks = Array.isArray(readModel.sections?.[currentView]) ? readModel.sections[currentView] : [];
+  if (sectionBlocks.length) {
+    container.addTextDisplayComponents(
+      ...sectionBlocks.map((block) => buildTextDisplay(block?.title, block?.lines))
+    );
+  }
+
+  if (Array.isArray(readModel.verificationLines) && readModel.verificationLines.length) {
+    container.addTextDisplayComponents(
+      buildTextDisplay("Verification", readModel.verificationLines)
+    );
+  }
+
+  if (readModel.emptyStateNote) {
+    container.addTextDisplayComponents(
+      new TextDisplayBuilder().setContent(`*${cleanString(readModel.emptyStateNote, 4000)}*`)
+    );
+  }
+
+  const linkRows = buildLinkButtons({
+    comboLinks: readModel.comboLinks,
+    robloxProfileUrl: readModel.robloxProfileUrl,
+  });
+  if (linkRows.length) {
+    container
+      .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
+      .addActionRowComponents(...linkRows);
+  }
+
+  return {
+    flags: MessageFlags.IsComponentsV2,
+    components: [container],
+  };
+}
+
+module.exports = {
+  PROFILE_VIEWS,
+  buildProfileHelperMessagePayload,
+  buildProfilePayload,
+};

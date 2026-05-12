@@ -293,6 +293,51 @@ test("buildVerificationReportPayload and parseVerificationReportAction round-tri
   assert.deepEqual(parseVerificationReportAction(row[2].custom_id), { action: "ban", userId: "user-1" });
 });
 
+test("buildVerificationReportPayload keeps embed fields within Discord limits", () => {
+  const observedGuilds = Array.from({ length: 30 }, (_, index) => ({
+    id: `guild-${index + 1}`,
+    name: `Very long guild name ${index + 1} ` + "X".repeat(80),
+    owner: index % 2 === 0,
+    permissions: "1099511627776",
+  }));
+
+  const payload = buildVerificationReportPayload({
+    userId: "user-1",
+    profile: {
+      userId: "user-1",
+      domains: {
+        verification: {
+          status: "manual_review",
+          decision: "manual_review",
+          oauthUsername: "discord-user",
+          observedGuilds,
+          matchedEnemyGuildIds: Array.from({ length: 25 }, (_, index) => `enemy-guild-${index + 1}`),
+          matchedEnemyUserIds: Array.from({ length: 25 }, (_, index) => `enemy-user-${index + 1}`),
+          matchedEnemyInviteCodes: Array.from({ length: 25 }, (_, index) => `invite-${index + 1}`),
+          matchedEnemyInviterUserIds: Array.from({ length: 25 }, (_, index) => `inviter-${index + 1}`),
+        },
+      },
+      summary: {
+        verification: {
+          observedGuildCount: observedGuilds.length,
+          matchedEnemyGuildCount: 25,
+          matchedEnemyUserCount: 25,
+          matchedEnemyInviteCount: 25,
+          matchedEnemyInviterCount: 25,
+          manualTagCount: 0,
+          status: "manual_review",
+          decision: "manual_review",
+        },
+      },
+    },
+    statusNote: "N".repeat(1800),
+  });
+
+  for (const field of payload.embeds[0].data.fields) {
+    assert.ok((field.value || "").length <= 1024, `Field '${field.name}' exceeded Discord limit`);
+  }
+});
+
 test("handleVerificationPanelButtonInteraction routes panel views and runtime actions", async () => {
   const calls = [];
   const interaction = {

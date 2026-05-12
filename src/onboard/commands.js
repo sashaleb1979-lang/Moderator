@@ -3,6 +3,8 @@
 const { ROLE_PANEL_COMMAND_NAME } = require("../role-panel");
 const { VERIFY_COMMAND_NAME, VERIFY_SUBCOMMAND_NAMES } = require("../verification/operator");
 
+const PROFILE_COMMAND_NAME = "профиль";
+
 const ONBOARD_SUBCOMMAND_NAMES = [
   "panel",
   "sotreport",
@@ -16,7 +18,7 @@ const ONBOARD_SUBCOMMAND_NAMES = [
   "removetier",
 ];
 
-const TOP_LEVEL_COMMAND_NAMES = ["onboard", ROLE_PANEL_COMMAND_NAME, VERIFY_COMMAND_NAME];
+const TOP_LEVEL_COMMAND_NAMES = ["onboard", ROLE_PANEL_COMMAND_NAME, VERIFY_COMMAND_NAME, PROFILE_COMMAND_NAME];
 
 function buildCommands() {
   const { SlashCommandBuilder } = require("discord.js");
@@ -98,11 +100,16 @@ function buildCommands() {
           .addUserOption((option) => option.setName("target").setDescription("Участник сервера").setRequired(true))
           .addStringOption((option) => option.setName("note").setDescription("Заметка модератора для запуска проверки"))
       ),
+    new SlashCommandBuilder()
+      .setName(PROFILE_COMMAND_NAME)
+      .setDescription("Открыть приватный профиль игрока")
+      .addUserOption((option) => option.setName("target").setDescription("Чей профиль открыть")),
   ].map((command) => command.toJSON());
 }
 
 module.exports = {
   ONBOARD_SUBCOMMAND_NAMES,
+  PROFILE_COMMAND_NAME,
   ROLE_PANEL_COMMAND_NAME,
   TOP_LEVEL_COMMAND_NAMES,
   VERIFY_COMMAND_NAME,

@@ -44,6 +44,21 @@ function getActionableSotCharacterAlertState(diagnostics = {}, options = {}) {
   };
 }
 
+function buildSotCharacterAlertSignature(issueParts = [], attentionLines = [], options = {}) {
+  const staleHours = Number.isFinite(Number(options.staleHours)) ? Math.max(1, Math.floor(Number(options.staleHours))) : 24;
+  const normalizedIssueParts = Array.isArray(issueParts)
+    ? issueParts.map((part) => String(part || "").trim()).filter(Boolean)
+    : [];
+  const normalizedAttentionLines = Array.isArray(attentionLines)
+    ? attentionLines
+      .map((line) => String(line || "").trim())
+      .filter(Boolean)
+      .map((line) => line.replace(/verification stale \d+h/gi, `verification stale >${staleHours}h`))
+    : [];
+
+  return `${normalizedIssueParts.join(",")}|${normalizedAttentionLines.join("|")}`;
+}
+
 async function runSotStartupAlerts(client, options = {}) {
   const {
     maybeLogSotCharacterHealthAlert,
@@ -112,6 +127,7 @@ function scheduleSotAlertTicks(client, options = {}) {
 }
 
 module.exports = {
+  buildSotCharacterAlertSignature,
   getActionableSotCharacterAlertState,
   runSotStartupAlerts,
   scheduleSotAlertTicks,
