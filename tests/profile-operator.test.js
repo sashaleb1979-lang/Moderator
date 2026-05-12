@@ -4,6 +4,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { MessageFlags } = require("discord.js");
 
+const { buildProfileNavCustomId, buildProfileOpenCustomId } = require("../src/profile/entry");
 const { createProfileOperator } = require("../src/profile/operator");
 
 function makeMember(roleIds = [], { userId = "user-1", username = "Sasha", displayName = "Sasha" } = {}) {
@@ -22,8 +23,9 @@ function makeMember(roleIds = [], { userId = "user-1", username = "Sasha", displ
   };
 }
 
-test("profile operator builds private payload from injected runtime readers", async () => {
-  const operator = createProfileOperator({
+function createTestOperator(overrides = {}) {
+  return createProfileOperator({
+    commandName: "профиль",
     guildId: "guild-1",
     getViewerTagRoleIds: () => ["tag-role"],
     hasStaffBypass: () => false,
@@ -56,16 +58,23 @@ test("profile operator builds private payload from injected runtime readers", as
           hasVerifiedAccount: true,
           currentUsername: "GojoMain",
           profileUrl: "https://www.roblox.com/users/123/profile",
+          avatarUrl: "https://tr.rbxcdn.com/gojo-avatar.png",
         },
         verification: {
           status: "verified",
           decision: "approved",
+          oauthAvatarUrl: "https://cdn.discordapp.com/oauth-avatar.png",
         },
       },
     }),
     getTargetDisplayName: () => "Sasha",
-    fetchMember: async () => makeMember(["role-1", "role-2"], { userId: "user-1", username: "Sasha", displayName: "Sasha Display" }),
-    fetchUser: async () => ({ id: "user-1", username: "Sasha", globalName: "Sasha Global" }),
+    fetchMember: async (userId) => makeMember(["role-1", "role-2"], { userId, username: "Sasha", displayName: "Sasha Display" }),
+    fetchUser: async (userId) => ({
+      id: userId,
+      username: "Sasha",
+      globalName: "Sasha Global",
+      displayAvatarURL: () => `https://cdn.discordapp.com/avatars/${userId}/profile.png`,
+    }),
     getPendingSubmissionForUser: () => null,
     getLatestSubmissionForUser: () => ({ reviewedAt: "2026-05-02T12:00:00.000Z" }),
     getApprovedEntries: () => [
@@ -85,7 +94,12 @@ test("profile operator builds private payload from injected runtime readers", as
       generalTechsThreadId: "general-thread",
       characters: [{ id: "gojo", name: "Gojo", threadId: "thread-1" }],
     }),
+    ...overrides,
   });
+}
+
+test("profile operator builds private payload from injected runtime readers", async () => {
+  const operator = createTestOperator();
 
   const access = operator.resolveProfileAccessForRequester({
     requesterUserId: "requester",
@@ -105,14 +119,11 @@ test("profile operator builds private payload from injected runtime readers", as
   assert.equal(container.type, 17);
   assert.ok(container.components.some((component) => component.type === 10 && /# Профиль/.test(component.content)));
   assert.ok(container.components.some((component) => component.type === 10 && /### Обзор/.test(component.content)));
+  assert.match(JSON.stringify(container), /https:\/\/cdn\.discordapp\.com\/avatars\/user-1\/profile\.png/);
 });
 
 test("profile operator exposes deny payload text through the runtime seam", () => {
-  const operator = createProfileOperator({
-    getViewerTagRoleIds: () => ["tag-role"],
-    hasStaffBypass: () => false,
-    getRequesterProfile: () => ({ domains: { activity: { desiredActivityRoleKey: "active" } } }),
-  });
+  const operator = createTestOperator();
 
   const access = operator.resolveProfileAccessForRequester({
     requesterUserId: "requester",
@@ -123,4 +134,109 @@ test("profile operator exposes deny payload text through the runtime seam", () =
   assert.equal(access.allowed, false);
   assert.match(operator.getProfileAccessDeniedText(access), /серверным tag/i);
   assert.equal(operator.buildProfileAccessDeniedPayload(access).flags, MessageFlags.Ephemeral);
+});
+
+test("profile operator handles profile message trigger and schedules helper cleanup", async () => {
+  const operator = createTestOperator();
+  const replies = [];
+  const scheduled = [];
+  const denied = [];
+  const message = {
+    content: "профиль",
+    author: { id: "requester", username: "Requester", bot: false },
+    member: makeMember(["tag-role"], { userId: "requester", username: "Requester", displayName: "Requester" }),
+    mentions: { users: new Map() },
+    reference: null,
+    reply: async (payload) => {
+      replies.push(payload);
+      return { id: "helper-message" };
+    },
+  };
+
+  const handled = await operator.handleProfileMessage({
+    message,
+    replyAndDelete: async (_message, text) => denied.push(text),
+    scheduleDeleteMessage: (messageToDelete, delayMs) => scheduled.push({ messageToDelete, delayMs }),
+    helperDeleteMs: 20000,
+  });
+
+  assert.equal(handled, true);
+  assert.deepEqual(denied, []);
+  assert.equal(replies.length, 1);
+  assert.match(replies[0].content, /открыть свой профиль/i);
+  assert.equal(scheduled.length, 1);
+  assert.equal(scheduled[0].delayMs, 20000);
+});
+
+test("profile operator handles slash command and edits ephemeral reply", async () => {
+  const operator = createTestOperator();
+  const calls = [];
+  const interaction = {
+    commandName: "профиль",
+    user: { id: "requester", username: "Requester" },
+    member: makeMember(["tag-role"], { userId: "requester", username: "Requester", displayName: "Requester" }),
+    options: {
+      getUser(name) {
+        assert.equal(name, "target");
+        return { id: "user-1", username: "Sasha" };
+      },
+    },
+    reply: async (payload) => calls.push({ step: "reply", payload }),
+    deferReply: async (payload) => calls.push({ step: "deferReply", payload }),
+    editReply: async (payload) => calls.push({ step: "editReply", payload }),
+  };
+
+  const handled = await operator.handleProfileSlashCommand({
+    interaction,
+    checkActorGuard: async () => false,
+  });
+
+  assert.equal(handled, true);
+  assert.equal(calls[0].step, "deferReply");
+  assert.equal(calls[0].payload.flags, MessageFlags.Ephemeral);
+  assert.equal(calls[1].step, "editReply");
+  assert.equal(calls[1].payload.flags, MessageFlags.IsComponentsV2);
+});
+
+test("profile operator handles open and nav buttons through one runtime seam", async () => {
+  const operator = createTestOperator();
+  const openCalls = [];
+  const openInteraction = {
+    customId: buildProfileOpenCustomId("requester", "user-1"),
+    user: { id: "requester", username: "Requester" },
+    member: makeMember(["tag-role"], { userId: "requester", username: "Requester", displayName: "Requester" }),
+    message: {
+      delete: async () => openCalls.push({ step: "deleteMessage" }),
+    },
+    reply: async (payload) => openCalls.push({ step: "reply", payload }),
+    deferReply: async (payload) => openCalls.push({ step: "deferReply", payload }),
+    editReply: async (payload) => openCalls.push({ step: "editReply", payload }),
+  };
+
+  const openHandled = await operator.handleProfileButtonInteraction({
+    interaction: openInteraction,
+    checkActorGuard: async () => false,
+  });
+
+  assert.equal(openHandled, true);
+  assert.deepEqual(openCalls.map((entry) => entry.step), ["deferReply", "editReply", "deleteMessage"]);
+  assert.equal(openCalls[0].payload.flags, MessageFlags.Ephemeral);
+  assert.equal(openCalls[1].payload.flags, MessageFlags.IsComponentsV2);
+
+  const navCalls = [];
+  const navInteraction = {
+    customId: buildProfileNavCustomId("requester", "user-1", "activity"),
+    user: { id: "requester", username: "Requester" },
+    member: makeMember(["tag-role"], { userId: "requester", username: "Requester", displayName: "Requester" }),
+    reply: async (payload) => navCalls.push({ step: "reply", payload }),
+    update: async (payload) => navCalls.push({ step: "update", payload }),
+  };
+
+  const navHandled = await operator.handleProfileButtonInteraction({
+    interaction: navInteraction,
+  });
+
+  assert.equal(navHandled, true);
+  assert.deepEqual(navCalls.map((entry) => entry.step), ["update"]);
+  assert.equal(navCalls[0].payload.flags, MessageFlags.IsComponentsV2);
 });

@@ -83,7 +83,7 @@ const {
   isPureimageAvailable,
   DEFAULT_GRAPHIC_TIER_COLORS,
 } = require("./graphic-tierlist");
-const { buildCommands, PROFILE_COMMAND_NAME } = require("./src/onboard/commands");
+const { buildCommands } = require("./src/onboard/commands");
 const { buildComboCommands } = require("./src/combo-guide/commands");
 const {
   publishGuideOrdered,
@@ -242,14 +242,7 @@ const {
 const {
   normalizeProfileViewerTagRoleIds,
 } = require("./src/profile/access");
-const {
-  PROFILE_TARGET_RESOLUTION_REASONS,
-  parseProfileNavCustomId,
-  parseProfileOpenCustomId,
-} = require("./src/profile/entry");
-const {
-  buildProfileHelperMessagePayload,
-} = require("./src/profile/view");
+
 const { createProfileOperator } = require("./src/profile/operator");
 const {
   createRobloxApiClient,
@@ -4882,16 +4875,6 @@ function isModerator(member) {
   return member.roles?.cache?.has?.(getModeratorRoleId()) || false;
 }
 
-function listMemberRoleMentions(member, limit = 6) {
-  const roles = member?.roles?.cache;
-  if (!roles?.values) return [];
-
-  return [...roles.values()]
-    .filter((role) => role && role.id !== member?.guild?.id)
-    .sort((left, right) => (Number(right?.position) || 0) - (Number(left?.position) || 0))
-    .slice(0, Math.max(1, Number(limit) || 1))
-    .map((role) => `<@&${role.id}>`);
-}
 
 let profileOperator = null;
 
@@ -4899,6 +4882,7 @@ function getProfileOperator() {
   if (profileOperator) return profileOperator;
 
   profileOperator = createProfileOperator({
+    commandName: "профиль",
     guildId: GUILD_ID,
     getViewerTagRoleIds: () => getProfileViewerTagRoleIds(),
     hasStaffBypass: (member) => isModerator(member),
@@ -4922,26 +4906,6 @@ function getProfileOperator() {
 
 function getProfileViewerTagRoleIds() {
   return normalizeProfileViewerTagRoleIds(appConfig?.roles?.profileViewerTagRoleIds);
-}
-
-function getProfileAccessDeniedText(access = {}) {
-  return getProfileOperator().getProfileAccessDeniedText(access);
-}
-
-function buildProfileAccessDeniedPayload(access = {}) {
-  return getProfileOperator().buildProfileAccessDeniedPayload(access);
-}
-
-function resolveProfileAccessForRequester({ requesterUserId = "", requesterMember = null, targetUserId = "" } = {}) {
-  return getProfileOperator().resolveProfileAccessForRequester({ requesterUserId, requesterMember, targetUserId });
-}
-
-async function buildPrivateProfilePayload(options = {}) {
-  return getProfileOperator().buildPrivateProfilePayload(options);
-}
-
-async function resolveProfileMessageRequest(message) {
-  return getProfileOperator().resolveProfileMessageRequest(message);
 }
 
 function hasActivityPanelAccess(member) {
@@ -13461,37 +13425,13 @@ client.on("messageCreate", async (message) => {
   }
 
   const hasActiveWelcomeSubmitSession = message.channelId === getResolvedChannelId("welcome") && Boolean(getSubmitSession(message.author.id));
-  if (!hasActiveWelcomeSubmitSession) {
-    const profileRequest = await resolveProfileMessageRequest(message);
-    if (profileRequest) {
-      if (!profileRequest.ok) {
-        if (profileRequest.reason === PROFILE_TARGET_RESOLUTION_REASONS.AMBIGUOUS_MENTION) {
-          await replyAndDelete(message, "Укажи только одного участника: один mention, либо reply, либо просто `профиль`.");
-          return;
-        }
-      }
-
-      const accessMember = message.member?.roles?.cache ? message.member : await fetchMember(client, message.author.id).catch(() => null);
-      const access = resolveProfileAccessForRequester({
-        requesterUserId: message.author.id,
-        requesterMember: accessMember,
-        targetUserId: profileRequest.targetUserId,
-      });
-
-      if (!access.allowed) {
-        await replyAndDelete(message, getProfileAccessDeniedText(access));
-        return;
-      }
-
-      const helperReply = await message.reply(buildProfileHelperMessagePayload({
-        requesterUserId: message.author.id,
-        targetUserId: profileRequest.targetUserId,
-        isSelf: access.isSelf,
-        targetLabel: profileRequest.targetUser?.username || (access.isSelf ? "свой профиль" : `<@${profileRequest.targetUserId}>`),
-      })).catch(() => null);
-      if (helperReply) scheduleDeleteMessage(helperReply, PROFILE_HELPER_MESSAGE_DELETE_MS);
-      return;
-    }
+  if (!hasActiveWelcomeSubmitSession && await getProfileOperator().handleProfileMessage({
+    message,
+    replyAndDelete,
+    scheduleDeleteMessage,
+    helperDeleteMs: PROFILE_HELPER_MESSAGE_DELETE_MS,
+  })) {
+    return;
   }
 
   if (message.channelId !== getResolvedChannelId("welcome")) return;
@@ -13738,30 +13678,10 @@ client.on("interactionCreate", async (interaction) => {
       }
     }
 
-    if (interaction.commandName === PROFILE_COMMAND_NAME) {
-      if (await replyIfAutonomyGuardBlockedActor(interaction)) {
-        return;
-      }
-
-      const targetUser = interaction.options.getUser("target") || interaction.user;
-      const access = resolveProfileAccessForRequester({
-        requesterUserId: interaction.user.id,
-        requesterMember: interaction.member,
-        targetUserId: targetUser.id,
-      });
-
-      if (!access.allowed) {
-        await interaction.reply(buildProfileAccessDeniedPayload(access));
-        return;
-      }
-
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-      await interaction.editReply(await buildPrivateProfilePayload({
-        targetUserId: targetUser.id,
-        targetUser,
-        isSelf: access.isSelf,
-        requesterUserId: interaction.user.id,
-      }));
+    if (await getProfileOperator().handleProfileSlashCommand({
+      interaction,
+      checkActorGuard: replyIfAutonomyGuardBlockedActor,
+    })) {
       return;
     }
 
@@ -14357,62 +14277,10 @@ client.on("interactionCreate", async (interaction) => {
   }
 
   if (interaction.isButton()) {
-    const profileButtonRequest = parseProfileOpenCustomId(interaction.customId);
-    if (profileButtonRequest) {
-      if (await replyIfAutonomyGuardBlockedActor(interaction)) {
-        return;
-      }
-
-      if (interaction.user.id !== profileButtonRequest.requesterUserId && !isModerator(interaction.member)) {
-        await interaction.reply(ephemeralPayload({ content: "Эта кнопка не для тебя." }));
-        return;
-      }
-
-      const access = resolveProfileAccessForRequester({
-        requesterUserId: interaction.user.id,
-        requesterMember: interaction.member,
-        targetUserId: profileButtonRequest.targetUserId,
-      });
-
-      if (!access.allowed) {
-        await interaction.reply(buildProfileAccessDeniedPayload(access));
-        return;
-      }
-
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-      await interaction.editReply(await buildPrivateProfilePayload({
-        targetUserId: profileButtonRequest.targetUserId,
-        isSelf: access.isSelf,
-        requesterUserId: interaction.user.id,
-      }));
-      await interaction.message.delete().catch(() => {});
-      return;
-    }
-
-    const profileNavRequest = parseProfileNavCustomId(interaction.customId);
-    if (profileNavRequest) {
-      if (interaction.user.id !== profileNavRequest.requesterUserId && !isModerator(interaction.member)) {
-        await interaction.reply(ephemeralPayload({ content: "Эта навигация не для тебя." }));
-        return;
-      }
-
-      const access = resolveProfileAccessForRequester({
-        requesterUserId: interaction.user.id,
-        requesterMember: interaction.member,
-        targetUserId: profileNavRequest.targetUserId,
-      });
-
-      if (!access.allowed) {
-        await interaction.reply(buildProfileAccessDeniedPayload(access));
-        return;
-      }
-
-      await interaction.update(await buildPrivateProfilePayload({
-        targetUserId: profileNavRequest.targetUserId,
-        isSelf: access.isSelf,
-        requesterUserId: interaction.user.id,
-        view: profileNavRequest.view,
-      }));
+    if (await getProfileOperator().handleProfileButtonInteraction({
+      interaction,
+      checkActorGuard: replyIfAutonomyGuardBlockedActor,
+    })) {
       return;
     }
 

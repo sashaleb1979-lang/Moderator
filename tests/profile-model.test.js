@@ -50,19 +50,30 @@ test("profile read-model composes derived sections, links, and verification fact
         roblox: {
           hasVerifiedAccount: true,
           currentUsername: "GojoMain",
+          currentDisplayName: "Gojo The Strongest",
+          previousUsername: "OldGojo",
+          renameCount: 2,
           profileUrl: "https://www.roblox.com/users/123/profile",
+          avatarUrl: "https://tr.rbxcdn.com/gojo-avatar.png",
           serverFriendsCount: 3,
+          jjsMinutes7d: 180,
           jjsMinutes30d: 420,
+          totalJjsMinutes: 5000,
           frequentNonFriendCount: 1,
           lastSeenInJjsAt: "2026-05-11T09:00:00.000Z",
+          lastRefreshAt: "2026-05-12T09:00:00.000Z",
+          refreshStatus: "fresh",
         },
         verification: {
           status: "verified",
           decision: "approved",
           reviewedAt: "2026-05-02T12:00:00.000Z",
+          oauthUsername: "SashaDiscord",
+          oauthAvatarUrl: "https://cdn.discordapp.com/oauth-avatar.png",
         },
       },
     },
+    targetAvatarUrl: "https://cdn.discordapp.com/avatars/user-1/profile.png",
     latestSubmission: {
       reviewedAt: "2026-05-02T12:00:00.000Z",
     },
@@ -96,11 +107,23 @@ test("profile read-model composes derived sections, links, and verification fact
   assert.equal(readModel.userId, "user-1");
   assert.equal(readModel.displayName, "Sasha");
   assert.equal(readModel.isSelf, false);
+  assert.equal(readModel.primaryAvatarUrl, "https://cdn.discordapp.com/avatars/user-1/profile.png");
+  assert.deepEqual(readModel.mediaGalleryItems.map((entry) => entry.url), [
+    "https://tr.rbxcdn.com/gojo-avatar.png",
+    "https://cdn.discordapp.com/oauth-avatar.png",
+  ]);
   assert.match(readModel.sections.overview[0].lines.join("\n"), /Kills: 120/);
   assert.match(readModel.sections.progress[0].lines.join("\n"), /Место по kills: #2/);
-  assert.match(readModel.sections.progress[1].lines.join("\n"), /ELO: 145/);
+  assert.match(readModel.sections.progress[1].lines.join("\n"), /Прирост: \+20 kills/);
+  assert.match(readModel.sections.progress[2].lines.join("\n"), /Последняя проверка:/);
+  assert.match(readModel.sections.progress[3].lines.join("\n"), /ELO: 145/);
   assert.match(readModel.sections.activity[1].lines.join("\n"), /Сообщения 90д: 400/);
-  assert.match(readModel.sections.social[0].lines.join("\n"), /GojoMain/);
+  assert.match(readModel.sections.social[0].lines.join("\n"), /Связка Roblox: подтверждена/);
+  assert.match(readModel.sections.social[0].lines.join("\n"), /Аккаунт: GojoMain/);
+  assert.match(readModel.sections.social[0].lines.join("\n"), /Display name: Gojo The Strongest/);
+  assert.match(readModel.sections.social[0].lines.join("\n"), /Смен username: 2/);
+  assert.match(readModel.sections.social[0].lines.join("\n"), /JJS минут 7д: 180/);
+  assert.match(readModel.sections.social[1].lines.join("\n"), /Доступные гайды: Gojo, Общие техи/);
   assert.equal(readModel.comboLinks[0].label, "Gojo");
   assert.equal(readModel.robloxProfileUrl, "https://www.roblox.com/users/123/profile");
   assert.ok(readModel.verificationLines.some((line) => /verified/.test(line)));
@@ -121,5 +144,7 @@ test("profile read-model marks empty profiles without fabricating data sections"
   assert.equal(readModel.verificationLines, null);
   assert.match(readModel.emptyStateNote, /После онбординга профиль заполнится автоматически/i);
   assert.deepEqual(readModel.comboLinks, []);
+  assert.equal(readModel.primaryAvatarUrl, null);
+  assert.deepEqual(readModel.mediaGalleryItems, []);
   assert.equal(readModel.robloxProfileUrl, null);
 });

@@ -38,6 +38,7 @@ test("profile payload renders overview, activity, rankings, roblox, and link but
     userId: "user-1",
     requesterUserId: "requester",
     targetDisplayName: "Sasha",
+    targetAvatarUrl: "https://cdn.discordapp.com/avatars/user-1/profile.png",
     isSelf: false,
     roleMentions: ["<@&role-1>", "<@&role-2>"],
     profile: {
@@ -73,6 +74,7 @@ test("profile payload renders overview, activity, rankings, roblox, and link but
           hasVerifiedAccount: true,
           currentUsername: "GojoMain",
           profileUrl: "https://www.roblox.com/users/123/profile",
+          avatarUrl: "https://tr.rbxcdn.com/gojo-avatar.png",
           serverFriendsCount: 3,
           jjsMinutes30d: 420,
           frequentNonFriendCount: 1,
@@ -82,6 +84,7 @@ test("profile payload renders overview, activity, rankings, roblox, and link but
           status: "verified",
           decision: "approved",
           reviewedAt: "2026-05-02T12:00:00.000Z",
+          oauthAvatarUrl: "https://cdn.discordapp.com/oauth-avatar.png",
         },
       },
     },
@@ -122,6 +125,7 @@ test("profile payload renders overview, activity, rankings, roblox, and link but
   assert.ok(textDisplays.some((component) => /# Профиль/.test(component.content)));
   assert.ok(textDisplays.some((component) => /### Обзор/.test(component.content) && /Kills: 120/.test(component.content)));
   assert.ok(textDisplays.some((component) => /### Verification/.test(component.content) && /verified/.test(component.content)));
+  assert.match(JSON.stringify(container), /https:\/\/cdn\.discordapp\.com\/avatars\/user-1\/profile\.png/);
   assert.equal(actionRows.length, 2);
   const navButtons = actionRows[0].components;
   assert.deepEqual(navButtons.map((button) => button.label), PROFILE_VIEWS.map((view) => ({
@@ -168,6 +172,103 @@ test("profile payload switches sections by requested view", () => {
   assert.ok(textDisplays.some((component) => /\*\*Секция:\*\* Активность/.test(component.content)));
   assert.ok(textDisplays.some((component) => /### Активность/.test(component.content) && /Bucket: active/.test(component.content)));
   assert.ok(textDisplays.some((component) => /### Детали activity/.test(component.content) && /Сообщения 90д: 400/.test(component.content)));
+});
+
+test("profile payload renders enriched progress and social sections", () => {
+  const progressPayload = buildProfilePayload({
+    guildId: "guild-1",
+    userId: "user-1",
+    requesterUserId: "requester",
+    targetDisplayName: "Sasha",
+    view: "progress",
+    profile: {
+      approvedKills: 120,
+      killTier: 4,
+      accessGrantedAt: "2026-05-01T10:00:00.000Z",
+      nonGgsAccessGrantedAt: "2026-05-03T10:00:00.000Z",
+      mainCharacterIds: ["gojo"],
+      mainCharacterLabels: ["Gojo"],
+      summary: {
+        preferredDisplayName: "Sasha",
+        onboarding: { approvedKills: 120, killTier: 4 },
+        elo: {
+          currentElo: 145,
+          currentTier: 2,
+          lastSubmissionStatus: "approved",
+        },
+        tierlist: {
+          mainName: "Gojo",
+          influenceMultiplier: 1.2,
+        },
+        roblox: {
+          hasVerifiedAccount: true,
+          currentUsername: "GojoMain",
+          profileUrl: "https://www.roblox.com/users/123/profile",
+        },
+      },
+    },
+    latestSubmission: {
+      reviewedAt: "2026-05-02T12:00:00.000Z",
+    },
+    approvedEntries: [
+      { userId: "user-2", displayName: "Top", approvedKills: 200 },
+      { userId: "user-1", displayName: "Sasha", approvedKills: 120 },
+    ],
+    recentKillChange: {
+      userId: "user-1",
+      from: 100,
+      to: 120,
+      fromAt: Date.parse("2026-05-01T00:00:00.000Z"),
+      toAt: Date.parse("2026-05-10T00:00:00.000Z"),
+    },
+    comboGuideState: {
+      generalTechsThreadId: "general-thread",
+      characters: [{ id: "gojo", name: "Gojo", threadId: "thread-1" }],
+    },
+  });
+
+  const progressDisplays = getProfileContainer(progressPayload).textDisplays;
+  assert.ok(progressDisplays.some((component) => /\*\*Секция:\*\* Прогресс/.test(component.content)));
+  assert.ok(progressDisplays.some((component) => /### Последний рост по kills/.test(component.content) && /Прирост: \+20 kills/.test(component.content)));
+  assert.ok(progressDisplays.some((component) => /### Заявки и проверки/.test(component.content) && /Последняя проверка:/.test(component.content)));
+
+  const socialPayload = buildProfilePayload({
+    guildId: "guild-1",
+    userId: "user-1",
+    requesterUserId: "requester",
+    targetDisplayName: "Sasha",
+    view: "social",
+    targetAvatarUrl: "https://cdn.discordapp.com/avatars/user-1/profile.png",
+    profile: {
+      accessGrantedAt: "2026-05-01T10:00:00.000Z",
+      nonGgsAccessGrantedAt: "2026-05-03T10:00:00.000Z",
+      mainCharacterIds: ["gojo"],
+      mainCharacterLabels: ["Gojo"],
+      summary: {
+        preferredDisplayName: "Sasha",
+        roblox: {
+          hasVerifiedAccount: true,
+          currentUsername: "GojoMain",
+          profileUrl: "https://www.roblox.com/users/123/profile",
+          avatarUrl: "https://tr.rbxcdn.com/gojo-avatar.png",
+        },
+        verification: {
+          oauthAvatarUrl: "https://cdn.discordapp.com/oauth-avatar.png",
+        },
+      },
+    },
+    comboGuideState: {
+      generalTechsThreadId: "general-thread",
+      characters: [{ id: "gojo", name: "Gojo", threadId: "thread-1" }],
+    },
+  });
+
+  const socialDisplays = getProfileContainer(socialPayload).textDisplays;
+  assert.ok(socialDisplays.some((component) => /\*\*Секция:\*\* Соц/.test(component.content)));
+  assert.ok(socialDisplays.some((component) => /### Roblox и соц/.test(component.content) && /Связка Roblox: подтверждена/.test(component.content)));
+  assert.ok(socialDisplays.some((component) => /### Мейны и гайды/.test(component.content) && /Основные персонажи: Gojo/.test(component.content) && /Доступные гайды: Gojo, Общие техи/.test(component.content)));
+  assert.match(JSON.stringify(getProfileContainer(socialPayload).container), /https:\/\/tr\.rbxcdn\.com\/gojo-avatar\.png/);
+  assert.match(JSON.stringify(getProfileContainer(socialPayload).container), /https:\/\/cdn\.discordapp\.com\/oauth-avatar\.png/);
 });
 
 test("profile payload handles empty profiles gracefully", () => {

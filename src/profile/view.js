@@ -5,9 +5,13 @@ const {
   ButtonBuilder,
   ButtonStyle,
   ContainerBuilder,
+  MediaGalleryBuilder,
+  MediaGalleryItemBuilder,
   MessageFlags,
+  SectionBuilder,
   SeparatorBuilder,
   TextDisplayBuilder,
+  ThumbnailBuilder,
 } = require("discord.js");
 const {
   buildProfileNavCustomId,
@@ -55,6 +59,40 @@ function buildTextDisplay(title, lines, fallback = "—", limit = 4000) {
   const heading = cleanString(title, 120) || "Блок";
   const body = buildFieldValue(lines, fallback, Math.max(64, limit - heading.length - 5));
   return new TextDisplayBuilder().setContent(`### ${heading}\n${body}`);
+}
+
+function buildAvatarSection({ primaryAvatarUrl = null, primaryAvatarDescription = null } = {}) {
+  const url = normalizeNullableString(primaryAvatarUrl, 1000);
+  if (!url) return null;
+
+  const description = cleanString(primaryAvatarDescription, 200) || "Аватар профиля";
+  return new SectionBuilder()
+    .addTextDisplayComponents(
+      new TextDisplayBuilder().setContent("### Аватар"),
+      new TextDisplayBuilder().setContent(description)
+    )
+    .setThumbnailAccessory(
+      new ThumbnailBuilder()
+        .setURL(url)
+        .setDescription(description)
+    );
+}
+
+function buildProfileMediaGallery(mediaGalleryItems = []) {
+  const items = [];
+
+  for (const entry of Array.isArray(mediaGalleryItems) ? mediaGalleryItems : []) {
+    const url = normalizeNullableString(entry?.url, 1000);
+    if (!url) continue;
+
+    const item = new MediaGalleryItemBuilder().setURL(url);
+    const description = normalizeNullableString(entry?.description, 200);
+    if (description) item.setDescription(description);
+    items.push(item);
+    if (items.length >= 4) break;
+  }
+
+  return items.length ? new MediaGalleryBuilder().addItems(items) : null;
 }
 
 function buildLinkButtons({ comboLinks = [], robloxProfileUrl = null } = {}) {
@@ -124,6 +162,11 @@ function buildProfilePayload(options = {}) {
   const userId = cleanString(readModel.userId, 80);
   const displayName = cleanString(readModel.displayName, 200) || `User ${userId}`;
   const currentView = normalizeProfileView(options.view);
+  const avatarSection = buildAvatarSection({
+    primaryAvatarUrl: readModel.primaryAvatarUrl,
+    primaryAvatarDescription: readModel.primaryAvatarDescription,
+  });
+  const mediaGallery = buildProfileMediaGallery(readModel.mediaGalleryItems);
 
   const container = new ContainerBuilder()
     .setAccentColor(0x1565C0)
@@ -133,8 +176,13 @@ function buildProfilePayload(options = {}) {
         readModel.isSelf ? `Приватный профиль ${displayName}.` : `Приватный просмотр профиля <@${userId}>.`
       ),
       new TextDisplayBuilder().setContent(`**Секция:** ${PROFILE_VIEW_LABELS[currentView]}`)
-    )
-    .addActionRowComponents(
+    );
+
+  if (avatarSection) {
+    container.addSectionComponents(avatarSection);
+  }
+
+  container.addActionRowComponents(
       buildProfileNavRow({
         requesterUserId: options.requesterUserId,
         targetUserId: userId,
@@ -160,6 +208,12 @@ function buildProfilePayload(options = {}) {
     container.addTextDisplayComponents(
       new TextDisplayBuilder().setContent(`*${cleanString(readModel.emptyStateNote, 4000)}*`)
     );
+  }
+
+  if (mediaGallery && (currentView === "overview" || currentView === "social")) {
+    container
+      .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
+      .addMediaGalleryComponents(mediaGallery);
   }
 
   const linkRows = buildLinkButtons({
