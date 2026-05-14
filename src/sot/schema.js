@@ -1,6 +1,7 @@
 "use strict";
 
 const { createEmptyActivityState, normalizeActivityState } = require("../activity/state");
+const { createEmptyNewsState, normalizeNewsState } = require("../news/state");
 const { getCharacterAliasNames } = require("./character-aliases");
 const { buildHistoricalManagedCharacterRoleIds } = require("./recovery/plan");
 
@@ -223,6 +224,7 @@ function createEmptySotState() {
       verification: {},
     },
     activity: createEmptyActivityState(),
+    news: createEmptyNewsState(),
     influence: normalizeInfluence(DEFAULT_INFLUENCE),
   };
 }
@@ -542,6 +544,7 @@ function normalizeSotState(value = {}) {
     ...clone(source.integrations && typeof source.integrations === "object" ? source.integrations : {}),
   };
   next.activity = normalizeActivityState(source.activity);
+  next.news = normalizeNewsState(source.news);
   next.influence = normalizeInfluence(source.influence);
   next.modes.onboard = normalizeRecord(source.modes?.onboard, "configured");
 
@@ -633,6 +636,10 @@ function refreshSotStateFromLegacy(db = {}, options = {}) {
     refreshed.activity = normalizeActivityState(existing.activity);
   }
 
+  if (existing?.news) {
+    refreshed.news = normalizeNewsState(existing.news);
+  }
+
   if (existing?.lastVerifiedAt && !options.lastVerifiedAt) {
     refreshed.lastVerifiedAt = existing.lastVerifiedAt;
   }
@@ -687,6 +694,7 @@ module.exports = {
   PANEL_MESSAGE_SLOTS,
   SOT_VERSION,
   createEmptyActivityState,
+  createEmptyNewsState,
   createCharacterRecord,
   createEmptySotState,
   createPanelRecord,
@@ -696,6 +704,7 @@ module.exports = {
   normalizeActivityState,
   normalizeCharacterRecord,
   normalizeInfluence,
+  normalizeNewsState,
   normalizePanelRecord,
   normalizeRecord,
   normalizeSotState,

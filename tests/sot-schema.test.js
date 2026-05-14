@@ -170,6 +170,8 @@ test("createEmptySotState seeds all core domains for v1", () => {
   assert.deepEqual(Object.keys(sot.panels.tierlistText.messageIds), ["main", "summary", "pages"]);
   assert.equal(sot.modes.onboard, null);
   assert.deepEqual(sot.integrations.roblox, {});
+  assert.equal(sot.news.config.voice.topCount, 5);
+  assert.equal(sot.news.config.presentation.visualMode, "edition");
   assert.equal(sot.influence.tiers[5], 4);
 });
 
@@ -257,6 +259,17 @@ test("ensureSotState normalizes existing v1 state without remigrating", () => {
       modes: {
         onboard: { value: "peace", source: "configured" },
       },
+      news: {
+        config: {
+          enabled: true,
+          channels: {
+            publicChannelId: " daily-public ",
+          },
+          voice: {
+            topCount: 7,
+          },
+        },
+      },
     },
   };
 
@@ -268,6 +281,9 @@ test("ensureSotState normalizes existing v1 state without remigrating", () => {
   assert.equal(db.sot.channels.welcome.value, "welcome-channel");
   assert.equal(db.sot.panels.tierlistText.messageIds.summary, null);
   assert.deepEqual(db.sot.integrations.roblox, {});
+  assert.equal(db.sot.news.config.enabled, true);
+  assert.equal(db.sot.news.config.channels.publicChannelId, "daily-public");
+  assert.equal(db.sot.news.config.voice.topCount, 7);
   assert.equal(db.sot.influence.tiers[1], 2);
   assert.equal(db.sot.influence.tiers[5], 10);
 });

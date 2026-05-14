@@ -10,15 +10,16 @@ let PImage = null;
 try { PImage = require("pureimage"); } catch {}
 
 // ====== CONSTANTS ======
-const GRAPHIC_TIER_ORDER = [5, 4, 3, 2, 1, 6];
+const GRAPHIC_TIER_ORDER = [5, 4, 3, 2, 1];
 const DEFAULT_GRAPHIC_TIER_COLORS = {
   5: "#ff6b6b",
   4: "#ff9f43",
   3: "#feca57",
   2: "#1dd1a1",
   1: "#54a0ff",
-  6: "#7f8c8d",
 };
+const NON_FAKE_CLUSTER_KEY = "nonFake";
+const NON_FAKE_CLUSTER_COLOR = "#7f8c8d";
 
 // ====== FONT STATE ======
 let fontsReady = false;
@@ -361,12 +362,18 @@ function clearGraphicAvatarCacheForUser(userId) {
 }
 
 // ====== DATA PREPARATION ======
-function buildBuckets(entries) {
-  const buckets = { 1: [], 2: [], 3: [], 4: [], 5: [], 6: [] };
+function buildBuckets(entries, options = {}) {
+  const includeNonFakeCluster = Boolean(String(options.nonFakeLabel || "").trim());
+  const buckets = { 1: [], 2: [], 3: [], 4: [], 5: [] };
+  if (includeNonFakeCluster) buckets[NON_FAKE_CLUSTER_KEY] = [];
+
   for (const entry of entries) {
     const tier = Number(entry.displayTier ?? entry.killTier ?? entry.tier);
-    if (!buckets[tier]) continue;
-    buckets[tier].push({
+    const bucketKey = includeNonFakeCluster && entry?.isNonFakeTierMember
+      ? NON_FAKE_CLUSTER_KEY
+      : tier;
+    if (!buckets[bucketKey]) continue;
+    buckets[bucketKey].push({
       userId: entry.userId,
       name: entry.displayName || entry.name || entry.userId,
       username: entry.displayName || entry.username || entry.name || entry.userId,
@@ -399,6 +406,7 @@ async function renderGraphicTierlistPng({
   title = "Графический тир-лист",
   tierLabels = {},
   tierColors = {},
+  specialClusterLabel = "",
   outlineRoleId = "",
   outlineColor = "#ffffff",
   outlineWidth = 6,
@@ -409,8 +417,16 @@ async function renderGraphicTierlistPng({
   if (!PImage) throw new Error("pureimage не установлен. Установи: npm i pureimage");
   if (!ensureFonts()) throw new Error(`Шрифт не найден. source=${fontInfo.source}. ${fontInfo.err || ""}`);
 
-  const colors = { ...DEFAULT_GRAPHIC_TIER_COLORS, ...tierColors };
-  const buckets = buildBuckets(entries);
+  const normalizedSpecialClusterLabel = String(specialClusterLabel || "").trim();
+  const colors = {
+    ...DEFAULT_GRAPHIC_TIER_COLORS,
+    ...tierColors,
+    [NON_FAKE_CLUSTER_KEY]: NON_FAKE_CLUSTER_COLOR,
+  };
+  const buckets = buildBuckets(entries, { nonFakeLabel: normalizedSpecialClusterLabel });
+  const bucketOrder = normalizedSpecialClusterLabel && buckets[NON_FAKE_CLUSTER_KEY]?.length
+    ? [...GRAPHIC_TIER_ORDER, NON_FAKE_CLUSTER_KEY]
+    : [...GRAPHIC_TIER_ORDER];
   const totalPlayers = entries.length;
 
   const W = Math.max(1200, Number(imageWidth) || 2000);
@@ -426,7 +442,7 @@ async function renderGraphicTierlistPng({
   const roleOutlineCache = new Map();
   const effectiveOutlineWidth = Math.max(2, Math.min(14, Number(outlineWidth) || 6));
 
-  const rowHeights = GRAPHIC_TIER_ORDER.map((tierKey) => {
+  const rowHeights = bucketOrder.map((tierKey) => {
     const n = (buckets[tierKey] || []).length;
     const rows = Math.max(1, Math.ceil(n / cols));
     const iconsH = rows * (ICON + gap) - gap;
@@ -453,8 +469,9 @@ async function renderGraphicTierlistPng({
 
   let yCursor = topY;
 
-  for (let i = 0; i < GRAPHIC_TIER_ORDER.length; i++) {
-    const tierKey = GRAPHIC_TIER_ORDER[i];
+  for (let i = 0; i < bucketOrder.length; i++) {
+    const tierKey = bucketOrder[i];
+    const isSpecialCluster = tierKey === NON_FAKE_CLUSTER_KEY;
     const y = yCursor;
     const rowH = rowHeights[i];
     yCursor += rowH;
@@ -472,11 +489,20 @@ async function renderGraphicTierlistPng({
     const titleBoxY = y + 16;
     const titleBoxH = Math.max(44, bottomLabelY - titleBoxY - 18);
 
-    drawTierTitle(ctx, formatTierTitle(tierKey, tierLabels), labelX, titleBoxY, labelW, titleBoxH);
+    drawTierTitle(
+      ctx,
+      isSpecialCluster ? normalizedSpecialClusterLabel : formatTierTitle(tierKey, tierLabels),
+      labelX,
+      titleBoxY,
+      labelW,
+      titleBoxH
+    );
 
-    fillHex(ctx, "#111111");
-    setFont(ctx, 24, "regular");
-    ctx.fillText(`TIER ${tierKey}`, labelX, bottomLabelY);
+    if (!isSpecialCluster) {
+      fillHex(ctx, "#111111");
+      setFont(ctx, 24, "regular");
+      ctx.fillText(`TIER ${tierKey}`, labelX, bottomLabelY);
+    }
 
     const list = buckets[tierKey] || [];
     const rightX = leftW + 24;

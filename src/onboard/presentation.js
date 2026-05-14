@@ -6,8 +6,9 @@ const HARD_DEFAULT_GRAPHIC_TIER_COLORS = {
   3: "#feca57",
   4: "#ff9f43",
   5: "#ff6b6b",
-  6: "#7f8c8d",
 };
+
+const GRAPHIC_TIER_KEYS = [1, 2, 3, 4, 5];
 
 const LEGACY_WELCOME_DESCRIPTION = "Нажми кнопку ниже, выбери 1 или 2 мейнов, укажи точное количество kills и отправь следующим сообщением скрин. После подачи заявки бот сразу выдаст тебе роль доступа, а kill-tier роль прилетит после проверки модератором.";
 const LEGACY_WELCOME_STEPS = [
@@ -55,7 +56,6 @@ const HARD_DEFAULT_PRESENTATION = {
       3: "Высший ранг",
       4: "Особый ранг",
       5: "Абсолютный ранг",
-      6: "Не фейкостановцы",
     },
     graphic: {
       image: {
@@ -128,11 +128,19 @@ function normalizeWelcomeSubmitStep(value, fallback = {}) {
 function normalizeTierMap(value, fallback) {
   const out = { ...fallback };
   const source = value && typeof value === "object" ? value : {};
-  for (const tier of [1, 2, 3, 4, 5, 6]) {
+  for (const tier of GRAPHIC_TIER_KEYS) {
     const next = cleanString(source[tier] ?? source[String(tier)]);
     if (next) out[tier] = next;
   }
   return out;
+}
+
+function normalizeGraphicSelectedTier(value, fallback = 5) {
+  const selectedTier = Number(value);
+  if (GRAPHIC_TIER_KEYS.includes(selectedTier)) return selectedTier;
+
+  const fallbackTier = Number(fallback);
+  return GRAPHIC_TIER_KEYS.includes(fallbackTier) ? fallbackTier : 5;
 }
 
 function normalizeGraphicImage(value, fallback) {
@@ -376,7 +384,9 @@ function ensurePresentationConfig(dbConfig, options = {}) {
     legacyGraphic.panel?.selectedTier &&
     (presentation.tierlist.graphic.panel.selectedTier === undefined || presentation.tierlist.graphic.panel.selectedTier === 5)
   ) {
-    presentation.tierlist.graphic.panel = { selectedTier: Number(legacyGraphic.panel.selectedTier) || 5 };
+    presentation.tierlist.graphic.panel = {
+      selectedTier: normalizeGraphicSelectedTier(legacyGraphic.panel.selectedTier, defaults.tierlist.graphic.panel.selectedTier),
+    };
     mutated = true;
   }
   if (isLegacyWelcomeCopy(presentation.welcome.description)) {
@@ -403,6 +413,24 @@ function ensurePresentationConfig(dbConfig, options = {}) {
   }
   if (dbConfig.nonGgsUi !== undefined) {
     delete dbConfig.nonGgsUi;
+    mutated = true;
+  }
+
+  for (const target of [presentation.tierlist.labels, presentation.tierlist.graphic.colors]) {
+    if (!target || typeof target !== "object") continue;
+    if (Object.prototype.hasOwnProperty.call(target, "6")) {
+      delete target[6];
+      delete target["6"];
+      mutated = true;
+    }
+  }
+
+  const normalizedSelectedTier = normalizeGraphicSelectedTier(
+    presentation.tierlist.graphic.panel.selectedTier,
+    defaults.tierlist.graphic.panel.selectedTier
+  );
+  if (presentation.tierlist.graphic.panel.selectedTier !== normalizedSelectedTier) {
+    presentation.tierlist.graphic.panel.selectedTier = normalizedSelectedTier;
     mutated = true;
   }
 
@@ -443,7 +471,10 @@ function resolvePresentation(dbConfig = {}, fileConfig = {}, options = {}) {
         colors: normalizeTierMap(graphic.colors, defaults.tierlist.graphic.colors),
         outline: normalizeGraphicOutline(graphic.outline, defaults.tierlist.graphic.outline),
         panel: {
-          selectedTier: Number(graphic.panel?.selectedTier) || defaults.tierlist.graphic.panel.selectedTier || 5,
+          selectedTier: normalizeGraphicSelectedTier(
+            graphic.panel?.selectedTier,
+            defaults.tierlist.graphic.panel.selectedTier
+          ),
         },
       },
     },

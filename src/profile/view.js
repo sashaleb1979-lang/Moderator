@@ -165,6 +165,33 @@ function buildProfileNavRow({ requesterUserId = "", targetUserId = "", currentVi
   );
 }
 
+function buildProfileActionRows({ isSelf = false } = {}) {
+  if (!isSelf) return [];
+
+  return buildButtonRows([
+    new ButtonBuilder()
+      .setCustomId("onboard_begin")
+      .setLabel("Добавить kills")
+      .setStyle(ButtonStyle.Primary),
+    new ButtonBuilder()
+      .setCustomId("onboard_change_mains")
+      .setLabel("Сменить мейнов")
+      .setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId("profile_bind_roblox")
+      .setLabel("Привязать Roblox")
+      .setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId("elo_submit_open")
+      .setLabel("Оставить ELO")
+      .setStyle(ButtonStyle.Primary),
+    new ButtonBuilder()
+      .setCustomId("rate_new_characters")
+      .setLabel("Оценить персонажей")
+      .setStyle(ButtonStyle.Secondary),
+  ], 5);
+}
+
 function buildProfileHelperMessagePayload({ requesterUserId = "", targetUserId = "", isSelf = false, targetLabel = "" } = {}) {
   const label = cleanString(targetLabel, 120) || (isSelf ? "свой профиль" : `профиль <@${cleanString(targetUserId, 80)}>`);
   return {
@@ -221,7 +248,16 @@ function buildProfilePayload(options = {}) {
         targetUserId: userId,
         currentView,
       })
-    )
+    );
+
+  const actionRows = buildProfileActionRows({
+    isSelf: readModel.isSelf,
+  });
+  if (actionRows.length) {
+    container.addActionRowComponents(...actionRows);
+  }
+
+  container
     .addSeparatorComponents(new SeparatorBuilder().setDivider(true));
 
   const sectionBlocks = Array.isArray(readModel.sections?.[currentView]) ? readModel.sections[currentView] : [];

@@ -135,7 +135,8 @@ test("profile operator builds private payload from injected runtime readers", as
   const container = payload.components[0].toJSON();
   assert.equal(container.type, 17);
   assert.ok(container.components.some((component) => component.type === 10 && /# Профиль/.test(component.content)));
-    assert.ok(container.components.some((component) => component.type === 10 && /### Вклад/.test(component.content)));
+  assert.ok(container.components.some((component) => component.type === 1 && component.components.some((button) => button.custom_id === buildProfileNavCustomId("requester", "user-1", "progress"))));
+  assert.ok(container.components.some((component) => component.type === 10 && /### Вклад/.test(component.content)));
   assert.ok(container.components.some((component) => component.type === 10 && /### История approved ростов/.test(component.content)));
   assert.match(JSON.stringify(container), /https:\/\/cdn\.discordapp\.com\/avatars\/user-1\/profile\.png/);
 });
@@ -214,6 +215,40 @@ test("profile operator handles slash command and edits ephemeral reply", async (
   assert.equal(calls[0].payload.flags, MessageFlags.Ephemeral);
   assert.equal(calls[1].step, "editReply");
   assert.equal(calls[1].payload.flags, MessageFlags.IsComponentsV2);
+});
+
+test("profile operator resolves slash target from replied message when explicit target is missing", async () => {
+  const operator = createTestOperator({
+    fetchChannelMessage: async (_channelId, messageId) => ({
+      id: messageId,
+      author: { id: "user-2", username: "ReplyTarget", bot: false },
+    }),
+  });
+  const calls = [];
+  const interaction = {
+    commandName: "профиль",
+    channelId: "channel-1",
+    reference: { messageId: "message-1" },
+    user: { id: "requester", username: "Requester" },
+    member: makeMember(["tag-role"], { userId: "requester", username: "Requester", displayName: "Requester" }),
+    options: {
+      getUser(name) {
+        assert.equal(name, "target");
+        return null;
+      },
+    },
+    deferReply: async (payload) => calls.push({ step: "deferReply", payload }),
+    editReply: async (payload) => calls.push({ step: "editReply", payload }),
+  };
+
+  const handled = await operator.handleProfileSlashCommand({
+    interaction,
+    checkActorGuard: async () => false,
+  });
+
+  assert.equal(handled, true);
+  assert.equal(calls[1].payload.flags, MessageFlags.IsComponentsV2);
+  assert.match(JSON.stringify(calls[1].payload.components[0].toJSON()), /profile_nav:requester:user-2:overview/);
 });
 
 test("profile operator handles open and nav buttons through one runtime seam", async () => {

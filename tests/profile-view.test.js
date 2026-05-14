@@ -345,12 +345,19 @@ test("profile payload handles empty profiles gracefully", () => {
     isSelf: true,
   });
 
-  const { textDisplays } = getProfileContainer(payload);
+  const { textDisplays, actionRows } = getProfileContainer(payload);
   assert.ok(textDisplays.some((component) => /### Быстрый статус/.test(component.content) && /Готовность: JJS доступ не выдан/i.test(component.content)));
   assert.ok(textDisplays.some((component) => /# Твой профиль/.test(component.content)));
   assert.ok(textDisplays.some((component) => /### Обзор/.test(component.content) && /ещё не заполнен/i.test(component.content)));
   assert.ok(textDisplays.some((component) => /### Статусы и доступ/.test(component.content) && /JJS доступ: пока не выдан/i.test(component.content) && /Верификация: не начата/i.test(component.content)));
   assert.ok(textDisplays.some((component) => /После онбординга профиль заполнится автоматически/i.test(component.content)));
+  assert.deepEqual(actionRows[1].components.map((button) => button.label), [
+    "Добавить kills",
+    "Сменить мейнов",
+    "Привязать Roblox",
+    "Оставить ELO",
+    "Оценить персонажей",
+  ]);
 });
 
 test("profile payload splits many link buttons into multiple rows", () => {

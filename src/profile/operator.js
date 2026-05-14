@@ -106,13 +106,15 @@ function createProfileOperator(options = {}) {
     view = "overview",
   } = {}) {
     const normalizedTargetUserId = cleanString(targetUserId, 80);
-    const resolvedTargetMember = targetMember || await Promise.resolve(
-      typeof options.fetchMember === "function" ? options.fetchMember(normalizedTargetUserId) : null
-    ).catch(() => null);
+    const [resolvedTargetMember, fetchedTargetUser] = await Promise.all([
+      targetMember
+        ? Promise.resolve(targetMember)
+        : Promise.resolve(typeof options.fetchMember === "function" ? options.fetchMember(normalizedTargetUserId) : null).catch(() => null),
+      targetUser
+        ? Promise.resolve(targetUser)
+        : Promise.resolve(typeof options.fetchUser === "function" ? options.fetchUser(normalizedTargetUserId) : null).catch(() => null),
+    ]);
     const memberUser = resolvedTargetMember?.user || null;
-    const fetchedTargetUser = targetUser || await Promise.resolve(
-      typeof options.fetchUser === "function" ? options.fetchUser(normalizedTargetUserId) : null
-    ).catch(() => null);
     const resolvedTargetUser = targetUser
       || fetchedTargetUser
       || memberUser
@@ -161,8 +163,29 @@ function createProfileOperator(options = {}) {
 
     return buildProfilePayload({
       readModel,
+      requesterUserId,
       view,
     });
+  }
+
+  async function resolveProfileSlashTargetUser(interaction) {
+    const explicitTargetUser = typeof interaction?.options?.getUser === "function"
+      ? interaction.options.getUser("target")
+      : null;
+    if (explicitTargetUser) {
+      return explicitTargetUser;
+    }
+
+    const channelId = cleanString(interaction?.channelId, 80);
+    const messageId = cleanString(interaction?.reference?.messageId, 80);
+    if (channelId && messageId && typeof options.fetchChannelMessage === "function") {
+      const referencedMessage = await Promise.resolve(options.fetchChannelMessage(channelId, messageId)).catch(() => null);
+      if (referencedMessage?.author && referencedMessage.author.bot !== true) {
+        return referencedMessage.author;
+      }
+    }
+
+    return interaction?.user || null;
   }
 
   async function resolveProfileMessageRequest(message) {
@@ -264,7 +287,7 @@ function createProfileOperator(options = {}) {
       return true;
     }
 
-    const targetUser = interaction.options.getUser("target") || interaction.user;
+    const targetUser = await resolveProfileSlashTargetUser(interaction);
     const access = resolveProfileAccessForRequester({
       requesterUserId: interaction.user.id,
       requesterMember: interaction.member,

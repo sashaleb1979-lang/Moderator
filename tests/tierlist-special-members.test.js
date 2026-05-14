@@ -40,7 +40,7 @@ test("setTierlistNonFakeUser adds and removes remembered users in place", () => 
   });
 });
 
-test("applyTierlistSpecialMembers moves remembered users into the 6th display cluster without changing kill tier", () => {
+test("applyTierlistSpecialMembers keeps real display tier while marking remembered nonfake members", () => {
   const entries = applyTierlistSpecialMembers([
     { userId: "100", displayName: "Alpha", approvedKills: 500, killTier: 2 },
     { userId: "200", displayName: "Beta", approvedKills: 900, killTier: 3 },
@@ -56,8 +56,9 @@ test("applyTierlistSpecialMembers moves remembered users into the 6th display cl
     isNonFakeTierMember: entry.isNonFakeTierMember,
   })), [
     { userId: "200", killTier: 3, displayTier: 3, isNonFakeTierMember: false },
-    { userId: "100", killTier: 2, displayTier: NON_FAKE_TIER_KEY, isNonFakeTierMember: true },
-    { userId: "300", killTier: 1, displayTier: NON_FAKE_TIER_KEY, isNonFakeTierMember: true },
+    { userId: "100", killTier: 2, displayTier: 2, isNonFakeTierMember: true },
+    { userId: "300", killTier: 1, displayTier: 1, isNonFakeTierMember: true },
   ]);
   assert.equal(NON_FAKE_TIER_LABEL, "Не фейкостановцы");
+  assert.equal(NON_FAKE_TIER_KEY, 6);
 });

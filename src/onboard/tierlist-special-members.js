@@ -69,9 +69,7 @@ function applyTierlistSpecialMembers(entries = [], options = {}) {
       const isNonFakeTierMember = Boolean(normalizedUserId && nonFakeUserIds.has(normalizedUserId));
       return {
         ...entry,
-        displayTier: isNonFakeTierMember
-          ? NON_FAKE_TIER_KEY
-          : Number(entry?.displayTier ?? entry?.killTier ?? entry?.tier) || null,
+        displayTier: Number(entry?.displayTier ?? entry?.killTier ?? entry?.tier) || null,
         isNonFakeTierMember,
       };
     })
