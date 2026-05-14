@@ -68,6 +68,7 @@ const DEFAULT_GRAPHIC_TIER_COLORS = {
   3: "#333333",
   4: "#444444",
   5: "#555555",
+  6: "#666666",
 };
 
 test("migrates legacy tierlist and graphic config into unified presentation state", () => {
@@ -86,8 +87,8 @@ test("migrates legacy tierlist and graphic config into unified presentation stat
     graphicTierlist: {
       title: "Legacy graphic title",
       messageText: "Legacy graphic text",
-      tierLabels: { 1: "Legacy tier one" },
-      tierColors: { 5: "#abcdef" },
+      tierLabels: { 1: "Legacy tier one", 6: "Legacy tier six" },
+      tierColors: { 5: "#abcdef", 6: "#777777" },
       image: { width: 2400, icon: 144 },
       panel: { selectedTier: 4 },
       lastUpdated: 123456,
@@ -115,7 +116,9 @@ test("migrates legacy tierlist and graphic config into unified presentation stat
   assert.equal(dbConfig.presentation.tierlist.graphicTitle, "Legacy graphic title");
   assert.equal(dbConfig.presentation.tierlist.graphicMessageText, "Legacy graphic text");
   assert.equal(dbConfig.presentation.tierlist.labels[1], "Legacy tier one");
+  assert.equal(dbConfig.presentation.tierlist.labels[6], "Legacy tier six");
   assert.equal(dbConfig.presentation.tierlist.graphic.colors[5], "#abcdef");
+  assert.equal(dbConfig.presentation.tierlist.graphic.colors[6], "#777777");
   assert.equal(dbConfig.presentation.tierlist.graphic.image.width, 2400);
   assert.equal(dbConfig.presentation.tierlist.graphic.image.icon, 144);
   assert.equal(dbConfig.presentation.tierlist.graphic.panel.selectedTier, 4);
@@ -136,11 +139,12 @@ test("presentation resolution prefers db overrides over file defaults and hard d
     graphicTierlist: {
       title: "File graphic title",
       subtitle: "File graphic text",
-      tierColors: { 3: "#c0ffee" },
+      tierColors: { 3: "#c0ffee", 6: "#6c6c6c" },
     },
     killTierLabels: {
       1: "File tier one",
       2: "File tier two",
+      6: "File tier six",
     },
   };
   const dbConfig = {
@@ -174,8 +178,10 @@ test("presentation resolution prefers db overrides over file defaults and hard d
   assert.equal(resolved.tierlist.graphicMessageText, "DB graphic text");
   assert.equal(getTierLabel(resolved, 1), "DB tier one");
   assert.equal(getTierLabel(resolved, 2), "File tier two");
+  assert.equal(getTierLabel(resolved, 6), "File tier six");
   assert.equal(resolved.tierlist.graphic.colors[3], "#c0ffee");
   assert.equal(resolved.tierlist.graphic.colors[5], "#555555");
+  assert.equal(resolved.tierlist.graphic.colors[6], "#6c6c6c");
 });
 
 test("presentation resolution keeps graphic outline config and validates fallback color", () => {

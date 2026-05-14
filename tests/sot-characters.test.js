@@ -175,6 +175,20 @@ test("resolveCharacterRecord uses explicit configured role ids for canonical cha
   });
 });
 
+test("listCharacterRecords seeds canonical alias evidence for configured characters", () => {
+  const records = listCharacterRecords({
+    appConfig: {
+      characters: [
+        { id: "aspiring_mangaka", label: "Aspiring Mangaka" },
+      ],
+    },
+  });
+
+  const result = records.find((entry) => entry.id === "aspiring_mangaka");
+  assert.equal(result?.label, "Aspiring Mangaka");
+  assert.deepEqual(result?.evidence?.aliasNames, ["Чарльз", "Шарль", "Mangaka", "Мангака"]);
+});
+
 test("resolveCharacterRecord ignores stale generated fallback when persisted native SoT record owns the slot", () => {
   const result = resolveCharacterRecord({
     characterId: "vessel",

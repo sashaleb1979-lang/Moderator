@@ -33,9 +33,10 @@
 16. Блок "Мейны и гайды" усилен: теперь он показывает покрытие guide-ссылками по каждому main, связывает tierlist main с мейнами и яснее объясняет, что доступно по кнопкам.
 17. Quick-link слой усилен: guide/Roblox кнопки стали понятнее по названиям и умеют раскладываться в несколько строк, если ссылок становится больше.
 18. Верхняя сводка усилена ещё на один продуктовый слой: появился отдельный блок статусов и доступов, который в одном месте показывает readiness по JJS access, verification, Roblox, guide coverage, Tierlist и ELO.
+19. Верх профиля визуально усилен: появился compact hero-блок с thumbnail/avatar и быстрой сводкой по прогрессу, фокусу и readiness, а для профилей без аватара этот же слой корректно падает в text-display без V2-ошибок.
 
 ### Реализовано Частично
-1. Базовые данные профиля уже стали заметно богаче, а верхняя сводка теперь лучше показывает readiness/status, но до финального "богатого" продуктового экрана ещё не доведены все разделы.
+1. Базовые данные профиля уже стали заметно богаче, верхняя сводка теперь лучше показывает readiness/status и получила отдельный hero-слой, но до финального "богатого" продуктового экрана ещё не доведены все разделы.
 2. ELO, tierlist, Roblox и server activity уже подключены и читаются лучше, но presentation ещё можно сделать визуально сильнее.
 3. Мейны и guide-связки уже поданы заметно лучше, но полноценный wiki-слой и отдельный контент-блок по каждому main пока не доведены до финальной формы.
 4. Media/avatar presentation уже добавлен через Components V2 thumbnail + media gallery, но визуальная polish-итерация ещё не доведена до финального вида.
@@ -48,7 +49,7 @@
 ### Текущее Техническое Состояние
 1. `node --check welcome-bot.js` — ok.
 2. Focused profile tests — зелёные.
-3. Полный `node --test` даёт 1274 pass / 2 fail.
+3. Полный `node --test` даёт 1275 pass / 2 fail.
 4. Полный `node --test` падает только на старых quarantine leftovers, а не на активном profile code:
    - [backups/quarantine-20260510-213529/deploy-verification-live-leftovers/tests/elo-graphic.test.js](backups/quarantine-20260510-213529/deploy-verification-live-leftovers/tests/elo-graphic.test.js)
    - [backups/quarantine-20260510-213529/deploy-verification-live-leftovers/tests/non-jjs-captcha.test.js](backups/quarantine-20260510-213529/deploy-verification-live-leftovers/tests/non-jjs-captcha.test.js)
@@ -117,7 +118,7 @@
 | `dead` не имеет доступа | Сделано | Центральный ACL resolver |
 | Без server tag нельзя смотреть чужие | Сделано | ACL уже завязан на tag-role ids |
 | Staff/mod bypass | Сделано | Одна центральная ветка в access/operator |
-| Статистика по серверу | Частично | База уже есть, partial-state polish добавлен, но summary можно сделать ещё сильнее |
+| Статистика по серверу | Частично | База уже есть, partial-state polish добавлен, верхний hero/overview стал сильнее, но summary можно усиливать дальше |
 | Роли | Сделано | В профиле уже выводятся role mentions |
 | Мейны | Частично | Есть richer main-block с guide coverage по каждому main, но presentation ещё можно усиливать |
 | Wiki / guides | Частично | Есть direct guide links, coverage по main и общие техи, но нет полноценного wiki-source и отдельного wiki-блока |

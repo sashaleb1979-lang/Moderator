@@ -6,6 +6,7 @@ const HARD_DEFAULT_GRAPHIC_TIER_COLORS = {
   3: "#feca57",
   4: "#ff9f43",
   5: "#ff6b6b",
+  6: "#7f8c8d",
 };
 
 const LEGACY_WELCOME_DESCRIPTION = "Нажми кнопку ниже, выбери 1 или 2 мейнов, укажи точное количество kills и отправь следующим сообщением скрин. После подачи заявки бот сразу выдаст тебе роль доступа, а kill-tier роль прилетит после проверки модератором.";
@@ -54,6 +55,7 @@ const HARD_DEFAULT_PRESENTATION = {
       3: "Высший ранг",
       4: "Особый ранг",
       5: "Абсолютный ранг",
+      6: "Не фейкостановцы",
     },
     graphic: {
       image: {
@@ -126,7 +128,7 @@ function normalizeWelcomeSubmitStep(value, fallback = {}) {
 function normalizeTierMap(value, fallback) {
   const out = { ...fallback };
   const source = value && typeof value === "object" ? value : {};
-  for (const tier of [1, 2, 3, 4, 5]) {
+  for (const tier of [1, 2, 3, 4, 5, 6]) {
     const next = cleanString(source[tier] ?? source[String(tier)]);
     if (next) out[tier] = next;
   }

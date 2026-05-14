@@ -144,6 +144,9 @@ test("profile read-model composes derived sections, links, and verification fact
   assert.equal(readModel.userId, "user-1");
   assert.equal(readModel.displayName, "Sasha");
   assert.equal(readModel.isSelf, false);
+  assert.match(readModel.heroLines.join("\n"), /Сейчас: 120 kills .* тир 4 .* #2 по kills/);
+  assert.match(readModel.heroLines.join("\n"), /Фокус: мейны Gojo .* Roblox GojoMain .* активность active/);
+  assert.match(readModel.heroLines.join("\n"), /Готовность: JJS доступ открыт .* верификация verified .* Roblox связан .* tierlist есть .* ELO 145 \/ tier 2/);
   assert.equal(readModel.primaryAvatarUrl, "https://cdn.discordapp.com/avatars/user-1/profile.png");
   assert.deepEqual(readModel.mediaGalleryItems.map((entry) => entry.url), [
     "https://tr.rbxcdn.com/gojo-avatar.png",
@@ -194,6 +197,7 @@ test("profile read-model marks empty profiles without fabricating data sections"
 
   assert.equal(readModel.displayName, "New User");
   assert.equal(readModel.isSelf, true);
+  assert.match(readModel.heroLines.join("\n"), /Готовность: JJS доступ не выдан .* верификация не начата .* Roblox не подтверждён/);
   assert.match(readModel.sections.overview[0].lines.join("\n"), /Профиль ещё не заполнен/i);
   assert.match(readModel.sections.overview[2].lines.join("\n"), /JJS доступ: пока не выдан/i);
   assert.match(readModel.sections.overview[2].lines.join("\n"), /Верификация: не начата/i);

@@ -1,5 +1,6 @@
 "use strict";
 
+const { getCharacterAliasNames } = require("../character-aliases");
 const { createCharacterRecord, normalizeCharacterRecord } = require("../schema");
 const {
   buildManagedCharacterRoleRecoveryPlan,
@@ -84,16 +85,46 @@ function getExcludedCharacterIds(context = {}) {
   return new Set(values.map((value) => cleanString(value, 120)).filter(Boolean));
 }
 
+function mergeCharacterAliasNames(entry = {}) {
+  const aliasNames = [
+    ...getCharacterAliasNames(entry?.id),
+    ...(Array.isArray(entry?.evidence?.aliasNames) ? entry.evidence.aliasNames : []),
+    ...(Array.isArray(entry?.aliasNames) ? entry.aliasNames : []),
+  ];
+
+  return [...new Set(aliasNames.map((value) => cleanString(value, 200)).filter(Boolean))];
+}
+
+function enrichManagedCharacterEntry(entry = {}) {
+  const aliasNames = mergeCharacterAliasNames(entry);
+  const nextEvidence = entry?.evidence && typeof entry.evidence === "object"
+    ? { ...entry.evidence }
+    : {};
+  if (aliasNames.length) nextEvidence.aliasNames = aliasNames;
+
+  return {
+    ...entry,
+    aliasNames,
+    evidence: Object.keys(nextEvidence).length ? nextEvidence : undefined,
+  };
+}
+
 function getManagedCatalog({ db = {}, appConfig = {}, managedCharacters, excludedCharacterIds } = {}) {
   if (Array.isArray(managedCharacters) && managedCharacters.length) {
-    return normalizeManagedCharacterCatalog(managedCharacters);
+    return normalizeManagedCharacterCatalog(managedCharacters).map((entry) => {
+      const rawEntry = managedCharacters.find((candidate) => cleanString(candidate?.id, 120) === entry.id) || {};
+      return enrichManagedCharacterEntry({ ...rawEntry, ...entry });
+    });
   }
 
   const excludedIds = getExcludedCharacterIds({ excludedCharacterIds });
   const configuredCatalog = getAppCharacters(appConfig)
     .filter((entry) => !excludedIds.has(cleanString(entry?.id, 120)));
 
-  return normalizeManagedCharacterCatalog(configuredCatalog);
+  return normalizeManagedCharacterCatalog(configuredCatalog).map((entry) => {
+    const rawEntry = configuredCatalog.find((candidate) => cleanString(candidate?.id, 120) === entry.id) || {};
+    return enrichManagedCharacterEntry({ ...rawEntry, ...entry });
+  });
 }
 
 function hasEntries(value) {
@@ -164,6 +195,29 @@ function buildRecoveryEvidence(analysis) {
   };
 }
 
+function mergeCharacterEvidence(...values) {
+  const aliasNames = [];
+  const merged = {};
+
+  for (const value of values) {
+    if (!value || typeof value !== "object") continue;
+
+    const nextAliasNames = Array.isArray(value.aliasNames) ? value.aliasNames : [];
+    aliasNames.push(...nextAliasNames);
+
+    for (const [key, entryValue] of Object.entries(value)) {
+      if (key === "aliasNames") continue;
+      if (entryValue === undefined) continue;
+      merged[key] = entryValue;
+    }
+  }
+
+  const normalizedAliasNames = [...new Set(aliasNames.map((value) => cleanString(value, 200)).filter(Boolean))];
+  if (normalizedAliasNames.length) merged.aliasNames = normalizedAliasNames;
+
+  return Object.keys(merged).length ? merged : undefined;
+}
+
 function buildCharacterFallbackIdentity({ id, persisted, catalogEntry, generatedLabel, recoveredLabel, analysis }) {
   const label = cleanString(generatedLabel, 200)
     || cleanString(recoveredLabel, 200)
@@ -179,7 +233,11 @@ function buildCharacterFallbackIdentity({ id, persisted, catalogEntry, generated
   return {
     label,
     englishLabel,
-    evidence: persisted?.evidence || buildRecoveryEvidence(analysis),
+    evidence: mergeCharacterEvidence(
+      persisted?.evidence,
+      cleanString(catalogEntry?.roleId, 80) ? undefined : catalogEntry?.evidence,
+      buildRecoveryEvidence(analysis)
+    ),
   };
 }
 

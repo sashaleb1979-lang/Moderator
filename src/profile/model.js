@@ -372,6 +372,78 @@ function buildOverviewStatusLines({
   return lines;
 }
 
+function buildHeroLines({
+  userId = "",
+  approvedKills = null,
+  killTier = null,
+  standing = {},
+  mainCharacterLabels = [],
+  verificationSummary = {},
+  robloxSummary = {},
+  tierlistSummary = {},
+  eloSummary = {},
+  activitySummary = {},
+  profile = null,
+  pendingSubmission = null,
+} = {}) {
+  const lines = [];
+  const progressBits = [];
+  if (Number.isFinite(approvedKills)) {
+    progressBits.push(`${formatNumber(approvedKills)} kills`);
+  }
+  if (Number.isFinite(killTier) && killTier > 0) {
+    progressBits.push(`тир ${killTier}`);
+  }
+  if (standing.rank) {
+    progressBits.push(`#${standing.rank} по kills`);
+  }
+  if (progressBits.length) {
+    lines.push(`Сейчас: ${progressBits.join(" • ")}`);
+  }
+
+  const focusBits = [];
+  const mainLabel = (Array.isArray(mainCharacterLabels) ? mainCharacterLabels : [])
+    .map((entry) => cleanString(entry, 80))
+    .filter(Boolean)
+    .slice(0, 2);
+  if (mainLabel.length) {
+    focusBits.push(`мейны ${mainLabel.join(", ")}`);
+  }
+  if (robloxSummary.currentUsername) {
+    focusBits.push(`Roblox ${cleanString(robloxSummary.currentUsername, 120)}`);
+  }
+  if (activitySummary.appliedActivityRoleKey || activitySummary.desiredActivityRoleKey) {
+    focusBits.push(`активность ${cleanString(activitySummary.appliedActivityRoleKey || activitySummary.desiredActivityRoleKey, 80)}`);
+  }
+  if (focusBits.length) {
+    lines.push(`Фокус: ${focusBits.join(" • ")}`);
+  }
+
+  const readinessBits = [];
+  readinessBits.push(
+    profile?.accessGrantedAt
+      ? "JJS доступ открыт"
+      : pendingSubmission
+        ? "JJS доступ ждёт proof"
+        : "JJS доступ не выдан"
+  );
+  readinessBits.push(`верификация ${cleanString(verificationSummary.status, 80) || "не начата"}`);
+  readinessBits.push(`Roblox ${robloxSummary.hasVerifiedAccount ? "связан" : "не подтверждён"}`);
+  if (tierlistSummary.hasSubmission === true || tierlistSummary.hasSubmission === false) {
+    readinessBits.push(`tierlist ${tierlistSummary.hasSubmission ? "есть" : "пуст"}`);
+  }
+  if (Number.isFinite(Number(eloSummary.currentElo)) || Number.isFinite(Number(eloSummary.currentTier))) {
+    readinessBits.push(`ELO ${formatNumber(eloSummary.currentElo)} / tier ${formatNumber(eloSummary.currentTier)}`);
+  }
+  lines.push(`Готовность: ${readinessBits.join(" • ")}`);
+
+  if (!lines.length) {
+    lines.push(`Игрок: <@${cleanString(userId, 80)}>`);
+  }
+
+  return lines;
+}
+
 function buildProfileReadModel(options = {}) {
   const userId = cleanString(options.userId, 80);
   const profile = options.profile && typeof options.profile === "object" ? options.profile : null;
@@ -477,6 +549,21 @@ function buildProfileReadModel(options = {}) {
   if (!profile && !pendingSubmission && !latestSubmission) {
     overviewLines.push("Профиль ещё не заполнен.");
   }
+
+  const heroLines = buildHeroLines({
+    userId,
+    approvedKills,
+    killTier,
+    standing,
+    mainCharacterLabels,
+    verificationSummary,
+    robloxSummary,
+    tierlistSummary,
+    eloSummary,
+    activitySummary,
+    profile,
+    pendingSubmission,
+  });
 
   const overviewStatusLines = buildOverviewStatusLines({
     profile,
@@ -695,6 +782,7 @@ function buildProfileReadModel(options = {}) {
     displayName,
     isSelf: Boolean(options.isSelf),
     comboLinks,
+    heroLines,
     primaryAvatarUrl: primaryAvatar?.url || null,
     primaryAvatarDescription: primaryAvatar?.description || null,
     mediaGalleryItems,

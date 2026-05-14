@@ -152,6 +152,9 @@ test("profile payload renders overview, activity, rankings, roblox, and link but
   const { container, textDisplays, actionRows } = getProfileContainer(payload);
   assert.equal(container.type, 17);
   assert.ok(textDisplays.some((component) => /# Профиль/.test(component.content)));
+  assert.match(JSON.stringify(container), /### Быстрый статус/);
+  assert.match(JSON.stringify(container), /Сейчас: 120 kills/);
+  assert.match(JSON.stringify(container), /Готовность: JJS доступ открыт/);
   assert.ok(textDisplays.some((component) => /### Обзор/.test(component.content) && /Подтверждённые kills: 120/.test(component.content)));
   assert.ok(textDisplays.some((component) => /### Ключевые факты/.test(component.content) && /Основной tierlist-пик: Gojo/.test(component.content)));
   assert.ok(textDisplays.some((component) => /### Статусы и доступ/.test(component.content) && /JJS доступ: открыт с/.test(component.content) && /Верификация: verified/.test(component.content) && /Roblox-связка: подтверждена/.test(component.content)));
@@ -343,6 +346,7 @@ test("profile payload handles empty profiles gracefully", () => {
   });
 
   const { textDisplays } = getProfileContainer(payload);
+  assert.ok(textDisplays.some((component) => /### Быстрый статус/.test(component.content) && /Готовность: JJS доступ не выдан/i.test(component.content)));
   assert.ok(textDisplays.some((component) => /# Твой профиль/.test(component.content)));
   assert.ok(textDisplays.some((component) => /### Обзор/.test(component.content) && /ещё не заполнен/i.test(component.content)));
   assert.ok(textDisplays.some((component) => /### Статусы и доступ/.test(component.content) && /JJS доступ: пока не выдан/i.test(component.content) && /Верификация: не начата/i.test(component.content)));

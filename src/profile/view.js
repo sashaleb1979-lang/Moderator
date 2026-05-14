@@ -61,21 +61,37 @@ function buildTextDisplay(title, lines, fallback = "—", limit = 4000) {
   return new TextDisplayBuilder().setContent(`### ${heading}\n${body}`);
 }
 
-function buildAvatarSection({ primaryAvatarUrl = null, primaryAvatarDescription = null } = {}) {
+function buildHeroSection({ heroLines = [], primaryAvatarUrl = null, primaryAvatarDescription = null } = {}) {
   const url = normalizeNullableString(primaryAvatarUrl, 1000);
-  if (!url) return null;
+  const lines = Array.isArray(heroLines)
+    ? heroLines.map((entry) => cleanString(entry, 300)).filter(Boolean)
+    : [];
+  if (!url || !lines.length) return null;
 
   const description = cleanString(primaryAvatarDescription, 200) || "Аватар профиля";
-  return new SectionBuilder()
+  const section = new SectionBuilder()
     .addTextDisplayComponents(
-      new TextDisplayBuilder().setContent("### Аватар"),
-      new TextDisplayBuilder().setContent(description)
-    )
-    .setThumbnailAccessory(
+      new TextDisplayBuilder().setContent("### Быстрый статус"),
+      new TextDisplayBuilder().setContent(buildFieldValue(lines, "После онбординга здесь появится быстрая сводка.", 1200))
+    );
+
+  if (url) {
+    section.setThumbnailAccessory(
       new ThumbnailBuilder()
         .setURL(url)
         .setDescription(description)
     );
+  }
+
+  return section;
+}
+
+function buildHeroTextDisplay(heroLines = []) {
+  const lines = Array.isArray(heroLines)
+    ? heroLines.map((entry) => cleanString(entry, 300)).filter(Boolean)
+    : [];
+  if (!lines.length) return null;
+  return buildTextDisplay("Быстрый статус", lines, "После онбординга здесь появится быстрая сводка.", 1500);
 }
 
 function buildProfileMediaGallery(mediaGalleryItems = []) {
@@ -173,7 +189,8 @@ function buildProfilePayload(options = {}) {
   const userId = cleanString(readModel.userId, 80);
   const displayName = cleanString(readModel.displayName, 200) || `Пользователь ${userId}`;
   const currentView = normalizeProfileView(options.view);
-  const avatarSection = buildAvatarSection({
+  const heroSection = buildHeroSection({
+    heroLines: readModel.heroLines,
     primaryAvatarUrl: readModel.primaryAvatarUrl,
     primaryAvatarDescription: readModel.primaryAvatarDescription,
   });
@@ -189,8 +206,13 @@ function buildProfilePayload(options = {}) {
       new TextDisplayBuilder().setContent(`**Секция:** ${PROFILE_VIEW_LABELS[currentView]}`)
     );
 
-  if (avatarSection) {
-    container.addSectionComponents(avatarSection);
+  if (heroSection) {
+    container.addSectionComponents(heroSection);
+  } else {
+    const heroTextDisplay = buildHeroTextDisplay(readModel.heroLines);
+    if (heroTextDisplay) {
+      container.addTextDisplayComponents(heroTextDisplay);
+    }
   }
 
   container.addActionRowComponents(
