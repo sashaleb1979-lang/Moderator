@@ -106,6 +106,30 @@ test("computeLegacyTierlistGlobalBuckets follows legacy averaging with stored in
   assert.equal(result.meta.gojo.votes, 2);
 });
 
+test("computeLegacyTierlistGlobalBuckets supports decimal influence multipliers from bonus roles", () => {
+  const liveState = {
+    rawState: {
+      tiers: {},
+      users: {
+        bonusVoter: { influenceMultiplier: 4.5 },
+        baselineVoter: { influenceMultiplier: 1 },
+      },
+      finalVotes: {
+        bonusVoter: { gojo: "S" },
+        baselineVoter: { gojo: "D" },
+      },
+    },
+    characters: [{ id: "gojo", name: "Gojo" }],
+    charById: new Map([["gojo", { id: "gojo", name: "Gojo" }]]),
+  };
+
+  const result = computeLegacyTierlistGlobalBuckets(liveState);
+
+  assert.equal(result.meta.gojo.votes, 2);
+  assert.ok(result.meta.gojo.avg > 1);
+  assert.deepEqual(result.buckets.A, ["gojo"]);
+});
+
 test("computeLegacyTierlistGlobalBuckets excludes only current main votes from the global result", () => {
   const liveState = {
     rawState: {

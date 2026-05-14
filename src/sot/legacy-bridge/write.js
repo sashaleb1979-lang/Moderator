@@ -1,12 +1,22 @@
 "use strict";
 
-const { CHANNEL_SLOTS, buildInfluenceState, buildIntegrationState, buildPanelMap, buildPresentationState, createCharacterRecord, createRecord, normalizeSotState } = require("../schema");
+const {
+  CHANNEL_SLOTS,
+  KILL_MILESTONE_SLOTS,
+  KILL_TIER_SLOTS,
+  LEGACY_ELO_TIER_SLOTS,
+  buildInfluenceState,
+  buildIntegrationState,
+  buildPanelMap,
+  buildPresentationState,
+  createCharacterRecord,
+  createRecord,
+  normalizeSotState,
+} = require("../schema");
 const { getConfiguredChannelValue, getLegacyChannelRecord } = require("../resolver/channels");
 const { selectPreferredRecord } = require("../resolver/priority");
 
 const BASE_ROLE_SLOTS = ["moderator", "accessNormal", "accessWartime", "accessNonJjs", "verifyAccess"];
-const KILL_TIER_SLOTS = [1, 2, 3, 4, 5];
-const LEGACY_ELO_TIER_SLOTS = [1, 2, 3, 4];
 
 function clone(value) {
   if (value === undefined) return undefined;
@@ -220,6 +230,12 @@ function buildLegacyLegacyEloTierRecord(tier, { appConfig = {} } = {}) {
   return createRecord(appRoles.legacyEloTierRoleIds?.[tier] || appRoles.legacyEloTierRoleIds?.[tierKey], "configured");
 }
 
+function buildLegacyKillMilestoneRecord(milestone, { appConfig = {} } = {}) {
+  const appRoles = getAppRoles(appConfig);
+  const milestoneKey = String(milestone).trim().toLowerCase();
+  return createRecord(appRoles.killMilestoneRoleIds?.[milestoneKey] || appRoles.killMilestoneRoleIds?.[String(milestoneKey)], "configured");
+}
+
 function buildLegacyRoleRecords({ db = {}, appConfig = {} } = {}) {
   return {
     moderator: buildLegacyBaseRoleRecord("moderator", { appConfig }),
@@ -228,6 +244,7 @@ function buildLegacyRoleRecords({ db = {}, appConfig = {} } = {}) {
     accessNonJjs: buildLegacyBaseRoleRecord("accessNonJjs", { appConfig }),
     verifyAccess: buildLegacyBaseRoleRecord("verifyAccess", { appConfig }),
     killTier: Object.fromEntries(KILL_TIER_SLOTS.map((tier) => [tier, buildLegacyKillTierRecord(tier, { db, appConfig })])),
+    killMilestone: Object.fromEntries(KILL_MILESTONE_SLOTS.map((milestone) => [milestone, buildLegacyKillMilestoneRecord(milestone, { appConfig })])),
     legacyEloTier: Object.fromEntries(LEGACY_ELO_TIER_SLOTS.map((tier) => [tier, buildLegacyLegacyEloTierRecord(tier, { appConfig })])),
   };
 }
@@ -350,6 +367,13 @@ function syncLegacyRoleWrites(db = {}, { appConfig = {} } = {}) {
     if (isEqual(nextSot.roles?.killTier?.[tier], nextRecord)) continue;
     nextSot.roles.killTier[tier] = nextRecord;
     writtenSlots.push(`killTier.${tier}`);
+  }
+
+  for (const milestone of KILL_MILESTONE_SLOTS) {
+    const nextRecord = mergeLegacyRecord(nextSot.roles?.killMilestone?.[milestone], nextRoles.killMilestone?.[milestone]);
+    if (isEqual(nextSot.roles?.killMilestone?.[milestone], nextRecord)) continue;
+    nextSot.roles.killMilestone[milestone] = nextRecord;
+    writtenSlots.push(`killMilestone.${milestone}`);
   }
 
   for (const tier of LEGACY_ELO_TIER_SLOTS) {

@@ -3,7 +3,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { getInfluenceTierValue, resolveInfluence, resolveLegacyInfluenceConfig } = require("../src/sot/resolver/influence");
+const { getInfluenceMilestoneValue, getInfluenceTierValue, resolveInfluence, resolveLegacyInfluenceConfig } = require("../src/sot/resolver/influence");
 
 test("resolveInfluence prefers persisted db.sot values and normalizes missing tiers", () => {
   const result = resolveInfluence({
@@ -22,6 +22,7 @@ test("resolveInfluence prefers persisted db.sot values and normalizes missing ti
   assert.equal(result.default, 2);
   assert.equal(result.tiers[3], 7);
   assert.equal(result.tiers[1], 2);
+  assert.equal(result.milestones["20k"], 4.5);
 });
 
 test("getInfluenceTierValue falls back to the default multiplier for unknown tiers", () => {
@@ -39,6 +40,21 @@ test("getInfluenceTierValue falls back to the default multiplier for unknown tie
   assert.equal(getInfluenceTierValue("bad", context), 1.5);
 });
 
+test("getInfluenceMilestoneValue uses configured milestone values and normalized milestone defaults", () => {
+  const context = {
+    influence: {
+      default: 1.5,
+      milestones: {
+        "20k": 6,
+      },
+    },
+  };
+
+  assert.equal(getInfluenceMilestoneValue("20k", context), 6);
+  assert.equal(getInfluenceMilestoneValue("30k", context), 5);
+  assert.equal(getInfluenceMilestoneValue("bad", context), 1.5);
+});
+
 test("resolveInfluence accepts legacy flat tier config without losing explicit values", () => {
   const result = resolveInfluence({
     influence: {
@@ -48,12 +64,16 @@ test("resolveInfluence accepts legacy flat tier config without losing explicit v
       3: 3.25,
       4: 3.75,
       5: 4.25,
+      "20k": 4.75,
+      "30k": 5.25,
     },
   });
 
   assert.equal(result.default, 1.25);
   assert.equal(result.tiers[1], 2.25);
   assert.equal(result.tiers[5], 4.25);
+  assert.equal(result.milestones["20k"], 4.75);
+  assert.equal(result.milestones["30k"], 5.25);
 });
 
 test("resolveLegacyInfluenceConfig flattens db.sot influence for legacy callers", () => {

@@ -1,6 +1,5 @@
 "use strict";
 
-const { DEFAULT_GRAPHIC_TIER_COLORS } = require("../../graphic-tierlist");
 const { tierForLegacyElo } = require("./elo-review-store");
 
 const GRAPHIC_IMAGE_LIMITS = {
@@ -15,6 +14,14 @@ const DEFAULT_LEGACY_ELO_TIER_LABELS = {
   3: "3",
   4: "4",
   5: "5",
+};
+
+const DEFAULT_LEGACY_ELO_TIER_COLORS = {
+  1: "#54a0ff",
+  2: "#1dd1a1",
+  3: "#feca57",
+  4: "#ff9f43",
+  5: "#ff6b6b",
 };
 
 const DEFAULT_LEGACY_ELO_GRAPHIC_TITLE = "ELO Tier List";
@@ -77,7 +84,7 @@ function normalizeTierLabels(source = {}) {
 function normalizeTierColors(source = {}) {
   const normalized = {};
   for (let tier = 1; tier <= 5; tier += 1) {
-    normalized[tier] = normalizeHexColor(source?.[tier]) || DEFAULT_GRAPHIC_TIER_COLORS[tier];
+    normalized[tier] = normalizeHexColor(source?.[tier]) || DEFAULT_LEGACY_ELO_TIER_COLORS[tier];
   }
   return normalized;
 }
@@ -210,12 +217,12 @@ function setLegacyEloGraphicTierColor(rawDb = {}, tier, color, options = {}) {
 function resetLegacyEloGraphicTierColor(rawDb = {}, tier, options = {}) {
   const tierKey = normalizeTierKey(tier);
   if (!tierKey) return false;
-  ensureLegacyEloGraphicState(rawDb, options).tierColors[tierKey] = DEFAULT_GRAPHIC_TIER_COLORS[tierKey];
+  ensureLegacyEloGraphicState(rawDb, options).tierColors[tierKey] = DEFAULT_LEGACY_ELO_TIER_COLORS[tierKey];
   return true;
 }
 
 function resetAllLegacyEloGraphicTierColors(rawDb = {}, options = {}) {
-  ensureLegacyEloGraphicState(rawDb, options).tierColors = { ...DEFAULT_GRAPHIC_TIER_COLORS };
+  ensureLegacyEloGraphicState(rawDb, options).tierColors = { ...DEFAULT_LEGACY_ELO_TIER_COLORS };
 }
 
 function setLegacyEloTierLabel(rawDb = {}, tier, name) {
@@ -294,7 +301,7 @@ function buildLegacyEloGraphicPanelSnapshot(rawDb = {}, options = {}) {
     image: cfg,
     selectedTier,
     selectedTierLabel: tierLabels[selectedTier] || String(selectedTier),
-    selectedTierColor: tierColors[selectedTier] || DEFAULT_GRAPHIC_TIER_COLORS[selectedTier],
+    selectedTierColor: tierColors[selectedTier] || DEFAULT_LEGACY_ELO_TIER_COLORS[selectedTier],
     tierLabels,
     tierColors,
     totalEntries: buildLegacyEloGraphicEntries(rawDb).length,
@@ -310,7 +317,7 @@ function buildLegacyEloGraphicStatusLines(rawDb = {}, options = {}) {
     `messageId: ${snapshot.dashboardMessageId || "—"}`,
     `img: ${snapshot.image.W}x${snapshot.image.H}, icon=${snapshot.image.ICON}`,
     `selectedTier: ${snapshot.selectedTier} -> ${snapshot.selectedTierLabel}`,
-    `tierColors: ${[5, 4, 3, 2, 1].map((tier) => `${tier}=${snapshot.tierColors[tier] || DEFAULT_GRAPHIC_TIER_COLORS[tier]}`).join(", ")}`,
+    `tierColors: ${[5, 4, 3, 2, 1].map((tier) => `${tier}=${snapshot.tierColors[tier] || DEFAULT_LEGACY_ELO_TIER_COLORS[tier]}`).join(", ")}`,
     `lastUpdated: ${snapshot.lastUpdated ? new Date(snapshot.lastUpdated).toLocaleString("ru-RU") : "—"}`,
   ];
 }

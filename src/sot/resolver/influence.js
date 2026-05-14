@@ -1,6 +1,6 @@
 "use strict";
 
-const { DEFAULT_INFLUENCE, normalizeInfluence } = require("../schema");
+const { DEFAULT_INFLUENCE, KILL_MILESTONE_SLOTS, normalizeInfluence } = require("../schema");
 
 function resolveInfluence({ db = {}, influence } = {}) {
   if (influence && typeof influence === "object" && !Array.isArray(influence)) {
@@ -32,7 +32,16 @@ function getInfluenceTierValue(tier, context = {}) {
     : influence.default;
 }
 
+function getInfluenceMilestoneValue(milestone, context = {}) {
+  const influence = resolveInfluence(context);
+  const milestoneKey = String(milestone || "").trim().toLowerCase();
+  return KILL_MILESTONE_SLOTS.includes(milestoneKey) && influence.milestones?.[milestoneKey] !== undefined
+    ? influence.milestones[milestoneKey]
+    : influence.default;
+}
+
 module.exports = {
+  getInfluenceMilestoneValue,
   getInfluenceTierValue,
   resolveLegacyInfluenceConfig,
   resolveInfluence,

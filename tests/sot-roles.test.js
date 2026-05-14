@@ -5,6 +5,7 @@ const assert = require("node:assert/strict");
 
 const {
   resolveAllRoleRecords,
+  resolveKillMilestoneRole,
   resolveKillTierRole,
   resolveLegacyEloTierRole,
   resolveRoleRecord,
@@ -34,6 +35,10 @@ function createContext(overrides = {}) {
         wartimeAccessRoleId: "wartime-config",
         nonGgsAccessRoleId: "nonjjs-config",
         verifyAccessRoleId: "verify-config",
+        killMilestoneRoleIds: {
+          "20k": "milestone-20k-config",
+          "30k": "milestone-30k-config",
+        },
         killTierRoleIds: {
           1: "tier-1-config",
           2: "tier-2-config",
@@ -91,7 +96,35 @@ test("resolveKillTierRole prefers configured ids, then generated ids when config
   });
 });
 
-test("resolveKillTierRole and resolveLegacyEloTierRole prefer persisted db.sot overrides", () => {
+test("resolveKillMilestoneRole prefers configured ids and persisted db.sot overrides", () => {
+  const context = createContext();
+
+  assert.deepEqual(resolveKillMilestoneRole({ milestone: "20k", ...context }), {
+    value: "milestone-20k-config",
+    source: "configured",
+    verifiedAt: null,
+  });
+
+  assert.deepEqual(resolveKillMilestoneRole({
+    milestone: "30k",
+    db: {
+      sot: {
+        roles: {
+          killMilestone: {
+            "30k": { value: "milestone-30k-sot", source: "manual", verifiedAt: "2026-05-04T10:06:00.000Z" },
+          },
+        },
+      },
+    },
+    appConfig: context.appConfig,
+  }), {
+    value: "milestone-30k-sot",
+    source: "manual",
+    verifiedAt: "2026-05-04T10:06:00.000Z",
+  });
+});
+
+test("resolveKillTierRole, resolveKillMilestoneRole and resolveLegacyEloTierRole prefer persisted db.sot overrides", () => {
   const result = resolveAllRoleRecords({
     db: {
       config: {
@@ -106,6 +139,9 @@ test("resolveKillTierRole and resolveLegacyEloTierRole prefer persisted db.sot o
           killTier: {
             3: { value: "tier-3-sot", source: "manual", verifiedAt: "2026-05-04T10:00:00.000Z" },
           },
+          killMilestone: {
+            "20k": { value: "milestone-20k-sot", source: "manual", verifiedAt: "2026-05-04T10:03:00.000Z" },
+          },
           legacyEloTier: {
             2: { value: "legacy-2-sot", source: "manual", verifiedAt: "2026-05-04T10:05:00.000Z" },
           },
@@ -119,6 +155,11 @@ test("resolveKillTierRole and resolveLegacyEloTierRole prefer persisted db.sot o
     value: "tier-3-sot",
     source: "manual",
     verifiedAt: "2026-05-04T10:00:00.000Z",
+  });
+  assert.deepEqual(result.killMilestone["20k"], {
+    value: "milestone-20k-sot",
+    source: "manual",
+    verifiedAt: "2026-05-04T10:03:00.000Z",
   });
   assert.deepEqual(result.legacyEloTier[2], {
     value: "legacy-2-sot",
@@ -148,7 +189,7 @@ test("resolveLegacyEloTierRole and accessNonJjs fall back to configured aliases"
   });
 });
 
-test("resolveAllRoleRecords returns all base and tier role slots", () => {
+test("resolveAllRoleRecords returns all base, tier and milestone role slots", () => {
   const result = resolveAllRoleRecords(createContext());
 
   assert.equal(result.moderator.value, "moderator-config");
@@ -156,6 +197,8 @@ test("resolveAllRoleRecords returns all base and tier role slots", () => {
   assert.equal(result.verifyAccess.value, "verify-config");
   assert.equal(result.killTier[1].value, "tier-1-config");
   assert.equal(result.killTier[5].value, "tier-5-generated");
+  assert.equal(result.killMilestone["20k"].value, "milestone-20k-config");
+  assert.equal(result.killMilestone["30k"].value, "milestone-30k-config");
   assert.equal(result.legacyEloTier[1].value, "legacy-1-config");
 });
 
@@ -225,6 +268,32 @@ test("writeNativeRoleRecord stores manual kill-tier override and resolveKillTier
     value: "tier-3-manual",
     source: "manual",
     verifiedAt: "2026-05-05T09:10:00.000Z",
+    evidence: {
+      nativeWriter: true,
+      manualOverride: true,
+    },
+  });
+});
+
+test("writeNativeRoleRecord stores manual kill milestone override and resolveKillMilestoneRole prefers it", () => {
+  const context = createContext();
+
+  const result = writeNativeRoleRecord(context.db, {
+    slot: "killMilestone:20k",
+    roleId: "milestone-20k-manual",
+    source: "manual",
+    verifiedAt: "2026-05-05T09:15:00.000Z",
+  });
+
+  assert.equal(result.mutated, true);
+  assert.equal(result.slot, "killMilestone:20k");
+  assert.equal(context.db.sot.roles.killMilestone["20k"].value, "milestone-20k-manual");
+
+  const resolved = resolveKillMilestoneRole({ milestone: "20k", ...context });
+  assert.deepEqual(resolved, {
+    value: "milestone-20k-manual",
+    source: "manual",
+    verifiedAt: "2026-05-05T09:15:00.000Z",
     evidence: {
       nativeWriter: true,
       manualOverride: true,
@@ -308,6 +377,12 @@ test("normalizeRoleSlot accepts nonJjs aliases and rejects unknown slots", () =>
     label: "Kill tier 4",
     domain: "killTier",
     key: "4",
+  });
+  assert.deepEqual(normalizeRoleSlot("killMilestone:20k"), {
+    canonical: "killMilestone:20k",
+    label: "Kill milestone 20k",
+    domain: "killMilestone",
+    key: "20k",
   });
   assert.deepEqual(normalizeRoleSlot("elo-3"), {
     canonical: "legacyEloTier:3",

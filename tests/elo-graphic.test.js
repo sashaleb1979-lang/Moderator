@@ -53,6 +53,7 @@ test("ensureLegacyEloGraphicState fills defaults and normalizes persisted values
   assert.equal(state.tierColors[5], "#ff6b6b");
   assert.equal(state.tierColors[4], "#ff9f43");
   assert.equal(state.panel.selectedTier, 4);
+  assert.equal(state.tierColors[6], undefined);
   assert.deepEqual(rawDb.config.tierLabels, DEFAULT_LEGACY_ELO_TIER_LABELS);
 });
 
@@ -95,6 +96,7 @@ test("legacy ELO graphic mutations update labels, colors, image config, and dash
   assert.equal(rawDb.config.graphicTierlist.dashboardChannelId, "");
   assert.equal(rawDb.config.graphicTierlist.dashboardMessageId, "");
   assert.equal(rawDb.config.graphicTierlist.lastUpdated, null);
+  assert.equal(rawDb.config.graphicTierlist.tierColors[6], undefined);
 });
 
 test("buildLegacyEloGraphicEntries sorts live ratings and status lines reflect the current graphic state", () => {

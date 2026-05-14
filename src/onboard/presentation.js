@@ -6,9 +6,10 @@ const HARD_DEFAULT_GRAPHIC_TIER_COLORS = {
   3: "#feca57",
   4: "#ff9f43",
   5: "#ff6b6b",
+  6: "#7f8c8d",
 };
 
-const GRAPHIC_TIER_KEYS = [1, 2, 3, 4, 5];
+const GRAPHIC_TIER_KEYS = [1, 2, 3, 4, 5, 6];
 
 const LEGACY_WELCOME_DESCRIPTION = "Нажми кнопку ниже, выбери 1 или 2 мейнов, укажи точное количество kills и отправь следующим сообщением скрин. После подачи заявки бот сразу выдаст тебе роль доступа, а kill-tier роль прилетит после проверки модератором.";
 const LEGACY_WELCOME_STEPS = [
@@ -56,6 +57,7 @@ const HARD_DEFAULT_PRESENTATION = {
       3: "Высший ранг",
       4: "Особый ранг",
       5: "Абсолютный ранг",
+      6: "Не фейкостановцы",
     },
     graphic: {
       image: {
@@ -414,15 +416,6 @@ function ensurePresentationConfig(dbConfig, options = {}) {
   if (dbConfig.nonGgsUi !== undefined) {
     delete dbConfig.nonGgsUi;
     mutated = true;
-  }
-
-  for (const target of [presentation.tierlist.labels, presentation.tierlist.graphic.colors]) {
-    if (!target || typeof target !== "object") continue;
-    if (Object.prototype.hasOwnProperty.call(target, "6")) {
-      delete target[6];
-      delete target["6"];
-      mutated = true;
-    }
   }
 
   const normalizedSelectedTier = normalizeGraphicSelectedTier(

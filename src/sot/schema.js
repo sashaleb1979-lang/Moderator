@@ -18,6 +18,9 @@ const CHANNEL_SLOTS = [
   "tierlistDashboard",
   "tierlistSummary",
 ];
+const KILL_TIER_SLOTS = [1, 2, 3, 4, 5];
+const KILL_MILESTONE_SLOTS = ["20k", "30k"];
+const LEGACY_ELO_TIER_SLOTS = [1, 2, 3, 4];
 const DEFAULT_INFLUENCE = {
   default: 1,
   tiers: {
@@ -26,6 +29,10 @@ const DEFAULT_INFLUENCE = {
     3: 3,
     4: 3.5,
     5: 4,
+  },
+  milestones: {
+    "20k": 4.5,
+    "30k": 5,
   },
 };
 const PANEL_MESSAGE_SLOTS = {
@@ -158,7 +165,7 @@ function createPanelRecord({ channelId = "", messageIds = {}, lastUpdated = null
 function normalizeInfluence(value) {
   const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
   const tiers = {};
-  for (const tier of [1, 2, 3, 4, 5]) {
+  for (const tier of KILL_TIER_SLOTS) {
     const raw = source.tiers?.[tier]
       ?? source.tiers?.[String(tier)]
       ?? source[tier]
@@ -167,10 +174,21 @@ function normalizeInfluence(value) {
     const next = Number(raw);
     tiers[tier] = Number.isFinite(next) && next > 0 ? next : DEFAULT_INFLUENCE.tiers[tier];
   }
+  const milestones = {};
+  for (const milestone of KILL_MILESTONE_SLOTS) {
+    const raw = source.milestones?.[milestone]
+      ?? source.milestones?.[String(milestone)]
+      ?? source[milestone]
+      ?? source[String(milestone)]
+      ?? DEFAULT_INFLUENCE.milestones[milestone];
+    const next = Number(raw);
+    milestones[milestone] = Number.isFinite(next) && next > 0 ? next : DEFAULT_INFLUENCE.milestones[milestone];
+  }
   const defaultValue = Number(source.default);
   return {
     default: Number.isFinite(defaultValue) && defaultValue > 0 ? defaultValue : DEFAULT_INFLUENCE.default,
     tiers,
+    milestones,
   };
 }
 
@@ -193,19 +211,9 @@ function createEmptySotState() {
       accessWartime: null,
       accessNonJjs: null,
       verifyAccess: null,
-      killTier: {
-        1: null,
-        2: null,
-        3: null,
-        4: null,
-        5: null,
-      },
-      legacyEloTier: {
-        1: null,
-        2: null,
-        3: null,
-        4: null,
-      },
+      killTier: Object.fromEntries(KILL_TIER_SLOTS.map((tier) => [tier, null])),
+      killMilestone: Object.fromEntries(KILL_MILESTONE_SLOTS.map((milestone) => [milestone, null])),
+      legacyEloTier: Object.fromEntries(LEGACY_ELO_TIER_SLOTS.map((tier) => [tier, null])),
     },
     characters: {},
     panels,
@@ -483,10 +491,13 @@ function migrateLegacyState(db = {}, options = {}) {
   next.roles.accessWartime = roleRecord(appRoles.wartimeAccessRoleId);
   next.roles.accessNonJjs = roleRecord(appRoles.nonGgsAccessRoleId || appRoles.nonJjsAccessRoleId);
   next.roles.verifyAccess = roleRecord(appRoles.verifyAccessRoleId);
-  for (const tier of [1, 2, 3, 4, 5]) {
+  for (const tier of KILL_TIER_SLOTS) {
     next.roles.killTier[tier] = roleRecord(appRoles.killTierRoleIds?.[tier] || appRoles.killTierRoleIds?.[String(tier)], dbConfig.generatedRoles?.tiers?.[tier] || dbConfig.generatedRoles?.tiers?.[String(tier)]);
   }
-  for (const tier of [1, 2, 3, 4]) {
+  for (const milestone of KILL_MILESTONE_SLOTS) {
+    next.roles.killMilestone[milestone] = roleRecord(appRoles.killMilestoneRoleIds?.[milestone] || appRoles.killMilestoneRoleIds?.[String(milestone)]);
+  }
+  for (const tier of LEGACY_ELO_TIER_SLOTS) {
     next.roles.legacyEloTier[tier] = roleRecord(appRoles.legacyEloTierRoleIds?.[tier] || appRoles.legacyEloTierRoleIds?.[String(tier)]);
   }
 
@@ -520,10 +531,13 @@ function normalizeSotState(value = {}) {
   next.roles.accessWartime = normalizeRecord(source.roles?.accessWartime, "configured");
   next.roles.accessNonJjs = normalizeRecord(source.roles?.accessNonJjs, "configured");
   next.roles.verifyAccess = normalizeRecord(source.roles?.verifyAccess, "configured");
-  for (const tier of [1, 2, 3, 4, 5]) {
+  for (const tier of KILL_TIER_SLOTS) {
     next.roles.killTier[tier] = normalizeRecord(source.roles?.killTier?.[tier] || source.roles?.killTier?.[String(tier)], "configured");
   }
-  for (const tier of [1, 2, 3, 4]) {
+  for (const milestone of KILL_MILESTONE_SLOTS) {
+    next.roles.killMilestone[milestone] = normalizeRecord(source.roles?.killMilestone?.[milestone] || source.roles?.killMilestone?.[String(milestone)], "configured");
+  }
+  for (const tier of LEGACY_ELO_TIER_SLOTS) {
     next.roles.legacyEloTier[tier] = normalizeRecord(source.roles?.legacyEloTier?.[tier] || source.roles?.legacyEloTier?.[String(tier)], "configured");
   }
 
@@ -581,14 +595,21 @@ function mergeRolesAcrossLegacyRefresh(existingRoles = {}, refreshedRoles = {}) 
     merged[slot] = currentRecord;
   }
 
-  for (const tier of [1, 2, 3, 4, 5]) {
+  for (const tier of KILL_TIER_SLOTS) {
     const currentRecord = normalizeRecord(currentRoles?.killTier?.[tier] || currentRoles?.killTier?.[String(tier)], "configured");
     if (!shouldPreserveRoleAcrossLegacyRefresh(currentRecord)) continue;
     merged.killTier ||= {};
     merged.killTier[tier] = currentRecord;
   }
 
-  for (const tier of [1, 2, 3, 4]) {
+  for (const milestone of KILL_MILESTONE_SLOTS) {
+    const currentRecord = normalizeRecord(currentRoles?.killMilestone?.[milestone] || currentRoles?.killMilestone?.[String(milestone)], "configured");
+    if (!shouldPreserveRoleAcrossLegacyRefresh(currentRecord)) continue;
+    merged.killMilestone ||= {};
+    merged.killMilestone[milestone] = currentRecord;
+  }
+
+  for (const tier of LEGACY_ELO_TIER_SLOTS) {
     const currentRecord = normalizeRecord(currentRoles?.legacyEloTier?.[tier] || currentRoles?.legacyEloTier?.[String(tier)], "configured");
     if (!shouldPreserveRoleAcrossLegacyRefresh(currentRecord)) continue;
     merged.legacyEloTier ||= {};
@@ -691,6 +712,9 @@ module.exports = {
   buildPresentationState,
   CHANNEL_SLOTS,
   DEFAULT_INFLUENCE,
+  KILL_MILESTONE_SLOTS,
+  KILL_TIER_SLOTS,
+  LEGACY_ELO_TIER_SLOTS,
   PANEL_MESSAGE_SLOTS,
   SOT_VERSION,
   createEmptyActivityState,

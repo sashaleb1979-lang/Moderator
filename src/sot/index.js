@@ -6,11 +6,11 @@ const { buildLegacyComparableSot, compareSotVsLegacy } = require("./legacy-bridg
 const { loadSotState, saveSotState, writeJsonAtomic } = require("./loader");
 const { listCharacterRecords, resolveAllCharacterRecords, resolveCharacterRecord } = require("./resolver/characters");
 const { getChannelValue, resolveAllChannelRecords, resolveChannelRecord } = require("./resolver/channels");
-const { resolveInfluence, resolveLegacyInfluenceConfig, getInfluenceTierValue } = require("./resolver/influence");
+const { resolveInfluence, resolveLegacyInfluenceConfig, getInfluenceMilestoneValue, getInfluenceTierValue } = require("./resolver/influence");
 const { INTEGRATION_SLOTS, resolveAllIntegrationRecords, resolveIntegrationRecord } = require("./resolver/integrations");
 const { PANEL_SLOTS, resolveAllPanelRecords, resolvePanelRecord } = require("./resolver/panels");
 const { PRESENTATION_SLOTS, resolveAllPresentations, resolvePresentation } = require("./resolver/presentation");
-const { resolveAllRoleRecords, resolveKillTierRole, resolveLegacyEloTierRole, resolveRoleRecord } = require("./resolver/roles");
+const { resolveAllRoleRecords, resolveKillMilestoneRole, resolveKillTierRole, resolveLegacyEloTierRole, resolveRoleRecord } = require("./resolver/roles");
 const {
   CHANNEL_SLOTS,
   DEFAULT_INFLUENCE,
@@ -39,6 +39,10 @@ function getRole(slot, context = {}) {
 
 function getKillTierRole(tier, context = {}) {
   return resolveKillTierRole({ tier, ...context });
+}
+
+function getKillMilestoneRole(milestone, context = {}) {
+  return resolveKillMilestoneRole({ milestone, ...context });
 }
 
 function getLegacyEloTierRole(tier, context = {}) {
@@ -106,8 +110,10 @@ module.exports = {
   getChannelValue,
   getInfluence,
   getLegacyInfluenceConfig,
+  getInfluenceMilestoneValue,
   getInfluenceTierValue,
   getIntegration,
+  getKillMilestoneRole,
   getKillTierRole,
   getLegacyEloTierRole,
   getPanel,
@@ -130,6 +136,7 @@ module.exports = {
   resolveAllPanelRecords,
   resolveAllPresentations,
   resolveAllRoleRecords,
+  resolveKillMilestoneRole,
   resolveChannelRecord,
   resolveInfluence,
   resolveIntegrationRecord,

@@ -2,7 +2,7 @@
 
 const { EventEmitter } = require("node:events");
 
-const { normalizeSotState } = require("./schema");
+const { KILL_MILESTONE_SLOTS, KILL_TIER_SLOTS, LEGACY_ELO_TIER_SLOTS, normalizeSotState } = require("./schema");
 
 function clone(value) {
   if (value === undefined) return undefined;
@@ -42,10 +42,13 @@ function collectSotChanges(previousState = {}, nextState = {}) {
   for (const slot of ["moderator", "accessNormal", "accessWartime", "accessNonJjs"]) {
     pushChange(changes, "roles", slot, previous.roles?.[slot], next.roles?.[slot]);
   }
-  for (const tier of [1, 2, 3, 4, 5]) {
+  for (const tier of KILL_TIER_SLOTS) {
     pushChange(changes, "roles", `killTier.${tier}`, previous.roles?.killTier?.[tier], next.roles?.killTier?.[tier]);
   }
-  for (const tier of [1, 2, 3, 4]) {
+  for (const milestone of KILL_MILESTONE_SLOTS) {
+    pushChange(changes, "roles", `killMilestone.${milestone}`, previous.roles?.killMilestone?.[milestone], next.roles?.killMilestone?.[milestone]);
+  }
+  for (const tier of LEGACY_ELO_TIER_SLOTS) {
     pushChange(changes, "roles", `legacyEloTier.${tier}`, previous.roles?.legacyEloTier?.[tier], next.roles?.legacyEloTier?.[tier]);
   }
 

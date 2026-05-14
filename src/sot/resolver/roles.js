@@ -1,6 +1,6 @@
 "use strict";
 
-const { createRecord } = require("../schema");
+const { createRecord, KILL_MILESTONE_SLOTS, KILL_TIER_SLOTS, LEGACY_ELO_TIER_SLOTS } = require("../schema");
 const { selectPreferredRecord } = require("./priority");
 
 function cleanString(value, limit = 200) {
@@ -61,6 +61,17 @@ function resolveKillTierRole({ tier, db = {}, appConfig = {} } = {}) {
   ], "configured");
 }
 
+function resolveKillMilestoneRole({ milestone, db = {}, appConfig = {} } = {}) {
+  const milestoneKey = cleanString(milestone, 20).toLowerCase();
+  if (!KILL_MILESTONE_SLOTS.includes(milestoneKey)) return null;
+  const appRoles = getAppRoles(appConfig);
+
+  return selectPreferredRecord([
+    db?.sot?.roles?.killMilestone?.[milestoneKey],
+    createRecord(appRoles.killMilestoneRoleIds?.[milestoneKey] || appRoles.killMilestoneRoleIds?.[String(milestoneKey)], "configured"),
+  ], "configured");
+}
+
 function resolveLegacyEloTierRole({ tier, db = {}, appConfig = {} } = {}) {
   const tierKey = String(tier);
   const appRoles = getAppRoles(appConfig);
@@ -78,13 +89,15 @@ function resolveAllRoleRecords({ db = {}, appConfig = {} } = {}) {
     accessWartime: resolveRoleRecord({ slot: "accessWartime", db, appConfig }),
     accessNonJjs: resolveRoleRecord({ slot: "accessNonJjs", db, appConfig }),
     verifyAccess: resolveRoleRecord({ slot: "verifyAccess", db, appConfig }),
-    killTier: Object.fromEntries([1, 2, 3, 4, 5].map((tier) => [tier, resolveKillTierRole({ tier, db, appConfig })])),
-    legacyEloTier: Object.fromEntries([1, 2, 3, 4].map((tier) => [tier, resolveLegacyEloTierRole({ tier, db, appConfig })])),
+    killTier: Object.fromEntries(KILL_TIER_SLOTS.map((tier) => [tier, resolveKillTierRole({ tier, db, appConfig })])),
+    killMilestone: Object.fromEntries(KILL_MILESTONE_SLOTS.map((milestone) => [milestone, resolveKillMilestoneRole({ milestone, db, appConfig })])),
+    legacyEloTier: Object.fromEntries(LEGACY_ELO_TIER_SLOTS.map((tier) => [tier, resolveLegacyEloTierRole({ tier, db, appConfig })])),
   };
 }
 
 module.exports = {
   resolveAllRoleRecords,
+  resolveKillMilestoneRole,
   resolveKillTierRole,
   resolveLegacyEloTierRole,
   resolveRoleRecord,

@@ -45,6 +45,7 @@ test("diagnoseSotState summarizes resolver-backed channel role and character sta
 
   assert.equal(report.channels.entries.find((entry) => entry.slot === "review").status, "ok");
   assert.equal(report.roles.entries.find((entry) => entry.slot === "moderator").status, "stale");
+  assert.equal(Boolean(report.roles.entries.find((entry) => entry.slot === "killMilestone.20k")), true);
   assert.equal(report.characters.entries.find((entry) => entry.id === "honored_one").status, "ok");
   assert.equal(report.characters.entries.find((entry) => entry.id === "honored_one").verifiedAt, "2026-05-03T12:15:00.000Z");
   assert.equal(report.summary.liveChannels, 1);

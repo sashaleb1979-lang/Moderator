@@ -12,6 +12,7 @@ const BASE_ROLE_SLOT_LABELS = {
 
 const TIER_ROLE_LABELS = {
   killTier: "Kill tier",
+  killMilestone: "Kill milestone",
   legacyEloTier: "Legacy ELO tier",
 };
 
@@ -67,6 +68,17 @@ function normalizeRoleSlot(slot) {
       label: `${TIER_ROLE_LABELS.killTier} ${tier}`,
       domain: "killTier",
       key: tier,
+    };
+  }
+
+  const killMilestoneMatch = normalized.match(/^(?:killmilestone|milestone)(20k|30k)$/);
+  if (killMilestoneMatch) {
+    const milestone = killMilestoneMatch[1];
+    return {
+      canonical: `killMilestone:${milestone}`,
+      label: `${TIER_ROLE_LABELS.killMilestone} ${milestone}`,
+      domain: "killMilestone",
+      key: milestone,
     };
   }
 

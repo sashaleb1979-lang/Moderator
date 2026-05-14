@@ -127,6 +127,10 @@ function createAppConfigFixture() {
       accessRoleId: "access-role",
       wartimeAccessRoleId: "wartime-role",
       nonGgsAccessRoleId: "non-ggs-role",
+      killMilestoneRoleIds: {
+        "20k": "milestone-20k-config",
+        "30k": "milestone-30k-config",
+      },
       killTierRoleIds: {
         1: "tier-1-config",
         2: "tier-2-config",
@@ -172,7 +176,9 @@ test("createEmptySotState seeds all core domains for v1", () => {
   assert.deepEqual(sot.integrations.roblox, {});
   assert.equal(sot.news.config.voice.topCount, 5);
   assert.equal(sot.news.config.presentation.visualMode, "edition");
+  assert.equal(sot.roles.killMilestone["20k"], null);
   assert.equal(sot.influence.tiers[5], 4);
+  assert.equal(sot.influence.milestones["20k"], 4.5);
 });
 
 test("ensureSotState migrates legacy config into the new v1 SoT shape", () => {
@@ -186,6 +192,7 @@ test("ensureSotState migrates legacy config into the new v1 SoT shape", () => {
     influence: {
       default: 1,
       tiers: { 1: 0.5, 2: 1, 3: 5, 4: 25, 5: 100 },
+      milestones: { "20k": 150, "30k": 250 },
     },
     lastVerifiedAt: "2026-05-03T12:30:00.000Z",
   });
@@ -200,6 +207,8 @@ test("ensureSotState migrates legacy config into the new v1 SoT shape", () => {
   assert.equal(db.sot.roles.moderator.value, "mod-role");
   assert.equal(db.sot.roles.killTier[3].value, "tier-3-config");
   assert.equal(db.sot.roles.killTier[5], null);
+  assert.equal(db.sot.roles.killMilestone["20k"].value, "milestone-20k-config");
+  assert.equal(db.sot.roles.killMilestone["30k"].value, "milestone-30k-config");
   assert.equal(db.sot.characters.gojo.roleId, "role-gojo-configured");
   assert.equal(db.sot.characters.megumi.roleId, "");
   assert.equal(db.sot.characters.gojo.label, "Годжо");
@@ -222,6 +231,8 @@ test("ensureSotState migrates legacy config into the new v1 SoT shape", () => {
   assert.equal(db.sot.integrations.verification.entryMessage.channelId, "verify-config");
   assert.equal(db.sot.integrations.verification.entryMessage.messageId, "verify-message-db");
   assert.equal(db.sot.influence.tiers[5], 100);
+  assert.equal(db.sot.influence.milestones["20k"], 150);
+  assert.equal(db.sot.influence.milestones["30k"], 250);
 });
 
 test("ensureSotState normalizes existing v1 state without remigrating", () => {
@@ -284,6 +295,8 @@ test("ensureSotState normalizes existing v1 state without remigrating", () => {
   assert.equal(db.sot.news.config.enabled, true);
   assert.equal(db.sot.news.config.channels.publicChannelId, "daily-public");
   assert.equal(db.sot.news.config.voice.topCount, 7);
+  assert.equal(db.sot.roles.killMilestone["20k"], null);
   assert.equal(db.sot.influence.tiers[1], 2);
   assert.equal(db.sot.influence.tiers[5], 10);
+  assert.equal(db.sot.influence.milestones["20k"], 4.5);
 });

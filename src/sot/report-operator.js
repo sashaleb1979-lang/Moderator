@@ -72,7 +72,7 @@ const SOT_REPORT_MODAL_BUILDERS = {
           .setStyle(TextInputStyle.Short)
           .setRequired(true)
           .setMaxLength(40)
-          .setPlaceholder("moderator / accessNormal / killTier:1 / legacyEloTier:1")
+          .setPlaceholder("moderator / accessNormal / killTier:1 / killMilestone:20k / legacyEloTier:1")
       ),
       new ActionRowBuilder().addComponents(
         new TextInputBuilder()
@@ -386,7 +386,7 @@ async function handleSotReportModalSubmitInteraction({
   const slotInfo = normalizeNativeRoleSlot(interaction.fields.getTextInputValue("sot_manual_role_slot"));
   const roleId = parseRequestedRoleId(interaction.fields.getTextInputValue("sot_manual_role_id"), "");
   if (!slotInfo) {
-    await replyError(interaction, "Неизвестный role slot. Используй moderator / accessNormal / accessWartime / accessNonJjs / killTier:1..5 / legacyEloTier:1..4.");
+    await replyError(interaction, "Неизвестный role slot. Используй moderator / accessNormal / accessWartime / accessNonJjs / killTier:1..5 / killMilestone:20k|30k / legacyEloTier:1..4.");
     return true;
   }
 

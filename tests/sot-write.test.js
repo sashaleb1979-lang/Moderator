@@ -21,6 +21,10 @@ function createContext() {
         wartimeAccessRoleId: "wartime-config",
         nonJjsAccessRoleId: "nonjjs-config",
         verifyAccessRoleId: "verify-config",
+        killMilestoneRoleIds: {
+          "20k": "milestone-20k-config",
+          "30k": "milestone-30k-config",
+        },
         killTierRoleIds: {
           1: "tier-1-config",
           2: "tier-2-config",
@@ -50,6 +54,10 @@ function createContext() {
             3: null,
             4: null,
             5: null,
+          },
+          killMilestone: {
+            "20k": null,
+            "30k": null,
           },
           legacyEloTier: {
             1: null,
@@ -187,6 +195,10 @@ function createInfluenceOptions() {
         4: 4,
         5: 5,
       },
+      milestones: {
+        "20k": 6,
+        "30k": 8,
+      },
     },
   };
 }
@@ -223,6 +235,8 @@ test("syncLegacyRoleWrites updates configured and generated role slots without t
     "accessNonJjs",
     "accessNormal",
     "accessWartime",
+    "killMilestone.20k",
+    "killMilestone.30k",
     "killTier.1",
     "killTier.2",
     "killTier.3",
@@ -236,6 +250,8 @@ test("syncLegacyRoleWrites updates configured and generated role slots without t
   assert.equal(context.db.sot.roles.accessNormal.value, "access-config");
   assert.equal(context.db.sot.roles.verifyAccess.value, "verify-config");
   assert.equal(context.db.sot.roles.killTier[5].value, "tier-5-generated");
+  assert.equal(context.db.sot.roles.killMilestone["20k"].value, "milestone-20k-config");
+  assert.equal(context.db.sot.roles.killMilestone["30k"].value, "milestone-30k-config");
   assert.equal(context.db.sot.roles.killTier[4], null);
   assert.equal(context.db.sot.channels.review.value, "stale-review");
 });
@@ -407,6 +423,8 @@ test("syncLegacyInfluenceWrites updates influence without touching other SoT dom
   assert.deepEqual(result.writtenSlots, ["current"]);
   assert.equal(context.db.sot.influence.default, 7);
   assert.equal(context.db.sot.influence.tiers[5], 5);
+  assert.equal(context.db.sot.influence.milestones["20k"], 6);
+  assert.equal(context.db.sot.influence.milestones["30k"], 8);
   assert.equal(context.db.sot.channels.review.value, "stale-review");
   assert.equal(context.db.sot.presentation.welcome.title, "Old welcome title");
 });

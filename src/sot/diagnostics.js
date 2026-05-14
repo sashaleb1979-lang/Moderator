@@ -6,7 +6,7 @@ const { resolveAllChannelRecords } = require("./resolver/channels");
 const { resolveAllIntegrationRecords } = require("./resolver/integrations");
 const { resolveAllPanelRecords } = require("./resolver/panels");
 const { resolveAllRoleRecords } = require("./resolver/roles");
-const { PANEL_MESSAGE_SLOTS } = require("./schema");
+const { KILL_MILESTONE_SLOTS, KILL_TIER_SLOTS, LEGACY_ELO_TIER_SLOTS, PANEL_MESSAGE_SLOTS } = require("./schema");
 
 function cleanString(value, limit = 200) {
   return String(value || "").trim().slice(0, limit);
@@ -104,8 +104,9 @@ function flattenRoleEntries(roleRecords = {}) {
     { slot: "accessNormal", record: roleRecords.accessNormal },
     { slot: "accessWartime", record: roleRecords.accessWartime },
     { slot: "accessNonJjs", record: roleRecords.accessNonJjs },
-    ...[1, 2, 3, 4, 5].map((tier) => ({ slot: `killTier.${tier}`, record: roleRecords.killTier?.[tier] || null })),
-    ...[1, 2, 3, 4].map((tier) => ({ slot: `legacyEloTier.${tier}`, record: roleRecords.legacyEloTier?.[tier] || null })),
+    ...KILL_TIER_SLOTS.map((tier) => ({ slot: `killTier.${tier}`, record: roleRecords.killTier?.[tier] || null })),
+    ...KILL_MILESTONE_SLOTS.map((milestone) => ({ slot: `killMilestone.${milestone}`, record: roleRecords.killMilestone?.[milestone] || null })),
+    ...LEGACY_ELO_TIER_SLOTS.map((tier) => ({ slot: `legacyEloTier.${tier}`, record: roleRecords.legacyEloTier?.[tier] || null })),
   ];
 }
 
