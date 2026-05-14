@@ -24,6 +24,8 @@ const DEFAULT_LEGACY_ELO_TIER_COLORS = {
   5: "#ff6b6b",
 };
 
+const LEGACY_ELO_GRAPHIC_TIER_ORDER = [5, 4, 3, 2, 1];
+
 const DEFAULT_LEGACY_ELO_GRAPHIC_TITLE = "ELO Tier List";
 const DEFAULT_LEGACY_ELO_GRAPHIC_MESSAGE_TEXT = "Главное отображение ELO тир-листа. Текстовый tierlist-канал больше не используется.";
 
@@ -317,7 +319,7 @@ function buildLegacyEloGraphicStatusLines(rawDb = {}, options = {}) {
     `messageId: ${snapshot.dashboardMessageId || "—"}`,
     `img: ${snapshot.image.W}x${snapshot.image.H}, icon=${snapshot.image.ICON}`,
     `selectedTier: ${snapshot.selectedTier} -> ${snapshot.selectedTierLabel}`,
-    `tierColors: ${[5, 4, 3, 2, 1].map((tier) => `${tier}=${snapshot.tierColors[tier] || DEFAULT_LEGACY_ELO_TIER_COLORS[tier]}`).join(", ")}`,
+    `tierColors: ${LEGACY_ELO_GRAPHIC_TIER_ORDER.map((tier) => `${tier}=${snapshot.tierColors[tier] || DEFAULT_LEGACY_ELO_TIER_COLORS[tier]}`).join(", ")}`,
     `lastUpdated: ${snapshot.lastUpdated ? new Date(snapshot.lastUpdated).toLocaleString("ru-RU") : "—"}`,
   ];
 }
@@ -326,6 +328,7 @@ module.exports = {
   DEFAULT_LEGACY_ELO_GRAPHIC_MESSAGE_TEXT,
   DEFAULT_LEGACY_ELO_GRAPHIC_TITLE,
   DEFAULT_LEGACY_ELO_TIER_LABELS,
+  LEGACY_ELO_GRAPHIC_TIER_ORDER,
   applyLegacyEloGraphicImageDelta,
   buildLegacyEloGraphicEntries,
   buildLegacyEloGraphicPanelSnapshot,

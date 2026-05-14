@@ -20,6 +20,21 @@ const DEFAULT_GRAPHIC_TIER_COLORS = {
   6: "#7f8c8d",
 };
 
+function normalizeGraphicTierOrder(order = GRAPHIC_TIER_ORDER) {
+  const source = Array.isArray(order) ? order : GRAPHIC_TIER_ORDER;
+  const normalized = [];
+  const seen = new Set();
+
+  for (const value of source) {
+    const tier = Number(value);
+    if (!Number.isSafeInteger(tier) || tier < 1 || tier > 6 || seen.has(tier)) continue;
+    seen.add(tier);
+    normalized.push(tier);
+  }
+
+  return normalized.length ? normalized : [...GRAPHIC_TIER_ORDER];
+}
+
 // ====== FONT STATE ======
 let fontsReady = false;
 const FONT_REG = "TierlistReg";
@@ -361,8 +376,8 @@ function clearGraphicAvatarCacheForUser(userId) {
 }
 
 // ====== DATA PREPARATION ======
-function buildBuckets(entries) {
-  const buckets = { 1: [], 2: [], 3: [], 4: [], 5: [], 6: [] };
+function buildBuckets(entries, tierOrder = GRAPHIC_TIER_ORDER) {
+  const buckets = Object.fromEntries(normalizeGraphicTierOrder(tierOrder).map((tier) => [tier, []]));
 
   for (const entry of entries) {
     const tier = Number(entry.displayTier ?? entry.killTier ?? entry.tier);
@@ -400,6 +415,7 @@ async function renderGraphicTierlistPng({
   title = "Графический тир-лист",
   tierLabels = {},
   tierColors = {},
+  tierOrder = GRAPHIC_TIER_ORDER,
   outlineRoleId = "",
   outlineColor = "#ffffff",
   outlineWidth = 6,
@@ -410,8 +426,9 @@ async function renderGraphicTierlistPng({
   if (!PImage) throw new Error("pureimage не установлен. Установи: npm i pureimage");
   if (!ensureFonts()) throw new Error(`Шрифт не найден. source=${fontInfo.source}. ${fontInfo.err || ""}`);
 
+  const resolvedTierOrder = normalizeGraphicTierOrder(tierOrder);
   const colors = { ...DEFAULT_GRAPHIC_TIER_COLORS, ...tierColors };
-  const buckets = buildBuckets(entries);
+  const buckets = buildBuckets(entries, resolvedTierOrder);
   const totalPlayers = entries.length;
 
   const W = Math.max(1200, Number(imageWidth) || 2000);
@@ -427,7 +444,7 @@ async function renderGraphicTierlistPng({
   const roleOutlineCache = new Map();
   const effectiveOutlineWidth = Math.max(2, Math.min(14, Number(outlineWidth) || 6));
 
-  const rowHeights = GRAPHIC_TIER_ORDER.map((tierKey) => {
+  const rowHeights = resolvedTierOrder.map((tierKey) => {
     const n = (buckets[tierKey] || []).length;
     const rows = Math.max(1, Math.ceil(n / cols));
     const iconsH = rows * (ICON + gap) - gap;
@@ -454,8 +471,8 @@ async function renderGraphicTierlistPng({
 
   let yCursor = topY;
 
-  for (let i = 0; i < GRAPHIC_TIER_ORDER.length; i++) {
-    const tierKey = GRAPHIC_TIER_ORDER[i];
+  for (let i = 0; i < resolvedTierOrder.length; i++) {
+    const tierKey = resolvedTierOrder[i];
     const y = yCursor;
     const rowH = rowHeights[i];
     yCursor += rowH;
@@ -550,6 +567,7 @@ async function renderGraphicTierlistPng({
 module.exports = {
   GRAPHIC_TIER_ORDER,
   DEFAULT_GRAPHIC_TIER_COLORS,
+  normalizeGraphicTierOrder,
   renderGraphicTierlistPng,
   ensureGraphicFonts: ensureFonts,
   clearGraphicAvatarCache,

@@ -7,6 +7,7 @@ const {
   DEFAULT_LEGACY_ELO_GRAPHIC_MESSAGE_TEXT,
   DEFAULT_LEGACY_ELO_GRAPHIC_TITLE,
   DEFAULT_LEGACY_ELO_TIER_LABELS,
+  LEGACY_ELO_GRAPHIC_TIER_ORDER,
   applyLegacyEloGraphicImageDelta,
   buildLegacyEloGraphicEntries,
   buildLegacyEloGraphicPanelSnapshot,
@@ -24,6 +25,12 @@ const {
   setLegacyEloTierLabel,
   setLegacyEloTierLabels,
 } = require("../src/integrations/elo-graphic");
+const { normalizeGraphicTierOrder } = require("../graphic-tierlist");
+
+test("legacy ELO render contract stays limited to tiers 1..5", () => {
+  assert.deepEqual(LEGACY_ELO_GRAPHIC_TIER_ORDER, [5, 4, 3, 2, 1]);
+  assert.deepEqual(normalizeGraphicTierOrder(LEGACY_ELO_GRAPHIC_TIER_ORDER), [5, 4, 3, 2, 1]);
+});
 
 test("ensureLegacyEloGraphicState fills defaults and normalizes persisted values", () => {
   const rawDb = {
