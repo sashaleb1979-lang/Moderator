@@ -97,6 +97,88 @@ function summarizeRecentKillChange(change = {}) {
   };
 }
 
+function normalizeRecentKillChanges(changes = [], fallbackChange = null, limit = 3) {
+  const normalizedLimit = Math.max(1, Number(limit) || 3);
+  const list = [];
+  const seen = new Set();
+
+  function pushChange(change) {
+    if (!change || typeof change !== "object") return;
+    const from = normalizeFiniteNumber(change.from);
+    const to = normalizeFiniteNumber(change.to);
+    const fromAt = Number.isFinite(Number(change.fromAt)) ? Number(change.fromAt) : Date.parse(String(change.fromAt || ""));
+    const toAt = Number.isFinite(Number(change.toAt)) ? Number(change.toAt) : Date.parse(String(change.toAt || ""));
+    if (!Number.isFinite(from) || !Number.isFinite(to) || !(to > from)) return;
+    const key = `${from}:${to}:${Number.isFinite(toAt) ? toAt : "na"}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    list.push({ from, to, fromAt, toAt });
+  }
+
+  for (const change of Array.isArray(changes) ? changes : []) {
+    pushChange(change);
+    if (list.length >= normalizedLimit) break;
+  }
+  if (!list.length) pushChange(fallbackChange);
+
+  return list
+    .sort((left, right) => (Number.isFinite(right.toAt) ? right.toAt : 0) - (Number.isFinite(left.toAt) ? left.toAt : 0))
+    .slice(0, normalizedLimit);
+}
+
+function buildRecentKillHistoryLines(changes = []) {
+  const lines = [];
+  const items = Array.isArray(changes) ? changes : [];
+  if (!items.length) {
+    lines.push("Подробной истории approved ростов по kills пока нет.");
+    return lines;
+  }
+
+  for (let index = 0; index < items.length; index += 1) {
+    const change = items[index];
+    const summary = summarizeRecentKillChange(change);
+    lines.push(
+      `${index + 1}. ${formatNumber(change.from)} -> ${formatNumber(change.to)} (${formatSignedNumber(summary.delta)} за ${formatNumber(summary.dayCount)} дн., ${formatNumber(summary.averagePerDay)}/день)`
+    );
+    if (change.toAt) {
+      lines.push(`Проверено: ${formatDateTime(change.toAt)}`);
+    }
+  }
+
+  return lines;
+}
+
+function buildTopCoPlayPeerLines(peers = [], limit = 3) {
+  const lines = [];
+  const items = (Array.isArray(peers) ? peers : []).slice(0, Math.max(1, Number(limit) || 3));
+  if (!items.length) {
+    lines.push("Нет заметных совместных сессий в JJS.");
+    return lines;
+  }
+
+  for (const peer of items) {
+    const peerId = cleanString(peer?.peerUserId, 80) || "unknown";
+    const parts = [`<@${peerId}>`];
+    if (Number.isFinite(Number(peer?.minutesTogether)) && Number(peer.minutesTogether) > 0) {
+      parts.push(`${formatNumber(peer.minutesTogether)} мин вместе`);
+    }
+    if (Number.isFinite(Number(peer?.sessionsTogether)) && Number(peer.sessionsTogether) > 0) {
+      parts.push(`${formatNumber(peer.sessionsTogether)} сесс.`);
+    }
+    if (peer?.isRobloxFriend === true) {
+      parts.push("Roblox-друг");
+    } else if (peer?.isFrequentNonFriend === true) {
+      parts.push("частый non-friend");
+    }
+    if (peer?.lastSeenTogetherAt) {
+      parts.push(`последний раз ${formatDateTime(peer.lastSeenTogetherAt)}`);
+    }
+    lines.push(parts.join(" • "));
+  }
+
+  return lines;
+}
+
 function buildDiscordChannelUrl(guildId, channelId) {
   const normalizedGuildId = cleanString(guildId, 80);
   const normalizedChannelId = cleanString(channelId, 80);
@@ -132,8 +214,12 @@ function buildComboThreadLinks({ guideState = {}, mainCharacterIds = [], mainCha
     const url = buildDiscordChannelUrl(guildId, threadId);
     if (!threadId || !url || seenThreadIds.has(threadId)) continue;
     seenThreadIds.add(threadId);
+    const resolvedLabel = cleanString(mainLabel || entry?.name || entry?.id, 80) || `Main ${links.length + 1}`;
     links.push({
-      label: cleanString(mainLabel || entry?.name || entry?.id, 80) || `Main ${links.length + 1}`,
+      label: resolvedLabel,
+      buttonLabel: cleanString(`Гайд: ${resolvedLabel}`, 80) || "Гайд",
+      kind: "main",
+      mainLabel: resolvedLabel,
       url,
     });
     if (links.length >= 2) break;
@@ -141,10 +227,149 @@ function buildComboThreadLinks({ guideState = {}, mainCharacterIds = [], mainCha
 
   const generalTechsUrl = buildDiscordChannelUrl(guildId, cleanString(guideState?.generalTechsThreadId, 80));
   if (generalTechsUrl && links.length < 3) {
-    links.push({ label: "Общие техи", url: generalTechsUrl });
+    links.push({
+      label: "Общие техи",
+      buttonLabel: "Общие техи",
+      kind: "general",
+      url: generalTechsUrl,
+    });
   }
 
   return links;
+}
+
+function computeGuideCoverage(mainCharacterLabels = [], comboLinks = []) {
+  const mains = (Array.isArray(mainCharacterLabels) ? mainCharacterLabels : [])
+    .map((entry) => cleanString(entry, 80))
+    .filter(Boolean);
+  const coveredMainGuideKeys = new Set(
+    (Array.isArray(comboLinks) ? comboLinks : [])
+      .filter((entry) => entry?.kind === "main")
+      .map((entry) => normalizeComboLookupKey(entry?.mainLabel || entry?.label))
+      .filter(Boolean)
+  );
+
+  return {
+    mainCount: mains.length,
+    coveredMainCount: mains.filter((entry) => coveredMainGuideKeys.has(normalizeComboLookupKey(entry))).length,
+    hasGeneralGuide: (Array.isArray(comboLinks) ? comboLinks : []).some((entry) => entry?.kind === "general"),
+  };
+}
+
+function buildMainAndGuideLines({
+  mainCharacterLabels = [],
+  comboLinks = [],
+  tierlistMainName = "",
+  accessGrantedAt = null,
+  nonGgsAccessGrantedAt = null,
+} = {}) {
+  const lines = [];
+  const mains = (Array.isArray(mainCharacterLabels) ? mainCharacterLabels : [])
+    .map((entry) => cleanString(entry, 80))
+    .filter(Boolean);
+  const mainLookup = new Set(mains.map((entry) => normalizeComboLookupKey(entry)));
+  const guideCoverage = computeGuideCoverage(mainCharacterLabels, comboLinks);
+  const mainGuideLookup = new Set(
+    (Array.isArray(comboLinks) ? comboLinks : [])
+      .filter((entry) => entry?.kind === "main")
+      .map((entry) => normalizeComboLookupKey(entry?.mainLabel || entry?.label))
+      .filter(Boolean)
+  );
+
+  if (mains.length) {
+    lines.push(`Основные персонажи: ${mains.join(", ")}`);
+    lines.push(`Гайды по мейнам: ${guideCoverage.coveredMainCount}/${mains.length}`);
+    for (let index = 0; index < mains.length; index += 1) {
+      const mainLabel = mains[index];
+      lines.push(`${index + 1}. ${mainLabel} — ${mainGuideLookup.has(normalizeComboLookupKey(mainLabel)) ? "гайд доступен по кнопке" : "гайд пока не привязан"}`);
+    }
+  } else {
+    lines.push("Мейны пока не указаны.");
+  }
+
+  const normalizedTierlistMainName = cleanString(tierlistMainName, 120);
+  if (normalizedTierlistMainName) {
+    lines.push(
+      `Основной tierlist-пик: ${normalizedTierlistMainName}${mainLookup.has(normalizeComboLookupKey(normalizedTierlistMainName)) ? " • входит в список мейнов" : ""}`
+    );
+  }
+
+  if (guideCoverage.hasGeneralGuide) {
+    lines.push("Общие техи: доступны по кнопке.");
+  } else if (mains.length) {
+    lines.push("Общие техи пока не привязаны.");
+  }
+
+  if (accessGrantedAt) {
+    lines.push(`JJS доступ: ${formatDateTime(accessGrantedAt)}`);
+  }
+  if (nonGgsAccessGrantedAt) {
+    lines.push(`Non-JJS доступ: ${formatDateTime(nonGgsAccessGrantedAt)}`);
+  }
+
+  return lines;
+}
+
+function buildOverviewStatusLines({
+  profile = null,
+  verificationSummary = {},
+  robloxSummary = {},
+  pendingSubmission = null,
+  latestSubmission = null,
+  mainCharacterLabels = [],
+  comboLinks = [],
+  tierlistSummary = {},
+  eloSummary = {},
+} = {}) {
+  const lines = [];
+  const guideCoverage = computeGuideCoverage(mainCharacterLabels, comboLinks);
+
+  if (profile?.accessGrantedAt) {
+    lines.push(`JJS доступ: открыт с ${formatDateTime(profile.accessGrantedAt)}`);
+  } else if (pendingSubmission) {
+    lines.push("JJS доступ: ждёт одобрения proof.");
+  } else {
+    lines.push("JJS доступ: пока не выдан.");
+  }
+
+  if (profile?.nonGgsAccessGrantedAt) {
+    lines.push(`Non-JJS доступ: открыт с ${formatDateTime(profile.nonGgsAccessGrantedAt)}`);
+  }
+
+  lines.push(`Верификация: ${cleanString(verificationSummary.status, 80) || "не начата"}`);
+
+  if (robloxSummary.hasVerifiedAccount === true) {
+    lines.push("Roblox-связка: подтверждена.");
+  } else if (robloxSummary.verificationStatus) {
+    lines.push(`Roblox-связка: ${cleanString(robloxSummary.verificationStatus, 80)}`);
+  } else {
+    lines.push("Roblox-связка: не подтверждена.");
+  }
+
+  if (guideCoverage.mainCount > 0) {
+    lines.push(`Гайды по мейнам: ${guideCoverage.coveredMainCount}/${guideCoverage.mainCount}`);
+  } else {
+    lines.push("Гайды по мейнам: пока нет мейнов.");
+  }
+  if (guideCoverage.hasGeneralGuide) {
+    lines.push("Общие техи: доступны.");
+  }
+
+  if (tierlistSummary.hasSubmission === true || tierlistSummary.hasSubmission === false) {
+    lines.push(`Tierlist-заявка: ${tierlistSummary.hasSubmission ? "есть" : "нет"}`);
+  }
+
+  if (Number.isFinite(Number(eloSummary.currentElo)) || Number.isFinite(Number(eloSummary.currentTier))) {
+    lines.push("ELO-профиль: заполнен.");
+  } else {
+    lines.push("ELO-профиль: пока пустой.");
+  }
+
+  if (latestSubmission?.reviewedAt) {
+    lines.push(`Последний review: ${formatDateTime(latestSubmission.reviewedAt)}`);
+  }
+
+  return lines;
 }
 
 function buildProfileReadModel(options = {}) {
@@ -161,6 +386,7 @@ function buildProfileReadModel(options = {}) {
   const latestSubmission = options.latestSubmission && typeof options.latestSubmission === "object" ? options.latestSubmission : null;
   const approvedEntries = Array.isArray(options.approvedEntries) ? options.approvedEntries : [];
   const recentKillChange = options.recentKillChange && typeof options.recentKillChange === "object" ? options.recentKillChange : null;
+  const recentKillChanges = normalizeRecentKillChanges(options.recentKillChanges, recentKillChange, 3);
   const roleMentions = Array.isArray(options.roleMentions) ? options.roleMentions.filter(Boolean) : [];
   const mainCharacterIds = Array.isArray(profile?.mainCharacterIds) ? profile.mainCharacterIds : [];
   const mainCharacterLabels = Array.isArray(profile?.mainCharacterLabels) ? profile.mainCharacterLabels : [];
@@ -186,19 +412,19 @@ function buildProfileReadModel(options = {}) {
   const primaryAvatar = [
     {
       url: targetAvatarUrl,
-      description: `Discord avatar${displayName ? ` • ${displayName}` : ""}`,
+      description: `Аватар Discord${displayName ? ` • ${displayName}` : ""}`,
     },
     {
       url: verificationAvatarUrl,
       description: verificationSummary.oauthUsername
-        ? `Discord OAuth avatar • ${cleanString(verificationSummary.oauthUsername, 120)}`
-        : "Discord OAuth avatar",
+        ? `OAuth-аватар Discord • ${cleanString(verificationSummary.oauthUsername, 120)}`
+        : "OAuth-аватар Discord",
     },
     {
       url: robloxAvatarUrl,
       description: robloxSummary.currentUsername
-        ? `Roblox avatar • ${cleanString(robloxSummary.currentUsername, 120)}`
-        : "Roblox avatar",
+        ? `Аватар Roblox • ${cleanString(robloxSummary.currentUsername, 120)}`
+        : "Аватар Roblox",
     },
   ].find((entry) => entry.url) || null;
   const mediaGalleryItems = [];
@@ -217,18 +443,19 @@ function buildProfileReadModel(options = {}) {
   pushMediaGalleryItem(
     robloxAvatarUrl,
     robloxSummary.currentUsername
-      ? `Roblox avatar • ${cleanString(robloxSummary.currentUsername, 120)}`
-      : "Roblox avatar"
+      ? `Аватар Roblox • ${cleanString(robloxSummary.currentUsername, 120)}`
+      : "Аватар Roblox"
   );
   pushMediaGalleryItem(
     verificationAvatarUrl,
     verificationSummary.oauthUsername
-      ? `Discord OAuth avatar • ${cleanString(verificationSummary.oauthUsername, 120)}`
-      : "Discord OAuth avatar"
+      ? `OAuth-аватар Discord • ${cleanString(verificationSummary.oauthUsername, 120)}`
+      : "OAuth-аватар Discord"
   );
 
   const overviewLines = [];
   overviewLines.push(`Игрок: <@${userId}>`);
+  overviewLines.push(`Ник в Discord: ${displayName}`);
   if (mainCharacterLabels.length) {
     overviewLines.push(`Мейны: ${mainCharacterLabels.join(", ")}`);
   }
@@ -236,27 +463,39 @@ function buildProfileReadModel(options = {}) {
     overviewLines.push(`Роли: ${roleMentions.join(", ")}`);
   }
   if (Number.isFinite(approvedKills)) {
-    overviewLines.push(`Kills: ${formatNumber(approvedKills)}`);
+    overviewLines.push(`Подтверждённые kills: ${formatNumber(approvedKills)}`);
   }
   if (Number.isFinite(killTier) && killTier > 0) {
-    overviewLines.push(`Kill-tier: ${killTier}`);
+    overviewLines.push(`Тир по kills: ${killTier}`);
   }
-  if (profile?.accessGrantedAt) {
-    overviewLines.push(`Стартовый доступ: ${formatDateTime(profile.accessGrantedAt)}`);
+  if (robloxSummary.currentUsername) {
+    overviewLines.push(`Roblox: ${cleanString(robloxSummary.currentUsername, 120)}`);
   }
-  if (profile?.nonGgsAccessGrantedAt) {
-    overviewLines.push(`Отдельный доступ без JJS: ${formatDateTime(profile.nonGgsAccessGrantedAt)}`);
+  if (activitySummary.appliedActivityRoleKey || activitySummary.desiredActivityRoleKey) {
+    overviewLines.push(`Бакет активности: ${cleanString(activitySummary.appliedActivityRoleKey || activitySummary.desiredActivityRoleKey, 80)}`);
   }
   if (!profile && !pendingSubmission && !latestSubmission) {
     overviewLines.push("Профиль ещё не заполнен.");
   }
 
+  const overviewStatusLines = buildOverviewStatusLines({
+    profile,
+    verificationSummary,
+    robloxSummary,
+    pendingSubmission,
+    latestSubmission,
+    mainCharacterLabels,
+    comboLinks,
+    tierlistSummary,
+    eloSummary,
+  });
+
   const activityLines = [];
   if (activitySummary.appliedActivityRoleKey || activitySummary.desiredActivityRoleKey) {
-    activityLines.push(`Bucket: ${cleanString(activitySummary.appliedActivityRoleKey || activitySummary.desiredActivityRoleKey, 80)}`);
+    activityLines.push(`Бакет: ${cleanString(activitySummary.appliedActivityRoleKey || activitySummary.desiredActivityRoleKey, 80)}`);
   }
   if (Number.isFinite(Number(activitySummary.activityScore))) {
-    activityLines.push(`Score: ${formatNumber(activitySummary.activityScore)}`);
+    activityLines.push(`Счёт активности: ${formatNumber(activitySummary.activityScore)}`);
   }
   if (Number.isFinite(Number(activitySummary.messages7d)) || Number.isFinite(Number(activitySummary.messages30d))) {
     activityLines.push(`Сообщения 7д/30д: ${formatNumber(activitySummary.messages7d)} / ${formatNumber(activitySummary.messages30d)}`);
@@ -273,13 +512,16 @@ function buildProfileReadModel(options = {}) {
   if (activitySummary.lastSeenAt) {
     activityLines.push(`Последняя активность: ${formatDateTime(activitySummary.lastSeenAt)}`);
   }
+  if (!activityLines.length) {
+    activityLines.push("Активность ещё не накоплена.");
+  }
 
   const contributionLines = [];
   if (Number.isFinite(approvedKills)) {
     contributionLines.push(`Подтверждённые kills: ${formatNumber(approvedKills)}`);
   }
   if (Number.isFinite(killTier) && killTier > 0) {
-    contributionLines.push(`Kill-tier: ${killTier}`);
+    contributionLines.push(`Тир по kills: ${killTier}`);
   }
   if (standing.rank) {
     contributionLines.push(`Место по kills: #${standing.rank} из ${formatNumber(standing.totalVerified)}`);
@@ -290,23 +532,29 @@ function buildProfileReadModel(options = {}) {
   if (standing.shareOfServerKills !== null) {
     contributionLines.push(`Доля серверных kills: ${formatPercent(standing.shareOfServerKills)}`);
   }
+  if (!contributionLines.length) {
+    contributionLines.push("Подтверждённых kills пока нет.");
+  }
 
   const progressHistoryLines = [];
-  if (recentKillChange) {
-    const recentSummary = summarizeRecentKillChange(recentKillChange);
-    progressHistoryLines.push(`Срез proof: ${formatNumber(recentKillChange.from)} -> ${formatNumber(recentKillChange.to)}`);
+  if (recentKillChanges.length) {
+    const latestKillChange = recentKillChanges[0];
+    const recentSummary = summarizeRecentKillChange(latestKillChange);
+    progressHistoryLines.push(`Последний proof-срез: ${formatNumber(latestKillChange.from)} -> ${formatNumber(latestKillChange.to)}`);
     progressHistoryLines.push(`Прирост: ${formatSignedNumber(recentSummary.delta)} kills за ${formatNumber(recentSummary.dayCount)} дн.`);
     progressHistoryLines.push(`Темп: ${formatNumber(recentSummary.averagePerDay)} kills/день`);
-    if (recentKillChange.fromAt) {
-      progressHistoryLines.push(`Старт среза: ${formatDateTime(recentKillChange.fromAt)}`);
+    if (latestKillChange.fromAt) {
+      progressHistoryLines.push(`Старт среза: ${formatDateTime(latestKillChange.fromAt)}`);
     }
-    if (recentKillChange.toAt) {
-      progressHistoryLines.push(`Финиш среза: ${formatDateTime(recentKillChange.toAt)}`);
-      progressHistoryLines.push(`С прошлого proof: ${formatDurationDaysSince(recentKillChange.toAt)}`);
+    if (latestKillChange.toAt) {
+      progressHistoryLines.push(`Финиш среза: ${formatDateTime(latestKillChange.toAt)}`);
+      progressHistoryLines.push(`С прошлого proof-среза: ${formatDurationDaysSince(latestKillChange.toAt)}`);
     }
   } else {
     progressHistoryLines.push("Свежей истории роста по kills пока нет.");
   }
+
+  const progressTimelineLines = buildRecentKillHistoryLines(recentKillChanges);
 
   const submissionLines = [];
   if (latestSubmission?.reviewedAt) {
@@ -315,7 +563,7 @@ function buildProfileReadModel(options = {}) {
     submissionLines.push(`Последняя заявка: ${formatDateTime(latestSubmission.createdAt)}`);
   }
   if (pendingSubmission) {
-    submissionLines.push(`Pending proof: ${formatNumber(pendingSubmission.kills)} kills`);
+    submissionLines.push(`Ожидающий proof: ${formatNumber(pendingSubmission.kills)} kills`);
     submissionLines.push(`Отправлена: ${formatDateTime(pendingSubmission.createdAt)}`);
   }
   if (!submissionLines.length) {
@@ -323,24 +571,39 @@ function buildProfileReadModel(options = {}) {
   }
 
   const rankingLines = [];
+  const currentElo = options.eloProfile?.currentElo ?? eloSummary.currentElo;
+  const currentEloTier = options.eloProfile?.currentTier ?? eloSummary.currentTier;
+  const eloSubmissionStatus = options.eloProfile?.lastSubmissionStatus || eloSummary.lastSubmissionStatus;
+  const tierlistMainName = options.tierlistProfile?.mainName || tierlistSummary.mainName;
+  const tierlistLockUntil = options.tierlistProfile?.lockUntil || tierlistSummary.lockUntil;
+  const tierlistInfluence = options.tierlistProfile?.influenceMultiplier ?? tierlistSummary.influenceMultiplier;
+
+  if (Number.isFinite(Number(currentElo)) || Number.isFinite(Number(currentEloTier))) {
+    rankingLines.push(`Текущий рейтинг: ELO ${formatNumber(currentElo)} / tier ${formatNumber(currentEloTier)}`);
+  }
   if (Number.isFinite(Number(options.eloProfile?.currentElo ?? eloSummary.currentElo))) {
     rankingLines.push(`ELO: ${formatNumber(options.eloProfile?.currentElo ?? eloSummary.currentElo)}`);
   }
   if (Number.isFinite(Number(options.eloProfile?.currentTier ?? eloSummary.currentTier))) {
     rankingLines.push(`ELO tier: ${formatNumber(options.eloProfile?.currentTier ?? eloSummary.currentTier)}`);
   }
-  if (options.eloProfile?.lastSubmissionStatus || eloSummary.lastSubmissionStatus) {
-    rankingLines.push(`ELO submit: ${cleanString(options.eloProfile?.lastSubmissionStatus || eloSummary.lastSubmissionStatus, 80)}`);
+  if (eloSubmissionStatus) {
+    rankingLines.push(`Статус ELO submit: ${cleanString(eloSubmissionStatus, 80)}`);
   }
-  if (options.tierlistProfile?.mainName || tierlistSummary.mainName) {
-    rankingLines.push(`Tierlist main: ${cleanString(options.tierlistProfile?.mainName || tierlistSummary.mainName, 120)}`);
+  if (tierlistMainName) {
+    rankingLines.push(`Основной tierlist-пик: ${cleanString(tierlistMainName, 120)}`);
   }
-  if (options.tierlistProfile?.lockUntil) {
-    rankingLines.push(`Lock до: ${formatDateTime(options.tierlistProfile.lockUntil)}`);
+  if (tierlistLockUntil) {
+    rankingLines.push(`Tierlist lock до: ${formatDateTime(tierlistLockUntil)}`);
   }
-  if (Number.isFinite(Number(options.tierlistProfile?.influenceMultiplier ?? tierlistSummary.influenceMultiplier))
-    && Number(options.tierlistProfile?.influenceMultiplier ?? tierlistSummary.influenceMultiplier) !== 1) {
-    rankingLines.push(`Influence: x${Number(options.tierlistProfile?.influenceMultiplier ?? tierlistSummary.influenceMultiplier).toFixed(2)}`);
+  if (Number.isFinite(Number(tierlistInfluence)) && Number(tierlistInfluence) !== 1) {
+    rankingLines.push(`Множитель влияния: x${Number(tierlistInfluence).toFixed(2)}`);
+  }
+  if (tierlistSummary.hasSubmission === true || tierlistSummary.hasSubmission === false) {
+    rankingLines.push(`Tierlist-заявка: ${tierlistSummary.hasSubmission ? "есть" : "нет"}`);
+  }
+  if (!rankingLines.length) {
+    rankingLines.push("ELO и tierlist данные пока не заполнены.");
   }
 
   const robloxLines = [];
@@ -357,25 +620,25 @@ function buildProfileReadModel(options = {}) {
   }
   if (robloxSummary.currentDisplayName
     && cleanString(robloxSummary.currentDisplayName, 120) !== cleanString(robloxSummary.currentUsername, 120)) {
-    robloxLines.push(`Display name: ${cleanString(robloxSummary.currentDisplayName, 120)}`);
+    robloxLines.push(`Display в Roblox: ${cleanString(robloxSummary.currentDisplayName, 120)}`);
   }
   if (robloxSummary.previousUsername) {
-    robloxLines.push(`Прошлый username: ${cleanString(robloxSummary.previousUsername, 120)}`);
+    robloxLines.push(`Прошлый username Roblox: ${cleanString(robloxSummary.previousUsername, 120)}`);
   }
   if (robloxSummary.previousDisplayName) {
-    robloxLines.push(`Прошлый display: ${cleanString(robloxSummary.previousDisplayName, 120)}`);
+    robloxLines.push(`Прошлый display в Roblox: ${cleanString(robloxSummary.previousDisplayName, 120)}`);
   }
   if (Number.isFinite(Number(robloxSummary.renameCount)) && Number(robloxSummary.renameCount) > 0) {
-    robloxLines.push(`Смен username: ${formatNumber(robloxSummary.renameCount)}`);
+    robloxLines.push(`Смен username Roblox: ${formatNumber(robloxSummary.renameCount)}`);
   }
   if (Number.isFinite(Number(robloxSummary.displayRenameCount)) && Number(robloxSummary.displayRenameCount) > 0) {
-    robloxLines.push(`Смен display-name: ${formatNumber(robloxSummary.displayRenameCount)}`);
+    robloxLines.push(`Смен display-name Roblox: ${formatNumber(robloxSummary.displayRenameCount)}`);
   }
   if (robloxSummary.lastRenameSeenAt) {
-    robloxLines.push(`Последний rename: ${formatDateTime(robloxSummary.lastRenameSeenAt)}`);
+    robloxLines.push(`Последний rename Roblox: ${formatDateTime(robloxSummary.lastRenameSeenAt)}`);
   }
   if (robloxSummary.hasVerifiedBadge === true) {
-    robloxLines.push("Есть verified badge");
+    robloxLines.push("Есть Roblox verified badge");
   }
   if (robloxSummary.accountStatus) {
     robloxLines.push(`Статус аккаунта: ${cleanString(robloxSummary.accountStatus, 80)}`);
@@ -395,34 +658,37 @@ function buildProfileReadModel(options = {}) {
   if (Number.isFinite(Number(robloxSummary.frequentNonFriendCount))) {
     robloxLines.push(`Частые non-friend: ${formatNumber(robloxSummary.frequentNonFriendCount)}`);
   }
+  if (Number.isFinite(Number(robloxSummary.nonFriendPeerCount))) {
+    robloxLines.push(`Всего non-friend peers: ${formatNumber(robloxSummary.nonFriendPeerCount)}`);
+  }
+  if (Number.isFinite(Number(robloxSummary.sessionCount))) {
+    robloxLines.push(`JJS сессий всего: ${formatNumber(robloxSummary.sessionCount)}`);
+  }
+  if (robloxSummary.currentSessionStartedAt) {
+    robloxLines.push(`Текущая JJS сессия с: ${formatDateTime(robloxSummary.currentSessionStartedAt)}`);
+  }
   if (robloxSummary.lastSeenInJjsAt) {
     robloxLines.push(`Последний JJS online: ${formatDateTime(robloxSummary.lastSeenInJjsAt)}`);
   }
   if (robloxSummary.lastRefreshAt) {
-    robloxLines.push(`Последний refresh: ${formatDateTime(robloxSummary.lastRefreshAt)}`);
+    robloxLines.push(`Последнее обновление: ${formatDateTime(robloxSummary.lastRefreshAt)}`);
   }
   if (robloxSummary.refreshStatus) {
-    robloxLines.push(`Статус refresh: ${cleanString(robloxSummary.refreshStatus, 80)}`);
+    robloxLines.push(`Статус обновления: ${cleanString(robloxSummary.refreshStatus, 80)}`);
   }
   if (robloxSummary.refreshError) {
-    robloxLines.push(`Ошибка refresh: ${cleanString(robloxSummary.refreshError, 180)}`);
+    robloxLines.push(`Ошибка обновления: ${cleanString(robloxSummary.refreshError, 180)}`);
   }
 
-  const mainAndGuideLines = [];
-  if (mainCharacterLabels.length) {
-    mainAndGuideLines.push(`Основные персонажи: ${mainCharacterLabels.join(", ")}`);
-  } else {
-    mainAndGuideLines.push("Мейны пока не указаны.");
-  }
-  if (comboLinks.length) {
-    mainAndGuideLines.push(`Доступные гайды: ${comboLinks.map((entry) => entry.label).join(", ")}`);
-  }
-  if (profile?.accessGrantedAt) {
-    mainAndGuideLines.push(`JJS доступ: ${formatDateTime(profile.accessGrantedAt)}`);
-  }
-  if (profile?.nonGgsAccessGrantedAt) {
-    mainAndGuideLines.push(`Non-JJS доступ: ${formatDateTime(profile.nonGgsAccessGrantedAt)}`);
-  }
+  const mainAndGuideLines = buildMainAndGuideLines({
+    mainCharacterLabels,
+    comboLinks,
+    tierlistMainName: tierlistSummary.mainName,
+    accessGrantedAt: profile?.accessGrantedAt,
+    nonGgsAccessGrantedAt: profile?.nonGgsAccessGrantedAt,
+  });
+
+  const socialPeerLines = buildTopCoPlayPeerLines(robloxSummary.topCoPlayPeers, 3);
 
   return {
     userId,
@@ -441,10 +707,14 @@ function buildProfileReadModel(options = {}) {
           lines: [
             standing.rank ? `Место по kills: #${standing.rank}` : "",
             standing.shareOfServerKills !== null ? `Доля kills: ${formatPercent(standing.shareOfServerKills)}` : "",
-            tierlistSummary.mainName ? `Tierlist main: ${cleanString(tierlistSummary.mainName, 120)}` : "",
+            tierlistSummary.mainName ? `Основной tierlist-пик: ${cleanString(tierlistSummary.mainName, 120)}` : "",
             eloSummary.currentElo !== null && eloSummary.currentElo !== undefined ? `ELO: ${formatNumber(eloSummary.currentElo)}` : "",
             robloxSummary.currentUsername ? `Roblox: ${cleanString(robloxSummary.currentUsername, 120)}` : "",
           ],
+        },
+        {
+          title: "Статусы и доступ",
+          lines: overviewStatusLines,
         },
       ],
       activity: [
@@ -457,18 +727,20 @@ function buildProfileReadModel(options = {}) {
             Number.isFinite(Number(activitySummary.activeDays7d)) ? `Активные дни 7д: ${formatNumber(activitySummary.activeDays7d)}` : "",
             Number.isFinite(Number(activitySummary.activeWatchedChannels30d)) ? `Активные каналы 30д: ${formatNumber(activitySummary.activeWatchedChannels30d)}` : "",
             Number.isFinite(Number(activitySummary.daysAbsent)) ? `Отсутствие: ${formatNumber(activitySummary.daysAbsent)} дн.` : "",
-            activitySummary.roleEligibilityStatus ? `Eligibility: ${cleanString(activitySummary.roleEligibilityStatus, 80)}` : "",
+            activitySummary.roleEligibilityStatus ? `Статус eligibility: ${cleanString(activitySummary.roleEligibilityStatus, 80)}` : "",
           ],
         },
       ],
       progress: [
         { title: "Вклад", lines: contributionLines },
         { title: "Последний рост по kills", lines: progressHistoryLines },
+        { title: "История approved ростов", lines: progressTimelineLines },
         { title: "Заявки и проверки", lines: submissionLines },
         { title: "ELO и Tierlist", lines: rankingLines },
       ],
       social: [
         { title: "Roblox и соц", lines: robloxLines },
+        { title: "С кем чаще всего играет", lines: socialPeerLines },
         { title: "Мейны и гайды", lines: mainAndGuideLines },
       ],
     },

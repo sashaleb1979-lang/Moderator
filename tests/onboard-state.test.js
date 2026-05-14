@@ -178,6 +178,53 @@ test("presentation resolution prefers db overrides over file defaults and hard d
   assert.equal(resolved.tierlist.graphic.colors[5], "#555555");
 });
 
+test("presentation resolution keeps graphic outline config and validates fallback color", () => {
+  const defaults = createPresentationDefaults({
+    graphicTierlist: {
+      outline: {
+        roleId: "222",
+        color: "#abcdef",
+      },
+    },
+  }, {
+    defaultGraphicTierColors: DEFAULT_GRAPHIC_TIER_COLORS,
+  });
+
+  assert.deepEqual(defaults.tierlist.graphic.outline, {
+    roleId: "222",
+    color: "#abcdef",
+  });
+
+  const dbConfig = {
+    presentation: {
+      tierlist: {
+        graphic: {
+          outline: {
+            roleId: "111",
+            color: "bad-color",
+          },
+        },
+      },
+    },
+  };
+
+  const resolved = resolvePresentation(dbConfig, {
+    graphicTierlist: {
+      outline: {
+        roleId: "222",
+        color: "#abcdef",
+      },
+    },
+  }, {
+    defaultGraphicTierColors: DEFAULT_GRAPHIC_TIER_COLORS,
+  });
+
+  assert.deepEqual(resolved.tierlist.graphic.outline, {
+    roleId: "111",
+    color: "#abcdef",
+  });
+});
+
 test("presentation resolution prefers submit-step overrides over defaults", () => {
   const resolved = resolvePresentation({
     presentation: {
@@ -778,6 +825,7 @@ test("command builder includes new admin refresh and editor subcommands", () => 
       "movegraphic",
       "movenotices",
       "movetext",
+      "nonfake",
       "panel",
       "removetier",
       "robloxauth",
@@ -785,6 +833,9 @@ test("command builder includes new admin refresh and editor subcommands", () => 
       "welcomeedit",
     ].sort()
   );
+
+  const onboardCommand = buildCommands().find((command) => command.name === "onboard");
+  assert.equal(onboardCommand.options.some((option) => option.type === 1 && option.name === "nonfake"), true);
 });
 
 test("command builder registers onboard, rolepanel, verify, and profile top-level commands", () => {

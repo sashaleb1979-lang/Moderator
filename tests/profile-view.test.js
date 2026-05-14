@@ -67,7 +67,9 @@ test("profile payload renders overview, activity, rankings, roblox, and link but
           lastSubmissionStatus: "approved",
         },
         tierlist: {
+          hasSubmission: true,
           mainName: "Gojo",
+          lockUntil: "2026-05-20T12:00:00.000Z",
           influenceMultiplier: 1.2,
         },
         roblox: {
@@ -76,9 +78,20 @@ test("profile payload renders overview, activity, rankings, roblox, and link but
           profileUrl: "https://www.roblox.com/users/123/profile",
           avatarUrl: "https://tr.rbxcdn.com/gojo-avatar.png",
           serverFriendsCount: 3,
+          sessionCount: 9,
+          nonFriendPeerCount: 4,
           jjsMinutes30d: 420,
           frequentNonFriendCount: 1,
           lastSeenInJjsAt: "2026-05-11T09:00:00.000Z",
+          topCoPlayPeers: [
+            {
+              peerUserId: "peer-1",
+              minutesTogether: 210,
+              sessionsTogether: 5,
+              isRobloxFriend: true,
+              lastSeenTogetherAt: "2026-05-12T08:00:00.000Z",
+            },
+          ],
         },
         verification: {
           status: "verified",
@@ -105,13 +118,29 @@ test("profile payload renders overview, activity, rankings, roblox, and link but
       { userId: "user-2", displayName: "Top", approvedKills: 200 },
       { userId: "user-1", displayName: "Sasha", approvedKills: 120 },
     ],
-    recentKillChange: {
-      userId: "user-1",
-      from: 100,
-      to: 120,
-      fromAt: Date.parse("2026-05-01T00:00:00.000Z"),
-      toAt: Date.parse("2026-05-10T00:00:00.000Z"),
-    },
+      recentKillChange: {
+        userId: "user-1",
+        from: 100,
+        to: 120,
+        fromAt: Date.parse("2026-05-01T00:00:00.000Z"),
+        toAt: Date.parse("2026-05-10T00:00:00.000Z"),
+      },
+    recentKillChanges: [
+      {
+        userId: "user-1",
+        from: 80,
+        to: 100,
+        fromAt: Date.parse("2026-04-26T00:00:00.000Z"),
+        toAt: Date.parse("2026-05-01T00:00:00.000Z"),
+      },
+      {
+        userId: "user-1",
+        from: 100,
+        to: 120,
+        fromAt: Date.parse("2026-05-01T00:00:00.000Z"),
+        toAt: Date.parse("2026-05-10T00:00:00.000Z"),
+      },
+    ],
     comboGuideState: {
       generalTechsThreadId: "general-thread",
       characters: [{ id: "gojo", name: "Gojo", threadId: "thread-1" }],
@@ -123,8 +152,10 @@ test("profile payload renders overview, activity, rankings, roblox, and link but
   const { container, textDisplays, actionRows } = getProfileContainer(payload);
   assert.equal(container.type, 17);
   assert.ok(textDisplays.some((component) => /# Профиль/.test(component.content)));
-  assert.ok(textDisplays.some((component) => /### Обзор/.test(component.content) && /Kills: 120/.test(component.content)));
-  assert.ok(textDisplays.some((component) => /### Verification/.test(component.content) && /verified/.test(component.content)));
+  assert.ok(textDisplays.some((component) => /### Обзор/.test(component.content) && /Подтверждённые kills: 120/.test(component.content)));
+  assert.ok(textDisplays.some((component) => /### Ключевые факты/.test(component.content) && /Основной tierlist-пик: Gojo/.test(component.content)));
+  assert.ok(textDisplays.some((component) => /### Статусы и доступ/.test(component.content) && /JJS доступ: открыт с/.test(component.content) && /Верификация: verified/.test(component.content) && /Roblox-связка: подтверждена/.test(component.content)));
+  assert.ok(textDisplays.some((component) => /### Верификация/.test(component.content) && /verified/.test(component.content)));
   assert.match(JSON.stringify(container), /https:\/\/cdn\.discordapp\.com\/avatars\/user-1\/profile\.png/);
   assert.equal(actionRows.length, 2);
   const navButtons = actionRows[0].components;
@@ -135,8 +166,9 @@ test("profile payload renders overview, activity, rankings, roblox, and link but
     social: "Соц",
   })[view]));
   const buttons = actionRows[1].components;
-  assert.ok(buttons.some((button) => button.label === "Техи: Gojo"));
-  assert.ok(buttons.some((button) => button.label === "Roblox"));
+  assert.ok(buttons.some((button) => button.label === "Гайд: Gojo"));
+  assert.ok(buttons.some((button) => button.label === "Общие техи"));
+  assert.ok(buttons.some((button) => button.label === "Roblox профиль"));
 });
 
 test("profile payload switches sections by requested view", () => {
@@ -170,7 +202,7 @@ test("profile payload switches sections by requested view", () => {
 
   const { textDisplays } = getProfileContainer(payload);
   assert.ok(textDisplays.some((component) => /\*\*Секция:\*\* Активность/.test(component.content)));
-  assert.ok(textDisplays.some((component) => /### Активность/.test(component.content) && /Bucket: active/.test(component.content)));
+  assert.ok(textDisplays.some((component) => /### Активность/.test(component.content) && /Бакет: active/.test(component.content)));
   assert.ok(textDisplays.some((component) => /### Детали activity/.test(component.content) && /Сообщения 90д: 400/.test(component.content)));
 });
 
@@ -197,7 +229,9 @@ test("profile payload renders enriched progress and social sections", () => {
           lastSubmissionStatus: "approved",
         },
         tierlist: {
+          hasSubmission: true,
           mainName: "Gojo",
+          lockUntil: "2026-05-20T12:00:00.000Z",
           influenceMultiplier: 1.2,
         },
         roblox: {
@@ -221,6 +255,22 @@ test("profile payload renders enriched progress and social sections", () => {
       fromAt: Date.parse("2026-05-01T00:00:00.000Z"),
       toAt: Date.parse("2026-05-10T00:00:00.000Z"),
     },
+    recentKillChanges: [
+      {
+        userId: "user-1",
+        from: 80,
+        to: 100,
+        fromAt: Date.parse("2026-04-26T00:00:00.000Z"),
+        toAt: Date.parse("2026-05-01T00:00:00.000Z"),
+      },
+      {
+        userId: "user-1",
+        from: 100,
+        to: 120,
+        fromAt: Date.parse("2026-05-01T00:00:00.000Z"),
+        toAt: Date.parse("2026-05-10T00:00:00.000Z"),
+      },
+    ],
     comboGuideState: {
       generalTechsThreadId: "general-thread",
       characters: [{ id: "gojo", name: "Gojo", threadId: "thread-1" }],
@@ -230,7 +280,9 @@ test("profile payload renders enriched progress and social sections", () => {
   const progressDisplays = getProfileContainer(progressPayload).textDisplays;
   assert.ok(progressDisplays.some((component) => /\*\*Секция:\*\* Прогресс/.test(component.content)));
   assert.ok(progressDisplays.some((component) => /### Последний рост по kills/.test(component.content) && /Прирост: \+20 kills/.test(component.content)));
+  assert.ok(progressDisplays.some((component) => /### История approved ростов/.test(component.content) && /1\. 100 -> 120/.test(component.content) && /2\. 80 -> 100/.test(component.content)));
   assert.ok(progressDisplays.some((component) => /### Заявки и проверки/.test(component.content) && /Последняя проверка:/.test(component.content)));
+  assert.ok(progressDisplays.some((component) => /### ELO и Tierlist/.test(component.content) && /Текущий рейтинг: ELO 145 \/ tier 2/.test(component.content) && /Tierlist-заявка: есть/.test(component.content)));
 
   const socialPayload = buildProfilePayload({
     guildId: "guild-1",
@@ -251,6 +303,15 @@ test("profile payload renders enriched progress and social sections", () => {
           currentUsername: "GojoMain",
           profileUrl: "https://www.roblox.com/users/123/profile",
           avatarUrl: "https://tr.rbxcdn.com/gojo-avatar.png",
+          topCoPlayPeers: [
+            {
+              peerUserId: "peer-1",
+              minutesTogether: 210,
+              sessionsTogether: 5,
+              isRobloxFriend: true,
+              lastSeenTogetherAt: "2026-05-12T08:00:00.000Z",
+            },
+          ],
         },
         verification: {
           oauthAvatarUrl: "https://cdn.discordapp.com/oauth-avatar.png",
@@ -266,7 +327,8 @@ test("profile payload renders enriched progress and social sections", () => {
   const socialDisplays = getProfileContainer(socialPayload).textDisplays;
   assert.ok(socialDisplays.some((component) => /\*\*Секция:\*\* Соц/.test(component.content)));
   assert.ok(socialDisplays.some((component) => /### Roblox и соц/.test(component.content) && /Связка Roblox: подтверждена/.test(component.content)));
-  assert.ok(socialDisplays.some((component) => /### Мейны и гайды/.test(component.content) && /Основные персонажи: Gojo/.test(component.content) && /Доступные гайды: Gojo, Общие техи/.test(component.content)));
+  assert.ok(socialDisplays.some((component) => /### С кем чаще всего играет/.test(component.content) && /<@peer-1> • 210 мин вместе • 5 сесс\. • Roblox-друг/.test(component.content)));
+  assert.ok(socialDisplays.some((component) => /### Мейны и гайды/.test(component.content) && /Основные персонажи: Gojo/.test(component.content) && /Гайды по мейнам: 1\/1/.test(component.content) && /1\. Gojo — гайд доступен по кнопке/.test(component.content) && /Общие техи: доступны по кнопке\./.test(component.content)));
   assert.match(JSON.stringify(getProfileContainer(socialPayload).container), /https:\/\/tr\.rbxcdn\.com\/gojo-avatar\.png/);
   assert.match(JSON.stringify(getProfileContainer(socialPayload).container), /https:\/\/cdn\.discordapp\.com\/oauth-avatar\.png/);
 });
@@ -283,5 +345,40 @@ test("profile payload handles empty profiles gracefully", () => {
   const { textDisplays } = getProfileContainer(payload);
   assert.ok(textDisplays.some((component) => /# Твой профиль/.test(component.content)));
   assert.ok(textDisplays.some((component) => /### Обзор/.test(component.content) && /ещё не заполнен/i.test(component.content)));
+  assert.ok(textDisplays.some((component) => /### Статусы и доступ/.test(component.content) && /JJS доступ: пока не выдан/i.test(component.content) && /Верификация: не начата/i.test(component.content)));
   assert.ok(textDisplays.some((component) => /После онбординга профиль заполнится автоматически/i.test(component.content)));
+});
+
+test("profile payload splits many link buttons into multiple rows", () => {
+  const payload = buildProfilePayload({
+    requesterUserId: "requester",
+    userId: "user-1",
+    readModel: {
+      userId: "user-1",
+      displayName: "Sasha",
+      isSelf: false,
+      comboLinks: [
+        { label: "One", buttonLabel: "Кнопка 1", url: "https://example.com/1" },
+        { label: "Two", buttonLabel: "Кнопка 2", url: "https://example.com/2" },
+        { label: "Three", buttonLabel: "Кнопка 3", url: "https://example.com/3" },
+        { label: "Four", buttonLabel: "Кнопка 4", url: "https://example.com/4" },
+        { label: "Five", buttonLabel: "Кнопка 5", url: "https://example.com/5" },
+        { label: "Six", buttonLabel: "Кнопка 6", url: "https://example.com/6" },
+      ],
+      primaryAvatarUrl: null,
+      primaryAvatarDescription: null,
+      mediaGalleryItems: [],
+      robloxProfileUrl: "https://www.roblox.com/users/123/profile",
+      sections: {
+        overview: [{ title: "Обзор", lines: ["ok"] }],
+      },
+      verificationLines: null,
+      emptyStateNote: null,
+    },
+  });
+
+  const { actionRows } = getProfileContainer(payload);
+  assert.equal(actionRows.length, 3);
+  assert.deepEqual(actionRows[1].components.map((button) => button.label), ["Кнопка 1", "Кнопка 2", "Кнопка 3", "Кнопка 4", "Кнопка 5"]);
+  assert.deepEqual(actionRows[2].components.map((button) => button.label), ["Кнопка 6", "Roblox профиль"]);
 });

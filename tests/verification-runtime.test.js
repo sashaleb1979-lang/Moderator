@@ -152,6 +152,8 @@ test("createVerificationCallbackHandler sends clean OAuth result to moderator re
   assert.equal(manualReviews[0].oauthUser.username, "discord-user");
   assert.equal(manualReviews[0].risk.requiresManualReview, false);
   assert.equal(failures.length, 0);
+  assert.equal(response.body.includes("Проверка завершена"), false);
+  assert.match(response.body, /Кейс отправлен модераторам/);
   assert.match(response.body, /доступ выдаётся только после их решения/);
 });
 

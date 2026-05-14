@@ -136,6 +136,40 @@ function collectRecentKillChanges(submissions = []) {
   return upgrades;
 }
 
+function collectUserRecentKillChangeHistory(submissions = [], userId = "", options = {}) {
+  const normalizedUserId = cleanString(userId, 80);
+  const limit = Math.max(1, Number(options.limit) || 3);
+  if (!normalizedUserId) return [];
+
+  const approved = (Array.isArray(submissions) ? submissions : [])
+    .filter((submission) => submission && submission.status === "approved" && cleanString(submission.userId, 80) === normalizedUserId)
+    .map((submission) => ({
+      kills: Number(submission.kills),
+      at: Date.parse(submission.reviewedAt || submission.createdAt || 0) || 0,
+    }))
+    .filter((entry) => Number.isFinite(entry.kills))
+    .sort((left, right) => left.at - right.at);
+
+  if (approved.length < 2) return [];
+
+  const changes = [];
+  for (let index = approved.length - 1; index > 0; index -= 1) {
+    const current = approved[index];
+    const previous = approved[index - 1];
+    if (!(current.kills > previous.kills)) continue;
+    changes.push({
+      userId: normalizedUserId,
+      from: previous.kills,
+      to: current.kills,
+      fromAt: previous.at,
+      toAt: current.at,
+    });
+    if (changes.length >= limit) break;
+  }
+
+  return changes;
+}
+
 function summarizeRecentKillChange(change = {}) {
   const from = normalizeFiniteNumber(change?.from);
   const to = normalizeFiniteNumber(change?.to);
@@ -174,6 +208,7 @@ function paginateRecentKillChanges(changes = [], options = {}) {
 module.exports = {
   buildCharacterFactData,
   collectRecentKillChanges,
+  collectUserRecentKillChangeHistory,
   paginateRecentKillChanges,
   summarizeRecentKillChange,
 };

@@ -10,13 +10,14 @@ let PImage = null;
 try { PImage = require("pureimage"); } catch {}
 
 // ====== CONSTANTS ======
-const GRAPHIC_TIER_ORDER = [5, 4, 3, 2, 1];
+const GRAPHIC_TIER_ORDER = [5, 4, 3, 2, 1, 6];
 const DEFAULT_GRAPHIC_TIER_COLORS = {
   5: "#ff6b6b",
   4: "#ff9f43",
   3: "#feca57",
   2: "#1dd1a1",
   1: "#54a0ff",
+  6: "#7f8c8d",
 };
 
 // ====== FONT STATE ======
@@ -324,6 +325,19 @@ async function loadAvatar(client, guild, userId) {
   return null;
 }
 
+async function hasRoleOutline(guild, userId, roleId, cache = new Map()) {
+  const normalizedRoleId = String(roleId || "").trim();
+  const normalizedUserId = String(userId || "").trim();
+  if (!guild || !normalizedRoleId || !normalizedUserId) return false;
+  if (cache.has(normalizedUserId)) return cache.get(normalizedUserId);
+
+  const member = guild.members?.cache?.get(normalizedUserId)
+    || await guild.members.fetch(normalizedUserId).catch(() => null);
+  const hasRole = Boolean(member?.roles?.cache?.has(normalizedRoleId));
+  cache.set(normalizedUserId, hasRole);
+  return hasRole;
+}
+
 function clearGraphicAvatarCache() {
   avatarMem.clear();
   try {
@@ -348,9 +362,9 @@ function clearGraphicAvatarCacheForUser(userId) {
 
 // ====== DATA PREPARATION ======
 function buildBuckets(entries) {
-  const buckets = { 1: [], 2: [], 3: [], 4: [], 5: [] };
+  const buckets = { 1: [], 2: [], 3: [], 4: [], 5: [], 6: [] };
   for (const entry of entries) {
-    const tier = Number(entry.killTier ?? entry.tier);
+    const tier = Number(entry.displayTier ?? entry.killTier ?? entry.tier);
     if (!buckets[tier]) continue;
     buckets[tier].push({
       userId: entry.userId,
@@ -385,6 +399,9 @@ async function renderGraphicTierlistPng({
   title = "Графический тир-лист",
   tierLabels = {},
   tierColors = {},
+  outlineRoleId = "",
+  outlineColor = "#ffffff",
+  outlineWidth = 6,
   imageWidth = null,
   imageHeight = null,
   imageIcon = null,
@@ -406,6 +423,8 @@ async function renderGraphicTierlistPng({
   const gap = Math.max(10, Math.floor(ICON * 0.16));
   const rightW = W - leftW - rightPad - 24;
   const cols = Math.max(1, Math.floor((rightW + gap) / (ICON + gap)));
+  const roleOutlineCache = new Map();
+  const effectiveOutlineWidth = Math.max(2, Math.min(14, Number(outlineWidth) || 6));
 
   const rowHeights = GRAPHIC_TIER_ORDER.map((tierKey) => {
     const n = (buckets[tierKey] || []).length;
@@ -471,6 +490,16 @@ async function renderGraphicTierlistPng({
       const py = rightY + row * (ICON + gap);
 
       const avatar = await loadAvatar(client, guild, player.userId);
+
+      if (await hasRoleOutline(guild, player.userId, outlineRoleId, roleOutlineCache)) {
+        fillHex(ctx, outlineColor);
+        ctx.fillRect(
+          px - effectiveOutlineWidth,
+          py - effectiveOutlineWidth,
+          ICON + (effectiveOutlineWidth * 2),
+          ICON + (effectiveOutlineWidth * 2)
+        );
+      }
 
       fillHex(ctx, "#171717");
       ctx.fillRect(px - 3, py - 3, ICON + 6, ICON + 6);

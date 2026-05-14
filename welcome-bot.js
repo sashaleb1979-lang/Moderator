@@ -372,6 +372,7 @@ const {
   paginateRecentKillChanges,
   summarizeRecentKillChange,
 } = require("./src/onboard/tierlist-ranking");
+const { collectUserRecentKillChangeHistory } = require("./src/onboard/tierlist-ranking");
 const {
   parseKillsFromSubmittedText,
   resolveEffectiveSubmittedKills,
@@ -4894,6 +4895,11 @@ function getProfileOperator() {
     getPendingSubmissionForUser,
     getLatestSubmissionForUser,
     getApprovedEntries: () => getApprovedTierlistEntries(),
+    getRecentKillChangesForUser: (userId) => collectUserRecentKillChangeHistory(
+      Object.values(db.submissions || {}),
+      userId,
+      { limit: 3 }
+    ),
     getRecentKillChangeForUser: (userId) => collectRecentKillChanges(Object.values(db.submissions || {}))
       .find((entry) => entry.userId === String(userId || "").trim()) || null,
     getEloProfile: (userId) => getDormantEloProfileSnapshot(db, userId),

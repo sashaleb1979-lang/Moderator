@@ -43,6 +43,10 @@ const HARD_DEFAULT_PRESENTATION = {
         icon: null,
       },
       colors: { ...HARD_DEFAULT_GRAPHIC_TIER_COLORS },
+      outline: {
+        roleId: "",
+        color: "#ffffff",
+      },
       panel: {
         selectedTier: 5,
       },
@@ -99,6 +103,16 @@ function normalizeGraphicImage(value, fallback) {
   return out;
 }
 
+function normalizeGraphicOutline(value, fallback = {}) {
+  const source = value && typeof value === "object" ? value : {};
+  const rawColor = cleanString(source.color);
+  const fallbackColor = cleanString(fallback.color) || "#ffffff";
+  return {
+    roleId: cleanString(source.roleId),
+    color: /^#[0-9a-f]{6}$/i.test(rawColor) ? rawColor : fallbackColor,
+  };
+}
+
 function createPresentationDefaults(fileConfig = {}, options = {}) {
   const graphicColors = {
     ...HARD_DEFAULT_GRAPHIC_TIER_COLORS,
@@ -135,6 +149,7 @@ function createPresentationDefaults(fileConfig = {}, options = {}) {
       graphic: {
         image: { ...hardDefaults.tierlist.graphic.image },
         colors: normalizeTierMap(graphicTierlist.tierColors, graphicColors),
+        outline: normalizeGraphicOutline(graphicTierlist.outline, hardDefaults.tierlist.graphic.outline),
         panel: {
           selectedTier: 5,
         },
@@ -205,6 +220,7 @@ function ensurePresentationConfig(dbConfig, options = {}) {
   dbConfig.presentation.tierlist.graphic ||= {};
   dbConfig.presentation.tierlist.graphic.image ||= {};
   dbConfig.presentation.tierlist.graphic.colors ||= {};
+  dbConfig.presentation.tierlist.graphic.outline ||= {};
   dbConfig.presentation.tierlist.graphic.panel ||= { selectedTier: 5 };
 
   const presentation = dbConfig.presentation;
@@ -267,6 +283,7 @@ function resolvePresentation(dbConfig = {}, fileConfig = {}, options = {}) {
       graphic: {
         image: normalizeGraphicImage(graphic.image, defaults.tierlist.graphic.image),
         colors: normalizeTierMap(graphic.colors, defaults.tierlist.graphic.colors),
+        outline: normalizeGraphicOutline(graphic.outline, defaults.tierlist.graphic.outline),
         panel: {
           selectedTier: Number(graphic.panel?.selectedTier) || defaults.tierlist.graphic.panel.selectedTier || 5,
         },

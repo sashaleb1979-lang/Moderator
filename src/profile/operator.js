@@ -150,6 +150,9 @@ function createProfileOperator(options = {}) {
       recentKillChange: typeof options.getRecentKillChangeForUser === "function"
         ? options.getRecentKillChangeForUser(normalizedTargetUserId)
         : null,
+      recentKillChanges: typeof options.getRecentKillChangesForUser === "function"
+        ? options.getRecentKillChangesForUser(normalizedTargetUserId)
+        : [],
       comboGuideState: typeof options.getComboGuideState === "function"
         ? options.getComboGuideState()
         : null,

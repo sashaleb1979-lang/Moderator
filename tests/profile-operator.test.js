@@ -5,6 +5,7 @@ const assert = require("node:assert/strict");
 const { MessageFlags } = require("discord.js");
 
 const { buildProfileNavCustomId, buildProfileOpenCustomId } = require("../src/profile/entry");
+const { collectUserRecentKillChangeHistory } = require("../src/onboard/tierlist-ranking");
 const { createProfileOperator } = require("../src/profile/operator");
 
 function makeMember(roleIds = [], { userId = "user-1", username = "Sasha", displayName = "Sasha" } = {}) {
@@ -51,6 +52,7 @@ function createTestOperator(overrides = {}) {
           lastSubmissionStatus: "approved",
         },
         tierlist: {
+          hasSubmission: true,
           mainName: "Gojo",
           influenceMultiplier: 1.2,
         },
@@ -59,6 +61,15 @@ function createTestOperator(overrides = {}) {
           currentUsername: "GojoMain",
           profileUrl: "https://www.roblox.com/users/123/profile",
           avatarUrl: "https://tr.rbxcdn.com/gojo-avatar.png",
+          topCoPlayPeers: [
+            {
+              peerUserId: "peer-1",
+              minutesTogether: 210,
+              sessionsTogether: 5,
+              isRobloxFriend: true,
+              lastSeenTogetherAt: "2026-05-12T08:00:00.000Z",
+            },
+          ],
         },
         verification: {
           status: "verified",
@@ -81,6 +92,11 @@ function createTestOperator(overrides = {}) {
       { userId: "user-2", displayName: "Top", approvedKills: 200 },
       { userId: "user-1", displayName: "Sasha", approvedKills: 120 },
     ],
+    getRecentKillChangesForUser: (userId) => collectUserRecentKillChangeHistory([
+      { userId, status: "approved", kills: 80, reviewedAt: "2026-04-26T00:00:00.000Z" },
+      { userId, status: "approved", kills: 100, reviewedAt: "2026-05-01T00:00:00.000Z" },
+      { userId, status: "approved", kills: 120, reviewedAt: "2026-05-10T00:00:00.000Z" },
+    ], userId, { limit: 3 }),
     getRecentKillChangeForUser: () => ({
       userId: "user-1",
       from: 100,
@@ -108,17 +124,19 @@ test("profile operator builds private payload from injected runtime readers", as
   });
   assert.equal(access.allowed, true);
 
-  const payload = await operator.buildPrivateProfilePayload({
+    const payload = await operator.buildPrivateProfilePayload({
     targetUserId: "user-1",
     requesterUserId: "requester",
     isSelf: false,
-  });
+      view: "progress",
+    });
 
   assert.equal(payload.flags, MessageFlags.IsComponentsV2);
   const container = payload.components[0].toJSON();
   assert.equal(container.type, 17);
   assert.ok(container.components.some((component) => component.type === 10 && /# Профиль/.test(component.content)));
-  assert.ok(container.components.some((component) => component.type === 10 && /### Обзор/.test(component.content)));
+    assert.ok(container.components.some((component) => component.type === 10 && /### Вклад/.test(component.content)));
+  assert.ok(container.components.some((component) => component.type === 10 && /### История approved ростов/.test(component.content)));
   assert.match(JSON.stringify(container), /https:\/\/cdn\.discordapp\.com\/avatars\/user-1\/profile\.png/);
 });
 

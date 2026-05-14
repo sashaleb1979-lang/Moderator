@@ -95,6 +95,17 @@ function buildProfileMediaGallery(mediaGalleryItems = []) {
   return items.length ? new MediaGalleryBuilder().addItems(items) : null;
 }
 
+function buildButtonRows(buttons = [], maxPerRow = 5) {
+  const rows = [];
+  const normalizedMaxPerRow = Math.max(1, Number(maxPerRow) || 5);
+
+  for (let index = 0; index < buttons.length; index += normalizedMaxPerRow) {
+    rows.push(new ActionRowBuilder().addComponents(buttons.slice(index, index + normalizedMaxPerRow)));
+  }
+
+  return rows;
+}
+
 function buildLinkButtons({ comboLinks = [], robloxProfileUrl = null } = {}) {
   const buttons = [];
 
@@ -104,23 +115,23 @@ function buildLinkButtons({ comboLinks = [], robloxProfileUrl = null } = {}) {
     buttons.push(
       new ButtonBuilder()
         .setStyle(ButtonStyle.Link)
-        .setLabel(cleanString(`Техи: ${link.label}`, 80) || "Техи")
+        .setLabel(cleanString(link?.buttonLabel || link?.label, 80) || "Ссылка")
         .setURL(url)
     );
-    if (buttons.length >= 4) break;
+    if (buttons.length >= 8) break;
   }
 
   const normalizedRobloxProfileUrl = normalizeNullableString(robloxProfileUrl, 1000);
-  if (normalizedRobloxProfileUrl && buttons.length < 5) {
+  if (normalizedRobloxProfileUrl && buttons.length < 10) {
     buttons.push(
       new ButtonBuilder()
         .setStyle(ButtonStyle.Link)
-        .setLabel("Roblox")
+        .setLabel("Roblox профиль")
         .setURL(normalizedRobloxProfileUrl)
     );
   }
 
-  return buttons.length ? [new ActionRowBuilder().addComponents(buttons)] : [];
+  return buttons.length ? buildButtonRows(buttons, 5) : [];
 }
 
 function normalizeProfileView(value) {
@@ -160,7 +171,7 @@ function buildProfilePayload(options = {}) {
     ? options.readModel
     : buildProfileReadModel(options);
   const userId = cleanString(readModel.userId, 80);
-  const displayName = cleanString(readModel.displayName, 200) || `User ${userId}`;
+  const displayName = cleanString(readModel.displayName, 200) || `Пользователь ${userId}`;
   const currentView = normalizeProfileView(options.view);
   const avatarSection = buildAvatarSection({
     primaryAvatarUrl: readModel.primaryAvatarUrl,
@@ -200,7 +211,7 @@ function buildProfilePayload(options = {}) {
 
   if (Array.isArray(readModel.verificationLines) && readModel.verificationLines.length) {
     container.addTextDisplayComponents(
-      buildTextDisplay("Verification", readModel.verificationLines)
+      buildTextDisplay("Верификация", readModel.verificationLines)
     );
   }
 

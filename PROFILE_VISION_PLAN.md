@@ -3,7 +3,7 @@
 > Этот файл является рабочим source of truth по профилю игрока.
 > Если появится конфликт между "удобной технической идеей" и тем, что вы уже сформулировали как продуктовые требования, приоритет у ваших требований.
 
-## Отчёт О Реализации На 13.05.2026
+## Отчёт О Реализации На 14.05.2026
 
 ### Уже Реализовано Локально
 1. Появился приватный профиль как отдельная feature-система, а не как разрозненные куски в одном файле.
@@ -26,23 +26,29 @@
    - [src/profile/operator.js](src/profile/operator.js) — runtime orchestration.
 10. [welcome-bot.js](welcome-bot.js) больше не держит profile orchestration inline: он только делегирует профильные message/slash/button входы в operator.
 11. Добавлены и проходят focused tests для access, entry, model, view и operator.
+12. Живой runtime теперь подаёт в профиль историю последних approved ростов по kills прямо из `db.submissions`, а не только synthetic test fixtures.
+13. Прогресс-блок усилен до истории нескольких последних approved ростов по kills, а ranking-блок теперь даёт более целостную сводку по ELO/tierlist.
+14. Roblox/social block стал богаче: выводятся JJS session context, non-friend peer counts и топ совместных напарников.
+15. Появилась отдельная partial-state и language polish-итерация: профиль последовательнее говорит по-русски и честнее объясняет отсутствие данных.
+16. Блок "Мейны и гайды" усилен: теперь он показывает покрытие guide-ссылками по каждому main, связывает tierlist main с мейнами и яснее объясняет, что доступно по кнопкам.
+17. Quick-link слой усилен: guide/Roblox кнопки стали понятнее по названиям и умеют раскладываться в несколько строк, если ссылок становится больше.
+18. Верхняя сводка усилена ещё на один продуктовый слой: появился отдельный блок статусов и доступов, который в одном месте показывает readiness по JJS access, verification, Roblox, guide coverage, Tierlist и ELO.
 
 ### Реализовано Частично
-1. Базовые данные профиля уже выводятся, но не вся глубина, которую вы запросили, доведена до финального "богатого" вида.
-2. ELO, tierlist, Roblox и server activity уже подключены как источники данных, но presentation ещё можно сделать заметно богаче.
-3. Мейны уже участвуют в профиле, но полноценный wiki-слой и отдельный контент-блок по каждому main пока не доведены до финальной формы.
-4. Последние изменения по kills уже вынесены в отдельный блок роста и заявок, но ещё не собраны в историю из нескольких последних изменений.
-5. Media/avatar presentation уже добавлен через Components V2 thumbnail + media gallery, но визуальная polish-итерация ещё не доведена до финального вида.
+1. Базовые данные профиля уже стали заметно богаче, а верхняя сводка теперь лучше показывает readiness/status, но до финального "богатого" продуктового экрана ещё не доведены все разделы.
+2. ELO, tierlist, Roblox и server activity уже подключены и читаются лучше, но presentation ещё можно сделать визуально сильнее.
+3. Мейны и guide-связки уже поданы заметно лучше, но полноценный wiki-слой и отдельный контент-блок по каждому main пока не доведены до финальной формы.
+4. Media/avatar presentation уже добавлен через Components V2 thumbnail + media gallery, но визуальная polish-итерация ещё не доведена до финального вида.
 
 ### Пока Не Закрыто
 1. Нет финального Discord smoke-check в живом рантайме после последнего рефактора.
-2. Нет финальной продуктовой polish-итерации под ваши слова "круче и в подробностях".
+2. Нет финальной визуальной polish-итерации под ваши слова "круче и в подробностях".
 3. Не сведены все старые legacy profile/my-card поверхности к одному каноническому профилю.
 
 ### Текущее Техническое Состояние
 1. `node --check welcome-bot.js` — ok.
 2. Focused profile tests — зелёные.
-3. Active suite `node --test tests/*.test.js` — зелёный.
+3. Полный `node --test` даёт 1274 pass / 2 fail.
 4. Полный `node --test` падает только на старых quarantine leftovers, а не на активном profile code:
    - [backups/quarantine-20260510-213529/deploy-verification-live-leftovers/tests/elo-graphic.test.js](backups/quarantine-20260510-213529/deploy-verification-live-leftovers/tests/elo-graphic.test.js)
    - [backups/quarantine-20260510-213529/deploy-verification-live-leftovers/tests/non-jjs-captcha.test.js](backups/quarantine-20260510-213529/deploy-verification-live-leftovers/tests/non-jjs-captcha.test.js)
@@ -111,16 +117,16 @@
 | `dead` не имеет доступа | Сделано | Центральный ACL resolver |
 | Без server tag нельзя смотреть чужие | Сделано | ACL уже завязан на tag-role ids |
 | Staff/mod bypass | Сделано | Одна центральная ветка в access/operator |
-| Статистика по серверу | Частично | База уже есть, presentation можно сделать богаче |
+| Статистика по серверу | Частично | База уже есть, partial-state polish добавлен, но summary можно сделать ещё сильнее |
 | Роли | Сделано | В профиле уже выводятся role mentions |
-| Мейны | Частично | Есть, но можно поднять quality presentation |
-| Wiki / guides | Частично | Есть combo/guide links, но нет полноценного wiki-блока |
-| Последние изменения по kills | Частично | Есть отдельный блок роста и заявок, но нет истории нескольких последних изменений |
-| Roblox-linked account | Частично | База и media уже есть, richer identity block ещё можно усилить |
-| Ранги | Частично | Rank/progression есть частично, но не сведены в отдельный богатый слой |
-| ELO | Частично | Данные уже тянутся, presentation ещё не финальная |
-| Tierlist | Частично | Данные есть, но можно сильнее связать с profile UX |
-| Кнопки | Сделано | Навигация и links уже есть |
+| Мейны | Частично | Есть richer main-block с guide coverage по каждому main, но presentation ещё можно усиливать |
+| Wiki / guides | Частично | Есть direct guide links, coverage по main и общие техи, но нет полноценного wiki-source и отдельного wiki-блока |
+| Последние изменения по kills | Сделано | Есть блок последнего роста и история нескольких последних approved изменений, протянутая и в live runtime |
+| Roblox-linked account | Частично | База, media и social context уже есть, но identity block ещё можно усилить |
+| Ранги | Частично | Rank/progression уже богаче, но всё ещё можно усилить верхнюю сводку и объясняющие тексты |
+| ELO | Частично | Данные и summary уже выведены, но presentation ещё не финальная |
+| Tierlist | Частично | Данные, submit-status и lock/influence уже в профиле, но UX ещё можно усилить |
+| Кнопки | Сделано | Навигация и direct quick links уже есть, включая multi-row раскладку ссылок |
 | Аватары / визуальный media-блок | Частично | Discord avatar, Roblox avatar и media gallery уже выведены, осталась polish-итерация |
 
 ## Архитектурное Видение

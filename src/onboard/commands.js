@@ -13,6 +13,7 @@ const ONBOARD_SUBCOMMAND_NAMES = [
   "movetext",
   "movenotices",
   "modset",
+  "nonfake",
   "robloxauth",
   "deleteprofile",
   "removetier",
@@ -61,6 +62,24 @@ function buildCommands() {
           .addIntegerOption((option) => option.setName("kills").setDescription("Точное число kills").setMinValue(0).setRequired(true))
           .addUserOption((option) => option.setName("target").setDescription("Игрок (если в сервере)"))
           .addStringOption((option) => option.setName("user_id").setDescription("ID игрока (если вышел из сервера)"))
+      )
+      .addSubcommand((subcommand) =>
+        subcommand
+          .setName("nonfake")
+          .setDescription("Управлять remembered списком не фейкостановцев")
+          .addStringOption((option) =>
+            option
+              .setName("action")
+              .setDescription("Что сделать")
+              .setRequired(true)
+              .addChoices(
+                { name: "Добавить", value: "add" },
+                { name: "Убрать", value: "remove" },
+                { name: "Показать список", value: "list" }
+              )
+          )
+          .addUserOption((option) => option.setName("target").setDescription("Игрок (если в сервере)"))
+          .addStringOption((option) => option.setName("user_id").setDescription("ID игрока, если пользователя нет в сервере"))
       )
       .addSubcommand((subcommand) =>
         subcommand

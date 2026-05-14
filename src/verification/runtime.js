@@ -328,8 +328,8 @@ function createVerificationCallbackHandler(options = {}) {
       console.log(`[verification-runtime] CALLBACK_READY_FOR_REVIEW user=${cleanString(session.userId, 80) || "unknown"} state=${formatLogToken(state)} guilds=${risk.observedGuilds.length}`);
       await onManualReview(payload);
       writeHtmlResponse(response, 200, buildVerificationCallbackHtml({
-        title: "Проверка завершена",
-        description: "OAuth успешно завершён. Данные уже отправлены модераторам, а доступ выдаётся только после их решения. Вернись в Discord и жди ответа.",
+        title: "OAuth завершён, ждите решения",
+        description: "OAuth успешно завершён. Кейс отправлен модераторам, а доступ выдаётся только после их решения. Вернись в Discord и жди ответа.",
         color: "#2563eb",
       }));
       return true;

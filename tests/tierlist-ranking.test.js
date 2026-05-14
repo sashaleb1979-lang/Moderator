@@ -6,6 +6,7 @@ const assert = require("node:assert/strict");
 const {
   buildCharacterFactData,
   collectRecentKillChanges,
+  collectUserRecentKillChangeHistory,
   paginateRecentKillChanges,
   summarizeRecentKillChange,
 } = require("../src/onboard/tierlist-ranking");
@@ -86,6 +87,25 @@ test("collectRecentKillChanges keeps only approved upward changes sorted by late
   assert.deepEqual(changes, [
     { userId: "u4", from: 900, to: 1600, fromAt: Date.parse("2026-05-01T00:00:00.000Z"), toAt: Date.parse("2026-05-05T00:00:00.000Z") },
     { userId: "u1", from: 1000, to: 1800, fromAt: Date.parse("2026-05-01T00:00:00.000Z"), toAt: Date.parse("2026-05-03T00:00:00.000Z") },
+  ]);
+});
+
+test("collectUserRecentKillChangeHistory keeps the latest approved upward history for one user", () => {
+  const changes = collectUserRecentKillChangeHistory([
+    { userId: "u1", status: "approved", kills: 900, reviewedAt: "2026-05-01T00:00:00.000Z" },
+    { userId: "u1", status: "approved", kills: 1300, reviewedAt: "2026-05-03T00:00:00.000Z" },
+    { userId: "u1", status: "rejected", kills: 1500, reviewedAt: "2026-05-04T00:00:00.000Z" },
+    { userId: "u1", status: "approved", kills: 1700, reviewedAt: "2026-05-05T00:00:00.000Z" },
+    { userId: "u1", status: "approved", kills: 1650, reviewedAt: "2026-05-06T00:00:00.000Z" },
+    { userId: "u1", status: "approved", kills: 2200, reviewedAt: "2026-05-08T00:00:00.000Z" },
+    { userId: "u2", status: "approved", kills: 500, reviewedAt: "2026-05-01T00:00:00.000Z" },
+    { userId: "u2", status: "approved", kills: 700, reviewedAt: "2026-05-02T00:00:00.000Z" },
+  ], "u1", { limit: 3 });
+
+  assert.deepEqual(changes, [
+    { userId: "u1", from: 1650, to: 2200, fromAt: Date.parse("2026-05-06T00:00:00.000Z"), toAt: Date.parse("2026-05-08T00:00:00.000Z") },
+    { userId: "u1", from: 1300, to: 1700, fromAt: Date.parse("2026-05-03T00:00:00.000Z"), toAt: Date.parse("2026-05-05T00:00:00.000Z") },
+    { userId: "u1", from: 900, to: 1300, fromAt: Date.parse("2026-05-01T00:00:00.000Z"), toAt: Date.parse("2026-05-03T00:00:00.000Z") },
   ]);
 });
 
