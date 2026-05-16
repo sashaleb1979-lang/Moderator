@@ -54,7 +54,8 @@ function normalizeUsernameInput(value) {
 }
 
 function getUserTag(user = {}) {
-  return cleanString(user.tag || user.username || user.globalName || user.id, 120);
+  const source = user || {};
+  return cleanString(source.tag || source.username || source.globalName || source.id, 120);
 }
 
 function getMemberRoleCache(member = null) {
@@ -312,6 +313,9 @@ function createAntiteamOperator(options = {}) {
     }
     const thread = await fetchTextChannel(ticket.message?.threadId).catch(() => null);
     if (thread && ticket.message?.threadPanelMessageId) {
+      if (ticket.status === "closed" && typeof thread.setName === "function") {
+        await thread.setName(buildThreadName(ticket).slice(0, 100), "antiteam mission closed").catch(() => {});
+      }
       const panel = await thread.messages?.fetch?.(ticket.message.threadPanelMessageId).catch(() => null);
       if (panel) await panel.edit(buildThreadPanelPayload(ticket, config)).catch(() => {});
     }
@@ -320,8 +324,10 @@ function createAntiteamOperator(options = {}) {
   async function publishTicketFromDraft(userId, { skipPhoto = false } = {}) {
     const draft = getAntiteamDraft(db, userId);
     if (!draft) throw new Error("Черновик антитима истёк. Начни заново.");
-    if (draft.kind === "clan" && !draft.description) {
-      throw new Error("Для клан-аларма нужно описание врагов и ситуации.");
+    if (!cleanString(draft.description, 900)) {
+      throw new Error(draft.kind === "clan"
+        ? "Для клан-аларма нужно описание врагов и ситуации."
+        : "Описание обязательно: укажи, кто тимится, кого бить, ники/kills или ситуацию любым понятным способом.");
     }
     if (draft.photoWanted && !draft.photo && !skipPhoto) {
       const channelId = getConfig().channelId;
@@ -417,14 +423,38 @@ function createAntiteamOperator(options = {}) {
     return "";
   }
 
+  function getFriendRequestTargetUserId(ticket = {}) {
+    return ticket.kind === "clan" && cleanString(ticket.anchorUserId, 80)
+      ? ticket.anchorUserId
+      : ticket.createdBy;
+  }
+
+  function buildFriendRequestNoticeText(ticket = {}, helper = {}) {
+    const targetUserId = getFriendRequestTargetUserId(ticket);
+    const friendRequestsUrl = getConfig().roblox.friendRequestsUrl;
+    return [
+      `<@${targetUserId}>`,
+      `<@${helper.userId}> сейчас отправит тебе friend request в Roblox, чтобы подключиться к ${ticket.kind === "clan" ? "клан-аларму" : "антитиму"}.`,
+      helper.robloxUsername
+        ? `Roblox helper-а: **${helper.robloxUsername}**${helper.robloxUserId ? ` (${helper.robloxUserId})` : ""}.`
+        : "Roblox helper-а в базе не найден, ориентируйся по Discord упоминанию.",
+      friendRequestsUrl ? `Принять заявки: ${friendRequestsUrl}` : "",
+    ].filter(Boolean).join("\n");
+  }
+
   async function notifyTicketAuthorForFriendRequest(ticket = {}, helper = {}) {
+    const targetUserId = getFriendRequestTargetUserId(ticket);
+    const helperText = buildFriendRequestNoticeText(ticket, helper);
+    const thread = await fetchTextChannel(ticket.message?.threadId).catch(() => null);
+    if (thread?.send) {
+      const sent = await thread.send({
+        content: helperText,
+        allowedMentions: { users: [targetUserId, helper.userId].filter(Boolean) },
+      }).catch(() => null);
+      if (sent) return true;
+    }
     if (typeof options.sendDirectMessage !== "function") return false;
-    const helperText = [
-      `<@${helper.userId}> хочет помочь по антитиму, но direct join недоступен.`,
-      helper.robloxUsername ? `Roblox helper-а: **${helper.robloxUsername}**${helper.robloxUserId ? ` (${helper.robloxUserId})` : ""}.` : "Roblox helper-а в базе не найден.",
-      `Прими его в друзья: ${getConfig().roblox.friendRequestsUrl}`,
-    ].join("\n");
-    await options.sendDirectMessage(ticket.createdBy, { content: helperText }).catch(() => null);
+    await options.sendDirectMessage(targetUserId, { content: helperText }).catch(() => null);
     return true;
   }
 
@@ -435,6 +465,76 @@ function createAntiteamOperator(options = {}) {
       username: cleanString(roblox.username || roblox.currentUsername, 120),
       userId: cleanString(roblox.userId, 40),
     };
+  }
+
+  function getStoredRobloxSnapshot(userId) {
+    const profile = typeof options.getProfile === "function" ? options.getProfile(userId) : db.profiles?.[userId];
+    const candidates = [
+      profile?.domains?.roblox,
+      profile?.summary?.roblox,
+      profile?.roblox,
+      profile,
+    ].filter(Boolean);
+
+    for (const roblox of candidates) {
+      const robloxUserId = cleanString(roblox.userId || roblox.robloxUserId || roblox.id, 40);
+      const username = cleanString(roblox.username || roblox.currentUsername || roblox.robloxUsername || roblox.name, 120);
+      const verificationStatus = cleanString(roblox.verificationStatus, 40).toLowerCase();
+      const recordStatus = cleanString(roblox.status, 40).toLowerCase();
+      const trusted = verificationStatus === "verified"
+        || roblox.hasVerifiedAccount === true
+        || Boolean(roblox.verifiedAt);
+      const unusableStatuses = new Set(["failed", "unverified", "rejected", "denied"]);
+      const explicitlyUnusable = unusableStatuses.has(verificationStatus)
+        || (!verificationStatus && unusableStatuses.has(recordStatus));
+      if (!robloxUserId || !username || explicitlyUnusable) continue;
+      if (verificationStatus && !trusted) continue;
+      return {
+        id: robloxUserId,
+        userId: robloxUserId,
+        name: username,
+        username,
+        displayName: cleanString(roblox.displayName || roblox.robloxDisplayName, 120),
+        profileUrl: cleanString(roblox.profileUrl, 500) || `https://www.roblox.com/users/${robloxUserId}/profile`,
+      };
+    }
+    return null;
+  }
+
+  async function handleStartPanelOpenInteraction(interaction) {
+    if (!interaction?.isButton?.()) return false;
+    const storedRoblox = getStoredRobloxSnapshot(interaction.user.id);
+    if (storedRoblox) {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      return openTicketDraftWithRoblox(interaction, storedRoblox, "standard", {
+        response: "editReply",
+        statusText: `Roblox взят из твоего профиля: ${storedRoblox.username}.`,
+      });
+    }
+    await interaction.showModal(buildRobloxUsernameModal({ customId: "at:roblox" }));
+    return true;
+  }
+
+  async function openTicketDraftWithRoblox(interaction, robloxUser, kind = "standard", { response = "reply", statusText = "", anchorUser = null } = {}) {
+    if (kind !== "clan") await grantBattalionRole(interaction.user.id, "antiteam roblox ready").catch(() => null);
+    const draft = await persist("antiteam-draft-roblox", () => setAntiteamDraft(db, interaction.user.id, {
+      kind,
+      userTag: getUserTag(interaction.user),
+      anchorUserId: kind === "clan" ? cleanString(anchorUser?.id, 80) : "",
+      anchorUserTag: kind === "clan" ? getUserTag(anchorUser) : "",
+      roblox: robloxUser,
+      level: "medium",
+      count: "2-4",
+      directJoinEnabled: false,
+      photoWanted: false,
+    }, { now: nowIso() }));
+    const payload = buildTicketSetupPayload(draft, getConfig(), statusText || `Roblox готов: ${draft.roblox.username}.`);
+    if (response === "editReply") {
+      await interaction.editReply(payload);
+    } else {
+      await interaction.reply(payload);
+    }
+    return true;
   }
 
   async function handleHelp(interaction, ticketId) {
@@ -453,15 +553,14 @@ function createAntiteamOperator(options = {}) {
     const previousHelper = ticket.helpers?.[interaction.user.id] || null;
     const alreadyResponded = Boolean(previousHelper?.respondedAt);
     const alreadyGrantedLink = Boolean(previousHelper?.linkGrantedAt);
-    const alreadyNotifiedAuthor = Boolean(previousHelper?.friendRequestNotifiedAt);
-    const shouldNotifyAuthor = linkKind === "friend_request" && !alreadyNotifiedAuthor;
+    const shouldNotifyAuthor = linkKind === "friend_request";
     const helperRecord = {
       userId: interaction.user.id,
       discordTag: getUserTag(interaction.user),
       robloxUsername: helperRoblox.username,
       robloxUserId: helperRoblox.userId,
       linkKind,
-      friendRequestNotifiedAt: linkKind === "friend_request" ? previousHelper?.friendRequestNotifiedAt || nowIso() : null,
+      friendRequestNotifiedAt: linkKind === "friend_request" ? nowIso() : null,
     };
 
     const updated = await persist("antiteam-helper", () => {
@@ -515,11 +614,31 @@ function createAntiteamOperator(options = {}) {
         await replyNoPermission(interaction);
         return true;
       }
-      await interaction.showModal(buildRobloxUsernameModal({
-        customId: "at:clan_roblox",
-        title: "Клан-аларм: Roblox якорь",
-      }));
-      return true;
+      const anchorUser = typeof interaction.options?.getUser === "function"
+        ? interaction.options.getUser("target", true)
+        : null;
+      if (!anchorUser?.id) {
+        await interaction.reply({ content: "Укажи игрока-якоря через target в команде.", flags: MessageFlags.Ephemeral });
+        return true;
+      }
+      if (anchorUser.bot) {
+        await interaction.reply({ content: "Якорем должен быть живой участник сервера, не бот.", flags: MessageFlags.Ephemeral });
+        return true;
+      }
+      const storedRoblox = getStoredRobloxSnapshot(anchorUser.id);
+      if (!storedRoblox) {
+        await interaction.reply({
+          content: `У <@${anchorUser.id}> нет проверенного Roblox в профиле. Сначала привяжите ему Roblox, потом вызывай клан-аларм.`,
+          flags: MessageFlags.Ephemeral,
+        });
+        return true;
+      }
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      return openTicketDraftWithRoblox(interaction, storedRoblox, "clan", {
+        response: "editReply",
+        anchorUser,
+        statusText: `Якорь: <@${anchorUser.id}> • Roblox: ${storedRoblox.username}. Он должен оставаться на сервере.`,
+      });
     }
 
     return false;
@@ -530,8 +649,7 @@ function createAntiteamOperator(options = {}) {
     const id = interaction.customId;
 
     if (id === ANTITEAM_CUSTOM_IDS.open) {
-      await interaction.showModal(buildRobloxUsernameModal({ customId: "at:roblox" }));
-      return true;
+      return handleStartPanelOpenInteraction(interaction);
     }
 
     if (id === ANTITEAM_CUSTOM_IDS.guide) {
@@ -596,11 +714,12 @@ function createAntiteamOperator(options = {}) {
         await interaction.reply({ content: "Черновик истёк. Начни заново.", flags: MessageFlags.Ephemeral });
         return true;
       }
+      await interaction.deferUpdate();
       const patch = id === ANTITEAM_CUSTOM_IDS.toggleDirect
         ? { directJoinEnabled: !draft.directJoinEnabled }
         : { photoWanted: !draft.photoWanted };
       const updated = await persist("antiteam-draft-toggle", () => setAntiteamDraft(db, interaction.user.id, patch, { now: nowIso() }));
-      await interaction.update(buildTicketSetupPayload(updated, getConfig()));
+      await interaction.editReply(buildTicketSetupPayload(updated, getConfig()));
       return true;
     }
 
@@ -615,11 +734,12 @@ function createAntiteamOperator(options = {}) {
     }
 
     if (id === ANTITEAM_CUSTOM_IDS.cancelDraft) {
+      await interaction.deferUpdate();
       await persist("antiteam-draft-cancel", () => {
         clearAntiteamDraft(db, interaction.user.id);
         return { mutated: true };
       });
-      await interaction.update({
+      await interaction.editReply({
         content: "Заявка антитима отменена.",
         components: [],
         flags: MessageFlags.Ephemeral,
@@ -720,8 +840,9 @@ function createAntiteamOperator(options = {}) {
         await interaction.reply({ content: "Helper не найден в этой миссии.", flags: MessageFlags.Ephemeral });
         return true;
       }
+      await interaction.deferUpdate();
       const updated = await persist("antiteam-arrival-toggle", () => setTicketHelperArrival(db, ticket.id, helperId, !current.arrived, { now: nowIso() }));
-      await interaction.update(buildCloseReviewPayload(updated, Number.parseInt(pageRaw, 10) || 0));
+      await interaction.editReply(buildCloseReviewPayload(updated, Number.parseInt(pageRaw, 10) || 0));
       return true;
     }
 
@@ -755,8 +876,9 @@ function createAntiteamOperator(options = {}) {
     } else {
       return false;
     }
+    await interaction.deferUpdate();
     const updated = await persist("antiteam-draft-select", () => setAntiteamDraft(db, interaction.user.id, patch, { now: nowIso() }));
-    await interaction.update(buildTicketSetupPayload(updated, getConfig()));
+    await interaction.editReply(buildTicketSetupPayload(updated, getConfig()));
     return true;
   }
 
@@ -768,19 +890,15 @@ function createAntiteamOperator(options = {}) {
       await interaction.editReply("Такой Roblox username не найден через Roblox API.");
       return true;
     }
-    await writeRobloxBinding(interaction.user.id, robloxUser, "antiteam");
-    await grantBattalionRole(interaction.user.id, "antiteam roblox verified").catch(() => null);
-    const draft = await persist("antiteam-draft-roblox", () => setAntiteamDraft(db, interaction.user.id, {
-      kind,
-      userTag: getUserTag(interaction.user),
-      roblox: robloxUser,
-      level: "medium",
-      count: "2-4",
-      directJoinEnabled: false,
-      photoWanted: false,
-    }, { now: nowIso() }));
-    await interaction.editReply(buildTicketSetupPayload(draft, getConfig(), `Roblox подтверждён: ${draft.roblox.username}.`));
-    return true;
+    if (kind !== "clan") {
+      await writeRobloxBinding(interaction.user.id, robloxUser, "antiteam");
+    }
+    return openTicketDraftWithRoblox(interaction, robloxUser, kind, {
+      response: "editReply",
+      statusText: kind === "clan"
+        ? `Якорь подтверждён: ${cleanString(robloxUser.username || robloxUser.name, 120)}. Это не привязка к твоему профилю.`
+        : `Roblox подтверждён: ${cleanString(robloxUser.username || robloxUser.name, 120)}.`,
+    });
   }
 
   async function handleModalSubmitInteraction(interaction) {
