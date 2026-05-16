@@ -68,6 +68,7 @@ const HARD_DEFAULT_PRESENTATION = {
       colors: { ...HARD_DEFAULT_GRAPHIC_TIER_COLORS },
       outline: {
         roleId: "",
+        roleIds: [],
         color: "#ffffff",
       },
       panel: {
@@ -159,12 +160,49 @@ function normalizeGraphicImage(value, fallback) {
   return out;
 }
 
+function normalizeGraphicOutlineRoleIds(value, limit = 25) {
+  const source = Array.isArray(value) ? value : [value];
+  const normalized = [];
+  const seen = new Set();
+
+  for (const entry of source) {
+    const parts = String(entry || "")
+      .split(/[;,\n\r\t ]+/g)
+      .map((item) => item.trim())
+      .filter(Boolean);
+
+    for (const part of parts) {
+      const mentionMatch = part.match(/^<@&(\d+)>$/);
+      const candidate = mentionMatch ? mentionMatch[1] : part.replace(/\s+/g, "");
+      if (!/^\d{5,25}$/.test(candidate) || seen.has(candidate)) continue;
+      seen.add(candidate);
+      normalized.push(candidate);
+      if (normalized.length >= limit) return normalized;
+    }
+  }
+
+  return normalized;
+}
+
 function normalizeGraphicOutline(value, fallback = {}) {
   const source = value && typeof value === "object" ? value : {};
   const rawColor = cleanString(source.color);
   const fallbackColor = cleanString(fallback.color) || "#ffffff";
+  const fallbackRoleIds = normalizeGraphicOutlineRoleIds(
+    Array.isArray(fallback.roleIds) && fallback.roleIds.length ? fallback.roleIds : fallback.roleId
+  );
+  const hasExplicitEmptyRoleIds = Array.isArray(source.roleIds) && source.roleIds.length === 0;
+  const hasExplicitEmptyRoleId = Object.prototype.hasOwnProperty.call(source, "roleId") && cleanString(source.roleId) === "";
+  const roleIds = normalizeGraphicOutlineRoleIds(
+    Array.isArray(source.roleIds) && source.roleIds.length ? source.roleIds : source.roleId
+  );
+  const resolvedRoleIds = (!roleIds.length && (hasExplicitEmptyRoleIds || hasExplicitEmptyRoleId))
+    ? []
+    : (roleIds.length ? roleIds : fallbackRoleIds);
+
   return {
-    roleId: cleanString(source.roleId),
+    roleId: resolvedRoleIds[0] || "",
+    roleIds: resolvedRoleIds,
     color: /^#[0-9a-f]{6}$/i.test(rawColor) ? rawColor : fallbackColor,
   };
 }

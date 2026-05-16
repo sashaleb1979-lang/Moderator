@@ -1517,7 +1517,7 @@ function buildTierlistNonFakeListText(userIds = getTierlistNonFakeUserIds(db.con
 
 async function applyTierlistNonFakeClusterMutation(client, targetId, enabled) {
   let result = null;
-  await applyUiMutation(client, "tierlists", () => {
+  await applyUiMutation(client, "none", () => {
     result = setTierlistNonFakeUser(db.config, targetId, enabled);
   });
 
@@ -2359,6 +2359,7 @@ async function buildGraphicTierlistBoardPayload(client) {
   const graphicBoard = getGraphicTierlistBoardState(db.config, appConfig.channels.tierlistChannelId || "");
   const imgCfg = getGraphicImageConfig();
   const presentation = getPresentation();
+  const outline = getEffectiveGraphicOutlineConfig();
 
   if (!isPureimageAvailable()) {
     throw new Error("pureimage не загружен, поэтому графический PNG тир-лист не может быть собран.");
@@ -2371,6 +2372,8 @@ async function buildGraphicTierlistBoardPayload(client) {
     title: getEffectiveGraphicTitle(),
     tierLabels: presentation.tierlist.labels,
     tierColors: getEffectiveTierColors(),
+    outlineRoleIds: outline.roleIds,
+    outlineColor: outline.color,
     imageWidth: imgCfg.W,
     imageHeight: imgCfg.H,
     imageIcon: imgCfg.ICON,
@@ -2433,7 +2436,9 @@ function buildGraphicPanelPayload(statusText = "", includeFlags = true) {
   const tierColor = tierColors[selectedTier] || DEFAULT_GRAPHIC_TIER_COLORS[selectedTier];
   const outline = getEffectiveGraphicOutlineConfig();
   const rememberedCount = getTierlistNonFakeUserIds(db.config).length;
-  const outlineRoleText = outline.roleId ? formatRoleMention(outline.roleId) : "не настроена";
+  const outlineRoleText = outline.roleIds.length
+    ? outline.roleIds.map((roleId) => formatRoleMention(roleId)).join(", ")
+    : "не настроена";
 
   const embed = new EmbedBuilder()
     .setTitle(`PNG Panel • ${GRAPHIC_PANEL_RUNTIME_MARKER}`)
@@ -2443,7 +2448,7 @@ function buildGraphicPanelPayload(statusText = "", includeFlags = true) {
       `**Иконки:** ${cfg.ICON}px`,
       `**Выбранный тир:** ${selectedTier} → **${formatTierLabel(selectedTier)}**`,
       `**Цвет тира:** ${tierColor}`,
-      `**Обводка по роли:** ${outlineRoleText}`,
+      `**Обводка по ролям:** ${outlineRoleText}`,
       `**Цвет обводки:** ${outline.color}`,
       `**Remembered T6:** ${rememberedCount}`,
       `**Runtime:** ${GRAPHIC_PANEL_RUNTIME_MARKER} / tiers=${GRAPHIC_PANEL_TIERS.join(",")}`,
@@ -2469,7 +2474,7 @@ function buildGraphicPanelPayload(statusText = "", includeFlags = true) {
     new ButtonBuilder().setCustomId("graphic_panel_icon_plus").setLabel("Иконки +").setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId("graphic_panel_w_minus").setLabel("Ширина −").setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId("graphic_panel_w_plus").setLabel("Ширина +").setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId("graphic_panel_outline").setLabel("Обводка по роли").setStyle(ButtonStyle.Primary)
+    new ButtonBuilder().setCustomId("graphic_panel_outline").setLabel("Обводка по ролям").setStyle(ButtonStyle.Primary)
   );
 
   const row3 = new ActionRowBuilder().addComponents(
@@ -2509,7 +2514,7 @@ function buildGraphicStatusLines() {
     `img: ${cfg.W}x${cfg.H}, icon=${cfg.ICON}`,
     `selectedTier: ${selectedTier} -> ${formatTierLabel(selectedTier)}`,
     `tierColors: ${GRAPHIC_PANEL_TIERS.map((tier) => `${tier}=${presentation.tierlist.graphic.colors[tier] || DEFAULT_GRAPHIC_TIER_COLORS[tier]}`).join(", ")}`,
-    `outline: ${outline.roleId ? `${outline.roleId} ${outline.color}` : "—"}`,
+    `outline: ${outline.roleIds.length ? `${outline.roleIds.join(",")} ${outline.color}` : "—"}`,
     `rememberedT6: ${getTierlistNonFakeUserIds(db.config).length}`,
     `runtime: ${GRAPHIC_PANEL_RUNTIME_MARKER}`,
     `lastUpdated: ${graphicBoard.lastUpdated ? new Date(graphicBoard.lastUpdated).toLocaleString("ru-RU") : "—"}`,
@@ -3419,10 +3424,18 @@ function getEffectiveTierColors() {
 
 function getEffectiveGraphicOutlineConfig() {
   const outline = getPresentation().tierlist.graphic.outline || {};
-  const roleId = String(outline.roleId || "").trim();
+  const rawRoleIds = Array.isArray(outline.roleIds) ? outline.roleIds : [];
+  const normalizedRoleIds = [...new Set(rawRoleIds
+    .map((value) => String(value || "").trim())
+    .filter((value) => /^\d{5,25}$/.test(value)))];
+  const fallbackRoleId = String(outline.roleId || "").trim();
+  if (!normalizedRoleIds.length && /^\d{5,25}$/.test(fallbackRoleId)) {
+    normalizedRoleIds.push(fallbackRoleId);
+  }
   const color = String(outline.color || "").trim();
   return {
-    roleId,
+    roleId: normalizedRoleIds[0] || "",
+    roleIds: normalizedRoleIds,
     color: /^#[0-9a-f]{6}$/i.test(color) ? color : "#ffffff",
   };
 }
@@ -12044,6 +12057,26 @@ function parseRequestedRoleId(value, fallbackRoleId = "") {
   return /^\d{5,25}$/.test(candidate) ? candidate : "";
 }
 
+function parseRequestedRoleIds(value, fallbackRoleIds = []) {
+  const source = Array.isArray(fallbackRoleIds) ? fallbackRoleIds : [fallbackRoleIds];
+  const normalized = [];
+  const seen = new Set();
+  const text = String(value || "").trim();
+  const candidates = text
+    ? text.split(/[;,\n\r\t ]+/g).map((entry) => entry.trim()).filter(Boolean)
+    : source.map((entry) => String(entry || "").trim()).filter(Boolean);
+
+  for (const entry of candidates) {
+    const roleId = parseRequestedRoleId(entry, "");
+    if (!roleId || seen.has(roleId)) continue;
+    seen.add(roleId);
+    normalized.push(roleId);
+    if (normalized.length >= 25) break;
+  }
+
+  return normalized;
+}
+
 function normalizeRequestedEntityName(value, prefixes = []) {
   let normalized = String(value || "").trim().toLowerCase();
   for (const prefix of prefixes) {
@@ -14430,6 +14463,45 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
+    if (subcommand === "nonfake") {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      const action = String(interaction.options.getString("action", true) || "").trim().toLowerCase();
+
+      if (action === "list") {
+        await interaction.editReply(buildTierlistNonFakeListText());
+        return;
+      }
+      if (!["add", "remove"].includes(action)) {
+        await interaction.editReply("Поддерживаются только action = add, remove или list.");
+        return;
+      }
+
+      const targetUser = interaction.options.getUser("target");
+      const userIdInput = (interaction.options.getString("user_id") || "").trim();
+      const targetId = targetUser?.id || parseRequestedUserId(userIdInput, "");
+      if (!targetId) {
+        await interaction.editReply("Укажи `target` или корректный `user_id`.");
+        return;
+      }
+
+      if (await replyAutonomyGuardIsolatedTarget(interaction, targetId, { editReply: true })) {
+        return;
+      }
+
+      try {
+        const mutationResult = await applyTierlistNonFakeClusterMutation(client, targetId, action === "add");
+        await interaction.editReply(buildTierlistNonFakeMutationText(
+          targetId,
+          action === "add",
+          mutationResult.result,
+          mutationResult.refreshWarnings
+        ));
+      } catch (error) {
+        await interaction.editReply(`Не удалось обновить remembered T6-кластер: ${String(error?.message || error || "неизвестная ошибка").slice(0, 260)}`);
+      }
+      return;
+    }
+
     if (subcommand === "removetier") {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       const targetUser = interaction.options.getUser("target");
@@ -15328,17 +15400,23 @@ client.on("interactionCreate", async (interaction) => {
 
       if (interaction.customId === "graphic_panel_outline") {
         const outline = getEffectiveGraphicOutlineConfig();
-        const modal = new ModalBuilder().setCustomId("graphic_panel_outline_modal").setTitle("Обводка PNG по роли");
+        const roleIdsText = outline.roleIds.join(", ");
+        const modal = new ModalBuilder().setCustomId("graphic_panel_outline_modal").setTitle("Обводка PNG по ролям");
+        const outlineRoleInput = new TextInputBuilder()
+          .setCustomId("outline_role")
+          .setLabel("Role IDs или mentions")
+          .setStyle(TextInputStyle.Paragraph)
+          .setRequired(true)
+          .setMaxLength(1000)
+          .setPlaceholder("<@&123456789012345678>, <@&987654321098765432>");
+
+        if (roleIdsText.length >= 3) {
+          outlineRoleInput.setValue(roleIdsText.slice(0, 1000));
+        }
+
         modal.addComponents(
           new ActionRowBuilder().addComponents(
-            new TextInputBuilder()
-              .setCustomId("outline_role")
-              .setLabel("Role ID или mention")
-              .setStyle(TextInputStyle.Short)
-              .setRequired(true)
-              .setMaxLength(80)
-              .setPlaceholder("<@&123456789012345678>")
-              .setValue(String(outline.roleId || "").slice(0, 80))
+            outlineRoleInput
           ),
           new ActionRowBuilder().addComponents(
             new TextInputBuilder()
@@ -15438,9 +15516,9 @@ client.on("interactionCreate", async (interaction) => {
 
       if (interaction.customId === "graphic_panel_outline_clear") {
         await applyUiMutation(client, "graphic", () => {
-          getGraphicTierlistConfig().outline = { roleId: "", color: "#ffffff" };
+          getGraphicTierlistConfig().outline = { roleId: "", roleIds: [], color: "#ffffff" };
         });
-        await interaction.update(buildGraphicPanelPayload("Обводка PNG по роли очищена.", false));
+        await interaction.update(buildGraphicPanelPayload("Обводка PNG по ролям очищена.", false));
         return;
       }
 
@@ -18971,15 +19049,21 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
-      const mutationResult = await applyTierlistNonFakeClusterMutation(client, targetId, normalizedAction === "add");
-      await interaction.reply(buildGraphicPanelPayload(
-        buildTierlistNonFakeMutationText(
-          targetId,
-          normalizedAction === "add",
-          mutationResult.result,
-          mutationResult.refreshWarnings
-        )
-      ));
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      try {
+        const mutationResult = await applyTierlistNonFakeClusterMutation(client, targetId, normalizedAction === "add");
+        await interaction.editReply(buildGraphicPanelPayload(
+          buildTierlistNonFakeMutationText(
+            targetId,
+            normalizedAction === "add",
+            mutationResult.result,
+            mutationResult.refreshWarnings
+          ),
+          false
+        ));
+      } catch (error) {
+        await interaction.editReply({ content: `Не удалось обновить remembered T6-кластер: ${String(error?.message || error)}` });
+      }
       return;
     }
 
@@ -18999,10 +19083,10 @@ client.on("interactionCreate", async (interaction) => {
     }
 
     if (interaction.customId === "graphic_panel_outline_modal") {
-      const roleId = parseRequestedRoleId(interaction.fields.getTextInputValue("outline_role"));
+      const roleIds = parseRequestedRoleIds(interaction.fields.getTextInputValue("outline_role"));
       const color = interaction.fields.getTextInputValue("outline_color").trim();
-      if (!roleId) {
-        await interaction.reply(ephemeralPayload({ content: "Укажи корректный role ID или mention роли." }));
+      if (!roleIds.length) {
+        await interaction.reply(ephemeralPayload({ content: "Укажи хотя бы один корректный role ID или role mention." }));
         return;
       }
       if (!/^#[0-9a-f]{6}$/i.test(color)) {
@@ -19010,12 +19094,21 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
-      await applyUiMutation(client, "graphic", () => {
-        const outline = getGraphicTierlistConfig().outline ||= {};
-        outline.roleId = roleId;
-        outline.color = color;
-      });
-      await interaction.reply(ephemeralPayload({ content: `Обводка PNG настроена: ${formatRoleMention(roleId)} → **${color}**.` }));
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      try {
+        await applyUiMutation(client, "graphic", () => {
+          const outline = getGraphicTierlistConfig().outline ||= {};
+          outline.roleId = roleIds[0] || "";
+          outline.roleIds = [...roleIds];
+          outline.color = color;
+        });
+        await interaction.editReply(buildGraphicPanelPayload(
+          `Обводка PNG настроена для ${roleIds.length} ролей: ${roleIds.map((roleId) => formatRoleMention(roleId)).join(", ")} → **${color}**.`,
+          false
+        ));
+      } catch (error) {
+        await interaction.editReply({ content: `Не удалось сохранить обводку PNG: ${String(error?.message || error)}` });
+      }
       return;
     }
 

@@ -23,10 +23,10 @@ const ACTIVITY_CHANNEL_WEIGHT_PRESETS = Object.freeze({
 });
 
 const DEFAULT_ACTIVITY_ROLE_THRESHOLDS = Object.freeze({
-  core: 85,
-  stable: 70,
-  active: 55,
-  floating: 38,
+  core: 94,
+  stable: 77,
+  active: 61,
+  floating: 42,
   weak: 18,
   dead: 0,
 });
@@ -51,6 +51,8 @@ const DEFAULT_ACTIVITY_SCORE_WEIGHTS = Object.freeze({
   days: 31,
   freshness: 18,
   messages: 10,
+  voice: 8,
+  activeVoice: 6,
   diversity: 5,
 });
 
@@ -58,6 +60,8 @@ const DEFAULT_ACTIVITY_SCORE_WINDOWS = Object.freeze({
   sessions: 50,
   days: 20,
   messages: 250,
+  voiceHours: 20,
+  activeVoiceHours: 12,
 });
 
 const DEFAULT_ACTIVITY_DIVERSITY_BONUSES = Object.freeze({
@@ -317,8 +321,10 @@ function createEmptyActivityState() {
     config: createDefaultActivityConfig(),
     watchedChannels: [],
     globalUserSessions: [],
+    globalVoiceSessions: [],
     channelDailyStats: [],
     userChannelDailyStats: [],
+    userVoiceDailyStats: [],
     userSnapshots: {},
     calibrationRuns: [],
     ops: {
@@ -326,6 +332,7 @@ function createEmptyActivityState() {
     },
     runtime: {
       openSessions: {},
+      openVoiceSessions: {},
       dirtyUsers: [],
       lastFlushAt: null,
       lastFlushStats: null,
@@ -407,8 +414,10 @@ function normalizeActivityState(value = {}) {
   next.watchedChannels = [...watchedChannelsById.values()];
 
   next.globalUserSessions = Array.isArray(source.globalUserSessions) ? clone(source.globalUserSessions) : [];
+  next.globalVoiceSessions = Array.isArray(source.globalVoiceSessions) ? clone(source.globalVoiceSessions) : [];
   next.channelDailyStats = Array.isArray(source.channelDailyStats) ? clone(source.channelDailyStats) : [];
   next.userChannelDailyStats = Array.isArray(source.userChannelDailyStats) ? clone(source.userChannelDailyStats) : [];
+  next.userVoiceDailyStats = Array.isArray(source.userVoiceDailyStats) ? clone(source.userVoiceDailyStats) : [];
   next.userSnapshots = source.userSnapshots && typeof source.userSnapshots === "object" && !Array.isArray(source.userSnapshots)
     ? clone(source.userSnapshots)
     : {};
@@ -423,6 +432,9 @@ function normalizeActivityState(value = {}) {
     ...(source.runtime && typeof source.runtime === "object" && !Array.isArray(source.runtime) ? clone(source.runtime) : {}),
     openSessions: source.runtime?.openSessions && typeof source.runtime.openSessions === "object" && !Array.isArray(source.runtime.openSessions)
       ? clone(source.runtime.openSessions)
+      : {},
+    openVoiceSessions: source.runtime?.openVoiceSessions && typeof source.runtime.openVoiceSessions === "object" && !Array.isArray(source.runtime.openVoiceSessions)
+      ? clone(source.runtime.openVoiceSessions)
       : {},
     dirtyUsers: normalizeStringArray(source.runtime?.dirtyUsers, 5000, 80),
     lastFlushAt: normalizeNullableString(source.runtime?.lastFlushAt, 80),

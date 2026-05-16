@@ -11,17 +11,12 @@
     "wartimeAccessRoleId": "1496376994966011954",
     "verifyAccessRoleId": "",
     "nonJjsAccessRoleId": "",
-    "profileViewerTagRoleIds": [],
     "killTierRoleIds": {
       "1": "",
       "2": "",
       "3": "",
       "4": "",
       "5": ""
-    },
-    "killMilestoneRoleIds": {
-      "20k": "",
-      "30k": ""
     }
   },
   "ui": {

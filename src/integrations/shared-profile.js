@@ -369,6 +369,11 @@ function normalizeRobloxCoPlayState(value = {}) {
   };
 }
 
+function normalizeRobloxPlatformUserId(value) {
+  const normalized = normalizeNullableInteger(value, { min: 1 });
+  return normalized ? String(normalized) : null;
+}
+
 function buildLegacyRobloxSource(profile = {}) {
   const source = profile && typeof profile === "object" ? profile : {};
   return {
@@ -518,7 +523,7 @@ function buildRobloxTopCoPlayPeers(peers = [], limit = ROBLOX_TOP_COPLAY_PEER_LI
 function normalizeRobloxDomainState(value = {}) {
   const source = value && typeof value === "object" ? value : {};
   const rawStatus = cleanString(source.verificationStatus || source.status, 40).toLowerCase();
-  const userId = normalizeNullableString(source.robloxUserId ?? source.userId, 40);
+  const userId = normalizeRobloxPlatformUserId(source.robloxUserId ?? source.userId);
   const username = normalizeNullableString(source.robloxUsername ?? source.username, 120);
   const displayName = normalizeNullableString(source.robloxDisplayName ?? source.displayName, 120);
   const rawAccountStatus = cleanString(source.robloxAccountStatus ?? source.accountStatus, 40).toLowerCase();

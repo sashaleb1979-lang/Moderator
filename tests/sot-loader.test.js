@@ -369,7 +369,7 @@ test("syncSotShadowState preserves activity SoT state during legacy refresh", ()
   assert.equal(db.sot.activity.config.scoreWindowDays, 30);
   assert.equal(db.sot.activity.config.channelWeightPresets.main_chat, 1);
   assert.equal(db.sot.activity.config.channelWeightPresets.flood, 0.35);
-  assert.equal(db.sot.activity.config.activityRoleThresholds.core, 85);
+  assert.equal(db.sot.activity.config.activityRoleThresholds.core, 94);
   assert.equal(db.sot.activity.config.activityRoleThresholds.dead, 0);
   assert.deepEqual(db.sot.activity.watchedChannels, [
     {

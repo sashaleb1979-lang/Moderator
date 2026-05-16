@@ -115,6 +115,12 @@ function ensureOpenSessionMap(state) {
   return state.runtime.openSessions;
 }
 
+function ensureOpenVoiceSessionMap(state) {
+  state.runtime ||= {};
+  state.runtime.openVoiceSessions ||= {};
+  return state.runtime.openVoiceSessions;
+}
+
 function ensureDirtyUserSet(state) {
   state.runtime ||= {};
   const values = Array.isArray(state.runtime.dirtyUsers) ? state.runtime.dirtyUsers : [];
@@ -126,6 +132,261 @@ function ensureDirtyUserSet(state) {
 function commitDirtyUserSet(state, dirtyUsers) {
   state.runtime ||= {};
   state.runtime.dirtyUsers = [...dirtyUsers].filter(Boolean).sort();
+}
+
+function uniqueChannelIds(items = []) {
+  const nextValues = [];
+  const seen = new Set();
+  for (const entry of Array.isArray(items) ? items : []) {
+    const channelId = cleanString(entry, 80);
+    if (!channelId || seen.has(channelId)) continue;
+    seen.add(channelId);
+    nextValues.push(channelId);
+  }
+  return nextValues;
+}
+
+function normalizeVoiceFlag(value) {
+  return value === true;
+}
+
+function buildVoiceFlags(voiceState = {}) {
+  return {
+    selfMute: normalizeVoiceFlag(voiceState?.selfMute),
+    selfDeaf: normalizeVoiceFlag(voiceState?.selfDeaf),
+    serverMute: normalizeVoiceFlag(voiceState?.serverMute),
+    serverDeaf: normalizeVoiceFlag(voiceState?.serverDeaf),
+    streaming: normalizeVoiceFlag(voiceState?.streaming),
+    selfVideo: normalizeVoiceFlag(voiceState?.selfVideo),
+  };
+}
+
+function hasMeaningfulVoiceFlagChange(currentFlags = {}, nextFlags = {}) {
+  return ["selfMute", "selfDeaf", "serverMute", "serverDeaf", "streaming", "selfVideo"]
+    .some((key) => normalizeVoiceFlag(currentFlags?.[key]) !== normalizeVoiceFlag(nextFlags?.[key]));
+}
+
+function isActiveVoiceFlags(flags = {}) {
+  return normalizeVoiceFlag(flags?.selfMute) !== true;
+}
+
+function buildVoiceSessionId(session) {
+  return [
+    cleanString(session.guildId, 80) || "guild",
+    cleanString(session.userId, 80) || "user",
+    cleanString(session.joinedAt, 80) || "start",
+    cleanString(session.endedAt, 80) || cleanString(session.joinedAt, 80) || "end",
+    "voice",
+  ].join(":");
+}
+
+function splitDurationAcrossUtcDays(startedAt, endedAt) {
+  const startedMs = Date.parse(String(startedAt || ""));
+  const endedMs = Date.parse(String(endedAt || ""));
+  if (!Number.isFinite(startedMs) || !Number.isFinite(endedMs) || endedMs <= startedMs) {
+    return [];
+  }
+
+  const segments = [];
+  let cursorMs = startedMs;
+  while (cursorMs < endedMs) {
+    const cursorIso = new Date(cursorMs).toISOString();
+    const nextDay = new Date(`${cursorIso.slice(0, 10)}T00:00:00.000Z`);
+    nextDay.setUTCDate(nextDay.getUTCDate() + 1);
+    const segmentEndMs = Math.min(endedMs, nextDay.getTime());
+    const durationSeconds = Math.max(0, Math.floor((segmentEndMs - cursorMs) / 1000));
+    if (durationSeconds > 0) {
+      segments.push({
+        date: cursorIso.slice(0, 10),
+        startedAt: cursorIso,
+        endedAt: new Date(segmentEndMs).toISOString(),
+        durationSeconds,
+      });
+    }
+    cursorMs = segmentEndMs;
+  }
+
+  return segments;
+}
+
+function getVoiceDayEntry(session, dateKey) {
+  session.dayBreakdown ||= {};
+  session.dayBreakdown[dateKey] ||= {
+    voiceDurationSeconds: 0,
+    activeVoiceDurationSeconds: 0,
+    streamingDurationSeconds: 0,
+    videoDurationSeconds: 0,
+    firstJoinedAt: null,
+    lastLeftAt: null,
+  };
+  return session.dayBreakdown[dateKey];
+}
+
+function createOpenVoiceSession({
+  guildId,
+  userId,
+  channelId,
+  createdAt,
+  flags = {},
+  incomplete = false,
+  incompleteReason = null,
+  enteredChannelIds = [],
+} = {}) {
+  const normalizedChannelId = cleanString(channelId, 80);
+  const normalizedFlags = buildVoiceFlags(flags);
+  return {
+    guildId: cleanString(guildId, 80),
+    userId: cleanString(userId, 80),
+    joinedAt: createdAt,
+    lastStateChangedAt: createdAt,
+    currentChannelId: normalizedChannelId,
+    enteredChannelIds: uniqueChannelIds([normalizedChannelId, ...enteredChannelIds]),
+    moveCount: 0,
+    voiceDurationSeconds: 0,
+    activeVoiceDurationSeconds: 0,
+    streamingDurationSeconds: 0,
+    videoDurationSeconds: 0,
+    dayBreakdown: {},
+    incomplete: incomplete === true,
+    incompleteReason: incomplete === true ? cleanString(incompleteReason, 120) || "unknown" : null,
+    ...normalizedFlags,
+  };
+}
+
+function accumulateOpenVoiceSessionSegment(session, endedAt) {
+  const endedAtIso = normalizeIsoTimestamp(endedAt, null);
+  const startedAtIso = normalizeIsoTimestamp(session?.lastStateChangedAt, null);
+  if (!endedAtIso || !startedAtIso) {
+    return 0;
+  }
+
+  const segments = splitDurationAcrossUtcDays(startedAtIso, endedAtIso);
+  const isActiveVoice = isActiveVoiceFlags(session);
+  const isStreaming = normalizeVoiceFlag(session?.streaming);
+  const isVideo = normalizeVoiceFlag(session?.selfVideo);
+  let totalDurationSeconds = 0;
+
+  for (const segment of segments) {
+    totalDurationSeconds += segment.durationSeconds;
+    const dayEntry = getVoiceDayEntry(session, segment.date);
+    dayEntry.voiceDurationSeconds += segment.durationSeconds;
+    if (isActiveVoice) {
+      dayEntry.activeVoiceDurationSeconds += segment.durationSeconds;
+    }
+    if (isStreaming) {
+      dayEntry.streamingDurationSeconds += segment.durationSeconds;
+    }
+    if (isVideo) {
+      dayEntry.videoDurationSeconds += segment.durationSeconds;
+    }
+    dayEntry.firstJoinedAt = dayEntry.firstJoinedAt || segment.startedAt;
+    dayEntry.lastLeftAt = segment.endedAt;
+  }
+
+  session.voiceDurationSeconds = Number(session.voiceDurationSeconds || 0) + totalDurationSeconds;
+  if (isActiveVoice) {
+    session.activeVoiceDurationSeconds = Number(session.activeVoiceDurationSeconds || 0) + totalDurationSeconds;
+  }
+  if (isStreaming) {
+    session.streamingDurationSeconds = Number(session.streamingDurationSeconds || 0) + totalDurationSeconds;
+  }
+  if (isVideo) {
+    session.videoDurationSeconds = Number(session.videoDurationSeconds || 0) + totalDurationSeconds;
+  }
+  session.lastStateChangedAt = endedAtIso;
+  return totalDurationSeconds;
+}
+
+function finalizeOpenVoiceSession(session, endedAt) {
+  const finalizedSession = clone(session || {});
+  const endedAtIso = normalizeIsoTimestamp(endedAt, finalizedSession?.lastStateChangedAt || finalizedSession?.joinedAt);
+  accumulateOpenVoiceSessionSegment(finalizedSession, endedAtIso);
+  finalizedSession.endedAt = endedAtIso;
+  return {
+    id: buildVoiceSessionId(finalizedSession),
+    guildId: cleanString(finalizedSession.guildId, 80),
+    userId: cleanString(finalizedSession.userId, 80),
+    joinedAt: normalizeIsoTimestamp(finalizedSession.joinedAt, null),
+    endedAt: endedAtIso,
+    durationSeconds: Number(finalizedSession.voiceDurationSeconds || 0),
+    activeVoiceDurationSeconds: Number(finalizedSession.activeVoiceDurationSeconds || 0),
+    streamingDurationSeconds: Number(finalizedSession.streamingDurationSeconds || 0),
+    videoDurationSeconds: Number(finalizedSession.videoDurationSeconds || 0),
+    finalChannelId: cleanString(finalizedSession.currentChannelId, 80) || null,
+    enteredChannelIds: uniqueChannelIds(finalizedSession.enteredChannelIds),
+    moveCount: Math.max(0, Number(finalizedSession.moveCount) || 0),
+    incomplete: finalizedSession.incomplete === true,
+    incompleteReason: finalizedSession.incomplete === true
+      ? cleanString(finalizedSession.incompleteReason, 120) || "unknown"
+      : null,
+    selfMute: normalizeVoiceFlag(finalizedSession.selfMute),
+    selfDeaf: normalizeVoiceFlag(finalizedSession.selfDeaf),
+    serverMute: normalizeVoiceFlag(finalizedSession.serverMute),
+    serverDeaf: normalizeVoiceFlag(finalizedSession.serverDeaf),
+    streaming: normalizeVoiceFlag(finalizedSession.streaming),
+    selfVideo: normalizeVoiceFlag(finalizedSession.selfVideo),
+    dayBreakdown: clone(finalizedSession.dayBreakdown || {}),
+  };
+}
+
+function upsertUserVoiceDailyStat(state, record) {
+  const list = Array.isArray(state.userVoiceDailyStats) ? state.userVoiceDailyStats : [];
+  const index = list.findIndex((entry) => entry.guildId === record.guildId
+    && entry.userId === record.userId
+    && entry.date === record.date);
+
+  if (index >= 0) {
+    const current = list[index];
+    list[index] = {
+      ...current,
+      voiceDurationSeconds: Number(current.voiceDurationSeconds || 0) + Number(record.voiceDurationSeconds || 0),
+      activeVoiceDurationSeconds: Number(current.activeVoiceDurationSeconds || 0) + Number(record.activeVoiceDurationSeconds || 0),
+      streamingDurationSeconds: Number(current.streamingDurationSeconds || 0) + Number(record.streamingDurationSeconds || 0),
+      videoDurationSeconds: Number(current.videoDurationSeconds || 0) + Number(record.videoDurationSeconds || 0),
+      sessionsCount: Number(current.sessionsCount || 0) + Number(record.sessionsCount || 0),
+      firstJoinedAt: [current.firstJoinedAt, record.firstJoinedAt].filter(Boolean).sort()[0] || null,
+      lastLeftAt: [current.lastLeftAt, record.lastLeftAt].filter(Boolean).sort().slice(-1)[0] || null,
+    };
+  } else {
+    list.push({
+      guildId: record.guildId,
+      userId: record.userId,
+      date: record.date,
+      voiceDurationSeconds: Number(record.voiceDurationSeconds || 0),
+      activeVoiceDurationSeconds: Number(record.activeVoiceDurationSeconds || 0),
+      streamingDurationSeconds: Number(record.streamingDurationSeconds || 0),
+      videoDurationSeconds: Number(record.videoDurationSeconds || 0),
+      sessionsCount: Number(record.sessionsCount || 0),
+      firstJoinedAt: record.firstJoinedAt || null,
+      lastLeftAt: record.lastLeftAt || null,
+    });
+  }
+
+  state.userVoiceDailyStats = list;
+}
+
+function persistFinalizedVoiceSession(state, session, endedAt) {
+  const persistedSession = finalizeOpenVoiceSession(session, endedAt);
+  state.globalVoiceSessions ||= [];
+  state.globalVoiceSessions.push(persistedSession);
+
+  const sessionDate = getDateKey(persistedSession.joinedAt);
+  for (const [date, dayEntry] of Object.entries(persistedSession.dayBreakdown || {})) {
+    upsertUserVoiceDailyStat(state, {
+      guildId: persistedSession.guildId,
+      userId: persistedSession.userId,
+      date,
+      voiceDurationSeconds: Number(dayEntry.voiceDurationSeconds || 0),
+      activeVoiceDurationSeconds: Number(dayEntry.activeVoiceDurationSeconds || 0),
+      streamingDurationSeconds: Number(dayEntry.streamingDurationSeconds || 0),
+      videoDurationSeconds: Number(dayEntry.videoDurationSeconds || 0),
+      sessionsCount: date === sessionDate && Number(persistedSession.durationSeconds || 0) >= 0 ? 1 : 0,
+      firstJoinedAt: dayEntry.firstJoinedAt || null,
+      lastLeftAt: dayEntry.lastLeftAt || null,
+    });
+  }
+
+  return persistedSession;
 }
 
 function getWatchedChannelRecord(state, channelId) {
@@ -420,6 +681,45 @@ function collectUserDailyRows(state, userId) {
   return rows;
 }
 
+function collectUserVoiceSessionRows(state, userId, now) {
+  const rows = (Array.isArray(state.globalVoiceSessions) ? state.globalVoiceSessions : [])
+    .filter((entry) => entry.userId === userId)
+    .map((entry) => clone(entry));
+  const openVoiceSession = ensureOpenVoiceSessionMap(state)[userId];
+  if (openVoiceSession && now) {
+    rows.push(finalizeOpenVoiceSession(openVoiceSession, now));
+  }
+  return rows;
+}
+
+function collectUserVoiceDailyRows(state, userId, now) {
+  const rows = (Array.isArray(state.userVoiceDailyStats) ? state.userVoiceDailyStats : [])
+    .filter((entry) => entry.userId === userId)
+    .map((entry) => clone(entry));
+
+  const openVoiceSession = ensureOpenVoiceSessionMap(state)[userId];
+  if (!openVoiceSession || !now) return rows;
+
+  const projectedSession = finalizeOpenVoiceSession(openVoiceSession, now);
+  const sessionDate = getDateKey(projectedSession.joinedAt);
+  for (const [date, dayEntry] of Object.entries(projectedSession.dayBreakdown || {})) {
+    rows.push({
+      guildId: projectedSession.guildId,
+      userId,
+      date,
+      voiceDurationSeconds: Number(dayEntry.voiceDurationSeconds || 0),
+      activeVoiceDurationSeconds: Number(dayEntry.activeVoiceDurationSeconds || 0),
+      streamingDurationSeconds: Number(dayEntry.streamingDurationSeconds || 0),
+      videoDurationSeconds: Number(dayEntry.videoDurationSeconds || 0),
+      sessionsCount: date === sessionDate && Number(projectedSession.durationSeconds || 0) >= 0 ? 1 : 0,
+      firstJoinedAt: dayEntry.firstJoinedAt || null,
+      lastLeftAt: dayEntry.lastLeftAt || null,
+    });
+  }
+
+  return rows;
+}
+
 function sumSessionEffectiveValuesByWindow(sessionRows, now, days, maxPerDay) {
   const cutoff = buildSnapshotCutoff(now, days);
   const totalsByDate = new Map();
@@ -484,13 +784,21 @@ function rebuildActivityUserSnapshot({ db = {}, userId = "", now, memberActivity
   const existingActivity = profile?.domains?.activity || {};
   const sessionRows = collectUserSessionRows(state, normalizedUserId);
   const dailyRows = collectUserDailyRows(state, normalizedUserId);
+  const voiceSessionRows = collectUserVoiceSessionRows(state, normalizedUserId, currentTime);
+  const voiceDailyRows = collectUserVoiceDailyRows(state, normalizedUserId, currentTime);
 
   const messageWindowSums = new Map([[7, 0], [30, 0], [90, 0]]);
   const sessionWindowCounts = new Map([[7, 0], [30, 0], [90, 0]]);
   const activeDaySets = new Map([[7, new Set()], [30, new Set()], [90, new Set()]]);
+  const voiceDurationWindowSums = new Map([[7, 0], [30, 0], [90, 0]]);
+  const activeVoiceDurationWindowSums = new Map([[7, 0], [30, 0], [90, 0]]);
+  const voiceSessionWindowCounts = new Map([[7, 0], [30, 0], [90, 0]]);
+  const voiceActiveDaySets = new Map([[7, new Set()], [30, new Set()], [90, new Set()]]);
   const channelMessageCounts30d = new Map();
   const channelSessionCounts30d = new Map();
   const channelWeightedMessages30d = new Map();
+  let streamingDurationSeconds30d = 0;
+  let videoDurationSeconds30d = 0;
   let lastSeenAt = null;
 
   for (const entry of dailyRows) {
@@ -528,6 +836,42 @@ function rebuildActivityUserSnapshot({ db = {}, userId = "", now, memberActivity
     }
   }
 
+  for (const entry of voiceDailyRows) {
+    const timestamp = new Date(entry.lastLeftAt || entry.firstJoinedAt || `${entry.date}T00:00:00.000Z`).getTime();
+    if (!Number.isFinite(timestamp)) continue;
+    const dateKey = cleanString(entry.date, 20) || getDateKey(entry.lastLeftAt || entry.firstJoinedAt);
+    const lastSeenCandidate = entry.lastLeftAt || entry.firstJoinedAt || null;
+    if (lastSeenCandidate && (!lastSeenAt || lastSeenCandidate > lastSeenAt)) {
+      lastSeenAt = lastSeenCandidate;
+    }
+
+    for (const windowDays of [7, 30, 90]) {
+      if (timestamp >= buildSnapshotCutoff(currentTime, windowDays)) {
+        voiceDurationWindowSums.set(windowDays, voiceDurationWindowSums.get(windowDays) + Number(entry.voiceDurationSeconds || 0));
+        activeVoiceDurationWindowSums.set(windowDays, activeVoiceDurationWindowSums.get(windowDays) + Number(entry.activeVoiceDurationSeconds || 0));
+        if (Number(entry.voiceDurationSeconds || 0) > 0 || Number(entry.activeVoiceDurationSeconds || 0) > 0) {
+          activeDaySets.get(windowDays).add(dateKey);
+          voiceActiveDaySets.get(windowDays).add(dateKey);
+        }
+      }
+    }
+
+    if (timestamp >= buildSnapshotCutoff(currentTime, 30)) {
+      streamingDurationSeconds30d += Number(entry.streamingDurationSeconds || 0);
+      videoDurationSeconds30d += Number(entry.videoDurationSeconds || 0);
+    }
+  }
+
+  for (const entry of voiceSessionRows) {
+    const timestamp = new Date(entry.joinedAt || entry.endedAt || 0).getTime();
+    if (!Number.isFinite(timestamp)) continue;
+    for (const windowDays of [7, 30, 90]) {
+      if (timestamp >= buildSnapshotCutoff(currentTime, windowDays)) {
+        voiceSessionWindowCounts.set(windowDays, voiceSessionWindowCounts.get(windowDays) + 1);
+      }
+    }
+  }
+
   let activeWatchedChannels30d = 0;
   for (const [channelId, messageCount] of channelMessageCounts30d.entries()) {
     const sessionsCount = channelSessionCounts30d.get(channelId) || 0;
@@ -539,6 +883,10 @@ function rebuildActivityUserSnapshot({ db = {}, userId = "", now, memberActivity
   const weightedMessages30d = [...channelWeightedMessages30d.values()].reduce((sum, value) => sum + value, 0);
   const globalEffectiveSessions30d = sumSessionEffectiveValuesByWindow(sessionRows, currentTime, 30, config.maxEffectiveSessionsPerDay);
   const effectiveActiveDays30d = activeDaySets.get(30).size;
+  const voiceHours30d = voiceDurationWindowSums.get(30) / 3600;
+  const activeVoiceSignalHours30d = (activeVoiceDurationWindowSums.get(30) / 3600)
+    + ((streamingDurationSeconds30d / 3600) * 0.5)
+    + ((videoDurationSeconds30d / 3600) * 0.25);
   const daysAbsent = lastSeenAt
     ? (() => {
       const currentDate = new Date(currentTime);
@@ -555,8 +903,12 @@ function rebuildActivityUserSnapshot({ db = {}, userId = "", now, memberActivity
   const freshnessPart = getFreshnessScore(daysAbsent ?? Number.POSITIVE_INFINITY, config);
   const messagesPart = Math.min(weightedMessages30d / (Number(config.activityScoreWindows?.messages) || 250), 1)
     * (Number(config.activityScoreWeights?.messages) || 10);
+  const voicePart = Math.min(voiceHours30d / (Number(config.activityScoreWindows?.voiceHours) || 20), 1)
+    * (Number(config.activityScoreWeights?.voice) || 8);
+  const activeVoicePart = Math.min(activeVoiceSignalHours30d / (Number(config.activityScoreWindows?.activeVoiceHours) || 12), 1)
+    * (Number(config.activityScoreWeights?.activeVoice) || 6);
   const diversityPart = getDiversityBonus(activeWatchedChannels30d, config);
-  const uncappedScore = sessionsPart + daysPart + freshnessPart + messagesPart + diversityPart;
+  const uncappedScore = sessionsPart + daysPart + freshnessPart + messagesPart + voicePart + activeVoicePart + diversityPart;
   const baseActivityScore = Math.round(
     Math.min(getActivityScoreCap(effectiveActiveDays30d, config), Math.min(100, uncappedScore))
   );
@@ -581,11 +933,25 @@ function rebuildActivityUserSnapshot({ db = {}, userId = "", now, memberActivity
     sessions7d: sessionWindowCounts.get(7),
     sessions30d: sessionWindowCounts.get(30),
     sessions90d: sessionWindowCounts.get(90),
+    voiceSessions7d: voiceSessionWindowCounts.get(7),
+    voiceSessions30d: voiceSessionWindowCounts.get(30),
+    voiceSessions90d: voiceSessionWindowCounts.get(90),
     activeDays7d: activeDaySets.get(7).size,
     activeDays30d: activeDaySets.get(30).size,
     activeDays90d: activeDaySets.get(90).size,
+    voiceActiveDays7d: voiceActiveDaySets.get(7).size,
+    voiceActiveDays30d: voiceActiveDaySets.get(30).size,
+    voiceActiveDays90d: voiceActiveDaySets.get(90).size,
     activeWatchedChannels30d,
     weightedMessages30d,
+    voiceDurationSeconds7d: voiceDurationWindowSums.get(7),
+    voiceDurationSeconds30d: voiceDurationWindowSums.get(30),
+    voiceDurationSeconds90d: voiceDurationWindowSums.get(90),
+    activeVoiceDurationSeconds7d: activeVoiceDurationWindowSums.get(7),
+    activeVoiceDurationSeconds30d: activeVoiceDurationWindowSums.get(30),
+    activeVoiceDurationSeconds90d: activeVoiceDurationWindowSums.get(90),
+    streamingDurationSeconds30d,
+    videoDurationSeconds30d,
     globalEffectiveSessions30d,
     effectiveActiveDays30d,
     daysAbsent,
@@ -626,6 +992,116 @@ function mirrorActivitySnapshotToProfile(db, userId, snapshot) {
 
   db.profiles[userId] = ensureSharedProfile(nextProfile, userId).profile;
   return db.profiles[userId];
+}
+
+function recordActivityVoiceState({ db = {}, oldState = {}, newState = {}, now } = {}) {
+  const state = ensureActivityState(db);
+  const currentTime = getActivityRuntimeNow({ now });
+  const guildId = cleanString(newState?.guildId || newState?.guild?.id || oldState?.guildId || oldState?.guild?.id, 80);
+  const userId = cleanString(newState?.userId || newState?.id || newState?.member?.id || oldState?.userId || oldState?.id || oldState?.member?.id, 80);
+  const previousChannelId = cleanString(oldState?.channelId, 80);
+  const nextChannelId = cleanString(newState?.channelId, 80);
+
+  if (!guildId || !userId) {
+    return { captured: false, stateChanged: false, reason: "missing_context" };
+  }
+
+  if (!previousChannelId && !nextChannelId) {
+    return { captured: false, stateChanged: false, reason: "not_in_voice" };
+  }
+
+  const openVoiceSessions = ensureOpenVoiceSessionMap(state);
+  const dirtyUsers = ensureDirtyUserSet(state);
+  let session = openVoiceSessions[userId] || null;
+
+  if (!nextChannelId) {
+    if (session) {
+      const finalizedSession = persistFinalizedVoiceSession(state, session, currentTime);
+      delete openVoiceSessions[userId];
+      dirtyUsers.add(userId);
+      commitDirtyUserSet(state, dirtyUsers);
+      return {
+        captured: true,
+        stateChanged: true,
+        action: "leave",
+        session: finalizedSession,
+      };
+    }
+
+    if (previousChannelId) {
+      const recoveredSession = createOpenVoiceSession({
+        guildId,
+        userId,
+        channelId: previousChannelId,
+        createdAt: currentTime,
+        flags: buildVoiceFlags(oldState),
+        incomplete: true,
+        incompleteReason: "missing_open_session",
+        enteredChannelIds: [previousChannelId],
+      });
+      const finalizedSession = persistFinalizedVoiceSession(state, recoveredSession, currentTime);
+      dirtyUsers.add(userId);
+      commitDirtyUserSet(state, dirtyUsers);
+      return {
+        captured: true,
+        stateChanged: true,
+        action: "leave_recovered",
+        session: finalizedSession,
+      };
+    }
+
+    return { captured: false, stateChanged: false, reason: "state_unchanged" };
+  }
+
+  const nextFlags = buildVoiceFlags(newState);
+  if (!session) {
+    const recoveredMidSession = Boolean(previousChannelId && previousChannelId !== nextChannelId);
+    session = createOpenVoiceSession({
+      guildId,
+      userId,
+      channelId: nextChannelId,
+      createdAt: currentTime,
+      flags: nextFlags,
+      incomplete: recoveredMidSession,
+      incompleteReason: recoveredMidSession ? "recovered_mid_session" : null,
+      enteredChannelIds: recoveredMidSession ? [previousChannelId, nextChannelId] : [nextChannelId],
+    });
+    if (recoveredMidSession) {
+      session.moveCount = 1;
+    }
+    openVoiceSessions[userId] = session;
+    dirtyUsers.add(userId);
+    commitDirtyUserSet(state, dirtyUsers);
+    return {
+      captured: true,
+      stateChanged: true,
+      action: recoveredMidSession ? "recovered_move" : "join",
+      session: clone(session),
+    };
+  }
+
+  const channelChanged = cleanString(session.currentChannelId, 80) !== nextChannelId;
+  const flagsChanged = hasMeaningfulVoiceFlagChange(session, nextFlags);
+  if (!channelChanged && !flagsChanged) {
+    return { captured: false, stateChanged: false, reason: "state_unchanged" };
+  }
+
+  accumulateOpenVoiceSessionSegment(session, currentTime);
+  if (channelChanged) {
+    session.currentChannelId = nextChannelId;
+    session.enteredChannelIds = uniqueChannelIds([...(session.enteredChannelIds || []), nextChannelId]);
+    session.moveCount = Math.max(0, Number(session.moveCount) || 0) + 1;
+  }
+  Object.assign(session, nextFlags, { lastStateChangedAt: currentTime });
+  dirtyUsers.add(userId);
+  commitDirtyUserSet(state, dirtyUsers);
+
+  return {
+    captured: true,
+    stateChanged: true,
+    action: channelChanged ? (previousChannelId ? "move" : "join_refresh") : "state_update",
+    session: clone(session),
+  };
 }
 
 function normalizeActivitySnapshotForState(db, userId, snapshot) {
@@ -889,5 +1365,6 @@ module.exports = {
   rebuildActivitySnapshots,
   rebuildActivityUserSnapshot,
   recordActivityMessage,
+  recordActivityVoiceState,
   resumeActivityRuntime,
 };

@@ -534,6 +534,19 @@ test("normalizeRobloxDomainState defaults to unverified when binding is missing"
   });
 });
 
+test("normalizeRobloxDomainState drops unsafe Roblox user ids instead of treating them as valid bindings", () => {
+  const result = normalizeRobloxDomainState({
+    username: "RynexV",
+    userId: "677512130085257217",
+    verificationStatus: "verified",
+  });
+
+  assert.equal(result.username, "RynexV");
+  assert.equal(result.userId, null);
+  assert.equal(result.profileUrl, null);
+  assert.equal(result.verificationStatus, "verified");
+});
+
 test("ensureSharedProfile does not leak Discord identity fields into Roblox domain without an explicit binding", () => {
   const result = ensureSharedProfile({
     userId: "200",

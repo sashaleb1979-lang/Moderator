@@ -185,11 +185,11 @@ test("presentation resolution prefers db overrides over file defaults and hard d
   assert.equal(resolved.tierlist.graphic.colors[6], "#6c6c6c");
 });
 
-test("presentation resolution keeps graphic outline config and validates fallback color", () => {
+test("presentation resolution keeps graphic outline roles config and validates fallback color", () => {
   const defaults = createPresentationDefaults({
     graphicTierlist: {
       outline: {
-        roleId: "222",
+        roleId: "1498650315631628318",
         color: "#abcdef",
       },
     },
@@ -198,7 +198,8 @@ test("presentation resolution keeps graphic outline config and validates fallbac
   });
 
   assert.deepEqual(defaults.tierlist.graphic.outline, {
-    roleId: "222",
+    roleId: "1498650315631628318",
+    roleIds: ["1498650315631628318"],
     color: "#abcdef",
   });
 
@@ -207,7 +208,7 @@ test("presentation resolution keeps graphic outline config and validates fallbac
       tierlist: {
         graphic: {
           outline: {
-            roleId: "111",
+            roleIds: ["1498650315631628318", "1498650315631628320", "1498650315631628318"],
             color: "bad-color",
           },
         },
@@ -218,7 +219,7 @@ test("presentation resolution keeps graphic outline config and validates fallbac
   const resolved = resolvePresentation(dbConfig, {
     graphicTierlist: {
       outline: {
-        roleId: "222",
+        roleId: "1498650315631628319",
         color: "#abcdef",
       },
     },
@@ -227,8 +228,38 @@ test("presentation resolution keeps graphic outline config and validates fallbac
   });
 
   assert.deepEqual(resolved.tierlist.graphic.outline, {
-    roleId: "111",
+    roleId: "1498650315631628318",
+    roleIds: ["1498650315631628318", "1498650315631628320"],
     color: "#abcdef",
+  });
+
+  const cleared = resolvePresentation({
+    presentation: {
+      tierlist: {
+        graphic: {
+          outline: {
+            roleId: "",
+            roleIds: [],
+            color: "#123456",
+          },
+        },
+      },
+    },
+  }, {
+    graphicTierlist: {
+      outline: {
+        roleId: "1498650315631628319",
+        color: "#abcdef",
+      },
+    },
+  }, {
+    defaultGraphicTierColors: DEFAULT_GRAPHIC_TIER_COLORS,
+  });
+
+  assert.deepEqual(cleared.tierlist.graphic.outline, {
+    roleId: "",
+    roleIds: [],
+    color: "#123456",
   });
 });
 

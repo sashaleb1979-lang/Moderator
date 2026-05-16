@@ -307,6 +307,120 @@ test("runRobloxPlaytimeSyncJob reports missing verified candidates explicitly", 
   });
 });
 
+test("runRobloxPlaytimeSyncJob repairs verified bindings with invalid Roblox ids before tracking", async () => {
+  const runtimeState = createRobloxRuntimeState();
+  const db = {
+    profiles: {
+      user_a: {
+        userId: "user_a",
+        domains: {
+          roblox: {
+            username: "AlphaRb",
+            userId: "711122552566579240",
+            verificationStatus: "verified",
+          },
+        },
+      },
+    },
+  };
+
+  const result = await runRobloxPlaytimeSyncJob({
+    db,
+    runtimeState,
+    now: () => "2026-05-09T12:00:00.000Z",
+    roblox: {
+      jjsUniverseId: 999,
+      playtimePollMinutes: 2,
+    },
+    async fetchUsersByUsernames(usernames) {
+      assert.deepEqual(usernames, ["alpharb"]);
+      return [{
+        userId: 101,
+        username: "AlphaRb",
+        displayName: "Alpha Display",
+      }];
+    },
+    async fetchUserPresences(userIds) {
+      assert.deepEqual(userIds, [101]);
+      return userIds.map((userId) => ({
+        userId,
+        presenceType: "in_game",
+        universeId: 999,
+        rootPlaceId: 111,
+        placeId: 222,
+        gameId: "server-1",
+      }));
+    },
+  });
+
+  assert.deepEqual(result, {
+    totalCandidates: 1,
+    totalBatches: 1,
+    processedBatches: 1,
+    failedBatches: 0,
+    processedUserIds: 1,
+    failedUserIds: 0,
+    activeJjsUsers: 1,
+    opaqueInGameUsers: 0,
+    touchedUserCount: 1,
+    startedSessionCount: 1,
+    closedSessionCount: 0,
+    activeCoPlayPairCount: 0,
+  });
+  assert.equal(db.profiles.user_a.domains.roblox.userId, "101");
+  assert.equal(db.profiles.user_a.domains.roblox.displayName, "Alpha Display");
+  assert.equal(runtimeState.activeSessionsByDiscordUserId.user_a.gameId, "server-1");
+  assert.equal(runtimeState.dirtyDiscordUserIds.has("user_a"), true);
+});
+
+test("runRobloxPlaytimeSyncJob marks sanitized invalid verified bindings dirty even when username is missing", async () => {
+  const runtimeState = createRobloxRuntimeState();
+  const db = {
+    profiles: {
+      user_a: {
+        userId: "user_a",
+        domains: {
+          roblox: {
+            userId: "711122552566579240",
+            verificationStatus: "verified",
+          },
+        },
+      },
+    },
+  };
+
+  const result = await runRobloxPlaytimeSyncJob({
+    db,
+    runtimeState,
+    now: () => "2026-05-09T12:00:00.000Z",
+    roblox: {
+      jjsUniverseId: 999,
+      playtimePollMinutes: 2,
+    },
+    async fetchUserPresences() {
+      throw new Error("should not fetch presences without verified candidates");
+    },
+  });
+
+  assert.deepEqual(result, {
+    totalCandidates: 0,
+    totalBatches: 0,
+    processedBatches: 0,
+    failedBatches: 0,
+    processedUserIds: 0,
+    failedUserIds: 0,
+    activeJjsUsers: 0,
+    opaqueInGameUsers: 0,
+    touchedUserCount: 0,
+    startedSessionCount: 0,
+    closedSessionCount: 0,
+    activeCoPlayPairCount: 0,
+    skippedReason: "no_verified_candidates",
+  });
+  assert.equal(db.profiles.user_a.domains.roblox.userId, null);
+  assert.equal(runtimeState.dirtyDiscordUserIds.has("user_a"), true);
+});
+
 test("runRobloxPlaytimeSyncJob updates rolling JJS minutes and co-play state in memory", async () => {
   const runtimeState = createRobloxRuntimeState();
   const db = {

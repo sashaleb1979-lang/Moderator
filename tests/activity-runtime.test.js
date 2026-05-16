@@ -6,6 +6,7 @@ const assert = require("node:assert/strict");
 const {
   flushActivityRuntime,
   recordActivityMessage,
+  recordActivityVoiceState,
   rebuildActivitySnapshots,
   rebuildActivityUserSnapshot,
   resumeActivityRuntime,
@@ -95,6 +96,129 @@ test("recordActivityMessage groups watched channels into one global session and 
   assert.deepEqual(Object.keys(firstSession.channelBreakdown).sort(), ["main-1", "media-1", "small-1"]);
   assert.equal(db.sot.activity.runtime.openSessions["user-1"].messageCount, 1);
   assert.equal(db.sot.activity.runtime.openSessions["user-1"].startedAt, "2026-05-09T13:30:00.000Z");
+});
+
+test("recordActivityVoiceState tracks voice lifecycle, active voice time, and streaming time separately", () => {
+  const db = {};
+
+  recordActivityVoiceState({
+    db,
+    oldState: { guildId: "guild-1", userId: "user-1", channelId: null },
+    newState: { guildId: "guild-1", userId: "user-1", channelId: "voice-main", selfMute: false },
+    now: "2026-05-09T12:00:00.000Z",
+  });
+  recordActivityVoiceState({
+    db,
+    oldState: { guildId: "guild-1", userId: "user-1", channelId: "voice-main", selfMute: false },
+    newState: { guildId: "guild-1", userId: "user-1", channelId: "voice-main", selfMute: true },
+    now: "2026-05-09T12:10:00.000Z",
+  });
+  recordActivityVoiceState({
+    db,
+    oldState: { guildId: "guild-1", userId: "user-1", channelId: "voice-main", selfMute: true, streaming: false },
+    newState: { guildId: "guild-1", userId: "user-1", channelId: "voice-main", selfMute: true, streaming: true },
+    now: "2026-05-09T12:20:00.000Z",
+  });
+  recordActivityVoiceState({
+    db,
+    oldState: { guildId: "guild-1", userId: "user-1", channelId: "voice-main", selfMute: true, streaming: true },
+    newState: { guildId: "guild-1", userId: "user-1", channelId: "voice-side", selfMute: false, streaming: true },
+    now: "2026-05-09T12:25:00.000Z",
+  });
+  const leaveResult = recordActivityVoiceState({
+    db,
+    oldState: { guildId: "guild-1", userId: "user-1", channelId: "voice-side", selfMute: false, streaming: true },
+    newState: { guildId: "guild-1", userId: "user-1", channelId: null },
+    now: "2026-05-09T12:35:00.000Z",
+  });
+
+  assert.equal(leaveResult.action, "leave");
+  assert.equal(db.sot.activity.runtime.openVoiceSessions["user-1"], undefined);
+  assert.equal(db.sot.activity.globalVoiceSessions.length, 1);
+  assert.equal(db.sot.activity.userVoiceDailyStats.length, 1);
+
+  const finalizedSession = db.sot.activity.globalVoiceSessions[0];
+  assert.equal(finalizedSession.durationSeconds, 2100);
+  assert.equal(finalizedSession.activeVoiceDurationSeconds, 1200);
+  assert.equal(finalizedSession.streamingDurationSeconds, 900);
+  assert.equal(finalizedSession.videoDurationSeconds, 0);
+  assert.equal(finalizedSession.moveCount, 1);
+  assert.deepEqual(finalizedSession.enteredChannelIds, ["voice-main", "voice-side"]);
+
+  const dailyRow = db.sot.activity.userVoiceDailyStats[0];
+  assert.equal(dailyRow.voiceDurationSeconds, 2100);
+  assert.equal(dailyRow.activeVoiceDurationSeconds, 1200);
+  assert.equal(dailyRow.streamingDurationSeconds, 900);
+  assert.equal(dailyRow.sessionsCount, 1);
+});
+
+test("rebuildActivityUserSnapshot projects open voice sessions into current metrics and score", () => {
+  const db = {
+    profiles: {
+      "user-1": {
+        userId: "user-1",
+        username: "todo",
+      },
+    },
+    sot: {
+      activity: {
+        config: {},
+        watchedChannels: [],
+        globalUserSessions: [],
+        globalVoiceSessions: [],
+        channelDailyStats: [],
+        userChannelDailyStats: [],
+        userVoiceDailyStats: [],
+        userSnapshots: {},
+        calibrationRuns: [],
+        ops: { moderationAuditLog: [] },
+        runtime: {
+          openSessions: {},
+          openVoiceSessions: {
+            "user-1": {
+              guildId: "guild-1",
+              userId: "user-1",
+              joinedAt: "2026-05-09T12:00:00.000Z",
+              lastStateChangedAt: "2026-05-09T12:00:00.000Z",
+              currentChannelId: "voice-main",
+              enteredChannelIds: ["voice-main"],
+              moveCount: 0,
+              voiceDurationSeconds: 0,
+              activeVoiceDurationSeconds: 0,
+              streamingDurationSeconds: 0,
+              videoDurationSeconds: 0,
+              dayBreakdown: {},
+              selfMute: false,
+              selfDeaf: false,
+              serverMute: false,
+              serverDeaf: false,
+              streaming: true,
+              selfVideo: false,
+            },
+          },
+          dirtyUsers: [],
+        },
+      },
+    },
+  };
+
+  const snapshot = rebuildActivityUserSnapshot({
+    db,
+    userId: "user-1",
+    now: "2026-05-09T12:30:00.000Z",
+    memberActivityMeta: {
+      joinedAt: "2026-05-01T12:00:00.000Z",
+    },
+  });
+
+  assert.equal(snapshot.voiceDurationSeconds30d, 1800);
+  assert.equal(snapshot.activeVoiceDurationSeconds30d, 1800);
+  assert.equal(snapshot.streamingDurationSeconds30d, 1800);
+  assert.equal(snapshot.voiceSessions30d, 1);
+  assert.equal(snapshot.voiceActiveDays30d, 1);
+  assert.equal(snapshot.activeDays30d, 1);
+  assert.equal(snapshot.lastSeenAt, "2026-05-09T12:30:00.000Z");
+  assert.equal(snapshot.baseActivityScore > 0, true);
 });
 
 test("rebuildActivityUserSnapshot computes 7/30/90 metrics and a desired role from persisted facts", () => {

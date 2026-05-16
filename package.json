@@ -6,7 +6,7 @@
   "main": "welcome-bot.js",
   "scripts": {
     "start": "node welcome-bot.js",
-    "test": "node --test",
+    "test": "node scripts/run-tests.js",
     "snapshot:db": "node scripts/snapshot-db.js"
   },
   "engines": {

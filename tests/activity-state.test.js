@@ -28,6 +28,9 @@ test("createEmptyActivityState seeds config and empty activity collections", () 
   assert.equal(state.config.channelWeightPresets.main_chat, 1);
   assert.deepEqual(state.watchedChannels, []);
   assert.deepEqual(state.globalUserSessions, []);
+  assert.deepEqual(state.globalVoiceSessions, []);
+  assert.deepEqual(state.userVoiceDailyStats, []);
+  assert.deepEqual(state.runtime.openVoiceSessions, {});
   assert.deepEqual(state.runtime.dirtyUsers, []);
   assert.equal(state.runtime.lastRebuildAndRoleSyncAt, null);
   assert.equal(state.runtime.lastRebuildAndRoleSyncStats, null);
@@ -167,7 +170,7 @@ test("updateActivityConfig merges partial overrides and keeps defaults available
   assert.deepEqual(result.config.adminRoleIds, ["admin-1"]);
   assert.equal(result.config.activityRoleThresholds.core, 90);
   assert.equal(result.config.activityRoleThresholds.weak, 20);
-  assert.equal(result.config.activityRoleThresholds.stable, 70);
+  assert.equal(result.config.activityRoleThresholds.stable, 77);
   assert.equal(getActivityConfig(db).channelWeightPresets.flood, ACTIVITY_CHANNEL_WEIGHT_PRESETS.flood);
 
   const ensured = ensureActivityState(db);

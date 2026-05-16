@@ -12,8 +12,8 @@ const {
   schedulePeriodicJobs,
 } = require("../src/runtime/client-ready-core");
 
-test("buildRobloxPeriodicJobs rebuilds the Roblox-only interval descriptor set", () => {
-  const periodicJobs = buildRobloxPeriodicJobs({
+test("buildRobloxPeriodicJobs restores the Roblox-only descriptor set for welcome-bot rescheduling", () => {
+  const jobs = buildRobloxPeriodicJobs({
     runRobloxProfileRefreshJob() {},
     syncRobloxPlaytime() {},
     flushRobloxRuntime() {},
@@ -21,38 +21,48 @@ test("buildRobloxPeriodicJobs rebuilds the Roblox-only interval descriptor set",
       metadataRefreshEnabled: true,
       metadataRefreshHours: 6,
       playtimeTrackingEnabled: true,
-      playtimePollMinutes: 7,
+      playtimePollMinutes: 15,
       runtimeFlushEnabled: true,
-      flushIntervalMinutes: 9,
+      flushIntervalMinutes: 11,
     },
   });
 
-  assert.deepEqual(periodicJobs.map((job) => job.errorLabel), [
+  assert.deepEqual(jobs.map((job) => job.key), [
+    "roblox.metadataRefresh",
+    "roblox.playtimeSync",
+    "roblox.runtimeFlush",
+  ]);
+  assert.deepEqual(jobs.map((job) => job.errorLabel), [
     "Roblox metadata refresh failed",
     "Roblox playtime sync failed",
     "Roblox runtime flush failed",
   ]);
-  assert.deepEqual(periodicJobs.map((job) => job.intervalMs), [21600000, 420000, 540000]);
+  assert.deepEqual(jobs.map((job) => job.intervalMs), [21600000, 900000, 660000]);
 });
 
 test("schedulePeriodicJobs schedules normalized jobs without startup alert wiring", async () => {
+  const handles = [];
   const calls = [];
-  const handles = schedulePeriodicJobs({ id: "client" }, {
+
+  const result = schedulePeriodicJobs({ id: "client" }, {
     periodicJobs: [{
+      key: "roblox.playtimeSync",
       run(client) {
-        calls.push(client.id);
+        calls.push(client);
       },
-      intervalMs: 100,
-      errorLabel: "scheduled job failed",
+      intervalMs: 1234,
+      errorLabel: "Roblox playtime sync failed",
     }],
     setIntervalFn(callback, intervalMs) {
+      handles.push(intervalMs);
       callback();
-      return { intervalMs };
+      return `handle-${intervalMs}`;
     },
   });
 
-  assert.deepEqual(handles, [{ intervalMs: 100 }]);
-  assert.deepEqual(calls, ["client"]);
+  assert.deepEqual(handles, [1234]);
+  assert.deepEqual(calls, [{ id: "client" }]);
+  assert.deepEqual(result, ["handle-1234"]);
 });
 
 test("buildClientReadyPeriodicJobs owns interval defaults and feature gating for periodic startup jobs", async () => {
@@ -70,6 +80,9 @@ test("buildClientReadyPeriodicJobs owns interval defaults and feature gating for
     flushActivityRuntime(client) {
       calls.push(["flushActivityRuntime", client]);
     },
+    runDailyActivityRoleSync(client) {
+      calls.push(["runDailyActivityRoleSync", client]);
+    },
     runVerificationDeadlineSweep(client) {
       calls.push(["runVerificationDeadlineSweep", client]);
     },
@@ -86,6 +99,7 @@ test("buildClientReadyPeriodicJobs owns interval defaults and feature gating for
     rolePanelAutoResendTickMs: 100,
     legacyTierlistSummaryRefreshMs: 200,
     activityFlushIntervalMs: 300,
+    activityRoleSyncHours: 24,
     verification: {
       enabled: true,
       reportSweepMinutes: 45,
@@ -103,12 +117,13 @@ test("buildClientReadyPeriodicJobs owns interval defaults and feature gating for
     "Auto-resend tick error",
     "Legacy Tierlist summary refresh failed",
     "Activity runtime flush failed",
+    "Activity daily role sync failed",
     "Verification deadline sweep failed",
     "Roblox metadata refresh failed",
     "Roblox playtime sync failed",
     "Roblox runtime flush failed",
   ]);
-  assert.deepEqual(periodicJobs.map((job) => job.intervalMs), [100, 200, 300, 2700000, 21600000, 900000, 660000]);
+  assert.deepEqual(periodicJobs.map((job) => job.intervalMs), [100, 200, 300, 86400000, 2700000, 21600000, 900000, 660000]);
 
   await periodicJobs[1].run({ id: "client" });
   assert.deepEqual(calls, [
@@ -129,6 +144,9 @@ test("buildClientReadyPeriodicJobs skips disabled Roblox jobs and no-op tierlist
     flushActivityRuntime(client) {
       calls.push(["flushActivityRuntime", client]);
     },
+    runDailyActivityRoleSync(client) {
+      calls.push(["runDailyActivityRoleSync", client]);
+    },
     getResolvedIntegrationSourcePath(slot) {
       calls.push(["getResolvedIntegrationSourcePath", slot]);
       return "";
@@ -136,6 +154,7 @@ test("buildClientReadyPeriodicJobs skips disabled Roblox jobs and no-op tierlist
     rolePanelAutoResendTickMs: 100,
     legacyTierlistSummaryRefreshMs: 200,
     activityFlushIntervalMs: 300,
+    activityRoleSyncHours: 24,
     roblox: {
       metadataRefreshEnabled: false,
       playtimeTrackingEnabled: false,
@@ -146,6 +165,7 @@ test("buildClientReadyPeriodicJobs skips disabled Roblox jobs and no-op tierlist
     "Auto-resend tick error",
     "Legacy Tierlist summary refresh failed",
     "Activity runtime flush failed",
+    "Activity daily role sync failed",
   ]);
 
   await periodicJobs[1].run({ id: "client" });
@@ -164,6 +184,22 @@ test("buildClientReadyPeriodicJobs does not require an activity flush callback t
     "Auto-resend tick error",
     "Legacy Tierlist summary refresh failed",
   ]);
+});
+
+test("buildClientReadyPeriodicJobs schedules daily activity rebuild and role sync when configured", () => {
+  const periodicJobs = buildClientReadyPeriodicJobs({
+    runAutoResendTick() {},
+    async refreshLegacyTierlistSummaryMessage() {},
+    runDailyActivityRoleSync() {},
+    activityRoleSyncHours: 12,
+  });
+
+  const activityRoleSyncJob = periodicJobs.find((job) => job.errorLabel === "Activity daily role sync failed");
+  assert.deepEqual(activityRoleSyncJob, {
+    run: activityRoleSyncJob.run,
+    intervalMs: 43200000,
+    errorLabel: "Activity daily role sync failed",
+  });
 });
 
 test("buildClientReadyPeriodicJobs applies Roblox default poll and flush cadences when callbacks are provided", () => {

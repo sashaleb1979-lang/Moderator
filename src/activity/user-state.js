@@ -114,6 +114,10 @@ function collectActivityAssignmentTargetUserIds(db, explicitUserIds = [], manage
     addFilteredActivityUserId(targetUserIds, explicitUserIdFilter, userId);
   }
 
+  for (const userId of Object.keys(state.runtime?.openVoiceSessions || {})) {
+    addFilteredActivityUserId(targetUserIds, explicitUserIdFilter, userId);
+  }
+
   for (const userId of Array.isArray(state.runtime?.dirtyUsers) ? state.runtime.dirtyUsers : []) {
     addFilteredActivityUserId(targetUserIds, explicitUserIdFilter, userId);
   }
@@ -122,7 +126,15 @@ function collectActivityAssignmentTargetUserIds(db, explicitUserIds = [], manage
     addFilteredActivityUserId(targetUserIds, explicitUserIdFilter, session?.userId);
   }
 
+  for (const session of Array.isArray(state.globalVoiceSessions) ? state.globalVoiceSessions : []) {
+    addFilteredActivityUserId(targetUserIds, explicitUserIdFilter, session?.userId);
+  }
+
   for (const row of Array.isArray(state.userChannelDailyStats) ? state.userChannelDailyStats : []) {
+    addFilteredActivityUserId(targetUserIds, explicitUserIdFilter, row?.userId);
+  }
+
+  for (const row of Array.isArray(state.userVoiceDailyStats) ? state.userVoiceDailyStats : []) {
     addFilteredActivityUserId(targetUserIds, explicitUserIdFilter, row?.userId);
   }
 
@@ -138,6 +150,10 @@ function collectActivityHistoryTargetUserIds(db, explicitUserIds = []) {
     addFilteredActivityUserId(targetUserIds, explicitUserIdFilter, userId);
   }
 
+  for (const userId of Object.keys(state.runtime?.openVoiceSessions || {})) {
+    addFilteredActivityUserId(targetUserIds, explicitUserIdFilter, userId);
+  }
+
   for (const userId of Array.isArray(state.runtime?.dirtyUsers) ? state.runtime.dirtyUsers : []) {
     addFilteredActivityUserId(targetUserIds, explicitUserIdFilter, userId);
   }
@@ -146,7 +162,15 @@ function collectActivityHistoryTargetUserIds(db, explicitUserIds = []) {
     addFilteredActivityUserId(targetUserIds, explicitUserIdFilter, session?.userId);
   }
 
+  for (const session of Array.isArray(state.globalVoiceSessions) ? state.globalVoiceSessions : []) {
+    addFilteredActivityUserId(targetUserIds, explicitUserIdFilter, session?.userId);
+  }
+
   for (const row of Array.isArray(state.userChannelDailyStats) ? state.userChannelDailyStats : []) {
+    addFilteredActivityUserId(targetUserIds, explicitUserIdFilter, row?.userId);
+  }
+
+  for (const row of Array.isArray(state.userVoiceDailyStats) ? state.userVoiceDailyStats : []) {
     addFilteredActivityUserId(targetUserIds, explicitUserIdFilter, row?.userId);
   }
 

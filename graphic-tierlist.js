@@ -340,17 +340,44 @@ async function loadAvatar(client, guild, userId) {
   return null;
 }
 
-async function hasRoleOutline(guild, userId, roleId, cache = new Map()) {
-  const normalizedRoleId = String(roleId || "").trim();
-  const normalizedUserId = String(userId || "").trim();
-  if (!guild || !normalizedRoleId || !normalizedUserId) return false;
-  if (cache.has(normalizedUserId)) return cache.get(normalizedUserId);
+function normalizeOutlineRoleIds(value, limit = 25) {
+  const source = Array.isArray(value) ? value : [value];
+  const normalized = [];
+  const seen = new Set();
 
-  const member = guild.members?.cache?.get(normalizedUserId)
-    || await guild.members.fetch(normalizedUserId).catch(() => null);
-  const hasRole = Boolean(member?.roles?.cache?.has(normalizedRoleId));
-  cache.set(normalizedUserId, hasRole);
-  return hasRole;
+  for (const entry of source) {
+    const parts = String(entry || "")
+      .split(/[;,\n\r\t ]+/g)
+      .map((item) => item.trim())
+      .filter(Boolean);
+
+    for (const part of parts) {
+      const mentionMatch = part.match(/^<@&(\d+)>$/);
+      const candidate = mentionMatch ? mentionMatch[1] : part.replace(/\s+/g, "");
+      if (!/^\d{5,25}$/.test(candidate) || seen.has(candidate)) continue;
+      seen.add(candidate);
+      normalized.push(candidate);
+      if (normalized.length >= limit) return normalized;
+    }
+  }
+
+  return normalized;
+}
+
+async function hasRoleOutline(guild, userId, roleIds, cache = new Map()) {
+  const normalizedRoleIds = normalizeOutlineRoleIds(roleIds);
+  const normalizedUserId = String(userId || "").trim();
+  if (!guild || !normalizedRoleIds.length || !normalizedUserId) return false;
+
+  let memberRoleIds = cache.get(normalizedUserId);
+  if (!memberRoleIds) {
+    const member = guild.members?.cache?.get(normalizedUserId)
+      || await guild.members.fetch(normalizedUserId).catch(() => null);
+    memberRoleIds = new Set(member?.roles?.cache?.keys?.() || []);
+    cache.set(normalizedUserId, memberRoleIds);
+  }
+
+  return normalizedRoleIds.some((roleId) => memberRoleIds.has(roleId));
 }
 
 function clearGraphicAvatarCache() {
@@ -416,6 +443,7 @@ async function renderGraphicTierlistPng({
   tierLabels = {},
   tierColors = {},
   tierOrder = GRAPHIC_TIER_ORDER,
+  outlineRoleIds = [],
   outlineRoleId = "",
   outlineColor = "#ffffff",
   outlineWidth = 6,
@@ -427,6 +455,9 @@ async function renderGraphicTierlistPng({
   if (!ensureFonts()) throw new Error(`Шрифт не найден. source=${fontInfo.source}. ${fontInfo.err || ""}`);
 
   const resolvedTierOrder = normalizeGraphicTierOrder(tierOrder);
+  const resolvedOutlineRoleIds = normalizeOutlineRoleIds(
+    Array.isArray(outlineRoleIds) && outlineRoleIds.length ? outlineRoleIds : outlineRoleId
+  );
   const colors = { ...DEFAULT_GRAPHIC_TIER_COLORS, ...tierColors };
   const buckets = buildBuckets(entries, resolvedTierOrder);
   const totalPlayers = entries.length;
@@ -509,7 +540,7 @@ async function renderGraphicTierlistPng({
 
       const avatar = await loadAvatar(client, guild, player.userId);
 
-      if (await hasRoleOutline(guild, player.userId, outlineRoleId, roleOutlineCache)) {
+      if (await hasRoleOutline(guild, player.userId, resolvedOutlineRoleIds, roleOutlineCache)) {
         fillHex(ctx, outlineColor);
         ctx.fillRect(
           px - effectiveOutlineWidth,
