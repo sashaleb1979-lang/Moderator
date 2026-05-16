@@ -7,7 +7,9 @@ const {
   ANTITEAM_CUSTOM_IDS,
   buildCloseReviewPayload,
   buildModeratorPanelPayload,
+  buildPanelTextModal,
   buildStartPanelPayload,
+  buildStartGuidePayload,
   buildThreadPanelPayload,
   buildTicketPublicPayload,
   buildTicketSetupPayload,
@@ -20,11 +22,37 @@ function payloadJson(payload) {
 }
 
 test("start panel is Components V2 and exposes submit button", () => {
-  const payload = buildStartPanelPayload({ battalionRoleId: "role-1" });
+  const payload = buildStartPanelPayload({
+    battalionRoleId: "role-1",
+    panel: {
+      title: "🔥 Вызов батальона",
+      description: "Жми, если тимеры мешают серверу.",
+      details: "Ники и kills ускоряют выезд.",
+      buttonLabel: "🚨 Создать антитим",
+      accentColor: 0xE53935,
+    },
+  });
 
   assert.equal(payload.flags, MessageFlags.IsComponentsV2);
-  assert.match(payloadJson(payload), /Антитим/);
+  assert.match(payloadJson(payload), /Вызов батальона/);
+  assert.match(payloadJson(payload), /Создать антитим/);
+  assert.match(payloadJson(payload), new RegExp(ANTITEAM_CUSTOM_IDS.guide.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   assert.match(payloadJson(payload), new RegExp(ANTITEAM_CUSTOM_IDS.open.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+});
+
+test("start guide and panel text modal expose polished setup copy", () => {
+  const config = normalizeAntiteamState({
+    config: {
+      panel: {
+        title: "⚔️ Антитим",
+        buttonLabel: "⚔️ Подать заявку",
+      },
+    },
+  }).config;
+
+  assert.equal(buildStartGuidePayload(config).flags, MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral);
+  assert.match(payloadJson(buildStartGuidePayload(config)), /Как работает антитим/);
+  assert.equal(buildPanelTextModal(config).data.custom_id, "at:panel_text:modal");
 });
 
 test("draft setup renders level, count and toggles compactly", () => {
@@ -121,6 +149,7 @@ test("moderator panel renders setup controls", () => {
   assert.equal(payload.flags, MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral);
   assert.match(json, /Antiteam Control/);
   assert.match(json, /Опубликовать панель/);
+  assert.match(json, /Редактировать старт/);
   assert.match(json, /Roblox\/тайминги/);
   assert.match(json, /Автозакрытие миссии/);
 });

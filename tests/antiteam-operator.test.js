@@ -96,6 +96,20 @@ test("roblox modal verifies user, writes binding, grants battalion role and crea
   assert.equal(interaction.calls.at(-1)[1].flags, MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral);
 });
 
+test("start panel submit button opens the Roblox username modal", async () => {
+  const db = {};
+  ensureAntiteamState(db);
+  const operator = createAntiteamOperator({
+    db,
+    saveDb() {},
+  });
+  const interaction = createButtonInteraction(ANTITEAM_CUSTOM_IDS.open, { id: "user-1", username: "User" });
+
+  assert.equal(await operator.handleButtonInteraction(interaction), true);
+  assert.equal(interaction.calls[0][0], "showModal");
+  assert.equal(interaction.calls[0][1].data.custom_id, "at:roblox");
+});
+
 test("help button records friend-request path and notifies author", async () => {
   const db = {};
   const state = ensureAntiteamState(db).state;
@@ -251,4 +265,47 @@ test("advanced config modal updates timing and Roblox link settings", async () =
   assert.equal(config.roblox.directJoinUrlTemplate, "https://example.test/start?placeId={placeId}&gameId={gameId}");
   assert.equal(config.roblox.friendRequestsUrl, "https://example.test/friends");
   assert.match(JSON.stringify(interaction.calls.at(-1)[1].components[0].toJSON()), /Roblox-ссылки/);
+});
+
+test("panel text modal updates and edits the published start panel", async () => {
+  const db = {};
+  const state = ensureAntiteamState(db).state;
+  state.config.channelId = "channel-1";
+  state.config.panelMessageId = "message-1";
+  let editedPayload = null;
+  const operator = createAntiteamOperator({
+    db,
+    saveDb() {},
+    fetchChannel: async () => ({
+      id: "channel-1",
+      isTextBased: () => true,
+      messages: {
+        fetch: async () => ({
+          id: "message-1",
+          edit: async (payload) => {
+            editedPayload = payload;
+          },
+        }),
+      },
+    }),
+  });
+  const interaction = createModalInteraction(
+    "at:panel_text:modal",
+    {
+      title: "🔥 Срочный антитим",
+      description: "Жми кнопку и собирай батальён.",
+      details: "Укажи Roblox ник, угрозу и цели.",
+      button_label: "🚨 Подать заявку",
+      accent_color: "#AA2244",
+    },
+    { id: "mod-1", username: "Mod" },
+    { permissions: { has: () => true }, roles: { cache: new Map() } }
+  );
+
+  assert.equal(await operator.handleModalSubmitInteraction(interaction), true);
+
+  assert.equal(db.sot.antiteam.config.panel.title, "🔥 Срочный антитим");
+  assert.equal(db.sot.antiteam.config.panel.accentColor, 0xAA2244);
+  assert.match(JSON.stringify(editedPayload.components[0].toJSON()), /Срочный антитим/);
+  assert.match(JSON.stringify(interaction.calls.at(-1)[1].components[0].toJSON()), /обновлена в канале/);
 });

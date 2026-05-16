@@ -79,6 +79,13 @@ function normalizePositiveInteger(value, fallback = 1) {
   return Number.isSafeInteger(number) && number > 0 ? number : fallback;
 }
 
+function normalizeColorInteger(value, fallback = 0x1565C0) {
+  if (Number.isSafeInteger(value) && value >= 0 && value <= 0xFFFFFF) return value;
+  const text = cleanString(value, 20).replace(/^#/, "");
+  if (/^[0-9a-f]{6}$/i.test(text)) return Number.parseInt(text, 16);
+  return fallback;
+}
+
 function normalizeThreadAutoArchiveMinutes(value, fallback = 60) {
   const normalizedFallback = DISCORD_THREAD_AUTO_ARCHIVE_MINUTES.includes(Number(fallback)) ? Number(fallback) : 60;
   const number = Number(value);
@@ -150,6 +157,18 @@ function normalizeClanPingRoles(value = []) {
   return [...byKey.values()].slice(0, 25);
 }
 
+function normalizeStartPanelConfig(value = {}) {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  return {
+    title: cleanString(source.title, 80) || "⚔️ Антитим",
+    description: cleanString(source.description, 700) || "Быстрый вызов батальёна против тимеров. Roblox ник проверяется автоматически, после заявки создаётся ветка миссии.",
+    details: cleanString(source.details, 700) || "Подготовь Roblox username, примерную силу команды, число тимеров и ники/киллы целей.",
+    buttonLabel: cleanString(source.buttonLabel, 80) || "⚔️ Подать заявку",
+    guideButtonLabel: cleanString(source.guideButtonLabel, 80) || "Что дальше?",
+    accentColor: normalizeColorInteger(source.accentColor, 0xE53935),
+  };
+}
+
 function createDefaultAntiteamConfig(value = {}) {
   const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
   const roblox = source.roblox && typeof source.roblox === "object" && !Array.isArray(source.roblox) ? source.roblox : {};
@@ -161,6 +180,7 @@ function createDefaultAntiteamConfig(value = {}) {
     clanCallerRoleId: cleanString(source.clanCallerRoleId, 80),
     missionAutoArchiveMinutes: normalizeThreadAutoArchiveMinutes(source.missionAutoArchiveMinutes, 60),
     missionAutoCloseMinutes: normalizePositiveInteger(source.missionAutoCloseMinutes, 120),
+    panel: normalizeStartPanelConfig(source.panel),
     clanPingRoles: normalizeClanPingRoles(source.clanPingRoles),
     roblox: {
       jjsPlaceId: cleanString(roblox.jjsPlaceId || source.robloxPlaceId, 40),

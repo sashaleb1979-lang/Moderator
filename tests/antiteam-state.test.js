@@ -20,6 +20,10 @@ test("antiteam state normalizes config, drafts, tickets and helper stats", () =>
           battalionRoleId: "battalion-role",
           battalionLeadRoleId: "lead-role",
           missionAutoArchiveMinutes: 90,
+          panel: {
+            title: "Custom",
+            accentColor: "#112233",
+          },
         },
       },
     },
@@ -32,6 +36,8 @@ test("antiteam state normalizes config, drafts, tickets and helper stats", () =>
   assert.equal(state.config.clanPingRoles[0].key, "battalion");
   assert.equal(state.config.clanPingRoles.find((role) => role.key === "battalion").roleId, "battalion-role");
   assert.equal(state.config.clanPingRoles.find((role) => role.key === "battalion_lead").roleId, "lead-role");
+  assert.equal(state.config.panel.title, "Custom");
+  assert.equal(state.config.panel.accentColor, 0x112233);
   assert.deepEqual(state.tickets, {});
   assert.deepEqual(state.stats.helpers, {});
 });

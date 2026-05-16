@@ -29,10 +29,12 @@ const {
   buildEscalateModal,
   buildHelpReplyPayload,
   buildModeratorPanelPayload,
+  buildPanelTextModal,
   buildPhotoRequestPayload,
   buildReportModal,
   buildRobloxUsernameModal,
   buildStartPanelPayload,
+  buildStartGuidePayload,
   buildThreadName,
   buildThreadPanelPayload,
   buildTicketPublicPayload,
@@ -108,6 +110,12 @@ function parseClanPingRolesText(value = "", previousRoles = []) {
 function parsePositiveIntegerInput(value, fallback) {
   const number = Number.parseInt(cleanString(value, 20), 10);
   return Number.isSafeInteger(number) && number > 0 ? number : fallback;
+}
+
+function parseColorInput(value, fallback = 0xE53935) {
+  const text = cleanString(value, 20).replace(/^#/, "");
+  if (/^[0-9a-f]{6}$/i.test(text)) return Number.parseInt(text, 16);
+  return fallback;
 }
 
 function buildTemplateUrl(template = "", replacements = {}) {
@@ -283,6 +291,16 @@ function createAntiteamOperator(options = {}) {
       return { mutated: true };
     });
     return { message, statusText: statusText || `Стартовая панель опубликована в <#${channel.id}>.` };
+  }
+
+  async function editPublishedStartPanel() {
+    const config = getConfig();
+    if (!config.channelId || !config.panelMessageId) return { edited: false, reason: "missing-message" };
+    const channel = await fetchTextChannel(config.channelId).catch(() => null);
+    const message = channel?.messages?.fetch ? await channel.messages.fetch(config.panelMessageId).catch(() => null) : null;
+    if (!message?.edit) return { edited: false, reason: "message-not-found" };
+    await message.edit(buildStartPanelPayload(config));
+    return { edited: true, message };
   }
 
   async function syncTicketMessages(ticket) {
@@ -516,12 +534,26 @@ function createAntiteamOperator(options = {}) {
       return true;
     }
 
+    if (id === ANTITEAM_CUSTOM_IDS.guide) {
+      await interaction.reply(buildStartGuidePayload(getConfig()));
+      return true;
+    }
+
     if (id === ANTITEAM_CUSTOM_IDS.config) {
       if (!isModerator(interaction.member)) {
         await replyNoPermission(interaction);
         return true;
       }
       await interaction.showModal(buildConfigModal(getConfig()));
+      return true;
+    }
+
+    if (id === ANTITEAM_CUSTOM_IDS.panelText) {
+      if (!isModerator(interaction.member)) {
+        await replyNoPermission(interaction);
+        return true;
+      }
+      await interaction.showModal(buildPanelTextModal(getConfig()));
       return true;
     }
 
@@ -794,6 +826,38 @@ function createAntiteamOperator(options = {}) {
         return { mutated: true };
       });
       await interaction.reply(buildModeratorPanelPayload(getState(), "Настройки антитима сохранены."));
+      return true;
+    }
+
+    if (id === "at:panel_text:modal") {
+      if (!isModerator(interaction.member)) {
+        await replyNoPermission(interaction);
+        return true;
+      }
+      const previous = getConfig();
+      const nextConfig = createDefaultAntiteamConfig({
+        ...previous,
+        panel: {
+          ...previous.panel,
+          title: interaction.fields.getTextInputValue("title"),
+          description: interaction.fields.getTextInputValue("description"),
+          details: interaction.fields.getTextInputValue("details"),
+          buttonLabel: interaction.fields.getTextInputValue("button_label"),
+          accentColor: parseColorInput(interaction.fields.getTextInputValue("accent_color"), previous.panel?.accentColor),
+        },
+      });
+      await persist("antiteam-panel-text", () => {
+        const state = getState();
+        state.config = nextConfig;
+        return { mutated: true };
+      });
+      const editResult = await editPublishedStartPanel().catch(() => ({ edited: false }));
+      await interaction.reply(buildModeratorPanelPayload(
+        getState(),
+        editResult.edited
+          ? "Стартовая панель сохранена и обновлена в канале."
+          : "Стартовая панель сохранена. Опубликуй её заново, если старое сообщение уже удалено."
+      ));
       return true;
     }
 
