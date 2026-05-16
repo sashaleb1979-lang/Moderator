@@ -1,6 +1,7 @@
 "use strict";
 
 const { ROLE_PANEL_COMMAND_NAME } = require("../role-panel");
+const { ANTITEAM_COMMAND_NAME } = require("../antiteam/view");
 const { VERIFY_COMMAND_NAME, VERIFY_SUBCOMMAND_NAMES } = require("../verification/operator");
 
 const PROFILE_COMMAND_NAME = "профиль";
@@ -19,7 +20,7 @@ const ONBOARD_SUBCOMMAND_NAMES = [
   "removetier",
 ];
 
-const TOP_LEVEL_COMMAND_NAMES = ["onboard", ROLE_PANEL_COMMAND_NAME, VERIFY_COMMAND_NAME, PROFILE_COMMAND_NAME];
+const TOP_LEVEL_COMMAND_NAMES = ["onboard", ROLE_PANEL_COMMAND_NAME, VERIFY_COMMAND_NAME, PROFILE_COMMAND_NAME, ANTITEAM_COMMAND_NAME];
 
 function buildCommands() {
   const { SlashCommandBuilder } = require("discord.js");
@@ -123,11 +124,21 @@ function buildCommands() {
       .setName(PROFILE_COMMAND_NAME)
       .setDescription("Открыть приватный профиль игрока")
       .addUserOption((option) => option.setName("target").setDescription("Чей профиль открыть")),
+    new SlashCommandBuilder()
+      .setName(ANTITEAM_COMMAND_NAME)
+      .setDescription("Антитим и клан-алармы")
+      .addSubcommand((subcommand) =>
+        subcommand.setName("panel").setDescription("Открыть панель настройки антитима")
+      )
+      .addSubcommand((subcommand) =>
+        subcommand.setName("clan").setDescription("Создать клан-аларм для батальона")
+      ),
   ].map((command) => command.toJSON());
 }
 
 module.exports = {
   ONBOARD_SUBCOMMAND_NAMES,
+  ANTITEAM_COMMAND_NAME,
   PROFILE_COMMAND_NAME,
   ROLE_PANEL_COMMAND_NAME,
   TOP_LEVEL_COMMAND_NAMES,

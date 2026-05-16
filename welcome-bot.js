@@ -244,6 +244,8 @@ const {
 } = require("./src/profile/access");
 
 const { createProfileOperator } = require("./src/profile/operator");
+const { createAntiteamOperator } = require("./src/antiteam/operator");
+const { ANTITEAM_COMMAND_NAME } = require("./src/antiteam/view");
 const {
   createRobloxApiClient,
 } = require("./src/integrations/roblox-service");
@@ -4878,6 +4880,7 @@ function isModerator(member) {
 
 
 let profileOperator = null;
+let antiteamOperator = null;
 
 function getProfileOperator() {
   if (profileOperator) return profileOperator;
@@ -4908,6 +4911,55 @@ function getProfileOperator() {
   });
 
   return profileOperator;
+}
+
+function getAntiteamOperator() {
+  if (antiteamOperator) return antiteamOperator;
+
+  antiteamOperator = createAntiteamOperator({
+    db,
+    now: nowIso,
+    saveDb,
+    runSerializedMutation: runSerializedDbMutation,
+    isModerator,
+    logError: (...args) => console.error(...args),
+    robloxPlaceId: () => getEffectiveRobloxConfig().jjsPlaceId,
+    resolveRobloxUserByUsername,
+    fetchRobloxFriends: (robloxUserId) => robloxApiClient.fetchUserFriends(robloxUserId),
+    fetchRobloxPresences: (robloxUserIds) => robloxApiClient.fetchUserPresences(robloxUserIds),
+    getProfile: (userId) => db.profiles?.[userId] ? getProfile(userId) : null,
+    writeRobloxBinding: (userId, robloxUser, source = "antiteam") => {
+      const profile = getProfile(userId);
+      return writeCanonicalRobloxBinding(userId, profile, robloxUser, {
+        verificationStatus: "verified",
+        verifiedAt: nowIso(),
+        updatedAt: nowIso(),
+        source,
+      });
+    },
+    fetchMember: (userId) => fetchMember(client, userId),
+    fetchChannel: async (channelId) => {
+      const cachedChannel = client.channels?.cache?.get?.(channelId) || null;
+      if (cachedChannel) return cachedChannel;
+      return client.channels.fetch(channelId).catch(() => null);
+    },
+    grantRole: async (userId, roleId, reason) => {
+      const member = await fetchMember(client, userId);
+      if (!member || !roleId) return { skipped: "missing-member-or-role" };
+      if (member.roles?.cache?.has?.(roleId)) return { skipped: "already-has-role", roleId };
+      await member.roles.add(roleId, reason);
+      return { granted: true, roleId };
+    },
+    sendDirectMessage: async (userId, payload) => {
+      const user = await client.users.fetch(userId).catch(() => null);
+      if (!user) return null;
+      return user.send(payload);
+    },
+    logLine: (text) => logLine(client, text),
+    replyNoPermission: (interaction) => interaction.reply(ephemeralPayload({ content: "Нет прав." })),
+  });
+
+  return antiteamOperator;
 }
 
 function getProfileViewerTagRoleIds() {
@@ -12977,6 +13029,11 @@ client.once("clientReady", async () => {
     roblox: getEffectiveRobloxConfig(),
     verification: getVerificationIntegrationState(),
   });
+  periodicJobs.push({
+    run: () => getAntiteamOperator().sweepIdleTickets(),
+    intervalMs: 5 * 60 * 1000,
+    errorLabel: "Antiteam idle sweep failed",
+  });
 
   const nonRobloxPeriodicJobs = periodicJobs.filter((job) => !String(job?.key || "").startsWith("roblox."));
   const startupRobloxPeriodicJobs = periodicJobs.filter((job) => String(job?.key || "").startsWith("roblox."));
@@ -13277,6 +13334,13 @@ client.on("messageCreate", async (message) => {
     });
   } catch (error) {
     console.error("Activity runtime message ingest failed:", error?.message || error);
+  }
+
+  if (await getAntiteamOperator().handlePhotoMessage(message).catch((error) => {
+    console.error("Antiteam photo flow failed:", error?.message || error);
+    return false;
+  })) {
+    return;
   }
 
   const legacyEloState = getLiveLegacyEloState();
@@ -13688,6 +13752,10 @@ client.on("interactionCreate", async (interaction) => {
       interaction,
       checkActorGuard: replyIfAutonomyGuardBlockedActor,
     })) {
+      return;
+    }
+
+    if (await getAntiteamOperator().handleSlashCommand(interaction)) {
       return;
     }
 
@@ -14287,6 +14355,10 @@ client.on("interactionCreate", async (interaction) => {
       interaction,
       checkActorGuard: replyIfAutonomyGuardBlockedActor,
     })) {
+      return;
+    }
+
+    if (await getAntiteamOperator().handleButtonInteraction(interaction)) {
       return;
     }
 
@@ -17869,6 +17941,10 @@ client.on("interactionCreate", async (interaction) => {
   }
 
   if (interaction.isStringSelectMenu()) {
+    if (await getAntiteamOperator().handleSelectMenuInteraction(interaction)) {
+      return;
+    }
+
     if (interaction.customId === "rolepanel_picker_select") {
       if (!isModerator(interaction.member)) {
         await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
@@ -18237,6 +18313,10 @@ client.on("interactionCreate", async (interaction) => {
   }
 
   if (interaction.isModalSubmit()) {
+    if (await getAntiteamOperator().handleModalSubmitInteraction(interaction)) {
+      return;
+    }
+
     if (await handleVerificationPanelModalSubmitInteraction({
       interaction,
       client,
