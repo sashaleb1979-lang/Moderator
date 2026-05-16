@@ -133,12 +133,16 @@ test("public ticket and thread name stay compact", () => {
     directJoinEnabled: false,
   };
   const json = payloadJson(buildTicketPublicPayload(ticket));
+  const threadJson = payloadJson(buildThreadPanelPayload(ticket));
 
   assert.equal(buildThreadName(ticket), "🟢 4-10 тимера • Gnom");
   assert.match(json, /Антитим • 4-10/);
-  assert.match(json, /Вход без др: \*\*нету\*\* • статус: \*\*открыто\*\*/);
-  assert.match(json, /Опасность: 🟢 \*\*Лоутабельные\*\*/);
-  assert.match(json, /Кого бить: Бить A\/B/);
+  assert.match(json, /👤 <@author-1> • 🎮 \*\*Anchor\*\*/);
+  assert.match(json, /⚡ Без др: \*\*нету\*\* • 📍 \*\*открыто\*\*/);
+  assert.match(json, /⚠️ Лоутабельные • до ~2k kills/);
+  assert.match(json, /🎯 Бить A\/B/);
+  assert.match(threadJson, /👥 Отклик: \*\*0\*\* • ✅ Пришли: \*\*0\*\*/);
+  assert.match(threadJson, /Бот сам выдаст профиль, direct join или friend request/);
   assert.doesNotMatch(json, /### Опасность/);
   assert.doesNotMatch(json, /### Помощь/);
 });
@@ -162,7 +166,7 @@ test("clan draft and public ticket show selected Discord anchor", () => {
   });
 
   assert.match(payloadJson(draftPayload), /Якорь: <@anchor-1>/);
-  assert.match(payloadJson(ticketPayload), /Автор: <@caller-1> • Якорь: <@anchor-1>/);
+  assert.match(payloadJson(ticketPayload), /👤 Автор: <@caller-1> • 🧷 Якорь: <@anchor-1>/);
 });
 
 test("public ticket and thread panel disable actions after close", () => {
@@ -183,10 +187,72 @@ test("public ticket and thread panel disable actions after close", () => {
   assert.match(payloadJson(buildTicketPublicPayload(ticket)), /закрыто/);
   assert.equal(buildTicketTitle(ticket), "⚫ Антитим • 2-4");
   assert.equal(buildThreadName(ticket), "⚫ 2-4 тимера • author-1");
-  assert.match(payloadJson(buildTicketPublicPayload(ticket)), /Опасность: ⚫ \*\*Средние\*\*/);
+  assert.match(payloadJson(buildTicketPublicPayload(ticket)), /⚠️ Средние • до ~8k kills/);
   assert.match(payloadJson(buildThreadPanelPayload(ticket)), /⚫ Миссия закрыта/);
+  assert.match(payloadJson(buildThreadPanelPayload(ticket)), /🔒 Ветка закрыта для работы и отправлена в архив/);
   assert.doesNotMatch(payloadJson(buildThreadPanelPayload(ticket)), /Помочь/);
   assert.equal(ticketButtonId("help", "ticket-1"), "at:help:ticket-1");
+});
+
+test("public ticket shows live helper mentions in response order", () => {
+  const payload = buildTicketPublicPayload({
+    id: "ticket-1",
+    kind: "standard",
+    status: "open",
+    createdBy: "author-1",
+    roblox: { username: "Anchor", userId: "101" },
+    level: "medium",
+    count: "2-4",
+    description: "Бить A/B, тимятся у центра.",
+    helpers: {
+      "helper-2": {
+        userId: "helper-2",
+        discordTag: "Helper 2",
+        respondedAt: "2026-05-16T10:02:00.000Z",
+      },
+      "helper-1": {
+        userId: "helper-1",
+        discordTag: "Helper 1",
+        respondedAt: "2026-05-16T10:01:00.000Z",
+      },
+    },
+  });
+  const json = payloadJson(payload);
+
+  assert.match(json, /👥 Отклик: \*\*2\*\* • ✅ Пришли: \*\*0\*\*/);
+  assert.match(json, /🫡 <@helper-1> • <@helper-2>/);
+});
+
+test("closed public ticket shows helper result markers", () => {
+  const payload = buildTicketPublicPayload({
+    id: "ticket-1",
+    kind: "standard",
+    status: "closed",
+    createdBy: "author-1",
+    roblox: { username: "Anchor", userId: "101" },
+    level: "medium",
+    count: "2-4",
+    description: "Бить A/B, тимятся у центра.",
+    helpers: {
+      "helper-1": {
+        userId: "helper-1",
+        discordTag: "Helper 1",
+        respondedAt: "2026-05-16T10:01:00.000Z",
+        arrived: true,
+      },
+      "helper-2": {
+        userId: "helper-2",
+        discordTag: "Helper 2",
+        respondedAt: "2026-05-16T10:02:00.000Z",
+        arrived: false,
+      },
+    },
+    closeSummary: { text: "done", confirmedHelperIds: ["helper-1"] },
+  });
+  const json = payloadJson(payload);
+
+  assert.match(json, /👥 Отклик: \*\*2\*\* • ✅ Пришли: \*\*1\*\* • Итог: done/);
+  assert.match(json, /🫡 ✅ <@helper-1> • ❌ <@helper-2>/);
 });
 
 test("clan public ticket without photo does not touch photo attachment name", () => {

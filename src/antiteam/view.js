@@ -106,6 +106,53 @@ function formatTicketStatus(ticket = {}) {
   return ticket.status === "closed" ? "закрыто" : "открыто";
 }
 
+function compareHelpersByResponse(left = {}, right = {}) {
+  return String(left.respondedAt || "").localeCompare(String(right.respondedAt || ""))
+    || String(left.userId || "").localeCompare(String(right.userId || ""));
+}
+
+function formatHelperIdentity(helper = {}) {
+  const userId = cleanString(helper.userId, 80);
+  if (userId) return `<@${userId}>`;
+  return cleanString(helper.discordTag || helper.robloxUsername, 120) || "helper";
+}
+
+function buildHelperRosterLine(ticket = {}, maxVisible = 6) {
+  const helpers = Object.values(ticket.helpers || {})
+    .filter((helper) => cleanString(helper.userId, 80) || cleanString(helper.discordTag || helper.robloxUsername, 120))
+    .sort(compareHelpersByResponse);
+  if (!helpers.length) return "";
+
+  const visibleHelpers = helpers.slice(0, Math.max(1, Number(maxVisible) || 8));
+  const remainingCount = Math.max(0, helpers.length - visibleHelpers.length);
+  const confirmedHelperIds = Array.isArray(ticket.closeSummary?.confirmedHelperIds) && ticket.closeSummary.confirmedHelperIds.length
+    ? ticket.closeSummary.confirmedHelperIds
+    : helpers.filter((helper) => helper.arrived === true).map((helper) => helper.userId);
+  const confirmedSet = new Set(confirmedHelperIds.map((userId) => cleanString(userId, 80)).filter(Boolean));
+  const isClosed = ticket.status === "closed";
+  const entries = visibleHelpers.map((helper) => {
+    const label = formatHelperIdentity(helper);
+    if (!isClosed) return label;
+    return `${confirmedSet.has(cleanString(helper.userId, 80)) ? "✅" : "❌"} ${label}`;
+  });
+
+  if (remainingCount > 0) {
+    entries.push(`+${remainingCount}`);
+  }
+
+  return `🫡 ${entries.join(" • ")}`;
+}
+
+function buildCompactDangerLine(ticket = {}, level = getLevelMeta(ticket.level)) {
+  if (ticket.kind === "clan") {
+    return "🛡️ Якорь остаётся в игре до конца тревоги.";
+  }
+
+  if (level.id === "low") return `⚠️ ${level.label} • до ~2k kills`;
+  if (level.id === "medium") return `⚠️ ${level.label} • до ~8k kills`;
+  return `⚠️ ${level.label} • 7k+ kills`;
+}
+
 function buildPayload(container, { ephemeral = false } = {}) {
   return {
     flags: flags(ephemeral),
@@ -582,18 +629,17 @@ function buildTicketPublicPayload(ticket = {}, config = createDefaultAntiteamCon
   const count = getCountMeta(ticket.count);
   const helperIds = Object.keys(ticket.helpers || {});
   const confirmed = helperIds.filter((userId) => ticket.helpers[userId]?.arrived === true);
+  const helperRosterLine = buildHelperRosterLine(ticket);
   const profileUrl = ticket.roblox?.profileUrl || (ticket.roblox?.userId ? `https://www.roblox.com/users/${ticket.roblox.userId}/profile` : "");
   const robloxText = ticket.roblox?.username
-    ? `Roblox: **${ticket.roblox.username}**${profileUrl ? ` ([профиль](${profileUrl}))` : ""}`
-    : "Roblox: **—**";
+    ? `🎮 **${ticket.roblox.username}**${profileUrl ? ` ([профиль](${profileUrl}))` : ""}`
+    : "🎮 **—**";
   const authorLine = isClan && ticket.anchorUserId
-    ? `Автор: <@${ticket.createdBy}> • Якорь: <@${ticket.anchorUserId}> • ${robloxText}`
-    : `<@${ticket.createdBy}> • ${robloxText}`;
-  const dangerText = isClan
-    ? "Клан-аларм: якорь должен оставаться в игре до завершения тревоги."
-    : `Опасность: ${isClosed ? "⚫" : level.emoji} **${level.label}** — ${level.description}`;
+    ? `👤 Автор: <@${ticket.createdBy}> • 🧷 Якорь: <@${ticket.anchorUserId}> • ${robloxText}`
+    : `👤 <@${ticket.createdBy}> • ${robloxText}`;
+  const dangerText = buildCompactDangerLine(ticket, level);
   const helpText = (helperIds.length || isClosed)
-    ? `Помощь: откликнулись **${helperIds.length}**, пришли **${confirmed.length}**${ticket.closeSummary?.text ? ` • итог: ${ticket.closeSummary.text}` : ""}`
+    ? `👥 Отклик: **${helperIds.length}** • ✅ Пришли: **${confirmed.length}**${ticket.closeSummary?.text ? ` • Итог: ${ticket.closeSummary.text}` : ""}`
     : "";
   const container = new ContainerBuilder()
     .setAccentColor(isClosed ? 0x607D8B : isClan ? 0xB71C1C : level.accentColor)
@@ -601,12 +647,11 @@ function buildTicketPublicPayload(ticket = {}, config = createDefaultAntiteamCon
       new TextDisplayBuilder().setContent(`# ${buildTicketTitle(ticket)}`),
       new TextDisplayBuilder().setContent([
         authorLine,
-        isClan
-          ? `Вход без др: **${formatDirectJoinValue(ticket.directJoinEnabled)}** • статус: **${formatTicketStatus(ticket)}**`
-          : `Вход без др: **${formatDirectJoinValue(ticket.directJoinEnabled)}** • статус: **${formatTicketStatus(ticket)}**`,
+        `⚡ Без др: **${formatDirectJoinValue(ticket.directJoinEnabled)}** • 📍 **${formatTicketStatus(ticket)}**`,
         dangerText,
-        `${isClan ? "Описание" : "Кого бить"}: ${ticket.description || "описание не добавлено"}`,
+        `${isClan ? "📝" : "🎯"} ${ticket.description || "описание не добавлено"}`,
         helpText,
+        helperRosterLine,
       ].filter(Boolean).join("\n"))
     );
 
@@ -638,22 +683,34 @@ function ticketButtonId(action, ticketId, extra = "") {
 
 function buildThreadPanelPayload(ticket = {}, config = createDefaultAntiteamConfig()) {
   const isClosed = ticket.status === "closed";
+  const helperIds = Object.keys(ticket.helpers || {});
+  const confirmedCount = helperIds.filter((userId) => ticket.helpers[userId]?.arrived === true).length;
   const container = new ContainerBuilder()
     .setAccentColor(isClosed ? 0x607D8B : ticket.kind === "clan" ? 0xB71C1C : getLevelMeta(ticket.level).accentColor)
     .addTextDisplayComponents(
-      new TextDisplayBuilder().setContent(isClosed ? "# ⚫ Миссия закрыта" : "# Сбор помощи"),
+      new TextDisplayBuilder().setContent(isClosed ? "# ⚫ Миссия закрыта" : "# 🫡 Сбор помощи"),
       new TextDisplayBuilder().setContent(isClosed
-        ? "Антитим закрыт. Thread оставлен для истории."
-        : "Нажми «Помочь», чтобы получить Roblox профиль, direct join link или запросить добавление в друзья.")
+        ? [
+          "🔒 Ветка закрыта для работы и отправлена в архив.",
+          "📝 Итог и отметки helper-ов смотри в основной заявке.",
+        ].join("\n")
+        : [
+          `👥 Отклик: **${helperIds.length}** • ✅ Пришли: **${confirmedCount}**`,
+          "🎮 Бот сам выдаст профиль, direct join или friend request.",
+          ticket.kind === "clan"
+            ? "🧷 Для клан-аларма маршрут ведётся к якорю."
+            : "🎯 Для обычной заявки маршрут ведётся к автору.",
+        ].join("\n"))
     );
 
   if (!isClosed) {
+    container.addSeparatorComponents(new SeparatorBuilder().setDivider(true));
     container.addActionRowComponents(
       new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(ticketButtonId("help", ticket.id)).setLabel("Помочь").setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId(ticketButtonId("report", ticket.id)).setLabel("Пожаловаться").setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId(ticketButtonId("escalate", ticket.id)).setLabel("Повысить опасность").setStyle(ButtonStyle.Danger).setDisabled(ticket.kind === "clan"),
-        new ButtonBuilder().setCustomId(ticketButtonId("close", ticket.id)).setLabel("Завершить").setStyle(ButtonStyle.Success)
+        new ButtonBuilder().setCustomId(ticketButtonId("help", ticket.id)).setLabel("Помочь").setEmoji("🫡").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId(ticketButtonId("report", ticket.id)).setLabel("Пожаловаться").setEmoji("⚠️").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId(ticketButtonId("escalate", ticket.id)).setLabel("Повысить опасность").setEmoji("📈").setStyle(ButtonStyle.Danger).setDisabled(ticket.kind === "clan"),
+        new ButtonBuilder().setCustomId(ticketButtonId("close", ticket.id)).setLabel("Завершить").setEmoji("✅").setStyle(ButtonStyle.Success)
       )
     );
   }

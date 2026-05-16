@@ -273,6 +273,42 @@ test("start panel submit button reuses verified Roblox from profile", async () =
   assert.match(JSON.stringify(interaction.calls[1][1].components[0].toJSON()), /Roblox взят из твоего профиля/);
 });
 
+test("start panel submit resets a stale clan draft back to the caller Roblox profile", async () => {
+  const db = {};
+  setAntiteamDraft(db, "user-1", {
+    kind: "clan",
+    userTag: "User",
+    anchorUserId: "anchor-1",
+    anchorUserTag: "Anchor",
+    roblox: { userId: "202", username: "AnchorTarget" },
+    description: "Старый клан-черновик.",
+  }, { now: "2026-05-16T10:00:00.000Z" });
+  const operator = createAntiteamOperator({
+    db,
+    now: () => "2026-05-16T10:01:00.000Z",
+    saveDb() {},
+    getProfile: () => ({
+      domains: {
+        roblox: {
+          userId: "101",
+          username: "AlreadyLinked",
+          displayName: "Already Linked",
+          verificationStatus: "verified",
+        },
+      },
+    }),
+  });
+  const interaction = createButtonInteraction(ANTITEAM_CUSTOM_IDS.open, { id: "user-1", username: "User" });
+
+  assert.equal(await operator.handleButtonInteraction(interaction), true);
+
+  const draft = db.sot.antiteam.drafts["user-1"];
+  assert.equal(draft.kind, "standard");
+  assert.equal(draft.anchorUserId, "");
+  assert.equal(draft.anchorUserTag, "");
+  assert.equal(draft.roblox.username, "AlreadyLinked");
+});
+
 test("help button records friend-request path and notifies author", async () => {
   const db = {};
   const state = ensureAntiteamState(db).state;
@@ -326,6 +362,94 @@ test("help button records friend-request path and notifies author", async () => 
   assert.match(JSON.stringify(interaction.calls.at(-1)[1].components[0].toJSON()), /Помощь принята/);
 });
 
+test("help button acknowledges before thread notice and ticket sync", async () => {
+  const db = {};
+  const state = ensureAntiteamState(db).state;
+  state.config.channelId = "channel-1";
+  const draft = setAntiteamDraft(db, "author-1", {
+    userTag: "Author",
+    roblox: { userId: "101", username: "Anchor", profileUrl: "https://www.roblox.com/users/101/profile" },
+    level: "medium",
+    count: "2-4",
+    description: "Нужна помощь в центре.",
+  }, { now: "2026-05-16T10:00:00.000Z" });
+  createAntiteamTicketFromDraft(db, draft, {
+    id: "ticket-1",
+    now: "2026-05-16T10:01:00.000Z",
+  });
+  db.sot.antiteam.tickets["ticket-1"].message = {
+    channelId: "channel-1",
+    messageId: "message-1",
+    threadId: "thread-1",
+    threadPanelMessageId: "panel-1",
+  };
+
+  const events = [];
+  const interaction = createButtonInteraction("at:help:ticket-1");
+  interaction.deferReply = async (payload) => {
+    events.push("deferReply");
+    interaction.calls.push(["deferReply", payload]);
+  };
+  interaction.editReply = async (payload) => {
+    events.push("editReply");
+    interaction.calls.push(["editReply", payload]);
+  };
+  interaction.reply = async (payload) => {
+    events.push("reply");
+    interaction.calls.push(["reply", payload]);
+  };
+
+  const operator = createAntiteamOperator({
+    db,
+    now: () => "2026-05-16T10:02:00.000Z",
+    saveDb() {},
+    getProfile: () => ({ domains: { roblox: { userId: "202", username: "HelperRoblox", verificationStatus: "verified" } } }),
+    fetchChannel: async (channelId) => {
+      if (channelId === "channel-1") {
+        return {
+          messages: {
+            fetch: async (messageId) => messageId === "message-1"
+              ? {
+                edit: async () => {
+                  events.push("public.edit");
+                },
+              }
+              : null,
+          },
+        };
+      }
+
+      if (channelId === "thread-1") {
+        return {
+          send: async () => {
+            events.push("thread.send");
+            return { id: "notice-1" };
+          },
+          messages: {
+            fetch: async (messageId) => messageId === "panel-1"
+              ? {
+                edit: async () => {
+                  events.push("panel.edit");
+                },
+              }
+              : null,
+          },
+        };
+      }
+
+      return null;
+    },
+  });
+
+  assert.equal(await operator.handleButtonInteraction(interaction), true);
+
+  assert.deepEqual(events.slice(0, 2), ["deferReply", "editReply"]);
+  assert.deepEqual(interaction.calls.map((call) => call[0]), ["deferReply", "editReply"]);
+  assert.ok(events.includes("thread.send"));
+  assert.ok(events.includes("public.edit"));
+  assert.ok(events.includes("panel.edit"));
+});
+
 test("clan friend-request notice pings the selected anchor in the thread", async () => {
   const db = {};
   const state = ensureAntiteamState(db).state;
@@ -364,6 +488,70 @@ test("clan friend-request notice pings the selected anchor in the thread", async
   assert.match(threadNotices[0].content, /<@anchor-1>/);
   assert.match(threadNotices[0].content, /клан-аларму/);
   assert.deepEqual(threadNotices[0].allowedMentions.users, ["anchor-1", "helper-1"]);
+});
+
+test("close review rejects moderator role without admin permissions", async () => {
+  const db = {};
+  const draft = setAntiteamDraft(db, "author-1", {
+    userTag: "Author",
+    roblox: { userId: "101", username: "Anchor" },
+    level: "medium",
+    count: "2-4",
+    description: "Нужна помощь.",
+  }, { now: "2026-05-16T10:00:00.000Z" });
+  createAntiteamTicketFromDraft(db, draft, {
+    id: "ticket-1",
+    now: "2026-05-16T10:01:00.000Z",
+  });
+
+  const operator = createAntiteamOperator({
+    db,
+    saveDb() {},
+    isModerator: () => true,
+  });
+  const interaction = createButtonInteraction("at:close:ticket-1", { id: "mod-1", username: "Mod" });
+  interaction.member = {
+    permissions: { has: () => false },
+    roles: { cache: new Map() },
+  };
+
+  assert.equal(await operator.handleButtonInteraction(interaction), true);
+  assert.equal(interaction.calls[0][0], "reply");
+  assert.equal(interaction.calls[0][1].content, "Нет прав.");
+});
+
+test("close modal rejects moderator role without admin permissions", async () => {
+  const db = {};
+  const draft = setAntiteamDraft(db, "author-1", {
+    userTag: "Author",
+    roblox: { userId: "101", username: "Anchor" },
+    level: "medium",
+    count: "2-4",
+    description: "Нужна помощь.",
+  }, { now: "2026-05-16T10:00:00.000Z" });
+  createAntiteamTicketFromDraft(db, draft, {
+    id: "ticket-1",
+    now: "2026-05-16T10:01:00.000Z",
+  });
+
+  const operator = createAntiteamOperator({
+    db,
+    saveDb() {},
+    isModerator: () => true,
+  });
+  const interaction = createModalInteraction(
+    ticketButtonId("close_modal", "ticket-1"),
+    { summary: "готово" },
+    { id: "mod-1", username: "Mod" },
+    {
+      permissions: { has: () => false },
+      roles: { cache: new Map() },
+    }
+  );
+
+  assert.equal(await operator.handleModalSubmitInteraction(interaction), true);
+  assert.equal(interaction.calls[0][0], "reply");
+  assert.equal(interaction.calls[0][1].content, "Нет прав.");
 });
 
 test("draft submit asks for photo when photo toggle is enabled", async () => {
@@ -590,6 +778,241 @@ test("closing ticket edits messages and renames thread with gray marker", async 
   assert.equal(renamedTo, "⚫ 2-4 тимера • Author");
   assert.match(JSON.stringify(publicEdit.components[0].toJSON()), /⚫ Антитим/);
   assert.match(JSON.stringify(threadPanelEdit.components[0].toJSON()), /⚫ Миссия закрыта/);
+});
+
+test("closing ticket removes ping message, locks thread, archives it, and removes non-admin members", async () => {
+  const db = {};
+  const draft = setAntiteamDraft(db, "author-1", {
+    userTag: "Author",
+    roblox: { userId: "101", username: "Anchor" },
+    level: "high",
+    count: "2-4",
+    description: "Цели A/B.",
+  }, { now: "2026-05-16T10:00:00.000Z" });
+  createAntiteamTicketFromDraft(db, draft, {
+    id: "ticket-1",
+    now: "2026-05-16T10:01:00.000Z",
+  });
+  db.sot.antiteam.tickets["ticket-1"].message = {
+    channelId: "channel-1",
+    messageId: "message-1",
+    threadId: "thread-1",
+    threadPanelMessageId: "thread-panel-1",
+    pingMessageId: "ping-1",
+  };
+
+  let pingDeleted = false;
+  let archived = null;
+  let locked = null;
+  const removedMembers = [];
+  const channel = {
+    messages: {
+      fetch: async () => ({
+        edit: async () => {},
+      }),
+    },
+  };
+  const thread = {
+    setName: async () => {},
+    setArchived: async (value) => {
+      archived = value;
+    },
+    setLocked: async (value) => {
+      locked = value;
+    },
+    members: {
+      fetch: async () => new Map([
+        ["author-1", { id: "author-1", user: { id: "author-1", bot: false } }],
+        ["helper-1", { id: "helper-1", user: { id: "helper-1", bot: false } }],
+        ["admin-1", { id: "admin-1", user: { id: "admin-1", bot: false }, permissions: { has: () => true } }],
+      ]),
+      remove: async (userId) => {
+        removedMembers.push(userId);
+      },
+    },
+    messages: {
+      fetch: async (messageId) => {
+        if (messageId === "ping-1") {
+          return {
+            delete: async () => {
+              pingDeleted = true;
+            },
+          };
+        }
+        return {
+          edit: async () => {},
+        };
+      },
+    },
+  };
+  const operator = createAntiteamOperator({
+    db,
+    now: () => "2026-05-16T10:02:00.000Z",
+    saveDb() {},
+    fetchChannel: async (channelId) => channelId === "channel-1" ? channel : thread,
+  });
+  const interaction = createModalInteraction(
+    ticketButtonId("close_modal", "ticket-1"),
+    { summary: "готово" },
+    { id: "author-1", username: "Author" }
+  );
+
+  assert.equal(await operator.handleModalSubmitInteraction(interaction), true);
+
+  assert.equal(pingDeleted, true);
+  assert.equal(archived, true);
+  assert.equal(locked, true);
+  assert.deepEqual(removedMembers, ["helper-1"]);
+});
+
+test("closing ticket writes helper result markers into the public message", async () => {
+  const db = {};
+  const draft = setAntiteamDraft(db, "author-1", {
+    userTag: "Author",
+    roblox: { userId: "101", username: "Anchor" },
+    level: "high",
+    count: "2-4",
+    description: "Цели A/B.",
+  }, { now: "2026-05-16T10:00:00.000Z" });
+  createAntiteamTicketFromDraft(db, draft, {
+    id: "ticket-1",
+    now: "2026-05-16T10:01:00.000Z",
+  });
+  db.sot.antiteam.tickets["ticket-1"].helpers = {
+    "helper-1": {
+      userId: "helper-1",
+      discordTag: "Helper 1",
+      respondedAt: "2026-05-16T10:02:00.000Z",
+      arrived: true,
+    },
+    "helper-2": {
+      userId: "helper-2",
+      discordTag: "Helper 2",
+      respondedAt: "2026-05-16T10:03:00.000Z",
+      arrived: false,
+    },
+  };
+  db.sot.antiteam.tickets["ticket-1"].message = {
+    channelId: "channel-1",
+    messageId: "message-1",
+    threadId: "thread-1",
+    threadPanelMessageId: "thread-panel-1",
+  };
+
+  let publicEdit = null;
+  const operator = createAntiteamOperator({
+    db,
+    now: () => "2026-05-16T10:04:00.000Z",
+    saveDb() {},
+    fetchChannel: async (channelId) => channelId === "channel-1"
+      ? {
+        messages: {
+          fetch: async () => ({
+            edit: async (payload) => {
+              publicEdit = payload;
+            },
+          }),
+        },
+      }
+      : {
+        setName: async () => {},
+        messages: {
+          fetch: async () => ({
+            edit: async () => {},
+          }),
+        },
+      },
+  });
+  const interaction = createModalInteraction(
+    ticketButtonId("close_modal", "ticket-1"),
+    { summary: "готово" },
+    { id: "author-1", username: "Author" }
+  );
+
+  assert.equal(await operator.handleModalSubmitInteraction(interaction), true);
+
+  assert.match(JSON.stringify(publicEdit.components[0].toJSON()), /🫡 ✅ <@helper-1> • ❌ <@helper-2>/);
+});
+
+test("auto-close reuses thread cleanup and archives the mission", async () => {
+  const db = {};
+  const state = ensureAntiteamState(db).state;
+  state.config.missionAutoCloseMinutes = 120;
+  const draft = setAntiteamDraft(db, "author-1", {
+    userTag: "Author",
+    roblox: { userId: "101", username: "Anchor" },
+    level: "high",
+    count: "2-4",
+    description: "Цели A/B.",
+  }, { now: "2026-05-16T10:00:00.000Z" });
+  createAntiteamTicketFromDraft(db, draft, {
+    id: "ticket-1",
+    now: "2026-05-16T10:01:00.000Z",
+  });
+  db.sot.antiteam.tickets["ticket-1"].message = {
+    channelId: "channel-1",
+    messageId: "message-1",
+    threadId: "thread-1",
+    threadPanelMessageId: "thread-panel-1",
+    pingMessageId: "ping-1",
+  };
+  db.sot.antiteam.tickets["ticket-1"].lastActivityAt = "2026-05-16T10:01:00.000Z";
+
+  let archived = false;
+  let locked = false;
+  let pingDeleted = false;
+  const removedMembers = [];
+  const operator = createAntiteamOperator({
+    db,
+    now: () => "2026-05-16T12:05:00.000Z",
+    saveDb() {},
+    fetchChannel: async (channelId) => channelId === "channel-1"
+      ? {
+        messages: {
+          fetch: async () => ({
+            edit: async () => {},
+          }),
+        },
+      }
+      : {
+        setName: async () => {},
+        setArchived: async () => {
+          archived = true;
+        },
+        setLocked: async () => {
+          locked = true;
+        },
+        members: {
+          fetch: async () => new Map([
+            ["author-1", { id: "author-1", user: { id: "author-1", bot: false } }],
+            ["helper-1", { id: "helper-1", user: { id: "helper-1", bot: false } }],
+          ]),
+          remove: async (userId) => {
+            removedMembers.push(userId);
+          },
+        },
+        messages: {
+          fetch: async (messageId) => messageId === "ping-1"
+            ? {
+              delete: async () => {
+                pingDeleted = true;
+              },
+            }
+            : {
+              edit: async () => {},
+            },
+        },
+      },
+  });
+
+  const result = await operator.sweepIdleTickets();
+
+  assert.equal(result.closedCount, 1);
+  assert.equal(db.sot.antiteam.tickets["ticket-1"].status, "closed");
+  assert.equal(pingDeleted, true);
+  assert.equal(locked, true);
+  assert.equal(archived, true);
+  assert.deepEqual(removedMembers, ["helper-1"]);
 });
 
 test("advanced config modal updates timing and Roblox link settings", async () => {

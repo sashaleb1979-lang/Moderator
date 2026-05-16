@@ -13,6 +13,8 @@ const ROBLOX_TOP_COPLAY_PEER_LIMIT = 5;
 const ROBLOX_FREQUENT_NON_FRIEND_MINUTES = 60;
 const ROBLOX_FREQUENT_NON_FRIEND_SESSIONS = 2;
 const ROBLOX_PLAYTIME_BUCKET_LIMIT = 40;
+const ROBLOX_PLAYTIME_HOURLY_BUCKET_LIMIT = ROBLOX_PLAYTIME_BUCKET_LIMIT * 24;
+const PROFILE_PROOF_WINDOW_LIMIT = 10;
 
 const sharedProfileRuntimeConfig = {
   frequentNonFriendMinutes: ROBLOX_FREQUENT_NON_FRIEND_MINUTES,
@@ -320,6 +322,17 @@ function normalizeRobloxPlaytimeDailyBuckets(value = {}) {
   );
 }
 
+function normalizeRobloxPlaytimeHourlyBuckets(value = {}) {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  return Object.fromEntries(
+    Object.entries(source)
+      .map(([bucketKey, minutes]) => [cleanString(bucketKey, 32), normalizeNonNegativeInteger(minutes, 0)])
+      .filter(([bucketKey, minutes]) => /^\d{4}-\d{2}-\d{2}T\d{2}$/.test(bucketKey) && minutes > 0)
+      .sort((left, right) => left[0].localeCompare(right[0]))
+      .slice(-ROBLOX_PLAYTIME_HOURLY_BUCKET_LIMIT)
+  );
+}
+
 function normalizeRobloxPlaytimeState(value = {}) {
   const source = value && typeof value === "object" ? value : {};
   return {
@@ -330,6 +343,7 @@ function normalizeRobloxPlaytimeState(value = {}) {
     currentSessionStartedAt: normalizeNullableString(source.currentSessionStartedAt, 80),
     lastSeenInJjsAt: normalizeNullableString(source.lastSeenInJjsAt, 80),
     dailyBuckets: normalizeRobloxPlaytimeDailyBuckets(source.dailyBuckets),
+    hourlyBucketsMsk: normalizeRobloxPlaytimeHourlyBuckets(source.hourlyBucketsMsk),
   };
 }
 
@@ -366,6 +380,50 @@ function normalizeRobloxCoPlayState(value = {}) {
   return {
     peers,
     computedAt: normalizeNullableString(source.computedAt, 80),
+  };
+}
+
+function normalizeProgressProofWindow(value = {}) {
+  const source = value && typeof value === "object" ? value : {};
+  const approvedKills = normalizeNullableInteger(source.approvedKills, { min: 0 });
+  const reviewedAt = normalizeNullableString(source.reviewedAt, 80);
+  if (approvedKills === null || !reviewedAt) return null;
+
+  return {
+    approvedKills,
+    killTier: normalizeNullableInteger(source.killTier, { min: 1, max: 5 }),
+    reviewedAt,
+    reviewedBy: normalizeNullableString(source.reviewedBy, 120),
+    playtimeTracked: source.playtimeTracked === true,
+    totalJjsMinutes: normalizeNonNegativeInteger(source.totalJjsMinutes, 0),
+    jjsMinutes7d: normalizeNonNegativeInteger(source.jjsMinutes7d, 0),
+    jjsMinutes30d: normalizeNonNegativeInteger(source.jjsMinutes30d, 0),
+    sessionCount: normalizeNonNegativeInteger(source.sessionCount, 0),
+    currentSessionStartedAt: normalizeNullableString(source.currentSessionStartedAt, 80),
+    lastSeenInJjsAt: normalizeNullableString(source.lastSeenInJjsAt, 80),
+    dailyBucketsSnapshot: normalizeRobloxPlaytimeDailyBuckets(source.dailyBucketsSnapshot),
+    hourlyBucketsMskSnapshot: normalizeRobloxPlaytimeHourlyBuckets(source.hourlyBucketsMskSnapshot),
+  };
+}
+
+function normalizeProgressDomainState(value = {}) {
+  const source = value && typeof value === "object" ? value : {};
+  const proofWindows = [];
+  const seen = new Set();
+
+  for (const entry of Array.isArray(source.proofWindows) ? source.proofWindows : []) {
+    const normalized = normalizeProgressProofWindow(entry);
+    if (!normalized) continue;
+    const key = `${normalized.approvedKills}:${normalized.reviewedAt}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    proofWindows.push(normalized);
+  }
+
+  proofWindows.sort((left, right) => left.reviewedAt.localeCompare(right.reviewedAt));
+
+  return {
+    proofWindows: proofWindows.slice(-PROFILE_PROOF_WINDOW_LIMIT),
   };
 }
 
@@ -642,6 +700,7 @@ function buildSharedProfileSummary(profile = {}, domains = {}) {
   const activity = domains.activity || normalizeActivityDomainState(profile?.domains?.activity || profile?.activity || profile?.summary?.activity);
   const roblox = domains.roblox || normalizeRobloxDomainState(profile?.domains?.roblox || profile);
   const verification = domains.verification || normalizeVerificationDomainState(profile?.domains?.verification || profile?.verification || profile?.summary?.verification);
+  const progress = domains.progress || normalizeProgressDomainState(profile?.domains?.progress);
   const previousUsername = getRobloxPreviousName(roblox.username, roblox.usernameHistory);
   const previousDisplayName = getRobloxPreviousName(roblox.displayName, roblox.displayNameHistory);
   const serverFriendsCount = roblox.serverFriends.userIds.length;
@@ -771,6 +830,11 @@ function buildSharedProfileSummary(profile = {}, domains = {}) {
       matchedEnemyInviterCount: verification.matchedEnemyInviterUserIds.length,
       manualTagCount: 0,
     },
+    progress: {
+      proofWindowCount: progress.proofWindows.length,
+      lastProofWindowReviewedAt: progress.proofWindows.length ? progress.proofWindows.at(-1).reviewedAt : null,
+      lastProofWindowApprovedKills: progress.proofWindows.length ? progress.proofWindows.at(-1).approvedKills : null,
+    },
   };
 }
 
@@ -782,6 +846,7 @@ function ensureSharedProfile(profile = {}, userId = "") {
   const activity = normalizeActivityDomainState(source?.domains?.activity || source?.activity || source?.summary?.activity);
   const roblox = normalizeRobloxDomainState(source?.domains?.roblox || buildLegacyRobloxSource(source));
   const verification = normalizeVerificationDomainState(source?.domains?.verification || source?.verification || source?.summary?.verification);
+  const progress = normalizeProgressDomainState(source?.domains?.progress);
 
   const next = {
     ...source,
@@ -808,6 +873,7 @@ function ensureSharedProfile(profile = {}, userId = "") {
       activity,
       roblox,
       verification,
+      progress,
     },
   };
   next.summary = buildSharedProfileSummary(next, next.domains);
@@ -1059,6 +1125,7 @@ module.exports = {
   ensureSharedProfile,
   normalizeActivityDomainState,
   normalizeIntegrationState,
+  normalizeProgressDomainState,
   normalizeRobloxDomainState,
   syncSharedProfiles,
 };

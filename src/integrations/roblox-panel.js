@@ -260,6 +260,12 @@ function shouldIncludeRobloxEntry(roblox = {}) {
 function buildRobloxEntryNote(entry = {}, options = {}) {
   const showRefreshDiagnostics = options.showRefreshDiagnostics !== false;
   const parts = [];
+  if (entry.trackingState === "manual_only") {
+    parts.push("проверен, но нет валидного userId и username");
+  } else if (entry.trackingState === "repairable") {
+    parts.push("проверен, но userId отсутствует; можно repair по username");
+  }
+
   if (entry.refreshError) {
     parts.push(`ошибка обновления: ${truncateText(entry.refreshError, 70)}`);
   } else if (entry.verificationStatus === "failed") {
@@ -280,6 +286,10 @@ function buildRobloxEntryNote(entry = {}, options = {}) {
     parts.push("ожидает сохранения runtime");
   }
 
+  if (!parts.length && entry.activityState === "never_seen") {
+    parts.push("ещё не был замечен в JJS");
+  }
+
   if (!parts.length && entry.lastSeenInJjsAt) {
     parts.push(`последний раз замечен ${formatDateTime(entry.lastSeenInJjsAt)}`);
   }
@@ -291,12 +301,69 @@ function getRobloxEntryPriority(entry = {}, options = {}) {
   const showRefreshDiagnostics = options.showRefreshDiagnostics !== false;
   let score = normalizeNonNegativeInteger(entry.totalJjsMinutes, 0);
   if (entry.isActiveInRuntime) score += 1000000;
+  if (entry.trackingState === "repairable") score += 2250000;
+  if (entry.trackingState === "manual_only") score += 3250000;
   if (showRefreshDiagnostics && entry.verificationStatus === "verified" && !entry.lastRefreshAt) score += 2500000;
   if (entry.verificationStatus === "pending") score += 3000000;
   if (entry.verificationStatus === "failed") score += 4000000;
   if (entry.refreshError) score += 5000000;
   if (entry.dirtyRuntime) score += 500000;
   return score;
+}
+
+function getRobloxTrackingState(entry = {}) {
+  if (entry.verificationStatus === "verified") {
+    if (entry.robloxUserId) {
+      return "trackable";
+    }
+    if (entry.robloxUsername) {
+      return "repairable";
+    }
+    return "manual_only";
+  }
+  if (entry.verificationStatus === "pending") {
+    return "pending";
+  }
+  if (entry.verificationStatus === "failed") {
+    return "failed";
+  }
+  return "unverified";
+}
+
+function getRobloxActivityState(entry = {}) {
+  if (entry.trackingState !== "trackable") {
+    return null;
+  }
+  if (entry.isActiveInRuntime) {
+    return "active_now";
+  }
+  if (entry.currentSessionStartedAt) {
+    return "stale_session_marker";
+  }
+  if (entry.lastSeenInJjsAt || normalizeNonNegativeInteger(entry.totalJjsMinutes, 0) > 0) {
+    return "seen_before";
+  }
+  return "never_seen";
+}
+
+function getRobloxTrackingBlocker(entry = {}, options = {}) {
+  const showRefreshDiagnostics = options.showRefreshDiagnostics !== false;
+  if (entry.verificationStatus !== "verified") {
+    return "none";
+  }
+  if (!entry.robloxUserId) {
+    return entry.robloxUsername ? "invalid_user_id" : "missing_username";
+  }
+  if (showRefreshDiagnostics && entry.refreshError) {
+    return "refresh_error";
+  }
+  if (showRefreshDiagnostics && !entry.lastRefreshAt) {
+    return "never_refreshed";
+  }
+  if (!entry.isActiveInRuntime && !entry.currentSessionStartedAt && !entry.lastSeenInJjsAt && normalizeNonNegativeInteger(entry.totalJjsMinutes, 0) === 0) {
+    return "zero_minutes";
+  }
+  return "none";
 }
 
 function collectRobloxPanelEntries(db = {}, runtimeState = {}, options = {}) {
@@ -327,7 +394,11 @@ function collectRobloxPanelEntries(db = {}, runtimeState = {}, options = {}) {
         dirtyRuntime: hasRuntimeDirtyUser(runtimeState, userId),
         isActiveInRuntime: Boolean(runtimeSession),
       };
+      entry.trackingState = getRobloxTrackingState(entry);
+      entry.activityState = getRobloxActivityState(entry);
+      entry.trackingBlocker = getRobloxTrackingBlocker(entry, { showRefreshDiagnostics });
       entry.note = buildRobloxEntryNote(entry, { showRefreshDiagnostics });
+      entry.displayReason = entry.note;
       entry.priorityScore = getRobloxEntryPriority(entry, { showRefreshDiagnostics });
       return entry;
     })
@@ -358,6 +429,40 @@ function cloneTelemetryJobState(job = {}, runtimeState = {}) {
       dirtyUserCount: getRuntimeDirtyUserCount(runtimeState),
     },
   };
+}
+
+function formatRobloxListEntry(entry = {}, index = 0) {
+  const label = entry.robloxUsername
+    ? `${entry.displayName} -> ${entry.robloxUsername}`
+    : entry.displayName;
+  return `${index + 1}. ${label} | ${truncateText(entry.displayReason || entry.note, 90) || "норма"}`;
+}
+
+function buildRobloxListSection(title, entries = [], totalCount = 0, emptyText = "нет") {
+  const lines = [`${title}: **${normalizeNonNegativeInteger(totalCount, 0)}**`];
+  if (!entries.length) {
+    lines.push(emptyText);
+    return lines.join("\n");
+  }
+  lines.push(...entries.map((entry, index) => formatRobloxListEntry(entry, index)));
+  if (totalCount > entries.length) {
+    lines.push(`+${totalCount - entries.length} ещё`);
+  }
+  return lines.join("\n");
+}
+
+function countEntries(entries = [], predicate) {
+  if (typeof predicate !== "function") {
+    return 0;
+  }
+  return entries.filter((entry) => predicate(entry)).length;
+}
+
+function filterEntries(entries = [], predicate, limit = ROBLOX_PANEL_TOP_LIMIT) {
+  if (typeof predicate !== "function") {
+    return [];
+  }
+  return entries.filter((entry) => predicate(entry)).slice(0, limit);
 }
 
 function buildRobloxPanelIssues(snapshot = {}) {
@@ -406,6 +511,12 @@ function getRobloxStatsPanelSnapshot({ db = {}, runtimeState = {}, telemetry = n
   const entries = collectRobloxPanelEntries(db, runtimeState, {
     showRefreshDiagnostics: metadataRefreshEnabled,
   });
+  const verifiedTrackableUsers = countEntries(entries, (entry) => entry.trackingState === "trackable");
+  const verifiedRepairableUsers = countEntries(entries, (entry) => entry.trackingState === "repairable");
+  const verifiedManualOnlyUsers = countEntries(entries, (entry) => entry.trackingState === "manual_only");
+  const verifiedSeenInJjsUsers = countEntries(entries, (entry) => entry.trackingState === "trackable" && entry.activityState && entry.activityState !== "never_seen");
+  const verifiedNeverSeenInJjsUsers = countEntries(entries, (entry) => entry.trackingState === "trackable" && entry.activityState === "never_seen");
+  const verifiedZeroMinuteUsers = countEntries(entries, (entry) => entry.trackingState === "trackable" && normalizeNonNegativeInteger(entry.totalJjsMinutes, 0) === 0);
   const topEntries = entries.slice(0, ROBLOX_PANEL_TOP_LIMIT);
   const snapshot = {
     config: {
@@ -419,8 +530,15 @@ function getRobloxStatsPanelSnapshot({ db = {}, runtimeState = {}, telemetry = n
       jjsPlaceId: normalizeNonNegativeInteger(appConfig?.roblox?.jjsPlaceId, 0),
     },
     totals: {
+      footprintUsers: entries.length,
       linkedUsers: entries.length,
       verifiedUsers: entries.filter((entry) => entry.verificationStatus === "verified").length,
+      verifiedTrackableUsers,
+      verifiedRepairableUsers,
+      verifiedManualOnlyUsers,
+      verifiedSeenInJjsUsers,
+      verifiedNeverSeenInJjsUsers,
+      verifiedZeroMinuteUsers,
       pendingUsers: entries.filter((entry) => entry.verificationStatus === "pending").length,
       failedUsers: entries.filter((entry) => entry.verificationStatus === "failed").length,
       refreshErrorUsers: entries.filter((entry) => Boolean(entry.refreshError)).length,
@@ -433,6 +551,10 @@ function getRobloxStatsPanelSnapshot({ db = {}, runtimeState = {}, telemetry = n
       profileRefresh: cloneTelemetryJobState(telemetry?.jobs?.profileRefresh, runtimeState),
       playtimeSync: cloneTelemetryJobState(telemetry?.jobs?.playtimeSync, runtimeState),
       runtimeFlush: cloneTelemetryJobState(telemetry?.jobs?.runtimeFlush, runtimeState),
+    },
+    lists: {
+      repairableEntries: filterEntries(entries, (entry) => entry.trackingState === "repairable"),
+      manualOnlyEntries: filterEntries(entries, (entry) => entry.trackingState === "manual_only"),
     },
     topEntries,
   };
@@ -543,11 +665,23 @@ function buildRobloxStatsPanelPayload({ db = {}, runtimeState = {}, telemetry = 
   const playtimeTrackingEnabled = snapshot.config.playtimeTrackingEnabled !== false;
   const runtimeFlushEnabled = snapshot.config.runtimeFlushEnabled !== false;
   const playtimePollMinutes = snapshot.config.playtimePollMinutes;
+  const bindingCoverageText = buildRobloxListSection(
+    "Автопочинка по username",
+    snapshot.lists.repairableEntries,
+    snapshot.totals.verifiedRepairableUsers,
+    "Сейчас нет verified-профилей, которые чинятся только username repair-ом."
+  );
+  const manualRebindText = buildRobloxListSection(
+    "Нужен manual rebind",
+    snapshot.lists.manualOnlyEntries,
+    snapshot.totals.verifiedManualOnlyUsers,
+    "Сейчас нет verified-профилей без userId и username."
+  );
   const embed = new EmbedBuilder()
     .setTitle("Контроль Roblox")
     .setDescription([
       "Компактный мод-пульт для Roblox-привязок, пассивного учёта JJS и ручных операций.",
-      `Связано аккаунтов: **${snapshot.totals.linkedUsers}**`,
+      `Roblox footprint: **${snapshot.totals.footprintUsers}**`,
       `Трекинг JJS: **${snapshot.config.jjsReady ? "готов" : "не настроен"}**`,
       `Применение настроек: **сразу на живом боте**`,
     ].join("\n"))
@@ -563,9 +697,12 @@ function buildRobloxStatsPanelPayload({ db = {}, runtimeState = {}, telemetry = 
         inline: false,
       },
       {
-        name: "Профили",
+        name: "Покрытие",
         value: [
           `Проверено: **${snapshot.totals.verifiedUsers}**`,
+          `Trackable для playtime: **${snapshot.totals.verifiedTrackableUsers}**`,
+          `Починится по username: **${snapshot.totals.verifiedRepairableUsers}**`,
+          `Нужен manual rebind: **${snapshot.totals.verifiedManualOnlyUsers}**`,
           `Ждут сверки: **${snapshot.totals.pendingUsers}**`,
           `Сверка не пройдена: **${snapshot.totals.failedUsers}**`,
           `${metadataRefreshEnabled ? "С ошибками обновления" : "Исторические ошибки обновления скрыты"}: **${metadataRefreshEnabled ? snapshot.totals.refreshErrorUsers : 0}**`,
@@ -595,10 +732,8 @@ function buildRobloxStatsPanelPayload({ db = {}, runtimeState = {}, telemetry = 
         inline: false,
       },
       {
-        name: "Кого проверить первым",
-        value: snapshot.topEntries.length
-          ? snapshot.topEntries.map((entry, index) => formatTopEntry(entry, index)).join("\n")
-          : "Пока нет Roblox-профилей для контроля.",
+        name: "Кого чинить",
+        value: [bindingCoverageText, manualRebindText].join("\n\n"),
         inline: false,
       },
       {

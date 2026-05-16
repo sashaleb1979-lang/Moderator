@@ -12,8 +12,9 @@ const {
   SHARED_PROFILE_VERSION,
   deriveProfileMainView,
   ensureSharedProfile,
-  normalizeRobloxDomainState,
   normalizeIntegrationState,
+  normalizeProgressDomainState,
+  normalizeRobloxDomainState,
   syncSharedProfiles,
 } = require("../src/integrations/shared-profile");
 
@@ -193,6 +194,7 @@ test("ensureSharedProfile migrates onboarding fields into domains and summary", 
       currentSessionStartedAt: null,
       lastSeenInJjsAt: null,
       dailyBuckets: {},
+      hourlyBucketsMsk: {},
     },
     coPlay: {
       peers: [],
@@ -526,6 +528,7 @@ test("normalizeRobloxDomainState defaults to unverified when binding is missing"
       currentSessionStartedAt: null,
       lastSeenInJjsAt: null,
       dailyBuckets: {},
+      hourlyBucketsMsk: {},
     },
     coPlay: {
       peers: [],
@@ -589,6 +592,7 @@ test("ensureSharedProfile summary exposes rename, server friend, and frequent no
           currentSessionStartedAt: "2026-05-09T12:00:00.000Z",
           lastSeenInJjsAt: "2026-05-09T12:10:00.000Z",
           dailyBuckets: {},
+          hourlyBucketsMsk: {},
         },
         coPlay: {
           computedAt: "2026-05-09T12:12:00.000Z",
@@ -700,6 +704,10 @@ test("normalizeRobloxDomainState keeps current names first and normalizes social
       currentSessionStartedAt: "2026-05-04T00:00:00.000Z",
       lastSeenInJjsAt: "2026-05-05T00:00:00.000Z",
       dailyBuckets: {},
+      hourlyBucketsMsk: {
+        "2026-05-05T03": 12,
+        invalid: 99,
+      },
     },
     robloxCoPlay: {
       computedAt: "2026-05-06T00:00:00.000Z",
@@ -726,6 +734,9 @@ test("normalizeRobloxDomainState keeps current names first and normalizes social
   });
   assert.equal(result.playtime.totalJjsMinutes, 123);
   assert.equal(result.playtime.sessionCount, 8);
+  assert.deepEqual(result.playtime.hourlyBucketsMsk, {
+    "2026-05-05T03": 12,
+  });
   assert.equal(result.coPlay.peers.length, 2);
   assert.equal(result.coPlay.peers[1].isRobloxFriend, false);
 });
@@ -752,6 +763,7 @@ test("applyRobloxAccountSnapshot writes canonical pending Roblox state and prese
           currentSessionStartedAt: null,
           lastSeenInJjsAt: "2026-05-03T00:00:00.000Z",
           dailyBuckets: {},
+          hourlyBucketsMsk: {},
         },
         coPlay: {
           peers: [{ peerUserId: "peer-1", minutesTogether: 10 }],
@@ -833,4 +845,54 @@ test("applyRobloxAccountSnapshot preserves existing verification timestamp when 
   assert.equal(result.verifiedAt, "2026-05-01T00:00:00.000Z");
   assert.equal(result.lastReviewedAt, "2026-05-10T00:00:00.000Z");
   assert.equal(result.reviewedBy, "mod#0001");
+});
+
+test("normalizeProgressDomainState dedupes proof windows and keeps the latest valid snapshots", () => {
+  const normalized = normalizeProgressDomainState({
+    proofWindows: [
+      {
+        approvedKills: 4000,
+        killTier: 3,
+        reviewedAt: "2026-05-10T10:00:00.000Z",
+        reviewedBy: "mod#1",
+        playtimeTracked: true,
+        totalJjsMinutes: 120,
+        dailyBucketsSnapshot: {
+          "2026-05-10": 20,
+        },
+        hourlyBucketsMskSnapshot: {
+          "2026-05-10T13": 5,
+        },
+      },
+      {
+        approvedKills: 4000,
+        killTier: 3,
+        reviewedAt: "2026-05-10T10:00:00.000Z",
+        reviewedBy: "mod#1",
+      },
+      {
+        approvedKills: 4320,
+        killTier: 3,
+        reviewedAt: "2026-05-12T10:00:00.000Z",
+        reviewedBy: "mod#2",
+        playtimeTracked: false,
+        totalJjsMinutes: 0,
+        hourlyBucketsMskSnapshot: {
+          invalid: 99,
+        },
+      },
+      {
+        reviewedAt: "2026-05-14T10:00:00.000Z",
+      },
+    ],
+  });
+
+  assert.equal(normalized.proofWindows.length, 2);
+  assert.equal(normalized.proofWindows[0].approvedKills, 4000);
+  assert.equal(normalized.proofWindows[0].playtimeTracked, true);
+  assert.deepEqual(normalized.proofWindows[0].hourlyBucketsMskSnapshot, {
+    "2026-05-10T13": 5,
+  });
+  assert.equal(normalized.proofWindows[1].approvedKills, 4320);
+  assert.equal(normalized.proofWindows[1].playtimeTracked, false);
 });

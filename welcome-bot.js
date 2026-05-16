@@ -2372,6 +2372,7 @@ async function buildGraphicTierlistBoardPayload(client) {
     title: getEffectiveGraphicTitle(),
     tierLabels: presentation.tierlist.labels,
     tierColors: getEffectiveTierColors(),
+    outlineRules: outline.rules,
     outlineRoleIds: outline.roleIds,
     outlineColor: outline.color,
     imageWidth: imgCfg.W,
@@ -2436,9 +2437,7 @@ function buildGraphicPanelPayload(statusText = "", includeFlags = true) {
   const tierColor = tierColors[selectedTier] || DEFAULT_GRAPHIC_TIER_COLORS[selectedTier];
   const outline = getEffectiveGraphicOutlineConfig();
   const rememberedCount = getTierlistNonFakeUserIds(db.config).length;
-  const outlineRoleText = outline.roleIds.length
-    ? outline.roleIds.map((roleId) => formatRoleMention(roleId)).join(", ")
-    : "не настроена";
+  const outlineRoleText = formatGraphicOutlineRulesText(outline.rules, 260);
 
   const embed = new EmbedBuilder()
     .setTitle(`PNG Panel • ${GRAPHIC_PANEL_RUNTIME_MARKER}`)
@@ -2449,7 +2448,7 @@ function buildGraphicPanelPayload(statusText = "", includeFlags = true) {
       `**Выбранный тир:** ${selectedTier} → **${formatTierLabel(selectedTier)}**`,
       `**Цвет тира:** ${tierColor}`,
       `**Обводка по ролям:** ${outlineRoleText}`,
-      `**Цвет обводки:** ${outline.color}`,
+      `**Цвет по умолчанию:** ${outline.color}`,
       `**Remembered T6:** ${rememberedCount}`,
       `**Runtime:** ${GRAPHIC_PANEL_RUNTIME_MARKER} / tiers=${GRAPHIC_PANEL_TIERS.join(",")}`,
       `**Текст сообщения:** ${previewGraphicMessageText(170)}`,
@@ -2514,7 +2513,8 @@ function buildGraphicStatusLines() {
     `img: ${cfg.W}x${cfg.H}, icon=${cfg.ICON}`,
     `selectedTier: ${selectedTier} -> ${formatTierLabel(selectedTier)}`,
     `tierColors: ${GRAPHIC_PANEL_TIERS.map((tier) => `${tier}=${presentation.tierlist.graphic.colors[tier] || DEFAULT_GRAPHIC_TIER_COLORS[tier]}`).join(", ")}`,
-    `outline: ${outline.roleIds.length ? `${outline.roleIds.join(",")} ${outline.color}` : "—"}`,
+    `outline: ${outline.rules.length ? outline.rules.map((rule) => `${rule.roleId}=${rule.color}`).join(",") : "—"}`,
+    `outlineDefaultColor: ${outline.color}`,
     `rememberedT6: ${getTierlistNonFakeUserIds(db.config).length}`,
     `runtime: ${GRAPHIC_PANEL_RUNTIME_MARKER}`,
     `lastUpdated: ${graphicBoard.lastUpdated ? new Date(graphicBoard.lastUpdated).toLocaleString("ru-RU") : "—"}`,
@@ -3422,8 +3422,46 @@ function getEffectiveTierColors() {
   return { ...getPresentation().tierlist.graphic.colors };
 }
 
+function normalizeGraphicOutlineColor(value, fallback = "#ffffff") {
+  const text = String(value || "").trim();
+  return /^#[0-9a-f]{6}$/i.test(text) ? text : fallback;
+}
+
+function normalizeGraphicOutlineRules(value, fallbackColor = "#ffffff", limit = 25) {
+  const source = Array.isArray(value) ? value : [];
+  const normalized = [];
+  const indexByRoleId = new Map();
+
+  for (const entry of source) {
+    if (!entry || typeof entry !== "object") continue;
+    const roleId = parseRequestedRoleId(entry.roleId, "");
+    if (!roleId) continue;
+
+    const color = normalizeGraphicOutlineColor(entry.color, fallbackColor);
+    if (indexByRoleId.has(roleId)) {
+      normalized[indexByRoleId.get(roleId)].color = color;
+      continue;
+    }
+
+    normalized.push({ roleId, color });
+    indexByRoleId.set(roleId, normalized.length - 1);
+    if (normalized.length >= limit) break;
+  }
+
+  return normalized;
+}
+
+function formatGraphicOutlineRulesText(rules = [], max = 220) {
+  if (!Array.isArray(rules) || !rules.length) return "не настроена";
+  return previewText(
+    rules.map((rule) => `${formatRoleMention(rule.roleId)} → ${rule.color}`).join("; "),
+    max
+  );
+}
+
 function getEffectiveGraphicOutlineConfig() {
   const outline = getPresentation().tierlist.graphic.outline || {};
+  const color = normalizeGraphicOutlineColor(outline.color, "#ffffff");
   const rawRoleIds = Array.isArray(outline.roleIds) ? outline.roleIds : [];
   const normalizedRoleIds = [...new Set(rawRoleIds
     .map((value) => String(value || "").trim())
@@ -3432,11 +3470,18 @@ function getEffectiveGraphicOutlineConfig() {
   if (!normalizedRoleIds.length && /^\d{5,25}$/.test(fallbackRoleId)) {
     normalizedRoleIds.push(fallbackRoleId);
   }
-  const color = String(outline.color || "").trim();
+  const rules = normalizeGraphicOutlineRules(
+    Array.isArray(outline.rules) && outline.rules.length
+      ? outline.rules
+      : normalizedRoleIds.map((roleId) => ({ roleId, color })),
+    color
+  );
+  const roleIds = rules.length ? rules.map((rule) => rule.roleId) : normalizedRoleIds;
   return {
-    roleId: normalizedRoleIds[0] || "",
-    roleIds: normalizedRoleIds,
-    color: /^#[0-9a-f]{6}$/i.test(color) ? color : "#ffffff",
+    roleId: roleIds[0] || "",
+    roleIds,
+    color,
+    rules,
   };
 }
 
@@ -12077,6 +12122,46 @@ function parseRequestedRoleIds(value, fallbackRoleIds = []) {
   return normalized;
 }
 
+function parseRequestedGraphicOutlineRules(value, fallbackColor = "#ffffff", limit = 25) {
+  const resolvedFallbackColor = normalizeGraphicOutlineColor(fallbackColor, "#ffffff");
+  const normalized = [];
+  const indexByRoleId = new Map();
+  const lines = String(value || "")
+    .split(/\r?\n/g)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  for (const line of lines) {
+    const parts = line.split(/[;,\t ]+/g).map((entry) => entry.trim()).filter(Boolean);
+    const lineRoleIds = [];
+    let lineColor = resolvedFallbackColor;
+
+    for (const part of parts) {
+      const color = normalizeGraphicOutlineColor(part, "");
+      if (color) {
+        lineColor = color;
+        continue;
+      }
+
+      const roleId = parseRequestedRoleId(part, "");
+      if (roleId) lineRoleIds.push(roleId);
+    }
+
+    for (const roleId of lineRoleIds) {
+      if (indexByRoleId.has(roleId)) {
+        normalized[indexByRoleId.get(roleId)].color = lineColor;
+        continue;
+      }
+
+      normalized.push({ roleId, color: lineColor });
+      indexByRoleId.set(roleId, normalized.length - 1);
+      if (normalized.length >= limit) return normalized;
+    }
+  }
+
+  return normalized;
+}
+
 function normalizeRequestedEntityName(value, prefixes = []) {
   let normalized = String(value || "").trim().toLowerCase();
   for (const prefix of prefixes) {
@@ -15400,28 +15485,30 @@ client.on("interactionCreate", async (interaction) => {
 
       if (interaction.customId === "graphic_panel_outline") {
         const outline = getEffectiveGraphicOutlineConfig();
-        const roleIdsText = outline.roleIds.join(", ");
-        const modal = new ModalBuilder().setCustomId("graphic_panel_outline_modal").setTitle("Обводка PNG по ролям");
-        const outlineRoleInput = new TextInputBuilder()
-          .setCustomId("outline_role")
-          .setLabel("Role IDs или mentions")
+        const outlineRulesText = outline.rules.length
+          ? outline.rules.map((rule) => `${formatRoleMention(rule.roleId)} ${rule.color}`).join("\n")
+          : outline.roleIds.map((roleId) => `${formatRoleMention(roleId)} ${outline.color}`).join("\n");
+        const modal = new ModalBuilder().setCustomId("graphic_panel_outline_modal").setTitle("Обводка PNG по ролям и цветам");
+        const outlineRulesInput = new TextInputBuilder()
+          .setCustomId("outline_rules")
+          .setLabel("Каждая строка: role ID/mention и optional #HEX")
           .setStyle(TextInputStyle.Paragraph)
           .setRequired(true)
           .setMaxLength(1000)
-          .setPlaceholder("<@&123456789012345678>, <@&987654321098765432>");
+          .setPlaceholder("<@&123456789012345678> #ff0000\n<@&987654321098765432> <@&111111111111111111> #00ff88");
 
-        if (roleIdsText.length >= 3) {
-          outlineRoleInput.setValue(roleIdsText.slice(0, 1000));
+        if (outlineRulesText.length >= 3) {
+          outlineRulesInput.setValue(outlineRulesText.slice(0, 1000));
         }
 
         modal.addComponents(
           new ActionRowBuilder().addComponents(
-            outlineRoleInput
+            outlineRulesInput
           ),
           new ActionRowBuilder().addComponents(
             new TextInputBuilder()
               .setCustomId("outline_color")
-              .setLabel("HEX цвет, пример #ffffff")
+              .setLabel("Цвет по умолчанию для строк без HEX")
               .setStyle(TextInputStyle.Short)
               .setRequired(true)
               .setMaxLength(7)
@@ -15516,7 +15603,7 @@ client.on("interactionCreate", async (interaction) => {
 
       if (interaction.customId === "graphic_panel_outline_clear") {
         await applyUiMutation(client, "graphic", () => {
-          getGraphicTierlistConfig().outline = { roleId: "", roleIds: [], color: "#ffffff" };
+          getGraphicTierlistConfig().outline = { roleId: "", roleIds: [], color: "#ffffff", rules: [] };
         });
         await interaction.update(buildGraphicPanelPayload("Обводка PNG по ролям очищена.", false));
         return;
@@ -19083,14 +19170,14 @@ client.on("interactionCreate", async (interaction) => {
     }
 
     if (interaction.customId === "graphic_panel_outline_modal") {
-      const roleIds = parseRequestedRoleIds(interaction.fields.getTextInputValue("outline_role"));
       const color = interaction.fields.getTextInputValue("outline_color").trim();
-      if (!roleIds.length) {
-        await interaction.reply(ephemeralPayload({ content: "Укажи хотя бы один корректный role ID или role mention." }));
-        return;
-      }
       if (!/^#[0-9a-f]{6}$/i.test(color)) {
         await interaction.reply(ephemeralPayload({ content: "Некорректный HEX-цвет. Формат: #rrggbb" }));
+        return;
+      }
+      const rules = parseRequestedGraphicOutlineRules(interaction.fields.getTextInputValue("outline_rules"), color);
+      if (!rules.length) {
+        await interaction.reply(ephemeralPayload({ content: "Укажи хотя бы один корректный role ID или role mention. Для своих цветов добавляй #HEX в той же строке." }));
         return;
       }
 
@@ -19098,12 +19185,17 @@ client.on("interactionCreate", async (interaction) => {
       try {
         await applyUiMutation(client, "graphic", () => {
           const outline = getGraphicTierlistConfig().outline ||= {};
-          outline.roleId = roleIds[0] || "";
-          outline.roleIds = [...roleIds];
+          outline.roleId = rules[0]?.roleId || "";
+          outline.roleIds = rules.map((rule) => rule.roleId);
           outline.color = color;
+          outline.rules = rules.map((rule) => ({ ...rule }));
         });
+        const rulesPreview = rules.slice(0, 5)
+          .map((rule) => `${formatRoleMention(rule.roleId)} → **${rule.color}**`)
+          .join(", ");
+        const moreText = rules.length > 5 ? ` и ещё ${rules.length - 5}` : "";
         await interaction.editReply(buildGraphicPanelPayload(
-          `Обводка PNG настроена для ${roleIds.length} ролей: ${roleIds.map((roleId) => formatRoleMention(roleId)).join(", ")} → **${color}**.`,
+          `Обводка PNG настроена для ${rules.length} ролей: ${rulesPreview}${moreText}. Цвет по умолчанию: **${color}**.`,
           false
         ));
       } catch (error) {

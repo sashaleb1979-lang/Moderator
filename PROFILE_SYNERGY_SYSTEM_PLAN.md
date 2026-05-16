@@ -2,6 +2,7 @@
 
 > Этот файл фиксирует отдельный source of truth по динамическим и кросс-системным фичам профиля.
 > Он не заменяет PROFILE_VISION_PLAN.md, а дополняет его именно по части синергии между kills, Roblox, Discord activity, voice, ELO, tierlist, mains и social graph.
+> Обязательный companion-файл для расчётов и зон ненадёжности: PROFILE_SYNERGY_CALCULATION_SPEC.md.
 
 ## 1. Реакция На Последние Уточнения
 
@@ -120,8 +121,8 @@
 
 ## 3. Чего Сейчас Не Хватает Для Чёткой Синергии
 
-1. Нет hourly buckets по Москве.
-   Сейчас playtime ведётся по дням, а не по часам.
+1. Нет полноценного hourly слоя по Москве в старом baseline.
+   До нового foundation playtime вёлся по дням, а не по часам.
    Без этого prime time, `играет вечером`, `онлайн с 19:00 до 23:00` и heatmap по МСК будут только грубыми.
 
 2. Нет proof-window snapshots как отдельного persisted слоя.
@@ -354,7 +355,7 @@
    Нужно хранить cumulative JJS minutes, session count, overlap snapshot и timestamp на момент review.
 
 2. Добавить hourlyBucketsMsk в Roblox playtime.
-   Минимальный формат: `{ "00": minutes, ..., "23": minutes }` за rolling windows.
+   Foundation-формат: rolling MSK day-hour buckets с ключами `YYYY-MM-DDTHH`.
 
 3. Добавить derived `hoursSinceLastApprovedKillsUpdate` и `jjsHoursSinceLastApprovedKillsUpdate`.
 
@@ -595,3 +596,61 @@
 3. K/D,
 4. character-specific боевую attribution,
 5. внешнюю JJS wiki без канонического каталога ссылок.
+
+## 10. Фазы Выполнения
+
+### Phase 0. Contracts И Calculation Spec
+1. Завести и поддерживать PROFILE_SYNERGY_CALCULATION_SPEC.md.
+2. Для каждой метрики фиксировать owner, source, persisted path, formula, limits и unreliable copy.
+
+### Phase 1. Telemetry Foundation
+1. Hourly MSK buckets в Roblox playtime.
+2. Proof-window snapshots на момент approved kills update.
+
+### Phase 2. Canonical Mirrors
+1. Progress domain для proof windows.
+2. Voice summary mirror.
+3. Social suggestions cache как derived cache.
+
+### Phase 3. New Profile Owner
+1. Ввести `src/profile/synergy.js`.
+2. Увести formulas/reminders/grades из model/view.
+
+### Phase 4. Self Progress Block
+1. Зарегистрированные kills.
+2. Часы с последнего approved update.
+3. `ОБНОВИ`.
+4. Последнее окно роста.
+5. Countdown до next tier/milestone.
+
+### Phase 5. Viewer-First Narrative Block
+1. Текст-тирлист формы.
+2. `Кто ты сейчас`.
+3. Short Main Core.
+
+### Phase 6. Social Synergy
+1. Friend Overlap.
+2. Кто из друзей уже здесь.
+3. Скрытый круг.
+4. Top co-play peers.
+5. Strong + medium inferred ties.
+
+### Phase 7. Voice, Prime Time И Personal Readiness
+1. Voice summary.
+2. Prime time.
+3. Personal War Readiness basic.
+
+### Phase 8. Character Wiki Layer
+1. `wikiUrl` в SoT character catalog.
+2. Main Core enrichment.
+
+### Phase 9. Story Layers
+1. Season Story.
+2. Social evolution.
+3. Best-period summaries.
+
+### Phase 10. Burn-In И Sync Docs
+1. Focused tests.
+2. Full `node --test`.
+3. Discord smoke.
+4. Sync `PROFILE_VISION_PLAN.md`, `PROFILE_SYNERGY_SYSTEM_PLAN.md` и `PROFILE_SYNERGY_CALCULATION_SPEC.md`.

@@ -364,10 +364,39 @@ function normalizeOutlineRoleIds(value, limit = 25) {
   return normalized;
 }
 
-async function hasRoleOutline(guild, userId, roleIds, cache = new Map()) {
-  const normalizedRoleIds = normalizeOutlineRoleIds(roleIds);
+function normalizeOutlineColor(value, fallback = "#ffffff") {
+  const text = String(value || "").trim();
+  return /^#[0-9a-f]{6}$/i.test(text) ? text : fallback;
+}
+
+function normalizeOutlineRules(value, fallbackColor = "#ffffff", limit = 25) {
+  const source = Array.isArray(value) ? value : [];
+  const normalized = [];
+  const indexByRoleId = new Map();
+
+  for (const entry of source) {
+    if (!entry || typeof entry !== "object") continue;
+    const roleId = normalizeOutlineRoleIds(entry.roleId, 1)[0] || "";
+    if (!roleId) continue;
+
+    const color = normalizeOutlineColor(entry.color, fallbackColor);
+    if (indexByRoleId.has(roleId)) {
+      normalized[indexByRoleId.get(roleId)].color = color;
+      continue;
+    }
+
+    normalized.push({ roleId, color });
+    indexByRoleId.set(roleId, normalized.length - 1);
+    if (normalized.length >= limit) break;
+  }
+
+  return normalized;
+}
+
+async function resolveGraphicOutlineRule(guild, userId, rules, cache = new Map()) {
+  const normalizedRules = normalizeOutlineRules(rules);
   const normalizedUserId = String(userId || "").trim();
-  if (!guild || !normalizedRoleIds.length || !normalizedUserId) return false;
+  if (!guild || !normalizedRules.length || !normalizedUserId) return null;
 
   let memberRoleIds = cache.get(normalizedUserId);
   if (!memberRoleIds) {
@@ -377,7 +406,7 @@ async function hasRoleOutline(guild, userId, roleIds, cache = new Map()) {
     cache.set(normalizedUserId, memberRoleIds);
   }
 
-  return normalizedRoleIds.some((roleId) => memberRoleIds.has(roleId));
+  return normalizedRules.find((rule) => memberRoleIds.has(rule.roleId)) || null;
 }
 
 function clearGraphicAvatarCache() {
@@ -443,6 +472,7 @@ async function renderGraphicTierlistPng({
   tierLabels = {},
   tierColors = {},
   tierOrder = GRAPHIC_TIER_ORDER,
+  outlineRules = [],
   outlineRoleIds = [],
   outlineRoleId = "",
   outlineColor = "#ffffff",
@@ -455,8 +485,15 @@ async function renderGraphicTierlistPng({
   if (!ensureFonts()) throw new Error(`Шрифт не найден. source=${fontInfo.source}. ${fontInfo.err || ""}`);
 
   const resolvedTierOrder = normalizeGraphicTierOrder(tierOrder);
+  const resolvedOutlineColor = normalizeOutlineColor(outlineColor, "#ffffff");
   const resolvedOutlineRoleIds = normalizeOutlineRoleIds(
     Array.isArray(outlineRoleIds) && outlineRoleIds.length ? outlineRoleIds : outlineRoleId
+  );
+  const resolvedOutlineRules = normalizeOutlineRules(
+    Array.isArray(outlineRules) && outlineRules.length
+      ? outlineRules
+      : resolvedOutlineRoleIds.map((roleId) => ({ roleId, color: resolvedOutlineColor })),
+    resolvedOutlineColor
   );
   const colors = { ...DEFAULT_GRAPHIC_TIER_COLORS, ...tierColors };
   const buckets = buildBuckets(entries, resolvedTierOrder);
@@ -540,8 +577,9 @@ async function renderGraphicTierlistPng({
 
       const avatar = await loadAvatar(client, guild, player.userId);
 
-      if (await hasRoleOutline(guild, player.userId, resolvedOutlineRoleIds, roleOutlineCache)) {
-        fillHex(ctx, outlineColor);
+      const outlineRule = await resolveGraphicOutlineRule(guild, player.userId, resolvedOutlineRules, roleOutlineCache);
+      if (outlineRule) {
+        fillHex(ctx, outlineRule.color);
         ctx.fillRect(
           px - effectiveOutlineWidth,
           py - effectiveOutlineWidth,
@@ -599,7 +637,9 @@ module.exports = {
   GRAPHIC_TIER_ORDER,
   DEFAULT_GRAPHIC_TIER_COLORS,
   normalizeGraphicTierOrder,
+  normalizeOutlineRules,
   renderGraphicTierlistPng,
+  resolveGraphicOutlineRule,
   ensureGraphicFonts: ensureFonts,
   clearGraphicAvatarCache,
   clearGraphicAvatarCacheForUser,

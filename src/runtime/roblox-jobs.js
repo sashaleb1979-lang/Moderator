@@ -262,6 +262,12 @@ function toDateKey(isoValue) {
   return Number.isFinite(timestamp) ? new Date(timestamp).toISOString().slice(0, 10) : null;
 }
 
+function toMskHourKey(isoValue) {
+  const timestamp = Date.parse(isoValue || "");
+  if (!Number.isFinite(timestamp)) return null;
+  return new Date(timestamp + (3 * 60 * 60 * 1000)).toISOString().slice(0, 13);
+}
+
 function canContinueTrackedSession(lastSeenAt, nowIso, maxGapMs) {
   const previousTs = Date.parse(lastSeenAt || "");
   const nowTs = Date.parse(nowIso || "");
@@ -288,6 +294,22 @@ function appendDailyMinutes(dailyBuckets = {}, nowIso, minutes, limit = 40) {
   return Object.fromEntries(
     Object.entries(next)
       .filter(([bucketKey, value]) => /^\d{4}-\d{2}-\d{2}$/.test(bucketKey) && Number(value) > 0)
+      .sort((left, right) => left[0].localeCompare(right[0]))
+      .slice(-Math.max(1, limit))
+  );
+}
+
+function appendHourlyMinutes(hourlyBucketsMsk = {}, nowIso, minutes, limit = 40 * 24) {
+  if (!Number.isFinite(minutes) || minutes <= 0) return { ...(hourlyBucketsMsk || {}) };
+  const hourKey = toMskHourKey(nowIso);
+  if (!hourKey) return { ...(hourlyBucketsMsk || {}) };
+
+  const next = { ...(hourlyBucketsMsk || {}) };
+  next[hourKey] = Number(next[hourKey] || 0) + minutes;
+
+  return Object.fromEntries(
+    Object.entries(next)
+      .filter(([bucketKey, value]) => /^\d{4}-\d{2}-\d{2}T\d{2}$/.test(bucketKey) && Number(value) > 0)
       .sort((left, right) => left[0].localeCompare(right[0]))
       .slice(-Math.max(1, limit))
   );
@@ -734,6 +756,7 @@ async function runRobloxPlaytimeSyncJob(options = {}) {
       if (deltaMinutes > 0) {
         playtime.totalJjsMinutes += deltaMinutes;
         playtime.dailyBuckets = appendDailyMinutes(playtime.dailyBuckets, nowIso, deltaMinutes);
+        playtime.hourlyBucketsMsk = appendHourlyMinutes(playtime.hourlyBucketsMsk, nowIso, deltaMinutes);
       }
 
       recalculatePlaytimeWindows(playtime, nowIso);

@@ -186,8 +186,15 @@ test("getRobloxStatsPanelSnapshot aggregates linked users, job telemetry, and co
   });
 
   assert.deepEqual(snapshot.totals, {
+    footprintUsers: 5,
     linkedUsers: 5,
     verifiedUsers: 3,
+    verifiedTrackableUsers: 3,
+    verifiedRepairableUsers: 0,
+    verifiedManualOnlyUsers: 0,
+    verifiedSeenInJjsUsers: 2,
+    verifiedNeverSeenInJjsUsers: 1,
+    verifiedZeroMinuteUsers: 1,
     pendingUsers: 1,
     failedUsers: 1,
     refreshErrorUsers: 1,
@@ -199,6 +206,8 @@ test("getRobloxStatsPanelSnapshot aggregates linked users, job telemetry, and co
   assert.equal(snapshot.jobs.profileRefresh.summary.failedCount, 1);
   assert.equal(snapshot.jobs.playtimeSync.summary.failedBatches, 1);
   assert.equal(snapshot.jobs.runtimeFlush.summary.dirtyUserCount, 2);
+  assert.equal(snapshot.lists.repairableEntries.length, 0);
+  assert.equal(snapshot.lists.manualOnlyEntries.length, 0);
   assert.equal(snapshot.topEntries[0].userId, "problem_user");
   assert.equal(snapshot.topEntries[1].userId, "failed_user");
   assert.match(snapshot.issues[0], /JJS ids/i);
@@ -245,17 +254,92 @@ test("getRobloxStatsPanelSnapshot hides refresh blockers in passive-only mode", 
   assert.doesNotMatch(snapshot.topEntries[0].note, /обновления профиля/i);
 });
 
+test("getRobloxStatsPanelSnapshot classifies verified coverage buckets for trackable, repairable, and manual-only users", () => {
+  const snapshot = getRobloxStatsPanelSnapshot({
+    db: {
+      profiles: {
+        trackable_user: {
+          userId: "trackable_user",
+          displayName: "Trackable User",
+          domains: {
+            roblox: {
+              username: "TrackableRb",
+              userId: "101",
+              verificationStatus: "verified",
+              playtime: {
+                totalJjsMinutes: 45,
+                lastSeenInJjsAt: "2026-05-09T12:00:00.000Z",
+              },
+            },
+          },
+        },
+        repairable_user: {
+          userId: "repairable_user",
+          displayName: "Repairable User",
+          domains: {
+            roblox: {
+              username: "RepairableRb",
+              userId: null,
+              verificationStatus: "verified",
+            },
+          },
+        },
+        manual_user: {
+          userId: "manual_user",
+          displayName: "Manual User",
+          domains: {
+            roblox: {
+              verificationStatus: "verified",
+            },
+          },
+        },
+      },
+    },
+  });
+
+  assert.equal(snapshot.totals.verifiedUsers, 3);
+  assert.equal(snapshot.totals.verifiedTrackableUsers, 1);
+  assert.equal(snapshot.totals.verifiedRepairableUsers, 1);
+  assert.equal(snapshot.totals.verifiedManualOnlyUsers, 1);
+  assert.equal(snapshot.totals.verifiedSeenInJjsUsers, 1);
+  assert.equal(snapshot.totals.verifiedNeverSeenInJjsUsers, 0);
+  assert.equal(snapshot.totals.verifiedZeroMinuteUsers, 0);
+  assert.equal(snapshot.lists.repairableEntries[0].userId, "repairable_user");
+  assert.equal(snapshot.lists.repairableEntries[0].trackingState, "repairable");
+  assert.equal(snapshot.lists.manualOnlyEntries[0].userId, "manual_user");
+  assert.equal(snapshot.lists.manualOnlyEntries[0].trackingState, "manual_only");
+});
+
 test("buildRobloxStatsPanelPayload renders manual controls and blocker field", () => {
   const payload = buildRobloxStatsPanelPayload({
     db: {
       profiles: {
-        user_1: {
-          userId: "user_1",
+        trackable_user: {
+          userId: "trackable_user",
           displayName: "Gojo",
           domains: {
             roblox: {
               username: "GojoRb",
               userId: "1",
+              verificationStatus: "verified",
+            },
+          },
+        },
+        repairable_user: {
+          userId: "repairable_user",
+          displayName: "Repairable User",
+          domains: {
+            roblox: {
+              username: "RepairableRb",
+              verificationStatus: "verified",
+            },
+          },
+        },
+        manual_user: {
+          userId: "manual_user",
+          displayName: "Manual User",
+          domains: {
+            roblox: {
               verificationStatus: "verified",
             },
           },
@@ -285,8 +369,13 @@ test("buildRobloxStatsPanelPayload renders manual controls and blocker field", (
   assert.equal(payload.components[2].components[1].data.custom_id, "roblox_stats_set_poll_3");
   assert.equal(payload.components[3].components[0].data.custom_id, "roblox_stats_clear_refresh_errors");
   assert.equal(payload.embeds[0].data.fields.at(-1).name, "Последнее действие");
-  assert.match(payload.embeds[0].data.fields[4].value, /Gojo/);
-  assert.match(payload.embeds[0].data.fields[5].value, /JJS IDs/i);
+  const fieldValues = Object.fromEntries(payload.embeds[0].data.fields.map((field) => [field.name, field.value]));
+  assert.match(fieldValues["Покрытие"], /Trackable для playtime: \*\*1\*\*/);
+  assert.match(fieldValues["Покрытие"], /Починится по username: \*\*1\*\*/);
+  assert.match(fieldValues["Покрытие"], /Нужен manual rebind: \*\*1\*\*/);
+  assert.match(fieldValues["Кого чинить"], /Repairable User -> RepairableRb/);
+  assert.match(fieldValues["Кого чинить"], /Manual User/);
+  assert.match(fieldValues["Ошибки и блокеры"], /JJS IDs/i);
 });
 
 test("buildRobloxStatsPanelPayload hides stale playtime and runtime job truth when those features are disabled", async () => {

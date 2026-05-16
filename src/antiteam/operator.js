@@ -211,6 +211,74 @@ function createAntiteamOperator(options = {}) {
     return cleanString(interaction?.user?.id, 80) === ticket.createdBy || isModerator(interaction?.member);
   }
 
+  function canCloseTicket(interaction, ticket = {}) {
+    return cleanString(interaction?.user?.id, 80) === ticket.createdBy || hasAdmin(interaction?.member);
+  }
+
+  async function resolveThreadParticipantMember(thread, participant = {}, userId = "") {
+    const embeddedMember = participant?.member || participant?.guildMember;
+    if (embeddedMember) return embeddedMember;
+    const guildMember = thread?.guild?.members?.cache?.get?.(userId);
+    if (guildMember) return guildMember;
+    if (typeof thread?.guild?.members?.fetch === "function") {
+      return thread.guild.members.fetch(userId).catch(() => participant);
+    }
+    return participant;
+  }
+
+  async function cleanupClosedTicketResources(ticket = {}) {
+    const threadId = cleanString(ticket.message?.threadId, 80);
+    if (!threadId) return;
+    const thread = await fetchTextChannel(threadId).catch(() => null);
+    if (!thread) return;
+
+    const pingMessageId = cleanString(ticket.message?.pingMessageId, 80);
+    if (pingMessageId && thread.messages?.fetch) {
+      const pingMessage = await thread.messages.fetch(pingMessageId).catch(() => null);
+      if (pingMessage?.delete) {
+        await pingMessage.delete().catch((error) => {
+          logError("Antiteam ping cleanup failed:", error?.message || error);
+        });
+      }
+    }
+
+    if (thread.members?.fetch && thread.members?.remove) {
+      const participants = await thread.members.fetch().catch(() => null);
+      const entries = participants?.values
+        ? [...participants.values()]
+        : Array.isArray(participants)
+          ? participants
+          : Object.values(participants || {});
+
+      for (const participant of entries) {
+        const userId = cleanString(participant?.id || participant?.user?.id || participant?.userId, 80);
+        if (!userId || userId === ticket.createdBy) continue;
+        const member = await resolveThreadParticipantMember(thread, participant, userId);
+        const isBot = participant?.user?.bot === true || member?.user?.bot === true;
+        if (isBot || hasAdmin(member)) continue;
+        await thread.members.remove(userId).catch((error) => {
+          logError(`Antiteam thread member cleanup failed [${userId}]:`, error?.message || error);
+        });
+      }
+    }
+
+    if (typeof thread.setLocked === "function") {
+      await thread.setLocked(true, "antiteam mission closed").catch((error) => {
+        logError("Antiteam thread lock failed:", error?.message || error);
+      });
+    }
+    if (typeof thread.setArchived === "function") {
+      await thread.setArchived(true, "antiteam mission closed").catch((error) => {
+        logError("Antiteam thread archive failed:", error?.message || error);
+      });
+    }
+  }
+
+  async function finalizeClosedTicket(ticket = {}) {
+    await syncTicketMessages(ticket).catch(() => {});
+    await cleanupClosedTicketResources(ticket).catch(() => {});
+  }
+
   async function replyNoPermission(interaction) {
     if (typeof options.replyNoPermission === "function") {
       await options.replyNoPermission(interaction);
@@ -306,19 +374,25 @@ function createAntiteamOperator(options = {}) {
 
   async function syncTicketMessages(ticket) {
     const config = getConfig();
-    const channel = await fetchTextChannel(ticket.message?.channelId).catch(() => null);
-    if (channel && ticket.message?.messageId) {
+    const publicMessageSync = (async () => {
+      const channel = await fetchTextChannel(ticket.message?.channelId).catch(() => null);
+      if (!channel || !ticket.message?.messageId) return;
       const message = await channel.messages?.fetch?.(ticket.message.messageId).catch(() => null);
       if (message) await message.edit(buildTicketPublicPayload(ticket, config)).catch(() => {});
-    }
-    const thread = await fetchTextChannel(ticket.message?.threadId).catch(() => null);
-    if (thread && ticket.message?.threadPanelMessageId) {
+    })();
+
+    const threadSync = (async () => {
+      const thread = await fetchTextChannel(ticket.message?.threadId).catch(() => null);
+      if (!thread) return;
       if (ticket.status === "closed" && typeof thread.setName === "function") {
         await thread.setName(buildThreadName(ticket).slice(0, 100), "antiteam mission closed").catch(() => {});
       }
+      if (!ticket.message?.threadPanelMessageId) return;
       const panel = await thread.messages?.fetch?.(ticket.message.threadPanelMessageId).catch(() => null);
       if (panel) await panel.edit(buildThreadPanelPayload(ticket, config)).catch(() => {});
-    }
+    })();
+
+    await Promise.all([publicMessageSync, threadSync]);
   }
 
   async function publishTicketFromDraft(userId, { skipPhoto = false } = {}) {
@@ -545,6 +619,8 @@ function createAntiteamOperator(options = {}) {
       return true;
     }
 
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
     const helperRoblox = getHelperRobloxSnapshot(interaction.user.id);
     const isFriendEligible = ticket.friendEligibleDiscordUserIds.includes(interaction.user.id);
     const linkKind = ticket.directJoinEnabled ? "direct" : isFriendEligible ? "friend_direct" : "friend_request";
@@ -573,18 +649,19 @@ function createAntiteamOperator(options = {}) {
       return getState().tickets[ticket.id];
     });
 
-    if (shouldNotifyAuthor) {
-      await notifyTicketAuthorForFriendRequest(ticket, helperRecord);
-    }
-
-    await syncTicketMessages(updated).catch(() => {});
-    await interaction.reply(buildHelpReplyPayload({
+    await interaction.editReply(buildHelpReplyPayload({
       ticket: updated,
       linkKind,
       directJoinUrl,
       profileUrl,
       friendRequestsUrl: getConfig().roblox.friendRequestsUrl,
     }));
+
+    const followUpTasks = [syncTicketMessages(updated).catch(() => {})];
+    if (shouldNotifyAuthor) {
+      followUpTasks.push(notifyTicketAuthorForFriendRequest(updated, helperRecord).catch(() => false));
+    }
+    await Promise.all(followUpTasks);
     return true;
   }
 
@@ -812,7 +889,7 @@ function createAntiteamOperator(options = {}) {
         await interaction.reply({ content: "Миссия уже закрыта или не найдена.", flags: MessageFlags.Ephemeral });
         return true;
       }
-      if (!canManageTicket(interaction, ticket)) {
+      if (!canCloseTicket(interaction, ticket)) {
         await replyNoPermission(interaction);
         return true;
       }
@@ -821,7 +898,7 @@ function createAntiteamOperator(options = {}) {
     }
 
     if (action === "close_page") {
-      if (!ticket || !canManageTicket(interaction, ticket)) {
+      if (!ticket || !canCloseTicket(interaction, ticket)) {
         await replyNoPermission(interaction);
         return true;
       }
@@ -830,7 +907,7 @@ function createAntiteamOperator(options = {}) {
     }
 
     if (action === "arrived") {
-      if (!ticket || !canManageTicket(interaction, ticket)) {
+      if (!ticket || !canCloseTicket(interaction, ticket)) {
         await replyNoPermission(interaction);
         return true;
       }
@@ -847,7 +924,7 @@ function createAntiteamOperator(options = {}) {
     }
 
     if (action === "close_finish") {
-      if (!ticket || !canManageTicket(interaction, ticket)) {
+      if (!ticket || !canCloseTicket(interaction, ticket)) {
         await replyNoPermission(interaction);
         return true;
       }
@@ -1083,7 +1160,7 @@ function createAntiteamOperator(options = {}) {
     }
 
     if (action === "close_modal") {
-      if (!canManageTicket(interaction, ticket)) {
+      if (!canCloseTicket(interaction, ticket)) {
         await replyNoPermission(interaction);
         return true;
       }
@@ -1104,7 +1181,7 @@ function createAntiteamOperator(options = {}) {
         }
         return closed;
       });
-      await syncTicketMessages(updated);
+      await finalizeClosedTicket(updated);
       await interaction.reply({ content: "Антитим закрыт. Итог записан в заявку.", flags: MessageFlags.Ephemeral });
       return true;
     }
@@ -1150,7 +1227,7 @@ function createAntiteamOperator(options = {}) {
         confirmedHelperIds: Object.values(ticket.helpers || {}).filter((helper) => helper.arrived).map((helper) => helper.userId),
         autoClosed: true,
       }));
-      await syncTicketMessages(updated).catch(() => {});
+      await finalizeClosedTicket(updated).catch(() => {});
       closed.push(updated);
     }
     return { closedCount: closed.length, closed };

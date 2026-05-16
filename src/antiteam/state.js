@@ -225,13 +225,15 @@ function normalizeSelectedClanPingKeys(value = [], config = createDefaultAntitea
 function normalizeAntiteamDraft(value = {}, config = createDefaultAntiteamConfig()) {
   const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
   const kind = normalizeTicketKind(source.kind, "standard");
+  const anchorUserId = kind === "clan" ? cleanString(source.anchorUserId, 80) : "";
+  const anchorUserTag = kind === "clan" ? cleanString(source.anchorUserTag, 120) : "";
   const now = new Date().toISOString();
   return {
     kind,
     userId: cleanString(source.userId, 80),
     userTag: cleanString(source.userTag, 120),
-    anchorUserId: cleanString(source.anchorUserId, 80),
-    anchorUserTag: cleanString(source.anchorUserTag, 120),
+    anchorUserId,
+    anchorUserTag,
     roblox: normalizeRobloxSnapshot(source.roblox),
     level: kind === "clan" ? "clan" : normalizeAntiteamLevel(source.level, "medium"),
     count: kind === "clan" ? "clan" : normalizeAntiteamCount(source.count, "2-4"),
@@ -290,6 +292,8 @@ function normalizeMessageRefs(value = {}) {
 function normalizeAntiteamTicket(value = {}, config = createDefaultAntiteamConfig()) {
   const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
   const kind = normalizeTicketKind(source.kind, "standard");
+  const anchorUserId = kind === "clan" ? cleanString(source.anchorUserId, 80) : "";
+  const anchorUserTag = kind === "clan" ? cleanString(source.anchorUserTag, 120) : "";
   const helpers = {};
   for (const [helperUserId, helper] of Object.entries(source.helpers || {})) {
     const normalized = normalizeHelperRecord(helper, helperUserId);
@@ -302,8 +306,8 @@ function normalizeAntiteamTicket(value = {}, config = createDefaultAntiteamConfi
     status: normalizeTicketStatus(source.status, "open"),
     createdBy: cleanString(source.createdBy, 80),
     createdByTag: cleanString(source.createdByTag, 120),
-    anchorUserId: cleanString(source.anchorUserId, 80),
-    anchorUserTag: cleanString(source.anchorUserTag, 120),
+    anchorUserId,
+    anchorUserTag,
     roblox: normalizeRobloxSnapshot(source.roblox),
     level: kind === "clan" ? "clan" : normalizeAntiteamLevel(source.level, "medium"),
     count: kind === "clan" ? "clan" : normalizeAntiteamCount(source.count, "2-4"),

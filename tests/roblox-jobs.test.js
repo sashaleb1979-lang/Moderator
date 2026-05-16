@@ -516,6 +516,7 @@ test("runRobloxPlaytimeSyncJob updates rolling JJS minutes and co-play state in 
   assert.equal(db.profiles.user_a.domains.roblox.playtime.jjsMinutes7d, 2);
   assert.equal(db.profiles.user_a.domains.roblox.playtime.jjsMinutes30d, 2);
   assert.equal(db.profiles.user_a.domains.roblox.playtime.currentSessionStartedAt, "2026-05-09T12:00:00.000Z");
+  assert.equal(db.profiles.user_a.domains.roblox.playtime.hourlyBucketsMsk["2026-05-09T15"], 2);
   assert.equal(db.profiles.user_a.domains.roblox.coPlay.peers[0].peerUserId, "user_b");
   assert.equal(db.profiles.user_a.domains.roblox.coPlay.peers[0].minutesTogether, 2);
   assert.equal(db.profiles.user_a.domains.roblox.coPlay.peers[0].sessionsTogether, 1);
@@ -555,6 +556,9 @@ test("runRobloxPlaytimeSyncJob keeps active sessions open when presence polling 
               lastSeenInJjsAt: "2026-05-09T12:00:00.000Z",
               dailyBuckets: {
                 "2026-05-09": 10,
+              },
+              hourlyBucketsMsk: {
+                "2026-05-09T15": 10,
               },
             },
           },
@@ -633,6 +637,9 @@ test("runRobloxPlaytimeSyncJob clears stale persisted session markers after rest
               lastSeenInJjsAt: "2026-05-09T12:00:00.000Z",
               dailyBuckets: {
                 "2026-05-09": 10,
+              },
+              hourlyBucketsMsk: {
+                "2026-05-09T15": 10,
               },
             },
           },

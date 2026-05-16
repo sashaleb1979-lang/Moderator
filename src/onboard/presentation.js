@@ -70,6 +70,7 @@ const HARD_DEFAULT_PRESENTATION = {
         roleId: "",
         roleIds: [],
         color: "#ffffff",
+        rules: [],
       },
       panel: {
         selectedTier: 5,
@@ -184,26 +185,69 @@ function normalizeGraphicOutlineRoleIds(value, limit = 25) {
   return normalized;
 }
 
+function normalizeGraphicOutlineColor(value, fallback = "#ffffff") {
+  const text = cleanString(value);
+  return /^#[0-9a-f]{6}$/i.test(text) ? text : fallback;
+}
+
+function normalizeGraphicOutlineRules(value, fallbackColor = "#ffffff", limit = 25) {
+  const source = Array.isArray(value) ? value : [];
+  const normalized = [];
+  const indexByRoleId = new Map();
+
+  for (const entry of source) {
+    if (!entry || typeof entry !== "object") continue;
+    const roleId = normalizeGraphicOutlineRoleIds(entry.roleId, 1)[0] || "";
+    if (!roleId) continue;
+
+    const color = normalizeGraphicOutlineColor(entry.color, fallbackColor);
+    if (indexByRoleId.has(roleId)) {
+      normalized[indexByRoleId.get(roleId)].color = color;
+      continue;
+    }
+
+    normalized.push({ roleId, color });
+    indexByRoleId.set(roleId, normalized.length - 1);
+    if (normalized.length >= limit) break;
+  }
+
+  return normalized;
+}
+
 function normalizeGraphicOutline(value, fallback = {}) {
   const source = value && typeof value === "object" ? value : {};
-  const rawColor = cleanString(source.color);
-  const fallbackColor = cleanString(fallback.color) || "#ffffff";
+  const fallbackColor = normalizeGraphicOutlineColor(fallback.color, "#ffffff");
+  const resolvedColor = normalizeGraphicOutlineColor(source.color, fallbackColor);
   const fallbackRoleIds = normalizeGraphicOutlineRoleIds(
     Array.isArray(fallback.roleIds) && fallback.roleIds.length ? fallback.roleIds : fallback.roleId
   );
+  const fallbackRules = normalizeGraphicOutlineRules(
+    Array.isArray(fallback.rules) && fallback.rules.length
+      ? fallback.rules
+      : fallbackRoleIds.map((roleId) => ({ roleId, color: fallbackColor })),
+    fallbackColor
+  );
   const hasExplicitEmptyRoleIds = Array.isArray(source.roleIds) && source.roleIds.length === 0;
   const hasExplicitEmptyRoleId = Object.prototype.hasOwnProperty.call(source, "roleId") && cleanString(source.roleId) === "";
+  const hasExplicitEmptyRules = Array.isArray(source.rules) && source.rules.length === 0;
   const roleIds = normalizeGraphicOutlineRoleIds(
     Array.isArray(source.roleIds) && source.roleIds.length ? source.roleIds : source.roleId
   );
-  const resolvedRoleIds = (!roleIds.length && (hasExplicitEmptyRoleIds || hasExplicitEmptyRoleId))
+  const sourceRules = normalizeGraphicOutlineRules(source.rules, resolvedColor);
+  const resolvedRules = (hasExplicitEmptyRules || (!sourceRules.length && !roleIds.length && (hasExplicitEmptyRoleIds || hasExplicitEmptyRoleId)))
     ? []
-    : (roleIds.length ? roleIds : fallbackRoleIds);
+    : (sourceRules.length
+      ? sourceRules
+      : (roleIds.length
+        ? roleIds.map((roleId) => ({ roleId, color: resolvedColor }))
+        : fallbackRules));
+  const resolvedRoleIds = resolvedRules.map((rule) => rule.roleId);
 
   return {
     roleId: resolvedRoleIds[0] || "",
     roleIds: resolvedRoleIds,
-    color: /^#[0-9a-f]{6}$/i.test(rawColor) ? rawColor : fallbackColor,
+    color: resolvedColor,
+    rules: resolvedRules,
   };
 }
 

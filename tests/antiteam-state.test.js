@@ -107,6 +107,48 @@ test("clan ticket keeps selected Discord anchor metadata", () => {
   assert.equal(ticket.roblox.username, "AnchorRb");
 });
 
+test("standard draft drops legacy anchor metadata", () => {
+  const db = {};
+
+  const draft = setAntiteamDraft(db, "author-1", {
+    kind: "standard",
+    userTag: "Author",
+    anchorUserId: "anchor-1",
+    anchorUserTag: "Anchor",
+    roblox: { userId: "101", username: "AuthorRb" },
+    description: "Обычная заявка без якоря.",
+  }, { now: "2026-05-16T10:00:00.000Z" });
+
+  assert.equal(draft.kind, "standard");
+  assert.equal(draft.anchorUserId, "");
+  assert.equal(draft.anchorUserTag, "");
+  assert.equal(draft.roblox.username, "AuthorRb");
+});
+
+test("standard ticket drops legacy anchor metadata from draft", () => {
+  const db = {};
+  const draft = setAntiteamDraft(db, "author-1", {
+    kind: "standard",
+    userTag: "Author",
+    anchorUserId: "anchor-1",
+    anchorUserTag: "Anchor",
+    roblox: { userId: "101", username: "AuthorRb" },
+    level: "medium",
+    count: "2-4",
+    description: "Обычная заявка без якоря.",
+  }, { now: "2026-05-16T10:00:00.000Z" });
+
+  const ticket = createAntiteamTicketFromDraft(db, draft, {
+    id: "ticket-standard",
+    now: "2026-05-16T10:01:00.000Z",
+  });
+
+  assert.equal(ticket.kind, "standard");
+  assert.equal(ticket.anchorUserId, "");
+  assert.equal(ticket.anchorUserTag, "");
+  assert.equal(ticket.roblox.username, "AuthorRb");
+});
+
 test("matchRobloxFriendsToDiscordProfiles only returns verified matching profiles", () => {
   const profiles = {
     "discord-1": {

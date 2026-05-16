@@ -201,6 +201,7 @@ test("presentation resolution keeps graphic outline roles config and validates f
     roleId: "1498650315631628318",
     roleIds: ["1498650315631628318"],
     color: "#abcdef",
+    rules: [{ roleId: "1498650315631628318", color: "#abcdef" }],
   });
 
   const dbConfig = {
@@ -231,6 +232,46 @@ test("presentation resolution keeps graphic outline roles config and validates f
     roleId: "1498650315631628318",
     roleIds: ["1498650315631628318", "1498650315631628320"],
     color: "#abcdef",
+    rules: [
+      { roleId: "1498650315631628318", color: "#abcdef" },
+      { roleId: "1498650315631628320", color: "#abcdef" },
+    ],
+  });
+
+  const resolvedWithRules = resolvePresentation({
+    presentation: {
+      tierlist: {
+        graphic: {
+          outline: {
+            rules: [
+              { roleId: "1498650315631628318", color: "#112233" },
+              { roleId: "1498650315631628320", color: "bad-color" },
+              { roleId: "1498650315631628318", color: "#334455" },
+            ],
+            color: "bad-color",
+          },
+        },
+      },
+    },
+  }, {
+    graphicTierlist: {
+      outline: {
+        roleId: "1498650315631628319",
+        color: "#abcdef",
+      },
+    },
+  }, {
+    defaultGraphicTierColors: DEFAULT_GRAPHIC_TIER_COLORS,
+  });
+
+  assert.deepEqual(resolvedWithRules.tierlist.graphic.outline, {
+    roleId: "1498650315631628318",
+    roleIds: ["1498650315631628318", "1498650315631628320"],
+    color: "#abcdef",
+    rules: [
+      { roleId: "1498650315631628318", color: "#334455" },
+      { roleId: "1498650315631628320", color: "#abcdef" },
+    ],
   });
 
   const cleared = resolvePresentation({
@@ -260,6 +301,7 @@ test("presentation resolution keeps graphic outline roles config and validates f
     roleId: "",
     roleIds: [],
     color: "#123456",
+    rules: [],
   });
 });
 
