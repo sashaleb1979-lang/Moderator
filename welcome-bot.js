@@ -2372,7 +2372,7 @@ function buildGraphicPanelPayload(statusText = "", includeFlags = true) {
   const tierColor = tierColors[selectedTier] || DEFAULT_GRAPHIC_TIER_COLORS[selectedTier];
 
   const embed = new EmbedBuilder()
-    .setTitle("PNG Panel")
+    .setTitle("PNG Panel • gp-2026-05-15-b")
     .setDescription([
       `**Title:** ${getEffectiveGraphicTitle()}`,
       `**Картинка:** ${cfg.W}×${cfg.H}`,
@@ -14922,6 +14922,7 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
         return;
       }
+      console.log("[graphic-panel] open marker=gp-2026-05-15-b tiers=5,4,3,2,1,6 user=" + (interaction.user?.id || "unknown"));
       await interaction.reply(buildGraphicPanelPayload());
       return;
     }
@@ -19993,3 +19994,11 @@ client.on("interactionCreate", async (interaction) => {
 });
 
 client.login(DISCORD_TOKEN);
+
+
+
+
+
+
+
+
