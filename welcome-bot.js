@@ -5044,6 +5044,22 @@ function getAntiteamOperator() {
   return antiteamOperator;
 }
 
+async function handleAntiteamInteractionSafely(interaction, methodName) {
+  try {
+    const operator = getAntiteamOperator();
+    if (typeof operator?.[methodName] !== "function") return false;
+    return await operator[methodName](interaction);
+  } catch (error) {
+    console.error(`Antiteam interaction failed (${interaction?.customId || interaction?.commandName || methodName}):`, error?.message || error);
+    if (!interaction?.deferred && !interaction?.replied && typeof interaction?.reply === "function") {
+      await interaction.reply(ephemeralPayload({
+        content: "Не удалось обработать антитим-действие. Попробуй ещё раз или попроси модератора обновить панель.",
+      })).catch(() => {});
+    }
+    return true;
+  }
+}
+
 function hasActivityPanelAccess(member) {
   if (isModerator(member)) return true;
   if (!member) return false;
@@ -13743,7 +13759,27 @@ client.on("messageCreate", async (message) => {
 });
 
 client.on("interactionCreate", async (interaction) => {
+  const customId = String(interaction.customId || "");
+  if (customId.startsWith("at:")) {
+    const antiteamMethod = interaction.isButton?.()
+      ? "handleButtonInteraction"
+      : interaction.isStringSelectMenu?.()
+        ? "handleSelectMenuInteraction"
+        : interaction.isModalSubmit?.()
+          ? "handleModalSubmitInteraction"
+          : "";
+    if (antiteamMethod && await handleAntiteamInteractionSafely(interaction, antiteamMethod)) {
+      return;
+    }
+  }
+
   if (interaction.isChatInputCommand()) {
+    if (interaction.commandName === ANTITEAM_COMMAND_NAME) {
+      if (await handleAntiteamInteractionSafely(interaction, "handleSlashCommand")) {
+        return;
+      }
+    }
+
     if (interaction.commandName === ROLE_PANEL_COMMAND_NAME) {
       if (await replyIfAutonomyGuardBlockedActor(interaction)) {
         return;
@@ -13834,7 +13870,7 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    if (await getAntiteamOperator().handleSlashCommand(interaction)) {
+    if (await handleAntiteamInteractionSafely(interaction, "handleSlashCommand")) {
       return;
     }
 
@@ -14437,7 +14473,7 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    if (await getAntiteamOperator().handleButtonInteraction(interaction)) {
+    if (await handleAntiteamInteractionSafely(interaction, "handleButtonInteraction")) {
       return;
     }
 
@@ -18083,7 +18119,7 @@ client.on("interactionCreate", async (interaction) => {
   }
 
   if (interaction.isStringSelectMenu()) {
-    if (await getAntiteamOperator().handleSelectMenuInteraction(interaction)) {
+    if (await handleAntiteamInteractionSafely(interaction, "handleSelectMenuInteraction")) {
       return;
     }
 
@@ -18455,7 +18491,7 @@ client.on("interactionCreate", async (interaction) => {
   }
 
   if (interaction.isModalSubmit()) {
-    if (await getAntiteamOperator().handleModalSubmitInteraction(interaction)) {
+    if (await handleAntiteamInteractionSafely(interaction, "handleModalSubmitInteraction")) {
       return;
     }
 
