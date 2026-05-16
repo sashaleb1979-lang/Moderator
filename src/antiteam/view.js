@@ -244,21 +244,22 @@ function buildPanelTextModal(config = createDefaultAntiteamConfig()) {
 }
 
 function buildRobloxUsernameModal({ customId = "at:roblox", title = "Roblox username", initialValue = "" } = {}) {
+  const input = new TextInputBuilder()
+    .setCustomId("roblox_username")
+    .setLabel("Уникальный Roblox username")
+    .setPlaceholder("Например: Builderman")
+    .setStyle(TextInputStyle.Short)
+    .setMinLength(3)
+    .setMaxLength(20)
+    .setRequired(true);
+  const value = cleanString(initialValue, 20);
+  if (value) input.setValue(value);
+
   return new ModalBuilder()
     .setCustomId(customId)
     .setTitle(title)
     .addComponents(
-      new ActionRowBuilder().addComponents(
-        new TextInputBuilder()
-          .setCustomId("roblox_username")
-          .setLabel("Уникальный Roblox username")
-          .setPlaceholder("Например: Builderman")
-          .setStyle(TextInputStyle.Short)
-          .setMinLength(3)
-          .setMaxLength(20)
-          .setRequired(true)
-          .setValue(cleanString(initialValue, 20))
-      )
+      new ActionRowBuilder().addComponents(input)
     );
 }
 
