@@ -96,7 +96,7 @@ test("roblox modal verifies user, writes binding, grants battalion role and crea
   assert.equal(interaction.calls.at(-1)[1].flags, MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral);
 });
 
-test("start panel submit button opens the Roblox username modal", async () => {
+test("start panel submit button opens the Roblox username modal only when profile has no Roblox", async () => {
   const db = {};
   ensureAntiteamState(db);
   const operator = createAntiteamOperator({
@@ -108,6 +108,38 @@ test("start panel submit button opens the Roblox username modal", async () => {
   assert.equal(await operator.handleButtonInteraction(interaction), true);
   assert.equal(interaction.calls[0][0], "showModal");
   assert.equal(interaction.calls[0][1].data.custom_id, "at:roblox");
+});
+
+test("start panel submit button reuses verified Roblox from profile", async () => {
+  const db = {};
+  ensureAntiteamState(db).state.config.battalionRoleId = "battalion-role";
+  const granted = [];
+  const operator = createAntiteamOperator({
+    db,
+    now: () => "2026-05-16T10:00:00.000Z",
+    saveDb() {},
+    getProfile: () => ({
+      domains: {
+        roblox: {
+          userId: "101",
+          username: "AlreadyLinked",
+          displayName: "Already Linked",
+          verificationStatus: "verified",
+        },
+      },
+    }),
+    grantRole: async (userId, roleId) => {
+      granted.push({ userId, roleId });
+    },
+  });
+  const interaction = createButtonInteraction(ANTITEAM_CUSTOM_IDS.open, { id: "user-1", username: "User" });
+
+  assert.equal(await operator.handleButtonInteraction(interaction), true);
+
+  assert.equal(interaction.calls[0][0], "reply");
+  assert.equal(db.sot.antiteam.drafts["user-1"].roblox.username, "AlreadyLinked");
+  assert.deepEqual(granted, [{ userId: "user-1", roleId: "battalion-role" }]);
+  assert.match(JSON.stringify(interaction.calls[0][1].components[0].toJSON()), /Roblox взят из твоего профиля/);
 });
 
 test("help button records friend-request path and notifies author", async () => {

@@ -162,7 +162,7 @@ function normalizeStartPanelConfig(value = {}) {
   return {
     title: cleanString(source.title, 80) || "⚔️ Антитим",
     description: cleanString(source.description, 700) || "Быстрый вызов батальёна против тимеров. Roblox ник проверяется автоматически, после заявки создаётся ветка миссии.",
-    details: cleanString(source.details, 700) || "Подготовь Roblox username, примерную силу команды, число тимеров и ники/киллы целей.",
+    details: cleanString(source.details, 700) || "Если Roblox уже привязан в профиле, ник спрашивать не будем. Для заявки нужны сила команды, число тимеров и ники/киллы целей.",
     buttonLabel: cleanString(source.buttonLabel, 80) || "⚔️ Подать заявку",
     guideButtonLabel: cleanString(source.guideButtonLabel, 80) || "Что дальше?",
     accentColor: normalizeColorInteger(source.accentColor, 0xE53935),

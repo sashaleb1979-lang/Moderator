@@ -437,6 +437,53 @@ function createAntiteamOperator(options = {}) {
     };
   }
 
+  function getStoredRobloxSnapshot(userId) {
+    const profile = typeof options.getProfile === "function" ? options.getProfile(userId) : db.profiles?.[userId];
+    const candidates = [
+      profile?.domains?.roblox,
+      profile?.summary?.roblox,
+      profile?.roblox,
+    ].filter(Boolean);
+
+    for (const roblox of candidates) {
+      const robloxUserId = cleanString(roblox.userId || roblox.robloxUserId || roblox.id, 40);
+      const username = cleanString(roblox.username || roblox.currentUsername || roblox.robloxUsername || roblox.name, 120);
+      const status = cleanString(roblox.verificationStatus || roblox.status, 40).toLowerCase();
+      const trusted = status === "verified" || roblox.hasVerifiedAccount === true || Boolean(roblox.verifiedAt);
+      const explicitlyUnusable = status === "failed" || status === "unverified";
+      if (!robloxUserId || !username || explicitlyUnusable || (!trusted && status)) continue;
+      return {
+        id: robloxUserId,
+        userId: robloxUserId,
+        name: username,
+        username,
+        displayName: cleanString(roblox.displayName || roblox.robloxDisplayName, 120),
+        profileUrl: cleanString(roblox.profileUrl, 500) || `https://www.roblox.com/users/${robloxUserId}/profile`,
+      };
+    }
+    return null;
+  }
+
+  async function openTicketDraftWithRoblox(interaction, robloxUser, kind = "standard", { response = "reply", statusText = "" } = {}) {
+    await grantBattalionRole(interaction.user.id, "antiteam roblox ready").catch(() => null);
+    const draft = await persist("antiteam-draft-roblox", () => setAntiteamDraft(db, interaction.user.id, {
+      kind,
+      userTag: getUserTag(interaction.user),
+      roblox: robloxUser,
+      level: "medium",
+      count: "2-4",
+      directJoinEnabled: false,
+      photoWanted: false,
+    }, { now: nowIso() }));
+    const payload = buildTicketSetupPayload(draft, getConfig(), statusText || `Roblox готов: ${draft.roblox.username}.`);
+    if (response === "editReply") {
+      await interaction.editReply(payload);
+    } else {
+      await interaction.reply(payload);
+    }
+    return true;
+  }
+
   async function handleHelp(interaction, ticketId) {
     const state = getState();
     const ticket = state.tickets[ticketId];
@@ -530,6 +577,13 @@ function createAntiteamOperator(options = {}) {
     const id = interaction.customId;
 
     if (id === ANTITEAM_CUSTOM_IDS.open) {
+      const storedRoblox = getStoredRobloxSnapshot(interaction.user.id);
+      if (storedRoblox) {
+        return openTicketDraftWithRoblox(interaction, storedRoblox, "standard", {
+          response: "reply",
+          statusText: `Roblox взят из твоего профиля: ${storedRoblox.username}.`,
+        });
+      }
       await interaction.showModal(buildRobloxUsernameModal({ customId: "at:roblox" }));
       return true;
     }
@@ -769,18 +823,10 @@ function createAntiteamOperator(options = {}) {
       return true;
     }
     await writeRobloxBinding(interaction.user.id, robloxUser, "antiteam");
-    await grantBattalionRole(interaction.user.id, "antiteam roblox verified").catch(() => null);
-    const draft = await persist("antiteam-draft-roblox", () => setAntiteamDraft(db, interaction.user.id, {
-      kind,
-      userTag: getUserTag(interaction.user),
-      roblox: robloxUser,
-      level: "medium",
-      count: "2-4",
-      directJoinEnabled: false,
-      photoWanted: false,
-    }, { now: nowIso() }));
-    await interaction.editReply(buildTicketSetupPayload(draft, getConfig(), `Roblox подтверждён: ${draft.roblox.username}.`));
-    return true;
+    return openTicketDraftWithRoblox(interaction, robloxUser, kind, {
+      response: "editReply",
+      statusText: `Roblox подтверждён: ${cleanString(robloxUser.username || robloxUser.name, 120)}.`,
+    });
   }
 
   async function handleModalSubmitInteraction(interaction) {

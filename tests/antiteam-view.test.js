@@ -53,13 +53,17 @@ test("start guide and panel text modal expose polished setup copy", () => {
 
   assert.equal(buildStartGuidePayload(config).flags, MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral);
   assert.match(payloadJson(buildStartGuidePayload(config)), /Как работает антитим/);
+  assert.match(payloadJson(buildStartGuidePayload(config)), /уже привязан/);
   assert.equal(buildPanelTextModal(config).data.custom_id, "at:panel_text:modal");
 });
 
 test("roblox username modal does not send an empty value below min length", () => {
+  const modal = buildRobloxUsernameModal({ customId: "at:roblox" }).toJSON();
   const emptyInput = buildRobloxUsernameModal({ customId: "at:roblox" }).toJSON().components[0].components[0];
   const filledInput = buildRobloxUsernameModal({ customId: "at:roblox", initialValue: "Builderman" }).toJSON().components[0].components[0];
 
+  assert.equal(modal.title, "Roblox не найден в профиле");
+  assert.equal(emptyInput.label, "Roblox username аккаунта");
   assert.equal(emptyInput.min_length, 3);
   assert.equal(Object.prototype.hasOwnProperty.call(emptyInput, "value"), false);
   assert.equal(filledInput.value, "Builderman");

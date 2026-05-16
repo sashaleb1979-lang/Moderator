@@ -133,10 +133,11 @@ function buildStartGuidePayload(config = createDefaultAntiteamConfig()) {
     .addTextDisplayComponents(
       new TextDisplayBuilder().setContent("# Как работает антитим"),
       new TextDisplayBuilder().setContent([
-        "1. Введи Roblox username. Бот проверит аккаунт через Roblox API и привяжет его к профилю.",
-        "2. Выбери опасность, число тимеров и при желании добавь ники/киллы целей.",
-        "3. После отправки появится заявка и thread, где батальён сможет быстро подключиться.",
-        "4. Если включён прямой вход или helper уже есть в друзьях Roblox, бот даст быстрый join/profile путь.",
+        "1. Если Roblox уже привязан к профилю, бот возьмёт его сам.",
+        "2. Если привязки нет, появится короткая форма только для Roblox username.",
+        "3. Выбери опасность, число тимеров и по возможности добавь ники/киллы целей.",
+        "4. После отправки появится заявка и thread, где батальён сможет быстро подключиться.",
+        "5. Если включён прямой вход или helper уже есть в друзьях Roblox, бот даст быстрый join/profile путь.",
       ].join("\n"))
     );
   return buildPayload(container, { ephemeral: true });
@@ -243,11 +244,11 @@ function buildPanelTextModal(config = createDefaultAntiteamConfig()) {
     );
 }
 
-function buildRobloxUsernameModal({ customId = "at:roblox", title = "Roblox username", initialValue = "" } = {}) {
+function buildRobloxUsernameModal({ customId = "at:roblox", title = "Roblox не найден в профиле", initialValue = "" } = {}) {
   const input = new TextInputBuilder()
     .setCustomId("roblox_username")
-    .setLabel("Уникальный Roblox username")
-    .setPlaceholder("Например: Builderman")
+    .setLabel("Roblox username аккаунта")
+    .setPlaceholder("Только ник, например Builderman")
     .setStyle(TextInputStyle.Short)
     .setMinLength(3)
     .setMaxLength(20)
