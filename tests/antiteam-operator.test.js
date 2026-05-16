@@ -58,11 +58,37 @@ function createButtonInteraction(customId, user = { id: "helper-1", username: "H
     async deferUpdate() {
       calls.push(["deferUpdate"]);
     },
+    async deferReply(payload) {
+      calls.push(["deferReply", payload]);
+    },
     async editReply(payload) {
       calls.push(["editReply", payload]);
     },
     async showModal(payload) {
       calls.push(["showModal", payload]);
+    },
+  };
+}
+
+function createSelectInteraction(customId, values = [], user = { id: "user-1", username: "User" }) {
+  const calls = [];
+  return {
+    calls,
+    customId,
+    values,
+    user,
+    isStringSelectMenu: () => true,
+    async reply(payload) {
+      calls.push(["reply", payload]);
+    },
+    async update(payload) {
+      calls.push(["update", payload]);
+    },
+    async deferUpdate() {
+      calls.push(["deferUpdate"]);
+    },
+    async editReply(payload) {
+      calls.push(["editReply", payload]);
     },
   };
 }
@@ -94,6 +120,29 @@ test("roblox modal verifies user, writes binding, grants battalion role and crea
   assert.equal(db.sot.antiteam.drafts["user-1"].roblox.username, "Anchor");
   assert.equal(interaction.calls[0][0], "deferReply");
   assert.equal(interaction.calls.at(-1)[1].flags, MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral);
+});
+
+test("clan roblox modal verifies anchor without rebinding caller profile", async () => {
+  const db = {};
+  ensureAntiteamState(db);
+  let binding = null;
+  const operator = createAntiteamOperator({
+    db,
+    now: () => "2026-05-16T10:00:00.000Z",
+    saveDb() {},
+    resolveRobloxUserByUsername: async () => ({ id: "202", name: "ClanAnchor", displayName: "Clan Anchor" }),
+    writeRobloxBinding: async (userId, robloxUser, source) => {
+      binding = { userId, robloxUser, source };
+    },
+  });
+  const interaction = createModalInteraction("at:clan_roblox", { roblox_username: "ClanAnchor" });
+
+  assert.equal(await operator.handleModalSubmitInteraction(interaction), true);
+
+  assert.equal(binding, null);
+  assert.equal(db.sot.antiteam.drafts["user-1"].kind, "clan");
+  assert.equal(db.sot.antiteam.drafts["user-1"].roblox.username, "ClanAnchor");
+  assert.match(JSON.stringify(interaction.calls.at(-1)[1].components[0].toJSON()), /Это не привязка к твоему профилю/);
 });
 
 test("start panel submit button opens the Roblox username modal only when profile has no Roblox", async () => {
@@ -136,10 +185,11 @@ test("start panel submit button reuses verified Roblox from profile", async () =
 
   assert.equal(await operator.handleButtonInteraction(interaction), true);
 
-  assert.equal(interaction.calls[0][0], "reply");
+  assert.equal(interaction.calls[0][0], "deferReply");
+  assert.equal(interaction.calls[1][0], "editReply");
   assert.equal(db.sot.antiteam.drafts["user-1"].roblox.username, "AlreadyLinked");
   assert.deepEqual(granted, [{ userId: "user-1", roleId: "battalion-role" }]);
-  assert.match(JSON.stringify(interaction.calls[0][1].components[0].toJSON()), /Roblox взят из твоего профиля/);
+  assert.match(JSON.stringify(interaction.calls[1][1].components[0].toJSON()), /Roblox взят из твоего профиля/);
 });
 
 test("help button records friend-request path and notifies author", async () => {
@@ -188,6 +238,7 @@ test("draft submit asks for photo when photo toggle is enabled", async () => {
   setAntiteamDraft(db, "user-1", {
     userTag: "User",
     roblox: { userId: "101", username: "Anchor" },
+    description: "Два ника около 4k.",
     photoWanted: true,
   }, { now: "2026-05-16T10:00:00.000Z" });
   const operator = createAntiteamOperator({
@@ -202,12 +253,36 @@ test("draft submit asks for photo when photo toggle is enabled", async () => {
   assert.match(JSON.stringify(interaction.calls.at(-1)[1].components[0].toJSON()), /Фото к заявке/);
 });
 
+test("draft toggle and select acknowledge before editing the setup panel", async () => {
+  const db = {};
+  setAntiteamDraft(db, "user-1", {
+    userTag: "User",
+    roblox: { userId: "101", username: "Anchor" },
+    description: "Тимятся двое у центра.",
+  }, { now: "2026-05-16T10:00:00.000Z" });
+  const operator = createAntiteamOperator({
+    db,
+    now: () => "2026-05-16T10:01:00.000Z",
+    saveDb() {},
+  });
+
+  const toggle = createButtonInteraction(ANTITEAM_CUSTOM_IDS.toggleDirect, { id: "user-1", username: "User" });
+  assert.equal(await operator.handleButtonInteraction(toggle), true);
+  assert.deepEqual(toggle.calls.map((call) => call[0]), ["deferUpdate", "editReply"]);
+
+  const select = createSelectInteraction(ANTITEAM_CUSTOM_IDS.countSelect, ["4-10"]);
+  assert.equal(await operator.handleSelectMenuInteraction(select), true);
+  assert.deepEqual(select.calls.map((call) => call[0]), ["deferUpdate", "editReply"]);
+  assert.equal(db.sot.antiteam.drafts["user-1"].count, "4-10");
+});
+
 test("photo collector publishes ticket with reattached image and deletes upload", async () => {
   const db = {};
   ensureAntiteamState(db).state.config.channelId = "channel-1";
   setAntiteamDraft(db, "user-1", {
     userTag: "User",
     roblox: { userId: "101", username: "Anchor" },
+    description: "Тимятся у центра, нужны A/B.",
     photoWanted: true,
   }, { now: "2026-05-16T10:00:00.000Z" });
   const state = ensureAntiteamState(db).state;

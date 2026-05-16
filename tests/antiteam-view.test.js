@@ -11,6 +11,7 @@ const {
   buildRobloxUsernameModal,
   buildStartPanelPayload,
   buildStartGuidePayload,
+  buildThreadName,
   buildThreadPanelPayload,
   buildTicketPublicPayload,
   buildTicketSetupPayload,
@@ -61,12 +62,20 @@ test("roblox username modal does not send an empty value below min length", () =
   const modal = buildRobloxUsernameModal({ customId: "at:roblox" }).toJSON();
   const emptyInput = buildRobloxUsernameModal({ customId: "at:roblox" }).toJSON().components[0].components[0];
   const filledInput = buildRobloxUsernameModal({ customId: "at:roblox", initialValue: "Builderman" }).toJSON().components[0].components[0];
+  const clanInput = buildRobloxUsernameModal({
+    customId: "at:clan_roblox",
+    title: "Клан-аларм: Roblox якорь",
+    label: "Roblox ник игрока-якоря",
+    placeholder: "Ник игрока, который уже сидит на сервере",
+  }).toJSON().components[0].components[0];
 
   assert.equal(modal.title, "Roblox не найден в профиле");
   assert.equal(emptyInput.label, "Roblox username аккаунта");
   assert.equal(emptyInput.min_length, 3);
   assert.equal(Object.prototype.hasOwnProperty.call(emptyInput, "value"), false);
   assert.equal(filledInput.value, "Builderman");
+  assert.equal(clanInput.label, "Roblox ник игрока-якоря");
+  assert.equal(clanInput.placeholder, "Ник игрока, который уже сидит на сервере");
 });
 
 test("draft setup renders level, count and toggles compactly", () => {
@@ -76,6 +85,7 @@ test("draft setup renders level, count and toggles compactly", () => {
     roblox: { username: "Anchor", userId: "101" },
     level: "high",
     count: "4-10",
+    description: "Ники: A/B, примерно 5k.",
     directJoinEnabled: true,
     photoWanted: true,
   };
@@ -85,8 +95,51 @@ test("draft setup renders level, count and toggles compactly", () => {
   assert.equal(payload.flags, MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral);
   assert.match(json, /Высокие/);
   assert.match(json, /4-10/);
-  assert.match(json, /Вход без др: да/);
-  assert.match(json, /Фото: да/);
+  assert.match(json, /Вход без др: есть/);
+  assert.match(json, /Фото: есть/);
+  assert.match(json, /Roblox пускает к тебе не-друзей/);
+  assert.match(json, /Описание обязательно/);
+  assert.doesNotMatch(json, /"disabled":true/);
+});
+
+test("draft setup requires description before submit", () => {
+  const payload = buildTicketSetupPayload({
+    kind: "standard",
+    userId: "user-1",
+    roblox: { username: "Anchor", userId: "101" },
+    level: "medium",
+    count: "2-4",
+  }, normalizeAntiteamState({}).config);
+  const json = payloadJson(payload);
+
+  assert.match(json, /Описание обязательно/);
+  assert.match(json, /Вход без др: нету/);
+  assert.match(json, /Заполнить описание/);
+  assert.match(json, /"disabled":true/);
+});
+
+test("public ticket and thread name stay compact", () => {
+  const ticket = {
+    id: "ticket-1",
+    kind: "standard",
+    status: "open",
+    createdBy: "author-1",
+    createdByTag: "Gnom#1234",
+    roblox: { username: "Anchor", userId: "101" },
+    level: "low",
+    count: "4-10",
+    description: "Бить A/B, тимятся у центра.",
+    directJoinEnabled: false,
+  };
+  const json = payloadJson(buildTicketPublicPayload(ticket));
+
+  assert.equal(buildThreadName(ticket), "🟢 4-10 тимера • Gnom");
+  assert.match(json, /Антитим • 4-10/);
+  assert.match(json, /Вход без др: \*\*нету\*\* • статус: \*\*открыто\*\*/);
+  assert.match(json, /Опасность: 🟢 \*\*Лоутабельные\*\*/);
+  assert.match(json, /Кого бить: Бить A\/B/);
+  assert.doesNotMatch(json, /### Опасность/);
+  assert.doesNotMatch(json, /### Помощь/);
 });
 
 test("public ticket and thread panel disable actions after close", () => {

@@ -320,8 +320,10 @@ function createAntiteamOperator(options = {}) {
   async function publishTicketFromDraft(userId, { skipPhoto = false } = {}) {
     const draft = getAntiteamDraft(db, userId);
     if (!draft) throw new Error("Черновик антитима истёк. Начни заново.");
-    if (draft.kind === "clan" && !draft.description) {
-      throw new Error("Для клан-аларма нужно описание врагов и ситуации.");
+    if (!cleanString(draft.description, 900)) {
+      throw new Error(draft.kind === "clan"
+        ? "Для клан-аларма нужно описание врагов и ситуации."
+        : "Описание обязательно: укажи, кто тимится, кого бить, ники/kills или ситуацию любым понятным способом.");
     }
     if (draft.photoWanted && !draft.photo && !skipPhoto) {
       const channelId = getConfig().channelId;
@@ -565,6 +567,8 @@ function createAntiteamOperator(options = {}) {
       await interaction.showModal(buildRobloxUsernameModal({
         customId: "at:clan_roblox",
         title: "Клан-аларм: Roblox якорь",
+        label: "Roblox ник игрока-якоря",
+        placeholder: "Ник игрока, который уже сидит на сервере",
       }));
       return true;
     }
@@ -579,8 +583,9 @@ function createAntiteamOperator(options = {}) {
     if (id === ANTITEAM_CUSTOM_IDS.open) {
       const storedRoblox = getStoredRobloxSnapshot(interaction.user.id);
       if (storedRoblox) {
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
         return openTicketDraftWithRoblox(interaction, storedRoblox, "standard", {
-          response: "reply",
+          response: "editReply",
           statusText: `Roblox взят из твоего профиля: ${storedRoblox.username}.`,
         });
       }
@@ -650,11 +655,12 @@ function createAntiteamOperator(options = {}) {
         await interaction.reply({ content: "Черновик истёк. Начни заново.", flags: MessageFlags.Ephemeral });
         return true;
       }
+      await interaction.deferUpdate();
       const patch = id === ANTITEAM_CUSTOM_IDS.toggleDirect
         ? { directJoinEnabled: !draft.directJoinEnabled }
         : { photoWanted: !draft.photoWanted };
       const updated = await persist("antiteam-draft-toggle", () => setAntiteamDraft(db, interaction.user.id, patch, { now: nowIso() }));
-      await interaction.update(buildTicketSetupPayload(updated, getConfig()));
+      await interaction.editReply(buildTicketSetupPayload(updated, getConfig()));
       return true;
     }
 
@@ -669,11 +675,12 @@ function createAntiteamOperator(options = {}) {
     }
 
     if (id === ANTITEAM_CUSTOM_IDS.cancelDraft) {
+      await interaction.deferUpdate();
       await persist("antiteam-draft-cancel", () => {
         clearAntiteamDraft(db, interaction.user.id);
         return { mutated: true };
       });
-      await interaction.update({
+      await interaction.editReply({
         content: "Заявка антитима отменена.",
         components: [],
         flags: MessageFlags.Ephemeral,
@@ -774,8 +781,9 @@ function createAntiteamOperator(options = {}) {
         await interaction.reply({ content: "Helper не найден в этой миссии.", flags: MessageFlags.Ephemeral });
         return true;
       }
+      await interaction.deferUpdate();
       const updated = await persist("antiteam-arrival-toggle", () => setTicketHelperArrival(db, ticket.id, helperId, !current.arrived, { now: nowIso() }));
-      await interaction.update(buildCloseReviewPayload(updated, Number.parseInt(pageRaw, 10) || 0));
+      await interaction.editReply(buildCloseReviewPayload(updated, Number.parseInt(pageRaw, 10) || 0));
       return true;
     }
 
@@ -809,8 +817,9 @@ function createAntiteamOperator(options = {}) {
     } else {
       return false;
     }
+    await interaction.deferUpdate();
     const updated = await persist("antiteam-draft-select", () => setAntiteamDraft(db, interaction.user.id, patch, { now: nowIso() }));
-    await interaction.update(buildTicketSetupPayload(updated, getConfig()));
+    await interaction.editReply(buildTicketSetupPayload(updated, getConfig()));
     return true;
   }
 
@@ -822,10 +831,14 @@ function createAntiteamOperator(options = {}) {
       await interaction.editReply("Такой Roblox username не найден через Roblox API.");
       return true;
     }
-    await writeRobloxBinding(interaction.user.id, robloxUser, "antiteam");
+    if (kind !== "clan") {
+      await writeRobloxBinding(interaction.user.id, robloxUser, "antiteam");
+    }
     return openTicketDraftWithRoblox(interaction, robloxUser, kind, {
       response: "editReply",
-      statusText: `Roblox подтверждён: ${cleanString(robloxUser.username || robloxUser.name, 120)}.`,
+      statusText: kind === "clan"
+        ? `Якорь подтверждён: ${cleanString(robloxUser.username || robloxUser.name, 120)}. Это не привязка к твоему профилю.`
+        : `Roblox подтверждён: ${cleanString(robloxUser.username || robloxUser.name, 120)}.`,
     });
   }
 
