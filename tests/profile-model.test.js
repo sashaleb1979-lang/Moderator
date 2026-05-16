@@ -152,14 +152,14 @@ test("profile read-model composes derived sections, links, and verification fact
     "https://tr.rbxcdn.com/gojo-avatar.png",
     "https://cdn.discordapp.com/oauth-avatar.png",
   ]);
-  assert.match(readModel.sections.overview[0].lines.join("\n"), /Ник в Discord: Sasha/);
+  assert.match(readModel.sections.overview[0].lines.join("\n"), /Игрок: <@user-1>/);
+  assert.match(readModel.sections.overview[0].lines.join("\n"), /Роли: <@&role-1>, <@&role-2>/);
+  assert.match(readModel.sections.overview[0].lines.join("\n"), /Roblox: GojoMain/);
   assert.match(readModel.sections.overview[0].lines.join("\n"), /Подтверждённые kills: 120/);
-  assert.match(readModel.sections.overview[1].lines.join("\n"), /Основной tierlist-пик: Gojo/);
-  assert.match(readModel.sections.overview[2].lines.join("\n"), /JJS доступ: открыт с/);
-  assert.match(readModel.sections.overview[2].lines.join("\n"), /Верификация: verified/);
-  assert.match(readModel.sections.overview[2].lines.join("\n"), /Roblox-связка: подтверждена/);
-  assert.match(readModel.sections.overview[2].lines.join("\n"), /Гайды по мейнам: 1\/1/);
-  assert.match(readModel.sections.overview[2].lines.join("\n"), /ELO-профиль: заполнен/);
+  assert.match(readModel.sections.overview[0].lines.join("\n"), /ELO: 145 \/ tier 2/);
+  assert.match(readModel.sections.overview[1].lines.join("\n"), /JJS доступ: открыт с/);
+  assert.match(readModel.sections.overview[1].lines.join("\n"), /Верификация: verified/);
+  assert.match(readModel.sections.overview[1].lines.join("\n"), /Roblox-связка: подтверждена/);
   assert.match(readModel.sections.progress[0].lines.join("\n"), /Место по kills: #2/);
   assert.match(readModel.sections.progress[1].lines.join("\n"), /Прирост: \+20 kills/);
   assert.match(readModel.sections.progress[2].lines.join("\n"), /1\. 100 -> 120/);
@@ -199,9 +199,13 @@ test("profile read-model marks empty profiles without fabricating data sections"
   assert.equal(readModel.isSelf, true);
   assert.match(readModel.heroLines.join("\n"), /Готовность: JJS доступ не выдан .* верификация не начата .* Roblox не подтверждён/);
   assert.match(readModel.sections.overview[0].lines.join("\n"), /Профиль ещё не заполнен/i);
-  assert.match(readModel.sections.overview[2].lines.join("\n"), /JJS доступ: пока не выдан/i);
-  assert.match(readModel.sections.overview[2].lines.join("\n"), /Верификация: не начата/i);
-  assert.match(readModel.sections.overview[2].lines.join("\n"), /Roblox-связка: не подтверждена/i);
+  assert.match(readModel.sections.overview[0].lines.join("\n"), /Роли: —/);
+  assert.match(readModel.sections.overview[0].lines.join("\n"), /Roblox: не привязан/i);
+  assert.match(readModel.sections.overview[0].lines.join("\n"), /Подтверждённые kills: —/);
+  assert.match(readModel.sections.overview[0].lines.join("\n"), /ELO: —/);
+  assert.match(readModel.sections.overview[1].lines.join("\n"), /JJS доступ: пока не выдан/i);
+  assert.match(readModel.sections.overview[1].lines.join("\n"), /Верификация: не начата/i);
+  assert.match(readModel.sections.overview[1].lines.join("\n"), /Roblox-связка: не подтверждена/i);
   assert.equal(readModel.verificationLines, null);
   assert.match(readModel.emptyStateNote, /После онбординга профиль заполнится автоматически/i);
   assert.deepEqual(readModel.comboLinks, []);

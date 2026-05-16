@@ -18,6 +18,7 @@
    - без server tag можно открыть только свой профиль,
    - staff/moderator bypass есть,
    - одно и то же правило используется для slash, message trigger, open button и nav button.
+   - source server tag теперь берётся из Discord user primary guild identity, а не из role-based конфига.
 9. Вынесены чистые owner-seams:
    - [src/profile/access.js](src/profile/access.js) — ACL,
    - [src/profile/entry.js](src/profile/entry.js) — trigger/custom id parsing,
@@ -32,12 +33,15 @@
 15. Появилась отдельная partial-state и language polish-итерация: профиль последовательнее говорит по-русски и честнее объясняет отсутствие данных.
 16. Блок "Мейны и гайды" усилен: теперь он показывает покрытие guide-ссылками по каждому main, связывает tierlist main с мейнами и яснее объясняет, что доступно по кнопкам.
 17. Quick-link слой усилен: guide/Roblox кнопки стали понятнее по названиям и умеют раскладываться в несколько строк, если ссылок становится больше.
-18. Верхняя сводка усилена ещё на один продуктовый слой: появился отдельный блок статусов и доступов, который в одном месте показывает readiness по JJS access, verification, Roblox, guide coverage, Tierlist и ELO.
-19. Верх профиля визуально усилен: появился compact hero-блок с thumbnail/avatar и быстрой сводкой по прогрессу, фокусу и readiness, а для профилей без аватара этот же слой корректно падает в text-display без V2-ошибок.
+18. Верхняя сводка упрощена под ваш текущий продуктовый запрос: overview теперь держит только Игрок, Роли, Roblox, Подтверждённые kills и компактный ELO без отдельного мусорного блока `Ключевые факты`.
+19. Отдельный status-блок сохранён, но сжат до `Готовность`: только JJS access, verification и Roblox-связка без повторов guide/tierlist/ELO summary.
+20. Верх профиля визуально усилен: появился compact hero-блок с thumbnail/avatar и быстрой сводкой по прогрессу, фокусу и readiness, а для профилей без аватара этот же слой корректно падает в text-display без V2-ошибок.
+21. Кнопка `Привязать Roblox` больше не зависит от onboarding session: у неё отдельный profile-only modal path с reuse существующих identity lock rules и canonical profile writer.
+22. Self-profile теперь яснее объясняет ELO flow прямо в overview: CTA и helper copy говорят, что сначала нужен текст с числом ELO, а потом следующим сообщением скрин.
 
 ### Реализовано Частично
 1. Базовые данные профиля уже стали заметно богаче, верхняя сводка теперь лучше показывает readiness/status и получила отдельный hero-слой, но до финального "богатого" продуктового экрана ещё не доведены все разделы.
-2. ELO, tierlist, Roblox и server activity уже подключены и читаются лучше, но presentation ещё можно сделать визуально сильнее.
+2. ELO, tierlist, Roblox и server activity уже подключены и читаются лучше, но presentation ещё можно сделать визуально сильнее в соседних секциях, не раздувая lean overview обратно.
 3. Мейны и guide-связки уже поданы заметно лучше, но полноценный wiki-слой и отдельный контент-блок по каждому main пока не доведены до финальной формы.
 4. Media/avatar presentation уже добавлен через Components V2 thumbnail + media gallery, но визуальная polish-итерация ещё не доведена до финального вида.
 
@@ -49,7 +53,7 @@
 ### Текущее Техническое Состояние
 1. `node --check welcome-bot.js` — ok.
 2. Focused profile tests — зелёные.
-3. Полный `node --test` даёт 1275 pass / 2 fail.
+3. Полный `node --test` даёт 1315 pass / 2 fail.
 4. Полный `node --test` падает только на старых quarantine leftovers, а не на активном profile code:
    - [backups/quarantine-20260510-213529/deploy-verification-live-leftovers/tests/elo-graphic.test.js](backups/quarantine-20260510-213529/deploy-verification-live-leftovers/tests/elo-graphic.test.js)
    - [backups/quarantine-20260510-213529/deploy-verification-live-leftovers/tests/non-jjs-captcha.test.js](backups/quarantine-20260510-213529/deploy-verification-live-leftovers/tests/non-jjs-captcha.test.js)
@@ -116,16 +120,16 @@
 | Components V2 | Сделано | Render layer уже на V2 |
 | Один экран с секциями | Сделано | Навигация внутри одного message payload |
 | `dead` не имеет доступа | Сделано | Центральный ACL resolver |
-| Без server tag нельзя смотреть чужие | Сделано | ACL уже завязан на tag-role ids |
+| Без server tag нельзя смотреть чужие | Сделано | ACL уже читает Discord server tag из user primary guild identity |
 | Staff/mod bypass | Сделано | Одна центральная ветка в access/operator |
 | Статистика по серверу | Частично | База уже есть, partial-state polish добавлен, верхний hero/overview стал сильнее, но summary можно усиливать дальше |
 | Роли | Сделано | В профиле уже выводятся role mentions |
 | Мейны | Частично | Есть richer main-block с guide coverage по каждому main, но presentation ещё можно усиливать |
 | Wiki / guides | Частично | Есть direct guide links, coverage по main и общие техи, но нет полноценного wiki-source и отдельного wiki-блока |
 | Последние изменения по kills | Сделано | Есть блок последнего роста и история нескольких последних approved изменений, протянутая и в live runtime |
-| Roblox-linked account | Частично | База, media и social context уже есть, но identity block ещё можно усилить |
+| Roblox-linked account | Частично | База, media и social context уже есть, а profile bind теперь работает как отдельный action без onboarding session; дальше нужен только UX polish |
 | Ранги | Частично | Rank/progression уже богаче, но всё ещё можно усилить верхнюю сводку и объясняющие тексты |
-| ELO | Частично | Данные и summary уже выведены, но presentation ещё не финальная |
+| ELO | Частично | Данные и summary уже выведены, а CTA в self overview теперь объясняет flow `текст -> скрин`; дальше нужен только дополнительный polish legacy ELO surface |
 | Tierlist | Частично | Данные, submit-status и lock/influence уже в профиле, но UX ещё можно усилить |
 | Кнопки | Сделано | Навигация и direct quick links уже есть, включая multi-row раскладку ссылок |
 | Аватары / визуальный media-блок | Частично | Discord avatar, Roblox avatar и media gallery уже выведены, осталась polish-итерация |
@@ -195,14 +199,20 @@
 Это главный продуктовый этап после smoke, потому что именно здесь закрываются ваши слова про "круче", "подробнее" и "по системе как на скрине".
 
 ### 2.1. Верхняя Сводка
-Нужно усилить верхний overview block так, чтобы он сразу давал:
-1. Discord display name,
-2. target mention,
-3. ключевые роли,
-4. mains,
-5. current progression markers,
-6. Roblox identity summary,
-7. статус доступа или важные flags, если они нужны.
+Текущее направление после product-cleanup другое: overview должен быть коротким и без мусора.
+
+Канонический состав overview сейчас такой:
+1. Игрок,
+2. Роли,
+3. Roblox,
+4. Подтверждённые kills,
+5. компактный ELO.
+
+Чего там специально не должно быть без сильной причины:
+1. отдельной строки `Ник в Discord`,
+2. отдельного блока `Ключевые факты`,
+3. дублирования guide/tierlist/readiness сигналов,
+4. шумных activity summary в общем блоке.
 
 ### 2.2. Раздел Серверной Аналитики
 Нужно собрать отдельный богато объяснённый блок по activity/server stats:
@@ -235,6 +245,10 @@
 4. tierlist main,
 5. influence/lock/status,
 6. дополнительные производные статусы, если они реально полезны игроку.
+
+Отдельный UX-обязательный пункт для self-profile:
+1. CTA рядом с действием должна явно объяснять сценарий `сначала текст с числом ELO, потом следующим сообщением скрин`,
+2. нельзя прятать эту последовательность только внутри legacy ELO панели.
 
 ### 2.5. Раздел Roblox И Social Context
 Нужно усилить Roblox/social block до полноценного identity-context слоя:

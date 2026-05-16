@@ -3,7 +3,7 @@
 const { MessageFlags } = require("discord.js");
 const {
   PROFILE_ACCESS_DENY_REASONS,
-  normalizeProfileViewerTagRoleIds,
+  hasProfileViewerServerTag,
   resolveProfileAccess,
 } = require("./access");
 const {
@@ -56,13 +56,6 @@ function createProfileOperator(options = {}) {
     return Boolean(typeof options.hasStaffBypass === "function" && options.hasStaffBypass(member));
   }
 
-  function getProfileViewerTagRoleIds() {
-    const raw = typeof options.getViewerTagRoleIds === "function"
-      ? options.getViewerTagRoleIds()
-      : options.viewerTagRoleIds;
-    return normalizeProfileViewerTagRoleIds(raw);
-  }
-
   function getProfileAccessDeniedText(access = {}) {
     if (access.denyReason === PROFILE_ACCESS_DENY_REASONS.DEAD_REQUESTER) {
       return "Профиль недоступен: у тебя сейчас activity bucket dead.";
@@ -82,17 +75,48 @@ function createProfileOperator(options = {}) {
     };
   }
 
-  function resolveProfileAccessForRequester({ requesterUserId = "", requesterMember = null, targetUserId = "" } = {}) {
-    const requesterProfile = typeof options.getRequesterProfile === "function"
-      ? options.getRequesterProfile(requesterUserId)
-      : null;
+  async function resolveRequesterUserForAccess({ requesterUserId = "", requesterUser = null, requesterMember = null } = {}) {
+    const candidateUsers = [requesterUser, requesterMember?.user].filter((user) => user && typeof user === "object");
+    const seededUser = candidateUsers.find((user) => hasProfileViewerServerTag(user)) || candidateUsers[0] || null;
+
+    if (hasProfileViewerServerTag(seededUser)) {
+      return seededUser;
+    }
+
+    const normalizedRequesterUserId = cleanString(requesterUserId, 80);
+    if (!normalizedRequesterUserId) {
+      return seededUser;
+    }
+
+    const fetchAccessUser = typeof options.fetchAccessUser === "function"
+      ? options.fetchAccessUser
+      : (typeof options.fetchUser === "function" ? options.fetchUser : null);
+    if (typeof fetchAccessUser !== "function") {
+      return seededUser;
+    }
+
+    const fetchedUser = await Promise.resolve(fetchAccessUser(normalizedRequesterUserId, seededUser)).catch(() => null);
+    return fetchedUser || seededUser;
+  }
+
+  async function resolveProfileAccessForRequester({ requesterUserId = "", requesterUser = null, requesterMember = null, targetUserId = "" } = {}) {
+    const [requesterProfile, resolvedRequesterUser] = await Promise.all([
+      Promise.resolve(typeof options.getRequesterProfile === "function"
+        ? options.getRequesterProfile(requesterUserId)
+        : null).catch(() => null),
+      resolveRequesterUserForAccess({
+        requesterUserId,
+        requesterUser,
+        requesterMember,
+      }),
+    ]);
 
     return resolveProfileAccess({
       requesterProfile,
       requesterMember,
+      requesterUser: resolvedRequesterUser,
       requesterUserId,
       targetUserId,
-      viewerTagRoleIds: getProfileViewerTagRoleIds(),
       hasStaffBypass: hasStaffBypass(requesterMember),
     });
   }
@@ -249,8 +273,9 @@ function createProfileOperator(options = {}) {
       || !message?.author?.id
       ? accessMember || message?.member || null
       : await Promise.resolve(typeof options.fetchMember === "function" ? options.fetchMember(message.author.id) : null).catch(() => null);
-    const access = resolveProfileAccessForRequester({
+    const access = await resolveProfileAccessForRequester({
       requesterUserId: message?.author?.id,
+      requesterUser: message?.author,
       requesterMember: resolvedAccessMember,
       targetUserId: profileRequest.targetUserId,
     });
@@ -288,8 +313,9 @@ function createProfileOperator(options = {}) {
     }
 
     const targetUser = await resolveProfileSlashTargetUser(interaction);
-    const access = resolveProfileAccessForRequester({
+    const access = await resolveProfileAccessForRequester({
       requesterUserId: interaction.user.id,
+      requesterUser: interaction.user,
       requesterMember: interaction.member,
       targetUserId: targetUser.id,
     });
@@ -325,8 +351,9 @@ function createProfileOperator(options = {}) {
         return true;
       }
 
-      const access = resolveProfileAccessForRequester({
+      const access = await resolveProfileAccessForRequester({
         requesterUserId: interaction.user.id,
+        requesterUser: interaction.user,
         requesterMember: interaction.member,
         targetUserId: profileButtonRequest.targetUserId,
       });
@@ -358,8 +385,9 @@ function createProfileOperator(options = {}) {
       return true;
     }
 
-    const access = resolveProfileAccessForRequester({
+    const access = await resolveProfileAccessForRequester({
       requesterUserId: interaction.user.id,
+      requesterUser: interaction.user,
       requesterMember: interaction.member,
       targetUserId: profileNavRequest.targetUserId,
     });

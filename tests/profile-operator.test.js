@@ -8,7 +8,16 @@ const { buildProfileNavCustomId, buildProfileOpenCustomId } = require("../src/pr
 const { collectUserRecentKillChangeHistory } = require("../src/onboard/tierlist-ranking");
 const { createProfileOperator } = require("../src/profile/operator");
 
-function makeMember(roleIds = [], { userId = "user-1", username = "Sasha", displayName = "Sasha" } = {}) {
+function makePrimaryGuild(tag = "TAG", { identityEnabled = true } = {}) {
+  return {
+    identityGuildId: "guild-1",
+    identityEnabled,
+    tag,
+    badge: "badge-hash",
+  };
+}
+
+function makeMember({ roleIds = [], userId = "user-1", username = "Sasha", displayName = "Sasha", primaryGuild = null } = {}) {
   const roles = roleIds.map((roleId, index) => ({
     id: roleId,
     position: roleIds.length - index,
@@ -17,7 +26,11 @@ function makeMember(roleIds = [], { userId = "user-1", username = "Sasha", displ
   return {
     guild: { id: "guild-1" },
     displayName,
-    user: { id: userId, username },
+    user: {
+      id: userId,
+      username,
+      ...(primaryGuild ? { primaryGuild } : {}),
+    },
     roles: {
       cache: new Map(roles.map((role) => [role.id, role])),
     },
@@ -28,7 +41,6 @@ function createTestOperator(overrides = {}) {
   return createProfileOperator({
     commandName: "профиль",
     guildId: "guild-1",
-    getViewerTagRoleIds: () => ["tag-role"],
     hasStaffBypass: () => false,
     getRequesterProfile: () => ({ domains: { activity: { desiredActivityRoleKey: "active" } } }),
     getTargetProfile: () => ({
@@ -79,7 +91,8 @@ function createTestOperator(overrides = {}) {
       },
     }),
     getTargetDisplayName: () => "Sasha",
-    fetchMember: async (userId) => makeMember(["role-1", "role-2"], { userId, username: "Sasha", displayName: "Sasha Display" }),
+    fetchAccessUser: async (_userId, seedUser) => seedUser || null,
+    fetchMember: async (userId) => makeMember({ roleIds: ["role-1", "role-2"], userId, username: "Sasha", displayName: "Sasha Display" }),
     fetchUser: async (userId) => ({
       id: userId,
       username: "Sasha",
@@ -117,9 +130,14 @@ function createTestOperator(overrides = {}) {
 test("profile operator builds private payload from injected runtime readers", async () => {
   const operator = createTestOperator();
 
-  const access = operator.resolveProfileAccessForRequester({
+  const access = await operator.resolveProfileAccessForRequester({
     requesterUserId: "requester",
-    requesterMember: makeMember(["tag-role"], { userId: "requester", username: "Requester", displayName: "Requester" }),
+    requesterMember: makeMember({
+      userId: "requester",
+      username: "Requester",
+      displayName: "Requester",
+      primaryGuild: makePrimaryGuild("TAG"),
+    }),
     targetUserId: "user-1",
   });
   assert.equal(access.allowed, true);
@@ -144,15 +162,35 @@ test("profile operator builds private payload from injected runtime readers", as
 test("profile operator exposes deny payload text through the runtime seam", () => {
   const operator = createTestOperator();
 
-  const access = operator.resolveProfileAccessForRequester({
+  return operator.resolveProfileAccessForRequester({
     requesterUserId: "requester",
-    requesterMember: makeMember([], { userId: "requester", username: "Requester", displayName: "Requester" }),
+    requesterMember: makeMember({ userId: "requester", username: "Requester", displayName: "Requester" }),
+    targetUserId: "target",
+  }).then((access) => {
+    assert.equal(access.allowed, false);
+    assert.match(operator.getProfileAccessDeniedText(access), /серверным tag/i);
+    assert.equal(operator.buildProfileAccessDeniedPayload(access).flags, MessageFlags.Ephemeral);
+  });
+});
+
+test("profile operator can fetch requester server tag for access", async () => {
+  const operator = createTestOperator({
+    fetchAccessUser: async (userId) => ({
+      id: userId,
+      username: "Requester",
+      primaryGuild: makePrimaryGuild("TAG"),
+    }),
+  });
+
+  const access = await operator.resolveProfileAccessForRequester({
+    requesterUserId: "requester",
+    requesterUser: { id: "requester", username: "Requester" },
+    requesterMember: makeMember({ userId: "requester", username: "Requester", displayName: "Requester" }),
     targetUserId: "target",
   });
 
-  assert.equal(access.allowed, false);
-  assert.match(operator.getProfileAccessDeniedText(access), /серверным tag/i);
-  assert.equal(operator.buildProfileAccessDeniedPayload(access).flags, MessageFlags.Ephemeral);
+  assert.equal(access.allowed, true);
+  assert.equal(access.hasViewerServerTag, true);
 });
 
 test("profile operator handles profile message trigger and schedules helper cleanup", async () => {
@@ -163,7 +201,12 @@ test("profile operator handles profile message trigger and schedules helper clea
   const message = {
     content: "профиль",
     author: { id: "requester", username: "Requester", bot: false },
-    member: makeMember(["tag-role"], { userId: "requester", username: "Requester", displayName: "Requester" }),
+    member: makeMember({
+      userId: "requester",
+      username: "Requester",
+      displayName: "Requester",
+      primaryGuild: makePrimaryGuild("TAG"),
+    }),
     mentions: { users: new Map() },
     reference: null,
     reply: async (payload) => {
@@ -193,7 +236,12 @@ test("profile operator handles slash command and edits ephemeral reply", async (
   const interaction = {
     commandName: "профиль",
     user: { id: "requester", username: "Requester" },
-    member: makeMember(["tag-role"], { userId: "requester", username: "Requester", displayName: "Requester" }),
+    member: makeMember({
+      userId: "requester",
+      username: "Requester",
+      displayName: "Requester",
+      primaryGuild: makePrimaryGuild("TAG"),
+    }),
     options: {
       getUser(name) {
         assert.equal(name, "target");
@@ -230,7 +278,12 @@ test("profile operator resolves slash target from replied message when explicit 
     channelId: "channel-1",
     reference: { messageId: "message-1" },
     user: { id: "requester", username: "Requester" },
-    member: makeMember(["tag-role"], { userId: "requester", username: "Requester", displayName: "Requester" }),
+    member: makeMember({
+      userId: "requester",
+      username: "Requester",
+      displayName: "Requester",
+      primaryGuild: makePrimaryGuild("TAG"),
+    }),
     options: {
       getUser(name) {
         assert.equal(name, "target");
@@ -257,7 +310,12 @@ test("profile operator handles open and nav buttons through one runtime seam", a
   const openInteraction = {
     customId: buildProfileOpenCustomId("requester", "user-1"),
     user: { id: "requester", username: "Requester" },
-    member: makeMember(["tag-role"], { userId: "requester", username: "Requester", displayName: "Requester" }),
+    member: makeMember({
+      userId: "requester",
+      username: "Requester",
+      displayName: "Requester",
+      primaryGuild: makePrimaryGuild("TAG"),
+    }),
     message: {
       delete: async () => openCalls.push({ step: "deleteMessage" }),
     },
@@ -280,7 +338,12 @@ test("profile operator handles open and nav buttons through one runtime seam", a
   const navInteraction = {
     customId: buildProfileNavCustomId("requester", "user-1", "activity"),
     user: { id: "requester", username: "Requester" },
-    member: makeMember(["tag-role"], { userId: "requester", username: "Requester", displayName: "Requester" }),
+    member: makeMember({
+      userId: "requester",
+      username: "Requester",
+      displayName: "Requester",
+      primaryGuild: makePrimaryGuild("TAG"),
+    }),
     reply: async (payload) => navCalls.push({ step: "reply", payload }),
     update: async (payload) => navCalls.push({ step: "update", payload }),
   };

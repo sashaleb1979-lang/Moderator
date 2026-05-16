@@ -315,14 +315,8 @@ function buildOverviewStatusLines({
   verificationSummary = {},
   robloxSummary = {},
   pendingSubmission = null,
-  latestSubmission = null,
-  mainCharacterLabels = [],
-  comboLinks = [],
-  tierlistSummary = {},
-  eloSummary = {},
 } = {}) {
   const lines = [];
-  const guideCoverage = computeGuideCoverage(mainCharacterLabels, comboLinks);
 
   if (profile?.accessGrantedAt) {
     lines.push(`JJS доступ: открыт с ${formatDateTime(profile.accessGrantedAt)}`);
@@ -344,29 +338,6 @@ function buildOverviewStatusLines({
     lines.push(`Roblox-связка: ${cleanString(robloxSummary.verificationStatus, 80)}`);
   } else {
     lines.push("Roblox-связка: не подтверждена.");
-  }
-
-  if (guideCoverage.mainCount > 0) {
-    lines.push(`Гайды по мейнам: ${guideCoverage.coveredMainCount}/${guideCoverage.mainCount}`);
-  } else {
-    lines.push("Гайды по мейнам: пока нет мейнов.");
-  }
-  if (guideCoverage.hasGeneralGuide) {
-    lines.push("Общие техи: доступны.");
-  }
-
-  if (tierlistSummary.hasSubmission === true || tierlistSummary.hasSubmission === false) {
-    lines.push(`Tierlist-заявка: ${tierlistSummary.hasSubmission ? "есть" : "нет"}`);
-  }
-
-  if (Number.isFinite(Number(eloSummary.currentElo)) || Number.isFinite(Number(eloSummary.currentTier))) {
-    lines.push("ELO-профиль: заполнен.");
-  } else {
-    lines.push("ELO-профиль: пока пустой.");
-  }
-
-  if (latestSubmission?.reviewedAt) {
-    lines.push(`Последний review: ${formatDateTime(latestSubmission.reviewedAt)}`);
   }
 
   return lines;
@@ -481,6 +452,9 @@ function buildProfileReadModel(options = {}) {
   const targetAvatarUrl = normalizeMediaUrl(options.targetAvatarUrl, 2000);
   const robloxAvatarUrl = normalizeMediaUrl(robloxSummary.avatarUrl, 2000);
   const verificationAvatarUrl = normalizeMediaUrl(verificationSummary.oauthAvatarUrl, 2000);
+  const currentElo = options.eloProfile?.currentElo ?? eloSummary.currentElo;
+  const currentEloTier = options.eloProfile?.currentTier ?? eloSummary.currentTier;
+  const eloSubmissionStatus = options.eloProfile?.lastSubmissionStatus || eloSummary.lastSubmissionStatus;
   const primaryAvatar = [
     {
       url: targetAvatarUrl,
@@ -527,24 +501,22 @@ function buildProfileReadModel(options = {}) {
 
   const overviewLines = [];
   overviewLines.push(`Игрок: <@${userId}>`);
-  overviewLines.push(`Ник в Discord: ${displayName}`);
-  if (mainCharacterLabels.length) {
-    overviewLines.push(`Мейны: ${mainCharacterLabels.join(", ")}`);
-  }
-  if (roleMentions.length) {
-    overviewLines.push(`Роли: ${roleMentions.join(", ")}`);
-  }
-  if (Number.isFinite(approvedKills)) {
-    overviewLines.push(`Подтверждённые kills: ${formatNumber(approvedKills)}`);
-  }
-  if (Number.isFinite(killTier) && killTier > 0) {
-    overviewLines.push(`Тир по kills: ${killTier}`);
-  }
-  if (robloxSummary.currentUsername) {
-    overviewLines.push(`Roblox: ${cleanString(robloxSummary.currentUsername, 120)}`);
-  }
-  if (activitySummary.appliedActivityRoleKey || activitySummary.desiredActivityRoleKey) {
-    overviewLines.push(`Бакет активности: ${cleanString(activitySummary.appliedActivityRoleKey || activitySummary.desiredActivityRoleKey, 80)}`);
+  overviewLines.push(`Роли: ${roleMentions.length ? roleMentions.join(", ") : "—"}`);
+  overviewLines.push(`Roblox: ${cleanString(robloxSummary.currentUsername || robloxSummary.userId, 120) || "не привязан"}`);
+  overviewLines.push(`Подтверждённые kills: ${Number.isFinite(approvedKills) ? formatNumber(approvedKills) : "—"}`);
+  if (Number.isFinite(Number(currentElo)) || Number.isFinite(Number(currentEloTier))) {
+    const eloBits = [];
+    if (Number.isFinite(Number(currentElo))) {
+      eloBits.push(formatNumber(currentElo));
+    }
+    if (Number.isFinite(Number(currentEloTier))) {
+      eloBits.push(`tier ${formatNumber(currentEloTier)}`);
+    }
+    overviewLines.push(`ELO: ${eloBits.join(" / ")}`);
+  } else if (eloSubmissionStatus) {
+    overviewLines.push(`ELO: статус ${cleanString(eloSubmissionStatus, 80)}`);
+  } else {
+    overviewLines.push("ELO: —");
   }
   if (!profile && !pendingSubmission && !latestSubmission) {
     overviewLines.push("Профиль ещё не заполнен.");
@@ -570,11 +542,6 @@ function buildProfileReadModel(options = {}) {
     verificationSummary,
     robloxSummary,
     pendingSubmission,
-    latestSubmission,
-    mainCharacterLabels,
-    comboLinks,
-    tierlistSummary,
-    eloSummary,
   });
 
   const activityLines = [];
@@ -658,9 +625,6 @@ function buildProfileReadModel(options = {}) {
   }
 
   const rankingLines = [];
-  const currentElo = options.eloProfile?.currentElo ?? eloSummary.currentElo;
-  const currentEloTier = options.eloProfile?.currentTier ?? eloSummary.currentTier;
-  const eloSubmissionStatus = options.eloProfile?.lastSubmissionStatus || eloSummary.lastSubmissionStatus;
   const tierlistMainName = options.tierlistProfile?.mainName || tierlistSummary.mainName;
   const tierlistLockUntil = options.tierlistProfile?.lockUntil || tierlistSummary.lockUntil;
   const tierlistInfluence = options.tierlistProfile?.influenceMultiplier ?? tierlistSummary.influenceMultiplier;
@@ -791,17 +755,7 @@ function buildProfileReadModel(options = {}) {
       overview: [
         { title: "Обзор", lines: overviewLines },
         {
-          title: "Ключевые факты",
-          lines: [
-            standing.rank ? `Место по kills: #${standing.rank}` : "",
-            standing.shareOfServerKills !== null ? `Доля kills: ${formatPercent(standing.shareOfServerKills)}` : "",
-            tierlistSummary.mainName ? `Основной tierlist-пик: ${cleanString(tierlistSummary.mainName, 120)}` : "",
-            eloSummary.currentElo !== null && eloSummary.currentElo !== undefined ? `ELO: ${formatNumber(eloSummary.currentElo)}` : "",
-            robloxSummary.currentUsername ? `Roblox: ${cleanString(robloxSummary.currentUsername, 120)}` : "",
-          ],
-        },
-        {
-          title: "Статусы и доступ",
+          title: "Готовность",
           lines: overviewStatusLines,
         },
       ],

@@ -4,6 +4,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const {
+  buildProfileRobloxIdentitySession,
   canManageWelcomeRobloxIdentity,
   getWelcomeRobloxIdentityLockText,
   hasConfirmedRobloxIdentity,
@@ -52,4 +53,28 @@ test("canManageWelcomeRobloxIdentity allows admin override for confirmed identit
     pending: null,
     canManage: true,
   }), null);
+});
+
+test("buildProfileRobloxIdentitySession keeps user id only for verified profile states", () => {
+  assert.deepEqual(buildProfileRobloxIdentitySession({
+    currentUsername: "KolhozU",
+    currentDisplayName: "Kolhoz",
+    userId: "9843941555",
+    verificationStatus: "verified",
+  }), {
+    robloxUsername: "KolhozU",
+    robloxUserId: "9843941555",
+    robloxDisplayName: "Kolhoz",
+  });
+
+  assert.deepEqual(buildProfileRobloxIdentitySession({
+    currentUsername: "KolhozU",
+    currentDisplayName: "Kolhoz",
+    userId: "9843941555",
+    verificationStatus: "unverified",
+  }), {
+    robloxUsername: "KolhozU",
+    robloxUserId: "",
+    robloxDisplayName: "Kolhoz",
+  });
 });

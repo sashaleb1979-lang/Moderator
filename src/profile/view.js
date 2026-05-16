@@ -183,7 +183,7 @@ function buildProfileActionRows({ isSelf = false } = {}) {
       .setStyle(ButtonStyle.Secondary),
     new ButtonBuilder()
       .setCustomId("elo_submit_open")
-      .setLabel("Оставить ELO")
+      .setLabel("ELO: текст + скрин")
       .setStyle(ButtonStyle.Primary),
     new ButtonBuilder()
       .setCustomId("rate_new_characters")
@@ -255,6 +255,16 @@ function buildProfilePayload(options = {}) {
   });
   if (actionRows.length) {
     container.addActionRowComponents(...actionRows);
+  }
+
+  if (readModel.isSelf && currentView === "overview") {
+    container.addTextDisplayComponents(
+      buildTextDisplay("ELO", [
+        "Кнопка ниже открывает ELO submit.",
+        "1. Сначала отправь текст с числом ELO.",
+        "2. Потом следующим сообщением кинь скрин.",
+      ], "—", 1200)
+    );
   }
 
   container

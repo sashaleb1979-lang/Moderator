@@ -239,10 +239,6 @@ const {
   normalizeIntegrationState,
   syncSharedProfiles,
 } = require("./src/integrations/shared-profile");
-const {
-  normalizeProfileViewerTagRoleIds,
-} = require("./src/profile/access");
-
 const { createProfileOperator } = require("./src/profile/operator");
 const { createAntiteamOperator } = require("./src/antiteam/operator");
 const { ANTITEAM_COMMAND_NAME } = require("./src/antiteam/view");
@@ -371,10 +367,16 @@ const {
 const {
   buildCharacterFactData,
   collectRecentKillChanges,
+  collectUserRecentKillChangeHistory,
   paginateRecentKillChanges,
   summarizeRecentKillChange,
 } = require("./src/onboard/tierlist-ranking");
-const { collectUserRecentKillChangeHistory } = require("./src/onboard/tierlist-ranking");
+const {
+  applyTierlistSpecialMembers,
+  getTierlistNonFakeUserIds,
+  getTierlistNonFakeUserIdSet,
+  setTierlistNonFakeUser,
+} = require("./src/onboard/tierlist-special-members");
 const {
   parseKillsFromSubmittedText,
   resolveEffectiveSubmittedKills,
@@ -591,9 +593,6 @@ function buildRuntimeConfig(fileConfig = {}) {
       nonJjsAccessRoleId: envText(
         "NON_JJS_ACCESS_ROLE_ID",
         envText("NON_GGS_ACCESS_ROLE_ID", fileConfig?.roles?.nonJjsAccessRoleId || fileConfig?.roles?.nonGgsAccessRoleId || "")
-      ),
-      profileViewerTagRoleIds: normalizeProfileViewerTagRoleIds(
-        envText("PROFILE_VIEWER_TAG_ROLE_IDS", "") || fileConfig?.roles?.profileViewerTagRoleIds
       ),
       killTierRoleIds: {
         1: envText("TIER_ROLE_1_ID", fileConfig?.roles?.killTierRoleIds?.["1"] || ""),
@@ -1084,6 +1083,17 @@ function formatTierLabel(tier) {
   return getTierLabel(getPresentation(), tier);
 }
 
+const GRAPHIC_PANEL_TIERS = Object.freeze([5, 4, 3, 2, 1, 6]);
+const GRAPHIC_PANEL_RUNTIME_MARKER = "gp-2026-05-15-b";
+
+function normalizeGraphicPanelSelectedTier(value, fallback = 5) {
+  const selectedTier = Number(value);
+  if (GRAPHIC_PANEL_TIERS.includes(selectedTier)) return selectedTier;
+
+  const fallbackTier = Number(fallback);
+  return GRAPHIC_PANEL_TIERS.includes(fallbackTier) ? fallbackTier : 5;
+}
+
 function ephemeralPayload(payload) {
   return { ...payload, flags: MessageFlags.Ephemeral };
 }
@@ -1461,7 +1471,7 @@ function getApprovedTierlistEntries(options = {}) {
     }
     return out;
   };
-  return filterEntriesByAllowedUserIds(Object.entries(db.profiles || {})
+  const approvedEntries = filterEntriesByAllowedUserIds(Object.entries(db.profiles || {})
     .map(([userId, profile]) => {
       const liveMains = liveMainsByUserId instanceof Map ? liveMainsByUserId.get(userId) : null;
       const mains = (Array.isArray(liveMains) && liveMains.length) ? liveMains : buildFallbackMains(profile);
@@ -1480,6 +1490,10 @@ function getApprovedTierlistEntries(options = {}) {
       if (right.approvedKills !== left.approvedKills) return right.approvedKills - left.approvedKills;
       return left.displayName.localeCompare(right.displayName, "ru");
     }), allowedUserIds);
+
+  return applyTierlistSpecialMembers(approvedEntries, {
+    nonFakeUserIds: getTierlistNonFakeUserIdSet(db.config),
+  });
 }
 
 function getLiveApprovedTierlistEntries(liveContext) {
@@ -1487,6 +1501,51 @@ function getLiveApprovedTierlistEntries(liveContext) {
     liveMainsByUserId: liveContext?.liveMainsByUserId,
     allowedUserIds: liveContext?.trackedUserIds,
   });
+}
+
+function buildTierlistNonFakeListText(userIds = getTierlistNonFakeUserIds(db.config)) {
+  if (!userIds.length) {
+    return "Remembered список не фейкостановцев пуст.";
+  }
+
+  return [
+    `Remembered не фейкостановцы: ${userIds.length}.`,
+    userIds.map((userId, index) => `${index + 1}. <@${userId}> (${userId})`).join("\n"),
+    "У этих участников меняется только display-кластер тир-листа, но не реальный kill-tier.",
+  ].join("\n\n");
+}
+
+async function applyTierlistNonFakeClusterMutation(client, targetId, enabled) {
+  let result = null;
+  await applyUiMutation(client, "tierlists", () => {
+    result = setTierlistNonFakeUser(db.config, targetId, enabled);
+  });
+
+  const refreshWarnings = [];
+  await refreshGraphicTierlistBoard(client).catch((error) => {
+    refreshWarnings.push(`PNG: ${formatRuntimeError(error)}`);
+  });
+  await refreshTextTierlistBoard(client, { page: 0 }).catch((error) => {
+    refreshWarnings.push(`Текст: ${formatRuntimeError(error)}`);
+  });
+
+  return { result, refreshWarnings };
+}
+
+function buildTierlistNonFakeMutationText(targetId, enabled, result, refreshWarnings = []) {
+  const statusText = enabled
+    ? (result?.changed ? "добавлен в remembered T6-кластер" : "уже был в remembered T6-кластере")
+    : (result?.changed ? "убран из remembered T6-кластера" : "уже отсутствовал в remembered T6-кластере");
+
+  const lines = [
+    `<@${targetId}> ${statusText}.`,
+    `Сейчас remembered не фейкостановцев: ${result?.userIds?.length || 0}.`,
+    "Kill-tier роли не меняются: меняется только display-кластер тир-листа.",
+  ];
+  if (refreshWarnings.length) {
+    lines.push(`Борды обновлены с предупреждениями: ${refreshWarnings.join("; ")}`);
+  }
+  return lines.join("\n");
 }
 
 function getStatsSnapshot(entries) {
@@ -2355,8 +2414,8 @@ async function buildGraphicTierlistBoardPayload(client) {
 }
 
 function buildGraphicPanelTierSelect() {
-  const selected = Number(getPresentation().tierlist.graphic.panel.selectedTier) || 5;
-  const options = [5, 4, 3, 2, 1].map((t) => ({
+  const selected = normalizeGraphicPanelSelectedTier(getPresentation().tierlist.graphic.panel.selectedTier, 5);
+  const options = GRAPHIC_PANEL_TIERS.map((t) => ({
     label: `Тир ${t} — ${formatTierLabel(t)}`,
     value: String(t),
     default: t === selected,
@@ -2369,21 +2428,28 @@ function buildGraphicPanelTierSelect() {
 function buildGraphicPanelPayload(statusText = "", includeFlags = true) {
   const cfg = getGraphicImageConfig();
   const presentation = getPresentation();
-  const selectedTier = Number(presentation.tierlist.graphic.panel.selectedTier) || 5;
+  const selectedTier = normalizeGraphicPanelSelectedTier(presentation.tierlist.graphic.panel.selectedTier, 5);
   const tierColors = getEffectiveTierColors();
   const tierColor = tierColors[selectedTier] || DEFAULT_GRAPHIC_TIER_COLORS[selectedTier];
+  const outline = getEffectiveGraphicOutlineConfig();
+  const rememberedCount = getTierlistNonFakeUserIds(db.config).length;
+  const outlineRoleText = outline.roleId ? formatRoleMention(outline.roleId) : "не настроена";
 
   const embed = new EmbedBuilder()
-    .setTitle("PNG Panel • gp-2026-05-15-b")
+    .setTitle(`PNG Panel • ${GRAPHIC_PANEL_RUNTIME_MARKER}`)
     .setDescription([
       `**Title:** ${getEffectiveGraphicTitle()}`,
       `**Картинка:** ${cfg.W}×${cfg.H}`,
       `**Иконки:** ${cfg.ICON}px`,
       `**Выбранный тир:** ${selectedTier} → **${formatTierLabel(selectedTier)}**`,
       `**Цвет тира:** ${tierColor}`,
+      `**Обводка по роли:** ${outlineRoleText}`,
+      `**Цвет обводки:** ${outline.color}`,
+      `**Remembered T6:** ${rememberedCount}`,
+      `**Runtime:** ${GRAPHIC_PANEL_RUNTIME_MARKER} / tiers=${GRAPHIC_PANEL_TIERS.join(",")}`,
       `**Текст сообщения:** ${previewGraphicMessageText(170)}`,
       "",
-      "Панель меняет только PNG-контур и связанные подписи и цвета.",
+      "Панель меняет PNG-контур, связанные подписи и цвета, а remembered не фейкостановцев уводит в T6-кластер.",
     ].join("\n"));
 
   if (statusText) {
@@ -2402,21 +2468,23 @@ function buildGraphicPanelPayload(statusText = "", includeFlags = true) {
     new ButtonBuilder().setCustomId("graphic_panel_icon_minus").setLabel("Иконки −").setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId("graphic_panel_icon_plus").setLabel("Иконки +").setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId("graphic_panel_w_minus").setLabel("Ширина −").setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId("graphic_panel_w_plus").setLabel("Ширина +").setStyle(ButtonStyle.Secondary)
+    new ButtonBuilder().setCustomId("graphic_panel_w_plus").setLabel("Ширина +").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId("graphic_panel_outline").setLabel("Обводка по роли").setStyle(ButtonStyle.Primary)
   );
 
   const row3 = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId("graphic_panel_h_minus").setLabel("Высота −").setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId("graphic_panel_h_plus").setLabel("Высота +").setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId("graphic_panel_set_color").setLabel("Цвет тира").setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId("graphic_panel_reset_color").setLabel("Сброс цвета тира").setStyle(ButtonStyle.Secondary)
+    new ButtonBuilder().setCustomId("graphic_panel_reset_color").setLabel("Сброс цвета тира").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId("graphic_panel_outline_clear").setLabel("Очистить обводку").setStyle(ButtonStyle.Secondary)
   );
 
   const row4 = buildGraphicPanelTierSelect();
 
   const row5 = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId("graphic_panel_reset_img").setLabel("Сбросить размеры").setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId("graphic_panel_reset_colors").setLabel("Сбросить все цвета").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId("graphic_panel_nonfake").setLabel("Нефейк-кластер").setStyle(ButtonStyle.Primary),
     new ButtonBuilder().setCustomId("graphic_panel_clear_cache").setLabel("Сбросить кэш ав").setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId("panel_resend_text").setLabel("Переотправить текст").setStyle(ButtonStyle.Danger),
     new ButtonBuilder().setCustomId("graphic_panel_close").setLabel("Закрыть").setStyle(ButtonStyle.Danger)
@@ -2430,7 +2498,8 @@ function buildGraphicStatusLines() {
   const graphicBoard = getResolvedGraphicTierlistBoardSnapshot();
   const cfg = getGraphicImageConfig();
   const presentation = getPresentation();
-  const selectedTier = Number(presentation.tierlist.graphic.panel.selectedTier) || 5;
+  const selectedTier = normalizeGraphicPanelSelectedTier(presentation.tierlist.graphic.panel.selectedTier, 5);
+  const outline = getEffectiveGraphicOutlineConfig();
 
   return [
     `title: ${presentation.tierlist.graphicTitle}`,
@@ -2439,7 +2508,10 @@ function buildGraphicStatusLines() {
     `messageId: ${graphicBoard.messageId || "—"}`,
     `img: ${cfg.W}x${cfg.H}, icon=${cfg.ICON}`,
     `selectedTier: ${selectedTier} -> ${formatTierLabel(selectedTier)}`,
-    `tierColors: ${[5, 4, 3, 2, 1].map((tier) => `${tier}=${presentation.tierlist.graphic.colors[tier] || DEFAULT_GRAPHIC_TIER_COLORS[tier]}`).join(", ")}`,
+    `tierColors: ${GRAPHIC_PANEL_TIERS.map((tier) => `${tier}=${presentation.tierlist.graphic.colors[tier] || DEFAULT_GRAPHIC_TIER_COLORS[tier]}`).join(", ")}`,
+    `outline: ${outline.roleId ? `${outline.roleId} ${outline.color}` : "—"}`,
+    `rememberedT6: ${getTierlistNonFakeUserIds(db.config).length}`,
+    `runtime: ${GRAPHIC_PANEL_RUNTIME_MARKER}`,
     `lastUpdated: ${graphicBoard.lastUpdated ? new Date(graphicBoard.lastUpdated).toLocaleString("ru-RU") : "—"}`,
   ];
 }
@@ -3343,6 +3415,16 @@ function getGraphicImageConfig() {
 
 function getEffectiveTierColors() {
   return { ...getPresentation().tierlist.graphic.colors };
+}
+
+function getEffectiveGraphicOutlineConfig() {
+  const outline = getPresentation().tierlist.graphic.outline || {};
+  const roleId = String(outline.roleId || "").trim();
+  const color = String(outline.color || "").trim();
+  return {
+    roleId,
+    color: /^#[0-9a-f]{6}$/i.test(color) ? color : "#ffffff",
+  };
 }
 
 function getEffectiveGraphicTitle() {
@@ -4888,7 +4970,7 @@ function getProfileOperator() {
   profileOperator = createProfileOperator({
     commandName: "профиль",
     guildId: GUILD_ID,
-    getViewerTagRoleIds: () => getProfileViewerTagRoleIds(),
+
     hasStaffBypass: (member) => isModerator(member),
     getRequesterProfile: (userId) => db.profiles?.[userId] ? getProfile(userId) : null,
     getTargetProfile: (userId) => db.profiles?.[userId] ? getProfile(userId) : null,
@@ -4960,10 +5042,6 @@ function getAntiteamOperator() {
   });
 
   return antiteamOperator;
-}
-
-function getProfileViewerTagRoleIds() {
-  return normalizeProfileViewerTagRoleIds(appConfig?.roles?.profileViewerTagRoleIds);
 }
 
 function hasActivityPanelAccess(member) {
@@ -11546,6 +11624,7 @@ async function buildLegacyEloGraphicBoardPayload(client, rawDb) {
     title: snapshot.title,
     tierLabels: snapshot.tierLabels,
     tierColors: snapshot.tierColors,
+    tierOrder: [5, 4, 3, 2, 1],
     imageWidth: snapshot.image.W,
     imageHeight: snapshot.image.H,
     imageIcon: snapshot.image.ICON,
@@ -15211,6 +15290,60 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
+      if (interaction.customId === "graphic_panel_outline") {
+        const outline = getEffectiveGraphicOutlineConfig();
+        const modal = new ModalBuilder().setCustomId("graphic_panel_outline_modal").setTitle("Обводка PNG по роли");
+        modal.addComponents(
+          new ActionRowBuilder().addComponents(
+            new TextInputBuilder()
+              .setCustomId("outline_role")
+              .setLabel("Role ID или mention")
+              .setStyle(TextInputStyle.Short)
+              .setRequired(true)
+              .setMaxLength(80)
+              .setPlaceholder("<@&123456789012345678>")
+              .setValue(String(outline.roleId || "").slice(0, 80))
+          ),
+          new ActionRowBuilder().addComponents(
+            new TextInputBuilder()
+              .setCustomId("outline_color")
+              .setLabel("HEX цвет, пример #ffffff")
+              .setStyle(TextInputStyle.Short)
+              .setRequired(true)
+              .setMaxLength(7)
+              .setValue(outline.color)
+          )
+        );
+        await interaction.showModal(modal);
+        return;
+      }
+
+      if (interaction.customId === "graphic_panel_nonfake") {
+        const modal = new ModalBuilder().setCustomId("graphic_panel_nonfake_modal").setTitle("Remembered T6-кластер");
+        modal.addComponents(
+          new ActionRowBuilder().addComponents(
+            new TextInputBuilder()
+              .setCustomId("nonfake_action")
+              .setLabel("Действие: list | add | remove")
+              .setStyle(TextInputStyle.Short)
+              .setRequired(true)
+              .setMaxLength(12)
+              .setValue("list")
+          ),
+          new ActionRowBuilder().addComponents(
+            new TextInputBuilder()
+              .setCustomId("nonfake_target")
+              .setLabel("User mention или ID")
+              .setStyle(TextInputStyle.Short)
+              .setRequired(false)
+              .setMaxLength(80)
+              .setPlaceholder("@user или 123456789012345678")
+          )
+        );
+        await interaction.showModal(modal);
+        return;
+      }
+
       // Size adjustment buttons
       if (interaction.customId === "graphic_panel_icon_minus" || interaction.customId === "graphic_panel_icon_plus") {
         const delta = interaction.customId.endsWith("plus") ? 12 : -12;
@@ -15264,6 +15397,14 @@ client.on("interactionCreate", async (interaction) => {
           getGraphicTierlistConfig().colors = {};
         });
         await interaction.update(buildGraphicPanelPayload());
+        return;
+      }
+
+      if (interaction.customId === "graphic_panel_outline_clear") {
+        await applyUiMutation(client, "graphic", () => {
+          getGraphicTierlistConfig().outline = { roleId: "", color: "#ffffff" };
+        });
+        await interaction.update(buildGraphicPanelPayload("Обводка PNG по роли очищена.", false));
         return;
       }
 
@@ -18773,6 +18914,39 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
+    if (interaction.customId === "graphic_panel_nonfake_modal") {
+      const action = String(interaction.fields.getTextInputValue("nonfake_action") || "").trim().toLowerCase();
+      const normalizedAction = action === "ls" ? "list" : action;
+      if (normalizedAction === "list") {
+        await interaction.reply(ephemeralPayload({ content: buildTierlistNonFakeListText() }));
+        return;
+      }
+      if (!["add", "remove"].includes(normalizedAction)) {
+        await interaction.reply(ephemeralPayload({ content: "Поддерживаются только action = list, add или remove." }));
+        return;
+      }
+
+      const targetId = parseRequestedUserId(interaction.fields.getTextInputValue("nonfake_target"), "");
+      if (!targetId) {
+        await interaction.reply(ephemeralPayload({ content: "Для add/remove укажи user mention или user ID." }));
+        return;
+      }
+      if (await replyAutonomyGuardIsolatedTarget(interaction, targetId)) {
+        return;
+      }
+
+      const mutationResult = await applyTierlistNonFakeClusterMutation(client, targetId, normalizedAction === "add");
+      await interaction.reply(buildGraphicPanelPayload(
+        buildTierlistNonFakeMutationText(
+          targetId,
+          normalizedAction === "add",
+          mutationResult.result,
+          mutationResult.refreshWarnings
+        )
+      ));
+      return;
+    }
+
     if (interaction.customId.startsWith("graphic_panel_color_modal:")) {
       const tierKey = interaction.customId.split(":")[1];
       const color = interaction.fields.getTextInputValue("tier_color").trim();
@@ -18785,6 +18959,27 @@ client.on("interactionCreate", async (interaction) => {
         getGraphicTierlistConfig().colors[tierKey] = color;
       });
       await interaction.reply(ephemeralPayload({ content: `Цвет тира ${tierKey} обновлён: **${color}**` }));
+      return;
+    }
+
+    if (interaction.customId === "graphic_panel_outline_modal") {
+      const roleId = parseRequestedRoleId(interaction.fields.getTextInputValue("outline_role"));
+      const color = interaction.fields.getTextInputValue("outline_color").trim();
+      if (!roleId) {
+        await interaction.reply(ephemeralPayload({ content: "Укажи корректный role ID или mention роли." }));
+        return;
+      }
+      if (!/^#[0-9a-f]{6}$/i.test(color)) {
+        await interaction.reply(ephemeralPayload({ content: "Некорректный HEX-цвет. Формат: #rrggbb" }));
+        return;
+      }
+
+      await applyUiMutation(client, "graphic", () => {
+        const outline = getGraphicTierlistConfig().outline ||= {};
+        outline.roleId = roleId;
+        outline.color = color;
+      });
+      await interaction.reply(ephemeralPayload({ content: `Обводка PNG настроена: ${formatRoleMention(roleId)} → **${color}**.` }));
       return;
     }
 

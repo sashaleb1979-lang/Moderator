@@ -11,27 +11,16 @@ function cleanString(value, limit = 2000) {
   return String(value || "").trim().slice(0, Math.max(0, Number(limit) || 0));
 }
 
-function normalizeProfileViewerTagRoleIds(value, limit = 20) {
-  const source = Array.isArray(value)
-    ? value
-    : cleanString(value, 4000).split(/[;,\n]/g);
-  const normalized = [];
-  const seen = new Set();
-
-  for (const entry of source) {
-    const roleId = cleanString(entry, 80);
-    if (!roleId || seen.has(roleId)) continue;
-    seen.add(roleId);
-    normalized.push(roleId);
-    if (normalized.length >= limit) break;
-  }
-
-  return normalized;
+function getProfileViewerServerTag(user = null) {
+  const primaryGuild = user?.primaryGuild;
+  const tag = cleanString(primaryGuild?.tag, 16);
+  if (!tag) return "";
+  if (primaryGuild?.identityEnabled === false) return "";
+  return tag;
 }
 
-function hasProfileViewerTagRole(member, viewerTagRoleIds = []) {
-  const normalizedRoleIds = normalizeProfileViewerTagRoleIds(viewerTagRoleIds);
-  return normalizedRoleIds.some((roleId) => member?.roles?.cache?.has?.(roleId));
+function hasProfileViewerServerTag(user = null) {
+  return Boolean(getProfileViewerServerTag(user));
 }
 
 function isProfileRequesterDead(profile = null) {
@@ -45,16 +34,26 @@ function isProfileRequesterDead(profile = null) {
 function resolveProfileAccess({
   requesterProfile = null,
   requesterMember = null,
+  requesterUser = null,
   requesterUserId = "",
   targetUserId = "",
-  viewerTagRoleIds = [],
+  hasViewerServerTag = null,
   hasStaffBypass = false,
 } = {}) {
   const normalizedRequesterUserId = cleanString(requesterUserId, 80);
   const normalizedTargetUserId = cleanString(targetUserId, 80) || normalizedRequesterUserId;
   const isSelf = normalizedRequesterUserId === normalizedTargetUserId;
   const isDeadRequester = isProfileRequesterDead(requesterProfile);
-  const hasViewerTagRole = hasProfileViewerTagRole(requesterMember, viewerTagRoleIds);
+  const requesterAccessUser = [requesterUser, requesterMember?.user]
+    .filter((user) => user && typeof user === "object")
+    .find((user) => hasProfileViewerServerTag(user))
+    || requesterUser
+    || requesterMember?.user
+    || null;
+  const requesterServerTag = getProfileViewerServerTag(requesterAccessUser);
+  const resolvedHasViewerServerTag = typeof hasViewerServerTag === "boolean"
+    ? hasViewerServerTag
+    : Boolean(requesterServerTag);
 
   if (hasStaffBypass) {
     return {
@@ -63,7 +62,8 @@ function resolveProfileAccess({
       isSelf,
       isDeadRequester,
       hasStaffBypass,
-      hasViewerTagRole,
+      hasViewerServerTag: resolvedHasViewerServerTag,
+      requesterServerTag,
       requesterUserId: normalizedRequesterUserId,
       targetUserId: normalizedTargetUserId,
     };
@@ -76,20 +76,22 @@ function resolveProfileAccess({
       isSelf,
       isDeadRequester,
       hasStaffBypass,
-      hasViewerTagRole,
+      hasViewerServerTag: resolvedHasViewerServerTag,
+      requesterServerTag,
       requesterUserId: normalizedRequesterUserId,
       targetUserId: normalizedTargetUserId,
     };
   }
 
-  if (!isSelf && !hasViewerTagRole) {
+  if (!isSelf && !resolvedHasViewerServerTag) {
     return {
       allowed: false,
       denyReason: PROFILE_ACCESS_DENY_REASONS.VIEWER_TAG_REQUIRED,
       isSelf,
       isDeadRequester,
       hasStaffBypass,
-      hasViewerTagRole,
+      hasViewerServerTag: resolvedHasViewerServerTag,
+      requesterServerTag,
       requesterUserId: normalizedRequesterUserId,
       targetUserId: normalizedTargetUserId,
     };
@@ -101,7 +103,8 @@ function resolveProfileAccess({
     isSelf,
     isDeadRequester,
     hasStaffBypass,
-    hasViewerTagRole,
+    hasViewerServerTag: resolvedHasViewerServerTag,
+    requesterServerTag,
     requesterUserId: normalizedRequesterUserId,
     targetUserId: normalizedTargetUserId,
   };
@@ -109,8 +112,8 @@ function resolveProfileAccess({
 
 module.exports = {
   PROFILE_ACCESS_DENY_REASONS,
-  hasProfileViewerTagRole,
+  getProfileViewerServerTag,
+  hasProfileViewerServerTag,
   isProfileRequesterDead,
-  normalizeProfileViewerTagRoleIds,
   resolveProfileAccess,
 };
