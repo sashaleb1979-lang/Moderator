@@ -1,6 +1,7 @@
 "use strict";
 
 const { createEmptyActivityState, normalizeActivityState } = require("../activity/state");
+const { normalizeAntiteamState } = require("../antiteam/state");
 const { createEmptyNewsState, normalizeNewsState } = require("../news/state");
 const { getCharacterAliasNames } = require("./character-aliases");
 const { buildHistoricalManagedCharacterRoleIds } = require("./recovery/plan");
@@ -232,6 +233,7 @@ function createEmptySotState() {
       verification: {},
     },
     activity: createEmptyActivityState(),
+    antiteam: normalizeAntiteamState({}),
     news: createEmptyNewsState(),
     influence: normalizeInfluence(DEFAULT_INFLUENCE),
   };
@@ -558,6 +560,7 @@ function normalizeSotState(value = {}) {
     ...clone(source.integrations && typeof source.integrations === "object" ? source.integrations : {}),
   };
   next.activity = normalizeActivityState(source.activity);
+  next.antiteam = normalizeAntiteamState(source.antiteam);
   next.news = normalizeNewsState(source.news);
   next.influence = normalizeInfluence(source.influence);
   next.modes.onboard = normalizeRecord(source.modes?.onboard, "configured");
@@ -655,6 +658,10 @@ function refreshSotStateFromLegacy(db = {}, options = {}) {
 
   if (existing?.activity) {
     refreshed.activity = normalizeActivityState(existing.activity);
+  }
+
+  if (existing?.antiteam) {
+    refreshed.antiteam = normalizeAntiteamState(existing.antiteam);
   }
 
   if (existing?.news) {
