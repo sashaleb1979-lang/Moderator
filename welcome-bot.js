@@ -4962,6 +4962,22 @@ function getAntiteamOperator() {
   return antiteamOperator;
 }
 
+async function handleAntiteamInteractionSafely(interaction, methodName) {
+  try {
+    const operator = getAntiteamOperator();
+    if (typeof operator?.[methodName] !== "function") return false;
+    return await operator[methodName](interaction);
+  } catch (error) {
+    console.error(`Antiteam interaction failed (${interaction?.customId || interaction?.commandName || methodName}):`, error?.message || error);
+    if (!interaction?.deferred && !interaction?.replied && typeof interaction?.reply === "function") {
+      await interaction.reply(ephemeralPayload({
+        content: "Не удалось обработать антитим-действие. Попробуй ещё раз или попроси модератора обновить панель.",
+      })).catch(() => {});
+    }
+    return true;
+  }
+}
+
 function getProfileViewerTagRoleIds() {
   return normalizeProfileViewerTagRoleIds(appConfig?.roles?.profileViewerTagRoleIds);
 }
@@ -13755,7 +13771,7 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    if (await getAntiteamOperator().handleSlashCommand(interaction)) {
+    if (await handleAntiteamInteractionSafely(interaction, "handleSlashCommand")) {
       return;
     }
 
@@ -14351,14 +14367,16 @@ client.on("interactionCreate", async (interaction) => {
   }
 
   if (interaction.isButton()) {
+    if (String(interaction.customId || "").startsWith("at:")) {
+      if (await handleAntiteamInteractionSafely(interaction, "handleButtonInteraction")) {
+        return;
+      }
+    }
+
     if (await getProfileOperator().handleProfileButtonInteraction({
       interaction,
       checkActorGuard: replyIfAutonomyGuardBlockedActor,
     })) {
-      return;
-    }
-
-    if (await getAntiteamOperator().handleButtonInteraction(interaction)) {
       return;
     }
 
@@ -17941,7 +17959,8 @@ client.on("interactionCreate", async (interaction) => {
   }
 
   if (interaction.isStringSelectMenu()) {
-    if (await getAntiteamOperator().handleSelectMenuInteraction(interaction)) {
+    if (String(interaction.customId || "").startsWith("at:")
+      && await handleAntiteamInteractionSafely(interaction, "handleSelectMenuInteraction")) {
       return;
     }
 
@@ -18313,7 +18332,8 @@ client.on("interactionCreate", async (interaction) => {
   }
 
   if (interaction.isModalSubmit()) {
-    if (await getAntiteamOperator().handleModalSubmitInteraction(interaction)) {
+    if (String(interaction.customId || "").startsWith("at:")
+      && await handleAntiteamInteractionSafely(interaction, "handleModalSubmitInteraction")) {
       return;
     }
 

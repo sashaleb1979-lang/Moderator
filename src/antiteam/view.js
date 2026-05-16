@@ -28,8 +28,10 @@ const ANTITEAM_COMMAND_NAME = "антитим";
 
 const ANTITEAM_CUSTOM_IDS = Object.freeze({
   open: "at:open",
+  guide: "at:guide",
   config: "at:config",
   configAdvanced: "at:config:advanced",
+  panelText: "at:panel:text",
   publishPanel: "at:panel:publish",
   refreshPanel: "at:panel:refresh",
   levelSelect: "at:level",
@@ -97,24 +99,47 @@ function buildPayload(container, { ephemeral = false } = {}) {
 }
 
 function buildStartPanelPayload(config = createDefaultAntiteamConfig()) {
+  const panel = createDefaultAntiteamConfig(config).panel;
   const container = new ContainerBuilder()
-    .setAccentColor(0x1565C0)
+    .setAccentColor(panel.accentColor)
     .addTextDisplayComponents(
-      new TextDisplayBuilder().setContent("# Антитим"),
-      new TextDisplayBuilder().setContent("Заметил тиму в JJS? Подай заявку, укажи Roblox ник, силу противников и кого нужно бить."),
-      new TextDisplayBuilder().setContent(`Батальён: ${formatRoleMention(config.battalionRoleId)}`)
+      new TextDisplayBuilder().setContent(`# ${panel.title}`),
+      new TextDisplayBuilder().setContent(panel.description),
+      new TextDisplayBuilder().setContent([
+        `Батальён: ${formatRoleMention(config.battalionRoleId)}`,
+        panel.details,
+      ].filter(Boolean).join("\n"))
     )
     .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
     .addActionRowComponents(
       new ActionRowBuilder().addComponents(
         new ButtonBuilder()
           .setCustomId(ANTITEAM_CUSTOM_IDS.open)
-          .setLabel("Подать антитим")
-          .setStyle(ButtonStyle.Primary)
+          .setLabel(panel.buttonLabel)
+          .setStyle(ButtonStyle.Danger),
+        new ButtonBuilder()
+          .setCustomId(ANTITEAM_CUSTOM_IDS.guide)
+          .setLabel(panel.guideButtonLabel)
+          .setStyle(ButtonStyle.Secondary)
       )
     );
 
   return buildPayload(container);
+}
+
+function buildStartGuidePayload(config = createDefaultAntiteamConfig()) {
+  const container = new ContainerBuilder()
+    .setAccentColor(config.panel?.accentColor || 0xE53935)
+    .addTextDisplayComponents(
+      new TextDisplayBuilder().setContent("# Как работает антитим"),
+      new TextDisplayBuilder().setContent([
+        "1. Введи Roblox username. Бот проверит аккаунт через Roblox API и привяжет его к профилю.",
+        "2. Выбери опасность, число тимеров и при желании добавь ники/киллы целей.",
+        "3. После отправки появится заявка и thread, где батальён сможет быстро подключиться.",
+        "4. Если включён прямой вход или helper уже есть в друзьях Roblox, бот даст быстрый join/profile путь.",
+      ].join("\n"))
+    );
+  return buildPayload(container, { ephemeral: true });
 }
 
 function buildModeratorPanelPayload(state = {}, statusText = "") {
@@ -153,6 +178,7 @@ function buildModeratorPanelPayload(state = {}, statusText = "") {
     .addActionRowComponents(
       new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId(ANTITEAM_CUSTOM_IDS.publishPanel).setLabel("Опубликовать панель").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId(ANTITEAM_CUSTOM_IDS.panelText).setLabel("Редактировать старт").setStyle(ButtonStyle.Secondary),
         new ButtonBuilder().setCustomId(ANTITEAM_CUSTOM_IDS.config).setLabel("Настройки").setStyle(ButtonStyle.Secondary),
         new ButtonBuilder().setCustomId(ANTITEAM_CUSTOM_IDS.configAdvanced).setLabel("Roblox/тайминги").setStyle(ButtonStyle.Secondary),
         new ButtonBuilder().setCustomId(ANTITEAM_CUSTOM_IDS.refreshPanel).setLabel("Обновить").setStyle(ButtonStyle.Secondary)
@@ -160,6 +186,61 @@ function buildModeratorPanelPayload(state = {}, statusText = "") {
     );
 
   return buildPayload(container, { ephemeral: true });
+}
+
+function buildPanelTextModal(config = createDefaultAntiteamConfig()) {
+  const panel = createDefaultAntiteamConfig(config).panel;
+  return new ModalBuilder()
+    .setCustomId("at:panel_text:modal")
+    .setTitle("Стартовая панель антитима")
+    .addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId("title")
+          .setLabel("Заголовок")
+          .setStyle(TextInputStyle.Short)
+          .setRequired(false)
+          .setMaxLength(80)
+          .setValue(cleanString(panel.title, 80))
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId("description")
+          .setLabel("Главный текст")
+          .setStyle(TextInputStyle.Paragraph)
+          .setRequired(false)
+          .setMaxLength(700)
+          .setValue(cleanString(panel.description, 700))
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId("details")
+          .setLabel("Нижняя строка/подсказка")
+          .setStyle(TextInputStyle.Paragraph)
+          .setRequired(false)
+          .setMaxLength(700)
+          .setValue(cleanString(panel.details, 700))
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId("button_label")
+          .setLabel("Текст кнопки заявки")
+          .setStyle(TextInputStyle.Short)
+          .setRequired(false)
+          .setMaxLength(80)
+          .setValue(cleanString(panel.buttonLabel, 80))
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId("accent_color")
+          .setLabel("Цвет панели hex")
+          .setPlaceholder("#E53935")
+          .setStyle(TextInputStyle.Short)
+          .setRequired(false)
+          .setMaxLength(10)
+          .setValue(`#${Number(panel.accentColor || 0xE53935).toString(16).padStart(6, "0").toUpperCase()}`)
+      )
+    );
 }
 
 function buildRobloxUsernameModal({ customId = "at:roblox", title = "Roblox username", initialValue = "" } = {}) {
@@ -691,10 +772,12 @@ module.exports = {
   buildEscalateModal,
   buildHelpReplyPayload,
   buildModeratorPanelPayload,
+  buildPanelTextModal,
   buildPhotoRequestPayload,
   buildReportModal,
   buildRobloxUsernameModal,
   buildStartPanelPayload,
+  buildStartGuidePayload,
   buildThreadName,
   buildThreadPanelPayload,
   buildTicketPublicPayload,
