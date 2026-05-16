@@ -84,6 +84,29 @@ test("antiteam ticket lifecycle records helpers and closes mission", () => {
   assert.equal(db.sot.antiteam.stats.helpers["helper-1"].responded, 1);
 });
 
+test("clan ticket keeps selected Discord anchor metadata", () => {
+  const db = {};
+  const draft = setAntiteamDraft(db, "caller-1", {
+    kind: "clan",
+    userTag: "Caller",
+    anchorUserId: "anchor-1",
+    anchorUserTag: "Anchor",
+    roblox: { userId: "202", username: "AnchorRb" },
+    description: "Клан держит сервер.",
+  }, { now: "2026-05-16T10:00:00.000Z" });
+
+  const ticket = createAntiteamTicketFromDraft(db, draft, {
+    id: "ticket-clan",
+    now: "2026-05-16T10:01:00.000Z",
+  });
+
+  assert.equal(ticket.kind, "clan");
+  assert.equal(ticket.createdBy, "caller-1");
+  assert.equal(ticket.anchorUserId, "anchor-1");
+  assert.equal(ticket.anchorUserTag, "Anchor");
+  assert.equal(ticket.roblox.username, "AnchorRb");
+});
+
 test("matchRobloxFriendsToDiscordProfiles only returns verified matching profiles", () => {
   const profiles = {
     "discord-1": {

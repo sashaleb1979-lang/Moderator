@@ -858,6 +858,8 @@ test("command builder registers onboard, rolepanel, verify, profile, and antitea
   assert.equal(profileCommand.options.some((option) => option.type === 6 && option.name === "target"), true);
   assert.equal(antiteamCommand.options.some((option) => option.type === 1 && option.name === "panel"), true);
   assert.equal(antiteamCommand.options.some((option) => option.type === 1 && option.name === "clan"), true);
+  const antiteamClan = antiteamCommand.options.find((option) => option.type === 1 && option.name === "clan");
+  assert.equal(antiteamClan.options.some((option) => option.type === 6 && option.name === "target" && option.required === true), true);
   assert.deepEqual(VERIFY_SUBCOMMAND_NAMES, ["panel", "add"]);
 });
 

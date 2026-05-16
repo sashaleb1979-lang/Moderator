@@ -70,6 +70,7 @@ function formatChannelMention(channelId) {
 }
 
 function getPhotoAttachmentName(photo = {}) {
+  if (!photo || typeof photo !== "object") return "antiteam-photo.png";
   const rawName = cleanString(photo.name, 180).replace(/[^A-Za-z0-9._-]+/g, "_");
   if (rawName && /\.[A-Za-z0-9]{2,8}$/.test(rawName)) return rawName.slice(0, 120);
   const contentType = cleanString(photo.contentType, 80).toLowerCase();
@@ -511,8 +512,10 @@ function buildTicketSetupPayload(draft = {}, config = createDefaultAntiteamConfi
     .addTextDisplayComponents(
       new TextDisplayBuilder().setContent(isClan ? "# Клан-аларм" : "# Заявка антитима"),
       new TextDisplayBuilder().setContent([
-        `Roblox: **${draft.roblox?.username || "—"}**${draft.roblox?.userId ? ` (${draft.roblox.userId})` : ""}`,
-        isClan ? "Якорь должен оставаться на сервере. По нему будут подключаться помощники." : `${level.emoji} **${level.label}** • ${count.label} тимеров`,
+        isClan && draft.anchorUserId
+          ? `Якорь: <@${draft.anchorUserId}> • Roblox: **${draft.roblox?.username || "—"}**${draft.roblox?.userId ? ` (${draft.roblox.userId})` : ""}`
+          : `Roblox: **${draft.roblox?.username || "—"}**${draft.roblox?.userId ? ` (${draft.roblox.userId})` : ""}`,
+        isClan ? "Якорь не должен выходить с сервера. По нему будут подключаться помощники." : `${level.emoji} **${level.label}** • ${count.label} тимеров`,
         directInfo,
         `Фото: **${formatDirectJoinValue(draft.photoWanted)}** — при «есть» следующим сообщением запросим скрин.`,
         statusText,
@@ -557,17 +560,19 @@ function buildPhotoRequestPayload(draft = {}, statusText = "") {
 }
 
 function buildTicketTitle(ticket = {}) {
-  if (ticket.kind === "clan") return "⚔️ Клан-аларм";
+  const isClosed = ticket.status === "closed";
+  if (ticket.kind === "clan") return `${isClosed ? "⚫" : "⚔️"} Клан-аларм`;
   const level = getLevelMeta(ticket.level);
   const count = getCountMeta(ticket.count);
-  return `${level.emoji} Антитим • ${count.label}`;
+  return `${isClosed ? "⚫" : level.emoji} Антитим • ${count.label}`;
 }
 
 function buildThreadName(ticket = {}) {
-  if (ticket.kind === "clan") return "⚔️ Война с кланом";
+  const isClosed = ticket.status === "closed";
+  if (ticket.kind === "clan") return `${isClosed ? "⚫" : "⚔️"} Война с кланом`;
   const level = getLevelMeta(ticket.level);
   const count = getCountMeta(ticket.count);
-  return `${level.emoji} ${count.label} тимера • ${formatRequesterName(ticket)}`;
+  return `${isClosed ? "⚫" : level.emoji} ${count.label} тимера • ${formatRequesterName(ticket)}`;
 }
 
 function buildTicketPublicPayload(ticket = {}, config = createDefaultAntiteamConfig(), options = {}) {
@@ -581,9 +586,12 @@ function buildTicketPublicPayload(ticket = {}, config = createDefaultAntiteamCon
   const robloxText = ticket.roblox?.username
     ? `Roblox: **${ticket.roblox.username}**${profileUrl ? ` ([профиль](${profileUrl}))` : ""}`
     : "Roblox: **—**";
+  const authorLine = isClan && ticket.anchorUserId
+    ? `Автор: <@${ticket.createdBy}> • Якорь: <@${ticket.anchorUserId}> • ${robloxText}`
+    : `<@${ticket.createdBy}> • ${robloxText}`;
   const dangerText = isClan
     ? "Клан-аларм: якорь должен оставаться в игре до завершения тревоги."
-    : `Опасность: ${level.emoji} **${level.label}** — ${level.description}`;
+    : `Опасность: ${isClosed ? "⚫" : level.emoji} **${level.label}** — ${level.description}`;
   const helpText = (helperIds.length || isClosed)
     ? `Помощь: откликнулись **${helperIds.length}**, пришли **${confirmed.length}**${ticket.closeSummary?.text ? ` • итог: ${ticket.closeSummary.text}` : ""}`
     : "";
@@ -592,7 +600,7 @@ function buildTicketPublicPayload(ticket = {}, config = createDefaultAntiteamCon
     .addTextDisplayComponents(
       new TextDisplayBuilder().setContent(`# ${buildTicketTitle(ticket)}`),
       new TextDisplayBuilder().setContent([
-        `<@${ticket.createdBy}> • ${robloxText}`,
+        authorLine,
         isClan
           ? `Вход без др: **${formatDirectJoinValue(ticket.directJoinEnabled)}** • статус: **${formatTicketStatus(ticket)}**`
           : `Вход без др: **${formatDirectJoinValue(ticket.directJoinEnabled)}** • статус: **${formatTicketStatus(ticket)}**`,
@@ -603,9 +611,10 @@ function buildTicketPublicPayload(ticket = {}, config = createDefaultAntiteamCon
     );
 
   const photoUrl = cleanString(ticket.photo?.url, 2000);
-  const photoAttachmentName = cleanString(ticket.message?.photoAttachmentName, 180) || getPhotoAttachmentName(ticket.photo);
   const shouldAttachPhoto = options.attachPhoto === true && photoUrl;
+  let photoAttachmentName = "";
   if (photoUrl) {
+    photoAttachmentName = cleanString(ticket.message?.photoAttachmentName, 180) || getPhotoAttachmentName(ticket.photo);
     const media = new MediaGalleryBuilder().addItems(
       new MediaGalleryItemBuilder()
         .setURL(shouldAttachPhoto || ticket.message?.photoAttachmentName ? `attachment://${photoAttachmentName}` : photoUrl)
@@ -632,7 +641,7 @@ function buildThreadPanelPayload(ticket = {}, config = createDefaultAntiteamConf
   const container = new ContainerBuilder()
     .setAccentColor(isClosed ? 0x607D8B : ticket.kind === "clan" ? 0xB71C1C : getLevelMeta(ticket.level).accentColor)
     .addTextDisplayComponents(
-      new TextDisplayBuilder().setContent(isClosed ? "# Миссия закрыта" : "# Сбор помощи"),
+      new TextDisplayBuilder().setContent(isClosed ? "# ⚫ Миссия закрыта" : "# Сбор помощи"),
       new TextDisplayBuilder().setContent(isClosed
         ? "Антитим закрыт. Thread оставлен для истории."
         : "Нажми «Помочь», чтобы получить Roblox профиль, direct join link или запросить добавление в друзья.")
@@ -654,15 +663,16 @@ function buildThreadPanelPayload(ticket = {}, config = createDefaultAntiteamConf
 
 function buildHelpReplyPayload({ ticket = {}, linkKind = "", directJoinUrl = "", profileUrl = "", friendRequestsUrl = "" } = {}) {
   const lines = [];
+  const targetLabel = ticket.kind === "clan" ? "якоря" : "автора";
   if (linkKind === "direct" || linkKind === "friend_direct") {
     lines.push("Можно подключаться быстрым путём.");
     if (directJoinUrl) lines.push(`[Прямая ссылка подключения](${directJoinUrl})`);
-    if (profileUrl) lines.push(`[Roblox профиль автора](${profileUrl})`);
+    if (profileUrl) lines.push(`[Roblox профиль ${targetLabel}](${profileUrl})`);
   } else {
-    lines.push("Прямой вход недоступен. Отправь автору friend request в Roblox.");
-    if (profileUrl) lines.push(`[Roblox профиль автора](${profileUrl})`);
+    lines.push(`Прямой вход недоступен. Отправь ${targetLabel} friend request в Roblox.`);
+    if (profileUrl) lines.push(`[Roblox профиль ${targetLabel}](${profileUrl})`);
     if (friendRequestsUrl) lines.push(`[Входящие заявки Roblox](${friendRequestsUrl})`);
-    lines.push("Автор уже получил подсказку принять тебя в друзья.");
+    lines.push(`${ticket.kind === "clan" ? "Якорь" : "Автор"} получил сообщение в ветке с просьбой принять тебя.`);
   }
 
   const container = new ContainerBuilder()

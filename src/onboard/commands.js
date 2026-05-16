@@ -131,7 +131,13 @@ function buildCommands() {
         subcommand.setName("panel").setDescription("Открыть панель настройки антитима")
       )
       .addSubcommand((subcommand) =>
-        subcommand.setName("clan").setDescription("Создать клан-аларм для батальона")
+        subcommand
+          .setName("clan")
+          .setDescription("Создать клан-аларм для батальона")
+          .addUserOption((option) => option
+            .setName("target")
+            .setDescription("Игрок-якорь, который уже сидит на сервере и не должен выходить")
+            .setRequired(true))
       ),
   ].map((command) => command.toJSON());
 }

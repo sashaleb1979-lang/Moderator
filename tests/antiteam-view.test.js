@@ -15,6 +15,7 @@ const {
   buildThreadPanelPayload,
   buildTicketPublicPayload,
   buildTicketSetupPayload,
+  buildTicketTitle,
   ticketButtonId,
 } = require("../src/antiteam/view");
 const { normalizeAntiteamState } = require("../src/antiteam/state");
@@ -142,6 +143,28 @@ test("public ticket and thread name stay compact", () => {
   assert.doesNotMatch(json, /### Помощь/);
 });
 
+test("clan draft and public ticket show selected Discord anchor", () => {
+  const draftPayload = buildTicketSetupPayload({
+    kind: "clan",
+    userId: "caller-1",
+    anchorUserId: "anchor-1",
+    roblox: { username: "AnchorRb", userId: "202" },
+    description: "Клан держит сервер.",
+  }, normalizeAntiteamState({}).config);
+  const ticketPayload = buildTicketPublicPayload({
+    id: "ticket-1",
+    kind: "clan",
+    status: "open",
+    createdBy: "caller-1",
+    anchorUserId: "anchor-1",
+    roblox: { username: "AnchorRb", userId: "202" },
+    description: "Клан держит сервер.",
+  });
+
+  assert.match(payloadJson(draftPayload), /Якорь: <@anchor-1>/);
+  assert.match(payloadJson(ticketPayload), /Автор: <@caller-1> • Якорь: <@anchor-1>/);
+});
+
 test("public ticket and thread panel disable actions after close", () => {
   const ticket = {
     id: "ticket-1",
@@ -158,8 +181,30 @@ test("public ticket and thread panel disable actions after close", () => {
   };
 
   assert.match(payloadJson(buildTicketPublicPayload(ticket)), /закрыто/);
+  assert.equal(buildTicketTitle(ticket), "⚫ Антитим • 2-4");
+  assert.equal(buildThreadName(ticket), "⚫ 2-4 тимера • author-1");
+  assert.match(payloadJson(buildTicketPublicPayload(ticket)), /Опасность: ⚫ \*\*Средние\*\*/);
+  assert.match(payloadJson(buildThreadPanelPayload(ticket)), /⚫ Миссия закрыта/);
   assert.doesNotMatch(payloadJson(buildThreadPanelPayload(ticket)), /Помочь/);
   assert.equal(ticketButtonId("help", "ticket-1"), "at:help:ticket-1");
+});
+
+test("clan public ticket without photo does not touch photo attachment name", () => {
+  const payload = buildTicketPublicPayload({
+    id: "ticket-clan",
+    kind: "clan",
+    status: "open",
+    createdBy: "caller-1",
+    anchorUserId: "anchor-1",
+    roblox: { username: "Krutoikira", userId: "1265862594" },
+    description: "ФАЙТ С ХН",
+    photo: null,
+  });
+  const json = payloadJson(payload);
+
+  assert.equal(payload.files, undefined);
+  assert.match(json, /Клан-аларм/);
+  assert.match(json, /ФАЙТ С ХН/);
 });
 
 test("public ticket can reattach photo into the application message", () => {
