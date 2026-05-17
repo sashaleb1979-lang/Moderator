@@ -81,6 +81,12 @@ function buildCommands() {
           )
           .addUserOption((option) => option.setName("target").setDescription("Игрок (если в сервере)"))
           .addStringOption((option) => option.setName("user_id").setDescription("ID игрока, если пользователя нет в сервере"))
+          .addStringOption((option) =>
+            option
+              .setName("user_ids")
+              .setDescription("Несколько user mention/ID через пробел, запятую или новую строку")
+              .setMaxLength(1000)
+          )
       )
       .addSubcommand((subcommand) =>
         subcommand

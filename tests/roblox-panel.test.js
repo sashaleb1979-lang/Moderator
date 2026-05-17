@@ -199,6 +199,7 @@ test("getRobloxStatsPanelSnapshot aggregates linked users, job telemetry, and co
     verifiedSeenInJjsUsers: 2,
     verifiedNeverSeenInJjsUsers: 1,
     verifiedZeroMinuteUsers: 1,
+    staleSessionMarkerUsers: 0,
     pendingUsers: 1,
     failedUsers: 1,
     refreshErrorUsers: 1,
@@ -365,17 +366,18 @@ test("buildRobloxStatsPanelPayload renders manual controls and blocker field", (
     statusText: "manual refresh completed",
   });
 
-  assert.equal(payload.components.length, 4);
+  assert.equal(payload.components.length, 5);
   assert.equal(payload.components[0].components.length, 5);
-  assert.equal(payload.components[0].components[0].data.custom_id, "roblox_stats_refresh");
-  assert.equal(payload.components[0].components[4].data.custom_id, "roblox_stats_back");
-  assert.equal(payload.components[0].components[1].data.label, "Синк сейчас");
-  assert.equal(payload.components[0].components[2].data.label, "Сохранить runtime");
-  assert.equal(payload.components[0].components[3].data.label, "Обновить профили");
-  assert.equal(payload.components[0].components[3].data.disabled, true);
-  assert.equal(payload.components[1].components[0].data.custom_id, "roblox_stats_toggle_playtime");
-  assert.equal(payload.components[2].components[1].data.custom_id, "roblox_stats_set_poll_3");
-  assert.equal(payload.components[3].components[0].data.custom_id, "roblox_stats_clear_refresh_errors");
+  assert.equal(payload.components[0].components[0].data.custom_id, "roblox_stats_view_overview");
+  assert.equal(payload.components[0].components[4].data.custom_id, "roblox_stats_back:overview");
+  assert.equal(payload.components[1].components[0].data.custom_id, "roblox_stats_refresh:overview");
+  assert.equal(payload.components[1].components[1].data.label, "Синк сейчас");
+  assert.equal(payload.components[1].components[2].data.label, "Сохранить runtime");
+  assert.equal(payload.components[1].components[3].data.label, "Обновить профили");
+  assert.equal(payload.components[1].components[3].data.disabled, true);
+  assert.equal(payload.components[2].components[0].data.custom_id, "roblox_stats_toggle_playtime:overview");
+  assert.equal(payload.components[3].components[1].data.custom_id, "roblox_stats_set_poll_3:overview");
+  assert.equal(payload.components[4].components[0].data.custom_id, "roblox_stats_clear_refresh_errors:overview");
   assert.equal(payload.embeds[0].data.fields.at(-1).name, "Последнее действие");
   const fieldValues = Object.fromEntries(payload.embeds[0].data.fields.map((field) => [field.name, field.value]));
   assert.match(fieldValues["Покрытие"], /Trackable для playtime: \*\*1\*\*/);
@@ -384,6 +386,71 @@ test("buildRobloxStatsPanelPayload renders manual controls and blocker field", (
   assert.match(fieldValues["Кого чинить"], /Repairable User -> RepairableRb/);
   assert.match(fieldValues["Кого чинить"], /Manual User/);
   assert.match(fieldValues["Ошибки и блокеры"], /JJS IDs/i);
+});
+
+test("buildRobloxStatsPanelPayload switches focused field layout by view mode", () => {
+  const activityPayload = buildRobloxStatsPanelPayload({
+    viewMode: "activity",
+    db: {
+      profiles: {
+        active_user: {
+          userId: "active_user",
+          displayName: "Active User",
+          domains: {
+            roblox: {
+              username: "ActiveRb",
+              userId: "1",
+              verificationStatus: "verified",
+              playtime: {
+                totalJjsMinutes: 10,
+                lastSeenInJjsAt: "2026-05-09T12:00:00.000Z",
+              },
+            },
+          },
+        },
+      },
+    },
+    runtimeState: {
+      activeSessionsByDiscordUserId: {
+        active_user: {
+          startedAt: "2026-05-09T12:00:00.000Z",
+          lastSeenAt: "2026-05-09T12:01:00.000Z",
+          gameId: "server-1",
+        },
+      },
+    },
+    appConfig: {
+      roblox: {
+        jjsUniverseId: 3508322461,
+      },
+    },
+  });
+
+  const activityFieldNames = activityPayload.embeds[0].data.fields.map((field) => field.name);
+  assert.deepEqual(activityFieldNames, ["Режим", "JJS и runtime", "Активность профилей", "Сейчас в JJS", "Ещё не были замечены в JJS"]);
+
+  const errorPayload = buildRobloxStatsPanelPayload({
+    viewMode: "errors",
+    db: {
+      profiles: {
+        error_user: {
+          userId: "error_user",
+          displayName: "Error User",
+          domains: {
+            roblox: {
+              username: "ErrorRb",
+              userId: "2",
+              verificationStatus: "verified",
+              refreshError: "upstream failed",
+            },
+          },
+        },
+      },
+    },
+  });
+
+  const errorFieldNames = errorPayload.embeds[0].data.fields.map((field) => field.name);
+  assert.deepEqual(errorFieldNames, ["Ошибки и блокеры", "Ошибки обновления", "Stale session markers", "Нужен manual rebind"]);
 });
 
 test("buildRobloxStatsPanelPayload hides stale playtime and runtime job truth when those features are disabled", async () => {
@@ -659,8 +726,46 @@ test("handleRobloxStatsPanelButtonInteraction gates permissions and delegates ma
   const liveConfigPayload = liveConfigToggle.calls.edits[0];
   const liveModeField = liveConfigPayload.embeds[0].data.fields.find((field) => field.name === "Режим");
   assert.match(liveModeField.value, /Обновление профилей: \*\*включено\*\*/i);
-  assert.equal(liveConfigPayload.components[0].components[3].data.disabled, false);
-  assert.equal(liveConfigPayload.components[1].components[1].data.label, "Профили: ВКЛ");
+  assert.equal(liveConfigPayload.components[1].components[3].data.disabled, false);
+  assert.equal(liveConfigPayload.components[2].components[1].data.label, "Профили: ВКЛ");
+
+  const navigate = createInteraction("roblox_stats_view_activity");
+  await handleRobloxStatsPanelButtonInteraction({
+    interaction: navigate.interaction,
+    client: {},
+    db: {},
+    runtimeState: {},
+    appConfig: {},
+    telemetry: createRobloxPanelTelemetry(),
+    isModerator: () => true,
+    replyNoPermission: () => navigate.interaction.reply({ content: "Нет прав." }),
+    buildModeratorPanelPayload: async () => ({ content: "main" }),
+    buildRobloxPanelPayload: ({ statusText = "", viewMode: nextViewMode = "overview" } = {}) => ({ content: `${nextViewMode}|${statusText}` }),
+    runProfileRefreshJob: async () => ({}),
+    runPlaytimeSyncJob: async () => ({}),
+    runRuntimeFlush: async () => ({}),
+  });
+
+  assert.equal(navigate.calls.updates[0].content, "activity|");
+
+  const refreshCoverage = createInteraction("roblox_stats_refresh:coverage");
+  await handleRobloxStatsPanelButtonInteraction({
+    interaction: refreshCoverage.interaction,
+    client: {},
+    db: {},
+    runtimeState: {},
+    appConfig: {},
+    telemetry: createRobloxPanelTelemetry(),
+    isModerator: () => true,
+    replyNoPermission: () => refreshCoverage.interaction.reply({ content: "Нет прав." }),
+    buildModeratorPanelPayload: async () => ({ content: "main" }),
+    buildRobloxPanelPayload: ({ statusText = "", viewMode: nextViewMode = "overview" } = {}) => ({ content: `${nextViewMode}|${statusText}` }),
+    runProfileRefreshJob: async () => ({}),
+    runPlaytimeSyncJob: async () => ({}),
+    runRuntimeFlush: async () => ({}),
+  });
+
+  assert.equal(refreshCoverage.calls.updates[0].content, "coverage|Панель Roblox обновлена.");
 
   const setPoll = createInteraction("roblox_stats_set_poll_5");
   const pollCalls = [];

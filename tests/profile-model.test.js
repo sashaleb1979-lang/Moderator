@@ -361,11 +361,18 @@ test("profile read-model prepends the self-progress block before generic progres
         progress: {
           proofWindows: [
             {
+              approvedKills: 3500,
+              killTier: 3,
+              reviewedAt: "2026-05-05T00:00:00.000Z",
+              playtimeTracked: true,
+              totalJjsMinutes: 300,
+            },
+            {
               approvedKills: 4000,
               killTier: 3,
               reviewedAt: "2026-05-10T00:00:00.000Z",
               playtimeTracked: true,
-              totalJjsMinutes: 600,
+              totalJjsMinutes: 900,
             },
             {
               approvedKills: 4300,
@@ -382,6 +389,8 @@ test("profile read-model prepends the self-progress block before generic progres
 
   assert.equal(readModel.sections.progress[0].title, "Практический прогресс");
   assert.equal(readModel.sections.progress[1].title, "Вклад");
+  assert.match(readModel.sections.progress[0].lines.join("\n"), /Сравнение окон: последний ап 60 kills\/ч .* прошлый 50 kills\/ч/);
+  assert.match(readModel.sections.progress[0].lines.join("\n"), /Средний темп за отслеженный период: 53,3 kills\/ч JJS/);
   assert.match(readModel.sections.progress[0].lines.join("\n"), /До следующего tier: 2.?700 kills/);
   assert.match(readModel.sections.progress[0].lines.join("\n"), /До milestone 20.?000: 15.?700 kills/);
 });

@@ -76,11 +76,18 @@ test("buildProfileSynergyState builds a self-progress block with growth window a
         progress: {
           proofWindows: [
             {
+              approvedKills: 3500,
+              killTier: 3,
+              reviewedAt: "2026-05-05T00:00:00.000Z",
+              playtimeTracked: true,
+              totalJjsMinutes: 300,
+            },
+            {
               approvedKills: 4000,
               killTier: 3,
               reviewedAt: "2026-05-10T00:00:00.000Z",
               playtimeTracked: true,
-              totalJjsMinutes: 600,
+              totalJjsMinutes: 900,
             },
             {
               approvedKills: 4300,
@@ -95,14 +102,17 @@ test("buildProfileSynergyState builds a self-progress block with growth window a
     },
     robloxSummary: {
       hasVerifiedAccount: true,
-      totalJjsMinutes: 1560,
+      totalJjsMinutes: 1980,
     },
   });
 
   assert.equal(state.blocks.selfProgress.title, "Практический прогресс");
   assert.match(state.blocks.selfProgress.lines.join("\n"), /Зарегистрировано: 4.?300 kills .* tier 3/);
-  assert.match(state.blocks.selfProgress.lines.join("\n"), /С последнего рега: 36 ч по времени .* 6 ч JJS/);
-  assert.match(state.blocks.selfProgress.lines.join("\n"), /Последнее окно роста: 4.?000 -> 4.?300 kills .* \+300 .* 10 ч JJS .* 5 д .* 30 kills\/ч/);
+  assert.match(state.blocks.selfProgress.lines.join("\n"), /С последнего рега: 36 ч по времени .* 13 ч JJS/);
+  assert.match(state.blocks.selfProgress.lines.join("\n"), /Последнее окно роста: 4.?000 -> 4.?300 kills .* \+300 .* 5 ч JJS .* 5 д .* 60 kills\/ч/);
+  assert.match(state.blocks.selfProgress.lines.join("\n"), /Сравнение окон: последний ап 60 kills\/ч .* прошлый 50 kills\/ч .* выше прошлого окна/);
+  assert.match(state.blocks.selfProgress.lines.join("\n"), /Средний темп за отслеженный период: 53,3 kills\/ч JJS .* 800 kills за 15 ч JJS .* 2 окна/);
   assert.match(state.blocks.selfProgress.lines.join("\n"), /До следующего tier: 2.?700 kills .* при текущем темпе/);
   assert.match(state.blocks.selfProgress.lines.join("\n"), /До milestone 20.?000: 15.?700 kills .* при текущем темпе/);
+  assert.match(state.blocks.selfProgress.lines.join("\n"), /Есть смысл обновить kills: после последнего апрува уже 13 ч JJS/);
 });

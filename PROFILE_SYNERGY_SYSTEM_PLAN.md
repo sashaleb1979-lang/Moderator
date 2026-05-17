@@ -626,7 +626,8 @@
 2. Зарегистрированные kills, часы с последнего approved update и `ОБНОВИ`. Реализовано.
 3. Последнее окно роста. Реализовано в base form из двух последних proof windows с честным fallback при ненадёжных Roblox-часах.
 4. Countdown до next tier/milestone. Реализовано в base form по каноническим thresholds и последнему надёжному kills/JJS pace.
-5. Следующий шаг фазы: сравнение двух последних окон, lifetime pace и richer CTA copy без возврата формул в `model.js`.
+5. Сравнение двух последних окон и lifetime pace. Реализовано в base form внутри того же owner через growth-window series без возврата формул в `model.js`.
+6. Следующий шаг фазы: richer CTA copy и более богатые формулировки стабильности/ускорения поверх уже готовых growth metrics.
 
 ### Phase 5. Viewer-First Narrative Block
 1. Текст-тирлист формы.

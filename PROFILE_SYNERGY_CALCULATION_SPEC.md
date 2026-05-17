@@ -236,9 +236,11 @@ Base Phase 4 implementation completed.
 1. зарегистрированные kills и текущий tier;
 2. часы с последнего approved update;
 3. последнее окно роста;
-4. countdown до следующего tier;
-5. countdown до следующего milestone 20k/30k;
-6. soft reminder `Есть смысл обновить kills`, если порог достигнут.
+4. сравнение двух последних окон роста;
+5. средний kills/JJS pace за отслеженный proof-window период;
+6. countdown до следующего tier;
+7. countdown до следующего milestone 20k/30k;
+8. soft reminder `Есть смысл обновить kills`, если порог достигнут.
 
 ### Owner
 1. Derived block owner: [src/profile/synergy.js](src/profile/synergy.js)
@@ -267,6 +269,8 @@ Kill milestones:
 
 `nextMilestoneTarget = first milestone > approvedKills`
 
+`growthWindows[] = latest-first series из adjacent proof windows, а при короткой proof history — с честным fallback на recentKillChanges без Roblox pace`
+
 `latestReliableWindow = last two proof windows, только если оба playtimeTracked и cumulative totalJjsMinutes монотонны`
 
 `windowDeltaKills = latest.approvedKills - previous.approvedKills`
@@ -275,9 +279,24 @@ Kill milestones:
 
 `killsPerJjsHour = windowDeltaKills / windowDeltaJjsHours`
 
+`windowComparison = growthWindows[0] vs growthWindows[1]`
+
+Если у обоих окон есть надёжный `killsPerJjsHour`, block пишет `последний ап X kills/ч • прошлый Y kills/ч` и короткий verdict:
+1. `выше прошлого окна`, если latest pace как минимум на 15% выше previous pace;
+2. `ниже прошлого окна`, если latest pace как минимум на 15% ниже previous pace;
+3. `держится близко к прошлому окну`, если разница остаётся внутри этого коридора.
+
+Если одно из двух окон ещё без надёжных Roblox-часов, comparison line обязана сказать это прямо, а не притворяться точным сравнением.
+
+`lifetimeReliableWindows = growthWindows.filter(reliableJjs === true && jjsHours > 0)`
+
+`lifetimePaceKillsPerJjsHour = sum(deltaKills) / sum(jjsHours)` по всем `lifetimeReliableWindows`
+
 `estimatedJjsHoursToTarget = remainingKills / killsPerJjsHour`
 
 Если надёжной proof-window пары ещё нет, block всё равно показывает countdown по remaining kills, но без притворной оценки по времени.
+
+Если reliable proof windows ещё нет, lifetime pace line обязана говорить, что надёжных Roblox-часов пока мало.
 
 ### Ненадёжно Когда
 1. меньше двух proof-window snapshots;
@@ -289,6 +308,8 @@ Kill milestones:
 1. Показывать countdown по времени только если `killsPerJjsHour` надёжен и положителен.
 2. Иначе писать честно: `темп ещё не накоплен`.
 3. Для окна роста при отсутствии надёжных Roblox-часов писать `Roblox-часы пока ненадёжны`.
+4. Для comparison line не сравнивать pace числа, если одно из окон без надёжных Roblox-часов.
+5. Lifetime pace line писать как `Средний темп за отслеженный период`, но считать только по reliable proof-window окнам.
 
 ---
 

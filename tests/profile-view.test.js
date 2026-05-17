@@ -310,11 +310,18 @@ test("profile payload renders enriched progress and social sections", () => {
         progress: {
           proofWindows: [
             {
+              approvedKills: 3500,
+              killTier: 3,
+              reviewedAt: "2026-05-05T00:00:00.000Z",
+              playtimeTracked: true,
+              totalJjsMinutes: 300,
+            },
+            {
               approvedKills: 4000,
               killTier: 3,
               reviewedAt: "2026-05-10T00:00:00.000Z",
               playtimeTracked: true,
-              totalJjsMinutes: 600,
+              totalJjsMinutes: 900,
             },
             {
               approvedKills: 4300,
@@ -330,7 +337,7 @@ test("profile payload renders enriched progress and social sections", () => {
   });
 
   const selfProgressDisplays = getProfileContainer(selfProgressPayload).textDisplays;
-  assert.ok(selfProgressDisplays.some((component) => /### Практический прогресс/.test(component.content) && /До следующего tier: 2.?700 kills/.test(component.content)));
+  assert.ok(selfProgressDisplays.some((component) => /### Практический прогресс/.test(component.content) && /Сравнение окон: последний ап 60 kills\/ч/.test(component.content) && /Средний темп за отслеженный период: 53,3 kills\/ч JJS/.test(component.content) && /До следующего tier: 2.?700 kills/.test(component.content)));
 
   const socialPayload = buildProfilePayload({
     guildId: "guild-1",

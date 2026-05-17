@@ -44,6 +44,10 @@ function formatDays(value, digits = 1) {
   return `${formatHours(value, digits)} д`;
 }
 
+function resolveTimestamp(value) {
+  return Number.isFinite(Number(value)) ? Number(value) : Date.parse(String(value || ""));
+}
+
 function getProofWindows(profile = {}) {
   return Array.isArray(profile?.domains?.progress?.proofWindows)
     ? profile.domains.progress.proofWindows
@@ -52,7 +56,7 @@ function getProofWindows(profile = {}) {
 
 function resolveNowTimestamp(now) {
   if (typeof now === "function") return resolveNowTimestamp(now());
-  const fromValue = Number.isFinite(Number(now)) ? Number(now) : Date.parse(String(now || ""));
+  const fromValue = resolveTimestamp(now);
   return Number.isFinite(fromValue) ? fromValue : Date.now();
 }
 
@@ -67,7 +71,7 @@ function getPreviousProofWindow(profile = {}) {
 }
 
 function computeElapsedHours(fromValue, now) {
-  const fromTimestamp = Number.isFinite(Number(fromValue)) ? Number(fromValue) : Date.parse(String(fromValue || ""));
+  const fromTimestamp = resolveTimestamp(fromValue);
   const nowTimestamp = resolveNowTimestamp(now);
   if (!Number.isFinite(fromTimestamp) || !Number.isFinite(nowTimestamp) || nowTimestamp < fromTimestamp) return null;
   return (nowTimestamp - fromTimestamp) / (60 * 60 * 1000);
@@ -130,46 +134,43 @@ function getNextKillMilestoneTarget(approvedKills = null) {
   };
 }
 
-function buildLatestGrowthWindow({ profile = null, recentKillChanges = [] } = {}) {
-  const latestProofWindow = getLatestProofWindow(profile);
-  const previousProofWindow = getPreviousProofWindow(profile);
-
-  if (previousProofWindow && latestProofWindow) {
-    const fromKills = normalizeFiniteNumber(previousProofWindow?.approvedKills);
-    const toKills = normalizeFiniteNumber(latestProofWindow?.approvedKills);
-    const wallClockHours = computeElapsedHours(previousProofWindow?.reviewedAt, latestProofWindow?.reviewedAt);
-    if (Number.isFinite(fromKills) && Number.isFinite(toKills) && toKills >= fromKills && Number.isFinite(wallClockHours) && wallClockHours > 0) {
-      const deltaKills = toKills - fromKills;
-      const reliableJjs = hasReliableProofWindowPair(previousProofWindow, latestProofWindow);
-      const previousMinutes = normalizeFiniteNumber(previousProofWindow?.totalJjsMinutes);
-      const latestMinutes = normalizeFiniteNumber(latestProofWindow?.totalJjsMinutes);
-      const jjsMinutes = reliableJjs ? Math.max(0, latestMinutes - previousMinutes) : null;
-      const jjsHours = Number.isFinite(jjsMinutes) ? jjsMinutes / 60 : null;
-      const killsPerJjsHour = Number.isFinite(jjsHours) && jjsHours > 0 ? deltaKills / jjsHours : null;
-
-      return {
-        source: "proof_windows",
-        fromKills,
-        toKills,
-        deltaKills,
-        reviewedFromAt: cleanString(previousProofWindow?.reviewedAt, 80) || null,
-        reviewedToAt: cleanString(latestProofWindow?.reviewedAt, 80) || null,
-        wallClockHours,
-        wallClockDays: wallClockHours / 24,
-        jjsMinutes,
-        jjsHours,
-        killsPerJjsHour,
-        reliableJjs,
-      };
-    }
+function buildGrowthWindowFromProofPair(previousProofWindow = null, latestProofWindow = null) {
+  const fromKills = normalizeFiniteNumber(previousProofWindow?.approvedKills);
+  const toKills = normalizeFiniteNumber(latestProofWindow?.approvedKills);
+  const wallClockHours = computeElapsedHours(previousProofWindow?.reviewedAt, latestProofWindow?.reviewedAt);
+  if (!Number.isFinite(fromKills) || !Number.isFinite(toKills) || toKills < fromKills || !Number.isFinite(wallClockHours) || wallClockHours <= 0) {
+    return null;
   }
 
-  const fallbackChange = Array.isArray(recentKillChanges) ? recentKillChanges[0] : null;
-  if (!fallbackChange) return null;
-  const fromKills = normalizeFiniteNumber(fallbackChange.from);
-  const toKills = normalizeFiniteNumber(fallbackChange.to);
-  const fromAt = Number.isFinite(Number(fallbackChange.fromAt)) ? Number(fallbackChange.fromAt) : Date.parse(String(fallbackChange.fromAt || ""));
-  const toAt = Number.isFinite(Number(fallbackChange.toAt)) ? Number(fallbackChange.toAt) : Date.parse(String(fallbackChange.toAt || ""));
+  const deltaKills = toKills - fromKills;
+  const reliableJjs = hasReliableProofWindowPair(previousProofWindow, latestProofWindow);
+  const previousMinutes = normalizeFiniteNumber(previousProofWindow?.totalJjsMinutes);
+  const latestMinutes = normalizeFiniteNumber(latestProofWindow?.totalJjsMinutes);
+  const jjsMinutes = reliableJjs ? Math.max(0, latestMinutes - previousMinutes) : null;
+  const jjsHours = Number.isFinite(jjsMinutes) ? jjsMinutes / 60 : null;
+  const killsPerJjsHour = Number.isFinite(jjsHours) && jjsHours > 0 ? deltaKills / jjsHours : null;
+
+  return {
+    source: "proof_windows",
+    fromKills,
+    toKills,
+    deltaKills,
+    reviewedFromAt: cleanString(previousProofWindow?.reviewedAt, 80) || null,
+    reviewedToAt: cleanString(latestProofWindow?.reviewedAt, 80) || null,
+    wallClockHours,
+    wallClockDays: wallClockHours / 24,
+    jjsMinutes,
+    jjsHours,
+    killsPerJjsHour,
+    reliableJjs,
+  };
+}
+
+function buildGrowthWindowFromHistoryChange(change = null) {
+  const fromKills = normalizeFiniteNumber(change?.from);
+  const toKills = normalizeFiniteNumber(change?.to);
+  const fromAt = resolveTimestamp(change?.fromAt);
+  const toAt = resolveTimestamp(change?.toAt);
   if (!Number.isFinite(fromKills) || !Number.isFinite(toKills) || toKills < fromKills || !Number.isFinite(fromAt) || !Number.isFinite(toAt) || toAt <= fromAt) {
     return null;
   }
@@ -191,6 +192,169 @@ function buildLatestGrowthWindow({ profile = null, recentKillChanges = [] } = {}
   };
 }
 
+function buildGrowthWindowKey(window = {}) {
+  return [
+    cleanString(window?.source, 40) || "unknown",
+    Number.isFinite(window?.fromKills) ? Number(window.fromKills) : "na",
+    Number.isFinite(window?.toKills) ? Number(window.toKills) : "na",
+    cleanString(window?.reviewedToAt, 80) || "na",
+  ].join(":");
+}
+
+function buildGrowthWindows({ profile = null, recentKillChanges = [], limit = 10 } = {}) {
+  const windows = [];
+  const seen = new Set();
+  const normalizedLimit = Math.max(1, Number(limit) || 10);
+  const proofWindows = getProofWindows(profile);
+
+  function pushWindow(window) {
+    if (!window) return;
+    const key = buildGrowthWindowKey(window);
+    if (seen.has(key)) return;
+    seen.add(key);
+    windows.push(window);
+  }
+
+  for (let index = proofWindows.length - 1; index >= 1 && windows.length < normalizedLimit; index -= 1) {
+    pushWindow(buildGrowthWindowFromProofPair(proofWindows[index - 1], proofWindows[index]));
+  }
+
+  for (const change of Array.isArray(recentKillChanges) ? recentKillChanges : []) {
+    if (windows.length >= normalizedLimit) break;
+    pushWindow(buildGrowthWindowFromHistoryChange(change));
+  }
+
+  return windows;
+}
+
+function buildWindowComparisonState(growthWindows = []) {
+  const latestWindow = Array.isArray(growthWindows) ? growthWindows[0] : null;
+  const previousWindow = Array.isArray(growthWindows) ? growthWindows[1] : null;
+  if (!latestWindow || !previousWindow) {
+    return {
+      status: "insufficient_history",
+      latestWindow,
+      previousWindow,
+    };
+  }
+
+  const latestPaceKillsPerJjsHour = normalizeFiniteNumber(latestWindow?.killsPerJjsHour);
+  const previousPaceKillsPerJjsHour = normalizeFiniteNumber(previousWindow?.killsPerJjsHour);
+  const hasLatestPace = Number.isFinite(latestPaceKillsPerJjsHour) && latestPaceKillsPerJjsHour > 0;
+  const hasPreviousPace = Number.isFinite(previousPaceKillsPerJjsHour) && previousPaceKillsPerJjsHour > 0;
+
+  if (hasLatestPace && hasPreviousPace) {
+    const deltaRatio = previousPaceKillsPerJjsHour > 0
+      ? (latestPaceKillsPerJjsHour - previousPaceKillsPerJjsHour) / previousPaceKillsPerJjsHour
+      : null;
+    let trend = "steady";
+    if (Number.isFinite(deltaRatio) && deltaRatio >= 0.15) trend = "up";
+    else if (Number.isFinite(deltaRatio) && deltaRatio <= -0.15) trend = "down";
+
+    return {
+      status: "ok",
+      latestWindow,
+      previousWindow,
+      latestPaceKillsPerJjsHour,
+      previousPaceKillsPerJjsHour,
+      deltaRatio,
+      trend,
+    };
+  }
+
+  if (hasLatestPace) {
+    return {
+      status: "previous_unreliable",
+      latestWindow,
+      previousWindow,
+      latestPaceKillsPerJjsHour,
+      previousPaceKillsPerJjsHour,
+    };
+  }
+
+  if (hasPreviousPace) {
+    return {
+      status: "latest_unreliable",
+      latestWindow,
+      previousWindow,
+      latestPaceKillsPerJjsHour,
+      previousPaceKillsPerJjsHour,
+    };
+  }
+
+  return {
+    status: "unreliable",
+    latestWindow,
+    previousWindow,
+    latestPaceKillsPerJjsHour,
+    previousPaceKillsPerJjsHour,
+  };
+}
+
+function buildWindowComparisonLine(comparisonState = {}) {
+  switch (comparisonState?.status) {
+    case "ok": {
+      let verdict = "форма роста держится близко к прошлому окну";
+      if (comparisonState?.trend === "up") verdict = "форма роста выше прошлого окна";
+      else if (comparisonState?.trend === "down") verdict = "форма роста ниже прошлого окна";
+
+      return `Сравнение окон: последний ап ${formatHours(comparisonState.latestPaceKillsPerJjsHour)} kills/ч • прошлый ${formatHours(comparisonState.previousPaceKillsPerJjsHour)} kills/ч • ${verdict}`;
+    }
+    case "previous_unreliable":
+      return `Сравнение окон: последний ап ${formatHours(comparisonState.latestPaceKillsPerJjsHour)} kills/ч • прошлое окно ещё без надёжных Roblox-часов`;
+    case "latest_unreliable":
+      return "Сравнение окон: последнее окно ещё без надёжных Roblox-часов";
+    case "unreliable":
+      return "Сравнение окон: Roblox-часы по последним окнам ещё ненадёжны";
+    default:
+      return "Сравнение окон: нужно ещё одно окно роста";
+  }
+}
+
+function buildLifetimePaceState(growthWindows = []) {
+  const reliableWindows = (Array.isArray(growthWindows) ? growthWindows : []).filter((window) => {
+    const jjsHours = normalizeFiniteNumber(window?.jjsHours);
+    const deltaKills = normalizeFiniteNumber(window?.deltaKills);
+    return window?.reliableJjs === true
+      && Number.isFinite(jjsHours)
+      && jjsHours > 0
+      && Number.isFinite(deltaKills)
+      && deltaKills >= 0;
+  });
+
+  if (!reliableWindows.length) {
+    return {
+      status: "unavailable",
+      reliableWindowCount: 0,
+      totalKills: null,
+      totalJjsHours: null,
+      paceKillsPerJjsHour: null,
+    };
+  }
+
+  const totalKills = reliableWindows.reduce((sum, window) => sum + (Number(window?.deltaKills) || 0), 0);
+  const totalJjsHours = reliableWindows.reduce((sum, window) => sum + (Number(window?.jjsHours) || 0), 0);
+  return {
+    status: Number.isFinite(totalJjsHours) && totalJjsHours > 0 ? "ok" : "unavailable",
+    reliableWindowCount: reliableWindows.length,
+    totalKills,
+    totalJjsHours,
+    paceKillsPerJjsHour: Number.isFinite(totalJjsHours) && totalJjsHours > 0 ? totalKills / totalJjsHours : null,
+  };
+}
+
+function buildLifetimePaceLine(lifetimePace = {}) {
+  if (lifetimePace?.status !== "ok") {
+    return "Средний темп за отслеженный период: надёжных Roblox-часов ещё мало";
+  }
+
+  return [
+    `Средний темп за отслеженный период: ${formatHours(lifetimePace.paceKillsPerJjsHour)} kills/ч JJS`,
+    `${formatNumber(lifetimePace.totalKills)} kills за ${formatHours(lifetimePace.totalJjsHours)} ч JJS`,
+    `${formatNumber(lifetimePace.reliableWindowCount)} окна`,
+  ].join(" • ");
+}
+
 function buildEstimatedTargetLine(label, target = null, paceKillsPerJjsHour = null) {
   if (!target) return null;
   if (Number.isFinite(paceKillsPerJjsHour) && paceKillsPerJjsHour > 0) {
@@ -205,15 +369,13 @@ function buildSelfProgressBlock({
   approvedKills = null,
   killTier = null,
   progressState = {},
-  recentKillChanges = [],
-  profile = null,
 } = {}) {
   if (!isSelf) return null;
 
   const lines = [];
   const normalizedApprovedKills = normalizeFiniteNumber(approvedKills);
   const normalizedKillTier = normalizeFiniteNumber(killTier);
-  const latestGrowthWindow = buildLatestGrowthWindow({ profile, recentKillChanges });
+  const latestGrowthWindow = progressState?.latestGrowthWindow || null;
   const nextTierTarget = getNextKillTierTarget(normalizedApprovedKills);
   const nextMilestoneTarget = getNextKillMilestoneTarget(normalizedApprovedKills);
   const currentKillsPerJjsHour = Number.isFinite(latestGrowthWindow?.killsPerJjsHour) && latestGrowthWindow.killsPerJjsHour > 0
@@ -263,6 +425,9 @@ function buildSelfProgressBlock({
     lines.push("Последнее окно роста: история ещё короткая.");
   }
 
+  lines.push(buildWindowComparisonLine(progressState?.windowComparison));
+  lines.push(buildLifetimePaceLine(progressState?.lifetimePace));
+
   const nextTierLine = buildEstimatedTargetLine("До следующего tier", nextTierTarget, currentKillsPerJjsHour);
   if (nextTierLine) {
     lines.push(nextTierLine);
@@ -289,13 +454,21 @@ function buildSelfProgressBlock({
   };
 }
 
-function buildProgressSynergyState({ profile = null, robloxSummary = {}, now } = {}) {
+function buildProgressSynergyState({ profile = null, robloxSummary = {}, recentKillChanges = [], now } = {}) {
   const latestProofWindow = getLatestProofWindow(profile);
   const hoursSinceLastApprovedKillsUpdate = computeElapsedHours(latestProofWindow?.reviewedAt, now);
+  const growthWindows = buildGrowthWindows({ profile, recentKillChanges });
+  const latestGrowthWindow = growthWindows[0] || null;
+  const windowComparison = buildWindowComparisonState(growthWindows);
+  const lifetimePace = buildLifetimePaceState(growthWindows);
 
   if (!latestProofWindow) {
     return {
       latestProofWindow: null,
+      latestGrowthWindow,
+      growthWindows,
+      windowComparison,
+      lifetimePace,
       hoursSinceLastApprovedKillsUpdate: null,
       jjsHoursSinceLastApprovedKillsUpdate: null,
       jjsMinutesSinceLastApprovedKillsUpdate: null,
@@ -316,6 +489,10 @@ function buildProgressSynergyState({ profile = null, robloxSummary = {}, now } =
 
   return {
     latestProofWindow,
+    latestGrowthWindow,
+    growthWindows,
+    windowComparison,
+    lifetimePace,
     hoursSinceLastApprovedKillsUpdate,
     jjsHoursSinceLastApprovedKillsUpdate,
     jjsMinutesSinceLastApprovedKillsUpdate,
