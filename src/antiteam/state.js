@@ -204,6 +204,7 @@ function normalizeRobloxSnapshot(value = {}) {
     userId,
     username: cleanString(source.username ?? source.name ?? source.robloxUsername, 120),
     displayName: cleanString(source.displayName ?? source.robloxDisplayName, 120),
+    avatarUrl: cleanString(source.avatarUrl ?? source.robloxAvatarUrl, 2000),
     profileUrl: cleanString(source.profileUrl, 500) || (userId ? `https://www.roblox.com/users/${userId}/profile` : ""),
   };
 }

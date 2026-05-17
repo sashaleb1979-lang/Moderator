@@ -111,6 +111,10 @@ function summarizeTelemetryResult(kind, result = {}) {
       startedSessionCount: normalizeNonNegativeInteger(summary.startedSessionCount, 0),
       closedSessionCount: normalizeNonNegativeInteger(summary.closedSessionCount, 0),
       activeCoPlayPairCount: normalizeNonNegativeInteger(summary.activeCoPlayPairCount, 0),
+      repairedBindingCount: normalizeNonNegativeInteger(summary.repairedBindingCount, 0),
+      unresolvedBindingCount: normalizeNonNegativeInteger(summary.unresolvedBindingCount, 0),
+      failedRepairBatchCount: normalizeNonNegativeInteger(summary.failedRepairBatchCount, 0),
+      sanitizedBindingCount: normalizeNonNegativeInteger(summary.sanitizedBindingCount, 0),
       skippedReason: cleanString(summary.skippedReason, 80) || null,
     };
   }
@@ -562,6 +566,23 @@ function getRobloxStatsPanelSnapshot({ db = {}, runtimeState = {}, telemetry = n
   return snapshot;
 }
 
+function buildPlaytimeRepairSummaryPieces(summary = {}) {
+  const pieces = [];
+  if (normalizeNonNegativeInteger(summary?.sanitizedBindingCount, 0) > 0) {
+    pieces.push(`санитизировано ${summary.sanitizedBindingCount}`);
+  }
+  if (normalizeNonNegativeInteger(summary?.repairedBindingCount, 0) > 0) {
+    pieces.push(`починено по username ${summary.repairedBindingCount}`);
+  }
+  if (normalizeNonNegativeInteger(summary?.unresolvedBindingCount, 0) > 0) {
+    pieces.push(`без repair осталось ${summary.unresolvedBindingCount}`);
+  }
+  if (normalizeNonNegativeInteger(summary?.failedRepairBatchCount, 0) > 0) {
+    pieces.push(`ошибок repair batch ${summary.failedRepairBatchCount}`);
+  }
+  return pieces;
+}
+
 function formatRobloxJobLine(job = {}) {
   const status = formatJobStatus(job.status);
   const pieces = [status];
@@ -584,6 +605,10 @@ function formatRobloxJobLine(job = {}) {
   }
   if (normalizeNonNegativeInteger(job.summary?.dirtyUserCount, 0) > 0) {
     pieces.push(`грязных ${job.summary.dirtyUserCount}`);
+  }
+  const repairPieces = buildPlaytimeRepairSummaryPieces(job.summary);
+  if (repairPieces.length) {
+    pieces.push(repairPieces.join(", "));
   }
   return pieces.join(" | ");
 }
@@ -634,11 +659,13 @@ function getPollButtonStyle(currentMinutes, buttonMinutes) {
 
 function buildPlaytimeSyncStatusText(result = {}) {
   const skippedReason = cleanString(result.skippedReason, 80) || null;
+  const repairPieces = buildPlaytimeRepairSummaryPieces(result);
+  const repairText = repairPieces.length ? ` Перед синком: ${repairPieces.join(", ")}.` : "";
   if (skippedReason === "jjs_ids_not_configured") {
-    return "Синк playtime пропущен: JJS IDs не настроены.";
+    return `Синк playtime пропущен: JJS IDs не настроены.${repairText}`;
   }
   if (skippedReason === "no_verified_candidates") {
-    return "Синк playtime пропущен: нет ни одной подтверждённой Roblox-привязки с userId.";
+    return `Синк playtime пропущен: нет ни одной подтверждённой Roblox-привязки с userId.${repairText}`;
   }
 
   const totalCandidates = normalizeNonNegativeInteger(result.totalCandidates, 0);
@@ -649,14 +676,14 @@ function buildPlaytimeSyncStatusText(result = {}) {
   const baseText = `Синк playtime завершён. Кандидатов: ${totalCandidates}, активных в JJS: ${activeJjsUsers}, затронуто профилей: ${touchedUserCount}, ошибок пользователей: ${failedUserIds}.`;
 
   if (opaqueInGameUsers > 0) {
-    return `${baseText} Roblox API скрыла universe/root/place ids у ${opaqueInGameUsers} in-game профилей, поэтому они учтены через fallback-режим.`;
+    return `${baseText}${repairText} Roblox API скрыла universe/root/place ids у ${opaqueInGameUsers} in-game профилей, поэтому они учтены через fallback-режим.`;
   }
 
   if (totalCandidates > 0 && activeJjsUsers === 0 && failedUserIds === 0) {
-    return `${baseText} В configured JJS сейчас никого не видно.`;
+    return `${baseText}${repairText} В configured JJS сейчас никого не видно.`;
   }
 
-  return baseText;
+  return `${baseText}${repairText}`;
 }
 
 function buildRobloxStatsPanelPayload({ db = {}, runtimeState = {}, telemetry = null, appConfig = {}, statusText = "" } = {}) {

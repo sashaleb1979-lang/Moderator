@@ -1,5 +1,7 @@
 "use strict";
 
+const { buildProfileSynergyState } = require("./synergy");
+
 function cleanString(value, limit = 2000) {
   return String(value || "").trim().slice(0, Math.max(0, Number(limit) || 0));
 }
@@ -44,6 +46,15 @@ function formatDurationDaysSince(value) {
   const diffMs = Math.max(0, Date.now() - timestamp);
   const diffDays = Math.floor(diffMs / (24 * 60 * 60 * 1000));
   return `${diffDays} дн.`;
+}
+
+function formatHours(value, digits = 1) {
+  const amount = Number(value);
+  if (!Number.isFinite(amount)) return "—";
+  return new Intl.NumberFormat("ru-RU", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: Math.max(0, Number(digits) || 0),
+  }).format(amount);
 }
 
 function normalizeMediaUrl(value, limit = 2000) {
@@ -380,7 +391,7 @@ function buildHeroLines({
   if (mainLabel.length) {
     focusBits.push(`мейны ${mainLabel.join(", ")}`);
   }
-  if (robloxSummary.currentUsername) {
+  if (robloxSummary.hasVerifiedAccount === true && robloxSummary.currentUsername) {
     focusBits.push(`Roblox ${cleanString(robloxSummary.currentUsername, 120)}`);
   }
   if (activitySummary.appliedActivityRoleKey || activitySummary.desiredActivityRoleKey) {
@@ -425,6 +436,7 @@ function buildProfileReadModel(options = {}) {
   const tierlistSummary = summary.tierlist && typeof summary.tierlist === "object" ? summary.tierlist : {};
   const robloxSummary = summary.roblox && typeof summary.roblox === "object" ? summary.roblox : {};
   const verificationSummary = summary.verification && typeof summary.verification === "object" ? summary.verification : {};
+  const progressSummary = summary.progress && typeof summary.progress === "object" ? summary.progress : {};
   const pendingSubmission = options.pendingSubmission && typeof options.pendingSubmission === "object" ? options.pendingSubmission : null;
   const latestSubmission = options.latestSubmission && typeof options.latestSubmission === "object" ? options.latestSubmission : null;
   const approvedEntries = Array.isArray(options.approvedEntries) ? options.approvedEntries : [];
@@ -450,7 +462,11 @@ function buildProfileReadModel(options = {}) {
     guildId: options.guildId,
   });
   const targetAvatarUrl = normalizeMediaUrl(options.targetAvatarUrl, 2000);
-  const robloxAvatarUrl = normalizeMediaUrl(robloxSummary.avatarUrl, 2000);
+  const hasVerifiedRoblox = robloxSummary.hasVerifiedAccount === true;
+  const verifiedRobloxLabel = hasVerifiedRoblox
+    ? cleanString(robloxSummary.currentUsername || robloxSummary.userId, 120)
+    : "";
+  const robloxAvatarUrl = hasVerifiedRoblox ? normalizeMediaUrl(robloxSummary.avatarUrl, 2000) : null;
   const verificationAvatarUrl = normalizeMediaUrl(verificationSummary.oauthAvatarUrl, 2000);
   const currentElo = options.eloProfile?.currentElo ?? eloSummary.currentElo;
   const currentEloTier = options.eloProfile?.currentTier ?? eloSummary.currentTier;
@@ -468,8 +484,8 @@ function buildProfileReadModel(options = {}) {
     },
     {
       url: robloxAvatarUrl,
-      description: robloxSummary.currentUsername
-        ? `Аватар Roblox • ${cleanString(robloxSummary.currentUsername, 120)}`
+      description: verifiedRobloxLabel
+        ? `Аватар Roblox • ${verifiedRobloxLabel}`
         : "Аватар Roblox",
     },
   ].find((entry) => entry.url) || null;
@@ -488,8 +504,8 @@ function buildProfileReadModel(options = {}) {
 
   pushMediaGalleryItem(
     robloxAvatarUrl,
-    robloxSummary.currentUsername
-      ? `Аватар Roblox • ${cleanString(robloxSummary.currentUsername, 120)}`
+    verifiedRobloxLabel
+      ? `Аватар Roblox • ${verifiedRobloxLabel}`
       : "Аватар Roblox"
   );
   pushMediaGalleryItem(
@@ -502,7 +518,7 @@ function buildProfileReadModel(options = {}) {
   const overviewLines = [];
   overviewLines.push(`Игрок: <@${userId}>`);
   overviewLines.push(`Роли: ${roleMentions.length ? roleMentions.join(", ") : "—"}`);
-  overviewLines.push(`Roblox: ${cleanString(robloxSummary.currentUsername || robloxSummary.userId, 120) || "не привязан"}`);
+  overviewLines.push(`Roblox: ${verifiedRobloxLabel || "не привязан"}`);
   overviewLines.push(`Подтверждённые kills: ${Number.isFinite(approvedKills) ? formatNumber(approvedKills) : "—"}`);
   if (Number.isFinite(Number(currentElo)) || Number.isFinite(Number(currentEloTier))) {
     const eloBits = [];
@@ -535,6 +551,16 @@ function buildProfileReadModel(options = {}) {
     activitySummary,
     profile,
     pendingSubmission,
+  });
+  const synergy = buildProfileSynergyState({
+    profile,
+    robloxSummary,
+    progressSummary,
+    approvedKills,
+    killTier,
+    recentKillChanges,
+    isSelf: options.isSelf,
+    now: options.now,
   });
 
   const overviewStatusLines = buildOverviewStatusLines({
@@ -658,7 +684,7 @@ function buildProfileReadModel(options = {}) {
   }
 
   const robloxLines = [];
-  if (robloxSummary.hasVerifiedAccount) {
+  if (hasVerifiedRoblox) {
     robloxLines.push("Связка Roblox: подтверждена");
     robloxLines.push(`Аккаунт: ${cleanString(robloxSummary.currentUsername, 120) || cleanString(robloxSummary.userId, 80) || "verified"}`);
   } else if (robloxSummary.verificationStatus) {
@@ -666,69 +692,71 @@ function buildProfileReadModel(options = {}) {
   } else {
     robloxLines.push("Связка Roblox ещё не подтверждена.");
   }
-  if (robloxSummary.profileUrl) {
-    robloxLines.push("Профиль Roblox: доступен по кнопке ниже");
-  }
-  if (robloxSummary.currentDisplayName
-    && cleanString(robloxSummary.currentDisplayName, 120) !== cleanString(robloxSummary.currentUsername, 120)) {
-    robloxLines.push(`Display в Roblox: ${cleanString(robloxSummary.currentDisplayName, 120)}`);
-  }
-  if (robloxSummary.previousUsername) {
-    robloxLines.push(`Прошлый username Roblox: ${cleanString(robloxSummary.previousUsername, 120)}`);
-  }
-  if (robloxSummary.previousDisplayName) {
-    robloxLines.push(`Прошлый display в Roblox: ${cleanString(robloxSummary.previousDisplayName, 120)}`);
-  }
-  if (Number.isFinite(Number(robloxSummary.renameCount)) && Number(robloxSummary.renameCount) > 0) {
-    robloxLines.push(`Смен username Roblox: ${formatNumber(robloxSummary.renameCount)}`);
-  }
-  if (Number.isFinite(Number(robloxSummary.displayRenameCount)) && Number(robloxSummary.displayRenameCount) > 0) {
-    robloxLines.push(`Смен display-name Roblox: ${formatNumber(robloxSummary.displayRenameCount)}`);
-  }
-  if (robloxSummary.lastRenameSeenAt) {
-    robloxLines.push(`Последний rename Roblox: ${formatDateTime(robloxSummary.lastRenameSeenAt)}`);
-  }
-  if (robloxSummary.hasVerifiedBadge === true) {
-    robloxLines.push("Есть Roblox verified badge");
-  }
-  if (robloxSummary.accountStatus) {
-    robloxLines.push(`Статус аккаунта: ${cleanString(robloxSummary.accountStatus, 80)}`);
-  }
-  if (Number.isFinite(Number(robloxSummary.serverFriendsCount))) {
-    robloxLines.push(`Друзья на сервере: ${formatNumber(robloxSummary.serverFriendsCount)}`);
-  }
-  if (Number.isFinite(Number(robloxSummary.jjsMinutes7d))) {
-    robloxLines.push(`JJS минут 7д: ${formatNumber(robloxSummary.jjsMinutes7d)}`);
-  }
-  if (Number.isFinite(Number(robloxSummary.jjsMinutes30d))) {
-    robloxLines.push(`JJS минут 30д: ${formatNumber(robloxSummary.jjsMinutes30d)}`);
-  }
-  if (Number.isFinite(Number(robloxSummary.totalJjsMinutes))) {
-    robloxLines.push(`JJS минут всего: ${formatNumber(robloxSummary.totalJjsMinutes)}`);
-  }
-  if (Number.isFinite(Number(robloxSummary.frequentNonFriendCount))) {
-    robloxLines.push(`Частые non-friend: ${formatNumber(robloxSummary.frequentNonFriendCount)}`);
-  }
-  if (Number.isFinite(Number(robloxSummary.nonFriendPeerCount))) {
-    robloxLines.push(`Всего non-friend peers: ${formatNumber(robloxSummary.nonFriendPeerCount)}`);
-  }
-  if (Number.isFinite(Number(robloxSummary.sessionCount))) {
-    robloxLines.push(`JJS сессий всего: ${formatNumber(robloxSummary.sessionCount)}`);
-  }
-  if (robloxSummary.currentSessionStartedAt) {
-    robloxLines.push(`Текущая JJS сессия с: ${formatDateTime(robloxSummary.currentSessionStartedAt)}`);
-  }
-  if (robloxSummary.lastSeenInJjsAt) {
-    robloxLines.push(`Последний JJS online: ${formatDateTime(robloxSummary.lastSeenInJjsAt)}`);
-  }
-  if (robloxSummary.lastRefreshAt) {
-    robloxLines.push(`Последнее обновление: ${formatDateTime(robloxSummary.lastRefreshAt)}`);
-  }
-  if (robloxSummary.refreshStatus) {
-    robloxLines.push(`Статус обновления: ${cleanString(robloxSummary.refreshStatus, 80)}`);
-  }
-  if (robloxSummary.refreshError) {
-    robloxLines.push(`Ошибка обновления: ${cleanString(robloxSummary.refreshError, 180)}`);
+  if (hasVerifiedRoblox) {
+    if (robloxSummary.profileUrl) {
+      robloxLines.push("Профиль Roblox: доступен по кнопке ниже");
+    }
+    if (robloxSummary.currentDisplayName
+      && cleanString(robloxSummary.currentDisplayName, 120) !== cleanString(robloxSummary.currentUsername, 120)) {
+      robloxLines.push(`Display в Roblox: ${cleanString(robloxSummary.currentDisplayName, 120)}`);
+    }
+    if (robloxSummary.previousUsername) {
+      robloxLines.push(`Прошлый username Roblox: ${cleanString(robloxSummary.previousUsername, 120)}`);
+    }
+    if (robloxSummary.previousDisplayName) {
+      robloxLines.push(`Прошлый display в Roblox: ${cleanString(robloxSummary.previousDisplayName, 120)}`);
+    }
+    if (Number.isFinite(Number(robloxSummary.renameCount)) && Number(robloxSummary.renameCount) > 0) {
+      robloxLines.push(`Смен username Roblox: ${formatNumber(robloxSummary.renameCount)}`);
+    }
+    if (Number.isFinite(Number(robloxSummary.displayRenameCount)) && Number(robloxSummary.displayRenameCount) > 0) {
+      robloxLines.push(`Смен display-name Roblox: ${formatNumber(robloxSummary.displayRenameCount)}`);
+    }
+    if (robloxSummary.lastRenameSeenAt) {
+      robloxLines.push(`Последний rename Roblox: ${formatDateTime(robloxSummary.lastRenameSeenAt)}`);
+    }
+    if (robloxSummary.hasVerifiedBadge === true) {
+      robloxLines.push("Есть Roblox verified badge");
+    }
+    if (robloxSummary.accountStatus) {
+      robloxLines.push(`Статус аккаунта: ${cleanString(robloxSummary.accountStatus, 80)}`);
+    }
+    if (Number.isFinite(Number(robloxSummary.serverFriendsCount))) {
+      robloxLines.push(`Друзья на сервере: ${formatNumber(robloxSummary.serverFriendsCount)}`);
+    }
+    if (Number.isFinite(Number(robloxSummary.jjsMinutes7d))) {
+      robloxLines.push(`JJS минут 7д: ${formatNumber(robloxSummary.jjsMinutes7d)}`);
+    }
+    if (Number.isFinite(Number(robloxSummary.jjsMinutes30d))) {
+      robloxLines.push(`JJS минут 30д: ${formatNumber(robloxSummary.jjsMinutes30d)}`);
+    }
+    if (Number.isFinite(Number(robloxSummary.totalJjsMinutes))) {
+      robloxLines.push(`JJS минут всего: ${formatNumber(robloxSummary.totalJjsMinutes)}`);
+    }
+    if (Number.isFinite(Number(robloxSummary.frequentNonFriendCount))) {
+      robloxLines.push(`Частые non-friend: ${formatNumber(robloxSummary.frequentNonFriendCount)}`);
+    }
+    if (Number.isFinite(Number(robloxSummary.nonFriendPeerCount))) {
+      robloxLines.push(`Всего non-friend peers: ${formatNumber(robloxSummary.nonFriendPeerCount)}`);
+    }
+    if (Number.isFinite(Number(robloxSummary.sessionCount))) {
+      robloxLines.push(`JJS сессий всего: ${formatNumber(robloxSummary.sessionCount)}`);
+    }
+    if (robloxSummary.currentSessionStartedAt) {
+      robloxLines.push(`Текущая JJS сессия с: ${formatDateTime(robloxSummary.currentSessionStartedAt)}`);
+    }
+    if (robloxSummary.lastSeenInJjsAt) {
+      robloxLines.push(`Последний JJS online: ${formatDateTime(robloxSummary.lastSeenInJjsAt)}`);
+    }
+    if (robloxSummary.lastRefreshAt) {
+      robloxLines.push(`Последнее обновление: ${formatDateTime(robloxSummary.lastRefreshAt)}`);
+    }
+    if (robloxSummary.refreshStatus) {
+      robloxLines.push(`Статус обновления: ${cleanString(robloxSummary.refreshStatus, 80)}`);
+    }
+    if (robloxSummary.refreshError) {
+      robloxLines.push(`Ошибка обновления: ${cleanString(robloxSummary.refreshError, 180)}`);
+    }
   }
 
   const mainAndGuideLines = buildMainAndGuideLines({
@@ -750,7 +778,7 @@ function buildProfileReadModel(options = {}) {
     primaryAvatarUrl: primaryAvatar?.url || null,
     primaryAvatarDescription: primaryAvatar?.description || null,
     mediaGalleryItems,
-    robloxProfileUrl: cleanString(robloxSummary.profileUrl, 1000) || null,
+    robloxProfileUrl: hasVerifiedRoblox ? cleanString(robloxSummary.profileUrl, 1000) || null : null,
     sections: {
       overview: [
         { title: "Обзор", lines: overviewLines },
@@ -774,6 +802,7 @@ function buildProfileReadModel(options = {}) {
         },
       ],
       progress: [
+        ...(synergy?.blocks?.selfProgress ? [synergy.blocks.selfProgress] : []),
         { title: "Вклад", lines: contributionLines },
         { title: "Последний рост по kills", lines: progressHistoryLines },
         { title: "История approved ростов", lines: progressTimelineLines },

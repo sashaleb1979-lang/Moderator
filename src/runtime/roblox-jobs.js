@@ -156,11 +156,14 @@ async function repairRobloxVerifiedBindings(options = {}) {
     return {
       repairedCount: 0,
       failedCount: 0,
+      failedBatchCount: 0,
       unresolvedCount: 0,
+      sanitizedCount: 0,
     };
   }
 
   const { candidates, sanitizedDiscordUserIds } = buildRobloxRepairableCandidates(db);
+  const sanitizedCount = sanitizedDiscordUserIds.length;
   if (runtimeState?.dirtyDiscordUserIds instanceof Set) {
     for (const discordUserId of sanitizedDiscordUserIds) {
       runtimeState.dirtyDiscordUserIds.add(discordUserId);
@@ -174,7 +177,9 @@ async function repairRobloxVerifiedBindings(options = {}) {
     return {
       repairedCount: 0,
       failedCount: 0,
+      failedBatchCount: 0,
       unresolvedCount: 0,
+      sanitizedCount,
     };
   }
 
@@ -182,7 +187,9 @@ async function repairRobloxVerifiedBindings(options = {}) {
     return {
       repairedCount: 0,
       failedCount: 0,
+      failedBatchCount: 0,
       unresolvedCount: 0,
+      sanitizedCount,
     };
   }
 
@@ -202,6 +209,7 @@ async function repairRobloxVerifiedBindings(options = {}) {
 
   let repairedCount = 0;
   let failedCount = 0;
+  let failedBatchCount = 0;
   let unresolvedCount = 0;
   for (const batchUsernames of splitIntoBatches([...candidatesByUsername.keys()], 100)) {
     try {
@@ -245,6 +253,7 @@ async function repairRobloxVerifiedBindings(options = {}) {
         }
       }
     } catch (error) {
+      failedBatchCount += 1;
       failedCount += batchUsernames.length;
       logError(`Roblox verified binding repair batch failed [${batchUsernames.join(",")}]:`, formatErrorText(error));
     }
@@ -253,7 +262,9 @@ async function repairRobloxVerifiedBindings(options = {}) {
   return {
     repairedCount,
     failedCount,
+    failedBatchCount,
     unresolvedCount,
+    sanitizedCount,
   };
 }
 
@@ -656,11 +667,15 @@ async function runRobloxPlaytimeSyncJob(options = {}) {
       startedSessionCount: 0,
       closedSessionCount: 0,
       activeCoPlayPairCount: 0,
+      repairedBindingCount: 0,
+      unresolvedBindingCount: 0,
+      failedRepairBatchCount: 0,
+      sanitizedBindingCount: 0,
       skippedReason: "jjs_ids_not_configured",
     };
   }
 
-  await repairRobloxVerifiedBindings({
+  const repairSummary = await repairRobloxVerifiedBindings({
     db,
     runtimeState,
     fetchUsersByUsernames,
@@ -683,6 +698,10 @@ async function runRobloxPlaytimeSyncJob(options = {}) {
       startedSessionCount: 0,
       closedSessionCount: 0,
       activeCoPlayPairCount: 0,
+      repairedBindingCount: normalizePositiveInteger(repairSummary.repairedCount, 0),
+      unresolvedBindingCount: normalizePositiveInteger(repairSummary.unresolvedCount, 0),
+      failedRepairBatchCount: normalizePositiveInteger(repairSummary.failedBatchCount, 0),
+      sanitizedBindingCount: normalizePositiveInteger(repairSummary.sanitizedCount, 0),
       skippedReason: "no_verified_candidates",
     };
   }
@@ -867,6 +886,10 @@ async function runRobloxPlaytimeSyncJob(options = {}) {
     startedSessionCount,
     closedSessionCount,
     activeCoPlayPairCount: activePairKeys.size,
+    repairedBindingCount: normalizePositiveInteger(repairSummary.repairedCount, 0),
+    unresolvedBindingCount: normalizePositiveInteger(repairSummary.unresolvedCount, 0),
+    failedRepairBatchCount: normalizePositiveInteger(repairSummary.failedBatchCount, 0),
+    sanitizedBindingCount: normalizePositiveInteger(repairSummary.sanitizedCount, 0),
   };
 }
 

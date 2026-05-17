@@ -15491,7 +15491,7 @@ client.on("interactionCreate", async (interaction) => {
         const modal = new ModalBuilder().setCustomId("graphic_panel_outline_modal").setTitle("Обводка PNG по ролям и цветам");
         const outlineRulesInput = new TextInputBuilder()
           .setCustomId("outline_rules")
-          .setLabel("Каждая строка: role ID/mention и optional #HEX")
+          .setLabel("Строка: role ID/mention + optional #HEX")
           .setStyle(TextInputStyle.Paragraph)
           .setRequired(true)
           .setMaxLength(1000)

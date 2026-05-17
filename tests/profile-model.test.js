@@ -7,6 +7,7 @@ const { buildProfileReadModel } = require("../src/profile/model");
 
 test("profile read-model composes derived sections, links, and verification facts", () => {
   const readModel = buildProfileReadModel({
+    now: "2026-05-16T12:00:00.000Z",
     guildId: "guild-1",
     userId: "user-1",
     targetDisplayName: "Sasha",
@@ -21,6 +22,11 @@ test("profile read-model composes derived sections, links, and verification fact
       summary: {
         preferredDisplayName: "Sasha",
         onboarding: { approvedKills: 120, killTier: 4 },
+        progress: {
+          proofWindowCount: 1,
+          lastProofWindowReviewedAt: "2026-05-15T00:00:00.000Z",
+          lastProofWindowApprovedKills: 120,
+        },
         activity: {
           appliedActivityRoleKey: "active",
           activityScore: 77,
@@ -91,6 +97,19 @@ test("profile read-model composes derived sections, links, and verification fact
           reviewedAt: "2026-05-02T12:00:00.000Z",
           oauthUsername: "SashaDiscord",
           oauthAvatarUrl: "https://cdn.discordapp.com/oauth-avatar.png",
+        },
+      },
+      domains: {
+        progress: {
+          proofWindows: [
+            {
+              approvedKills: 120,
+              killTier: 4,
+              reviewedAt: "2026-05-15T00:00:00.000Z",
+              playtimeTracked: true,
+              totalJjsMinutes: 180,
+            },
+          ],
         },
       },
     },
@@ -189,6 +208,7 @@ test("profile read-model composes derived sections, links, and verification fact
 
 test("profile read-model marks empty profiles without fabricating data sections", () => {
   const readModel = buildProfileReadModel({
+    now: "2026-05-16T12:00:00.000Z",
     guildId: "guild-1",
     userId: "user-1",
     targetDisplayName: "New User",
@@ -212,4 +232,156 @@ test("profile read-model marks empty profiles without fabricating data sections"
   assert.equal(readModel.primaryAvatarUrl, null);
   assert.deepEqual(readModel.mediaGalleryItems, []);
   assert.equal(readModel.robloxProfileUrl, null);
+});
+
+test("profile read-model hides unverified Roblox identity details from the profile surface", () => {
+  const readModel = buildProfileReadModel({
+    now: "2026-05-16T12:00:00.000Z",
+    guildId: "guild-1",
+    userId: "user-1",
+    targetDisplayName: "Sasha",
+    isSelf: true,
+    profile: {
+      summary: {
+        preferredDisplayName: "Sasha",
+        roblox: {
+          hasVerifiedAccount: false,
+          verificationStatus: "unverified",
+          currentUsername: "RandomNick",
+          currentDisplayName: "Random Display",
+          profileUrl: "https://www.roblox.com/users/123/profile",
+          avatarUrl: "https://tr.rbxcdn.com/random-avatar.png",
+        },
+      },
+    },
+  });
+
+  assert.doesNotMatch(readModel.heroLines.join("\n"), /RandomNick/);
+  assert.match(readModel.sections.overview[0].lines.join("\n"), /Roblox: не привязан/);
+  assert.match(readModel.sections.social[0].lines.join("\n"), /Связка Roblox: unverified/);
+  assert.doesNotMatch(readModel.sections.social[0].lines.join("\n"), /RandomNick|Профиль Roblox/);
+  assert.equal(readModel.primaryAvatarUrl, null);
+  assert.equal(readModel.robloxProfileUrl, null);
+});
+
+test("profile read-model keeps Roblox-hours line honest when proof snapshot has no reliable playtime baseline", () => {
+  const readModel = buildProfileReadModel({
+    now: "2026-05-16T12:00:00.000Z",
+    guildId: "guild-1",
+    userId: "user-1",
+    isSelf: true,
+    profile: {
+      approvedKills: 120,
+      killTier: 4,
+      summary: {
+        preferredDisplayName: "Sasha",
+        onboarding: { approvedKills: 120, killTier: 4 },
+        roblox: {
+          hasVerifiedAccount: true,
+          totalJjsMinutes: 5000,
+        },
+      },
+      domains: {
+        progress: {
+          proofWindows: [
+            {
+              approvedKills: 120,
+              killTier: 4,
+              reviewedAt: "2026-05-15T00:00:00.000Z",
+              playtimeTracked: false,
+              totalJjsMinutes: 100,
+            },
+          ],
+        },
+      },
+    },
+  });
+
+  assert.equal(readModel.sections.progress[0].title, "Практический прогресс");
+  assert.match(readModel.sections.progress[0].lines.join("\n"), /С последнего рега: 36 ч по времени .* Roblox-часы пока ненадёжны/);
+  assert.doesNotMatch(readModel.sections.progress[0].lines.join("\n"), /Есть смысл обновить kills/);
+});
+
+test("profile read-model shows a soft self reminder after enough reliable JJS hours since last approved update", () => {
+  const readModel = buildProfileReadModel({
+    now: "2026-05-16T12:00:00.000Z",
+    guildId: "guild-1",
+    userId: "user-1",
+    isSelf: true,
+    profile: {
+      approvedKills: 120,
+      killTier: 4,
+      summary: {
+        preferredDisplayName: "Sasha",
+        onboarding: { approvedKills: 120, killTier: 4 },
+        roblox: {
+          hasVerifiedAccount: true,
+          totalJjsMinutes: 900,
+        },
+      },
+      domains: {
+        progress: {
+          proofWindows: [
+            {
+              approvedKills: 120,
+              killTier: 4,
+              reviewedAt: "2026-05-15T00:00:00.000Z",
+              playtimeTracked: true,
+              totalJjsMinutes: 120,
+            },
+          ],
+        },
+      },
+    },
+  });
+
+  assert.equal(readModel.sections.progress[0].title, "Практический прогресс");
+  assert.match(readModel.sections.progress[0].lines.join("\n"), /С последнего рега: 36 ч по времени .* 13 ч JJS/);
+  assert.match(readModel.sections.progress[0].lines.join("\n"), /Есть смысл обновить kills: после последнего апрува уже 13 ч JJS/);
+});
+
+test("profile read-model prepends the self-progress block before generic progress sections", () => {
+  const readModel = buildProfileReadModel({
+    now: "2026-05-16T12:00:00.000Z",
+    guildId: "guild-1",
+    userId: "user-1",
+    isSelf: true,
+    profile: {
+      approvedKills: 4300,
+      killTier: 3,
+      summary: {
+        preferredDisplayName: "Sasha",
+        onboarding: { approvedKills: 4300, killTier: 3 },
+        roblox: {
+          hasVerifiedAccount: true,
+          totalJjsMinutes: 1560,
+        },
+      },
+      domains: {
+        progress: {
+          proofWindows: [
+            {
+              approvedKills: 4000,
+              killTier: 3,
+              reviewedAt: "2026-05-10T00:00:00.000Z",
+              playtimeTracked: true,
+              totalJjsMinutes: 600,
+            },
+            {
+              approvedKills: 4300,
+              killTier: 3,
+              reviewedAt: "2026-05-15T00:00:00.000Z",
+              playtimeTracked: true,
+              totalJjsMinutes: 1200,
+            },
+          ],
+        },
+      },
+    },
+  });
+
+  assert.equal(readModel.sections.progress[0].title, "Практический прогресс");
+  assert.equal(readModel.sections.progress[1].title, "Вклад");
+  assert.match(readModel.sections.progress[0].lines.join("\n"), /До следующего tier: 2.?700 kills/);
+  assert.match(readModel.sections.progress[0].lines.join("\n"), /До milestone 20.?000: 15.?700 kills/);
 });

@@ -543,11 +543,21 @@ function createAntiteamOperator(options = {}) {
 
   function getStoredRobloxSnapshot(userId) {
     const profile = typeof options.getProfile === "function" ? options.getProfile(userId) : db.profiles?.[userId];
+    const legacyProfileRoblox = profile ? {
+      userId: profile.robloxUserId,
+      username: profile.robloxUsername,
+      displayName: profile.robloxDisplayName,
+      avatarUrl: profile.robloxAvatarUrl,
+      profileUrl: profile.robloxProfileUrl,
+      verificationStatus: profile.verificationStatus,
+      verifiedAt: profile.robloxVerifiedAt,
+      hasVerifiedAccount: profile.hasVerifiedAccount,
+    } : null;
     const candidates = [
       profile?.domains?.roblox,
       profile?.summary?.roblox,
       profile?.roblox,
-      profile,
+      legacyProfileRoblox,
     ].filter(Boolean);
 
     for (const roblox of candidates) {
@@ -556,19 +566,20 @@ function createAntiteamOperator(options = {}) {
       const verificationStatus = cleanString(roblox.verificationStatus, 40).toLowerCase();
       const recordStatus = cleanString(roblox.status, 40).toLowerCase();
       const trusted = verificationStatus === "verified"
+        || recordStatus === "verified"
         || roblox.hasVerifiedAccount === true
-        || Boolean(roblox.verifiedAt);
+        || Boolean(cleanString(roblox.verifiedAt || roblox.robloxVerifiedAt, 80));
       const unusableStatuses = new Set(["failed", "unverified", "rejected", "denied"]);
       const explicitlyUnusable = unusableStatuses.has(verificationStatus)
         || (!verificationStatus && unusableStatuses.has(recordStatus));
-      if (!robloxUserId || !username || explicitlyUnusable) continue;
-      if (verificationStatus && !trusted) continue;
+      if (!robloxUserId || !username || explicitlyUnusable || !trusted) continue;
       return {
         id: robloxUserId,
         userId: robloxUserId,
         name: username,
         username,
         displayName: cleanString(roblox.displayName || roblox.robloxDisplayName, 120),
+        avatarUrl: cleanString(roblox.avatarUrl || roblox.robloxAvatarUrl, 2000),
         profileUrl: cleanString(roblox.profileUrl, 500) || `https://www.roblox.com/users/${robloxUserId}/profile`,
       };
     }
@@ -967,14 +978,11 @@ function createAntiteamOperator(options = {}) {
       await interaction.editReply("Такой Roblox username не найден через Roblox API.");
       return true;
     }
-    if (kind !== "clan") {
-      await writeRobloxBinding(interaction.user.id, robloxUser, "antiteam");
-    }
     return openTicketDraftWithRoblox(interaction, robloxUser, kind, {
       response: "editReply",
       statusText: kind === "clan"
         ? `Якорь подтверждён: ${cleanString(robloxUser.username || robloxUser.name, 120)}. Это не привязка к твоему профилю.`
-        : `Roblox подтверждён: ${cleanString(robloxUser.username || robloxUser.name, 120)}.`,
+        : `Roblox найден через API: ${cleanString(robloxUser.username || robloxUser.name, 120)}. Для общего профиля привязка не менялась.`,
     });
   }
 

@@ -287,6 +287,51 @@ test("profile payload renders enriched progress and social sections", () => {
   assert.ok(progressDisplays.some((component) => /### Заявки и проверки/.test(component.content) && /Последняя проверка:/.test(component.content)));
   assert.ok(progressDisplays.some((component) => /### ELO и Tierlist/.test(component.content) && /Текущий рейтинг: ELO 145 \/ tier 2/.test(component.content) && /Tierlist-заявка: есть/.test(component.content)));
 
+  const selfProgressPayload = buildProfilePayload({
+    now: "2026-05-16T12:00:00.000Z",
+    guildId: "guild-1",
+    userId: "user-1",
+    requesterUserId: "user-1",
+    targetDisplayName: "Sasha",
+    isSelf: true,
+    view: "progress",
+    profile: {
+      approvedKills: 4300,
+      killTier: 3,
+      summary: {
+        preferredDisplayName: "Sasha",
+        onboarding: { approvedKills: 4300, killTier: 3 },
+        roblox: {
+          hasVerifiedAccount: true,
+          totalJjsMinutes: 1560,
+        },
+      },
+      domains: {
+        progress: {
+          proofWindows: [
+            {
+              approvedKills: 4000,
+              killTier: 3,
+              reviewedAt: "2026-05-10T00:00:00.000Z",
+              playtimeTracked: true,
+              totalJjsMinutes: 600,
+            },
+            {
+              approvedKills: 4300,
+              killTier: 3,
+              reviewedAt: "2026-05-15T00:00:00.000Z",
+              playtimeTracked: true,
+              totalJjsMinutes: 1200,
+            },
+          ],
+        },
+      },
+    },
+  });
+
+  const selfProgressDisplays = getProfileContainer(selfProgressPayload).textDisplays;
+  assert.ok(selfProgressDisplays.some((component) => /### Практический прогресс/.test(component.content) && /До следующего tier: 2.?700 kills/.test(component.content)));
+
   const socialPayload = buildProfilePayload({
     guildId: "guild-1",
     userId: "user-1",

@@ -1,5 +1,7 @@
 "use strict";
 
+const { normalizeNewsState } = require("../news/state");
+
 const SHARED_PROFILE_VERSION = 3;
 const INTEGRATION_STATE_VERSION = 1;
 const INTEGRATION_MODE_DORMANT = "dormant";
@@ -15,6 +17,9 @@ const ROBLOX_FREQUENT_NON_FRIEND_SESSIONS = 2;
 const ROBLOX_PLAYTIME_BUCKET_LIMIT = 40;
 const ROBLOX_PLAYTIME_HOURLY_BUCKET_LIMIT = ROBLOX_PLAYTIME_BUCKET_LIMIT * 24;
 const PROFILE_PROOF_WINDOW_LIMIT = 10;
+const PROFILE_VOICE_TOP_CHANNEL_LIMIT = 10;
+const PROFILE_SOCIAL_SUGGESTION_LIMIT = 10;
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 const sharedProfileRuntimeConfig = {
   frequentNonFriendMinutes: ROBLOX_FREQUENT_NON_FRIEND_MINUTES,
@@ -427,6 +432,120 @@ function normalizeProgressDomainState(value = {}) {
   };
 }
 
+function normalizeVoiceChannelSummaryEntry(value = {}) {
+  const source = value && typeof value === "object" ? value : {};
+  const channelId = normalizeNullableString(source.channelId, 80);
+  if (!channelId) return null;
+
+  return {
+    channelId,
+    sessionCount: normalizeNonNegativeInteger(source.sessionCount, 0),
+    lastSeenAt: normalizeNullableString(source.lastSeenAt, 80),
+  };
+}
+
+function normalizeVoiceSummaryState(value = {}) {
+  const source = value && typeof value === "object" ? value : {};
+  const topChannels = [];
+  const seen = new Set();
+
+  for (const entry of Array.isArray(source.topChannels) ? source.topChannels : []) {
+    const normalized = normalizeVoiceChannelSummaryEntry(entry);
+    if (!normalized) continue;
+    if (seen.has(normalized.channelId)) continue;
+    seen.add(normalized.channelId);
+    topChannels.push(normalized);
+  }
+
+  topChannels.sort((left, right) => {
+    const sessionDiff = right.sessionCount - left.sessionCount;
+    if (sessionDiff) return sessionDiff;
+    const rightSeenAt = right.lastSeenAt || "";
+    const leftSeenAt = left.lastSeenAt || "";
+    const seenDiff = rightSeenAt.localeCompare(leftSeenAt);
+    if (seenDiff) return seenDiff;
+    return left.channelId.localeCompare(right.channelId);
+  });
+
+  return {
+    lifetimeSessionCount: normalizeNonNegativeInteger(source.lifetimeSessionCount, 0),
+    lifetimeVoiceDurationSeconds: normalizeNonNegativeInteger(source.lifetimeVoiceDurationSeconds, 0),
+    sessionCount7d: normalizeNonNegativeInteger(source.sessionCount7d, 0),
+    sessionCount30d: normalizeNonNegativeInteger(source.sessionCount30d, 0),
+    incompleteSessionCount30d: normalizeNonNegativeInteger(source.incompleteSessionCount30d, 0),
+    voiceDurationSeconds7d: normalizeNonNegativeInteger(source.voiceDurationSeconds7d, 0),
+    voiceDurationSeconds30d: normalizeNonNegativeInteger(source.voiceDurationSeconds30d, 0),
+    lastSessionEndedAt: normalizeNullableString(source.lastSessionEndedAt, 80),
+    lastVoiceSeenAt: normalizeNullableString(source.lastVoiceSeenAt, 80),
+    lastCapturedAt: normalizeNullableString(source.lastCapturedAt, 80),
+    isInVoiceNow: source.isInVoiceNow === true,
+    currentChannelId: normalizeNullableString(source.currentChannelId, 80),
+    currentSessionStartedAt: normalizeNullableString(source.currentSessionStartedAt, 80),
+    topChannels: topChannels.slice(0, PROFILE_VOICE_TOP_CHANNEL_LIMIT),
+  };
+}
+
+function normalizeVoiceDomainState(value = {}) {
+  const source = value && typeof value === "object" ? value : {};
+  const summarySource = source.summary && typeof source.summary === "object" && !Array.isArray(source.summary)
+    ? source.summary
+    : source;
+
+  return {
+    summary: normalizeVoiceSummaryState(summarySource),
+  };
+}
+
+function normalizeSocialSuggestionEntry(value = {}) {
+  const source = value && typeof value === "object" ? value : {};
+  const peerUserId = normalizeNullableString(source.peerUserId, 80);
+  if (!peerUserId) return null;
+
+  return {
+    peerUserId,
+    peerDisplayName: normalizeNullableString(source.peerDisplayName, 200),
+    peerRobloxUserId: normalizeNullableString(source.peerRobloxUserId, 40),
+    peerRobloxUsername: normalizeNullableString(source.peerRobloxUsername, 120),
+    peerHasVerifiedRoblox: source.peerHasVerifiedRoblox === true,
+    minutesTogether: normalizeNonNegativeInteger(source.minutesTogether, 0),
+    sessionsTogether: normalizeNonNegativeInteger(source.sessionsTogether, 0),
+    daysTogether: normalizeNonNegativeInteger(source.daysTogether, 0),
+    sharedJjsSessionCount: normalizeNonNegativeInteger(source.sharedJjsSessionCount, 0),
+    lastSeenTogetherAt: normalizeNullableString(source.lastSeenTogetherAt, 80),
+    sourceComputedAt: normalizeNullableString(source.sourceComputedAt, 80),
+  };
+}
+
+function normalizeSocialDomainState(value = {}) {
+  const source = value && typeof value === "object" ? value : {};
+  const suggestions = [];
+  const seen = new Set();
+
+  for (const entry of Array.isArray(source.suggestions) ? source.suggestions : []) {
+    const normalized = normalizeSocialSuggestionEntry(entry);
+    if (!normalized) continue;
+    if (seen.has(normalized.peerUserId)) continue;
+    seen.add(normalized.peerUserId);
+    suggestions.push(normalized);
+  }
+
+  suggestions.sort((left, right) => {
+    const minutesDiff = right.minutesTogether - left.minutesTogether;
+    if (minutesDiff) return minutesDiff;
+    const sessionsDiff = right.sharedJjsSessionCount - left.sharedJjsSessionCount;
+    if (sessionsDiff) return sessionsDiff;
+    const rightSeenAt = right.lastSeenTogetherAt || "";
+    const leftSeenAt = left.lastSeenTogetherAt || "";
+    const seenDiff = rightSeenAt.localeCompare(leftSeenAt);
+    if (seenDiff) return seenDiff;
+    return left.peerUserId.localeCompare(right.peerUserId);
+  });
+
+  return {
+    suggestions: suggestions.slice(0, PROFILE_SOCIAL_SUGGESTION_LIMIT),
+  };
+}
+
 function normalizeRobloxPlatformUserId(value) {
   const normalized = normalizeNullableInteger(value, { min: 1 });
   return normalized ? String(normalized) : null;
@@ -532,6 +651,196 @@ function getLatestTimestamp(values = []) {
   return latest;
 }
 
+function normalizeTimestampMs(value) {
+  const normalized = normalizeNullableString(value, 80);
+  if (!normalized) return null;
+  const timestamp = Date.parse(normalized);
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function listUniqueVoiceChannelIds(session = {}) {
+  return [...new Set([
+    ...(Array.isArray(session?.enteredChannelIds) ? session.enteredChannelIds : []),
+    session?.finalChannelId,
+    session?.currentChannelId,
+  ].map((value) => cleanString(value, 80)).filter(Boolean))];
+}
+
+function ensureVoiceMirrorAggregate(map = new Map(), userId = "", lastCapturedAt = null) {
+  const normalizedUserId = cleanString(userId, 80);
+  if (!normalizedUserId) return null;
+  if (!map.has(normalizedUserId)) {
+    map.set(normalizedUserId, {
+      lifetimeSessionCount: 0,
+      lifetimeVoiceDurationSeconds: 0,
+      sessionCount7d: 0,
+      sessionCount30d: 0,
+      incompleteSessionCount30d: 0,
+      voiceDurationSeconds7d: 0,
+      voiceDurationSeconds30d: 0,
+      lastSessionEndedAt: null,
+      lastVoiceSeenAt: null,
+      lastCapturedAt: normalizeNullableString(lastCapturedAt, 80),
+      isInVoiceNow: false,
+      currentChannelId: null,
+      currentSessionStartedAt: null,
+      topChannels: new Map(),
+    });
+  }
+  return map.get(normalizedUserId);
+}
+
+function updateVoiceChannelAggregate(aggregate = {}, channelId, lastSeenAt = null) {
+  const normalizedChannelId = cleanString(channelId, 80);
+  if (!normalizedChannelId || !(aggregate.topChannels instanceof Map)) return;
+  const current = aggregate.topChannels.get(normalizedChannelId) || {
+    channelId: normalizedChannelId,
+    sessionCount: 0,
+    lastSeenAt: null,
+  };
+  current.sessionCount += 1;
+  current.lastSeenAt = getLatestTimestamp([current.lastSeenAt, lastSeenAt]);
+  aggregate.topChannels.set(normalizedChannelId, current);
+}
+
+function collectVoiceMirrorSummary(aggregate = {}) {
+  const topChannels = [...(aggregate.topChannels instanceof Map ? aggregate.topChannels.values() : [])]
+    .sort((left, right) => {
+      const sessionDiff = normalizeNonNegativeInteger(right?.sessionCount, 0) - normalizeNonNegativeInteger(left?.sessionCount, 0);
+      if (sessionDiff) return sessionDiff;
+      const rightSeenAt = normalizeNullableString(right?.lastSeenAt, 80) || "";
+      const leftSeenAt = normalizeNullableString(left?.lastSeenAt, 80) || "";
+      const seenDiff = rightSeenAt.localeCompare(leftSeenAt);
+      if (seenDiff) return seenDiff;
+      return cleanString(left?.channelId, 80).localeCompare(cleanString(right?.channelId, 80));
+    })
+    .slice(0, PROFILE_VOICE_TOP_CHANNEL_LIMIT);
+
+  return {
+    lifetimeSessionCount: aggregate.lifetimeSessionCount,
+    lifetimeVoiceDurationSeconds: aggregate.lifetimeVoiceDurationSeconds,
+    sessionCount7d: aggregate.sessionCount7d,
+    sessionCount30d: aggregate.sessionCount30d,
+    incompleteSessionCount30d: aggregate.incompleteSessionCount30d,
+    voiceDurationSeconds7d: aggregate.voiceDurationSeconds7d,
+    voiceDurationSeconds30d: aggregate.voiceDurationSeconds30d,
+    lastSessionEndedAt: aggregate.lastSessionEndedAt,
+    lastVoiceSeenAt: aggregate.lastVoiceSeenAt,
+    lastCapturedAt: aggregate.lastCapturedAt,
+    isInVoiceNow: aggregate.isInVoiceNow,
+    currentChannelId: aggregate.currentChannelId,
+    currentSessionStartedAt: aggregate.currentSessionStartedAt,
+    topChannels,
+  };
+}
+
+function buildVoiceMirrorIndex(value = {}) {
+  const newsState = normalizeNewsState(value);
+  const aggregates = new Map();
+  const lastCapturedAt = normalizeNullableString(newsState?.runtime?.lastVoiceCaptureAt, 80);
+  const referenceAt = getLatestTimestamp([
+    lastCapturedAt,
+    ...(Array.isArray(newsState?.voice?.finalizedSessions)
+      ? newsState.voice.finalizedSessions.map((session) => normalizeNullableString(session?.endedAt, 80))
+      : []),
+  ]);
+  const referenceMs = normalizeTimestampMs(referenceAt);
+
+  for (const session of Array.isArray(newsState?.voice?.finalizedSessions) ? newsState.voice.finalizedSessions : []) {
+    const aggregate = ensureVoiceMirrorAggregate(aggregates, session?.userId, lastCapturedAt);
+    if (!aggregate) continue;
+
+    const endedAt = normalizeNullableString(session?.endedAt, 80);
+    const endedMs = normalizeTimestampMs(endedAt);
+    const durationSeconds = normalizeNonNegativeInteger(session?.durationSeconds, 0);
+
+    aggregate.lifetimeSessionCount += 1;
+    aggregate.lifetimeVoiceDurationSeconds += durationSeconds;
+    aggregate.lastSessionEndedAt = getLatestTimestamp([aggregate.lastSessionEndedAt, endedAt]);
+    aggregate.lastVoiceSeenAt = getLatestTimestamp([aggregate.lastVoiceSeenAt, endedAt]);
+
+    if (Number.isFinite(referenceMs) && Number.isFinite(endedMs)) {
+      if (endedMs >= referenceMs - (7 * MS_PER_DAY) && endedMs <= referenceMs) {
+        aggregate.sessionCount7d += 1;
+        aggregate.voiceDurationSeconds7d += durationSeconds;
+      }
+      if (endedMs >= referenceMs - (30 * MS_PER_DAY) && endedMs <= referenceMs) {
+        aggregate.sessionCount30d += 1;
+        aggregate.voiceDurationSeconds30d += durationSeconds;
+        if (session?.incomplete === true) aggregate.incompleteSessionCount30d += 1;
+      }
+    }
+
+    for (const channelId of listUniqueVoiceChannelIds(session)) {
+      updateVoiceChannelAggregate(aggregate, channelId, endedAt);
+    }
+  }
+
+  for (const session of Object.values(newsState?.voice?.openSessions && typeof newsState.voice.openSessions === "object" ? newsState.voice.openSessions : {})) {
+    const aggregate = ensureVoiceMirrorAggregate(aggregates, session?.userId, lastCapturedAt);
+    if (!aggregate) continue;
+
+    const joinedAt = normalizeNullableString(session?.joinedAt, 80);
+    aggregate.isInVoiceNow = true;
+    aggregate.currentChannelId = normalizeNullableString(session?.currentChannelId, 80);
+    aggregate.currentSessionStartedAt = joinedAt;
+    aggregate.lastVoiceSeenAt = getLatestTimestamp([aggregate.lastVoiceSeenAt, lastCapturedAt, joinedAt]);
+
+    for (const channelId of listUniqueVoiceChannelIds(session)) {
+      updateVoiceChannelAggregate(aggregate, channelId, lastCapturedAt || joinedAt);
+    }
+  }
+
+  return Object.fromEntries(
+    [...aggregates.entries()].map(([userId, aggregate]) => [
+      userId,
+      normalizeVoiceDomainState({ summary: collectVoiceMirrorSummary(aggregate) }),
+    ])
+  );
+}
+
+function buildSocialSuggestionCache(profiles = {}) {
+  const suggestionsByUserId = {};
+
+  for (const [userId, profile] of Object.entries(profiles || {})) {
+    const roblox = normalizeRobloxDomainState(profile?.domains?.roblox || buildLegacyRobloxSource(profile));
+    const suggestions = roblox.coPlay.peers
+      .filter((peer) => isFrequentRobloxNonFriendPeer(peer))
+      .filter((peer) => cleanString(peer?.peerUserId, 80) && cleanString(peer?.peerUserId, 80) !== userId)
+      .map((peer) => {
+        const peerUserId = cleanString(peer?.peerUserId, 80);
+        const peerProfile = profiles?.[peerUserId] || null;
+        const peerRoblox = peerProfile
+          ? normalizeRobloxDomainState(peerProfile?.domains?.roblox || buildLegacyRobloxSource(peerProfile))
+          : normalizeRobloxDomainState({});
+
+        return {
+          peerUserId,
+          peerDisplayName: cleanString(
+            peerProfile?.summary?.preferredDisplayName
+              || peerProfile?.displayName
+              || peerProfile?.username
+              || peerUserId,
+            200
+          ) || null,
+          peerRobloxUserId: peerRoblox.userId,
+          peerRobloxUsername: peerRoblox.username,
+          peerHasVerifiedRoblox: peerRoblox.verificationStatus === "verified" && Boolean(peerRoblox.userId),
+          minutesTogether: normalizeNonNegativeInteger(peer?.minutesTogether, 0),
+          sessionsTogether: normalizeNonNegativeInteger(peer?.sessionsTogether, 0),
+          daysTogether: normalizeNonNegativeInteger(peer?.daysTogether, 0),
+          sharedJjsSessionCount: getRobloxSharedSessionCount(peer),
+          lastSeenTogetherAt: normalizeNullableString(peer?.lastSeenTogetherAt, 80),
+          sourceComputedAt: roblox.coPlay.computedAt,
+        };
+      });
+
+    suggestionsByUserId[userId] = normalizeSocialDomainState({ suggestions });
+  }
+
+  return suggestionsByUserId;
+}
+
 function getRobloxSharedSessionCount(peer = {}) {
   return Math.max(
     normalizeNonNegativeInteger(peer?.sharedJjsSessionCount, 0),
@@ -584,6 +893,9 @@ function normalizeRobloxDomainState(value = {}) {
   const userId = normalizeRobloxPlatformUserId(source.robloxUserId ?? source.userId);
   const username = normalizeNullableString(source.robloxUsername ?? source.username, 120);
   const displayName = normalizeNullableString(source.robloxDisplayName ?? source.displayName, 120);
+  const verifiedAt = normalizeNullableString(source.verifiedAt, 80);
+  const implicitlyTrustedVerified = Boolean(userId)
+    && (source.hasVerifiedAccount === true || Boolean(verifiedAt));
   const rawAccountStatus = cleanString(source.robloxAccountStatus ?? source.accountStatus, 40).toLowerCase();
   const usernameHistory = normalizeRobloxNameHistory(source.robloxUsernameHistory ?? source.usernameHistory, username, {
     limit: ROBLOX_NAME_HISTORY_LIMIT,
@@ -610,10 +922,10 @@ function normalizeRobloxDomainState(value = {}) {
           : null,
     verificationStatus: ROBLOX_VERIFICATION_STATUSES.has(rawStatus)
       ? rawStatus
-      : userId
+      : implicitlyTrustedVerified
         ? "verified"
         : "unverified",
-    verifiedAt: normalizeNullableString(source.verifiedAt, 80),
+    verifiedAt,
     updatedAt: normalizeNullableString(source.updatedAt, 80),
     lastSubmissionId: normalizeNullableString(source.lastSubmissionId, 80),
     lastReviewedAt: normalizeNullableString(source.lastReviewedAt, 80),
@@ -701,6 +1013,8 @@ function buildSharedProfileSummary(profile = {}, domains = {}) {
   const roblox = domains.roblox || normalizeRobloxDomainState(profile?.domains?.roblox || profile);
   const verification = domains.verification || normalizeVerificationDomainState(profile?.domains?.verification || profile?.verification || profile?.summary?.verification);
   const progress = domains.progress || normalizeProgressDomainState(profile?.domains?.progress);
+  const voice = domains.voice || normalizeVoiceDomainState(profile?.domains?.voice);
+  const social = domains.social || normalizeSocialDomainState(profile?.domains?.social);
   const previousUsername = getRobloxPreviousName(roblox.username, roblox.usernameHistory);
   const previousDisplayName = getRobloxPreviousName(roblox.displayName, roblox.displayNameHistory);
   const serverFriendsCount = roblox.serverFriends.userIds.length;
@@ -835,10 +1149,30 @@ function buildSharedProfileSummary(profile = {}, domains = {}) {
       lastProofWindowReviewedAt: progress.proofWindows.length ? progress.proofWindows.at(-1).reviewedAt : null,
       lastProofWindowApprovedKills: progress.proofWindows.length ? progress.proofWindows.at(-1).approvedKills : null,
     },
+    voice: {
+      lifetimeSessionCount: voice.summary.lifetimeSessionCount,
+      lifetimeVoiceDurationSeconds: voice.summary.lifetimeVoiceDurationSeconds,
+      sessionCount7d: voice.summary.sessionCount7d,
+      sessionCount30d: voice.summary.sessionCount30d,
+      incompleteSessionCount30d: voice.summary.incompleteSessionCount30d,
+      voiceDurationSeconds7d: voice.summary.voiceDurationSeconds7d,
+      voiceDurationSeconds30d: voice.summary.voiceDurationSeconds30d,
+      lastSessionEndedAt: voice.summary.lastSessionEndedAt,
+      lastVoiceSeenAt: voice.summary.lastVoiceSeenAt,
+      lastCapturedAt: voice.summary.lastCapturedAt,
+      isInVoiceNow: voice.summary.isInVoiceNow,
+      currentChannelId: voice.summary.currentChannelId,
+      currentSessionStartedAt: voice.summary.currentSessionStartedAt,
+      topChannels: voice.summary.topChannels,
+    },
+    social: {
+      suggestionCount: social.suggestions.length,
+      suggestions: social.suggestions,
+    },
   };
 }
 
-function ensureSharedProfile(profile = {}, userId = "") {
+function ensureSharedProfile(profile = {}, userId = "", options = {}) {
   const source = profile && typeof profile === "object" ? profile : {};
   const onboarding = normalizeOnboardingDomainState(source);
   const elo = normalizeEloDomainState(source?.domains?.elo);
@@ -847,6 +1181,12 @@ function ensureSharedProfile(profile = {}, userId = "") {
   const roblox = normalizeRobloxDomainState(source?.domains?.roblox || buildLegacyRobloxSource(source));
   const verification = normalizeVerificationDomainState(source?.domains?.verification || source?.verification || source?.summary?.verification);
   const progress = normalizeProgressDomainState(source?.domains?.progress);
+  const voice = hasOwn(options, "voice")
+    ? normalizeVoiceDomainState(options.voice)
+    : normalizeVoiceDomainState(source?.domains?.voice);
+  const social = hasOwn(options, "social")
+    ? normalizeSocialDomainState(options.social)
+    : normalizeSocialDomainState(source?.domains?.social);
 
   const next = {
     ...source,
@@ -874,6 +1214,8 @@ function ensureSharedProfile(profile = {}, userId = "") {
       roblox,
       verification,
       progress,
+      voice,
+      social,
     },
   };
   next.summary = buildSharedProfileSummary(next, next.domains);
@@ -886,11 +1228,23 @@ function ensureSharedProfile(profile = {}, userId = "") {
 
 function syncSharedProfiles(db = {}) {
   const profiles = db && typeof db.profiles === "object" && !Array.isArray(db.profiles) ? db.profiles : {};
+  const voiceMirrors = buildVoiceMirrorIndex(db?.sot?.news);
   const nextProfiles = {};
   let mutated = !db || typeof db !== "object" || !db.profiles || typeof db.profiles !== "object" || Array.isArray(db.profiles);
 
   for (const [userId, rawProfile] of Object.entries(profiles)) {
-    const ensured = ensureSharedProfile(rawProfile, userId);
+    const ensured = ensureSharedProfile(rawProfile, userId, {
+      voice: hasOwn(voiceMirrors, userId) ? voiceMirrors[userId] : {},
+    });
+    nextProfiles[userId] = ensured.profile;
+    mutated ||= ensured.mutated || ensured.profile.userId !== userId;
+  }
+
+  const socialCaches = buildSocialSuggestionCache(nextProfiles);
+  for (const [userId, profile] of Object.entries(nextProfiles)) {
+    const ensured = ensureSharedProfile(profile, userId, {
+      social: hasOwn(socialCaches, userId) ? socialCaches[userId] : {},
+    });
     nextProfiles[userId] = ensured.profile;
     mutated ||= ensured.mutated || ensured.profile.userId !== userId;
   }
@@ -1127,5 +1481,7 @@ module.exports = {
   normalizeIntegrationState,
   normalizeProgressDomainState,
   normalizeRobloxDomainState,
+  normalizeSocialDomainState,
+  normalizeVoiceDomainState,
   syncSharedProfiles,
 };

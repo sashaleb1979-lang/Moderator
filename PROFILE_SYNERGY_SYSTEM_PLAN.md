@@ -61,9 +61,9 @@
 3. Есть last reviewed / latest submission контекст.
 4. Канонические kill tier thresholds уже существуют:
    - Tier 2: 1000
-   - Tier 3: 4000
-   - Tier 4: 9000
-   - Tier 5: 15000
+   - Tier 3: 3000
+   - Tier 4: 7000
+   - Tier 5: 11000
 5. Канонические kill milestones тоже уже есть:
    - 20k
    - 30k
@@ -353,16 +353,21 @@
 
 1. Persist proof-window snapshots при каждом approved update kills.
    Нужно хранить cumulative JJS minutes, session count, overlap snapshot и timestamp на момент review.
+   Foundation уже заведён: owner `src/profile/synergy-snapshots.js`, canonical path `profile.domains.progress.proofWindows`, snapshot flag `playtimeTracked`.
 
 2. Добавить hourlyBucketsMsk в Roblox playtime.
+   Реализовано.
    Foundation-формат: rolling MSK day-hour buckets с ключами `YYYY-MM-DDTHH`.
 
 3. Добавить derived `hoursSinceLastApprovedKillsUpdate` и `jjsHoursSinceLastApprovedKillsUpdate`.
+   Реализовано в `src/profile/synergy.js` как read-side база для self-progress блока.
 
 4. Добавить social suggestions cache.
+   Base cache уже реализован в `profile.domains.social.suggestions` из frequent non-friend co-play peers.
    На каждый verified profile хранить top candidate overlaps, которых нет в Roblox friends.
 
 5. Добавить profile-side voice summary domain.
+   Base mirror уже реализован в `profile.domains.voice.summary` через sync shared-profile из `sot.news.voice`.
 
 6. Завести canonical character wiki url catalog.
 
@@ -604,24 +609,24 @@
 2. Для каждой метрики фиксировать owner, source, persisted path, formula, limits и unreliable copy.
 
 ### Phase 1. Telemetry Foundation
-1. Hourly MSK buckets в Roblox playtime.
-2. Proof-window snapshots на момент approved kills update.
+1. Hourly MSK buckets в Roblox playtime. Реализовано.
+2. Proof-window snapshots на момент approved kills update. Write-path реализован.
 
 ### Phase 2. Canonical Mirrors
-1. Progress domain для proof windows.
-2. Voice summary mirror.
-3. Social suggestions cache как derived cache.
+1. Progress domain для proof windows. Базовый storage mirror реализован.
+2. Voice summary mirror. Base mirror реализован.
+3. Social suggestions cache как derived cache. Base cache реализован.
 
 ### Phase 3. New Profile Owner
-1. Ввести `src/profile/synergy.js`.
-2. Увести formulas/reminders/grades из model/view.
+1. Ввести `src/profile/synergy.js`. Базовый owner seam реализован.
+2. Увести formulas/reminders/grades из model/view. Начато: last-approved window metrics и soft reminder больше не собираются inline в `model.js`.
 
 ### Phase 4. Self Progress Block
-1. Зарегистрированные kills.
-2. Часы с последнего approved update.
-3. `ОБНОВИ`.
-4. Последнее окно роста.
-5. Countdown до next tier/milestone.
+1. Практический self-progress block сверху self-view. Базовая версия реализована через `src/profile/synergy.js`.
+2. Зарегистрированные kills, часы с последнего approved update и `ОБНОВИ`. Реализовано.
+3. Последнее окно роста. Реализовано в base form из двух последних proof windows с честным fallback при ненадёжных Roblox-часах.
+4. Countdown до next tier/milestone. Реализовано в base form по каноническим thresholds и последнему надёжному kills/JJS pace.
+5. Следующий шаг фазы: сравнение двух последних окон, lifetime pace и richer CTA copy без возврата формул в `model.js`.
 
 ### Phase 5. Viewer-First Narrative Block
 1. Текст-тирлист формы.

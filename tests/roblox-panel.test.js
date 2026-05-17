@@ -73,6 +73,10 @@ test("getRobloxStatsPanelSnapshot aggregates linked users, job telemetry, and co
     activeJjsUsers: 1,
     touchedUserCount: 1,
     activeCoPlayPairCount: 1,
+    repairedBindingCount: 2,
+    unresolvedBindingCount: 1,
+    failedRepairBatchCount: 1,
+    sanitizedBindingCount: 3,
   }))();
   await telemetry.wrapJob("runtime_flush", async () => ({
     saved: true,
@@ -205,6 +209,10 @@ test("getRobloxStatsPanelSnapshot aggregates linked users, job telemetry, and co
   });
   assert.equal(snapshot.jobs.profileRefresh.summary.failedCount, 1);
   assert.equal(snapshot.jobs.playtimeSync.summary.failedBatches, 1);
+  assert.equal(snapshot.jobs.playtimeSync.summary.repairedBindingCount, 2);
+  assert.equal(snapshot.jobs.playtimeSync.summary.unresolvedBindingCount, 1);
+  assert.equal(snapshot.jobs.playtimeSync.summary.failedRepairBatchCount, 1);
+  assert.equal(snapshot.jobs.playtimeSync.summary.sanitizedBindingCount, 3);
   assert.equal(snapshot.jobs.runtimeFlush.summary.dirtyUserCount, 2);
   assert.equal(snapshot.lists.repairableEntries.length, 0);
   assert.equal(snapshot.lists.manualOnlyEntries.length, 0);
@@ -418,6 +426,49 @@ test("buildRobloxStatsPanelPayload hides stale playtime and runtime job truth wh
   assert.doesNotMatch(fieldTexts, /JJS IDs/i);
 });
 
+test("buildRobloxStatsPanelPayload renders playtime repair telemetry in background job status", async () => {
+  const telemetry = createRobloxPanelTelemetry({
+    now: createNowQueue([
+      "2026-05-09T12:00:00.000Z",
+      "2026-05-09T12:00:01.000Z",
+    ]),
+  });
+
+  await telemetry.wrapJob("playtime_sync", async () => ({
+    totalCandidates: 4,
+    totalBatches: 1,
+    processedBatches: 1,
+    failedBatches: 0,
+    processedUserIds: 4,
+    failedUserIds: 0,
+    activeJjsUsers: 2,
+    touchedUserCount: 2,
+    repairedBindingCount: 2,
+    unresolvedBindingCount: 1,
+    failedRepairBatchCount: 1,
+    sanitizedBindingCount: 3,
+  }))();
+
+  const payload = buildRobloxStatsPanelPayload({
+    telemetry,
+    appConfig: {
+      roblox: {
+        playtimeTrackingEnabled: true,
+        runtimeFlushEnabled: true,
+        metadataRefreshEnabled: true,
+        jjsUniverseId: 3508322461,
+      },
+    },
+  });
+
+  const fieldTexts = payload.embeds[0].data.fields.map((field) => `${field.name}: ${field.value}`).join("\n");
+  assert.match(fieldTexts, /Синк playtime: успешно/i);
+  assert.match(fieldTexts, /санитизировано 3/i);
+  assert.match(fieldTexts, /починено по username 2/i);
+  assert.match(fieldTexts, /без repair осталось 1/i);
+  assert.match(fieldTexts, /ошибок repair batch 1/i);
+});
+
 test("buildRobloxStatsPanelPayload shows pending runtime flush when dirty runtime users exist", () => {
   const payload = buildRobloxStatsPanelPayload({
     runtimeState: {
@@ -479,6 +530,10 @@ test("handleRobloxStatsPanelButtonInteraction gates permissions and delegates ma
         opaqueInGameUsers: 0,
         touchedUserCount: 3,
         failedUserIds: 1,
+        repairedBindingCount: 2,
+        unresolvedBindingCount: 1,
+        failedRepairBatchCount: 0,
+        sanitizedBindingCount: 3,
       };
     },
     runRuntimeFlush: async () => {
@@ -495,6 +550,7 @@ test("handleRobloxStatsPanelButtonInteraction gates permissions and delegates ma
   assert.equal(runtimeFlushRuns, 1);
   assert.equal(manual.calls.deferred, 1);
   assert.match(manual.calls.edits[0].content, /Кандидатов: 4, активных в JJS: 2, затронуто профилей: 3, ошибок пользователей: 1/i);
+  assert.match(manual.calls.edits[0].content, /Перед синком: санитизировано 3, починено по username 2, без repair осталось 1/i);
   assert.match(manual.calls.edits[0].content, /Runtime сразу сохранён: да, профилей: 3/i);
 
   const opaqueManual = createInteraction("roblox_stats_run_playtime_sync");
@@ -516,11 +572,16 @@ test("handleRobloxStatsPanelButtonInteraction gates permissions and delegates ma
       opaqueInGameUsers: 1,
       touchedUserCount: 2,
       failedUserIds: 0,
+      repairedBindingCount: 1,
+      unresolvedBindingCount: 0,
+      failedRepairBatchCount: 0,
+      sanitizedBindingCount: 1,
     }),
     runRuntimeFlush: async () => ({}),
   });
 
   assert.match(opaqueManual.calls.edits[0].content, /активных в JJS: 2/i);
+  assert.match(opaqueManual.calls.edits[0].content, /Перед синком: санитизировано 1, починено по username 1/i);
   assert.match(opaqueManual.calls.edits[0].content, /учтены через fallback-режим/i);
 
   const togglePlaytime = createInteraction("roblox_stats_toggle_playtime");

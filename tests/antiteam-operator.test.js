@@ -124,7 +124,7 @@ function createSlashInteraction(subcommand, {
   };
 }
 
-test("roblox modal verifies user, writes binding, grants battalion role and creates draft", async () => {
+test("roblox modal uses API lookup only for the current draft, grants battalion role and does not rewrite profile binding", async () => {
   const db = {};
   ensureAntiteamState(db).state.config.battalionRoleId = "battalion-role";
   let binding = null;
@@ -133,7 +133,12 @@ test("roblox modal verifies user, writes binding, grants battalion role and crea
     db,
     now: () => "2026-05-16T10:00:00.000Z",
     saveDb() {},
-    resolveRobloxUserByUsername: async () => ({ id: "101", name: "Anchor", displayName: "Anchor Display" }),
+    resolveRobloxUserByUsername: async () => ({
+      id: "101",
+      name: "Anchor",
+      displayName: "Anchor Display",
+      avatarUrl: "https://tr.rbxcdn.com/anchor-headshot.png",
+    }),
     writeRobloxBinding: async (userId, robloxUser, source) => {
       binding = { userId, robloxUser, source };
     },
@@ -145,11 +150,12 @@ test("roblox modal verifies user, writes binding, grants battalion role and crea
 
   assert.equal(await operator.handleModalSubmitInteraction(interaction), true);
 
-  assert.equal(binding.userId, "user-1");
-  assert.equal(binding.source, "antiteam");
+  assert.equal(binding, null);
   assert.deepEqual(granted, [{ userId: "user-1", roleId: "battalion-role" }]);
   assert.equal(db.sot.antiteam.drafts["user-1"].roblox.username, "Anchor");
+  assert.equal(db.sot.antiteam.drafts["user-1"].roblox.avatarUrl, "https://tr.rbxcdn.com/anchor-headshot.png");
   assert.equal(interaction.calls[0][0], "deferReply");
+  assert.match(JSON.stringify(interaction.calls.at(-1)[1].components[0].toJSON()), /Для общего профиля привязка не менялась/);
   assert.equal(interaction.calls.at(-1)[1].flags, MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral);
 });
 
@@ -236,6 +242,29 @@ test("start panel submit button opens the Roblox username modal only when profil
   const interaction = createButtonInteraction(ANTITEAM_CUSTOM_IDS.open, { id: "user-1", username: "User" });
 
   assert.equal(await operator.handleButtonInteraction(interaction), true);
+  assert.equal(interaction.calls[0][0], "showModal");
+  assert.equal(interaction.calls[0][1].data.custom_id, "at:roblox");
+});
+
+test("start panel submit button ignores Roblox records without verified trust markers", async () => {
+  const db = {};
+  ensureAntiteamState(db);
+  const operator = createAntiteamOperator({
+    db,
+    saveDb() {},
+    getProfile: () => ({
+      domains: {
+        roblox: {
+          userId: "101",
+          username: "MaybeWrong",
+        },
+      },
+    }),
+  });
+  const interaction = createButtonInteraction(ANTITEAM_CUSTOM_IDS.open, { id: "user-1", username: "User" });
+
+  assert.equal(await operator.handleButtonInteraction(interaction), true);
+
   assert.equal(interaction.calls[0][0], "showModal");
   assert.equal(interaction.calls[0][1].data.custom_id, "at:roblox");
 });
@@ -775,8 +804,8 @@ test("closing ticket edits messages and renames thread with gray marker", async 
 
   assert.equal(await operator.handleModalSubmitInteraction(interaction), true);
 
-  assert.equal(renamedTo, "⚫ 2-4 тимера • Author");
-  assert.match(JSON.stringify(publicEdit.components[0].toJSON()), /⚫ Антитим/);
+  assert.equal(renamedTo, "⚫ 2-4 тимеров • Author");
+  assert.match(JSON.stringify(publicEdit.components[0].toJSON()), /⚫ 2-4 тимеров/);
   assert.match(JSON.stringify(threadPanelEdit.components[0].toJSON()), /⚫ Миссия закрыта/);
 });
 
@@ -931,7 +960,8 @@ test("closing ticket writes helper result markers into the public message", asyn
 
   assert.equal(await operator.handleModalSubmitInteraction(interaction), true);
 
-  assert.match(JSON.stringify(publicEdit.components[0].toJSON()), /🫡 ✅ <@helper-1> • ❌ <@helper-2>/);
+  assert.match(JSON.stringify(publicEdit.components[0].toJSON()), /### Откликнулись/);
+  assert.match(JSON.stringify(publicEdit.components[0].toJSON()), /✅ <@helper-1> • ❌ <@helper-2>/);
 });
 
 test("auto-close reuses thread cleanup and archives the mission", async () => {

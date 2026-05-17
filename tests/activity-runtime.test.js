@@ -802,3 +802,84 @@ test("resumeActivityRuntime promotes persisted activity mirrors into the canonic
   assert.equal(db.sot.activity.userSnapshots.mirrorOnly.desiredActivityRoleKey, "active");
   assert.equal(db.sot.activity.runtime.lastResumeAt, "2026-05-09T12:00:00.000Z");
 });
+
+test("resumeActivityRuntime hydrates current voice occupants and closes stale open voice sessions on startup", async () => {
+  const db = {
+    profiles: {
+      hydrated: { userId: "hydrated" },
+      stale: { userId: "stale" },
+    },
+    sot: {
+      activity: {
+        config: {},
+        watchedChannels: [],
+        globalUserSessions: [],
+        globalVoiceSessions: [],
+        userChannelDailyStats: [],
+        userVoiceDailyStats: [],
+        userSnapshots: {},
+        calibrationRuns: [],
+        ops: { moderationAuditLog: [] },
+        runtime: {
+          openSessions: {},
+          openVoiceSessions: {
+            stale: {
+              guildId: "guild-1",
+              userId: "stale",
+              joinedAt: "2026-05-09T11:00:00.000Z",
+              lastStateChangedAt: "2026-05-09T11:00:00.000Z",
+              currentChannelId: "voice-old",
+              enteredChannelIds: ["voice-old"],
+              moveCount: 0,
+              voiceDurationSeconds: 0,
+              activeVoiceDurationSeconds: 0,
+              streamingDurationSeconds: 0,
+              videoDurationSeconds: 0,
+              dayBreakdown: {},
+              selfMute: false,
+              selfDeaf: false,
+              serverMute: false,
+              serverDeaf: false,
+              streaming: false,
+              selfVideo: false,
+            },
+          },
+          dirtyUsers: [],
+        },
+      },
+    },
+  };
+
+  const result = await resumeActivityRuntime({
+    db,
+    now: "2026-05-09T12:00:00.000Z",
+    listCurrentVoiceStates: async () => [{
+      guildId: "guild-1",
+      userId: "hydrated",
+      channelId: "voice-main",
+      selfMute: false,
+      selfDeaf: false,
+      serverMute: false,
+      serverDeaf: false,
+      streaming: true,
+      selfVideo: false,
+    }],
+    resolveMemberActivityMeta: async () => ({
+      joinedAt: "2026-05-01T12:00:00.000Z",
+    }),
+  });
+
+  assert.equal(result.hydratedVoiceUserCount, 1);
+  assert.equal(result.finalizedOfflineVoiceUserCount, 1);
+  assert.equal(result.rebuiltUserCount, 2);
+  assert.equal(result.openVoiceSessionCount, 1);
+  assert.deepEqual(Object.keys(db.sot.activity.runtime.openVoiceSessions), ["hydrated"]);
+  assert.deepEqual(db.sot.activity.runtime.dirtyUsers, []);
+  assert.equal(db.sot.activity.runtime.openVoiceSessions.hydrated.incomplete, true);
+  assert.equal(db.sot.activity.runtime.openVoiceSessions.hydrated.incompleteReason, "hydrated_on_startup");
+  assert.equal(db.sot.activity.globalVoiceSessions.length, 1);
+  assert.equal(db.sot.activity.globalVoiceSessions[0].userId, "stale");
+  assert.equal(db.sot.activity.globalVoiceSessions[0].incomplete, true);
+  assert.equal(db.sot.activity.globalVoiceSessions[0].incompleteReason, "ended_while_offline");
+  assert.equal(db.sot.activity.globalVoiceSessions[0].durationSeconds, 3600);
+});

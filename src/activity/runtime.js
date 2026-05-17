@@ -161,6 +161,22 @@ function buildVoiceFlags(voiceState = {}) {
   };
 }
 
+function normalizeCurrentVoiceStateRecord(voiceState = {}) {
+  const guildId = cleanString(voiceState?.guildId || voiceState?.guild?.id, 80);
+  const userId = cleanString(voiceState?.userId || voiceState?.id || voiceState?.member?.id, 80);
+  const channelId = cleanString(voiceState?.channelId, 80);
+  if (!guildId || !userId || !channelId) {
+    return null;
+  }
+
+  return {
+    guildId,
+    userId,
+    channelId,
+    ...buildVoiceFlags(voiceState),
+  };
+}
+
 function hasMeaningfulVoiceFlagChange(currentFlags = {}, nextFlags = {}) {
   return ["selfMute", "selfDeaf", "serverMute", "serverDeaf", "streaming", "selfVideo"]
     .some((key) => normalizeVoiceFlag(currentFlags?.[key]) !== normalizeVoiceFlag(nextFlags?.[key]));
@@ -251,6 +267,18 @@ function createOpenVoiceSession({
     incompleteReason: incomplete === true ? cleanString(incompleteReason, 120) || "unknown" : null,
     ...normalizedFlags,
   };
+}
+
+function ensureIncompleteVoiceSession(session, reason = "unknown") {
+  if (!session || typeof session !== "object") {
+    return session;
+  }
+
+  session.incomplete = true;
+  if (!cleanString(session.incompleteReason, 120)) {
+    session.incompleteReason = cleanString(reason, 120) || "unknown";
+  }
+  return session;
 }
 
 function accumulateOpenVoiceSessionSegment(session, endedAt) {
@@ -387,6 +415,83 @@ function persistFinalizedVoiceSession(state, session, endedAt) {
   }
 
   return persistedSession;
+}
+
+function hydrateActivityVoiceSessionsOnResume(state, currentVoiceStates = [], currentTime) {
+  const openVoiceSessions = ensureOpenVoiceSessionMap(state);
+  const dirtyUsers = ensureDirtyUserSet(state);
+  const currentVoiceStateMap = new Map();
+
+  for (const voiceState of Array.isArray(currentVoiceStates) ? currentVoiceStates : []) {
+    const normalizedVoiceState = normalizeCurrentVoiceStateRecord(voiceState);
+    if (!normalizedVoiceState || currentVoiceStateMap.has(normalizedVoiceState.userId)) {
+      continue;
+    }
+    currentVoiceStateMap.set(normalizedVoiceState.userId, normalizedVoiceState);
+  }
+
+  const hydratedUserIds = [];
+  const updatedOpenVoiceUserIds = [];
+  const finalizedOfflineVoiceUserIds = [];
+
+  for (const [userId, session] of Object.entries(openVoiceSessions)) {
+    const currentVoiceState = currentVoiceStateMap.get(userId);
+    if (!currentVoiceState) {
+      ensureIncompleteVoiceSession(session, "ended_while_offline");
+      persistFinalizedVoiceSession(state, session, currentTime);
+      delete openVoiceSessions[userId];
+      dirtyUsers.add(userId);
+      finalizedOfflineVoiceUserIds.push(userId);
+      continue;
+    }
+
+    ensureIncompleteVoiceSession(session, "hydrated_on_startup");
+    const channelChanged = cleanString(session.currentChannelId, 80) !== currentVoiceState.channelId;
+    const flagsChanged = hasMeaningfulVoiceFlagChange(session, currentVoiceState);
+    if (channelChanged || flagsChanged) {
+      accumulateOpenVoiceSessionSegment(session, currentTime);
+      if (channelChanged) {
+        session.currentChannelId = currentVoiceState.channelId;
+        session.enteredChannelIds = uniqueChannelIds([...(session.enteredChannelIds || []), currentVoiceState.channelId]);
+        session.moveCount = Math.max(0, Number(session.moveCount) || 0) + 1;
+      }
+      Object.assign(session, buildVoiceFlags(currentVoiceState), { lastStateChangedAt: currentTime });
+    }
+    dirtyUsers.add(userId);
+    updatedOpenVoiceUserIds.push(userId);
+    currentVoiceStateMap.delete(userId);
+  }
+
+  for (const currentVoiceState of currentVoiceStateMap.values()) {
+    const session = createOpenVoiceSession({
+      guildId: currentVoiceState.guildId,
+      userId: currentVoiceState.userId,
+      channelId: currentVoiceState.channelId,
+      createdAt: currentTime,
+      flags: currentVoiceState,
+      incomplete: true,
+      incompleteReason: "hydrated_on_startup",
+      enteredChannelIds: [currentVoiceState.channelId],
+    });
+    openVoiceSessions[currentVoiceState.userId] = session;
+    dirtyUsers.add(currentVoiceState.userId);
+    hydratedUserIds.push(currentVoiceState.userId);
+  }
+
+  commitDirtyUserSet(state, dirtyUsers);
+
+  const touchedUserIds = [...new Set([
+    ...hydratedUserIds,
+    ...updatedOpenVoiceUserIds,
+    ...finalizedOfflineVoiceUserIds,
+  ])];
+
+  return {
+    hydratedVoiceUserCount: hydratedUserIds.length,
+    updatedOpenVoiceUserCount: updatedOpenVoiceUserIds.length,
+    finalizedOfflineVoiceUserCount: finalizedOfflineVoiceUserIds.length,
+    touchedUserIds,
+  };
 }
 
 function getWatchedChannelRecord(state, channelId) {
@@ -1335,11 +1440,59 @@ async function flushActivityRuntime({ db = {}, now, saveDb, runSerialized, resol
   return execute();
 }
 
-async function resumeActivityRuntime({ db = {}, now, saveDb, runSerialized } = {}) {
+async function resumeActivityRuntime({ db = {}, now, saveDb, runSerialized, resolveMemberActivityMeta, listCurrentVoiceStates } = {}) {
   const execute = async () => {
     const promotionResult = promotePersistedActivityMirrorsToSnapshots({ db });
-    const state = ensureActivityState(db);
     const resumedAt = getActivityRuntimeNow({ now });
+    const state = ensureActivityState(db);
+    let hydrationResult = {
+      hydratedVoiceUserCount: 0,
+      finalizedOfflineVoiceUserCount: 0,
+      touchedUserIds: [],
+    };
+
+    if (typeof listCurrentVoiceStates === "function") {
+      try {
+        const currentVoiceStates = await Promise.resolve(listCurrentVoiceStates());
+        hydrationResult = hydrateActivityVoiceSessionsOnResume(state, currentVoiceStates, resumedAt);
+      } catch (error) {
+        appendActivityRuntimeError(state, {
+          scope: "resume_voice_state_hydration",
+          createdAt: resumedAt,
+          reason: error?.message || error,
+        });
+      }
+    }
+
+    const rebuiltUsers = [];
+    for (const userId of hydrationResult.touchedUserIds) {
+      const { memberActivityMeta, error } = await safelyResolveMemberActivityMeta(resolveMemberActivityMeta, userId);
+      if (error) {
+        appendActivityRuntimeError(state, {
+          scope: "member_activity_meta",
+          userId,
+          createdAt: resumedAt,
+          reason: error?.message || error,
+        });
+      }
+      const snapshot = rebuildActivityUserSnapshot({
+        db,
+        userId,
+        now: resumedAt,
+        memberActivityMeta,
+      });
+      mirrorActivitySnapshotToProfile(db, userId, snapshot);
+      rebuiltUsers.push(userId);
+    }
+
+    if (rebuiltUsers.length) {
+      const remainingDirtyUsers = ensureDirtyUserSet(state);
+      for (const userId of rebuiltUsers) {
+        remainingDirtyUsers.delete(userId);
+      }
+      commitDirtyUserSet(state, remainingDirtyUsers);
+    }
+
     state.runtime.lastResumeAt = resumedAt;
     db.sot.activity = state;
     if (typeof saveDb === "function") {
@@ -1348,7 +1501,11 @@ async function resumeActivityRuntime({ db = {}, now, saveDb, runSerialized } = {
     return {
       resumedAt,
       openSessionCount: Object.keys(state.runtime.openSessions || {}).length,
+      openVoiceSessionCount: Object.keys(state.runtime.openVoiceSessions || {}).length,
       promotedUserCount: promotionResult.promotedUserCount,
+      hydratedVoiceUserCount: hydrationResult.hydratedVoiceUserCount,
+      finalizedOfflineVoiceUserCount: hydrationResult.finalizedOfflineVoiceUserCount,
+      rebuiltUserCount: rebuiltUsers.length,
     };
   };
 

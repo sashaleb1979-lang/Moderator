@@ -192,14 +192,50 @@ test("buildClientReadyPeriodicJobs schedules daily activity rebuild and role syn
     async refreshLegacyTierlistSummaryMessage() {},
     runDailyActivityRoleSync() {},
     activityRoleSyncHours: 12,
+    now: "2026-05-16T12:00:00.000Z",
   });
 
   const activityRoleSyncJob = periodicJobs.find((job) => job.errorLabel === "Activity daily role sync failed");
   assert.deepEqual(activityRoleSyncJob, {
     run: activityRoleSyncJob.run,
     intervalMs: 43200000,
+    initialDelayMs: 0,
     errorLabel: "Activity daily role sync failed",
   });
+});
+
+test("buildClientReadyPeriodicJobs preserves daily activity sync cadence across restart using the last successful run time", () => {
+  const periodicJobs = buildClientReadyPeriodicJobs({
+    runAutoResendTick() {},
+    async refreshLegacyTierlistSummaryMessage() {},
+    runDailyActivityRoleSync() {},
+    activityRoleSyncHours: 24,
+    getActivityRoleSyncLastRunAt() {
+      return "2026-05-15T18:00:00.000Z";
+    },
+    now: "2026-05-16T12:00:00.000Z",
+  });
+
+  const activityRoleSyncJob = periodicJobs.find((job) => job.errorLabel === "Activity daily role sync failed");
+  assert.equal(activityRoleSyncJob.intervalMs, 86400000);
+  assert.equal(activityRoleSyncJob.initialDelayMs, 21600000);
+});
+
+test("buildClientReadyPeriodicJobs catches up daily activity sync immediately after an overdue restart", () => {
+  const periodicJobs = buildClientReadyPeriodicJobs({
+    runAutoResendTick() {},
+    async refreshLegacyTierlistSummaryMessage() {},
+    runDailyActivityRoleSync() {},
+    activityRoleSyncHours: 24,
+    getActivityRoleSyncLastRunAt() {
+      return "2026-05-14T09:00:00.000Z";
+    },
+    now: "2026-05-16T12:00:00.000Z",
+  });
+
+  const activityRoleSyncJob = periodicJobs.find((job) => job.errorLabel === "Activity daily role sync failed");
+  assert.equal(activityRoleSyncJob.intervalMs, 86400000);
+  assert.equal(activityRoleSyncJob.initialDelayMs, 0);
 });
 
 test("buildClientReadyPeriodicJobs applies Roblox default poll and flush cadences when callbacks are provided", () => {
@@ -577,6 +613,58 @@ test("scheduleClientReadyIntervals wires auto-resend, alert ticks, and summary r
     ["flushActivityRuntime", { id: "client" }],
     ["syncRobloxPlaytime", { id: "client" }],
   ]);
+});
+
+test("scheduleClientReadyIntervals runs zero-delay jobs immediately and delays the recurring cadence when initialDelayMs is set", async () => {
+  const scheduledIntervals = [];
+  const scheduledTimeouts = [];
+  const calls = [];
+
+  const handles = scheduleClientReadyIntervals({ id: "client" }, {
+    periodicJobs: [
+      {
+        run(client) {
+          calls.push(["runDailyActivityRoleSync", client]);
+        },
+        intervalMs: 86400000,
+        initialDelayMs: 0,
+        errorLabel: "Activity daily role sync failed",
+      },
+      {
+        run(client) {
+          calls.push(["delayedActivityRoleSync", client]);
+        },
+        intervalMs: 86400000,
+        initialDelayMs: 3600000,
+        errorLabel: "Activity delayed role sync failed",
+      },
+    ],
+    scheduleSotAlertTicks() {
+      return [];
+    },
+    setIntervalFn(handler, intervalMs) {
+      scheduledIntervals.push({ handler, intervalMs });
+      return `timer:${intervalMs}:${scheduledIntervals.length}`;
+    },
+    setTimeoutFn(handler, delayMs) {
+      scheduledTimeouts.push({ handler, delayMs });
+      return `timeout:${delayMs}`;
+    },
+  });
+
+  assert.deepEqual(calls, [["runDailyActivityRoleSync", { id: "client" }]]);
+  assert.deepEqual(scheduledTimeouts.map((entry) => entry.delayMs), [3600000]);
+  assert.deepEqual(scheduledIntervals.map((entry) => entry.intervalMs), [86400000]);
+  assert.deepEqual(handles, ["timer:86400000:1", "timeout:3600000"]);
+
+  await scheduledTimeouts[0].handler();
+
+  assert.deepEqual(calls, [
+    ["runDailyActivityRoleSync", { id: "client" }],
+    ["delayedActivityRoleSync", { id: "client" }],
+  ]);
+  assert.deepEqual(scheduledIntervals.map((entry) => entry.intervalMs), [86400000, 86400000]);
+  assert.deepEqual(handles, ["timer:86400000:1", "timeout:3600000", "timer:86400000:2"]);
 });
 
 test("scheduleClientReadyIntervals logs auto-resend and summary refresh failures", async () => {

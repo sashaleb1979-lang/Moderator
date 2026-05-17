@@ -35,6 +35,31 @@ function normalizeIntervalMs(value, fallbackMs) {
   return Number.isFinite(numeric) && numeric > 0 ? numeric : fallbackMs;
 }
 
+function normalizeTimestampMs(value, fallbackMs = NaN) {
+  const timestampMs = Date.parse(String(value || ""));
+  return Number.isFinite(timestampMs) ? timestampMs : fallbackMs;
+}
+
+function resolveInitialDelayMs(intervalMs, lastRunAt, now) {
+  const normalizedIntervalMs = Number(intervalMs);
+  if (!Number.isFinite(normalizedIntervalMs) || normalizedIntervalMs <= 0) {
+    return 0;
+  }
+
+  const nowMs = normalizeTimestampMs(now, Date.now());
+  const lastRunAtMs = normalizeTimestampMs(lastRunAt, NaN);
+  if (!Number.isFinite(nowMs) || !Number.isFinite(lastRunAtMs)) {
+    return 0;
+  }
+
+  const elapsedMs = Math.max(0, nowMs - lastRunAtMs);
+  if (elapsedMs >= normalizedIntervalMs) {
+    return 0;
+  }
+
+  return normalizedIntervalMs - elapsedMs;
+}
+
 function buildRobloxPeriodicJobs(options = {}) {
   const {
     runRobloxProfileRefreshJob,
@@ -96,10 +121,12 @@ function buildClientReadyPeriodicJobs(options = {}) {
     flushRobloxRuntime,
     syncRobloxPlaytime,
     getResolvedIntegrationSourcePath = null,
+    getActivityRoleSyncLastRunAt = null,
     rolePanelAutoResendTickMs = 0,
     legacyTierlistSummaryRefreshMs = 0,
     activityFlushIntervalMs = 0,
     activityRoleSyncHours = 0,
+    now = null,
     roblox = {},
     verification = {},
   } = options;
@@ -126,6 +153,9 @@ function buildClientReadyPeriodicJobs(options = {}) {
   }
   if (getResolvedIntegrationSourcePath != null) {
     assertFunction(getResolvedIntegrationSourcePath, "getResolvedIntegrationSourcePath");
+  }
+  if (getActivityRoleSyncLastRunAt != null) {
+    assertFunction(getActivityRoleSyncLastRunAt, "getActivityRoleSyncLastRunAt");
   }
 
   const periodicJobs = [
@@ -156,9 +186,15 @@ function buildClientReadyPeriodicJobs(options = {}) {
   }
 
   if (typeof runDailyActivityRoleSync === "function") {
+    const intervalMs = Math.max(1, Number(activityRoleSyncHours) || 0) * 60 * 60 * 1000;
     periodicJobs.push({
       run: runDailyActivityRoleSync,
-      intervalMs: Math.max(1, Number(activityRoleSyncHours) || 0) * 60 * 60 * 1000,
+      intervalMs,
+      initialDelayMs: resolveInitialDelayMs(
+        intervalMs,
+        typeof getActivityRoleSyncLastRunAt === "function" ? getActivityRoleSyncLastRunAt() : null,
+        now
+      ),
       errorLabel: "Activity daily role sync failed",
     });
   }
@@ -196,6 +232,9 @@ function normalizePeriodicJobs(periodicJobs = []) {
       return {
         run: job.run,
         intervalMs: Number(job.intervalMs),
+        initialDelayMs: Number.isFinite(Number(job.initialDelayMs)) && Number(job.initialDelayMs) >= 0
+          ? Number(job.initialDelayMs)
+          : null,
         errorLabel: String(job.errorLabel || "Periodic job failed").trim() || "Periodic job failed",
       };
     })
@@ -262,11 +301,13 @@ function scheduleClientReadyIntervals(client, options = {}) {
     periodicJobs = [],
     scheduleSotAlertTicks,
     setIntervalFn = setInterval,
+    setTimeoutFn = setTimeout,
     logError = () => {},
   } = options;
 
   assertFunction(scheduleSotAlertTicks, "scheduleSotAlertTicks");
   assertFunction(setIntervalFn, "setIntervalFn");
+  assertFunction(setTimeoutFn, "setTimeoutFn");
   assertFunction(logError, "logError");
   const jobs = normalizePeriodicJobs(periodicJobs);
 
@@ -278,11 +319,25 @@ function scheduleClientReadyIntervals(client, options = {}) {
   }
 
   for (const job of jobs) {
-    intervalHandles.push(setIntervalFn(() => {
+    const runJob = () => {
       Promise.resolve(job.run(client)).catch((error) => {
         logError(`${job.errorLabel}:`, formatErrorText(error));
       });
-    }, job.intervalMs));
+    };
+
+    if (job.initialDelayMs === null || job.initialDelayMs <= 0 || job.initialDelayMs >= job.intervalMs) {
+      if (job.initialDelayMs === 0) {
+        runJob();
+      }
+      intervalHandles.push(setIntervalFn(runJob, job.intervalMs));
+      continue;
+    }
+
+    const timeoutHandle = setTimeoutFn(() => {
+      runJob();
+      intervalHandles.push(setIntervalFn(runJob, job.intervalMs));
+    }, job.initialDelayMs);
+    intervalHandles.push(timeoutHandle);
   }
 
   return intervalHandles;

@@ -260,6 +260,187 @@ test("syncSharedProfiles backfills missing shared state and keeps onboarding sna
   assert.equal(db.profiles["100"].summary.onboarding.mainsCount, 2);
 });
 
+test("syncSharedProfiles mirrors news voice summary into profile domains and summary", () => {
+  const db = {
+    profiles: {
+      "100": {
+        userId: "100",
+        username: "megumi",
+      },
+      "200": {
+        userId: "200",
+        username: "gojo",
+        domains: {
+          voice: {
+            summary: {
+              lifetimeSessionCount: 99,
+            },
+          },
+        },
+      },
+    },
+    sot: {
+      news: {
+        voice: {
+          finalizedSessions: [
+            {
+              userId: "100",
+              joinedAt: "2026-05-10T10:00:00.000Z",
+              endedAt: "2026-05-10T11:30:00.000Z",
+              durationSeconds: 5400,
+              enteredChannelIds: ["voice-main", "voice-side"],
+              finalChannelId: "voice-side",
+              incomplete: false,
+            },
+            {
+              userId: "100",
+              joinedAt: "2026-05-02T09:00:00.000Z",
+              endedAt: "2026-05-02T10:00:00.000Z",
+              durationSeconds: 3600,
+              enteredChannelIds: ["voice-main"],
+              finalChannelId: "voice-main",
+              incomplete: true,
+            },
+          ],
+          openSessions: {
+            "100": {
+              userId: "100",
+              joinedAt: "2026-05-10T12:10:00.000Z",
+              currentChannelId: "voice-lounge",
+              enteredChannelIds: ["voice-lounge"],
+            },
+          },
+        },
+        runtime: {
+          lastVoiceCaptureAt: "2026-05-10T12:30:00.000Z",
+        },
+      },
+    },
+  };
+
+  const result = syncSharedProfiles(db);
+
+  assert.equal(result.mutated, true);
+  assert.equal(db.profiles["100"].domains.voice.summary.lifetimeSessionCount, 2);
+  assert.equal(db.profiles["100"].domains.voice.summary.lifetimeVoiceDurationSeconds, 9000);
+  assert.equal(db.profiles["100"].domains.voice.summary.sessionCount7d, 1);
+  assert.equal(db.profiles["100"].domains.voice.summary.sessionCount30d, 2);
+  assert.equal(db.profiles["100"].domains.voice.summary.incompleteSessionCount30d, 1);
+  assert.equal(db.profiles["100"].domains.voice.summary.voiceDurationSeconds7d, 5400);
+  assert.equal(db.profiles["100"].domains.voice.summary.voiceDurationSeconds30d, 9000);
+  assert.equal(db.profiles["100"].domains.voice.summary.lastSessionEndedAt, "2026-05-10T11:30:00.000Z");
+  assert.equal(db.profiles["100"].domains.voice.summary.lastVoiceSeenAt, "2026-05-10T12:30:00.000Z");
+  assert.equal(db.profiles["100"].domains.voice.summary.lastCapturedAt, "2026-05-10T12:30:00.000Z");
+  assert.equal(db.profiles["100"].domains.voice.summary.isInVoiceNow, true);
+  assert.equal(db.profiles["100"].domains.voice.summary.currentChannelId, "voice-lounge");
+  assert.equal(db.profiles["100"].domains.voice.summary.currentSessionStartedAt, "2026-05-10T12:10:00.000Z");
+  assert.deepEqual(db.profiles["100"].domains.voice.summary.topChannels, [
+    {
+      channelId: "voice-main",
+      sessionCount: 2,
+      lastSeenAt: "2026-05-10T11:30:00.000Z",
+    },
+    {
+      channelId: "voice-lounge",
+      sessionCount: 1,
+      lastSeenAt: "2026-05-10T12:30:00.000Z",
+    },
+    {
+      channelId: "voice-side",
+      sessionCount: 1,
+      lastSeenAt: "2026-05-10T11:30:00.000Z",
+    },
+  ]);
+  assert.equal(db.profiles["100"].summary.voice.voiceDurationSeconds30d, 9000);
+  assert.equal(db.profiles["100"].summary.voice.isInVoiceNow, true);
+  assert.equal(db.profiles["200"].domains.voice.summary.lifetimeSessionCount, 0);
+});
+
+test("syncSharedProfiles builds social suggestions cache only from frequent non-friend co-play peers", () => {
+  const db = {
+    profiles: {
+      main: {
+        userId: "main",
+        displayName: "Yuji",
+        domains: {
+          roblox: {
+            userId: "111",
+            username: "YujiRb",
+            verificationStatus: "verified",
+            coPlay: {
+              computedAt: "2026-05-10T12:30:00.000Z",
+              peers: [
+                {
+                  peerUserId: "peer-1",
+                  isRobloxFriend: false,
+                  minutesTogether: 80,
+                  sessionsTogether: 1,
+                  sharedJjsSessionCount: 1,
+                  lastSeenTogetherAt: "2026-05-10T12:20:00.000Z",
+                },
+                {
+                  peerUserId: "peer-2",
+                  isRobloxFriend: true,
+                  minutesTogether: 200,
+                  sessionsTogether: 4,
+                  sharedJjsSessionCount: 4,
+                  lastSeenTogetherAt: "2026-05-10T12:25:00.000Z",
+                },
+                {
+                  peerUserId: "peer-3",
+                  isRobloxFriend: false,
+                  minutesTogether: 20,
+                  sessionsTogether: 1,
+                  sharedJjsSessionCount: 1,
+                  lastSeenTogetherAt: "2026-05-10T12:15:00.000Z",
+                },
+                {
+                  peerUserId: "peer-4",
+                  isRobloxFriend: false,
+                  minutesTogether: 40,
+                  sessionsTogether: 3,
+                  sharedJjsSessionCount: 3,
+                  lastSeenTogetherAt: "2026-05-10T12:18:00.000Z",
+                },
+              ],
+            },
+          },
+        },
+      },
+      "peer-1": {
+        userId: "peer-1",
+        displayName: "Gojo",
+        domains: {
+          roblox: {
+            userId: "222",
+            username: "GojoRb",
+            verificationStatus: "verified",
+          },
+        },
+      },
+      "peer-4": {
+        userId: "peer-4",
+        username: "junpei",
+      },
+    },
+  };
+
+  const result = syncSharedProfiles(db);
+
+  assert.equal(result.mutated, true);
+  assert.equal(db.profiles.main.domains.social.suggestions.length, 2);
+  assert.deepEqual(db.profiles.main.domains.social.suggestions.map((entry) => entry.peerUserId), ["peer-1", "peer-4"]);
+  assert.equal(db.profiles.main.domains.social.suggestions[0].peerDisplayName, "Gojo");
+  assert.equal(db.profiles.main.domains.social.suggestions[0].peerRobloxUsername, "GojoRb");
+  assert.equal(db.profiles.main.domains.social.suggestions[0].peerHasVerifiedRoblox, true);
+  assert.equal(db.profiles.main.domains.social.suggestions[0].sourceComputedAt, "2026-05-10T12:30:00.000Z");
+  assert.equal(db.profiles.main.domains.social.suggestions[1].peerDisplayName, "junpei");
+  assert.equal(db.profiles.main.domains.social.suggestions[1].peerHasVerifiedRoblox, false);
+  assert.equal(db.profiles.main.summary.social.suggestionCount, 2);
+  assert.deepEqual(db.profiles.main.summary.social.suggestions.map((entry) => entry.peerUserId), ["peer-1", "peer-4"]);
+  assert.equal(db.profiles["peer-1"].domains.social.suggestions.length, 0);
+});
+
 test("clearAllRobloxRefreshDiagnostics clears persisted Roblox refresh errors without dropping account state", () => {
   const profiles = {
     user_1: {
@@ -535,6 +716,28 @@ test("normalizeRobloxDomainState defaults to unverified when binding is missing"
       computedAt: null,
     },
   });
+});
+
+test("normalizeRobloxDomainState does not auto-verify a userId without explicit trust markers", () => {
+  const result = normalizeRobloxDomainState({
+    username: "RynexV",
+    userId: "321",
+  });
+
+  assert.equal(result.userId, "321");
+  assert.equal(result.profileUrl, buildRobloxProfileUrl("321"));
+  assert.equal(result.verificationStatus, "unverified");
+});
+
+test("normalizeRobloxDomainState preserves verified status from verifiedAt when legacy status is missing", () => {
+  const result = normalizeRobloxDomainState({
+    username: "RynexV",
+    userId: "321",
+    verifiedAt: "2026-05-16T10:00:00.000Z",
+  });
+
+  assert.equal(result.verificationStatus, "verified");
+  assert.equal(result.verifiedAt, "2026-05-16T10:00:00.000Z");
 });
 
 test("normalizeRobloxDomainState drops unsafe Roblox user ids instead of treating them as valid bindings", () => {

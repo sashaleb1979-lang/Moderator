@@ -164,17 +164,27 @@ Snapshot cumulative progress facts в момент approved kills update.
 ## 5. Часы С Последнего Approved Update
 
 ### Статус
-Planned for Phase 4.
+Base derived metrics implemented in Phase 3 read-side seam.
+Base self-progress block presentation implemented in Phase 4.
 
 ### Что Это Такое
-Derived metric `jjsHoursSinceLastApprovedKillsUpdate`.
+Derived metrics `hoursSinceLastApprovedKillsUpdate` и `jjsHoursSinceLastApprovedKillsUpdate`, которые теперь входят в practical self-progress block.
+
+### Owner
+1. Derived owner: [src/profile/synergy.js](src/profile/synergy.js)
+2. Read-model composition: [src/profile/model.js](src/profile/model.js)
 
 ### Источник
 1. последний proof-window snapshot
 2. текущее `profile.domains.roblox.playtime.totalJjsMinutes`
+3. текущее время render/read-model
 
 ### Формула
+`hoursSinceLastApprovedKillsUpdate = now - snapshot.reviewedAt`
+
 `(currentTotalJjsMinutes - snapshotTotalJjsMinutes) / 60`
+
+Для JJS-часов считать метрику только когда snapshot помечен `playtimeTracked = true`, текущая Roblox-связка всё ещё verified и current total minutes не меньше snapshot baseline.
 
 ### Ненадёжно Когда
 1. нет ни одного proof-window snapshot;
@@ -182,14 +192,21 @@ Derived metric `jjsHoursSinceLastApprovedKillsUpdate`.
 3. Roblox binding был потерян или подтверждён заново между окнами.
 
 ### UI Copy Правило
-Если snapshot отсутствует, использовать честный текст вроде `после последнего апрува история Roblox-часов ещё не накоплена`.
+Если snapshot отсутствует, использовать честный текст вроде `первый approved update ещё не зафиксирован`.
+
+Если wall-clock metric есть, а JJS metric ненадёжен, показывать только elapsed-time line и честный fallback про Roblox-часы.
+
+### Текущая V1-Подача
+Self-progress block использует строку формата:
+1. `С последнего рега: X ч по времени • Y ч JJS`
+2. если JJS metric ненадёжен: `С последнего рега: X ч по времени • Roblox-часы пока ненадёжны`
 
 ---
 
 ## 6. Reminder `ОБНОВИ`
 
 ### Статус
-Planned for Phase 4.
+Soft self reminder implemented in base form внутри practical self-progress block.
 
 ### Решение Для V1
 Триггер: `10 JJS часов после последнего approved update`.
@@ -205,19 +222,104 @@ Derived from `jjsHoursSinceLastApprovedKillsUpdate`.
 ### UI Copy Правило
 1. Не писать `ты точно уже должен обновить kills`.
 2. Писать мягко и честно: `Есть смысл обновить kills`.
+3. Показывать только в self-view.
 
 ---
 
-## 7. Co-Play И Social Suggestions
+## 7. Self-Progress Block И Countdown До Целей
+
+### Статус
+Base Phase 4 implementation completed.
+
+### Что Это Такое
+Практический верхний block self-view, который собирает в одном месте:
+1. зарегистрированные kills и текущий tier;
+2. часы с последнего approved update;
+3. последнее окно роста;
+4. countdown до следующего tier;
+5. countdown до следующего milestone 20k/30k;
+6. soft reminder `Есть смысл обновить kills`, если порог достигнут.
+
+### Owner
+1. Derived block owner: [src/profile/synergy.js](src/profile/synergy.js)
+2. Section composition owner: [src/profile/model.js](src/profile/model.js)
+
+### Источники
+1. `profile.approvedKills`
+2. `profile.killTier`
+3. `profile.domains.progress.proofWindows`
+4. `profile.summary.roblox.totalJjsMinutes`
+5. fallback history из `recentKillChanges`, если для окна роста ещё нет двух proof-window snapshots
+
+### Канонические Thresholds
+Kill tiers:
+1. Tier 2: `1000`
+2. Tier 3: `3000`
+3. Tier 4: `7000`
+4. Tier 5: `11000`
+
+Kill milestones:
+1. `20000`
+2. `30000`
+
+### Формулы
+`nextTierTarget = first threshold > approvedKills`
+
+`nextMilestoneTarget = first milestone > approvedKills`
+
+`latestReliableWindow = last two proof windows, только если оба playtimeTracked и cumulative totalJjsMinutes монотонны`
+
+`windowDeltaKills = latest.approvedKills - previous.approvedKills`
+
+`windowDeltaJjsHours = (latest.totalJjsMinutes - previous.totalJjsMinutes) / 60`
+
+`killsPerJjsHour = windowDeltaKills / windowDeltaJjsHours`
+
+`estimatedJjsHoursToTarget = remainingKills / killsPerJjsHour`
+
+Если надёжной proof-window пары ещё нет, block всё равно показывает countdown по remaining kills, но без притворной оценки по времени.
+
+### Ненадёжно Когда
+1. меньше двух proof-window snapshots;
+2. хотя бы один snapshot в последнем окне имеет `playtimeTracked = false`;
+3. cumulative JJS baseline сломан или обнулился;
+4. последнее окно собрано только из fallback approved history без Roblox-часов.
+
+### UI Copy Правило
+1. Показывать countdown по времени только если `killsPerJjsHour` надёжен и положителен.
+2. Иначе писать честно: `темп ещё не накоплен`.
+3. Для окна роста при отсутствии надёжных Roblox-часов писать `Roblox-часы пока ненадёжны`.
+
+---
+
+## 8. Co-Play И Social Suggestions
 
 ### Статус
 Top co-play peers уже существуют как source facts.
-Suggestions cache planned for Phase 2 and Phase 6.
+Base suggestions cache implemented for Phase 2. Richer narrative/read-side blocks remain for Phase 6.
 
 ### Owner
 1. Raw source facts: [src/runtime/roblox-jobs.js](src/runtime/roblox-jobs.js)
 2. Canonical normalized profile source: [src/integrations/shared-profile.js](src/integrations/shared-profile.js)
 3. Future derived read-side owner: `src/profile/synergy.js`
+
+### Текущие Cache-Поля
+1. `profile.domains.social.suggestions[].peerUserId`
+2. `profile.domains.social.suggestions[].peerDisplayName`
+3. `profile.domains.social.suggestions[].peerRobloxUserId`
+4. `profile.domains.social.suggestions[].peerRobloxUsername`
+5. `profile.domains.social.suggestions[].peerHasVerifiedRoblox`
+6. `profile.domains.social.suggestions[].minutesTogether`
+7. `profile.domains.social.suggestions[].sessionsTogether`
+8. `profile.domains.social.suggestions[].daysTogether`
+9. `profile.domains.social.suggestions[].sharedJjsSessionCount`
+10. `profile.domains.social.suggestions[].lastSeenTogetherAt`
+11. `profile.domains.social.suggestions[].sourceComputedAt`
+
+### Текущий Отбор
+1. только `frequent non-friend` peers;
+2. Roblox-friend peers исключаются;
+3. сортировка идёт по minutesTogether, затем по sharedJjsSessionCount.
 
 ### Источник
 1. `profile.domains.roblox.coPlay.peers`
@@ -234,30 +336,53 @@ Suggestions cache planned for Phase 2 and Phase 6.
 2. `partial`: бот был оффлайн и часть пересечений пропущена;
 3. `stale`: computedAt старый;
 4. не все peers обязаны быть Roblox friends или verified Discord mappings.
+5. текущий cache ещё не доказывает social closeness вне JJS overlap.
 
 ---
 
-## 8. Voice Summary
+## 9. Voice Summary
 
 ### Статус
-Raw capture уже существует. Profile-facing mirror planned for Phase 2 and Phase 7.
+Raw capture уже существует. Base profile-facing mirror implemented for Phase 2.
 
 ### Owner
 1. Raw owner: [src/news/voice.js](src/news/voice.js)
-2. Future canonical mirror: [src/integrations/shared-profile.js](src/integrations/shared-profile.js)
+2. Canonical mirror: [src/integrations/shared-profile.js](src/integrations/shared-profile.js)
 3. Future read-side blocks: `src/profile/synergy.js`
+
+### Текущие Mirror-Поля
+1. `profile.domains.voice.summary.lifetimeSessionCount`
+2. `profile.domains.voice.summary.lifetimeVoiceDurationSeconds`
+3. `profile.domains.voice.summary.sessionCount7d`
+4. `profile.domains.voice.summary.sessionCount30d`
+5. `profile.domains.voice.summary.incompleteSessionCount30d`
+6. `profile.domains.voice.summary.voiceDurationSeconds7d`
+7. `profile.domains.voice.summary.voiceDurationSeconds30d`
+8. `profile.domains.voice.summary.lastSessionEndedAt`
+9. `profile.domains.voice.summary.lastVoiceSeenAt`
+10. `profile.domains.voice.summary.lastCapturedAt`
+11. `profile.domains.voice.summary.isInVoiceNow`
+12. `profile.domains.voice.summary.currentChannelId`
+13. `profile.domains.voice.summary.currentSessionStartedAt`
+14. `profile.domains.voice.summary.topChannels`
+
+### Что Пока Не Реализовано В Mirror
+1. frequent voice contacts;
+2. voice overlap с другими игроками;
+3. совместные voice+JJS ties.
 
 ### Ненадёжно Когда
 1. бот был оффлайн во время voice activity;
 2. остались incomplete/recovered sessions;
-3. данные ещё не зеркалированы в profile domain.
+3. `topChannels` пока считаются по появлениям channelId в tracked sessions, а не по точным секундам на канал;
+4. контакты по людям пока не зеркалированы в profile domain.
 
 ### UI Copy Правило
 Если voice summary stale или incomplete, блок обязан маркироваться как неполный.
 
 ---
 
-## 9. Text-Tierlist Grades И `Кто Ты Сейчас`
+## 10. Text-Tierlist Grades И `Кто Ты Сейчас`
 
 ### Статус
 Planned for Phase 5.

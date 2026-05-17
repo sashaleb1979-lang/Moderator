@@ -303,6 +303,10 @@ test("runRobloxPlaytimeSyncJob reports missing verified candidates explicitly", 
     startedSessionCount: 0,
     closedSessionCount: 0,
     activeCoPlayPairCount: 0,
+    repairedBindingCount: 0,
+    unresolvedBindingCount: 0,
+    failedRepairBatchCount: 0,
+    sanitizedBindingCount: 0,
     skippedReason: "no_verified_candidates",
   });
 });
@@ -366,6 +370,10 @@ test("runRobloxPlaytimeSyncJob repairs verified bindings with invalid Roblox ids
     startedSessionCount: 1,
     closedSessionCount: 0,
     activeCoPlayPairCount: 0,
+    repairedBindingCount: 1,
+    unresolvedBindingCount: 0,
+    failedRepairBatchCount: 0,
+    sanitizedBindingCount: 1,
   });
   assert.equal(db.profiles.user_a.domains.roblox.userId, "101");
   assert.equal(db.profiles.user_a.domains.roblox.displayName, "Alpha Display");
@@ -415,6 +423,67 @@ test("runRobloxPlaytimeSyncJob marks sanitized invalid verified bindings dirty e
     startedSessionCount: 0,
     closedSessionCount: 0,
     activeCoPlayPairCount: 0,
+    repairedBindingCount: 0,
+    unresolvedBindingCount: 0,
+    failedRepairBatchCount: 0,
+    sanitizedBindingCount: 1,
+    skippedReason: "no_verified_candidates",
+  });
+  assert.equal(db.profiles.user_a.domains.roblox.userId, null);
+  assert.equal(runtimeState.dirtyDiscordUserIds.has("user_a"), true);
+});
+
+test("runRobloxPlaytimeSyncJob reports unresolved verified username repairs when no Roblox user match is found", async () => {
+  const runtimeState = createRobloxRuntimeState();
+  const db = {
+    profiles: {
+      user_a: {
+        userId: "user_a",
+        domains: {
+          roblox: {
+            username: "AlphaRb",
+            userId: "711122552566579240",
+            verificationStatus: "verified",
+          },
+        },
+      },
+    },
+  };
+
+  const result = await runRobloxPlaytimeSyncJob({
+    db,
+    runtimeState,
+    now: () => "2026-05-09T12:00:00.000Z",
+    roblox: {
+      jjsUniverseId: 999,
+      playtimePollMinutes: 2,
+    },
+    async fetchUsersByUsernames(usernames) {
+      assert.deepEqual(usernames, ["alpharb"]);
+      return [];
+    },
+    async fetchUserPresences() {
+      throw new Error("should not fetch presences without resolved verified candidates");
+    },
+  });
+
+  assert.deepEqual(result, {
+    totalCandidates: 0,
+    totalBatches: 0,
+    processedBatches: 0,
+    failedBatches: 0,
+    processedUserIds: 0,
+    failedUserIds: 0,
+    activeJjsUsers: 0,
+    opaqueInGameUsers: 0,
+    touchedUserCount: 0,
+    startedSessionCount: 0,
+    closedSessionCount: 0,
+    activeCoPlayPairCount: 0,
+    repairedBindingCount: 0,
+    unresolvedBindingCount: 1,
+    failedRepairBatchCount: 0,
+    sanitizedBindingCount: 1,
     skippedReason: "no_verified_candidates",
   });
   assert.equal(db.profiles.user_a.domains.roblox.userId, null);
@@ -511,6 +580,10 @@ test("runRobloxPlaytimeSyncJob updates rolling JJS minutes and co-play state in 
     startedSessionCount: 0,
     closedSessionCount: 0,
     activeCoPlayPairCount: 1,
+    repairedBindingCount: 0,
+    unresolvedBindingCount: 0,
+    failedRepairBatchCount: 0,
+    sanitizedBindingCount: 0,
   });
   assert.equal(db.profiles.user_a.domains.roblox.playtime.totalJjsMinutes, 2);
   assert.equal(db.profiles.user_a.domains.roblox.playtime.jjsMinutes7d, 2);
@@ -603,6 +676,10 @@ test("runRobloxPlaytimeSyncJob keeps active sessions open when presence polling 
     startedSessionCount: 0,
     closedSessionCount: 0,
     activeCoPlayPairCount: 0,
+    repairedBindingCount: 0,
+    unresolvedBindingCount: 0,
+    failedRepairBatchCount: 0,
+    sanitizedBindingCount: 0,
   });
   assert.deepEqual(runtimeState.activeSessionsByDiscordUserId.user_a, {
     startedAt: "2026-05-09T12:00:00.000Z",
@@ -677,6 +754,10 @@ test("runRobloxPlaytimeSyncJob clears stale persisted session markers after rest
     startedSessionCount: 0,
     closedSessionCount: 0,
     activeCoPlayPairCount: 0,
+    repairedBindingCount: 0,
+    unresolvedBindingCount: 0,
+    failedRepairBatchCount: 0,
+    sanitizedBindingCount: 0,
   });
   assert.equal(db.profiles.user_a.domains.roblox.playtime.currentSessionStartedAt, null);
   assert.equal(runtimeState.dirtyDiscordUserIds.has("user_a"), true);
@@ -732,6 +813,10 @@ test("runRobloxPlaytimeSyncJob reports opaque in-game presences separately from 
     startedSessionCount: 1,
     closedSessionCount: 0,
     activeCoPlayPairCount: 0,
+    repairedBindingCount: 0,
+    unresolvedBindingCount: 0,
+    failedRepairBatchCount: 0,
+    sanitizedBindingCount: 0,
   });
   assert.equal(db.profiles.user_a.domains.roblox.playtime.currentSessionStartedAt, "2026-05-09T12:02:00.000Z");
   assert.equal(runtimeState.activeSessionsByDiscordUserId.user_a.gameId, "opaque:101");
@@ -819,6 +904,10 @@ test("runRobloxPlaytimeSyncJob keeps opaque in-game fallback users out of fake c
     startedSessionCount: 0,
     closedSessionCount: 0,
     activeCoPlayPairCount: 0,
+    repairedBindingCount: 0,
+    unresolvedBindingCount: 0,
+    failedRepairBatchCount: 0,
+    sanitizedBindingCount: 0,
   });
   assert.equal(db.profiles.user_a.domains.roblox.playtime.totalJjsMinutes, 2);
   assert.equal(db.profiles.user_b.domains.roblox.playtime.totalJjsMinutes, 2);
