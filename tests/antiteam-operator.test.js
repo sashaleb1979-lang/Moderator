@@ -637,9 +637,13 @@ test("help button can route through a Roblox friend currently in the author's ga
       },
     }),
     fetchRobloxFriends: async (robloxUserId) => robloxUserId === "202" ? [{ userId: "303" }] : [],
-    fetchRobloxPresences: async (robloxUserIds) => robloxUserIds[0] === "303"
-      ? [{ userId: 303, placeId: "place-1", gameId: "game-1" }]
-      : [],
+    fetchRobloxPresences: async (robloxUserIds) => robloxUserIds
+      .map((robloxUserId) => {
+        if (robloxUserId === "101") return { userId: 101, placeId: "place-1", gameId: "game-1" };
+        if (robloxUserId === "303") return { userId: 303, placeId: "place-1", gameId: "game-1" };
+        return null;
+      })
+      .filter(Boolean),
     fetchChannel: async () => ({
       messages: {
         fetch: async () => ({ edit: async () => {} }),
@@ -657,6 +661,98 @@ test("help button can route through a Roblox friend currently in the author's ga
   assert.match(json, /BridgeFriend/);
   assert.match(json, /Прямая ссылка подключения/);
   assert.doesNotMatch(json, /Отправил др/);
+});
+
+test("direct join help skips generic fallback links when Roblox does not expose an exact live server", async () => {
+  const db = {};
+  const state = ensureAntiteamState(db).state;
+  state.config.channelId = "channel-1";
+  const draft = setAntiteamDraft(db, "author-1", {
+    userTag: "Author",
+    roblox: { userId: "101", username: "Anchor", profileUrl: "https://www.roblox.com/users/101/profile" },
+    level: "medium",
+    count: "2-4",
+    description: "Цели A/B.",
+    directJoinEnabled: true,
+  }, { now: "2026-05-16T10:00:00.000Z" });
+  createAntiteamTicketFromDraft(db, draft, {
+    id: "ticket-direct",
+    now: "2026-05-16T10:01:00.000Z",
+  });
+
+  const operator = createAntiteamOperator({
+    db,
+    now: () => "2026-05-16T10:02:00.000Z",
+    saveDb() {},
+    fetchRobloxPresences: async () => [{ userId: 101, rootPlaceId: "root-1", gameId: "game-1" }],
+  });
+  const interaction = createButtonInteraction("at:help:ticket-direct");
+
+  assert.equal(await operator.handleButtonInteraction(interaction), true);
+
+  const ticket = db.sot.antiteam.tickets["ticket-direct"];
+  assert.equal(ticket.helpers["helper-1"].linkKind, "direct");
+  const json = JSON.stringify(interaction.calls.at(-1)[1].components[0].toJSON());
+  assert.doesNotMatch(json, /root-1/);
+  assert.doesNotMatch(json, /🔗 Подключиться/);
+  assert.match(json, /Профиль/);
+});
+
+test("help button downgrades bridge routing when API cannot confirm the same live server", async () => {
+  const db = {
+    profiles: {
+      "helper-1": {
+        domains: { roblox: { userId: "202", username: "HelperRoblox", verificationStatus: "verified" } },
+      },
+      "bridge-1": {
+        domains: { roblox: { userId: "303", username: "BridgeFriend", verificationStatus: "verified" } },
+      },
+    },
+  };
+  const state = ensureAntiteamState(db).state;
+  state.config.channelId = "channel-1";
+  const draft = setAntiteamDraft(db, "author-1", {
+    userTag: "Author",
+    roblox: { userId: "101", username: "Anchor", profileUrl: "https://www.roblox.com/users/101/profile" },
+    level: "medium",
+    count: "2-4",
+    description: "Цели A/B.",
+  }, { now: "2026-05-16T10:00:00.000Z" });
+  createAntiteamTicketFromDraft(db, draft, {
+    id: "ticket-mismatch",
+    now: "2026-05-16T10:01:00.000Z",
+  });
+
+  const operator = createAntiteamOperator({
+    db,
+    now: () => "2026-05-16T10:02:00.000Z",
+    saveDb() {},
+    getRobloxRuntimeState: () => ({
+      activeSessionsByDiscordUserId: {
+        "author-1": { gameId: "game-1" },
+        "bridge-1": { gameId: "game-1" },
+      },
+    }),
+    fetchRobloxFriends: async (robloxUserId) => robloxUserId === "202" ? [{ userId: "303" }] : [],
+    fetchRobloxPresences: async (robloxUserIds) => robloxUserIds
+      .map((robloxUserId) => {
+        if (robloxUserId === "101") return { userId: 101, placeId: "place-1", gameId: "game-1" };
+        if (robloxUserId === "303") return { userId: 303, placeId: "place-1", gameId: "game-9" };
+        return null;
+      })
+      .filter(Boolean),
+  });
+  const interaction = createButtonInteraction("at:help:ticket-mismatch");
+
+  assert.equal(await operator.handleButtonInteraction(interaction), true);
+
+  const ticket = db.sot.antiteam.tickets["ticket-mismatch"];
+  assert.equal(ticket.helpers["helper-1"].linkKind, "friend_request");
+  assert.equal(ticket.helpers["helper-1"].bridgeDiscordUserId, "");
+  const json = JSON.stringify(interaction.calls.at(-1)[1].components[0].toJSON());
+  assert.doesNotMatch(json, /BridgeFriend/);
+  assert.match(json, /Отправил др, пусть примет/);
+  assert.doesNotMatch(json, /🔗 Подключиться/);
 });
 
 test("close review rejects moderator role without admin permissions", async () => {
@@ -744,6 +840,42 @@ test("draft submit asks for photo when photo toggle is enabled", async () => {
   assert.match(JSON.stringify(interaction.calls.at(-1)[1].components[0].toJSON()), /Фото к заявке/);
 });
 
+test("draft cancel clears a live draft and confirms cancellation", async () => {
+  const db = {};
+  setAntiteamDraft(db, "user-1", {
+    userTag: "User",
+    roblox: { userId: "101", username: "Anchor" },
+    description: "Два ника около 4k.",
+  }, { now: "2026-05-16T10:00:00.000Z" });
+  const operator = createAntiteamOperator({
+    db,
+    saveDb() {},
+  });
+  const interaction = createButtonInteraction(ANTITEAM_CUSTOM_IDS.cancelDraft, { id: "user-1", username: "User" });
+
+  assert.equal(await operator.handleButtonInteraction(interaction), true);
+
+  assert.equal(interaction.calls[0][0], "deferUpdate");
+  assert.equal(db.sot.antiteam.drafts["user-1"], undefined);
+  assert.equal(interaction.calls.at(-1)[0], "editReply");
+  assert.equal(interaction.calls.at(-1)[1].content, "Заявка антитима отменена.");
+});
+
+test("draft cancel fails gracefully when the draft already expired", async () => {
+  const db = {};
+  const operator = createAntiteamOperator({
+    db,
+    saveDb() {},
+  });
+  const interaction = createButtonInteraction(ANTITEAM_CUSTOM_IDS.cancelDraft, { id: "user-1", username: "User" });
+
+  assert.equal(await operator.handleButtonInteraction(interaction), true);
+
+  assert.equal(interaction.calls[0][0], "reply");
+  assert.equal(interaction.calls[0][1].content, "Черновик истёк. Начни заново.");
+  assert.equal(interaction.calls[0][1].flags, MessageFlags.Ephemeral);
+});
+
 test("clan draft submit publishes without photo", async () => {
   const db = {};
   ensureAntiteamState(db).state.config.channelId = "channel-1";
@@ -797,7 +929,7 @@ test("clan draft submit publishes without photo", async () => {
   assert.match(interaction.calls.at(-1)[1].content, /Заявка опубликована/);
 });
 
-test("draft toggle and select acknowledge before editing the setup panel", async () => {
+test("draft toggle and select update the setup panel immediately", async () => {
   const db = {};
   setAntiteamDraft(db, "user-1", {
     userTag: "User",
@@ -812,12 +944,48 @@ test("draft toggle and select acknowledge before editing the setup panel", async
 
   const toggle = createButtonInteraction(ANTITEAM_CUSTOM_IDS.toggleDirect, { id: "user-1", username: "User" });
   assert.equal(await operator.handleButtonInteraction(toggle), true);
-  assert.deepEqual(toggle.calls.map((call) => call[0]), ["deferUpdate", "editReply"]);
+  assert.deepEqual(toggle.calls.map((call) => call[0]), ["update"]);
 
   const select = createSelectInteraction(ANTITEAM_CUSTOM_IDS.countSelect, ["4-10"]);
   assert.equal(await operator.handleSelectMenuInteraction(select), true);
-  assert.deepEqual(select.calls.map((call) => call[0]), ["deferUpdate", "editReply"]);
+  assert.deepEqual(select.calls.map((call) => call[0]), ["update"]);
   assert.equal(db.sot.antiteam.drafts["user-1"].count, "4-10");
+});
+
+test("draft toggle updates the message before serialized persistence finishes", async () => {
+  const db = {};
+  setAntiteamDraft(db, "user-1", {
+    userTag: "User",
+    roblox: { userId: "101", username: "Anchor" },
+    description: "Тимятся двое у центра.",
+  }, { now: "2026-05-16T10:00:00.000Z" });
+
+  let releasePersist = null;
+  let resolvePersistEntered = null;
+  const persistEntered = new Promise((resolve) => {
+    resolvePersistEntered = resolve;
+  });
+  const toggle = createButtonInteraction(ANTITEAM_CUSTOM_IDS.toggleDirect, { id: "user-1", username: "User" });
+  const operator = createAntiteamOperator({
+    db,
+    now: () => "2026-05-16T10:01:00.000Z",
+    saveDb() {},
+    runSerializedMutation: async ({ mutate }) => {
+      resolvePersistEntered(toggle.calls.map((call) => call[0]));
+      await new Promise((resolve) => {
+        releasePersist = resolve;
+      });
+      return mutate();
+    },
+  });
+
+  const pending = operator.handleButtonInteraction(toggle);
+  const callsBeforePersist = await persistEntered;
+
+  assert.deepEqual(callsBeforePersist, ["update"]);
+  releasePersist();
+  assert.equal(await pending, true);
+  assert.equal(db.sot.antiteam.drafts["user-1"].directJoinEnabled, true);
 });
 
 test("description modal updates the same setup message when update is available", async () => {

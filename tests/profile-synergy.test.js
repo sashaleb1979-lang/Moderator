@@ -364,3 +364,46 @@ test("buildProfileSynergyState calibrates viewer grades against population basel
   assert.ok(GRADE_RANK[strongPopulationGrades.form] < GRADE_RANK[localGrades.form]);
   assert.ok(GRADE_RANK[weakPopulationGrades.form] > GRADE_RANK[localGrades.form]);
 });
+
+test("buildProfileSynergyState exposes social suggestions from canonical cache without overclaiming coop", () => {
+  const state = buildProfileSynergyState({
+    now: "2026-05-16T12:00:00.000Z",
+    isSelf: true,
+    profile: {
+      domains: {
+        social: {
+          suggestions: [
+            {
+              peerUserId: "peer-1",
+              peerDisplayName: "Gojo",
+              peerRobloxUsername: "GojoRb",
+              peerHasVerifiedRoblox: true,
+              minutesTogether: 80,
+              sessionsTogether: 1,
+              sharedJjsSessionCount: 1,
+              sourceComputedAt: "2026-05-16T09:00:00.000Z",
+            },
+            {
+              peerUserId: "peer-4",
+              peerDisplayName: "junpei",
+              peerHasVerifiedRoblox: false,
+              minutesTogether: 40,
+              sessionsTogether: 3,
+              sharedJjsSessionCount: 3,
+              sourceComputedAt: "2026-05-16T09:00:00.000Z",
+            },
+          ],
+        },
+      },
+    },
+    robloxSummary: {
+      serverFriendsCount: 2,
+    },
+  });
+
+  assert.equal(state.blocks.socialSuggestions.title, "Скрытый круг");
+  assert.match(state.blocks.socialSuggestions.lines.join("\n"), /Скрытый круг: 2 кандидата .* Roblox-друзей на сервере: 2 .* не точный кооп/);
+  assert.match(state.blocks.socialSuggestions.lines.join("\n"), /1\. <@peer-1> .* Gojo .* Roblox GojoRb .* 80 мин вместе .* 1 общ\. сесс\. .* verified Roblox/);
+  assert.match(state.blocks.socialSuggestions.lines.join("\n"), /2\. <@peer-4> .* junpei .* 40 мин вместе .* 3 общ\. сесс\./);
+  assert.match(state.blocks.socialSuggestions.lines.join("\n"), /Social-срез: обновлялся ~3 ч назад/);
+});

@@ -15,6 +15,7 @@ const {
   getAntiteamDraft,
   incrementHelperStats,
   matchRobloxFriendsToDiscordProfiles,
+  normalizeAntiteamDraft,
   recordAntiteamHelper,
   setAntiteamDraft,
   setTicketHelperArrival,
@@ -379,6 +380,11 @@ function createAntiteamOperator(options = {}) {
     return { edited: true, message };
   }
 
+  function isConcreteRobloxGameId(gameId = "") {
+    const value = cleanString(gameId, 120);
+    return Boolean(value) && !value.startsWith("opaque:") && !value.startsWith("root:");
+  }
+
   function getTicketRuntimeTargetGameId(ticket = {}) {
     const runtimeState = getRobloxRuntimeState();
     const activeSessions = runtimeState?.activeSessionsByDiscordUserId || {};
@@ -539,29 +545,56 @@ function createAntiteamOperator(options = {}) {
   }
 
   async function resolveDirectJoinUrlForRobloxUserId(robloxUserId = "") {
+    return (await resolveDirectJoinTargetForRobloxUserId(robloxUserId))?.directJoinUrl || "";
+  }
+
+  async function fetchRobloxPresenceMap(robloxUserIds = [], errorLabel = "Antiteam Roblox presence lookup failed:") {
+    const requestedIds = [...new Set((Array.isArray(robloxUserIds) ? robloxUserIds : [])
+      .map((userId) => cleanString(userId, 40))
+      .filter(Boolean))];
+    if (!requestedIds.length || typeof options.fetchRobloxPresences !== "function") return new Map();
+
+    const presences = await options.fetchRobloxPresences(requestedIds).catch((error) => {
+      logError(errorLabel, error?.message || error);
+      return [];
+    });
+
+    const presenceByRobloxId = new Map();
+    for (const [index, presence] of (Array.isArray(presences) ? presences : []).entries()) {
+      const presenceUserId = cleanString(presence?.userId, 40) || requestedIds[index];
+      if (presenceUserId) presenceByRobloxId.set(presenceUserId, presence);
+    }
+    return presenceByRobloxId;
+  }
+
+  function getExactDirectJoinTarget(presenceByRobloxId, robloxUserId = "", { requiredGameId = "" } = {}) {
     const config = getConfig();
     const userId = cleanString(robloxUserId, 40);
-    const optionPlaceId = typeof options.robloxPlaceId === "function" ? options.robloxPlaceId() : options.robloxPlaceId;
-    const configuredPlaceId = cleanString(config.roblox.jjsPlaceId || optionPlaceId, 40);
-    let gameId = "";
-    let placeId = configuredPlaceId;
-    if (userId && typeof options.fetchRobloxPresences === "function") {
-      const presences = await options.fetchRobloxPresences([userId]).catch(() => []);
-      const presence = Array.isArray(presences) ? presences[0] : null;
-      gameId = cleanString(presence?.gameId, 120);
-      placeId = cleanString(presence?.placeId || presence?.rootPlaceId || configuredPlaceId, 40);
-    }
-    if (placeId && gameId) {
-      return buildTemplateUrl(config.roblox.directJoinUrlTemplate, { placeId, gameId });
-    }
-    if (placeId) {
-      return buildTemplateUrl(config.roblox.gameUrlTemplate, { placeId });
-    }
-    return "";
+    const expectedGameId = cleanString(requiredGameId, 120);
+    const presence = presenceByRobloxId.get(userId);
+    const gameId = cleanString(presence?.gameId, 120);
+    const placeId = cleanString(presence?.placeId, 40);
+    if (!userId || !isConcreteRobloxGameId(gameId) || !placeId) return null;
+    if (expectedGameId && gameId !== expectedGameId) return null;
+    return {
+      userId,
+      gameId,
+      placeId,
+      directJoinUrl: buildTemplateUrl(config.roblox.directJoinUrlTemplate, { placeId, gameId }),
+    };
+  }
+
+  async function resolveDirectJoinTargetForRobloxUserId(robloxUserId = "", { requiredGameId = "" } = {}) {
+    const presenceByRobloxId = await fetchRobloxPresenceMap([robloxUserId], "Antiteam direct-join lookup failed:");
+    return getExactDirectJoinTarget(presenceByRobloxId, robloxUserId, { requiredGameId });
+  }
+
+  async function resolveDirectJoinTarget(ticket = {}, { requiredGameId = "" } = {}) {
+    return resolveDirectJoinTargetForRobloxUserId(ticket.roblox?.userId, { requiredGameId });
   }
 
   async function resolveDirectJoinUrl(ticket = {}) {
-    return resolveDirectJoinUrlForRobloxUserId(ticket.roblox?.userId);
+    return (await resolveDirectJoinTarget(ticket))?.directJoinUrl || "";
   }
 
   async function findRuntimeBridgeTarget(ticket = {}, helperRoblox = {}) {
@@ -570,8 +603,11 @@ function createAntiteamOperator(options = {}) {
     const runtimeState = getRobloxRuntimeState();
     const activeSessions = runtimeState?.activeSessionsByDiscordUserId || {};
     const targetDiscordUserId = getFriendRequestTargetUserId(ticket);
-    const targetGameId = cleanString(activeSessions[targetDiscordUserId]?.gameId, 120);
-    if (!targetGameId) return null;
+    const runtimeTargetGameId = cleanString(activeSessions[targetDiscordUserId]?.gameId, 120);
+    if (!isConcreteRobloxGameId(runtimeTargetGameId)) return null;
+
+    const targetRoute = await resolveDirectJoinTarget(ticket, { requiredGameId: runtimeTargetGameId });
+    if (!targetRoute) return null;
 
     let helperFriendDiscordIds = [];
     try {
@@ -582,16 +618,31 @@ function createAntiteamOperator(options = {}) {
       return null;
     }
 
+    const candidates = [];
     for (const discordUserId of helperFriendDiscordIds) {
       if (discordUserId === targetDiscordUserId) continue;
       const session = activeSessions[discordUserId];
-      if (!session || cleanString(session.gameId, 120) !== targetGameId) continue;
+      if (!session || cleanString(session.gameId, 120) !== targetRoute.gameId) continue;
       const roblox = getStoredRobloxSnapshot(discordUserId);
       if (!roblox?.userId) continue;
+      candidates.push({ discordUserId, roblox });
+    }
+    if (!candidates.length) return null;
+
+    const presenceByRobloxId = await fetchRobloxPresenceMap(
+      candidates.map(({ roblox }) => roblox.userId),
+      "Antiteam bridge direct-join lookup failed:"
+    );
+
+    for (const candidate of candidates) {
+      const exactRoute = getExactDirectJoinTarget(presenceByRobloxId, candidate.roblox.userId, {
+        requiredGameId: targetRoute.gameId,
+      });
+      if (!exactRoute) continue;
       return {
-        discordUserId,
-        roblox,
-        directJoinUrl: await resolveDirectJoinUrlForRobloxUserId(roblox.userId),
+        discordUserId: candidate.discordUserId,
+        roblox: candidate.roblox,
+        directJoinUrl: exactRoute.directJoinUrl,
       };
     }
     return null;
@@ -686,6 +737,14 @@ function createAntiteamOperator(options = {}) {
     return null;
   }
 
+  function buildOptimisticDraft(draft = {}, patch = {}, userId = "") {
+    return normalizeAntiteamDraft({
+      ...draft,
+      ...patch,
+      userId: cleanString(draft.userId || userId, 80),
+    }, getConfig());
+  }
+
   async function handleStartPanelOpenInteraction(interaction) {
     if (!interaction?.isButton?.()) return false;
     const storedRoblox = getStoredRobloxSnapshot(interaction.user.id);
@@ -734,6 +793,9 @@ function createAntiteamOperator(options = {}) {
 
     const helperRoblox = getHelperRobloxSnapshot(interaction.user.id);
     const isFriendEligible = ticket.friendEligibleDiscordUserIds.includes(interaction.user.id);
+    const targetRoute = ticket.directJoinEnabled || isFriendEligible
+      ? await resolveDirectJoinTarget(ticket)
+      : null;
     const bridgeTarget = !ticket.directJoinEnabled && !isFriendEligible
       ? await findRuntimeBridgeTarget(ticket, helperRoblox)
       : null;
@@ -746,7 +808,7 @@ function createAntiteamOperator(options = {}) {
           : "friend_request";
     const directJoinUrl = linkKind === "bridge_direct"
       ? bridgeTarget.directJoinUrl
-      : await resolveDirectJoinUrl(ticket);
+          : targetRoute?.directJoinUrl || "";
     const profileUrl = getTicketProfileUrl(ticket);
     const previousHelper = ticket.helpers?.[interaction.user.id] || null;
     const alreadyResponded = Boolean(previousHelper?.respondedAt);
@@ -963,12 +1025,17 @@ function createAntiteamOperator(options = {}) {
         await interaction.reply({ content: "Черновик истёк. Начни заново.", flags: MessageFlags.Ephemeral });
         return true;
       }
-      await interaction.deferUpdate();
       const patch = id === ANTITEAM_CUSTOM_IDS.toggleDirect
         ? { directJoinEnabled: !draft.directJoinEnabled }
         : { photoWanted: !draft.photoWanted };
-      const updated = await persist("antiteam-draft-toggle", () => setAntiteamDraft(db, interaction.user.id, patch, { now: nowIso() }));
-      await interaction.editReply(buildTicketSetupPayload(updated, getConfig()));
+      const optimisticDraft = buildOptimisticDraft(draft, patch, interaction.user.id);
+      await interaction.update(buildTicketSetupPayload(optimisticDraft, getConfig()));
+      try {
+        await persist("antiteam-draft-toggle", () => setAntiteamDraft(db, interaction.user.id, patch, { now: nowIso() }));
+      } catch (error) {
+        const fallbackDraft = getAntiteamDraft(db, interaction.user.id) || draft;
+        await interaction.editReply(buildTicketSetupPayload(fallbackDraft, getConfig(), `Ошибка: ${error?.message || error}`)).catch(() => {});
+      }
       return true;
     }
 
@@ -983,6 +1050,11 @@ function createAntiteamOperator(options = {}) {
     }
 
     if (id === ANTITEAM_CUSTOM_IDS.cancelDraft) {
+      const draft = getAntiteamDraft(db, interaction.user.id);
+      if (!draft) {
+        await interaction.reply({ content: "Черновик истёк. Начни заново.", flags: MessageFlags.Ephemeral });
+        return true;
+      }
       await interaction.deferUpdate();
       await persist("antiteam-draft-cancel", () => {
         clearAntiteamDraft(db, interaction.user.id);
@@ -1155,9 +1227,14 @@ function createAntiteamOperator(options = {}) {
     } else {
       return false;
     }
-    await interaction.deferUpdate();
-    const updated = await persist("antiteam-draft-select", () => setAntiteamDraft(db, interaction.user.id, patch, { now: nowIso() }));
-    await interaction.editReply(buildTicketSetupPayload(updated, getConfig()));
+    const optimisticDraft = buildOptimisticDraft(draft, patch, interaction.user.id);
+    await interaction.update(buildTicketSetupPayload(optimisticDraft, getConfig()));
+    try {
+      await persist("antiteam-draft-select", () => setAntiteamDraft(db, interaction.user.id, patch, { now: nowIso() }));
+    } catch (error) {
+      const fallbackDraft = getAntiteamDraft(db, interaction.user.id) || draft;
+      await interaction.editReply(buildTicketSetupPayload(fallbackDraft, getConfig(), `Ошибка: ${error?.message || error}`)).catch(() => {});
+    }
     return true;
   }
 

@@ -201,10 +201,12 @@ test("profile read-model composes derived sections, links, and verification fact
   assert.match(readModel.sections.social[0].lines.join("\n"), /JJS сессий всего: 9/);
   assert.match(readModel.sections.social[1].lines.join("\n"), /<@peer-1> • 210 мин вместе • 5 сесс\. • Roblox-друг/);
   assert.match(readModel.sections.social[1].lines.join("\n"), /<@peer-2> • 140 мин вместе • 3 сесс\. • частый non-friend/);
-  assert.match(readModel.sections.social[2].lines.join("\n"), /Гайды по мейнам: 1\/1/);
-  assert.match(readModel.sections.social[2].lines.join("\n"), /1\. Gojo — гайд доступен по кнопке/);
-  assert.match(readModel.sections.social[2].lines.join("\n"), /Основной tierlist-пик: Gojo • входит в список мейнов/);
-  assert.match(readModel.sections.social[2].lines.join("\n"), /Общие техи: доступны по кнопке\./);
+  assert.equal(readModel.sections.social[2].title, "Скрытый круг");
+  assert.match(readModel.sections.social[2].lines.join("\n"), /явных frequent non-friend пересечений пока не видно, хотя Roblox-друзья на сервере уже есть \(3\)/);
+  assert.match(readModel.sections.social[3].lines.join("\n"), /Гайды по мейнам: 1\/1/);
+  assert.match(readModel.sections.social[3].lines.join("\n"), /1\. Gojo — гайд доступен по кнопке/);
+  assert.match(readModel.sections.social[3].lines.join("\n"), /Основной tierlist-пик: Gojo • входит в список мейнов/);
+  assert.match(readModel.sections.social[3].lines.join("\n"), /Общие техи: доступны по кнопке\./);
   assert.equal(readModel.comboLinks[0].label, "Gojo");
   assert.equal(readModel.comboLinks[0].buttonLabel, "Гайд: Gojo");
   assert.equal(readModel.robloxProfileUrl, "https://www.roblox.com/users/123/profile");
