@@ -10,7 +10,7 @@ const ANTITEAM_LEVELS = Object.freeze({
     emoji: "🟢",
     label: "Лоутабельные",
     shortLabel: "Лоу",
-    description: "Все или почти все до ~2k kills. Если есть 7k+ игрок, поднимай минимум до среднего.",
+    description: "Все или почти все до ~2k kills. Если есть 8k+ игрок, поднимай минимум до среднего.",
     accentColor: 0x2E7D32,
   },
   medium: {
@@ -26,7 +26,7 @@ const ANTITEAM_LEVELS = Object.freeze({
     emoji: "🔴",
     label: "Высокие",
     shortLabel: "Хай",
-    description: "Выше 7k kills. Если таких хотя бы треть команды, выбирай этот режим.",
+    description: "8k+ kills. Если таких хотя бы треть команды, выбирай этот режим.",
     accentColor: 0xC62828,
   },
 });
@@ -269,6 +269,8 @@ function normalizeHelperRecord(value = {}, userId = "") {
     discordTag: cleanString(source.discordTag, 120),
     robloxUsername: cleanString(source.robloxUsername, 120),
     robloxUserId: cleanString(source.robloxUserId, 40),
+    bridgeDiscordUserId: cleanString(source.bridgeDiscordUserId, 80),
+    bridgeRobloxUsername: cleanString(source.bridgeRobloxUsername, 120),
     respondedAt: normalizeIsoTimestamp(source.respondedAt, null),
     linkKind: cleanString(source.linkKind, 40),
     linkGrantedAt: normalizeIsoTimestamp(source.linkGrantedAt, null),
@@ -567,6 +569,21 @@ function incrementHelperStats(db = {}, helperUserId, patch = {}, options = {}) {
   return next;
 }
 
+function deleteHelperStats(db = {}, helperUserId) {
+  const { state } = ensureAntiteamState(db);
+  const userId = cleanString(helperUserId, 80);
+  if (!userId || !state.stats.helpers[userId]) return false;
+  delete state.stats.helpers[userId];
+  return true;
+}
+
+function clearHelperStats(db = {}) {
+  const { state } = ensureAntiteamState(db);
+  const count = Object.keys(state.stats.helpers || {}).length;
+  state.stats.helpers = {};
+  return count;
+}
+
 function setTicketHelperArrival(db = {}, ticketId, helperUserId, arrived, options = {}) {
   const now = cleanString(options.now, 80) || new Date().toISOString();
   return updateAntiteamTicket(db, ticketId, (ticket) => {
@@ -638,10 +655,12 @@ module.exports = {
   DEFAULT_CLAN_PING_ROLES,
   cleanString,
   clearAntiteamDraft,
+  clearHelperStats,
   closeAntiteamTicket,
   createAntiteamTicketFromDraft,
   createDefaultAntiteamConfig,
   createTicketId,
+  deleteHelperStats,
   ensureAntiteamState,
   findIdleAntiteamTickets,
   getAntiteamDraft,
