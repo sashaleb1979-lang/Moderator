@@ -8,7 +8,9 @@ const {
   clearHelperStats,
   deleteHelperStats,
   ensureAntiteamState,
+  getRobloxConfirmation,
   incrementHelperStats,
+  markRobloxConfirmed,
   matchRobloxFriendsToDiscordProfiles,
   recordAntiteamHelper,
   setAntiteamDraft,
@@ -97,6 +99,32 @@ test("antiteam helper stats can delete one helper or clear the aggregate table",
   assert.equal(db.sot.antiteam.stats.helpers["helper-2"].confirmedArrived, 1);
   assert.equal(clearHelperStats(db), 1);
   assert.deepEqual(db.sot.antiteam.stats.helpers, {});
+});
+
+test("antiteam stores one-time Roblox confirmation per Discord user and account", () => {
+  const db = {};
+  const first = markRobloxConfirmed(db, "user-1", "101", { now: "2026-05-16T10:00:00.000Z" });
+
+  assert.equal(first.robloxUserId, "101");
+  assert.deepEqual(getRobloxConfirmation(db, "user-1"), {
+    userId: "user-1",
+    robloxUserId: "101",
+    confirmedAt: "2026-05-16T10:00:00.000Z",
+  });
+
+  const { state } = ensureAntiteamState({
+    sot: {
+      antiteam: {
+        robloxConfirmations: {
+          "user-2": { robloxUserId: "202", confirmedAt: "bad-date" },
+          "bad-user": { robloxUserId: "" },
+        },
+      },
+    },
+  });
+
+  assert.equal(state.robloxConfirmations["user-2"].robloxUserId, "202");
+  assert.equal(state.robloxConfirmations["bad-user"], undefined);
 });
 
 test("clan ticket keeps selected Discord anchor metadata", () => {

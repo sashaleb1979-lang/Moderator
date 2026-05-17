@@ -30,6 +30,9 @@ const ANTITEAM_COMMAND_NAME = "антитим";
 const ANTITEAM_CUSTOM_IDS = Object.freeze({
   open: "at:open",
   guide: "at:guide",
+  requestRobloxNick: "at:roblox:request",
+  confirmRoblox: "at:roblox:confirm",
+  changeRoblox: "at:roblox:change",
   config: "at:config",
   configAdvanced: "at:config:advanced",
   panelText: "at:panel:text",
@@ -181,6 +184,63 @@ function buildStartGuidePayload(config = createDefaultAntiteamConfig()) {
         "5. Если включён прямой вход или helper уже есть в друзьях Roblox, бот даст быстрый join/profile путь.",
       ].join("\n"))
     );
+  return buildPayload(container, { ephemeral: true });
+}
+
+function buildRobloxMissingPayload() {
+  const container = new ContainerBuilder()
+    .setAccentColor(0x1565C0)
+    .addTextDisplayComponents(
+      new TextDisplayBuilder().setContent("# Roblox ник"),
+      new TextDisplayBuilder().setContent([
+        "В профиле пока нет Roblox аккаунта для антитима.",
+        "Внеси ник: бот проверит его через Roblox API и сразу откроет заявку.",
+      ].join("\n"))
+    )
+    .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
+    .addActionRowComponents(
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(ANTITEAM_CUSTOM_IDS.requestRobloxNick)
+          .setLabel("✍️ Внести ник")
+          .setStyle(ButtonStyle.Primary),
+        new ButtonBuilder()
+          .setCustomId(ANTITEAM_CUSTOM_IDS.cancelDraft)
+          .setLabel("✖️ Отмена")
+          .setStyle(ButtonStyle.Secondary)
+      )
+    );
+  return buildPayload(container, { ephemeral: true });
+}
+
+function buildRobloxConfirmPayload(roblox = {}) {
+  const username = cleanString(roblox.username || roblox.name, 120) || "Roblox";
+  const userId = cleanString(roblox.userId || roblox.id, 40);
+  const profileUrl = cleanString(roblox.profileUrl, 500) || (userId ? `https://www.roblox.com/users/${userId}/profile` : "");
+  const buttons = [
+    new ButtonBuilder()
+      .setCustomId(ANTITEAM_CUSTOM_IDS.confirmRoblox)
+      .setLabel("✅ Да, это мой")
+      .setStyle(ButtonStyle.Success),
+    new ButtonBuilder()
+      .setCustomId(ANTITEAM_CUSTOM_IDS.changeRoblox)
+      .setLabel("✏️ Другой ник")
+      .setStyle(ButtonStyle.Secondary),
+  ];
+  if (profileUrl) {
+    buttons.push(new ButtonBuilder().setLabel("👤 Профиль").setStyle(ButtonStyle.Link).setURL(profileUrl));
+  }
+  const container = new ContainerBuilder()
+    .setAccentColor(0x1565C0)
+    .addTextDisplayComponents(
+      new TextDisplayBuilder().setContent("# Подтверди Roblox"),
+      new TextDisplayBuilder().setContent([
+        `В профиле найден: **${username}**${userId ? ` (${userId})` : ""}.`,
+        "Это одноразовая проверка перед первой заявкой антитима.",
+      ].join("\n"))
+    )
+    .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
+    .addActionRowComponents(new ActionRowBuilder().addComponents(...buttons.slice(0, 5)));
   return buildPayload(container, { ephemeral: true });
 }
 
@@ -726,9 +786,9 @@ function formatPublicDifficulty(ticket = {}) {
   const isClosed = ticket.status === "closed";
   const level = getLevelMeta(ticket.level);
   const descriptions = {
-    low: "почти вся команда до ~2k kills; если есть 8k+ игрок, повышай минимум до средних.",
-    medium: "команда в основном 2k-8k kills; если 8k+ хотя бы треть, повышай до высоких.",
-    high: "8k+ kills; выбирай, если таких хотя бы треть команды.",
+    low: "почти вся команда до ~2k kills.",
+    medium: "команда в основном 2k-8k kills.",
+    high: "8k+ kills у заметной части команды.",
   };
   return `${isClosed ? "⚫" : level.emoji} **${level.label}**: ${descriptions[level.id] || level.description}`;
 }
@@ -1008,6 +1068,8 @@ module.exports = {
   buildPanelTextModal,
   buildPhotoRequestPayload,
   buildReportModal,
+  buildRobloxConfirmPayload,
+  buildRobloxMissingPayload,
   buildRobloxUsernameModal,
   buildStartPanelPayload,
   buildStartGuidePayload,

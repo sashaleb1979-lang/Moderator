@@ -399,6 +399,24 @@ function normalizeHelperStats(value = {}) {
   return { helpers };
 }
 
+function normalizeRobloxConfirmations(value = {}) {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const result = {};
+  for (const [userId, raw] of Object.entries(source)) {
+    const normalizedUserId = cleanString(userId, 80);
+    if (!normalizedUserId) continue;
+    const entry = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+    const robloxUserId = cleanString(entry.robloxUserId, 40);
+    if (!robloxUserId) continue;
+    result[normalizedUserId] = {
+      userId: normalizedUserId,
+      robloxUserId,
+      confirmedAt: normalizeIsoTimestamp(entry.confirmedAt, null),
+    };
+  }
+  return result;
+}
+
 function normalizeAntiteamState(value = {}) {
   const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
   const config = createDefaultAntiteamConfig(source.config);
@@ -420,6 +438,7 @@ function normalizeAntiteamState(value = {}) {
     config,
     drafts,
     photoRequests: normalizePhotoRequests(source.photoRequests, config),
+    robloxConfirmations: normalizeRobloxConfirmations(source.robloxConfirmations),
     tickets,
     stats: normalizeHelperStats(source.stats),
   };
@@ -480,6 +499,26 @@ function getAntiteamDraft(db = {}, userId) {
   const { state } = ensureAntiteamState(db);
   const normalizedUserId = cleanString(userId, 80);
   return normalizedUserId ? state.drafts[normalizedUserId] || null : null;
+}
+
+function getRobloxConfirmation(db = {}, userId) {
+  const { state } = ensureAntiteamState(db);
+  const normalizedUserId = cleanString(userId, 80);
+  return normalizedUserId ? state.robloxConfirmations[normalizedUserId] || null : null;
+}
+
+function markRobloxConfirmed(db = {}, userId, robloxUserId, options = {}) {
+  const { state } = ensureAntiteamState(db);
+  const normalizedUserId = cleanString(userId, 80);
+  const normalizedRobloxUserId = cleanString(robloxUserId, 40);
+  if (!normalizedUserId || !normalizedRobloxUserId) return null;
+  const entry = {
+    userId: normalizedUserId,
+    robloxUserId: normalizedRobloxUserId,
+    confirmedAt: cleanString(options.now, 80) || new Date().toISOString(),
+  };
+  state.robloxConfirmations[normalizedUserId] = entry;
+  return entry;
 }
 
 function createAntiteamTicketFromDraft(db = {}, draft = {}, options = {}) {
@@ -664,8 +703,10 @@ module.exports = {
   ensureAntiteamState,
   findIdleAntiteamTickets,
   getAntiteamDraft,
+  getRobloxConfirmation,
   incrementHelperStats,
   listOpenAntiteamTickets,
+  markRobloxConfirmed,
   matchRobloxFriendsToDiscordProfiles,
   normalizeAntiteamCount,
   normalizeAntiteamDraft,
