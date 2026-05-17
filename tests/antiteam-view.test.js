@@ -149,10 +149,11 @@ test("public ticket is the main compact post and thread panel is buttons only", 
   assert.doesNotMatch(json, /🎮/);
   assert.doesNotMatch(json, /Маршрут:/);
   assert.match(json, /🟢 \*\*Лоутабельные\*\*: почти вся команда до ~2k kills; если есть 8k\+ игрок/);
-  assert.match(json, /### Для тех кто отозвался/);
+  assert.match(json, /### Помощники/);
   assert.match(json, /Пока никто не отозвался/);
   assert.match(json, /### Описание/);
   assert.match(json, /> Бить A\/B, тимятся у центра\./);
+  assert.ok(json.indexOf("### Описание") < json.indexOf("### Помощники"));
   assert.match(threadJson, /🙋 Помочь/);
   assert.match(threadJson, /⚠️ Пожаловаться/);
   assert.match(threadJson, /📈 Повысить/);
@@ -200,7 +201,7 @@ test("public ticket and thread panel disable actions after close", () => {
   assert.match(payloadJson(buildTicketPublicPayload(ticket)), /# ⚫ Завершено • 2-4 тимеров/);
   assert.equal(buildTicketTitle(ticket), "⚫ Завершено • 2-4 тимеров");
   assert.equal(buildThreadName(ticket), "⚫ 2-4 тимеров • author-1");
-  assert.match(payloadJson(buildTicketPublicPayload(ticket)), /⚫ \*\*Средние\*\*: большинство команды 2k-8k kills/);
+  assert.match(payloadJson(buildTicketPublicPayload(ticket)), /⚫ \*\*Средние\*\*: команда в основном 2k-8k kills/);
   assert.match(payloadJson(buildThreadPanelPayload(ticket)), /✅ Закрыто/);
   assert.match(payloadJson(buildThreadPanelPayload(ticket)), /"disabled":true/);
   assert.equal(ticketButtonId("help", "ticket-1"), "at:help:ticket-1");
@@ -231,9 +232,35 @@ test("public ticket shows live helper mentions in response order", () => {
   });
   const json = payloadJson(payload);
 
-  assert.match(json, /### Для тех кто отозвался/);
+  assert.match(json, /### Помощники/);
+  assert.match(json, /Откликнулись: \*\*2\*\*/);
+  assert.doesNotMatch(json, /пришли: \*\*0\*\*/);
   assert.match(json, /<@helper-1> • <@helper-2>/);
   assert.doesNotMatch(json, /👥 Отклик:/);
+});
+
+test("open public ticket shows API present count only when runtime detects arrivals", () => {
+  const baseTicket = {
+    id: "ticket-1",
+    kind: "standard",
+    status: "open",
+    createdBy: "author-1",
+    roblox: { username: "Anchor", userId: "101" },
+    level: "medium",
+    count: "2-4",
+    description: "Бить A/B.",
+    helpers: {
+      "helper-1": { userId: "helper-1", respondedAt: "2026-05-16T10:01:00.000Z" },
+      "helper-2": { userId: "helper-2", respondedAt: "2026-05-16T10:02:00.000Z" },
+    },
+  };
+
+  const withoutApi = payloadJson(buildTicketPublicPayload(baseTicket));
+  const withApi = payloadJson(buildTicketPublicPayload(baseTicket, undefined, { apiPresentHelperIds: ["helper-2"] }));
+
+  assert.match(withoutApi, /Откликнулись: \*\*2\*\*/);
+  assert.doesNotMatch(withoutApi, /API в игре/);
+  assert.match(withApi, /Откликнулись: \*\*2\*\* \(API в игре: \*\*1\*\*\)/);
 });
 
 test("closed public ticket shows helper result markers", () => {
@@ -264,7 +291,7 @@ test("closed public ticket shows helper result markers", () => {
   });
   const json = payloadJson(payload);
 
-  assert.match(json, /### Для тех кто отозвался/);
+  assert.match(json, /### Помощники/);
   assert.match(json, /✅ <@helper-1> • ❌ <@helper-2>/);
   assert.match(json, /Итог: done/);
 });

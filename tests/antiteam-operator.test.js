@@ -485,6 +485,73 @@ test("help button acknowledges before ticket sync without thread notice spam", a
   assert.ok(events.includes("panel.edit"));
 });
 
+test("ticket sync annotates public helper count with API-present helpers", async () => {
+  const db = {
+    profiles: {
+      "helper-1": {
+        domains: { roblox: { userId: "202", username: "HelperRoblox", verificationStatus: "verified" } },
+      },
+    },
+  };
+  const state = ensureAntiteamState(db).state;
+  state.config.channelId = "channel-1";
+  const draft = setAntiteamDraft(db, "author-1", {
+    userTag: "Author",
+    roblox: { userId: "101", username: "Anchor", profileUrl: "https://www.roblox.com/users/101/profile" },
+    level: "medium",
+    count: "2-4",
+    description: "Нужна помощь в центре.",
+  }, { now: "2026-05-16T10:00:00.000Z" });
+  createAntiteamTicketFromDraft(db, draft, {
+    id: "ticket-1",
+    now: "2026-05-16T10:01:00.000Z",
+  });
+  db.sot.antiteam.tickets["ticket-1"].message = {
+    channelId: "channel-1",
+    messageId: "message-1",
+    threadId: "thread-1",
+    threadPanelMessageId: "panel-1",
+  };
+
+  let publicEdit = null;
+  const operator = createAntiteamOperator({
+    db,
+    now: () => "2026-05-16T10:02:00.000Z",
+    saveDb() {},
+    getRobloxRuntimeState: () => ({
+      activeSessionsByDiscordUserId: {
+        "author-1": { gameId: "game-1" },
+        "helper-1": { gameId: "game-1" },
+      },
+    }),
+    fetchChannel: async (channelId) => {
+      if (channelId === "channel-1") {
+        return {
+          messages: {
+            fetch: async () => ({
+              edit: async (payload) => {
+                publicEdit = payload;
+              },
+            }),
+          },
+        };
+      }
+      return {
+        messages: {
+          fetch: async () => ({ edit: async () => {} }),
+        },
+      };
+    },
+  });
+  const interaction = createButtonInteraction("at:help:ticket-1");
+
+  assert.equal(await operator.handleButtonInteraction(interaction), true);
+
+  const json = JSON.stringify(publicEdit.components[0].toJSON());
+  assert.match(json, /Откликнулись: \*\*1\*\* \(API в игре: \*\*1\*\*\)/);
+  assert.doesNotMatch(json, /пришли: \*\*0\*\*/);
+});
+
 test("clan friend-request notice pings the selected anchor in the thread", async () => {
   const db = {};
   const state = ensureAntiteamState(db).state;
@@ -1084,7 +1151,7 @@ test("closing ticket writes helper result markers into the public message", asyn
 
   assert.equal(await operator.handleModalSubmitInteraction(interaction), true);
 
-  assert.match(JSON.stringify(publicEdit.components[0].toJSON()), /### Для тех кто отозвался/);
+  assert.match(JSON.stringify(publicEdit.components[0].toJSON()), /### Помощники/);
   assert.match(JSON.stringify(publicEdit.components[0].toJSON()), /✅ <@helper-1> • ❌ <@helper-2>/);
 });
 
