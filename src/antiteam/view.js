@@ -15,7 +15,6 @@ const {
   TextDisplayBuilder,
   TextInputBuilder,
   TextInputStyle,
-  ThumbnailBuilder,
 } = require("discord.js");
 const {
   ANTITEAM_COUNTS,
@@ -36,6 +35,9 @@ const ANTITEAM_CUSTOM_IDS = Object.freeze({
   panelText: "at:panel:text",
   publishPanel: "at:panel:publish",
   refreshPanel: "at:panel:refresh",
+  stats: "at:stats",
+  statsClear: "at:stats:clear",
+  statsClearConfirm: "at:stats:clear_confirm",
   levelSelect: "at:level",
   countSelect: "at:count",
   clanRolesSelect: "at:clan_roles",
@@ -119,68 +121,6 @@ function formatCountHeadline(count) {
   return `${meta.label} тимеров`;
 }
 
-function compareHelpersByResponse(left = {}, right = {}) {
-  return String(left.respondedAt || "").localeCompare(String(right.respondedAt || ""))
-    || String(left.userId || "").localeCompare(String(right.userId || ""));
-}
-
-function formatHelperIdentity(helper = {}) {
-  const userId = cleanString(helper.userId, 80);
-  if (userId) return `<@${userId}>`;
-  return cleanString(helper.discordTag || helper.robloxUsername, 120) || "helper";
-}
-
-function buildHelperRosterLine(ticket = {}, maxVisible = 6) {
-  const helpers = Object.values(ticket.helpers || {})
-    .filter((helper) => cleanString(helper.userId, 80) || cleanString(helper.discordTag || helper.robloxUsername, 120))
-    .sort(compareHelpersByResponse);
-  if (!helpers.length) return "";
-
-  const visibleHelpers = helpers.slice(0, Math.max(1, Number(maxVisible) || 8));
-  const remainingCount = Math.max(0, helpers.length - visibleHelpers.length);
-  const confirmedHelperIds = Array.isArray(ticket.closeSummary?.confirmedHelperIds) && ticket.closeSummary.confirmedHelperIds.length
-    ? ticket.closeSummary.confirmedHelperIds
-    : helpers.filter((helper) => helper.arrived === true).map((helper) => helper.userId);
-  const confirmedSet = new Set(confirmedHelperIds.map((userId) => cleanString(userId, 80)).filter(Boolean));
-  const isClosed = ticket.status === "closed";
-  const entries = visibleHelpers.map((helper) => {
-    const label = formatHelperIdentity(helper);
-    if (!isClosed) return label;
-    return `${confirmedSet.has(cleanString(helper.userId, 80)) ? "✅" : "❌"} ${label}`;
-  });
-
-  if (remainingCount > 0) {
-    entries.push(`+${remainingCount}`);
-  }
-
-  return entries.join(" • ");
-}
-
-function buildCompactDangerLine(ticket = {}, level = getLevelMeta(ticket.level)) {
-  if (ticket.kind === "clan") {
-    return "🛡️ Якорь остаётся в игре до конца тревоги.";
-  }
-
-  if (level.id === "low") return `⚠️ ${level.label} • до ~2k kills`;
-  if (level.id === "medium") return `⚠️ ${level.label} • до ~8k kills`;
-  return `⚠️ ${level.label} • 7k+ kills`;
-}
-
-function buildRouteSummary(ticket = {}) {
-  const routeTarget = ticket.kind === "clan" ? "якорю" : "автору";
-  const friendEligibleCount = Array.isArray(ticket.friendEligibleDiscordUserIds)
-    ? ticket.friendEligibleDiscordUserIds.length
-    : 0;
-
-  if (ticket.directJoinEnabled) {
-    return `🚪 Маршрут: вход без др открыт, бот выдаст direct join к ${routeTarget}.`;
-  }
-  if (friendEligibleCount > 0) {
-    return `🤝 Маршрут: друзьям Roblox — быстрый путь, остальным — профиль и friend request к ${routeTarget}.`;
-  }
-  return `➕ Маршрут: через профиль и friend request к ${routeTarget}.`;
-}
-
 function buildQuotedDescription(value = "", fallback = "описание не добавлено") {
   const text = cleanString(value, 900);
   if (!text) return fallback;
@@ -190,21 +130,6 @@ function buildQuotedDescription(value = "", fallback = "описание не д
     .filter(Boolean)
     .map((line) => `> ${line}`)
     .join("\n");
-}
-
-function buildTicketHeroSection(ticket = {}, lines = []) {
-  const avatarUrl = cleanString(ticket.roblox?.avatarUrl, 2000);
-  if (!avatarUrl) return null;
-
-  const section = new SectionBuilder().addTextDisplayComponents(
-    new TextDisplayBuilder().setContent(joinContentLines(lines, "—", 1400))
-  );
-  section.setThumbnailAccessory(
-    new ThumbnailBuilder()
-      .setURL(avatarUrl)
-      .setDescription(cleanString(ticket.roblox?.displayName || ticket.roblox?.username, 120) || "Roblox headshot")
-  );
-  return section;
 }
 
 function buildPayload(container, { ephemeral = false } = {}) {
@@ -250,7 +175,7 @@ function buildStartGuidePayload(config = createDefaultAntiteamConfig()) {
       new TextDisplayBuilder().setContent("# Как работает антитим"),
       new TextDisplayBuilder().setContent([
         "1. Если Roblox уже привязан к профилю, бот возьмёт его сам.",
-        "2. Если привязки нет, появится короткая форма только для Roblox username.",
+        "2. Если привязки нет, появится короткая форма только для Roblox ника.",
         "3. Выбери опасность, число тимеров и по возможности добавь ники/киллы целей.",
         "4. После отправки появится заявка и thread, где батальён сможет быстро подключиться.",
         "5. Если включён прямой вход или helper уже есть в друзьях Roblox, бот даст быстрый join/profile путь.",
@@ -299,8 +224,95 @@ function buildModeratorPanelPayload(state = {}, statusText = "") {
         new ButtonBuilder().setCustomId(ANTITEAM_CUSTOM_IDS.config).setLabel("Настройки").setStyle(ButtonStyle.Secondary),
         new ButtonBuilder().setCustomId(ANTITEAM_CUSTOM_IDS.configAdvanced).setLabel("Roblox/тайминги").setStyle(ButtonStyle.Secondary),
         new ButtonBuilder().setCustomId(ANTITEAM_CUSTOM_IDS.refreshPanel).setLabel("Обновить").setStyle(ButtonStyle.Secondary)
+      ),
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(ANTITEAM_CUSTOM_IDS.stats).setLabel("📊 Статистика помощи").setStyle(ButtonStyle.Secondary)
       )
     );
+
+  return buildPayload(container, { ephemeral: true });
+}
+
+function statsButtonId(action, extra = "") {
+  return ["at", "stats", action, extra].map((part) => cleanString(part, 80)).filter(Boolean).join(":").slice(0, 100);
+}
+
+function buildHelperStatsPayload(state = {}, page = 0, statusText = "", { confirmClear = false } = {}) {
+  const helpers = Object.entries(state.stats?.helpers || {})
+    .map(([userId, stats]) => ({
+      userId,
+      responded: Number(stats?.responded) || 0,
+      linkGranted: Number(stats?.linkGranted) || 0,
+      confirmedArrived: Number(stats?.confirmedArrived) || 0,
+      lastTicketId: cleanString(stats?.lastTicketId, 80),
+      lastHelpedAt: cleanString(stats?.lastHelpedAt, 80),
+    }))
+    .sort((left, right) => (right.confirmedArrived - left.confirmedArrived)
+      || (right.responded - left.responded)
+      || left.userId.localeCompare(right.userId));
+  const pageSize = 5;
+  const totalPages = Math.max(1, Math.ceil(helpers.length / pageSize));
+  const currentPage = Math.min(Math.max(Number.parseInt(page, 10) || 0, 0), totalPages - 1);
+  const visibleHelpers = helpers.slice(currentPage * pageSize, currentPage * pageSize + pageSize);
+  const container = new ContainerBuilder()
+    .setAccentColor(confirmClear ? 0xC62828 : 0x1565C0)
+    .addTextDisplayComponents(
+      new TextDisplayBuilder().setContent("# 📊 Статистика помощи"),
+      new TextDisplayBuilder().setContent([
+        `Записей: **${helpers.length}** • страница **${currentPage + 1}/${totalPages}**`,
+        statusText,
+        confirmClear ? "Подтверди полную очистку. История заявок не будет удалена." : "",
+      ].filter(Boolean).join("\n"))
+    );
+
+  if (!visibleHelpers.length) {
+    container.addTextDisplayComponents(new TextDisplayBuilder().setContent("Пока нет сохранённой статистики helper-ов."));
+  }
+
+  for (const helper of visibleHelpers) {
+    container.addSectionComponents(
+      new SectionBuilder()
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent([
+          `<@${helper.userId}>`,
+          `Откликнулся: **${helper.responded}** • ссылки: **${helper.linkGranted}** • пришёл: **${helper.confirmedArrived}**`,
+          helper.lastHelpedAt ? `Последняя помощь: ${helper.lastHelpedAt}` : "",
+        ].filter(Boolean).join("\n")))
+        .setButtonAccessory(
+          new ButtonBuilder()
+            .setCustomId(statsButtonId("delete", `${helper.userId}:${currentPage}`))
+            .setLabel("🗑️ Удалить")
+            .setStyle(ButtonStyle.Danger)
+        )
+    );
+  }
+
+  if (totalPages > 1) {
+    container.addActionRowComponents(
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(statsButtonId("page", String(Math.max(0, currentPage - 1))))
+          .setLabel("◀️ Назад")
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(currentPage === 0),
+        new ButtonBuilder()
+          .setCustomId(statsButtonId("page", String(Math.min(totalPages - 1, currentPage + 1))))
+          .setLabel("Вперёд ▶️")
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(currentPage >= totalPages - 1)
+      )
+    );
+  }
+
+  container.addActionRowComponents(
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(ANTITEAM_CUSTOM_IDS.refreshPanel).setLabel("↩️ В панель").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId(confirmClear ? ANTITEAM_CUSTOM_IDS.statsClearConfirm : ANTITEAM_CUSTOM_IDS.statsClear)
+        .setLabel(confirmClear ? "🔥 Да, стереть всё" : "🧹 Очистить всё")
+        .setStyle(ButtonStyle.Danger)
+        .setDisabled(!helpers.length)
+    )
+  );
 
   return buildPayload(container, { ephemeral: true });
 }
@@ -363,14 +375,14 @@ function buildPanelTextModal(config = createDefaultAntiteamConfig()) {
 function buildRobloxUsernameModal({
   customId = "at:roblox",
   title = "Roblox не найден в профиле",
-  label = "Roblox username аккаунта",
-  placeholder = "Только ник, например Builderman",
+  label = "Roblox ник аккаунта",
+  placeholder = "Например Builderman",
   initialValue = "",
 } = {}) {
   const input = new TextInputBuilder()
     .setCustomId("roblox_username")
-    .setLabel(cleanString(label, 45) || "Roblox username")
-    .setPlaceholder(cleanString(placeholder, 100) || "Только ник, например Builderman")
+    .setLabel(cleanString(label, 45) || "Roblox ник")
+    .setPlaceholder(cleanString(placeholder, 100) || "Например Builderman")
     .setStyle(TextInputStyle.Short)
     .setMinLength(3)
     .setMaxLength(20)
@@ -572,63 +584,83 @@ function buildClanRolesSelect(draft = {}, config = createDefaultAntiteamConfig()
   );
 }
 
-function buildDraftActionRows(draft = {}) {
+function getDraftRobloxLine(draft = {}, statusText = "") {
+  const robloxLabel = `Roblox: **${draft.roblox?.username || "—"}**${draft.roblox?.userId ? ` (${draft.roblox.userId})` : ""}`;
+  const status = cleanString(statusText, 240);
+  if (/взят из твоего профиля/i.test(status)) return `${robloxLabel} • взят из профиля`;
+  if (/подтвержд[её]н|найден через API/i.test(status)) return `${robloxLabel} • подтверждён`;
+  if (/готов/i.test(status)) return `${robloxLabel} • готов`;
+  return robloxLabel;
+}
+
+function buildDraftDescriptionRow(draft = {}) {
   const hasDescription = Boolean(cleanString(draft.description, 900));
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(ANTITEAM_CUSTOM_IDS.editDescription)
+      .setLabel(hasDescription ? "📝 Изменить описание" : "📝 Заполнить описание")
+      .setStyle(hasDescription ? ButtonStyle.Secondary : ButtonStyle.Primary)
+  );
+}
+
+function buildDraftSettingsSections(draft = {}) {
   return [
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId(ANTITEAM_CUSTOM_IDS.toggleDirect)
-        .setLabel(`Вход без др: ${formatDirectJoinValue(draft.directJoinEnabled)}`)
-        .setStyle(draft.directJoinEnabled ? ButtonStyle.Success : ButtonStyle.Secondary),
-      new ButtonBuilder()
-        .setCustomId(ANTITEAM_CUSTOM_IDS.togglePhoto)
-        .setLabel(`Фото: ${formatDirectJoinValue(draft.photoWanted)}`)
-        .setStyle(draft.photoWanted ? ButtonStyle.Success : ButtonStyle.Secondary),
-      new ButtonBuilder()
-        .setCustomId(ANTITEAM_CUSTOM_IDS.editDescription)
-        .setLabel(hasDescription ? "Изменить описание" : "Заполнить описание")
-        .setStyle(hasDescription ? ButtonStyle.Secondary : ButtonStyle.Primary)
-    ),
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId(ANTITEAM_CUSTOM_IDS.submitDraft)
-        .setLabel(draft.photoWanted ? "Дальше к фото" : "Отправить заявку")
-        .setStyle(ButtonStyle.Primary)
-        .setDisabled(!hasDescription),
-      new ButtonBuilder()
-        .setCustomId(ANTITEAM_CUSTOM_IDS.cancelDraft)
-        .setLabel("Отменить")
-        .setStyle(ButtonStyle.Secondary)
-    ),
+    new SectionBuilder()
+      .addTextDisplayComponents(new TextDisplayBuilder().setContent([
+        "**Вход без друзей**",
+        "Ставь «есть», если Roblox разрешает подключаться к тебе без добавления в друзья.",
+      ].join("\n")))
+      .setButtonAccessory(
+        new ButtonBuilder()
+          .setCustomId(ANTITEAM_CUSTOM_IDS.toggleDirect)
+          .setLabel(draft.directJoinEnabled ? "🔓 Есть" : "🔒 Нету")
+          .setStyle(draft.directJoinEnabled ? ButtonStyle.Success : ButtonStyle.Secondary)
+      ),
+    new SectionBuilder()
+      .addTextDisplayComponents(new TextDisplayBuilder().setContent([
+        "**Фото к заявке**",
+        "При «есть» бот попросит следующим сообщением отправить скрин.",
+      ].join("\n")))
+      .setButtonAccessory(
+        new ButtonBuilder()
+          .setCustomId(ANTITEAM_CUSTOM_IDS.togglePhoto)
+          .setLabel(draft.photoWanted ? "📸 Есть" : "🖼️ Нету")
+          .setStyle(draft.photoWanted ? ButtonStyle.Success : ButtonStyle.Secondary)
+      ),
   ];
+}
+
+function buildDraftSubmitRow(draft = {}) {
+  const hasDescription = Boolean(cleanString(draft.description, 900));
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(ANTITEAM_CUSTOM_IDS.submitDraft)
+      .setLabel(draft.photoWanted ? "📸 Дальше к фото" : "🚀 Отправить заявку")
+      .setStyle(ButtonStyle.Primary)
+      .setDisabled(!hasDescription),
+    new ButtonBuilder()
+      .setCustomId(ANTITEAM_CUSTOM_IDS.cancelDraft)
+      .setLabel("✖️ Отменить")
+      .setStyle(ButtonStyle.Secondary)
+  );
 }
 
 function buildTicketSetupPayload(draft = {}, config = createDefaultAntiteamConfig(), statusText = "") {
   const isClan = draft.kind === "clan";
   const level = getLevelMeta(draft.level);
   const count = getCountMeta(draft.count);
-  const directInfo = `Вход без др: **${formatDirectJoinValue(draft.directJoinEnabled)}** — ставь «есть», если Roblox пускает к тебе не-друзей.`;
   const container = new ContainerBuilder()
     .setAccentColor(isClan ? 0xB71C1C : level.accentColor)
     .addTextDisplayComponents(
       new TextDisplayBuilder().setContent(isClan ? "# Клан-аларм" : "# Заявка антитима"),
       new TextDisplayBuilder().setContent([
         isClan && draft.anchorUserId
-          ? `Якорь: <@${draft.anchorUserId}> • Roblox: **${draft.roblox?.username || "—"}**${draft.roblox?.userId ? ` (${draft.roblox.userId})` : ""}`
-          : `Roblox: **${draft.roblox?.username || "—"}**${draft.roblox?.userId ? ` (${draft.roblox.userId})` : ""}`,
+          ? `Якорь: <@${draft.anchorUserId}> • ${getDraftRobloxLine(draft, statusText)}`
+          : getDraftRobloxLine(draft, statusText),
         isClan ? "Якорь не должен выходить с сервера. По нему будут подключаться помощники." : `${level.emoji} **${level.label}** • ${count.label} тимеров`,
-        directInfo,
-        `Фото: **${formatDirectJoinValue(draft.photoWanted)}** — при «есть» следующим сообщением запросим скрин.`,
-        statusText,
+        statusText && !/roblox (взят|подтвержд|найден|готов)/i.test(cleanString(statusText, 240)) ? statusText : "",
       ].filter(Boolean).join("\n"))
     );
-
-  container
-    .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent([
-      "**Описание обязательно**",
-      draft.description || "Опиши, кто тимится, что происходит и кого бить: ники, kills, место или любой понятный метод.",
-    ].join("\n")));
 
   if (isClan) {
     container.addActionRowComponents(buildClanRolesSelect(draft, config));
@@ -636,7 +668,17 @@ function buildTicketSetupPayload(draft = {}, config = createDefaultAntiteamConfi
     container.addActionRowComponents(buildLevelSelect(draft), buildCountSelect(draft));
   }
 
-  container.addActionRowComponents(...buildDraftActionRows(draft));
+  container
+    .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent([
+      "**Описание обязательно**",
+      draft.description || "Опиши, кто тимится, что происходит и кого бить: ники, kills, место или любой понятный метод.",
+    ].join("\n")))
+    .addActionRowComponents(buildDraftDescriptionRow(draft))
+    .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
+    .addSectionComponents(...buildDraftSettingsSections(draft))
+    .addSeparatorComponents(new SeparatorBuilder().setDivider(false))
+    .addActionRowComponents(buildDraftSubmitRow(draft));
   return buildPayload(container, { ephemeral: true });
 }
 
@@ -663,7 +705,7 @@ function buildPhotoRequestPayload(draft = {}, statusText = "") {
 function buildTicketTitle(ticket = {}) {
   const isClosed = ticket.status === "closed";
   if (ticket.kind === "clan") return `${isClosed ? "⚫" : "⚔️"} Клан-аларм`;
-  return `${isClosed ? "⚫" : getLevelMeta(ticket.level).emoji} ${formatCountHeadline(ticket.count)}`;
+  return `${isClosed ? "⚫ Завершено" : `${getLevelMeta(ticket.level).emoji} Нужна помощь`} • ${formatCountHeadline(ticket.count)}`;
 }
 
 function buildThreadName(ticket = {}) {
@@ -672,46 +714,66 @@ function buildThreadName(ticket = {}) {
   return `${isClosed ? "⚫" : getLevelMeta(ticket.level).emoji} ${formatCountHeadline(ticket.count)} • ${formatRequesterName(ticket)}`;
 }
 
+function formatPublicRobloxLink(ticket = {}) {
+  const profileUrl = cleanString(ticket.roblox?.profileUrl, 500)
+    || (ticket.roblox?.userId ? `https://www.roblox.com/users/${ticket.roblox.userId}/profile` : "");
+  const username = cleanString(ticket.roblox?.username, 120);
+  if (!username) return "**—**";
+  return `**${username}**${profileUrl ? ` ([профиль](${profileUrl}))` : ""}`;
+}
+
+function formatPublicDifficulty(ticket = {}) {
+  const isClosed = ticket.status === "closed";
+  const level = getLevelMeta(ticket.level);
+  const descriptions = {
+    low: "почти вся команда до ~2k kills; если есть 8k+ игрок, повышай минимум до средних.",
+    medium: "большинство команды 2k-8k kills; если 8k+ хотя бы треть, повышай до высоких.",
+    high: "8k+ kills; выбирай, если таких хотя бы треть команды.",
+  };
+  return `${isClosed ? "⚫" : level.emoji} **${level.label}**: ${descriptions[level.id] || level.description}`;
+}
+
+function formatHelpersBlock(ticket = {}) {
+  const helpers = Object.values(ticket.helpers || {})
+    .sort((left, right) => String(left.respondedAt || "").localeCompare(String(right.respondedAt || "")) || String(left.userId || "").localeCompare(String(right.userId || "")));
+  const confirmed = helpers.filter((helper) => helper.arrived === true);
+  const isClosed = ticket.status === "closed";
+  if (!helpers.length) return "Пока никто не отозвался.";
+  const helperLine = helpers.slice(0, 8)
+    .map((helper) => isClosed ? `${helper.arrived ? "✅" : "❌"} <@${helper.userId}>` : `<@${helper.userId}>`)
+    .join(" • ");
+  const overflow = helpers.length > 8 ? ` +${helpers.length - 8}` : "";
+  return [
+    `Откликнулись: **${helpers.length}** • пришли: **${confirmed.length}**`,
+    `${helperLine}${overflow}`,
+    ticket.closeSummary?.text ? `Итог: ${ticket.closeSummary.text}` : "",
+  ].filter(Boolean).join("\n");
+}
+
 function buildTicketPublicPayload(ticket = {}, config = createDefaultAntiteamConfig(), options = {}) {
   const isClosed = ticket.status === "closed";
   const isClan = ticket.kind === "clan";
   const level = getLevelMeta(ticket.level);
-  const count = getCountMeta(ticket.count);
-  const helperIds = Object.keys(ticket.helpers || {});
-  const confirmed = helperIds.filter((userId) => ticket.helpers[userId]?.arrived === true);
-  const helperRosterLine = buildHelperRosterLine(ticket);
-  const profileUrl = ticket.roblox?.profileUrl || (ticket.roblox?.userId ? `https://www.roblox.com/users/${ticket.roblox.userId}/profile` : "");
-  const robloxText = ticket.roblox?.username
-    ? `🎮 **${ticket.roblox.username}**${profileUrl ? ` ([профиль](${profileUrl}))` : ""}`
-    : "🎮 **—**";
   const authorLine = isClan && ticket.anchorUserId
-    ? `👤 Автор: <@${ticket.createdBy}> • 🧷 Якорь: <@${ticket.anchorUserId}> • ${robloxText}`
-    : `👤 <@${ticket.createdBy}> • ${robloxText}`;
-  const dangerText = buildCompactDangerLine(ticket, level);
+    ? `Попросил 👤 <@${ticket.createdBy}> • Якорь <@${ticket.anchorUserId}> • ${formatPublicRobloxLink(ticket)}`
+    : `Попросил 👤 <@${ticket.createdBy}> • ${formatPublicRobloxLink(ticket)}`;
+  const dangerText = isClan
+    ? "Клан-аларм: якорь должен оставаться в игре до завершения тревоги."
+    : formatPublicDifficulty(ticket);
   const container = new ContainerBuilder()
     .setAccentColor(isClosed ? 0x607D8B : isClan ? 0xB71C1C : level.accentColor)
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(`# ${buildTicketTitle(ticket)}`));
-
-  const heroLines = [authorLine, buildRouteSummary(ticket), dangerText].filter(Boolean);
-  const heroSection = buildTicketHeroSection(ticket, heroLines);
-  if (heroSection) {
-    container.addSectionComponents(heroSection);
-  } else {
-    container.addTextDisplayComponents(new TextDisplayBuilder().setContent(joinContentLines(heroLines, "—", 1400)));
-  }
-
-  container
+    .addTextDisplayComponents(
+      new TextDisplayBuilder().setContent(`# ${buildTicketTitle(ticket)}`),
+      new TextDisplayBuilder().setContent(joinContentLines([
+        authorLine,
+        dangerText,
+        `Вход без др: **${formatDirectJoinValue(ticket.directJoinEnabled)}** • статус: **${formatTicketStatus(ticket)}**`,
+      ], "—", 1400))
+    )
     .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
-    .addTextDisplayComponents(buildText("Что происходит", buildQuotedDescription(ticket.description)));
-
-  const closeSummaryText = cleanString(ticket.closeSummary?.text, 240)
-    ? `Итог: ${cleanString(ticket.closeSummary.text, 240)}`
-    : "";
-  if (helperRosterLine || closeSummaryText) {
-    container
-      .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
-      .addTextDisplayComponents(buildText(helperRosterLine ? "Откликнулись" : "Итог", [helperRosterLine, closeSummaryText].filter(Boolean)));
-  }
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(`### Для тех кто отозвался\n${formatHelpersBlock(ticket)}`))
+    .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(`### Описание\n${buildQuotedDescription(ticket.description)}`));
 
   const photoUrl = cleanString(ticket.photo?.url, 2000);
   const shouldAttachPhoto = options.attachPhoto === true && photoUrl;
@@ -741,67 +803,52 @@ function ticketButtonId(action, ticketId, extra = "") {
 
 function buildThreadPanelPayload(ticket = {}, config = createDefaultAntiteamConfig()) {
   const isClosed = ticket.status === "closed";
-  const authorLine = ticket.kind === "clan" && ticket.anchorUserId
-    ? `👤 Автор: <@${ticket.createdBy}> • 🧷 Якорь: <@${ticket.anchorUserId}>`
-    : `👤 <@${ticket.createdBy}>`;
-  const helperRosterLine = buildHelperRosterLine(ticket);
-  const container = new ContainerBuilder()
-    .setAccentColor(isClosed ? 0x607D8B : ticket.kind === "clan" ? 0xB71C1C : getLevelMeta(ticket.level).accentColor)
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(isClosed ? "# ⚫ Миссия закрыта" : "# 🫡 Сбор помощи"));
-
-  const heroLines = isClosed
-    ? [
-      authorLine,
-      helperRosterLine ? `Откликнулись: ${helperRosterLine}` : "Откликнувшихся не было.",
-      "🔒 Ветка закрыта для работы и отправлена в архив.",
-      "📝 Итог и отметки helper-ов смотри в основной заявке.",
-    ]
-    : [
-      authorLine,
-      buildRouteSummary(ticket),
-      helperRosterLine ? `Откликнулись: ${helperRosterLine}` : "Откликнувшихся пока нет.",
-      "🎮 После кнопки бот сам выдаст direct join, профиль или friend request.",
-    ];
-  const heroSection = buildTicketHeroSection(ticket, heroLines);
-  if (heroSection) {
-    container.addSectionComponents(heroSection);
-  } else {
-    container.addTextDisplayComponents(new TextDisplayBuilder().setContent(joinContentLines(heroLines, "—", 1400)));
-  }
-
-  if (!isClosed && cleanString(ticket.description, 900)) {
-    container
-      .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
-      .addTextDisplayComponents(buildText("Контекст", buildQuotedDescription(ticket.description)));
-  }
-
-  if (!isClosed) {
-    container.addSeparatorComponents(new SeparatorBuilder().setDivider(true));
-    container.addActionRowComponents(
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(ticketButtonId("help", ticket.id)).setLabel("Помочь").setEmoji("🫡").setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId(ticketButtonId("report", ticket.id)).setLabel("Пожаловаться").setEmoji("⚠️").setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId(ticketButtonId("escalate", ticket.id)).setLabel("Повысить опасность").setEmoji("📈").setStyle(ButtonStyle.Danger).setDisabled(ticket.kind === "clan"),
-        new ButtonBuilder().setCustomId(ticketButtonId("close", ticket.id)).setLabel("Завершить").setEmoji("✅").setStyle(ButtonStyle.Success)
-      )
-    );
-  }
-
-  return buildPayload(container);
+  return {
+    components: [new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(ticketButtonId("help", ticket.id))
+      .setLabel("🙋 Помочь")
+      .setStyle(ButtonStyle.Primary)
+      .setDisabled(isClosed),
+    new ButtonBuilder()
+      .setCustomId(ticketButtonId("report", ticket.id))
+      .setLabel("⚠️ Пожаловаться")
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(isClosed),
+    new ButtonBuilder()
+      .setCustomId(ticketButtonId("escalate", ticket.id))
+      .setLabel("📈 Повысить")
+      .setStyle(ButtonStyle.Danger)
+      .setDisabled(isClosed || ticket.kind === "clan"),
+    new ButtonBuilder()
+      .setCustomId(ticketButtonId("close", ticket.id))
+      .setLabel(isClosed ? "✅ Закрыто" : "✅ Завершить")
+      .setStyle(ButtonStyle.Success)
+      .setDisabled(isClosed)
+    )],
+  };
 }
 
-function buildHelpReplyPayload({ ticket = {}, linkKind = "", directJoinUrl = "", profileUrl = "", friendRequestsUrl = "" } = {}) {
+function buildHelpReplyPayload({ ticket = {}, linkKind = "", directJoinUrl = "", profileUrl = "", friendRequestsUrl = "", bridgeLabel = "" } = {}) {
   const lines = [];
   const targetLabel = ticket.kind === "clan" ? "якоря" : "автора";
-  if (linkKind === "direct" || linkKind === "friend_direct") {
-    lines.push("Можно подключаться быстрым путём.");
+  if (linkKind === "direct") {
+    lines.push("Прямой вход включён. Можно подключаться сразу.");
+  } else if (linkKind === "friend_direct") {
+    lines.push(`Ты уже Roblox-друг ${targetLabel}. Можно подключаться напрямую.`);
+  } else if (linkKind === "bridge_direct") {
+    lines.push(`Автор сейчас в игре с твоим Roblox-другом${bridgeLabel ? `: **${bridgeLabel}**` : ""}. Можно подключиться через него.`);
+  }
+
+  if (linkKind === "direct" || linkKind === "friend_direct" || linkKind === "bridge_direct") {
     if (directJoinUrl) lines.push(`[Прямая ссылка подключения](${directJoinUrl})`);
     if (profileUrl) lines.push(`[Roblox профиль ${targetLabel}](${profileUrl})`);
   } else {
-    lines.push(`Прямой вход недоступен. Отправь ${targetLabel} friend request в Roblox.`);
+    lines.push(`Отправь ${targetLabel} friend request в Roblox.`);
+    if (directJoinUrl) lines.push(`[Ссылка подключения](${directJoinUrl}) станет рабочей после добавления в друзья.`);
     if (profileUrl) lines.push(`[Roblox профиль ${targetLabel}](${profileUrl})`);
-    if (friendRequestsUrl) lines.push(`[Входящие заявки Roblox](${friendRequestsUrl})`);
-    lines.push(`${ticket.kind === "clan" ? "Якорь" : "Автор"} получил сообщение в ветке с просьбой принять тебя.`);
+    if (friendRequestsUrl) lines.push(`[Где принимают заявки Roblox](${friendRequestsUrl})`);
+    lines.push("После отправки friend request нажми кнопку ниже, чтобы пингануть автора в ветке.");
   }
 
   const container = new ContainerBuilder()
@@ -810,6 +857,23 @@ function buildHelpReplyPayload({ ticket = {}, linkKind = "", directJoinUrl = "",
       new TextDisplayBuilder().setContent("# Помощь принята"),
       new TextDisplayBuilder().setContent(lines.join("\n"))
     );
+
+  const buttons = [];
+  if (directJoinUrl) {
+    buttons.push(new ButtonBuilder().setLabel("🔗 Подключиться").setStyle(ButtonStyle.Link).setURL(directJoinUrl));
+  }
+  if (profileUrl) {
+    buttons.push(new ButtonBuilder().setLabel("👤 Профиль").setStyle(ButtonStyle.Link).setURL(profileUrl));
+  }
+  if (linkKind === "friend_request") {
+    buttons.push(
+      new ButtonBuilder()
+        .setCustomId(ticketButtonId("friend_request_sent", ticket.id))
+        .setLabel("📨 Отправил др, пусть примет")
+        .setStyle(ButtonStyle.Primary)
+    );
+  }
+  if (buttons.length) container.addActionRowComponents(new ActionRowBuilder().addComponents(...buttons.slice(0, 5)));
   return buildPayload(container, { ephemeral: true });
 }
 
@@ -925,6 +989,7 @@ module.exports = {
   buildConfigModal,
   buildDescriptionModal,
   buildEscalateModal,
+  buildHelperStatsPayload,
   buildHelpReplyPayload,
   buildModeratorPanelPayload,
   buildPanelTextModal,

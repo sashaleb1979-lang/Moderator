@@ -155,7 +155,7 @@ test("roblox modal uses API lookup only for the current draft, grants battalion 
   assert.equal(db.sot.antiteam.drafts["user-1"].roblox.username, "Anchor");
   assert.equal(db.sot.antiteam.drafts["user-1"].roblox.avatarUrl, "https://tr.rbxcdn.com/anchor-headshot.png");
   assert.equal(interaction.calls[0][0], "deferReply");
-  assert.match(JSON.stringify(interaction.calls.at(-1)[1].components[0].toJSON()), /Для общего профиля привязка не менялась/);
+  assert.match(JSON.stringify(interaction.calls.at(-1)[1].components[0].toJSON()), /Roblox: \*\*Anchor\*\* \(101\) • подтверждён/);
   assert.equal(interaction.calls.at(-1)[1].flags, MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral);
 });
 
@@ -299,7 +299,7 @@ test("start panel submit button reuses verified Roblox from profile", async () =
   assert.equal(interaction.calls[1][0], "editReply");
   assert.equal(db.sot.antiteam.drafts["user-1"].roblox.username, "AlreadyLinked");
   assert.deepEqual(granted, [{ userId: "user-1", roleId: "battalion-role" }]);
-  assert.match(JSON.stringify(interaction.calls[1][1].components[0].toJSON()), /Roblox взят из твоего профиля/);
+  assert.match(JSON.stringify(interaction.calls[1][1].components[0].toJSON()), /Roblox: \*\*AlreadyLinked\*\* \(101\) • взят из профиля/);
 });
 
 test("start panel submit resets a stale clan draft back to the caller Roblox profile", async () => {
@@ -338,7 +338,7 @@ test("start panel submit resets a stale clan draft back to the caller Roblox pro
   assert.equal(draft.roblox.username, "AlreadyLinked");
 });
 
-test("help button records friend-request path and notifies author", async () => {
+test("help button records friend-request path and notifies author only after helper confirms request", async () => {
   const db = {};
   const state = ensureAntiteamState(db).state;
   state.config.channelId = "channel-1";
@@ -382,16 +382,22 @@ test("help button records friend-request path and notifies author", async () => 
   assert.equal(ticket.helpers["helper-1"].linkKind, "friend_request");
   assert.equal(db.sot.antiteam.stats.helpers["helper-1"].responded, 1);
   assert.equal(db.sot.antiteam.stats.helpers["helper-1"].linkGranted, 1);
-  assert.equal(threadNotices.length, 2);
+  assert.equal(threadNotices.length, 0);
   assert.equal(dm.length, 0);
+  assert.match(JSON.stringify(interaction.calls.at(-1)[1].components[0].toJSON()), /Отправил др, пусть примет/);
+
+  const sentInteraction = createButtonInteraction(ticketButtonId("friend_request_sent", "ticket-1"));
+  assert.equal(await operator.handleButtonInteraction(sentInteraction), true);
+
+  assert.equal(threadNotices.length, 1);
   assert.match(threadNotices[0].content, /<@author-1>/);
-  assert.match(threadNotices[0].content, /<@helper-1> сейчас отправит тебе friend request/);
+  assert.match(threadNotices[0].content, /<@helper-1> отправил тебе friend request/);
   assert.match(threadNotices[0].content, /Принять заявки/);
   assert.deepEqual(threadNotices[0].allowedMentions.users, ["author-1", "helper-1"]);
-  assert.match(JSON.stringify(interaction.calls.at(-1)[1].components[0].toJSON()), /Помощь принята/);
+  assert.match(JSON.stringify(sentInteraction.calls.at(-1)[1].components[0].toJSON()), /Помощь принята/);
 });
 
-test("help button acknowledges before thread notice and ticket sync", async () => {
+test("help button acknowledges before ticket sync without thread notice spam", async () => {
   const db = {};
   const state = ensureAntiteamState(db).state;
   state.config.channelId = "channel-1";
@@ -474,7 +480,7 @@ test("help button acknowledges before thread notice and ticket sync", async () =
 
   assert.deepEqual(events.slice(0, 2), ["deferReply", "editReply"]);
   assert.deepEqual(interaction.calls.map((call) => call[0]), ["deferReply", "editReply"]);
-  assert.ok(events.includes("thread.send"));
+  assert.ok(!events.includes("thread.send"));
   assert.ok(events.includes("public.edit"));
   assert.ok(events.includes("panel.edit"));
 });
@@ -512,11 +518,78 @@ test("clan friend-request notice pings the selected anchor in the thread", async
   });
 
   assert.equal(await operator.handleButtonInteraction(createButtonInteraction("at:help:ticket-clan")), true);
+  assert.equal(threadNotices.length, 0);
+  assert.equal(await operator.handleButtonInteraction(createButtonInteraction(ticketButtonId("friend_request_sent", "ticket-clan"))), true);
 
   assert.equal(threadNotices.length, 1);
   assert.match(threadNotices[0].content, /<@anchor-1>/);
   assert.match(threadNotices[0].content, /клан-аларму/);
   assert.deepEqual(threadNotices[0].allowedMentions.users, ["anchor-1", "helper-1"]);
+});
+
+test("help button can route through a Roblox friend currently in the author's game", async () => {
+  const db = {
+    profiles: {
+      "helper-1": {
+        domains: { roblox: { userId: "202", username: "HelperRoblox", verificationStatus: "verified" } },
+      },
+      "bridge-1": {
+        domains: { roblox: { userId: "303", username: "BridgeFriend", verificationStatus: "verified" } },
+      },
+    },
+  };
+  const state = ensureAntiteamState(db).state;
+  state.config.channelId = "channel-1";
+  state.config.roblox.jjsPlaceId = "place-1";
+  const draft = setAntiteamDraft(db, "author-1", {
+    userTag: "Author",
+    roblox: { userId: "101", username: "Anchor", profileUrl: "https://www.roblox.com/users/101/profile" },
+    level: "medium",
+    count: "2-4",
+    description: "Цели A/B.",
+  }, { now: "2026-05-16T10:00:00.000Z" });
+  createAntiteamTicketFromDraft(db, draft, {
+    id: "ticket-1",
+    now: "2026-05-16T10:01:00.000Z",
+  });
+  db.sot.antiteam.tickets["ticket-1"].message = {
+    channelId: "channel-1",
+    messageId: "message-1",
+    threadId: "thread-1",
+    threadPanelMessageId: "panel-1",
+  };
+
+  const operator = createAntiteamOperator({
+    db,
+    now: () => "2026-05-16T10:02:00.000Z",
+    saveDb() {},
+    getRobloxRuntimeState: () => ({
+      activeSessionsByDiscordUserId: {
+        "author-1": { gameId: "game-1" },
+        "bridge-1": { gameId: "game-1" },
+      },
+    }),
+    fetchRobloxFriends: async (robloxUserId) => robloxUserId === "202" ? [{ userId: "303" }] : [],
+    fetchRobloxPresences: async (robloxUserIds) => robloxUserIds[0] === "303"
+      ? [{ userId: 303, placeId: "place-1", gameId: "game-1" }]
+      : [],
+    fetchChannel: async () => ({
+      messages: {
+        fetch: async () => ({ edit: async () => {} }),
+      },
+    }),
+  });
+  const interaction = createButtonInteraction("at:help:ticket-1");
+
+  assert.equal(await operator.handleButtonInteraction(interaction), true);
+
+  const ticket = db.sot.antiteam.tickets["ticket-1"];
+  assert.equal(ticket.helpers["helper-1"].linkKind, "bridge_direct");
+  assert.equal(ticket.helpers["helper-1"].bridgeDiscordUserId, "bridge-1");
+  const json = JSON.stringify(interaction.calls.at(-1)[1].components[0].toJSON());
+  assert.match(json, /BridgeFriend/);
+  assert.match(json, /Прямая ссылка подключения/);
+  assert.doesNotMatch(json, /Отправил др/);
 });
 
 test("close review rejects moderator role without admin permissions", async () => {
@@ -680,6 +753,57 @@ test("draft toggle and select acknowledge before editing the setup panel", async
   assert.equal(db.sot.antiteam.drafts["user-1"].count, "4-10");
 });
 
+test("description modal updates the same setup message when update is available", async () => {
+  const db = {};
+  setAntiteamDraft(db, "user-1", {
+    userTag: "User",
+    roblox: { userId: "101", username: "Anchor" },
+  }, { now: "2026-05-16T10:00:00.000Z" });
+  const operator = createAntiteamOperator({
+    db,
+    now: () => "2026-05-16T10:01:00.000Z",
+    saveDb() {},
+  });
+  const interaction = createModalInteraction("at:desc:modal", { description: "Бить A/B у центра." });
+  interaction.update = async (payload) => {
+    interaction.calls.push(["update", payload]);
+  };
+
+  assert.equal(await operator.handleModalSubmitInteraction(interaction), true);
+
+  assert.equal(db.sot.antiteam.drafts["user-1"].description, "Бить A/B у центра.");
+  assert.deepEqual(interaction.calls.map((call) => call[0]), ["update"]);
+  assert.match(JSON.stringify(interaction.calls[0][1].components[0].toJSON()), /Бить A\/B у центра/);
+});
+
+test("moderator stats controls delete one helper and clear the aggregate table", async () => {
+  const db = {};
+  const state = ensureAntiteamState(db).state;
+  state.stats.helpers["helper-1"] = { responded: 2, linkGranted: 2, confirmedArrived: 1, lastHelpedAt: "2026-05-16T10:00:00.000Z" };
+  state.stats.helpers["helper-2"] = { responded: 1, linkGranted: 1, confirmedArrived: 0, lastHelpedAt: "2026-05-16T10:01:00.000Z" };
+  const operator = createAntiteamOperator({
+    db,
+    saveDb() {},
+  });
+  const member = { permissions: { has: () => true }, roles: { cache: new Map() } };
+
+  const open = createButtonInteraction(ANTITEAM_CUSTOM_IDS.stats, { id: "mod-1", username: "Mod" });
+  open.member = member;
+  assert.equal(await operator.handleButtonInteraction(open), true);
+  assert.match(JSON.stringify(open.calls[0][1].components[0].toJSON()), /Статистика помощи/);
+
+  const deleteOne = createButtonInteraction("at:stats:delete:helper-1:0", { id: "mod-1", username: "Mod" });
+  deleteOne.member = member;
+  assert.equal(await operator.handleButtonInteraction(deleteOne), true);
+  assert.equal(db.sot.antiteam.stats.helpers["helper-1"], undefined);
+  assert.equal(db.sot.antiteam.stats.helpers["helper-2"].responded, 1);
+
+  const clearAll = createButtonInteraction(ANTITEAM_CUSTOM_IDS.statsClearConfirm, { id: "mod-1", username: "Mod" });
+  clearAll.member = member;
+  assert.equal(await operator.handleButtonInteraction(clearAll), true);
+  assert.deepEqual(db.sot.antiteam.stats.helpers, {});
+});
+
 test("photo collector publishes ticket with reattached image and deletes upload", async () => {
   const db = {};
   ensureAntiteamState(db).state.config.channelId = "channel-1";
@@ -805,8 +929,8 @@ test("closing ticket edits messages and renames thread with gray marker", async 
   assert.equal(await operator.handleModalSubmitInteraction(interaction), true);
 
   assert.equal(renamedTo, "⚫ 2-4 тимеров • Author");
-  assert.match(JSON.stringify(publicEdit.components[0].toJSON()), /⚫ 2-4 тимеров/);
-  assert.match(JSON.stringify(threadPanelEdit.components[0].toJSON()), /⚫ Миссия закрыта/);
+  assert.match(JSON.stringify(publicEdit.components[0].toJSON()), /⚫ Завершено • 2-4 тимеров/);
+  assert.match(JSON.stringify(threadPanelEdit.components[0].toJSON()), /✅ Закрыто/);
 });
 
 test("closing ticket removes ping message, locks thread, archives it, and removes non-admin members", async () => {
@@ -960,7 +1084,7 @@ test("closing ticket writes helper result markers into the public message", asyn
 
   assert.equal(await operator.handleModalSubmitInteraction(interaction), true);
 
-  assert.match(JSON.stringify(publicEdit.components[0].toJSON()), /### Откликнулись/);
+  assert.match(JSON.stringify(publicEdit.components[0].toJSON()), /### Для тех кто отозвался/);
   assert.match(JSON.stringify(publicEdit.components[0].toJSON()), /✅ <@helper-1> • ❌ <@helper-2>/);
 });
 

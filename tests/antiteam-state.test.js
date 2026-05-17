@@ -5,6 +5,8 @@ const assert = require("node:assert/strict");
 const {
   closeAntiteamTicket,
   createAntiteamTicketFromDraft,
+  clearHelperStats,
+  deleteHelperStats,
   ensureAntiteamState,
   incrementHelperStats,
   matchRobloxFriendsToDiscordProfiles,
@@ -82,6 +84,19 @@ test("antiteam ticket lifecycle records helpers and closes mission", () => {
   assert.equal(closed.status, "closed");
   assert.equal(closed.closeSummary.text, "won");
   assert.equal(db.sot.antiteam.stats.helpers["helper-1"].responded, 1);
+});
+
+test("antiteam helper stats can delete one helper or clear the aggregate table", () => {
+  const db = {};
+  incrementHelperStats(db, "helper-1", { responded: 2, linkGranted: 1 }, { now: "2026-05-16T10:00:00.000Z" });
+  incrementHelperStats(db, "helper-2", { responded: 1, confirmedArrived: 1 }, { now: "2026-05-16T10:01:00.000Z" });
+
+  assert.equal(deleteHelperStats(db, "helper-1"), true);
+  assert.equal(deleteHelperStats(db, "missing"), false);
+  assert.equal(db.sot.antiteam.stats.helpers["helper-1"], undefined);
+  assert.equal(db.sot.antiteam.stats.helpers["helper-2"].confirmedArrived, 1);
+  assert.equal(clearHelperStats(db), 1);
+  assert.deepEqual(db.sot.antiteam.stats.helpers, {});
 });
 
 test("clan ticket keeps selected Discord anchor metadata", () => {
