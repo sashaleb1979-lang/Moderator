@@ -506,6 +506,77 @@ function filterEntries(entries = [], predicate, limit = ROBLOX_PANEL_TOP_LIMIT) 
   return entries.filter((entry) => predicate(entry)).slice(0, limit);
 }
 
+function hasRobloxEverSeenInGame(entry = {}) {
+  return Boolean(
+    entry.isActiveInRuntime
+    || cleanString(entry.lastSeenInJjsAt, 80)
+    || normalizeNonNegativeInteger(entry.totalJjsMinutes, 0) > 0
+  );
+}
+
+function formatRobloxAuthenticatedEntryLabel(entry = {}) {
+  return entry.robloxUsername
+    ? `${entry.displayName} -> ${entry.robloxUsername}`
+    : entry.displayName;
+}
+
+function compareRobloxAuthenticatedEntries(left = {}, right = {}) {
+  const leftSeen = hasRobloxEverSeenInGame(left);
+  const rightSeen = hasRobloxEverSeenInGame(right);
+  if (leftSeen !== rightSeen) {
+    return Number(rightSeen) - Number(leftSeen);
+  }
+  return String(left.displayName).localeCompare(String(right.displayName), "ru");
+}
+
+function buildRobloxAuthenticatedListText(entries = [], limit = 3200) {
+  const verifiedEntries = Array.isArray(entries) ? entries : [];
+  if (!verifiedEntries.length) {
+    return "Пока нет подтверждённых Roblox-профилей.";
+  }
+
+  const lines = [];
+  let remainingCount = 0;
+  for (const entry of verifiedEntries) {
+    const line = `${hasRobloxEverSeenInGame(entry) ? "✓" : "—"} ${formatRobloxAuthenticatedEntryLabel(entry)}`;
+    const nextText = [...lines, line].join("\n");
+    if (nextText.length > limit) {
+      remainingCount += 1;
+      continue;
+    }
+    lines.push(line);
+  }
+
+  if (!lines.length) {
+    return `Пока не удалось показать список целиком. Всего подтверждённых: ${verifiedEntries.length}.`;
+  }
+
+  if (remainingCount > 0) {
+    const overflowLine = `+${remainingCount} ещё`;
+    const nextText = [...lines, overflowLine].join("\n");
+    if (nextText.length <= limit) {
+      lines.push(overflowLine);
+    }
+  }
+
+  return lines.join("\n");
+}
+
+function buildRobloxSimplePanelDescription(snapshot = {}) {
+  const summaryLines = [
+    "Список подтверждённых Roblox-профилей.",
+    "✓ = бот хотя бы раз фиксировал пользователя в игре.",
+    `Подтверждено: **${snapshot.totals?.verifiedUsers || 0}**`,
+    `С галочкой: **${snapshot.totals?.verifiedSeenUsers || 0}**`,
+    `Без галочки: **${snapshot.totals?.verifiedUnseenUsers || 0}**`,
+    "",
+  ];
+  const prefix = summaryLines.join("\n");
+  const remainingLimit = Math.max(200, 4096 - prefix.length - 1);
+  const listText = buildRobloxAuthenticatedListText(snapshot.lists?.verifiedEntries, remainingLimit);
+  return `${prefix}${listText}`;
+}
+
 function buildRobloxPanelIssues(snapshot = {}) {
   const issues = [];
   const metadataRefreshEnabled = snapshot.config?.metadataRefreshEnabled !== false;
@@ -552,6 +623,9 @@ function getRobloxStatsPanelSnapshot({ db = {}, runtimeState = {}, telemetry = n
   const entries = collectRobloxPanelEntries(db, runtimeState, {
     showRefreshDiagnostics: metadataRefreshEnabled,
   });
+  const verifiedEntries = entries
+    .filter((entry) => entry.verificationStatus === "verified")
+    .sort(compareRobloxAuthenticatedEntries);
   const verifiedTrackableUsers = countEntries(entries, (entry) => entry.trackingState === "trackable");
   const verifiedRepairableUsers = countEntries(entries, (entry) => entry.trackingState === "repairable");
   const verifiedManualOnlyUsers = countEntries(entries, (entry) => entry.trackingState === "manual_only");
@@ -559,6 +633,7 @@ function getRobloxStatsPanelSnapshot({ db = {}, runtimeState = {}, telemetry = n
   const verifiedNeverSeenInJjsUsers = countEntries(entries, (entry) => entry.trackingState === "trackable" && entry.activityState === "never_seen");
   const verifiedZeroMinuteUsers = countEntries(entries, (entry) => entry.trackingState === "trackable" && normalizeNonNegativeInteger(entry.totalJjsMinutes, 0) === 0);
   const staleSessionMarkerUsers = countEntries(entries, (entry) => entry.activityState === "stale_session_marker");
+  const verifiedSeenUsers = countEntries(verifiedEntries, (entry) => hasRobloxEverSeenInGame(entry));
   const topEntries = entries.slice(0, ROBLOX_PANEL_TOP_LIMIT);
   const snapshot = {
     config: {
@@ -578,6 +653,8 @@ function getRobloxStatsPanelSnapshot({ db = {}, runtimeState = {}, telemetry = n
       verifiedTrackableUsers,
       verifiedRepairableUsers,
       verifiedManualOnlyUsers,
+      verifiedSeenUsers,
+      verifiedUnseenUsers: Math.max(0, verifiedEntries.length - verifiedSeenUsers),
       verifiedSeenInJjsUsers,
       verifiedNeverSeenInJjsUsers,
       verifiedZeroMinuteUsers,
@@ -596,6 +673,7 @@ function getRobloxStatsPanelSnapshot({ db = {}, runtimeState = {}, telemetry = n
       runtimeFlush: cloneTelemetryJobState(telemetry?.jobs?.runtimeFlush, runtimeState),
     },
     lists: {
+      verifiedEntries,
       repairableEntries: filterEntries(entries, (entry) => entry.trackingState === "repairable"),
       manualOnlyEntries: filterEntries(entries, (entry) => entry.trackingState === "manual_only"),
       activeNowEntries: filterEntries(entries, (entry) => entry.activityState === "active_now"),
@@ -952,21 +1030,9 @@ function buildRobloxPanelFields(snapshot = {}, viewMode = ROBLOX_PANEL_DEFAULT_V
 
 function buildRobloxStatsPanelPayload({ db = {}, runtimeState = {}, telemetry = null, appConfig = {}, statusText = "", viewMode = ROBLOX_PANEL_DEFAULT_VIEW } = {}) {
   const snapshot = getRobloxStatsPanelSnapshot({ db, runtimeState, telemetry, appConfig });
-  const normalizedViewMode = normalizeRobloxPanelViewMode(viewMode);
-  const metadataRefreshEnabled = snapshot.config.metadataRefreshEnabled !== false;
-  const playtimeTrackingEnabled = snapshot.config.playtimeTrackingEnabled !== false;
-  const runtimeFlushEnabled = snapshot.config.runtimeFlushEnabled !== false;
-  const playtimePollMinutes = snapshot.config.playtimePollMinutes;
   const embed = new EmbedBuilder()
-    .setTitle("Контроль Roblox")
-    .setDescription([
-      "Компактный мод-пульт для Roblox-привязок, пассивного учёта JJS и ручных операций.",
-      `Вид: **${getRobloxPanelViewLabel(normalizedViewMode)}**`,
-      `Roblox footprint: **${snapshot.totals.footprintUsers}**`,
-      `Трекинг JJS: **${snapshot.config.jjsReady ? "готов" : "не настроен"}**`,
-      `Применение настроек: **сразу на живом боте**`,
-    ].join("\n"))
-    .addFields(...buildRobloxPanelFields(snapshot, normalizedViewMode));
+    .setTitle("Roblox")
+    .setDescription(buildRobloxSimplePanelDescription(snapshot));
 
   if (statusText) {
     embed.addFields({
@@ -980,31 +1046,8 @@ function buildRobloxStatsPanelPayload({ db = {}, runtimeState = {}, telemetry = 
     embeds: [embed],
     components: [
       new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId("roblox_stats_view_overview").setLabel("Обзор").setStyle(getRobloxPanelViewButtonStyle(normalizedViewMode, "overview")),
-        new ButtonBuilder().setCustomId("roblox_stats_view_coverage").setLabel("Покрытие").setStyle(getRobloxPanelViewButtonStyle(normalizedViewMode, "coverage")),
-        new ButtonBuilder().setCustomId("roblox_stats_view_activity").setLabel("Активность").setStyle(getRobloxPanelViewButtonStyle(normalizedViewMode, "activity")),
-        new ButtonBuilder().setCustomId("roblox_stats_view_errors").setLabel("Ошибки").setStyle(getRobloxPanelViewButtonStyle(normalizedViewMode, "errors")),
-        new ButtonBuilder().setCustomId(buildRobloxPanelScopedCustomId("roblox_stats_back", normalizedViewMode)).setLabel("Назад").setStyle(ButtonStyle.Secondary)
-      ),
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(buildRobloxPanelScopedCustomId("roblox_stats_refresh", normalizedViewMode)).setLabel("Обновить").setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId(buildRobloxPanelScopedCustomId("roblox_stats_run_playtime_sync", normalizedViewMode)).setLabel("Синк сейчас").setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId(buildRobloxPanelScopedCustomId("roblox_stats_run_flush", normalizedViewMode)).setLabel("Сохранить runtime").setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId(buildRobloxPanelScopedCustomId("roblox_stats_run_profile_refresh", normalizedViewMode)).setLabel("Обновить профили").setStyle(ButtonStyle.Secondary).setDisabled(!metadataRefreshEnabled)
-      ),
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(buildRobloxPanelScopedCustomId("roblox_stats_toggle_playtime", normalizedViewMode)).setLabel(buildToggleLabel("Учёт JJS", playtimeTrackingEnabled)).setStyle(getToggleButtonStyle(playtimeTrackingEnabled)),
-        new ButtonBuilder().setCustomId(buildRobloxPanelScopedCustomId("roblox_stats_toggle_metadata", normalizedViewMode)).setLabel(buildToggleLabel("Профили", metadataRefreshEnabled)).setStyle(getToggleButtonStyle(metadataRefreshEnabled)),
-        new ButtonBuilder().setCustomId(buildRobloxPanelScopedCustomId("roblox_stats_toggle_flush", normalizedViewMode)).setLabel(buildToggleLabel("Runtime", runtimeFlushEnabled)).setStyle(getToggleButtonStyle(runtimeFlushEnabled))
-      ),
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(buildRobloxPanelScopedCustomId("roblox_stats_set_poll_1", normalizedViewMode)).setLabel("1 мин").setStyle(getPollButtonStyle(playtimePollMinutes, 1)),
-        new ButtonBuilder().setCustomId(buildRobloxPanelScopedCustomId("roblox_stats_set_poll_3", normalizedViewMode)).setLabel("3 мин").setStyle(getPollButtonStyle(playtimePollMinutes, 3)),
-        new ButtonBuilder().setCustomId(buildRobloxPanelScopedCustomId("roblox_stats_set_poll_5", normalizedViewMode)).setLabel("5 мин").setStyle(getPollButtonStyle(playtimePollMinutes, 5)),
-        new ButtonBuilder().setCustomId(buildRobloxPanelScopedCustomId("roblox_stats_set_poll_10", normalizedViewMode)).setLabel("10 мин").setStyle(getPollButtonStyle(playtimePollMinutes, 10))
-      ),
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(buildRobloxPanelScopedCustomId("roblox_stats_clear_refresh_errors", normalizedViewMode)).setLabel("Очистить старые ошибки обновления").setStyle(ButtonStyle.Secondary)
+        new ButtonBuilder().setCustomId("roblox_stats_refresh").setLabel("Обновить").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId("roblox_stats_back").setLabel("Назад").setStyle(ButtonStyle.Secondary)
       ),
     ],
   };
@@ -1029,7 +1072,7 @@ async function handleRobloxStatsPanelButtonInteraction({
   runRuntimeFlush,
 } = {}) {
   const customId = String(interaction?.customId || "").trim();
-  const { baseCustomId, viewMode } = parseRobloxPanelCustomId(customId);
+  const { baseCustomId } = parseRobloxPanelCustomId(customId);
   if (![
     "panel_open_roblox_stats",
     "roblox_stats_view_overview",
@@ -1065,24 +1108,17 @@ async function handleRobloxStatsPanelButtonInteraction({
   if (getAppConfig != null && typeof getAppConfig !== "function") {
     throw new TypeError("getAppConfig must be a function");
   }
-  if (updateRobloxSettings != null && typeof updateRobloxSettings !== "function") {
-    throw new TypeError("updateRobloxSettings must be a function");
-  }
-  if (clearRefreshDiagnostics != null && typeof clearRefreshDiagnostics !== "function") {
-    throw new TypeError("clearRefreshDiagnostics must be a function");
-  }
 
   const readAppConfig = () => resolvePanelAppConfig(appConfig, getAppConfig);
 
   const renderPanel = typeof buildRobloxPanelPayload === "function"
     ? buildRobloxPanelPayload
-    : ({ statusText = "", viewMode: nextViewMode = viewMode } = {}) => buildRobloxStatsPanelPayload({
+    : ({ statusText = "" } = {}) => buildRobloxStatsPanelPayload({
       db,
       runtimeState,
       telemetry,
       appConfig: readAppConfig(),
       statusText,
-      viewMode: nextViewMode,
     });
 
   if (!isModerator(interaction?.member)) {
@@ -1091,17 +1127,12 @@ async function handleRobloxStatsPanelButtonInteraction({
   }
 
   if (baseCustomId === "panel_open_roblox_stats") {
-    await interaction.update(renderPanel({ statusText: "", viewMode }));
-    return true;
-  }
-
-  if (["roblox_stats_view_overview", "roblox_stats_view_coverage", "roblox_stats_view_activity", "roblox_stats_view_errors"].includes(baseCustomId)) {
-    await interaction.update(renderPanel({ statusText: "", viewMode: resolveRobloxPanelNavigationViewMode(baseCustomId, viewMode) }));
+    await interaction.update(renderPanel({ statusText: "" }));
     return true;
   }
 
   if (baseCustomId === "roblox_stats_refresh") {
-    await interaction.update(renderPanel({ statusText: "Панель Roblox обновлена.", viewMode }));
+    await interaction.update(renderPanel({ statusText: "Панель Roblox обновлена." }));
     return true;
   }
 
@@ -1110,124 +1141,9 @@ async function handleRobloxStatsPanelButtonInteraction({
     return true;
   }
 
-  if (baseCustomId === "roblox_stats_toggle_playtime") {
-    const nextValue = !isPlaytimeTrackingEnabled(readAppConfig());
-    await interaction.deferUpdate();
-    await updateRobloxSettings({ playtimeTrackingEnabled: nextValue });
-    await interaction.editReply(renderPanel({
-      statusText: `Учёт JJS ${nextValue ? "включён" : "выключен"}.`,
-      viewMode,
-    }));
-    return true;
-  }
-
-  if (baseCustomId === "roblox_stats_toggle_metadata") {
-    const nextValue = !isMetadataRefreshEnabled(readAppConfig());
-    await interaction.deferUpdate();
-    await updateRobloxSettings({ metadataRefreshEnabled: nextValue });
-    await interaction.editReply(renderPanel({
-      statusText: `Автообновление профилей ${nextValue ? "включено" : "выключено"}.`,
-      viewMode,
-    }));
-    return true;
-  }
-
-  if (baseCustomId === "roblox_stats_toggle_flush") {
-    const nextValue = !isRuntimeFlushEnabled(readAppConfig());
-    await interaction.deferUpdate();
-    await updateRobloxSettings({ runtimeFlushEnabled: nextValue });
-    await interaction.editReply(renderPanel({
-      statusText: `Периодическое сохранение runtime ${nextValue ? "включено" : "выключено"}.`,
-      viewMode,
-    }));
-    return true;
-  }
-
-  if (["roblox_stats_set_poll_1", "roblox_stats_set_poll_3", "roblox_stats_set_poll_5", "roblox_stats_set_poll_10"].includes(baseCustomId)) {
-    const nextMinutes = Number(baseCustomId.replace("roblox_stats_set_poll_", ""));
-    await interaction.deferUpdate();
-    await updateRobloxSettings({ playtimePollMinutes: nextMinutes });
-    await interaction.editReply(renderPanel({
-      statusText: `Интервал опроса переключён на ${nextMinutes} мин.`,
-      viewMode,
-    }));
-    return true;
-  }
-
-  if (baseCustomId === "roblox_stats_clear_refresh_errors") {
-    await interaction.deferUpdate();
-    const result = await clearRefreshDiagnostics();
-    await interaction.editReply(renderPanel({
-      statusText: `Старые ошибки обновления очищены у ${normalizeNonNegativeInteger(result?.clearedCount, 0)} профилей.`,
-      viewMode,
-    }));
-    return true;
-  }
-
-  if (baseCustomId === "roblox_stats_run_profile_refresh" && !isMetadataRefreshEnabled(readAppConfig())) {
-    await interaction.update(renderPanel({
-      statusText: "Обновление профилей выключено. Для пассивного учёта JJS оно не нужно.",
-      viewMode,
-    }));
-    return true;
-  }
-
-  if (baseCustomId === "roblox_stats_run_playtime_sync") {
-    await interaction.deferUpdate();
-    try {
-      const result = await runPlaytimeSyncJob();
-      const touchedUserCount = normalizeNonNegativeInteger(result?.touchedUserCount, 0);
-      let statusText = buildPlaytimeSyncStatusText(result);
-
-      if (touchedUserCount > 0) {
-        if (isRuntimeFlushEnabled(readAppConfig()) && typeof runRuntimeFlush === "function") {
-          try {
-            const flushResult = await runRuntimeFlush();
-            statusText = `${statusText} Runtime сразу сохранён: ${flushResult?.saved === true ? "да" : "нет"}, профилей: ${normalizeNonNegativeInteger(flushResult?.dirtyUserCount, 0)}.`;
-          } catch (error) {
-            statusText = `${statusText} Автосохранение runtime упало: ${truncateText(error?.message || error, 160) || "неизвестная ошибка"}. Изменения остались в памяти.`;
-          }
-        } else {
-          statusText = `${statusText} Изменения остались в runtime до следующего сохранения.`;
-        }
-      }
-
-      await interaction.editReply(renderPanel({ statusText, viewMode }));
-    } catch (error) {
-      await interaction.editReply(renderPanel({
-        statusText: `Операция завершилась ошибкой: ${truncateText(error?.message || error, 240) || "неизвестная ошибка"}`,
-        viewMode,
-      }));
-    }
-    return true;
-  }
-
-  const actionMap = {
-    roblox_stats_run_profile_refresh: {
-      runner: runProfileRefreshJob,
-      successText: (result = {}) => `Обновление профилей завершено. Обновлено: ${normalizeNonNegativeInteger(result.refreshedCount, 0)}, с ошибками: ${normalizeNonNegativeInteger(result.failedCount, 0)}.`,
-    },
-    roblox_stats_run_flush: {
-      runner: runRuntimeFlush,
-      successText: (result = {}) => `Сохранение runtime завершено. Грязных профилей: ${normalizeNonNegativeInteger(result.dirtyUserCount, 0)}, сохранено: ${result.saved === true ? "да" : "нет"}.`,
-    },
-  };
-
-  const action = actionMap[baseCustomId];
-  if (typeof action?.runner !== "function") {
-    throw new TypeError(`Missing runner for ${baseCustomId}`);
-  }
-
-  await interaction.deferUpdate();
-  try {
-    const result = await action.runner();
-    await interaction.editReply(renderPanel({ statusText: action.successText(result), viewMode }));
-  } catch (error) {
-    await interaction.editReply(renderPanel({
-      statusText: `Операция завершилась ошибкой: ${truncateText(error?.message || error, 240) || "неизвестная ошибка"}`,
-      viewMode,
-    }));
-  }
+  await interaction.update(renderPanel({
+    statusText: "Панель упрощена. Используй Обновить или Назад.",
+  }));
   return true;
 }
 

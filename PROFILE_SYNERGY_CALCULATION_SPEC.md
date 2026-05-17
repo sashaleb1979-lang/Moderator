@@ -223,6 +223,7 @@ Derived from `jjsHoursSinceLastApprovedKillsUpdate`.
 1. Не писать `ты точно уже должен обновить kills`.
 2. Писать мягко и честно: `Есть смысл обновить kills`.
 3. Показывать только в self-view.
+4. Если reminder threshold ещё не достигнут, допустим мягкий `Фокус` line без императива, завязанный на текущий pace и distance до next tier.
 
 ---
 
@@ -310,6 +311,8 @@ Kill milestones:
 3. Для окна роста при отсутствии надёжных Roblox-часов писать `Roblox-часы пока ненадёжны`.
 4. Для comparison line не сравнивать pace числа, если одно из окон без надёжных Roblox-часов.
 5. Lifetime pace line писать как `Средний темп за отслеженный период`, но считать только по reliable proof-window окнам.
+6. Между comparison и countdown допустима narrative line про стабильность/ускорение, но только если она опирается на тот же `windowComparison` state, а не на отдельную скрытую эвристику.
+7. Финальная self-view line может быть либо мягким `CTA`, если reminder threshold достигнут, либо `Фокус`, если threshold ещё не достигнут.
 
 ---
 
@@ -406,21 +409,63 @@ Raw capture уже существует. Base profile-facing mirror implemented 
 ## 10. Text-Tierlist Grades И `Кто Ты Сейчас`
 
 ### Статус
-Planned for Phase 5.
+Phase 5 viewer-first hero, separate Main Core block и population-calibrated grading are live.
+Future work: persisted population snapshots and richer Main Core enrichment поверх wiki/voice/social layers.
 
-### Planned Owner
-`src/profile/synergy.js`
+### Owner
+1. Derived owner: [src/profile/synergy.js](src/profile/synergy.js)
+2. Read-model composition: [src/profile/model.js](src/profile/model.js)
+3. Top renderer surface: [src/profile/view.js](src/profile/view.js)
 
 ### Источники
 1. Roblox playtime
 2. activity domain
 3. proof windows
 4. co-play and friend overlap
+5. approved kills / kill tier / standing
+6. current ELO summary
+7. runtime population profile snapshot, прокинутый через [src/profile/operator.js](src/profile/operator.js) из [welcome-bot.js](welcome-bot.js)
+
+### Текущая V1-Подача
+Верх non-self profile сейчас использует viewer hero block `Кто ты сейчас` и отдельный overview block `Main Core`.
+
+Viewer hero даёт:
+1. строку `Текст-тирлист: Форма • Чат • Килы • Стабильность • Развитие • Соц`;
+2. мягкий human-summary line вида `Сейчас это ...`;
+3. anchor line с главными опорами профиля вроде kills rank, tier, Roblox, activity bucket и ELO.
+
+Main Core даёт:
+1. краткое ядро main/tierlist identity;
+2. server-relative status line с формой, ростом, стабильностью и ranking anchors;
+3. top co-play partner line;
+4. guide coverage line.
+
+### Текущая V1-Формула
+Текущая формула двухслойная: сначала local raw score, потом population calibration, если baseline достаточно плотный.
+
+Raw axis-score layer:
+1. `Форма` смотрит на JJS minutes 7d, activity score, freshness last approved update и recent JJS presence.
+2. `Чат` смотрит на messages 7d, sessions 7d и active days.
+3. `Килы` смотрят на kill tier, approved kills и standing.
+4. `Стабильность` смотрит на `windowComparison` и наличие надёжных growth windows.
+5. `Развитие` смотрит на latest growth pace, trend vs previous window и relation к lifetime pace.
+6. `Соц` смотрит на server friends, peer counts и co-play session density.
+
+Population calibration layer:
+1. `populationProfiles[]` приходит в read-model из runtime seam `getPopulationProfiles()`.
+2. Для каждой оси профиль считает тот же raw score по каждому population profile, у кого на этой оси есть валидный сигнал.
+3. Если по оси накоплено меньше `5` валидных population samples, ось честно остаётся на local fallback grade.
+4. Если sample size `>= 5`, итоговая буква берётся уже не из raw score напрямую, а из percentile score текущего raw score внутри population sample этой оси.
+5. Percentile считается average-rank способом: tie cases не превращают всех в top grade, а дают середину общего ранга tied group.
+6. После percentile normalization буква снова строится общей grade ladder `S+ ... D-`.
+7. `Кто ты сейчас` и `Main Core` читают уже этот calibrated axis state, а не пересчитывают формулы отдельно.
 
 ### Главная Ненадёжность
-1. relative grading зависит от population baseline;
-2. без регулярных population snapshots grade может быть only best-effort;
-3. при недостатке данных отдельные axes обязаны становиться `N/A`, а не слабой буквой.
+1. relative grading зависит от live population snapshot и axis-specific sample size;
+2. текущий baseline считается on-demand из канонических profiles в runtime, а не из отдельного persisted history snapshot;
+3. если по оси меньше `5` signal profiles, эта ось падает в local fallback и остаётся only best-effort;
+4. при недостатке данных отдельные axes обязаны становиться `N/A`, а не слабой буквой;
+5. viewer hero и Main Core не должны притворяться абсолютным leaderboard truth: это compact observational read относительно текущей живой популяции.
 
 ### UI Copy Правило
 Не выдавать narrative как hard truth психотипа. Это должен быть мягкий observational summary.

@@ -61,7 +61,7 @@ function buildTextDisplay(title, lines, fallback = "—", limit = 4000) {
   return new TextDisplayBuilder().setContent(`### ${heading}\n${body}`);
 }
 
-function buildHeroSection({ heroLines = [], primaryAvatarUrl = null, primaryAvatarDescription = null } = {}) {
+function buildHeroSection({ heroTitle = "Быстрый статус", heroLines = [], primaryAvatarUrl = null, primaryAvatarDescription = null } = {}) {
   const url = normalizeNullableString(primaryAvatarUrl, 1000);
   const lines = Array.isArray(heroLines)
     ? heroLines.map((entry) => cleanString(entry, 300)).filter(Boolean)
@@ -71,7 +71,7 @@ function buildHeroSection({ heroLines = [], primaryAvatarUrl = null, primaryAvat
   const description = cleanString(primaryAvatarDescription, 200) || "Аватар профиля";
   const section = new SectionBuilder()
     .addTextDisplayComponents(
-      new TextDisplayBuilder().setContent("### Быстрый статус"),
+      new TextDisplayBuilder().setContent(`### ${cleanString(heroTitle, 120) || "Быстрый статус"}`),
       new TextDisplayBuilder().setContent(buildFieldValue(lines, "После онбординга здесь появится быстрая сводка.", 1200))
     );
 
@@ -86,12 +86,12 @@ function buildHeroSection({ heroLines = [], primaryAvatarUrl = null, primaryAvat
   return section;
 }
 
-function buildHeroTextDisplay(heroLines = []) {
+function buildHeroTextDisplay(heroLines = [], heroTitle = "Быстрый статус") {
   const lines = Array.isArray(heroLines)
     ? heroLines.map((entry) => cleanString(entry, 300)).filter(Boolean)
     : [];
   if (!lines.length) return null;
-  return buildTextDisplay("Быстрый статус", lines, "После онбординга здесь появится быстрая сводка.", 1500);
+  return buildTextDisplay(cleanString(heroTitle, 120) || "Быстрый статус", lines, "После онбординга здесь появится быстрая сводка.", 1500);
 }
 
 function buildProfileMediaGallery(mediaGalleryItems = []) {
@@ -217,6 +217,7 @@ function buildProfilePayload(options = {}) {
   const displayName = cleanString(readModel.displayName, 200) || `Пользователь ${userId}`;
   const currentView = normalizeProfileView(options.view);
   const heroSection = buildHeroSection({
+    heroTitle: readModel.heroTitle,
     heroLines: readModel.heroLines,
     primaryAvatarUrl: readModel.primaryAvatarUrl,
     primaryAvatarDescription: readModel.primaryAvatarDescription,
@@ -236,7 +237,7 @@ function buildProfilePayload(options = {}) {
   if (heroSection) {
     container.addSectionComponents(heroSection);
   } else {
-    const heroTextDisplay = buildHeroTextDisplay(readModel.heroLines);
+    const heroTextDisplay = buildHeroTextDisplay(readModel.heroLines, readModel.heroTitle);
     if (heroTextDisplay) {
       container.addTextDisplayComponents(heroTextDisplay);
     }

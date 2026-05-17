@@ -152,10 +152,11 @@ test("profile payload renders overview, activity, rankings, roblox, and link but
   const { container, textDisplays, actionRows } = getProfileContainer(payload);
   assert.equal(container.type, 17);
   assert.ok(textDisplays.some((component) => /# Профиль/.test(component.content)));
-  assert.match(JSON.stringify(container), /### Быстрый статус/);
-  assert.match(JSON.stringify(container), /Сейчас: 120 kills/);
-  assert.match(JSON.stringify(container), /Готовность: JJS доступ открыт/);
+  assert.match(JSON.stringify(container), /### Кто ты сейчас/);
+  assert.match(JSON.stringify(container), /Текст-тирлист: .* Килы A/);
+  assert.match(JSON.stringify(container), /Сейчас это .* Gojo-main/);
   assert.ok(textDisplays.some((component) => /### Обзор/.test(component.content) && /Игрок: <@user-1>/.test(component.content) && /Подтверждённые kills: 120/.test(component.content) && /ELO: 145 \/ tier 2/.test(component.content)));
+  assert.ok(textDisplays.some((component) => /### Main Core/.test(component.content) && /Ядро пиков: Gojo-main/.test(component.content) && /Серверный контур: форма C- .* рост C- .* стабильность C-/.test(component.content) && /Игровая связка: чаще всего с <@peer-1>/.test(component.content)));
   assert.doesNotMatch(JSON.stringify(container), /### Ключевые факты/);
   assert.ok(textDisplays.some((component) => /### Готовность/.test(component.content) && /JJS доступ: открыт с/.test(component.content) && /Верификация: verified/.test(component.content) && /Roblox-связка: подтверждена/.test(component.content)));
   assert.ok(textDisplays.some((component) => /### Верификация/.test(component.content) && /verified/.test(component.content)));
@@ -337,7 +338,7 @@ test("profile payload renders enriched progress and social sections", () => {
   });
 
   const selfProgressDisplays = getProfileContainer(selfProgressPayload).textDisplays;
-  assert.ok(selfProgressDisplays.some((component) => /### Практический прогресс/.test(component.content) && /Сравнение окон: последний ап 60 kills\/ч/.test(component.content) && /Средний темп за отслеженный период: 53,3 kills\/ч JJS/.test(component.content) && /До следующего tier: 2.?700 kills/.test(component.content)));
+  assert.ok(selfProgressDisplays.some((component) => /### Практический прогресс/.test(component.content) && /С последнего рега: 36 ч по времени .* 6 ч JJS/.test(component.content) && /Сравнение окон: последний ап 60 kills\/ч/.test(component.content) && /Динамика: темп ускорился относительно прошлого окна/.test(component.content) && /Средний темп за отслеженный период: 53,3 kills\/ч JJS/.test(component.content) && /До следующего tier: 2.?700 kills/.test(component.content) && /Фокус: темп выше прошлого окна/.test(component.content)));
 
   const socialPayload = buildProfilePayload({
     guildId: "guild-1",

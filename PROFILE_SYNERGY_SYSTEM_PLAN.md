@@ -556,7 +556,8 @@
     Например: был тихим, стал боевым активным; был соло, стал social-core.
 
 40. Full synergy leaderboard calibration.
-    Для по-настоящему честных S+/A/B-grade систем нужны регулярные population snapshots, а не только on-demand computations.
+   Базовая population-calibrated grade system уже заведена в viewer hero через runtime population snapshot.
+   Для ещё более стабильной и исторически честной S+/A/B-grade системы позже всё равно нужны регулярные persisted population snapshots, а не только on-demand computations.
 
 ## 8. Уточнённые Развилки И Принятые Решения
 
@@ -627,12 +628,14 @@
 3. Последнее окно роста. Реализовано в base form из двух последних proof windows с честным fallback при ненадёжных Roblox-часах.
 4. Countdown до next tier/milestone. Реализовано в base form по каноническим thresholds и последнему надёжному kills/JJS pace.
 5. Сравнение двух последних окон и lifetime pace. Реализовано в base form внутри того же owner через growth-window series без возврата формул в `model.js`.
-6. Следующий шаг фазы: richer CTA copy и более богатые формулировки стабильности/ускорения поверх уже готовых growth metrics.
+6. Richer CTA copy и формулировки стабильности/ускорения. Базовая версия реализована внутри self-progress owner.
+7. Следующий шаг фазы: richer stability taxonomy и более человекочитаемые CTA поверх уже собранных growth metrics.
 
 ### Phase 5. Viewer-First Narrative Block
-1. Текст-тирлист формы.
-2. `Кто ты сейчас`.
-3. Short Main Core.
+1. Текст-тирлист формы. Viewer hero block реализован через `src/profile/synergy.js` и теперь калибрует буквы от runtime population snapshot с честным fallback при малом baseline.
+2. `Кто ты сейчас`. Базовый observational summary реализован в том же верхнем block.
+3. Short Main Core. Реализован как отдельный non-self overview block в том же owner seam.
+4. Следующий шаг фазы: richer archetype taxonomy, persisted population snapshots и Main Core enrichment поверх wiki/voice/social layers.
 
 ### Phase 6. Social Synergy
 1. Friend Overlap.
@@ -648,7 +651,7 @@
 
 ### Phase 8. Character Wiki Layer
 1. `wikiUrl` в SoT character catalog.
-2. Main Core enrichment.
+2. Main Core enrichment поверх character wiki links.
 
 ### Phase 9. Story Layers
 1. Season Story.

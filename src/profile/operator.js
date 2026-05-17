@@ -173,6 +173,9 @@ function createProfileOperator(options = {}) {
       approvedEntries: typeof options.getApprovedEntries === "function"
         ? options.getApprovedEntries()
         : [],
+        populationProfiles: typeof options.getPopulationProfiles === "function"
+          ? options.getPopulationProfiles()
+          : [],
       recentKillChange: typeof options.getRecentKillChangeForUser === "function"
         ? options.getRecentKillChangeForUser(normalizedTargetUserId)
         : null,
