@@ -11677,7 +11677,7 @@ function buildLegacyEloGraphicPanelPayload(rawDb, statusText = "", includeFlags 
     new ButtonBuilder().setCustomId("elo_graphic_panel_reset_img").setLabel("Сбросить размеры").setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId("elo_graphic_panel_reset_colors").setLabel("Сбросить все цвета").setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId("elo_graphic_panel_clear_cache").setLabel("Сбросить кэш ав").setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId("elo_graphic_panel_fonts").setLabel("Шрифты").setStyle(ButtonStyle.Secondary)
+    new ButtonBuilder().setCustomId("elo_graphic_panel_refresh_names").setLabel("Сбросить неймы").setStyle(ButtonStyle.Secondary)
   );
 
   const payload = {
@@ -15393,6 +15393,9 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
+      let refreshProfileNames = false;
+      let refreshedProfileNames = 0;
+
       if (interaction.customId === "elo_graphic_panel_icon_minus" || interaction.customId === "elo_graphic_panel_icon_plus") {
         const delta = interaction.customId.endsWith("plus") ? 12 : -12;
         applyLegacyEloGraphicImageDelta(liveState.rawDb, "icon", delta);
@@ -15410,16 +15413,23 @@ client.on("interactionCreate", async (interaction) => {
         resetAllLegacyEloGraphicTierColors(liveState.rawDb);
       } else if (interaction.customId === "elo_graphic_panel_clear_cache") {
         clearGraphicAvatarCache();
+      } else if (interaction.customId === "elo_graphic_panel_refresh_names") {
+        refreshProfileNames = true;
       } else {
         return;
       }
 
       await interaction.deferUpdate();
       try {
+        if (refreshProfileNames) {
+          refreshedProfileNames = await syncProfileNamesFromDiscord(client);
+        }
         const persisted = await persistLegacyEloGraphicMutation(client, liveState, { refreshBoard: true });
         const status = [
           interaction.customId === "elo_graphic_panel_clear_cache"
             ? "Кэш аватарок очищен."
+            : interaction.customId === "elo_graphic_panel_refresh_names"
+              ? `Неймы синхронизированы из Discord: ${formatNumber(refreshedProfileNames || 0)} профилей обновлено.`
             : "Настройки legacy ELO PNG обновлены.",
           persisted.boardUpdated ? "PNG board пересобран." : "PNG board пока не настроен.",
         ].join(" ") + getLegacyEloSyncStatusSuffix(persisted.syncResult);
