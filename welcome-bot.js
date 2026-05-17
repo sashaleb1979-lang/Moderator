@@ -5038,6 +5038,10 @@ function getProfileOperator() {
     getPendingSubmissionForUser,
     getLatestSubmissionForUser,
     getApprovedEntries: () => getApprovedTierlistEntries(),
+    getPopulationProfiles: () => Object.entries(db.profiles || {}).map(([userId]) => ({
+      userId,
+      profile: getProfile(userId),
+    })),
     getRecentKillChangesForUser: (userId) => collectUserRecentKillChangeHistory(
       Object.values(db.submissions || {}),
       userId,

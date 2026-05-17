@@ -19,8 +19,6 @@ function createInteraction(customId, overrides = {}) {
   const calls = {
     replies: [],
     updates: [],
-    edits: [],
-    deferred: 0,
   };
 
   return {
@@ -34,18 +32,12 @@ function createInteraction(customId, overrides = {}) {
       async update(payload) {
         calls.updates.push(payload);
       },
-      async deferUpdate() {
-        calls.deferred += 1;
-      },
-      async editReply(payload) {
-        calls.edits.push(payload);
-      },
     },
     calls,
   };
 }
 
-test("getRobloxStatsPanelSnapshot aggregates linked users, job telemetry, and control issues", async () => {
+test("getRobloxStatsPanelSnapshot keeps aggregate truth and builds a seen-first verified list", async () => {
   const telemetry = createRobloxPanelTelemetry({
     now: createNowQueue([
       "2026-05-09T12:00:00.000Z",
@@ -84,327 +76,76 @@ test("getRobloxStatsPanelSnapshot aggregates linked users, job telemetry, and co
     flushedAt: "2026-05-09T12:06:01.000Z",
   }))();
 
-  const runtimeState = {
-    activeSessionsByDiscordUserId: {
-      active_user: {
-        startedAt: "2026-05-09T12:04:00.000Z",
-        lastSeenAt: "2026-05-09T12:05:00.000Z",
-        gameId: "server-1",
-      },
-    },
-    activeCoPlayPairsByKey: {
-      "active_user:problem_user": {
-        lastSeenAt: "2026-05-09T12:05:00.000Z",
-        gameId: "server-1",
-      },
-    },
-    dirtyDiscordUserIds: new Set(["problem_user", "active_user"]),
-  };
-
-  const db = {
-    profiles: {
-      problem_user: {
-        userId: "problem_user",
-        displayName: "Problem Child",
-        domains: {
-          roblox: {
-            username: "ProblemRb",
-            userId: "101",
-            verificationStatus: "verified",
-            refreshStatus: "error",
-            refreshError: "temporary upstream outage",
-            lastRefreshAt: "2026-05-09T11:00:00.000Z",
-            playtime: {
-              totalJjsMinutes: 10,
-            },
-          },
-        },
-      },
-      pending_user: {
-        userId: "pending_user",
-        displayName: "Pending User",
-        domains: {
-          roblox: {
-            username: "PendingRb",
-            userId: "202",
-            verificationStatus: "pending",
-          },
-        },
-      },
-      active_user: {
-        userId: "active_user",
-        displayName: "Active User",
-        domains: {
-          roblox: {
-            username: "ActiveRb",
-            userId: "303",
-            verificationStatus: "verified",
-            refreshStatus: "ok",
-            lastRefreshAt: "2026-05-09T11:59:00.000Z",
-            playtime: {
-              totalJjsMinutes: 150,
-              currentSessionStartedAt: "2026-05-09T12:04:00.000Z",
-              lastSeenInJjsAt: "2026-05-09T12:05:00.000Z",
-            },
-          },
-        },
-      },
-      stale_user: {
-        userId: "stale_user",
-        displayName: "Stale User",
-        domains: {
-          roblox: {
-            username: "StaleRb",
-            userId: "404",
-            verificationStatus: "verified",
-            refreshStatus: null,
-            lastRefreshAt: null,
-          },
-        },
-      },
-      failed_user: {
-        userId: "failed_user",
-        displayName: "Failed User",
-        domains: {
-          roblox: {
-            username: "FailedRb",
-            userId: "505",
-            verificationStatus: "failed",
-          },
-        },
-      },
-    },
-  };
-
-  const snapshot = getRobloxStatsPanelSnapshot({
-    db,
-    runtimeState,
-    telemetry,
-    appConfig: {
-      roblox: {
-        jjsUniverseId: 0,
-        jjsRootPlaceId: 0,
-        jjsPlaceId: 0,
-      },
-    },
-  });
-
-  assert.deepEqual(snapshot.totals, {
-    footprintUsers: 5,
-    linkedUsers: 5,
-    verifiedUsers: 3,
-    verifiedTrackableUsers: 3,
-    verifiedRepairableUsers: 0,
-    verifiedManualOnlyUsers: 0,
-    verifiedSeenInJjsUsers: 2,
-    verifiedNeverSeenInJjsUsers: 1,
-    verifiedZeroMinuteUsers: 1,
-    staleSessionMarkerUsers: 0,
-    pendingUsers: 1,
-    failedUsers: 1,
-    refreshErrorUsers: 1,
-    neverRefreshedVerifiedUsers: 1,
-    activeJjsUsers: 1,
-    dirtyRuntimeUsers: 2,
-    activeCoPlayPairs: 1,
-  });
-  assert.equal(snapshot.jobs.profileRefresh.summary.failedCount, 1);
-  assert.equal(snapshot.jobs.playtimeSync.summary.failedBatches, 1);
-  assert.equal(snapshot.jobs.playtimeSync.summary.repairedBindingCount, 2);
-  assert.equal(snapshot.jobs.playtimeSync.summary.unresolvedBindingCount, 1);
-  assert.equal(snapshot.jobs.playtimeSync.summary.failedRepairBatchCount, 1);
-  assert.equal(snapshot.jobs.playtimeSync.summary.sanitizedBindingCount, 3);
-  assert.equal(snapshot.jobs.runtimeFlush.summary.dirtyUserCount, 2);
-  assert.equal(snapshot.lists.repairableEntries.length, 0);
-  assert.equal(snapshot.lists.manualOnlyEntries.length, 0);
-  assert.equal(snapshot.topEntries[0].userId, "problem_user");
-  assert.equal(snapshot.topEntries[1].userId, "failed_user");
-  assert.match(snapshot.issues[0], /JJS ids/i);
-  assert.match(snapshot.issues[1], /Обновление профилей завершилось с ошибками/i);
-  assert.match(snapshot.issues[2], /Синк playtime потерял пачки/i);
-});
-
-test("getRobloxStatsPanelSnapshot hides refresh blockers in passive-only mode", async () => {
-  const telemetry = createRobloxPanelTelemetry();
-  await telemetry.wrapJob("profile_refresh", async () => ({
-    refreshedCount: 1,
-    failedCount: 7,
-  }))();
-
   const snapshot = getRobloxStatsPanelSnapshot({
     db: {
       profiles: {
-        user_1: {
-          userId: "user_1",
-          displayName: "Gojo",
+        problem_user: {
+          userId: "problem_user",
+          displayName: "Problem Child",
           domains: {
             roblox: {
-              username: "GojoRb",
-              userId: "1",
-              verificationStatus: "verified",
-              refreshError: "Roblox API request failed (429)",
-            },
-          },
-        },
-      },
-    },
-    telemetry,
-    appConfig: {
-      roblox: {
-        metadataRefreshEnabled: false,
-        jjsUniverseId: 3508322461,
-      },
-    },
-  });
-
-  assert.equal(snapshot.config.metadataRefreshEnabled, false);
-  assert.equal(snapshot.totals.refreshErrorUsers, 0);
-  assert.equal(snapshot.issues.length, 0);
-  assert.doesNotMatch(snapshot.topEntries[0].note, /обновления профиля/i);
-});
-
-test("getRobloxStatsPanelSnapshot classifies verified coverage buckets for trackable, repairable, and manual-only users", () => {
-  const snapshot = getRobloxStatsPanelSnapshot({
-    db: {
-      profiles: {
-        trackable_user: {
-          userId: "trackable_user",
-          displayName: "Trackable User",
-          domains: {
-            roblox: {
-              username: "TrackableRb",
+              username: "ProblemRb",
               userId: "101",
               verificationStatus: "verified",
+              refreshStatus: "error",
+              refreshError: "temporary upstream outage",
+              lastRefreshAt: "2026-05-09T11:00:00.000Z",
               playtime: {
-                totalJjsMinutes: 45,
-                lastSeenInJjsAt: "2026-05-09T12:00:00.000Z",
+                totalJjsMinutes: 10,
               },
             },
           },
         },
-        repairable_user: {
-          userId: "repairable_user",
-          displayName: "Repairable User",
+        pending_user: {
+          userId: "pending_user",
+          displayName: "Pending User",
           domains: {
             roblox: {
-              username: "RepairableRb",
-              userId: null,
-              verificationStatus: "verified",
+              username: "PendingRb",
+              userId: "202",
+              verificationStatus: "pending",
             },
           },
         },
-        manual_user: {
-          userId: "manual_user",
-          displayName: "Manual User",
-          domains: {
-            roblox: {
-              verificationStatus: "verified",
-            },
-          },
-        },
-      },
-    },
-  });
-
-  assert.equal(snapshot.totals.verifiedUsers, 3);
-  assert.equal(snapshot.totals.verifiedTrackableUsers, 1);
-  assert.equal(snapshot.totals.verifiedRepairableUsers, 1);
-  assert.equal(snapshot.totals.verifiedManualOnlyUsers, 1);
-  assert.equal(snapshot.totals.verifiedSeenInJjsUsers, 1);
-  assert.equal(snapshot.totals.verifiedNeverSeenInJjsUsers, 0);
-  assert.equal(snapshot.totals.verifiedZeroMinuteUsers, 0);
-  assert.equal(snapshot.lists.repairableEntries[0].userId, "repairable_user");
-  assert.equal(snapshot.lists.repairableEntries[0].trackingState, "repairable");
-  assert.equal(snapshot.lists.manualOnlyEntries[0].userId, "manual_user");
-  assert.equal(snapshot.lists.manualOnlyEntries[0].trackingState, "manual_only");
-});
-
-test("buildRobloxStatsPanelPayload renders manual controls and blocker field", () => {
-  const payload = buildRobloxStatsPanelPayload({
-    db: {
-      profiles: {
-        trackable_user: {
-          userId: "trackable_user",
-          displayName: "Gojo",
-          domains: {
-            roblox: {
-              username: "GojoRb",
-              userId: "1",
-              verificationStatus: "verified",
-            },
-          },
-        },
-        repairable_user: {
-          userId: "repairable_user",
-          displayName: "Repairable User",
-          domains: {
-            roblox: {
-              username: "RepairableRb",
-              verificationStatus: "verified",
-            },
-          },
-        },
-        manual_user: {
-          userId: "manual_user",
-          displayName: "Manual User",
-          domains: {
-            roblox: {
-              verificationStatus: "verified",
-            },
-          },
-        },
-      },
-    },
-    appConfig: {
-      roblox: {
-        metadataRefreshEnabled: false,
-        jjsUniverseId: 0,
-        jjsRootPlaceId: 0,
-        jjsPlaceId: 0,
-      },
-    },
-    statusText: "manual refresh completed",
-  });
-
-  assert.equal(payload.components.length, 5);
-  assert.equal(payload.components[0].components.length, 5);
-  assert.equal(payload.components[0].components[0].data.custom_id, "roblox_stats_view_overview");
-  assert.equal(payload.components[0].components[4].data.custom_id, "roblox_stats_back:overview");
-  assert.equal(payload.components[1].components[0].data.custom_id, "roblox_stats_refresh:overview");
-  assert.equal(payload.components[1].components[1].data.label, "Синк сейчас");
-  assert.equal(payload.components[1].components[2].data.label, "Сохранить runtime");
-  assert.equal(payload.components[1].components[3].data.label, "Обновить профили");
-  assert.equal(payload.components[1].components[3].data.disabled, true);
-  assert.equal(payload.components[2].components[0].data.custom_id, "roblox_stats_toggle_playtime:overview");
-  assert.equal(payload.components[3].components[1].data.custom_id, "roblox_stats_set_poll_3:overview");
-  assert.equal(payload.components[4].components[0].data.custom_id, "roblox_stats_clear_refresh_errors:overview");
-  assert.equal(payload.embeds[0].data.fields.at(-1).name, "Последнее действие");
-  const fieldValues = Object.fromEntries(payload.embeds[0].data.fields.map((field) => [field.name, field.value]));
-  assert.match(fieldValues["Покрытие"], /Trackable для playtime: \*\*1\*\*/);
-  assert.match(fieldValues["Покрытие"], /Починится по username: \*\*1\*\*/);
-  assert.match(fieldValues["Покрытие"], /Нужен manual rebind: \*\*1\*\*/);
-  assert.match(fieldValues["Кого чинить"], /Repairable User -> RepairableRb/);
-  assert.match(fieldValues["Кого чинить"], /Manual User/);
-  assert.match(fieldValues["Ошибки и блокеры"], /JJS IDs/i);
-});
-
-test("buildRobloxStatsPanelPayload switches focused field layout by view mode", () => {
-  const activityPayload = buildRobloxStatsPanelPayload({
-    viewMode: "activity",
-    db: {
-      profiles: {
         active_user: {
           userId: "active_user",
           displayName: "Active User",
           domains: {
             roblox: {
               username: "ActiveRb",
-              userId: "1",
+              userId: "303",
               verificationStatus: "verified",
+              refreshStatus: "ok",
+              lastRefreshAt: "2026-05-09T11:59:00.000Z",
               playtime: {
-                totalJjsMinutes: 10,
-                lastSeenInJjsAt: "2026-05-09T12:00:00.000Z",
+                totalJjsMinutes: 150,
+                currentSessionStartedAt: "2026-05-09T12:04:00.000Z",
+                lastSeenInJjsAt: "2026-05-09T12:05:00.000Z",
               },
+            },
+          },
+        },
+        stale_user: {
+          userId: "stale_user",
+          displayName: "Stale User",
+          domains: {
+            roblox: {
+              username: "StaleRb",
+              userId: "404",
+              verificationStatus: "verified",
+              refreshStatus: null,
+              lastRefreshAt: null,
+            },
+          },
+        },
+        failed_user: {
+          userId: "failed_user",
+          displayName: "Failed User",
+          domains: {
+            roblox: {
+              username: "FailedRb",
+              userId: "505",
+              verificationStatus: "failed",
             },
           },
         },
@@ -413,70 +154,22 @@ test("buildRobloxStatsPanelPayload switches focused field layout by view mode", 
     runtimeState: {
       activeSessionsByDiscordUserId: {
         active_user: {
-          startedAt: "2026-05-09T12:00:00.000Z",
-          lastSeenAt: "2026-05-09T12:01:00.000Z",
+          startedAt: "2026-05-09T12:04:00.000Z",
+          lastSeenAt: "2026-05-09T12:05:00.000Z",
           gameId: "server-1",
         },
       },
-    },
-    appConfig: {
-      roblox: {
-        jjsUniverseId: 3508322461,
-      },
-    },
-  });
-
-  const activityFieldNames = activityPayload.embeds[0].data.fields.map((field) => field.name);
-  assert.deepEqual(activityFieldNames, ["Режим", "JJS и runtime", "Активность профилей", "Сейчас в JJS", "Ещё не были замечены в JJS"]);
-
-  const errorPayload = buildRobloxStatsPanelPayload({
-    viewMode: "errors",
-    db: {
-      profiles: {
-        error_user: {
-          userId: "error_user",
-          displayName: "Error User",
-          domains: {
-            roblox: {
-              username: "ErrorRb",
-              userId: "2",
-              verificationStatus: "verified",
-              refreshError: "upstream failed",
-            },
-          },
+      activeCoPlayPairsByKey: {
+        "active_user:problem_user": {
+          lastSeenAt: "2026-05-09T12:05:00.000Z",
+          gameId: "server-1",
         },
       },
+      dirtyDiscordUserIds: new Set(["problem_user", "active_user"]),
     },
-  });
-
-  const errorFieldNames = errorPayload.embeds[0].data.fields.map((field) => field.name);
-  assert.deepEqual(errorFieldNames, ["Ошибки и блокеры", "Ошибки обновления", "Stale session markers", "Нужен manual rebind"]);
-});
-
-test("buildRobloxStatsPanelPayload hides stale playtime and runtime job truth when those features are disabled", async () => {
-  const telemetry = createRobloxPanelTelemetry({
-    now: createNowQueue([
-      "2026-05-09T12:00:00.000Z",
-      "2026-05-09T12:00:01.000Z",
-      "2026-05-09T12:01:00.000Z",
-      "2026-05-09T12:01:01.000Z",
-    ]),
-  });
-
-  await telemetry.wrapJob("playtime_sync", async () => {
-    throw new Error("playtime failed");
-  })().catch(() => null);
-  await telemetry.wrapJob("runtime_flush", async () => {
-    throw new Error("flush failed");
-  })().catch(() => null);
-
-  const payload = buildRobloxStatsPanelPayload({
     telemetry,
     appConfig: {
       roblox: {
-        playtimeTrackingEnabled: false,
-        runtimeFlushEnabled: false,
-        metadataRefreshEnabled: true,
         jjsUniverseId: 0,
         jjsRootPlaceId: 0,
         jjsPlaceId: 0,
@@ -484,78 +177,113 @@ test("buildRobloxStatsPanelPayload hides stale playtime and runtime job truth wh
     },
   });
 
-  const fieldTexts = payload.embeds[0].data.fields.map((field) => `${field.name}: ${field.value}`).join("\n");
-  assert.match(fieldTexts, /Последний синк playtime: выключен в настройках/);
-  assert.match(fieldTexts, /Синк playtime: выключено в настройках/);
-  assert.match(fieldTexts, /Сохранение runtime: выключено в настройках/);
-  assert.doesNotMatch(fieldTexts, /playtime failed/i);
-  assert.doesNotMatch(fieldTexts, /flush failed/i);
-  assert.doesNotMatch(fieldTexts, /JJS IDs/i);
+  assert.equal(snapshot.totals.verifiedUsers, 3);
+  assert.equal(snapshot.totals.verifiedSeenUsers, 2);
+  assert.equal(snapshot.totals.verifiedUnseenUsers, 1);
+  assert.equal(snapshot.totals.refreshErrorUsers, 1);
+  assert.equal(snapshot.totals.activeJjsUsers, 1);
+  assert.equal(snapshot.jobs.playtimeSync.summary.repairedBindingCount, 2);
+  assert.equal(snapshot.jobs.playtimeSync.summary.unresolvedBindingCount, 1);
+  assert.deepEqual(
+    snapshot.lists.verifiedEntries.map((entry) => entry.userId),
+    ["active_user", "problem_user", "stale_user"]
+  );
+  assert.match(snapshot.issues[0], /JJS ids/i);
 });
 
-test("buildRobloxStatsPanelPayload renders playtime repair telemetry in background job status", async () => {
-  const telemetry = createRobloxPanelTelemetry({
-    now: createNowQueue([
-      "2026-05-09T12:00:00.000Z",
-      "2026-05-09T12:00:01.000Z",
-    ]),
+test("buildRobloxStatsPanelPayload renders one simple authenticated list with seen markers", () => {
+  const payload = buildRobloxStatsPanelPayload({
+    db: {
+      profiles: {
+        seen_user: {
+          userId: "seen_user",
+          displayName: "Gojo",
+          domains: {
+            roblox: {
+              username: "GojoRb",
+              userId: "1",
+              verificationStatus: "verified",
+              playtime: {
+                totalJjsMinutes: 15,
+              },
+            },
+          },
+        },
+        repairable_user: {
+          userId: "repairable_user",
+          displayName: "Repairable User",
+          domains: {
+            roblox: {
+              username: "RepairableRb",
+              verificationStatus: "verified",
+            },
+          },
+        },
+        manual_user: {
+          userId: "manual_user",
+          displayName: "Manual User",
+          domains: {
+            roblox: {
+              verificationStatus: "verified",
+            },
+          },
+        },
+      },
+    },
+    statusText: "manual refresh completed",
   });
 
-  await telemetry.wrapJob("playtime_sync", async () => ({
-    totalCandidates: 4,
-    totalBatches: 1,
-    processedBatches: 1,
-    failedBatches: 0,
-    processedUserIds: 4,
-    failedUserIds: 0,
-    activeJjsUsers: 2,
-    touchedUserCount: 2,
-    repairedBindingCount: 2,
-    unresolvedBindingCount: 1,
-    failedRepairBatchCount: 1,
-    sanitizedBindingCount: 3,
-  }))();
+  assert.equal(payload.components.length, 1);
+  assert.equal(payload.components[0].components.length, 2);
+  assert.equal(payload.components[0].components[0].data.custom_id, "roblox_stats_refresh");
+  assert.equal(payload.components[0].components[1].data.custom_id, "roblox_stats_back");
 
+  const embed = payload.embeds[0].data;
+  assert.equal(embed.title, "Roblox");
+  assert.match(embed.description, /Список подтверждённых Roblox-профилей/i);
+  assert.match(embed.description, /Подтверждено: \*\*3\*\*/i);
+  assert.match(embed.description, /С галочкой: \*\*1\*\*/i);
+  assert.match(embed.description, /Без галочки: \*\*2\*\*/i);
+  assert.match(embed.description, /✓ Gojo -> GojoRb/);
+  assert.match(embed.description, /— Manual User/);
+  assert.match(embed.description, /— Repairable User -> RepairableRb/);
+  assert.equal(embed.fields.length, 1);
+  assert.equal(embed.fields[0].name, "Последнее действие");
+  assert.equal(embed.fields[0].value, "manual refresh completed");
+});
+
+test("buildRobloxStatsPanelPayload keeps passive verified users in the list even without runtime visibility", () => {
   const payload = buildRobloxStatsPanelPayload({
-    telemetry,
-    appConfig: {
-      roblox: {
-        playtimeTrackingEnabled: true,
-        runtimeFlushEnabled: true,
-        metadataRefreshEnabled: true,
-        jjsUniverseId: 3508322461,
+    db: {
+      profiles: {
+        pending_user: {
+          userId: "pending_user",
+          displayName: "Pending User",
+          domains: {
+            roblox: {
+              username: "PendingRb",
+              verificationStatus: "pending",
+            },
+          },
+        },
+        manual_user: {
+          userId: "manual_user",
+          displayName: "Manual User",
+          domains: {
+            roblox: {
+              verificationStatus: "verified",
+            },
+          },
+        },
       },
     },
   });
 
-  const fieldTexts = payload.embeds[0].data.fields.map((field) => `${field.name}: ${field.value}`).join("\n");
-  assert.match(fieldTexts, /Синк playtime: успешно/i);
-  assert.match(fieldTexts, /санитизировано 3/i);
-  assert.match(fieldTexts, /починено по username 2/i);
-  assert.match(fieldTexts, /без repair осталось 1/i);
-  assert.match(fieldTexts, /ошибок repair batch 1/i);
+  assert.doesNotMatch(payload.embeds[0].data.description, /Pending User/);
+  assert.match(payload.embeds[0].data.description, /— Manual User/);
 });
 
-test("buildRobloxStatsPanelPayload shows pending runtime flush when dirty runtime users exist", () => {
-  const payload = buildRobloxStatsPanelPayload({
-    runtimeState: {
-      dirtyDiscordUserIds: new Set(["user_1", "user_2"]),
-    },
-    telemetry: createRobloxPanelTelemetry(),
-    appConfig: {
-      roblox: {
-        playtimeTrackingEnabled: true,
-        runtimeFlushEnabled: true,
-        jjsUniverseId: 3508322461,
-      },
-    },
-  });
-
-  const fieldTexts = payload.embeds[0].data.fields.map((field) => `${field.name}: ${field.value}`).join("\n");
-  assert.match(fieldTexts, /Сохранение runtime: ожидает flush \| грязных 2/i);
-});
-
-test("handleRobloxStatsPanelButtonInteraction gates permissions and delegates manual actions", async () => {
+test("handleRobloxStatsPanelButtonInteraction gates permissions and rerenders simple panel for refresh and legacy buttons", async () => {
   const denied = createInteraction("panel_open_roblox_stats", {
     member: { roles: { cache: new Set() } },
   });
@@ -574,271 +302,53 @@ test("handleRobloxStatsPanelButtonInteraction gates permissions and delegates ma
   assert.equal(deniedHandled, true);
   assert.equal(denied.calls.replies.length, 1);
 
-  const manual = createInteraction("roblox_stats_run_playtime_sync");
-  let playtimeRuns = 0;
-  let runtimeFlushRuns = 0;
-  const manualHandled = await handleRobloxStatsPanelButtonInteraction({
-    interaction: manual.interaction,
+  const refresh = createInteraction("roblox_stats_refresh:coverage");
+  const refreshHandled = await handleRobloxStatsPanelButtonInteraction({
+    interaction: refresh.interaction,
     client: {},
     db: {},
     runtimeState: {},
     appConfig: {},
-    telemetry: createRobloxPanelTelemetry(),
     isModerator: () => true,
-    replyNoPermission: () => manual.interaction.reply({ content: "Нет прав." }),
+    replyNoPermission: () => refresh.interaction.reply({ content: "Нет прав." }),
     buildModeratorPanelPayload: async () => ({ content: "main" }),
     buildRobloxPanelPayload: ({ statusText = "" } = {}) => ({ content: statusText }),
-    runProfileRefreshJob: async () => ({}),
-    runPlaytimeSyncJob: async () => {
-      playtimeRuns += 1;
-      return {
-        totalCandidates: 4,
-        activeJjsUsers: 2,
-        opaqueInGameUsers: 0,
-        touchedUserCount: 3,
-        failedUserIds: 1,
-        repairedBindingCount: 2,
-        unresolvedBindingCount: 1,
-        failedRepairBatchCount: 0,
-        sanitizedBindingCount: 3,
-      };
-    },
-    runRuntimeFlush: async () => {
-      runtimeFlushRuns += 1;
-      return {
-        saved: true,
-        dirtyUserCount: 3,
-      };
-    },
   });
 
-  assert.equal(manualHandled, true);
-  assert.equal(playtimeRuns, 1);
-  assert.equal(runtimeFlushRuns, 1);
-  assert.equal(manual.calls.deferred, 1);
-  assert.match(manual.calls.edits[0].content, /Кандидатов: 4, активных в JJS: 2, затронуто профилей: 3, ошибок пользователей: 1/i);
-  assert.match(manual.calls.edits[0].content, /Перед синком: санитизировано 3, починено по username 2, без repair осталось 1/i);
-  assert.match(manual.calls.edits[0].content, /Runtime сразу сохранён: да, профилей: 3/i);
+  assert.equal(refreshHandled, true);
+  assert.equal(refresh.calls.updates[0].content, "Панель Roblox обновлена.");
 
-  const opaqueManual = createInteraction("roblox_stats_run_playtime_sync");
+  const legacyView = createInteraction("roblox_stats_view_activity");
   await handleRobloxStatsPanelButtonInteraction({
-    interaction: opaqueManual.interaction,
+    interaction: legacyView.interaction,
     client: {},
     db: {},
     runtimeState: {},
     appConfig: {},
-    telemetry: createRobloxPanelTelemetry(),
     isModerator: () => true,
-    replyNoPermission: () => opaqueManual.interaction.reply({ content: "Нет прав." }),
+    replyNoPermission: () => legacyView.interaction.reply({ content: "Нет прав." }),
     buildModeratorPanelPayload: async () => ({ content: "main" }),
     buildRobloxPanelPayload: ({ statusText = "" } = {}) => ({ content: statusText }),
-    runProfileRefreshJob: async () => ({}),
-    runPlaytimeSyncJob: async () => ({
-      totalCandidates: 8,
-      activeJjsUsers: 2,
-      opaqueInGameUsers: 1,
-      touchedUserCount: 2,
-      failedUserIds: 0,
-      repairedBindingCount: 1,
-      unresolvedBindingCount: 0,
-      failedRepairBatchCount: 0,
-      sanitizedBindingCount: 1,
-    }),
-    runRuntimeFlush: async () => ({}),
   });
 
-  assert.match(opaqueManual.calls.edits[0].content, /активных в JJS: 2/i);
-  assert.match(opaqueManual.calls.edits[0].content, /Перед синком: санитизировано 1, починено по username 1/i);
-  assert.match(opaqueManual.calls.edits[0].content, /учтены через fallback-режим/i);
+  assert.equal(legacyView.calls.updates[0].content, "Панель упрощена. Используй Обновить или Назад.");
 
-  const togglePlaytime = createInteraction("roblox_stats_toggle_playtime");
-  const toggleCalls = [];
+  const openPanel = createInteraction("panel_open_roblox_stats");
   await handleRobloxStatsPanelButtonInteraction({
-    interaction: togglePlaytime.interaction,
-    client: {},
-    db: {},
-    runtimeState: {},
-    appConfig: { roblox: { playtimeTrackingEnabled: true } },
-    telemetry: createRobloxPanelTelemetry(),
-    isModerator: () => true,
-    replyNoPermission: () => togglePlaytime.interaction.reply({ content: "Нет прав." }),
-    buildModeratorPanelPayload: async () => ({ content: "main" }),
-    buildRobloxPanelPayload: ({ statusText = "" } = {}) => ({ content: statusText }),
-    updateRobloxSettings: async (patch) => {
-      toggleCalls.push(patch);
-      return { mutated: true };
-    },
-    clearRefreshDiagnostics: async () => ({ clearedCount: 0 }),
-    runProfileRefreshJob: async () => ({}),
-    runPlaytimeSyncJob: async () => ({}),
-    runRuntimeFlush: async () => ({}),
-  });
-
-  assert.deepEqual(toggleCalls, [{ playtimeTrackingEnabled: false }]);
-  assert.match(togglePlaytime.calls.edits[0].content, /выключен/i);
-
-  const liveConfigToggle = createInteraction("roblox_stats_toggle_metadata");
-  let currentAppConfig = {
-    roblox: {
-      metadataRefreshEnabled: false,
-      playtimeTrackingEnabled: true,
-      runtimeFlushEnabled: true,
-      playtimePollMinutes: 3,
-      jjsUniverseId: 3508322461,
-    },
-  };
-
-  await handleRobloxStatsPanelButtonInteraction({
-    interaction: liveConfigToggle.interaction,
-    client: {},
-    db: {},
-    runtimeState: {},
-    appConfig: {
-      roblox: {
-        metadataRefreshEnabled: false,
-        playtimeTrackingEnabled: true,
-        runtimeFlushEnabled: true,
-        playtimePollMinutes: 3,
-        jjsUniverseId: 3508322461,
-      },
-    },
-    getAppConfig: () => currentAppConfig,
-    telemetry: createRobloxPanelTelemetry(),
-    isModerator: () => true,
-    replyNoPermission: () => liveConfigToggle.interaction.reply({ content: "Нет прав." }),
-    buildModeratorPanelPayload: async () => ({ content: "main" }),
-    updateRobloxSettings: async (patch) => {
-      currentAppConfig = {
-        ...currentAppConfig,
-        roblox: {
-          ...(currentAppConfig.roblox || {}),
-          ...patch,
-        },
-      };
-      return { mutated: true };
-    },
-    clearRefreshDiagnostics: async () => ({ clearedCount: 0 }),
-    runProfileRefreshJob: async () => ({}),
-    runPlaytimeSyncJob: async () => ({}),
-    runRuntimeFlush: async () => ({}),
-  });
-
-  const liveConfigPayload = liveConfigToggle.calls.edits[0];
-  const liveModeField = liveConfigPayload.embeds[0].data.fields.find((field) => field.name === "Режим");
-  assert.match(liveModeField.value, /Обновление профилей: \*\*включено\*\*/i);
-  assert.equal(liveConfigPayload.components[1].components[3].data.disabled, false);
-  assert.equal(liveConfigPayload.components[2].components[1].data.label, "Профили: ВКЛ");
-
-  const navigate = createInteraction("roblox_stats_view_activity");
-  await handleRobloxStatsPanelButtonInteraction({
-    interaction: navigate.interaction,
+    interaction: openPanel.interaction,
     client: {},
     db: {},
     runtimeState: {},
     appConfig: {},
-    telemetry: createRobloxPanelTelemetry(),
     isModerator: () => true,
-    replyNoPermission: () => navigate.interaction.reply({ content: "Нет прав." }),
+    replyNoPermission: () => openPanel.interaction.reply({ content: "Нет прав." }),
     buildModeratorPanelPayload: async () => ({ content: "main" }),
-    buildRobloxPanelPayload: ({ statusText = "", viewMode: nextViewMode = "overview" } = {}) => ({ content: `${nextViewMode}|${statusText}` }),
-    runProfileRefreshJob: async () => ({}),
-    runPlaytimeSyncJob: async () => ({}),
-    runRuntimeFlush: async () => ({}),
+    buildRobloxPanelPayload: ({ statusText = "" } = {}) => ({ content: statusText || "opened" }),
   });
 
-  assert.equal(navigate.calls.updates[0].content, "activity|");
+  assert.equal(openPanel.calls.updates[0].content, "opened");
 
-  const refreshCoverage = createInteraction("roblox_stats_refresh:coverage");
-  await handleRobloxStatsPanelButtonInteraction({
-    interaction: refreshCoverage.interaction,
-    client: {},
-    db: {},
-    runtimeState: {},
-    appConfig: {},
-    telemetry: createRobloxPanelTelemetry(),
-    isModerator: () => true,
-    replyNoPermission: () => refreshCoverage.interaction.reply({ content: "Нет прав." }),
-    buildModeratorPanelPayload: async () => ({ content: "main" }),
-    buildRobloxPanelPayload: ({ statusText = "", viewMode: nextViewMode = "overview" } = {}) => ({ content: `${nextViewMode}|${statusText}` }),
-    runProfileRefreshJob: async () => ({}),
-    runPlaytimeSyncJob: async () => ({}),
-    runRuntimeFlush: async () => ({}),
-  });
-
-  assert.equal(refreshCoverage.calls.updates[0].content, "coverage|Панель Roblox обновлена.");
-
-  const setPoll = createInteraction("roblox_stats_set_poll_5");
-  const pollCalls = [];
-  await handleRobloxStatsPanelButtonInteraction({
-    interaction: setPoll.interaction,
-    client: {},
-    db: {},
-    runtimeState: {},
-    appConfig: { roblox: { playtimePollMinutes: 3 } },
-    telemetry: createRobloxPanelTelemetry(),
-    isModerator: () => true,
-    replyNoPermission: () => setPoll.interaction.reply({ content: "Нет прав." }),
-    buildModeratorPanelPayload: async () => ({ content: "main" }),
-    buildRobloxPanelPayload: ({ statusText = "" } = {}) => ({ content: statusText }),
-    updateRobloxSettings: async (patch) => {
-      pollCalls.push(patch);
-      return { mutated: true };
-    },
-    clearRefreshDiagnostics: async () => ({ clearedCount: 0 }),
-    runProfileRefreshJob: async () => ({}),
-    runPlaytimeSyncJob: async () => ({}),
-    runRuntimeFlush: async () => ({}),
-  });
-
-  assert.deepEqual(pollCalls, [{ playtimePollMinutes: 5 }]);
-  assert.match(setPoll.calls.edits[0].content, /5 мин/i);
-
-  const clearErrors = createInteraction("roblox_stats_clear_refresh_errors");
-  await handleRobloxStatsPanelButtonInteraction({
-    interaction: clearErrors.interaction,
-    client: {},
-    db: {},
-    runtimeState: {},
-    appConfig: { roblox: {} },
-    telemetry: createRobloxPanelTelemetry(),
-    isModerator: () => true,
-    replyNoPermission: () => clearErrors.interaction.reply({ content: "Нет прав." }),
-    buildModeratorPanelPayload: async () => ({ content: "main" }),
-    buildRobloxPanelPayload: ({ statusText = "" } = {}) => ({ content: statusText }),
-    updateRobloxSettings: async () => ({ mutated: false }),
-    clearRefreshDiagnostics: async () => ({ clearedCount: 7 }),
-    runProfileRefreshJob: async () => ({}),
-    runPlaytimeSyncJob: async () => ({}),
-    runRuntimeFlush: async () => ({}),
-  });
-
-  assert.match(clearErrors.calls.edits[0].content, /7 профилей/i);
-
-  const disabledRefresh = createInteraction("roblox_stats_run_profile_refresh");
-  let profileRuns = 0;
-  await handleRobloxStatsPanelButtonInteraction({
-    interaction: disabledRefresh.interaction,
-    client: {},
-    db: {},
-    runtimeState: {},
-    appConfig: { roblox: { metadataRefreshEnabled: false } },
-    telemetry: createRobloxPanelTelemetry(),
-    isModerator: () => true,
-    replyNoPermission: () => disabledRefresh.interaction.reply({ content: "Нет прав." }),
-    buildModeratorPanelPayload: async () => ({ content: "main" }),
-    buildRobloxPanelPayload: ({ statusText = "" } = {}) => ({ content: statusText }),
-    runProfileRefreshJob: async () => {
-      profileRuns += 1;
-      return {};
-    },
-    runPlaytimeSyncJob: async () => ({}),
-    runRuntimeFlush: async () => ({}),
-  });
-
-  assert.equal(profileRuns, 0);
-  assert.match(disabledRefresh.calls.updates[0].content, /выключено/i);
-
-  const back = createInteraction("roblox_stats_back");
+  const back = createInteraction("roblox_stats_back:overview");
   await handleRobloxStatsPanelButtonInteraction({
     interaction: back.interaction,
     client: { id: "client" },
@@ -851,4 +361,21 @@ test("handleRobloxStatsPanelButtonInteraction gates permissions and delegates ma
   });
 
   assert.deepEqual(back.calls.updates[0], { statusText: "", includeFlags: false });
+});
+
+test("handleRobloxStatsPanelButtonInteraction ignores unrelated custom ids", async () => {
+  const unknown = createInteraction("roblox_stats_unknown");
+  const handled = await handleRobloxStatsPanelButtonInteraction({
+    interaction: unknown.interaction,
+    client: {},
+    db: {},
+    runtimeState: {},
+    appConfig: {},
+    isModerator: () => true,
+    replyNoPermission: () => unknown.interaction.reply({ content: "Нет прав." }),
+    buildModeratorPanelPayload: async () => ({ content: "main" }),
+  });
+
+  assert.equal(handled, false);
+  assert.equal(unknown.calls.updates.length, 0);
 });

@@ -105,6 +105,30 @@ function createTestOperator(overrides = {}) {
       { userId: "user-2", displayName: "Top", approvedKills: 200 },
       { userId: "user-1", displayName: "Sasha", approvedKills: 120 },
     ],
+    getPopulationProfiles: () => [
+      {
+        userId: "user-2",
+        profile: {
+          approvedKills: 200,
+          killTier: 4,
+          summary: {
+            activity: { activityScore: 84, messages7d: 42 },
+            roblox: { hasVerifiedAccount: true, jjsMinutes7d: 240 },
+          },
+        },
+      },
+      {
+        userId: "user-1",
+        profile: {
+          approvedKills: 120,
+          killTier: 4,
+          summary: {
+            activity: { activityScore: 77, messages7d: 35 },
+            roblox: { hasVerifiedAccount: true, jjsMinutes7d: 180 },
+          },
+        },
+      },
+    ],
     getRecentKillChangesForUser: (userId) => collectUserRecentKillChangeHistory([
       { userId, status: "approved", kills: 80, reviewedAt: "2026-04-26T00:00:00.000Z" },
       { userId, status: "approved", kills: 100, reviewedAt: "2026-05-01T00:00:00.000Z" },

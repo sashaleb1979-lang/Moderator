@@ -440,6 +440,7 @@ function buildProfileReadModel(options = {}) {
   const pendingSubmission = options.pendingSubmission && typeof options.pendingSubmission === "object" ? options.pendingSubmission : null;
   const latestSubmission = options.latestSubmission && typeof options.latestSubmission === "object" ? options.latestSubmission : null;
   const approvedEntries = Array.isArray(options.approvedEntries) ? options.approvedEntries : [];
+  const populationProfiles = Array.isArray(options.populationProfiles) ? options.populationProfiles : [];
   const recentKillChange = options.recentKillChange && typeof options.recentKillChange === "object" ? options.recentKillChange : null;
   const recentKillChanges = normalizeRecentKillChanges(options.recentKillChanges, recentKillChange, 3);
   const roleMentions = Array.isArray(options.roleMentions) ? options.roleMentions.filter(Boolean) : [];
@@ -538,7 +539,27 @@ function buildProfileReadModel(options = {}) {
     overviewLines.push("Профиль ещё не заполнен.");
   }
 
-  const heroLines = buildHeroLines({
+  const synergy = buildProfileSynergyState({
+    profile,
+    robloxSummary,
+    progressSummary,
+    activitySummary,
+    eloSummary,
+    tierlistSummary,
+    verificationSummary,
+    comboLinks,
+    approvedEntries,
+    populationProfiles,
+    approvedKills,
+    killTier,
+    standing,
+    mainCharacterLabels,
+    recentKillChanges,
+    isSelf: options.isSelf,
+    now: options.now,
+  });
+
+  const defaultHeroLines = buildHeroLines({
     userId,
     approvedKills,
     killTier,
@@ -552,16 +573,10 @@ function buildProfileReadModel(options = {}) {
     profile,
     pendingSubmission,
   });
-  const synergy = buildProfileSynergyState({
-    profile,
-    robloxSummary,
-    progressSummary,
-    approvedKills,
-    killTier,
-    recentKillChanges,
-    isSelf: options.isSelf,
-    now: options.now,
-  });
+  const heroTitle = cleanString(synergy?.blocks?.viewerHero?.title, 120) || "Быстрый статус";
+  const heroLines = Array.isArray(synergy?.blocks?.viewerHero?.lines) && synergy.blocks.viewerHero.lines.length
+    ? synergy.blocks.viewerHero.lines
+    : defaultHeroLines;
 
   const overviewStatusLines = buildOverviewStatusLines({
     profile,
@@ -774,6 +789,7 @@ function buildProfileReadModel(options = {}) {
     displayName,
     isSelf: Boolean(options.isSelf),
     comboLinks,
+    heroTitle,
     heroLines,
     primaryAvatarUrl: primaryAvatar?.url || null,
     primaryAvatarDescription: primaryAvatar?.description || null,
@@ -782,6 +798,7 @@ function buildProfileReadModel(options = {}) {
     sections: {
       overview: [
         { title: "Обзор", lines: overviewLines },
+        ...(synergy?.blocks?.viewerMainCore ? [synergy.blocks.viewerMainCore] : []),
         {
           title: "Готовность",
           lines: overviewStatusLines,
