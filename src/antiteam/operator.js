@@ -379,13 +379,69 @@ function createAntiteamOperator(options = {}) {
     return { edited: true, message };
   }
 
+  function getTicketRuntimeTargetGameId(ticket = {}) {
+    const runtimeState = getRobloxRuntimeState();
+    const activeSessions = runtimeState?.activeSessionsByDiscordUserId || {};
+    const targetUserId = getFriendRequestTargetUserId(ticket);
+    return cleanString(activeSessions[targetUserId]?.gameId, 120);
+  }
+
+  async function collectApiPresentHelperIds(ticket = {}) {
+    if (ticket.status === "closed") return [];
+    const helpers = Object.values(ticket.helpers || {}).filter((helper) => cleanString(helper.userId, 80));
+    if (!helpers.length) return [];
+
+    const presentIds = new Set();
+    const runtimeState = getRobloxRuntimeState();
+    const activeSessions = runtimeState?.activeSessionsByDiscordUserId || {};
+    const runtimeTargetGameId = getTicketRuntimeTargetGameId(ticket);
+    if (runtimeTargetGameId) {
+      for (const helper of helpers) {
+        const helperGameId = cleanString(activeSessions[helper.userId]?.gameId, 120);
+        if (helperGameId && helperGameId === runtimeTargetGameId) presentIds.add(helper.userId);
+      }
+    }
+
+    if (typeof options.fetchRobloxPresences !== "function") return [...presentIds];
+    const targetRobloxId = cleanString(ticket.roblox?.userId, 40);
+    const helperRobloxByDiscordId = new Map();
+    for (const helper of helpers) {
+      const helperRobloxId = cleanString(helper.robloxUserId, 40) || getHelperRobloxSnapshot(helper.userId).userId;
+      if (helperRobloxId) helperRobloxByDiscordId.set(helper.userId, helperRobloxId);
+    }
+    const requestedIds = [...new Set([targetRobloxId, ...helperRobloxByDiscordId.values()].filter(Boolean))];
+    if (!targetRobloxId || requestedIds.length < 2) return [...presentIds];
+
+    const presences = await options.fetchRobloxPresences(requestedIds).catch((error) => {
+      logError("Antiteam helper presence scan failed:", error?.message || error);
+      return [];
+    });
+    const presenceByRobloxId = new Map();
+    for (const [index, presence] of (Array.isArray(presences) ? presences : []).entries()) {
+      const presenceUserId = cleanString(presence?.userId, 40) || requestedIds[index];
+      if (presenceUserId) presenceByRobloxId.set(presenceUserId, presence);
+    }
+
+    const targetPresence = presenceByRobloxId.get(targetRobloxId);
+    const targetGameId = cleanString(targetPresence?.gameId, 120) || runtimeTargetGameId;
+    if (!targetGameId) return [...presentIds];
+    for (const [helperUserId, helperRobloxId] of helperRobloxByDiscordId.entries()) {
+      const helperPresence = presenceByRobloxId.get(helperRobloxId);
+      if (cleanString(helperPresence?.gameId, 120) === targetGameId) presentIds.add(helperUserId);
+    }
+    return [...presentIds];
+  }
+
   async function syncTicketMessages(ticket) {
     const config = getConfig();
+    const publicPayloadOptions = {
+      apiPresentHelperIds: await collectApiPresentHelperIds(ticket).catch(() => []),
+    };
     const publicMessageSync = (async () => {
       const channel = await fetchTextChannel(ticket.message?.channelId).catch(() => null);
       if (!channel || !ticket.message?.messageId) return;
       const message = await channel.messages?.fetch?.(ticket.message.messageId).catch(() => null);
-      if (message) await message.edit(buildTicketPublicPayload(ticket, config)).catch(() => {});
+      if (message) await message.edit(buildTicketPublicPayload(ticket, config, publicPayloadOptions)).catch(() => {});
     })();
 
     const threadSync = (async () => {

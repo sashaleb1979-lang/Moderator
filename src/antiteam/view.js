@@ -727,24 +727,35 @@ function formatPublicDifficulty(ticket = {}) {
   const level = getLevelMeta(ticket.level);
   const descriptions = {
     low: "почти вся команда до ~2k kills; если есть 8k+ игрок, повышай минимум до средних.",
-    medium: "большинство команды 2k-8k kills; если 8k+ хотя бы треть, повышай до высоких.",
+    medium: "команда в основном 2k-8k kills; если 8k+ хотя бы треть, повышай до высоких.",
     high: "8k+ kills; выбирай, если таких хотя бы треть команды.",
   };
   return `${isClosed ? "⚫" : level.emoji} **${level.label}**: ${descriptions[level.id] || level.description}`;
 }
 
-function formatHelpersBlock(ticket = {}) {
+function normalizeHelperIdSet(values = []) {
+  return new Set((Array.isArray(values) ? values : [])
+    .map((value) => cleanString(value, 80))
+    .filter(Boolean));
+}
+
+function formatHelpersBlock(ticket = {}, options = {}) {
   const helpers = Object.values(ticket.helpers || {})
     .sort((left, right) => String(left.respondedAt || "").localeCompare(String(right.respondedAt || "")) || String(left.userId || "").localeCompare(String(right.userId || "")));
   const confirmed = helpers.filter((helper) => helper.arrived === true);
+  const apiPresentIds = normalizeHelperIdSet(options.apiPresentHelperIds);
+  const apiPresentCount = helpers.filter((helper) => apiPresentIds.has(cleanString(helper.userId, 80))).length;
   const isClosed = ticket.status === "closed";
   if (!helpers.length) return "Пока никто не отозвался.";
   const helperLine = helpers.slice(0, 8)
     .map((helper) => isClosed ? `${helper.arrived ? "✅" : "❌"} <@${helper.userId}>` : `<@${helper.userId}>`)
     .join(" • ");
   const overflow = helpers.length > 8 ? ` +${helpers.length - 8}` : "";
+  const responseLine = isClosed
+    ? `Откликнулись: **${helpers.length}** • пришли: **${confirmed.length}**`
+    : `Откликнулись: **${helpers.length}**${apiPresentCount > 0 ? ` (API в игре: **${apiPresentCount}**)` : ""}`;
   return [
-    `Откликнулись: **${helpers.length}** • пришли: **${confirmed.length}**`,
+    responseLine,
     `${helperLine}${overflow}`,
     ticket.closeSummary?.text ? `Итог: ${ticket.closeSummary.text}` : "",
   ].filter(Boolean).join("\n");
@@ -760,6 +771,8 @@ function buildTicketPublicPayload(ticket = {}, config = createDefaultAntiteamCon
   const dangerText = isClan
     ? "Клан-аларм: якорь должен оставаться в игре до завершения тревоги."
     : formatPublicDifficulty(ticket);
+  const statusEmoji = isClosed ? "⚫" : "🟢";
+  const directEmoji = ticket.directJoinEnabled ? "🔓" : "🔒";
   const container = new ContainerBuilder()
     .setAccentColor(isClosed ? 0x607D8B : isClan ? 0xB71C1C : level.accentColor)
     .addTextDisplayComponents(
@@ -767,13 +780,13 @@ function buildTicketPublicPayload(ticket = {}, config = createDefaultAntiteamCon
       new TextDisplayBuilder().setContent(joinContentLines([
         authorLine,
         dangerText,
-        `Вход без др: **${formatDirectJoinValue(ticket.directJoinEnabled)}** • статус: **${formatTicketStatus(ticket)}**`,
+        `${directEmoji} Вход без др: **${formatDirectJoinValue(ticket.directJoinEnabled)}** • ${statusEmoji} **${formatTicketStatus(ticket)}**`,
       ], "—", 1400))
     )
     .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(`### Для тех кто отозвался\n${formatHelpersBlock(ticket)}`))
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(`### Описание\n${buildQuotedDescription(ticket.description)}`))
     .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(`### Описание\n${buildQuotedDescription(ticket.description)}`));
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(`### Помощники\n${formatHelpersBlock(ticket, options)}`));
 
   const photoUrl = cleanString(ticket.photo?.url, 2000);
   const shouldAttachPhoto = options.attachPhoto === true && photoUrl;
