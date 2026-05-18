@@ -43,10 +43,11 @@ test("legacy welcome copy is normalized to the mains-first submission flow", () 
   assert.equal(resolved.welcome.steps.length, 3);
   assert.ok(resolved.welcome.steps.some((step) => /\*\*kills\*\* числом/i.test(step)));
   assert.ok(resolved.welcome.steps.some((step) => /roblox username/i.test(step)));
-  assert.ok(resolved.welcome.steps.some((step) => /после отправки бот откроет доступ/i.test(step)));
+  assert.ok(resolved.welcome.steps.some((step) => /доступ выдаётся сразу после отправки/i.test(step)));
   assert.ok(resolved.welcome.steps.every((step) => !/следующим сообщением/i.test(step)));
   assert.ok(resolved.welcome.steps.every((step) => !/сразу даст access-role/i.test(step)));
   assert.ok(resolved.welcome.steps.every((step) => !/доступ откроется по режиму сервера/i.test(step)));
+  assert.ok(resolved.welcome.steps.every((step) => !/бот откроет доступ/i.test(step)));
 });
 
 test("ensurePresentationConfig rewrites persisted legacy welcome text", () => {
@@ -77,7 +78,7 @@ test("ensurePresentationConfig rewrites persisted legacy welcome text", () => {
   assert.equal(dbConfig.presentation.welcome.steps.length, 3);
   assert.ok(dbConfig.presentation.welcome.steps.some((step) => /\*\*kills\*\* числом/i.test(step)));
   assert.ok(dbConfig.presentation.welcome.steps.some((step) => /roblox username/i.test(step)));
-  assert.ok(dbConfig.presentation.welcome.steps.some((step) => /после отправки бот откроет доступ/i.test(step)));
+  assert.ok(dbConfig.presentation.welcome.steps.some((step) => /доступ выдаётся сразу после отправки/i.test(step)));
 });
 
 test("ensurePresentationConfig removes outdated compact welcome summary", () => {
@@ -103,6 +104,8 @@ test("ensurePresentationConfig removes outdated compact welcome summary", () => 
 
   assert.equal(result.mutated, true);
   assert.equal(dbConfig.presentation.welcome.description, "");
+  assert.ok(dbConfig.presentation.welcome.steps.some((step) => /доступ выдаётся сразу после отправки/i.test(step)));
+  assert.ok(dbConfig.presentation.welcome.steps.every((step) => !/бот откроет доступ/i.test(step)));
 });
 
 test("ensurePresentationConfig compacts persisted long welcome flow", () => {

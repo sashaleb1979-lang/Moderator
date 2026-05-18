@@ -23,9 +23,9 @@ const LEGACY_WELCOME_STEPS = [
 ];
 const COMBINED_SUBMISSION_WELCOME_DESCRIPTION = "";
 const COMBINED_SUBMISSION_WELCOME_STEPS = [
-  "Жми **Получить роль** и выбери **1-2 emoji-мейнов** кнопками.",
+  "Нажми **Получить роль** и выбери **1-2 мейнов**.",
   "Отправь **одно сообщение**: **kills** числом + скрин, где видны kills и **Roblox username**.",
-  "После отправки бот откроет доступ; **kill-tier** прилетит после мод-чека.",
+  "**Доступ выдаётся сразу после отправки**; **kill-tier** проверит модератор.",
 ];
 
 const HARD_DEFAULT_PRESENTATION = {
@@ -36,9 +36,9 @@ const HARD_DEFAULT_PRESENTATION = {
     submitStep: {
       title: "Готово. Кидай kills и общий скрин",
       description: [
-        "Финальный пруф: одно сообщение в {{uploadTarget}}.",
-        "В тексте — **точное число kills**, во вложении — **один скрин**, где видны kills и твой **уникальный Roblox username**.",
-        "После отправки kills бот отдельно попросит Roblox username и добавит его в модераторскую заявку.",
+        "Одно сообщение в {{uploadTarget}}.",
+        "Текст: **kills** числом. Вложение: **один скрин**, где видны kills и **Roblox username**.",
+        "После отправки доступ выдаётся сразу; **kill-tier** проверит модератор.",
         "{{exampleNote}}",
       ].join("\n"),
     },
@@ -101,6 +101,14 @@ function isOutdatedCombinedWelcomeDescription(text) {
     && normalized.includes("мод-чек");
 }
 
+function isOutdatedWelcomeStepText(text) {
+  const normalized = cleanString(text).toLowerCase();
+  return normalized.includes("дождись мод")
+    || normalized.includes("доступ откроется по режиму")
+    || normalized.includes("после отправки бот откроет доступ")
+    || normalized.includes("kill-tier прилетит");
+}
+
 function firstNonEmpty(...values) {
   for (const value of values) {
     const text = cleanString(value);
@@ -134,7 +142,7 @@ function isOutdatedWelcomeStepSet(steps) {
 
 function normalizeWelcomeSteps(value, fallback) {
   const steps = normalizeSteps(value, fallback);
-  return steps.some((step) => isLegacyWelcomeCopy(step)) || isOutdatedWelcomeStepSet(steps) ? [...fallback] : steps;
+  return steps.some((step) => isLegacyWelcomeCopy(step) || isOutdatedWelcomeStepText(step)) || isOutdatedWelcomeStepSet(steps) ? [...fallback] : steps;
 }
 
 function normalizeWelcomeSubmitStep(value, fallback = {}) {
@@ -493,7 +501,7 @@ function ensurePresentationConfig(dbConfig, options = {}) {
     mutated = true;
   }
   const hasOutdatedWelcomeSteps = Array.isArray(presentation.welcome.steps)
-    && (presentation.welcome.steps.some((step) => isLegacyWelcomeCopy(step)) || isOutdatedWelcomeStepSet(presentation.welcome.steps));
+    && (presentation.welcome.steps.some((step) => isLegacyWelcomeCopy(step) || isOutdatedWelcomeStepText(step)) || isOutdatedWelcomeStepSet(presentation.welcome.steps));
 
   if (isLegacyWelcomeCopy(presentation.welcome.description) || isOutdatedCombinedWelcomeDescription(presentation.welcome.description) || hasOutdatedWelcomeSteps) {
     presentation.welcome.description = defaults.welcome.description;

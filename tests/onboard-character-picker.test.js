@@ -118,9 +118,9 @@ test("character picker pagination keeps all configured characters reachable", ()
 });
 
 test("current configured characters fit on one fast picker page", () => {
-  const entries = Object.entries(botConfig.characters || {}).map(([id, value]) => ({
-    id,
-    label: value?.name || value?.label || id,
+  const entries = (Array.isArray(botConfig.characters) ? botConfig.characters : []).map((value) => ({
+    id: value.id,
+    label: value?.name || value?.label || value.id,
   }));
   const pageInfo = paginateCharacterPickerEntries(entries, 0);
 
@@ -158,9 +158,9 @@ test("character picker toggle selects up to two mains and blocks the third", () 
 });
 
 test("character picker payload renders one dense emoji-button panel without attachments", () => {
-  const entries = Object.entries(botConfig.characters || {}).map(([id, value]) => ({
-    id,
-    label: value?.name || value?.label || id,
+  const entries = (Array.isArray(botConfig.characters) ? botConfig.characters : []).map((value) => ({
+    id: value.id,
+    label: value?.name || value?.label || value.id,
   }));
   const firstEntry = entries[0];
   const payload = buildCharacterPickerPayload({
@@ -182,8 +182,12 @@ test("character picker payload renders one dense emoji-button panel without atta
   assert.equal(characterButtons.length, entries.length);
   assert.equal(rows[0].components.length, 5);
   assert.equal(rows[3].components.length, 4);
+  assert.equal(rows[4].components.length, 2);
   assert.match(json, new RegExp(`onboard_main_toggle:${firstEntry.id}`));
   assert.match(json, /jjs_first_character/);
+  assert.doesNotMatch(json, /"label":"0[1-9] /);
+  assert.doesNotMatch(json, /onboard_main_prev/);
+  assert.doesNotMatch(json, /onboard_main_next/);
   assert.doesNotMatch(json, /mains-picker\.png/);
   assert.doesNotMatch(json, /attachment:\/\//);
 });
@@ -197,7 +201,7 @@ test("character picker payload falls back to text labels without emoji mapping",
   });
   const button = payload.components[0].toJSON().components[0];
 
-  assert.equal(button.label, "01 Годжо");
+  assert.equal(button.label, "Годжо");
   assert.equal(button.emoji, undefined);
 });
 

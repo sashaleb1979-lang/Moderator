@@ -7075,7 +7075,6 @@ async function purgeUserProfile(client, userId, moderatorTag) {
 function buildWelcomeEmbed() {
   const presentation = getPresentation();
   const nonJjsUi = getNonJjsUiConfig();
-  const stepMarkers = ["`01` ⚡", "`02` 📎", "`03` ✅"];
   const summaryLines = String(presentation.welcome.description || "")
     .split(/\r?\n/)
     .map((line) => line.trim())
@@ -7086,8 +7085,8 @@ function buildWelcomeEmbed() {
     : [];
   const descriptionLines = [
     ...(summaryLines.length ? [...summaryLines, ""] : []),
-    "**Как пройти**",
-    ...steps.map((step, index) => `${stepMarkers[index] || `\`${index + 1}\``} ${step}`),
+    "**Быстрый вход**",
+    ...steps.map((step) => `• ${step}`),
     "",
     `**${nonJjsUi.title}**`,
     nonJjsUi.description,

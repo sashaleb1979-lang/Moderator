@@ -73,15 +73,11 @@ function formatCharacterLabel(entry = {}, characterEmojis = {}) {
 
 function buildCharacterButton(entry, options = {}) {
   const {
-    number,
     selected,
     characterEmojis,
   } = options;
   const emoji = toButtonEmoji(characterEmojis[entry.id]);
-  const numberText = String(number).padStart(2, "0");
-  const label = emoji
-    ? previewText(`${numberText} ${entry.label || entry.id}`, 80)
-    : previewText(`${numberText} ${entry.label || entry.id}`, 80);
+  const label = previewText(entry.label || entry.id, 80);
   const button = new ButtonBuilder()
     .setCustomId(`onboard_main_toggle:${entry.id}`)
     .setLabel(label)
@@ -96,10 +92,8 @@ function buildCharacterButtonRows(picker, pageInfo, characterEmojis = {}) {
     const rowItems = pageInfo.items.slice(rowIndex * CHARACTER_PICKER_COLUMNS, rowIndex * CHARACTER_PICKER_COLUMNS + CHARACTER_PICKER_COLUMNS);
     if (!rowItems.length) break;
     const row = new ActionRowBuilder();
-    for (const [index, entry] of rowItems.entries()) {
-      const number = pageInfo.startIndex + rowIndex * CHARACTER_PICKER_COLUMNS + index + 1;
+    for (const entry of rowItems) {
       row.addComponents(buildCharacterButton(entry, {
-        number,
         selected: picker.selectedIds.includes(entry.id),
         characterEmojis,
       }));
@@ -110,13 +104,18 @@ function buildCharacterButtonRows(picker, pageInfo, characterEmojis = {}) {
 }
 
 function buildCharacterPickerControlRow(picker, pageInfo) {
-  return new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
+  const row = new ActionRowBuilder();
+
+  if (pageInfo.pageCount > 1) {
+    row.addComponents(new ButtonBuilder()
       .setCustomId("onboard_main_prev")
       .setLabel("Назад")
       .setEmoji("◀️")
       .setStyle(ButtonStyle.Secondary)
-      .setDisabled(!pageInfo.hasPrev),
+      .setDisabled(!pageInfo.hasPrev));
+  }
+
+  row.addComponents(
     new ButtonBuilder()
       .setCustomId("onboard_main_confirm")
       .setLabel(picker.mode === "quick" ? "Сохранить" : "Готово")
@@ -127,14 +126,19 @@ function buildCharacterPickerControlRow(picker, pageInfo) {
       .setCustomId("onboard_cancel")
       .setLabel("Отмена")
       .setEmoji("✖️")
-      .setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder()
+      .setStyle(ButtonStyle.Secondary)
+  );
+
+  if (pageInfo.pageCount > 1) {
+    row.addComponents(new ButtonBuilder()
       .setCustomId("onboard_main_next")
       .setLabel("Дальше")
       .setEmoji("▶️")
       .setStyle(ButtonStyle.Secondary)
-      .setDisabled(!pageInfo.hasNext)
-  );
+      .setDisabled(!pageInfo.hasNext));
+  }
+
+  return row;
 }
 
 function buildCharacterPickerStatusPayload(message, options = {}) {
@@ -164,8 +168,9 @@ function buildCharacterPickerPayload(options = {}) {
 
   const pageInfo = paginateCharacterPickerEntries(entries, picker.page, CHARACTER_PICKER_PAGE_SIZE);
   const isQuick = picker.mode === "quick";
+  const entriesById = new Map(entries.map((entry) => [entry.id, entry]));
   const selectedLabels = selectedIds
-    .map((id) => entries.find((entry) => entry.id === id))
+    .map((id) => entriesById.get(id))
     .filter(Boolean)
     .map((entry) => formatCharacterLabel(entry, characterEmojis));
 
@@ -173,10 +178,9 @@ function buildCharacterPickerPayload(options = {}) {
     .setColor(0x5865F2)
     .setTitle(isQuick ? "Смена мейнов" : "Выбор мейнов")
     .setDescription([
-      "`1-2` мейна. Жми кнопку персонажа; зелёные уже выбраны.",
-      selectedLabels.length ? `**Выбрано:** ${selectedLabels.join(", ")}` : "**Выбрано:** пока пусто",
-      pageInfo.pageCount > 1 ? `**Страница:** ${pageInfo.page + 1}/${pageInfo.pageCount}` : null,
+      selectedLabels.length ? `**Выбрано:** ${selectedLabels.join(", ")}` : "**Выбрано:** 1-2 мейна",
       cleanString(picker.statusText, 220) ? `_${cleanString(picker.statusText, 220)}_` : null,
+      pageInfo.pageCount > 1 ? `**Страница:** ${pageInfo.page + 1}/${pageInfo.pageCount}` : null,
     ].filter(Boolean).join("\n"));
 
   const payload = {
