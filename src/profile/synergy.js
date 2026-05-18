@@ -1003,6 +1003,99 @@ function buildViewerMainCoreBlock({
   };
 }
 
+function buildSocialSuggestionsIntroLine({ suggestions = [], robloxSummary = {} } = {}) {
+  const suggestionCount = Array.isArray(suggestions) ? suggestions.length : 0;
+  const serverFriendsCount = normalizeFiniteNumber(robloxSummary?.serverFriendsCount);
+  if (!suggestionCount) {
+    if (Number.isFinite(serverFriendsCount) && serverFriendsCount > 0) {
+      return `Скрытый круг: явных frequent non-friend пересечений пока не видно, хотя Roblox-друзья на сервере уже есть (${formatNumber(serverFriendsCount)}).`;
+    }
+    return "Скрытый круг: frequent non-friend пересечения в JJS пока не накопились.";
+  }
+
+  const parts = [`Скрытый круг: ${formatNumber(suggestionCount)} кандидата по частым пересечениям в JJS`];
+  if (Number.isFinite(serverFriendsCount)) {
+    parts.push(`Roblox-друзей на сервере: ${formatNumber(serverFriendsCount)}`);
+  }
+  parts.push("это не точный кооп, а frequent non-friend сигнал");
+  return parts.join(" • ");
+}
+
+function buildSocialSuggestionEntryLine(entry = {}, index = 0) {
+  const ordinal = Number(index) + 1;
+  const parts = [`${ordinal}. <@${cleanString(entry?.peerUserId, 80) || "unknown"}>`];
+  const displayName = cleanString(entry?.peerDisplayName, 120);
+  const robloxUsername = cleanString(entry?.peerRobloxUsername, 120);
+  const minutesTogether = normalizeFiniteNumber(entry?.minutesTogether);
+  const sessionsTogether = normalizeFiniteNumber(entry?.sharedJjsSessionCount, normalizeFiniteNumber(entry?.sessionsTogether));
+
+  if (displayName && displayName !== cleanString(entry?.peerUserId, 80)) {
+    parts.push(displayName);
+  }
+  if (robloxUsername) {
+    parts.push(`Roblox ${robloxUsername}`);
+  }
+  if (Number.isFinite(minutesTogether) && minutesTogether > 0) {
+    parts.push(`${formatNumber(minutesTogether)} мин вместе`);
+  }
+  if (Number.isFinite(sessionsTogether) && sessionsTogether > 0) {
+    parts.push(`${formatNumber(sessionsTogether)} общ. сесс.`);
+  }
+  if (entry?.peerHasVerifiedRoblox === true) {
+    parts.push("verified Roblox");
+  }
+
+  return parts.join(" • ");
+}
+
+function buildSocialSuggestionsFreshnessLine(suggestions = [], now) {
+  const latestComputedAt = (Array.isArray(suggestions) ? suggestions : [])
+    .map((entry) => cleanString(entry?.sourceComputedAt, 80))
+    .filter(Boolean)
+    .sort()
+    .at(-1);
+  if (!latestComputedAt) return null;
+
+  const hoursSinceComputed = computeElapsedHours(latestComputedAt, now);
+  if (!Number.isFinite(hoursSinceComputed)) {
+    return null;
+  }
+  if (hoursSinceComputed <= 24) {
+    return `Social-срез: обновлялся ~${formatHours(hoursSinceComputed)} ч назад.`;
+  }
+  return `Social-срез: уже ~${formatHours(hoursSinceComputed)} ч назад, так что часть пересечений могла устареть.`;
+}
+
+function buildSocialSuggestionsBlock({ profile = null, robloxSummary = {}, isSelf = false, now } = {}) {
+  const domainSuggestions = Array.isArray(profile?.domains?.social?.suggestions) ? profile.domains.social.suggestions : [];
+  const summarySuggestions = Array.isArray(profile?.summary?.social?.suggestions) ? profile.summary.social.suggestions : [];
+  const suggestions = (domainSuggestions.length ? domainSuggestions : summarySuggestions).slice(0, 3);
+
+  if (!suggestions.length && isSelf) {
+    return {
+      title: "Скрытый круг",
+      lines: [buildSocialSuggestionsIntroLine({ suggestions, robloxSummary })],
+    };
+  }
+  if (!suggestions.length && !Number.isFinite(normalizeFiniteNumber(robloxSummary?.serverFriendsCount))) {
+    return null;
+  }
+
+  const lines = [buildSocialSuggestionsIntroLine({ suggestions, robloxSummary })];
+  for (let index = 0; index < suggestions.length; index += 1) {
+    lines.push(buildSocialSuggestionEntryLine(suggestions[index], index));
+  }
+  const freshnessLine = buildSocialSuggestionsFreshnessLine(suggestions, now);
+  if (freshnessLine) {
+    lines.push(freshnessLine);
+  }
+
+  return {
+    title: "Скрытый круг",
+    lines,
+  };
+}
+
 function buildViewerHeroBlock({
   isSelf = false,
   approvedKills = null,
@@ -1196,6 +1289,9 @@ function buildProfileSynergyState(options = {}) {
       selfProgress: buildSelfProgressBlock({
         ...options,
         progressState: progress,
+      }),
+      socialSuggestions: buildSocialSuggestionsBlock({
+        ...options,
       }),
       viewerMainCore: buildViewerMainCoreBlock({
         ...options,

@@ -638,11 +638,11 @@
 4. Следующий шаг фазы: richer archetype taxonomy, persisted population snapshots и Main Core enrichment поверх wiki/voice/social layers.
 
 ### Phase 6. Social Synergy
-1. Friend Overlap.
-2. Кто из друзей уже здесь.
-3. Скрытый круг.
-4. Top co-play peers.
-5. Strong + medium inferred ties.
+1. Friend Overlap. Пока не реализован как отдельный profile block.
+2. Кто из друзей уже здесь. Пока не реализован как отдельный profile block.
+3. Скрытый круг. Базовый read-side block реализован на existing social suggestions cache через `src/profile/synergy.js`.
+4. Top co-play peers. Уже показываются в profile social section; hidden-circle block теперь дополняет этот слой, а не заменяет его.
+5. Strong + medium inferred ties. Всё ещё future work; текущий shipped слой опирается только на frequent non-friend JJS intersections и не притворяется broader social graph truth.
 
 ### Phase 7. Voice, Prime Time И Personal Readiness
 1. Voice summary.

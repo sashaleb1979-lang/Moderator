@@ -320,7 +320,8 @@ Kill milestones:
 
 ### Статус
 Top co-play peers уже существуют как source facts.
-Base suggestions cache implemented for Phase 2. Richer narrative/read-side blocks remain for Phase 6.
+Base suggestions cache implemented for Phase 2.
+Base Phase 6 read-side block `Скрытый круг` is live via `src/profile/synergy.js`; richer friend-overlap and medium-tie layers remain future work.
 
 ### Owner
 1. Raw source facts: [src/runtime/roblox-jobs.js](src/runtime/roblox-jobs.js)
@@ -355,12 +356,26 @@ Base suggestions cache implemented for Phase 2. Richer narrative/read-side block
 ### Разрешённая Формулировка
 `часто пересекаетесь в одной JJS-сессии`
 
+### Текущая V1-Подача
+Profile social section теперь может показывать отдельный block `Скрытый круг`:
+1. summary line по числу frequent non-friend candidates;
+2. до 3 peer lines с Discord mention, display/Roblox label, minutesTogether и shared sessions;
+3. freshness line по `sourceComputedAt`, если она есть.
+
+Этот block использует уже существующий derived cache и не требует нового runtime collection layer.
+
 ### Ненадёжно Когда
 1. `inferred`: вся co-play логика основана на совпадении tracked JJS gameId;
 2. `partial`: бот был оффлайн и часть пересечений пропущена;
 3. `stale`: computedAt старый;
 4. не все peers обязаны быть Roblox friends или verified Discord mappings.
 5. текущий cache ещё не доказывает social closeness вне JJS overlap.
+
+### UI Copy Правило
+1. Не писать `кооп`, `пати` или `точный отряд`.
+2. Если suggestions пусты, допустим честный empty-state block вместо исчезновения раздела.
+3. Если есть `serverFriendsCount`, empty state может говорить, что друзья на сервере уже есть, но явный hidden-circle сигнал пока не накопился.
+4. Если `sourceComputedAt` старый, block должен прямо говорить, что social-sрез мог устареть.
 
 ---
 

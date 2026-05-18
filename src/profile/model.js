@@ -829,6 +829,7 @@ function buildProfileReadModel(options = {}) {
       social: [
         { title: "Roblox и соц", lines: robloxLines },
         { title: "С кем чаще всего играет", lines: socialPeerLines },
+        ...(synergy?.blocks?.socialSuggestions ? [synergy.blocks.socialSuggestions] : []),
         { title: "Мейны и гайды", lines: mainAndGuideLines },
       ],
     },
