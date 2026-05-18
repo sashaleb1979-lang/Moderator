@@ -21,11 +21,11 @@ const LEGACY_WELCOME_STEPS = [
   "Следующим сообщением отправь **скрин** в этот канал.",
   "Бот удалит скрин после обработки, сразу даст access-role, а kill-tier прилетит после проверки модератором.",
 ];
-const COMBINED_SUBMISSION_WELCOME_DESCRIPTION = "**Выбор → пруф → доступ.** 1-2 мейна, один пруф, роль сразу после отправки.";
+const COMBINED_SUBMISSION_WELCOME_DESCRIPTION = "**Быстрый вход**";
 const COMBINED_SUBMISSION_WELCOME_STEPS = [
-  "Нажми **Получить роль** и выбери **1-2 мейна**.",
-  "Отправь **одно сообщение**: **kills** числом + скрин с kills и **Roblox username**.",
-  "**Доступ выдаётся сразу после отправки.** **kill-tier** проверит модератор.",
+  "Нажми **Получить роль** и выбери **1-2 мейнов**.",
+  "Отправь **одно сообщение: kills** числом + скрин, где видны **kills** и **Roblox username**.",
+  "**Доступ выдаётся сразу после отправки; kill-tier** проверит модератор.",
 ];
 
 const HARD_DEFAULT_PRESENTATION = {
@@ -44,7 +44,7 @@ const HARD_DEFAULT_PRESENTATION = {
     },
     buttons: {
       begin: "Получить роль",
-      quickMains: "Сменить мейнов",
+      quickMains: "Быстро сменить мейнов",
     },
     characterEmojis: {},
   },
@@ -98,7 +98,8 @@ function isOutdatedCombinedWelcomeDescription(text) {
   const normalized = cleanString(text).toLowerCase();
   return (normalized.includes("emoji-мейны")
     && normalized.includes("один пруф")
-    && normalized.includes("мод-чек"));
+    && normalized.includes("мод-чек"))
+    || normalized.includes("выбор → пруф → доступ");
 }
 
 function isOutdatedWelcomeStepText(text) {
@@ -107,10 +108,11 @@ function isOutdatedWelcomeStepText(text) {
     || normalized.includes("доступ откроется по режиму")
     || normalized.includes("после отправки бот откроет доступ")
     || normalized.includes("kill-tier прилетит")
-    || normalized.includes("нажми **получить роль** и выбери **1-2 мейнов**")
+    || normalized.includes("нажми **получить роль** и выбери **1-2 мейна**")
     || normalized.includes("кнопка **получить роль** → **1-2 мейна**")
     || normalized.includes("**kills** числом + **один скрин**")
     || normalized.includes("**доступ выдаётся сразу после отправки.** **kill-tier** после проверки")
+    || normalized.includes("**доступ выдаётся сразу после отправки.** **kill-tier** проверит модератор")
     || normalized.includes("**доступ выдаётся сразу после отправки**; **kill-tier** проверит модератор");
 }
 
