@@ -524,7 +524,9 @@ function createAntiteamOperator(options = {}) {
     }));
 
     try {
-      const publicPayload = buildTicketPublicPayload(ticket, config, { attachPhoto: Boolean(ticket.photo?.url) });
+      const publicPayload = buildTicketPublicPayload(ticket, config, {
+        attachPhoto: Boolean(ticket.photos?.length || ticket.photo?.url),
+      });
       const publicMessage = await channel.send(publicPayload);
       const thread = typeof publicMessage.startThread === "function"
         ? await publicMessage.startThread({
@@ -553,6 +555,7 @@ function createAntiteamOperator(options = {}) {
           threadPanelMessageId: threadPanel?.id || "",
           pingMessageId: pingMessage?.id || "",
           photoAttachmentName: publicPayload.files?.[0]?.name || "",
+          photoAttachmentNames: (publicPayload.files || []).map((file) => file.name).filter(Boolean),
         };
         current.updatedAt = nowIso();
         return current;
@@ -580,6 +583,13 @@ function createAntiteamOperator(options = {}) {
 
   async function resolveDirectJoinUrlForRobloxUserId(robloxUserId = "") {
     return (await resolveDirectJoinTargetForRobloxUserId(robloxUserId))?.directJoinUrl || "";
+  }
+
+  function getConfiguredRobloxPlaceId() {
+    const configPlaceId = cleanString(getConfig().roblox?.jjsPlaceId, 40);
+    if (configPlaceId) return configPlaceId;
+    if (typeof options.robloxPlaceId === "function") return cleanString(options.robloxPlaceId(), 40);
+    return cleanString(options.robloxPlaceId, 40);
   }
 
   async function fetchRobloxPresenceMap(robloxUserIds = [], errorLabel = "Antiteam Roblox presence lookup failed:") {
@@ -618,13 +628,31 @@ function createAntiteamOperator(options = {}) {
     };
   }
 
+  function getRuntimeDirectJoinTarget(ticket = {}, { requiredGameId = "" } = {}) {
+    const targetDiscordUserId = getFriendRequestTargetUserId(ticket);
+    const runtimeState = getRobloxRuntimeState();
+    const session = runtimeState?.activeSessionsByDiscordUserId?.[targetDiscordUserId] || null;
+    const gameId = cleanString(session?.gameId, 120);
+    const expectedGameId = cleanString(requiredGameId, 120);
+    const placeId = cleanString(session?.placeId || session?.rootPlaceId, 40) || getConfiguredRobloxPlaceId();
+    if (!isConcreteRobloxGameId(gameId) || !placeId) return null;
+    if (expectedGameId && gameId !== expectedGameId) return null;
+    return {
+      userId: cleanString(ticket.roblox?.userId, 40),
+      gameId,
+      placeId,
+      directJoinUrl: buildTemplateUrl(getConfig().roblox.directJoinUrlTemplate, { placeId, gameId }),
+    };
+  }
+
   async function resolveDirectJoinTargetForRobloxUserId(robloxUserId = "", { requiredGameId = "" } = {}) {
     const presenceByRobloxId = await fetchRobloxPresenceMap([robloxUserId], "Antiteam direct-join lookup failed:");
     return getExactDirectJoinTarget(presenceByRobloxId, robloxUserId, { requiredGameId });
   }
 
   async function resolveDirectJoinTarget(ticket = {}, { requiredGameId = "" } = {}) {
-    return resolveDirectJoinTargetForRobloxUserId(ticket.roblox?.userId, { requiredGameId });
+    return getRuntimeDirectJoinTarget(ticket, { requiredGameId })
+      || resolveDirectJoinTargetForRobloxUserId(ticket.roblox?.userId, { requiredGameId });
   }
 
   async function resolveDirectJoinUrl(ticket = {}) {
@@ -836,9 +864,7 @@ function createAntiteamOperator(options = {}) {
 
     const helperRoblox = getHelperRobloxSnapshot(interaction.user.id);
     const isFriendEligible = ticket.friendEligibleDiscordUserIds.includes(interaction.user.id);
-    const targetRoute = ticket.directJoinEnabled || isFriendEligible
-      ? await resolveDirectJoinTarget(ticket)
-      : null;
+    const targetRoute = await resolveDirectJoinTarget(ticket);
     const bridgeTarget = !ticket.directJoinEnabled && !isFriendEligible
       ? await findRuntimeBridgeTarget(ticket, helperRoblox)
       : null;
@@ -851,7 +877,7 @@ function createAntiteamOperator(options = {}) {
           : "friend_request";
     const directJoinUrl = linkKind === "bridge_direct"
       ? bridgeTarget.directJoinUrl
-          : targetRoute?.directJoinUrl || "";
+      : targetRoute?.directJoinUrl || "";
     const profileUrl = getTicketProfileUrl(ticket);
     const previousHelper = ticket.helpers?.[interaction.user.id] || null;
     const alreadyResponded = Boolean(previousHelper?.respondedAt);
@@ -1162,6 +1188,27 @@ function createAntiteamOperator(options = {}) {
     const ticket = getState().tickets[ticketId];
 
     if (action === "help") return handleHelp(interaction, ticketId);
+
+    if (action === "toggle_direct") {
+      if (!ticket || ticket.status !== "open") {
+        await interaction.reply({ content: "Эта миссия уже закрыта или не найдена.", flags: MessageFlags.Ephemeral });
+        return true;
+      }
+      if (!canCloseTicket(interaction, ticket)) {
+        await replyNoPermission(interaction);
+        return true;
+      }
+      await interaction.deferUpdate();
+      const updated = await persist("antiteam-ticket-toggle-direct", () => updateAntiteamTicket(db, ticket.id, (current) => {
+        current.directJoinEnabled = !current.directJoinEnabled;
+        current.updatedAt = nowIso();
+        current.lastActivityAt = nowIso();
+        return current;
+      }));
+      await interaction.editReply(buildThreadPanelPayload(updated, getConfig())).catch(() => {});
+      await syncTicketMessages(updated).catch(() => {});
+      return true;
+    }
 
     if (action === "friend_request_sent") {
       if (!ticket || ticket.status !== "open") {
@@ -1540,11 +1587,15 @@ function createAntiteamOperator(options = {}) {
     if (request.channelId && message.channelId !== request.channelId) return false;
 
     const attachments = message.attachments?.values ? [...message.attachments.values()] : [];
-    const photoAttachment = attachments.find(isImageAttachment);
-    if (!photoAttachment) return false;
+    const photoAttachments = attachments.filter(isImageAttachment).slice(0, 10);
+    if (!photoAttachments.length) return false;
 
-    const photo = normalizeAttachmentPhoto(photoAttachment, nowIso());
-    await persist("antiteam-photo-captured", () => setAntiteamDraft(db, message.author.id, { photo }, { now: nowIso() }));
+    const capturedAt = nowIso();
+    const photos = photoAttachments.map((attachment) => normalizeAttachmentPhoto(attachment, capturedAt));
+    await persist("antiteam-photo-captured", () => setAntiteamDraft(db, message.author.id, {
+      photo: photos[0],
+      photos,
+    }, { now: capturedAt }));
     let result;
     try {
       result = await publishTicketFromDraft(message.author.id, { skipPhoto: true });

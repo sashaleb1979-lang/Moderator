@@ -360,6 +360,7 @@ test("help button records friend-request path and notifies author only after hel
   const db = {};
   const state = ensureAntiteamState(db).state;
   state.config.channelId = "channel-1";
+  state.config.roblox.jjsPlaceId = "place-1";
   const draft = setAntiteamDraft(db, "author-1", {
     userTag: "Author",
     roblox: { userId: "101", username: "Anchor", profileUrl: "https://www.roblox.com/users/101/profile" },
@@ -386,6 +387,11 @@ test("help button records friend-request path and notifies author only after hel
     now: () => "2026-05-16T10:02:00.000Z",
     saveDb() {},
     getProfile: () => ({ domains: { roblox: { userId: "202", username: "HelperRoblox", verificationStatus: "verified" } } }),
+    getRobloxRuntimeState: () => ({
+      activeSessionsByDiscordUserId: {
+        "author-1": { gameId: "game-1" },
+      },
+    }),
     sendDirectMessage: async (userId, payload) => {
       dm.push({ userId, payload });
     },
@@ -402,7 +408,11 @@ test("help button records friend-request path and notifies author only after hel
   assert.equal(db.sot.antiteam.stats.helpers["helper-1"].linkGranted, 1);
   assert.equal(threadNotices.length, 0);
   assert.equal(dm.length, 0);
-  assert.match(JSON.stringify(interaction.calls.at(-1)[1].components[0].toJSON()), /Отправил др, пусть примет/);
+  const helpJson = JSON.stringify(interaction.calls.at(-1)[1].components[0].toJSON());
+  assert.match(helpJson, /Отправил др, пусть примет/);
+  assert.match(helpJson, /станет рабочей после добавления в друзья/);
+  assert.match(helpJson, /gameInstanceId=game-1/);
+  assert.match(helpJson, /🔗 Подключиться/);
 
   const sentInteraction = createButtonInteraction(ticketButtonId("friend_request_sent", "ticket-1"));
   assert.equal(await operator.handleButtonInteraction(sentInteraction), true);
@@ -413,6 +423,82 @@ test("help button records friend-request path and notifies author only after hel
   assert.match(threadNotices[0].content, /Принять заявки/);
   assert.deepEqual(threadNotices[0].allowedMentions.users, ["author-1", "helper-1"]);
   assert.match(JSON.stringify(sentInteraction.calls.at(-1)[1].components[0].toJSON()), /Помощь принята/);
+});
+
+test("ticket direct-join toggle is limited to author or admin and updates the mission", async () => {
+  const db = {};
+  const state = ensureAntiteamState(db).state;
+  state.config.channelId = "channel-1";
+  const draft = setAntiteamDraft(db, "author-1", {
+    userTag: "Author",
+    roblox: { userId: "101", username: "Anchor", profileUrl: "https://www.roblox.com/users/101/profile" },
+    level: "medium",
+    count: "2-4",
+    description: "Тимятся у центра.",
+    directJoinEnabled: false,
+  }, { now: "2026-05-16T10:00:00.000Z" });
+  createAntiteamTicketFromDraft(db, draft, {
+    id: "ticket-1",
+    now: "2026-05-16T10:01:00.000Z",
+  });
+  db.sot.antiteam.tickets["ticket-1"].message = {
+    channelId: "channel-1",
+    messageId: "message-1",
+    threadId: "thread-1",
+    threadPanelMessageId: "panel-1",
+  };
+  let publicEdit = null;
+  let panelEdit = null;
+  const operator = createAntiteamOperator({
+    db,
+    now: () => "2026-05-16T10:02:00.000Z",
+    saveDb() {},
+    fetchChannel: async (channelId) => {
+      if (channelId === "channel-1") {
+        return {
+          messages: {
+            fetch: async () => ({
+              edit: async (payload) => {
+                publicEdit = payload;
+              },
+            }),
+          },
+        };
+      }
+      if (channelId === "thread-1") {
+        return {
+          messages: {
+            fetch: async () => ({
+              edit: async (payload) => {
+                panelEdit = payload;
+              },
+            }),
+          },
+        };
+      }
+      return null;
+    },
+  });
+  const denied = createButtonInteraction(ticketButtonId("toggle_direct", "ticket-1"), { id: "any-1", username: "Any" });
+
+  assert.equal(await operator.handleButtonInteraction(denied), true);
+  assert.equal(db.sot.antiteam.tickets["ticket-1"].directJoinEnabled, false);
+  assert.deepEqual(denied.calls.map((call) => call[0]), ["reply"]);
+
+  const authorToggle = createButtonInteraction(ticketButtonId("toggle_direct", "ticket-1"), { id: "author-1", username: "Author" });
+  assert.equal(await operator.handleButtonInteraction(authorToggle), true);
+  assert.equal(db.sot.antiteam.tickets["ticket-1"].directJoinEnabled, true);
+  assert.deepEqual(authorToggle.calls.map((call) => call[0]), ["deferUpdate", "editReply"]);
+  assert.match(JSON.stringify(authorToggle.calls.at(-1)[1].components[0].toJSON()), /🔓 Вход без др: есть/);
+  assert.match(JSON.stringify(publicEdit.components[0].toJSON()), /Вход без др: \*\*есть\*\*/);
+  assert.match(JSON.stringify(panelEdit.components[0].toJSON()), /🔓 Вход без др: есть/);
+  assert.equal(Object.keys(db.sot.antiteam.tickets["ticket-1"].helpers).length, 0);
+  assert.deepEqual(db.sot.antiteam.stats.helpers, {});
+
+  const adminToggle = createButtonInteraction(ticketButtonId("toggle_direct", "ticket-1"), { id: "admin-1", username: "Admin" });
+  adminToggle.member = { permissions: { has: () => true }, roles: { cache: new Map() } };
+  assert.equal(await operator.handleButtonInteraction(adminToggle), true);
+  assert.equal(db.sot.antiteam.tickets["ticket-1"].directJoinEnabled, false);
 });
 
 test("help button acknowledges before ticket sync without thread notice spam", async () => {
@@ -903,7 +989,8 @@ test("help button downgrades bridge routing when API cannot confirm the same liv
   const json = JSON.stringify(interaction.calls.at(-1)[1].components[0].toJSON());
   assert.doesNotMatch(json, /BridgeFriend/);
   assert.match(json, /Отправил др, пусть примет/);
-  assert.doesNotMatch(json, /🔗 Подключиться/);
+  assert.match(json, /станет рабочей после добавления в друзья/);
+  assert.match(json, /🔗 Подключиться/);
 });
 
 test("close review rejects moderator role without admin permissions", async () => {
@@ -1198,7 +1285,7 @@ test("moderator stats controls delete one helper and clear the aggregate table",
   assert.deepEqual(db.sot.antiteam.stats.helpers, {});
 });
 
-test("photo collector publishes ticket with reattached image and deletes upload", async () => {
+test("photo collector publishes ticket with multiple reattached images from one upload message", async () => {
   const db = {};
   ensureAntiteamState(db).state.config.channelId = "channel-1";
   setAntiteamDraft(db, "user-1", {
@@ -1253,6 +1340,16 @@ test("photo collector publishes ticket with reattached image and deletes upload"
       name: "team.png",
       contentType: "image/png",
       size: 1234,
+    }], ["a2", {
+      url: "https://cdn.discordapp.com/attachments/1/2/team-2.webp",
+      name: "team-2.webp",
+      contentType: "image/webp",
+      size: 4321,
+    }], ["note", {
+      url: "https://cdn.discordapp.com/attachments/1/2/readme.txt",
+      name: "readme.txt",
+      contentType: "text/plain",
+      size: 111,
     }]]),
     delete: async () => {
       deleted = true;
@@ -1260,8 +1357,12 @@ test("photo collector publishes ticket with reattached image and deletes upload"
   }), true);
 
   const ticket = Object.values(db.sot.antiteam.tickets)[0];
+  assert.equal(ticket.photos.length, 2);
   assert.equal(ticket.message.photoAttachmentName, "team.png");
+  assert.deepEqual(ticket.message.photoAttachmentNames, ["team.png", "team-2.webp"]);
+  assert.equal(sentToChannel[0].files.length, 2);
   assert.equal(sentToChannel[0].files[0].name, "team.png");
+  assert.equal(sentToChannel[0].files[1].name, "team-2.webp");
   assert.equal(deleted, true);
 });
 

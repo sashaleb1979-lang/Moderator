@@ -96,6 +96,50 @@ function getPhotoAttachmentName(photo = {}) {
   return `antiteam-photo.${extension}`;
 }
 
+function getTicketPhotos(ticket = {}) {
+  const source = Array.isArray(ticket.photos) && ticket.photos.length ? ticket.photos : [ticket.photo];
+  const photos = [];
+  const seen = new Set();
+  for (const entry of source) {
+    const url = cleanString(entry?.url, 2000);
+    if (!url || seen.has(url)) continue;
+    seen.add(url);
+    photos.push(entry);
+    if (photos.length >= 10) break;
+  }
+  return photos;
+}
+
+function withUniquePhotoName(name, index, used) {
+  const baseName = cleanString(name, 180) || `antiteam-photo-${index + 1}.png`;
+  let candidate = baseName;
+  if (!used.has(candidate)) {
+    used.add(candidate);
+    return candidate;
+  }
+  const match = baseName.match(/^(.*?)(\.[A-Za-z0-9]{2,8})$/);
+  const base = match ? match[1] : baseName;
+  const extension = match ? match[2] : "";
+  let suffix = 2;
+  do {
+    candidate = `${base}-${suffix}${extension}`;
+    suffix += 1;
+  } while (used.has(candidate));
+  used.add(candidate);
+  return candidate;
+}
+
+function getPhotoAttachmentNames(ticket = {}, photos = getTicketPhotos(ticket)) {
+  const storedNames = Array.isArray(ticket.message?.photoAttachmentNames)
+    ? ticket.message.photoAttachmentNames.map((name) => cleanString(name, 180)).filter(Boolean)
+    : [];
+  if (!storedNames.length && cleanString(ticket.message?.photoAttachmentName, 180)) {
+    storedNames.push(cleanString(ticket.message.photoAttachmentName, 180));
+  }
+  const used = new Set();
+  return photos.map((photo, index) => withUniquePhotoName(storedNames[index] || getPhotoAttachmentName(photo), index, used));
+}
+
 function getLevelMeta(level) {
   return ANTITEAM_LEVELS[normalizeAntiteamLevel(level, "medium")] || ANTITEAM_LEVELS.medium;
 }
@@ -679,7 +723,7 @@ function buildDraftSettingsSections(draft = {}) {
     new SectionBuilder()
       .addTextDisplayComponents(new TextDisplayBuilder().setContent([
         "**Фото к заявке**",
-        "При «есть» бот попросит следующим сообщением отправить скрин.",
+        "При «есть» бот попросит следующим сообщением отправить один или несколько скринов.",
       ].join("\n")))
       .setButtonAccessory(
         new ButtonBuilder()
@@ -748,8 +792,8 @@ function buildPhotoRequestPayload(draft = {}, statusText = "") {
     .addTextDisplayComponents(
       new TextDisplayBuilder().setContent("# Фото к заявке"),
       new TextDisplayBuilder().setContent([
-        "Отправь следующим сообщением в антитим-канал один скрин.",
-        "Бот прикрепит его к заявке и удалит исходное сообщение.",
+        "Отправь следующим сообщением в антитим-канал один или несколько скринов.",
+        "Можно кинуть несколько изображений сразу одним сообщением. Бот прикрепит их к заявке и удалит исходное сообщение.",
         statusText,
       ].filter(Boolean).join("\n"))
     )
@@ -866,16 +910,21 @@ function buildTicketPublicPayload(ticket = {}, config = createDefaultAntiteamCon
     .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
     .addTextDisplayComponents(new TextDisplayBuilder().setContent(`### Помощники\n${formatHelpersBlock(ticket, options)}`));
 
-  const photoUrl = cleanString(ticket.photo?.url, 2000);
-  const shouldAttachPhoto = options.attachPhoto === true && photoUrl;
-  let photoAttachmentName = "";
-  if (photoUrl) {
-    photoAttachmentName = cleanString(ticket.message?.photoAttachmentName, 180) || getPhotoAttachmentName(ticket.photo);
-    const media = new MediaGalleryBuilder().addItems(
-      new MediaGalleryItemBuilder()
-        .setURL(shouldAttachPhoto || ticket.message?.photoAttachmentName ? `attachment://${photoAttachmentName}` : photoUrl)
-        .setDescription("Скрин антитима")
-    );
+  const photos = getTicketPhotos(ticket);
+  const shouldAttachPhoto = options.attachPhoto === true && photos.length > 0;
+  const photoAttachmentNames = getPhotoAttachmentNames(ticket, photos);
+  if (photos.length) {
+    const storedAttachmentCount = Array.isArray(ticket.message?.photoAttachmentNames)
+      ? ticket.message.photoAttachmentNames.map((name) => cleanString(name, 180)).filter(Boolean).length
+      : cleanString(ticket.message?.photoAttachmentName, 180) ? 1 : 0;
+    const hasStoredAttachments = storedAttachmentCount >= photos.length;
+    const media = new MediaGalleryBuilder().addItems(...photos.map((photo, index) => {
+      const url = cleanString(photo.url, 2000);
+      const attachmentName = photoAttachmentNames[index];
+      return new MediaGalleryItemBuilder()
+        .setURL(shouldAttachPhoto || hasStoredAttachments ? `attachment://${attachmentName}` : url)
+        .setDescription(photos.length > 1 ? `Скрин антитима ${index + 1}` : "Скрин антитима");
+    }));
     container
       .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
       .addMediaGalleryComponents(media);
@@ -893,7 +942,10 @@ function buildTicketPublicPayload(ticket = {}, config = createDefaultAntiteamCon
     ] : [],
   });
   if (shouldAttachPhoto) {
-    payload.files = [{ attachment: photoUrl, name: photoAttachmentName }];
+    payload.files = photos.map((photo, index) => ({
+      attachment: cleanString(photo.url, 2000),
+      name: photoAttachmentNames[index],
+    }));
   }
   return payload;
 }
@@ -910,6 +962,11 @@ function buildThreadPanelPayload(ticket = {}, config = createDefaultAntiteamConf
       .setCustomId(ticketButtonId("help", ticket.id))
       .setLabel("🙋 Помочь")
       .setStyle(ButtonStyle.Primary)
+      .setDisabled(isClosed),
+    new ButtonBuilder()
+      .setCustomId(ticketButtonId("toggle_direct", ticket.id))
+      .setLabel(ticket.directJoinEnabled ? "🔓 Вход без др: есть" : "🔒 Вход без др: нет")
+      .setStyle(ticket.directJoinEnabled ? ButtonStyle.Success : ButtonStyle.Secondary)
       .setDisabled(isClosed),
     new ButtonBuilder()
       .setCustomId(ticketButtonId("report", ticket.id))

@@ -10,6 +10,7 @@ const {
   buildHelpReplyPayload,
   buildModeratorPanelPayload,
   buildPanelTextModal,
+  buildPhotoRequestPayload,
   buildRobloxConfirmPayload,
   buildRobloxMissingPayload,
   buildRobloxUsernameModal,
@@ -178,6 +179,7 @@ test("public ticket is the main compact post and thread panel is buttons only", 
   assert.match(json, /> Бить A\/B, тимятся у центра\./);
   assert.ok(json.indexOf("### Описание") < json.indexOf("### Помощники"));
   assert.match(threadJson, /🙋 Помочь/);
+  assert.match(threadJson, /🔒 Вход без др: нет/);
   assert.match(threadJson, /⚠️ Пожаловаться/);
   assert.match(threadJson, /📈 Повысить/);
   assert.match(threadJson, /✅ Завершить/);
@@ -250,6 +252,7 @@ test("public ticket and thread panel disable actions after close", () => {
   assert.match(payloadJson(buildTicketPublicPayload(ticket)), /⚫ \*\*Средние\*\*: команда в основном 2k-8k kills/);
   assert.doesNotMatch(payloadJson(buildTicketPublicPayload(ticket)), /Прийти на помощь/);
   assert.match(payloadJson(buildThreadPanelPayload(ticket)), /✅ Закрыто/);
+  assert.match(payloadJson(buildThreadPanelPayload(ticket)), /🔒 Вход без др: нет/);
   assert.match(payloadJson(buildThreadPanelPayload(ticket)), /"disabled":true/);
   assert.equal(ticketButtonId("help", "ticket-1"), "at:help:ticket-1");
 });
@@ -382,6 +385,33 @@ test("public ticket can reattach photo into the application message", () => {
   assert.match(json, /attachment:\/\/screen_shot\.png/);
 });
 
+test("public ticket can reattach multiple photos into the application message", () => {
+  const payload = buildTicketPublicPayload({
+    id: "ticket-1",
+    kind: "standard",
+    status: "open",
+    createdBy: "author-1",
+    roblox: { username: "Anchor", userId: "101" },
+    level: "medium",
+    count: "2-4",
+    photos: [{
+      url: "https://cdn.discordapp.com/attachments/1/2/screen shot.png",
+      name: "screen shot.png",
+      contentType: "image/png",
+    }, {
+      url: "https://cdn.discordapp.com/attachments/1/2/screen shot.png?second=1",
+      name: "screen shot.png",
+      contentType: "image/png",
+    }],
+  }, undefined, { attachPhoto: true });
+  const json = payloadJson(payload);
+
+  assert.equal(payload.files.length, 2);
+  assert.deepEqual(payload.files.map((file) => file.name), ["screen_shot.png", "screen_shot-2.png"]);
+  assert.match(json, /attachment:\/\/screen_shot\.png/);
+  assert.match(json, /attachment:\/\/screen_shot-2\.png/);
+});
+
 test("public ticket keeps stored photo attachment reference on edits", () => {
   const payload = buildTicketPublicPayload({
     id: "ticket-1",
@@ -402,6 +432,13 @@ test("public ticket keeps stored photo attachment reference on edits", () => {
 
   assert.equal(payload.files, undefined);
   assert.match(json, /attachment:\/\/stored\.png/);
+});
+
+test("photo request copy allows several images in one message", () => {
+  const payload = buildPhotoRequestPayload({});
+  const json = payloadJson(payload);
+
+  assert.match(json, /несколько изображений сразу одним сообщением/);
 });
 
 test("moderator panel renders setup controls", () => {

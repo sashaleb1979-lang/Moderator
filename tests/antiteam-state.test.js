@@ -88,6 +88,35 @@ test("antiteam ticket lifecycle records helpers and closes mission", () => {
   assert.equal(db.sot.antiteam.stats.helpers["helper-1"].responded, 1);
 });
 
+test("antiteam draft and ticket preserve multiple photos with first-photo compatibility", () => {
+  const db = {};
+  const draft = setAntiteamDraft(db, "author-1", {
+    userTag: "Author",
+    roblox: { userId: "101", username: "Anchor" },
+    description: "enemy nick 2k",
+    photos: [{
+      url: "https://cdn.discordapp.com/attachments/1/2/a.png",
+      name: "a.png",
+      contentType: "image/png",
+    }, {
+      url: "https://cdn.discordapp.com/attachments/1/2/b.webp",
+      name: "b.webp",
+      contentType: "image/webp",
+    }],
+  }, { now: "2026-05-16T10:00:00.000Z" });
+
+  assert.equal(draft.photo.name, "a.png");
+  assert.equal(draft.photos.length, 2);
+
+  const ticket = createAntiteamTicketFromDraft(db, draft, {
+    id: "ticket-photos",
+    now: "2026-05-16T10:01:00.000Z",
+  });
+
+  assert.equal(ticket.photo.name, "a.png");
+  assert.deepEqual(ticket.photos.map((photo) => photo.name), ["a.png", "b.webp"]);
+});
+
 test("antiteam helper stats can delete one helper or clear the aggregate table", () => {
   const db = {};
   incrementHelperStats(db, "helper-1", { responded: 2, linkGranted: 1 }, { now: "2026-05-16T10:00:00.000Z" });

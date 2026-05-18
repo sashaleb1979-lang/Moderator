@@ -437,6 +437,8 @@ const {
   renderCaptchaPng,
 } = nonGgsCaptchaModule;
 
+const DEFAULT_NON_JJS_DESCRIPTION = "Если ты не играешь в JJS, нажми кнопку ниже. Бот запустит 2 этапа капчи и после успешного прохождения выдаст отдельную роль доступа.";
+
 const {
   AuditLogEvent,
   Client,
@@ -447,7 +449,10 @@ const {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  ContainerBuilder,
   StringSelectMenuBuilder,
+  SeparatorBuilder,
+  TextDisplayBuilder,
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
@@ -646,7 +651,7 @@ function buildRuntimeConfig(fileConfig = {}) {
       nonGgsDescription: String(
         fileConfig?.ui?.nonJjsDescription ||
         fileConfig?.ui?.nonGgsDescription ||
-        "Не играешь в JJS - жми кнопку ниже. Бот даст короткую капчу и отдельную роль доступа."
+        DEFAULT_NON_JJS_DESCRIPTION
       ).trim(),
       nonGgsButtonLabel: String(fileConfig?.ui?.nonJjsButtonLabel || fileConfig?.ui?.nonGgsButtonLabel || "Я не играю в JJS").trim(),
       onboardingProofExampleImageUrl: envText(
@@ -1365,12 +1370,13 @@ function getResolvedIntegrationSourcePath(slot, currentDb = db) {
 
 function getNonJjsUiConfig() {
   const nonJjsPresentation = getPresentation().nonGgs || {};
+  const rawDescription = String(nonJjsPresentation.description || "").trim();
+  const description = rawDescription === "Не играешь в JJS - жми кнопку ниже. Бот даст короткую капчу и отдельную роль доступа."
+    ? DEFAULT_NON_JJS_DESCRIPTION
+    : rawDescription || DEFAULT_NON_JJS_DESCRIPTION;
   return {
     title: String(nonJjsPresentation.title || "Я не играю в JJS").trim(),
-    description: String(
-      nonJjsPresentation.description ||
-      "Если ты не играешь в JJS, нажми кнопку ниже. Бот запустит 2 этапа капчи и после успешного прохождения выдаст отдельную роль доступа."
-    ).trim(),
+    description,
     buttonLabel: String(nonJjsPresentation.buttonLabel || "Я не играю в JJS").trim(),
   };
 }
@@ -2786,7 +2792,7 @@ function getCharacterPickerValidationError(characterEntries) {
 function buildManualMainSelectionModal(mode = "full") {
   const modal = new ModalBuilder()
     .setCustomId(mode === "quick" ? "onboard_manual_mains_quick_modal" : "onboard_manual_mains_modal")
-    .setTitle(mode === "quick" ? "Быстро сменить мейнов" : "Указать мейнов");
+    .setTitle(mode === "quick" ? "Сменить мейнов" : "Указать мейнов");
 
   const mainsInput = new TextInputBuilder()
     .setCustomId("mains")
@@ -7122,49 +7128,86 @@ async function purgeUserProfile(client, userId, moderatorTag) {
   };
 }
 
-function buildWelcomeEmbed() {
+function buildWelcomePanelPayload() {
   const presentation = getPresentation();
   const nonJjsUi = getNonJjsUiConfig();
-  const summaryLines = String(presentation.welcome.description || "")
+  const summaryText = String(presentation.welcome.description || "")
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean)
-    .map((line) => `> ${line}`);
+    .join("\n");
   const steps = Array.isArray(presentation.welcome.steps)
     ? presentation.welcome.steps.map((step) => String(step || "").trim()).filter(Boolean)
     : [];
-  const descriptionLines = [
-    ...(summaryLines.length ? [...summaryLines, ""] : []),
-    "**Быстрый вход**",
-    ...steps.map((step) => `• ${step}`),
-    "",
-    `**${nonJjsUi.title}**`,
-    nonJjsUi.description,
-  ];
-  return new EmbedBuilder()
-    .setColor(0x5865F2)
-    .setTitle(presentation.welcome.title)
-    .setDescription(descriptionLines.join("\n"));
+  const welcomeSteps = (steps.length ? steps : [
+    "Нажми **Получить роль** и выбери **1-2 мейнов**.",
+    "Отправь **одно сообщение: kills** числом + скрин, где видны **kills** и **Roblox username**.",
+    "**Доступ выдаётся сразу после отправки; kill-tier** проверит модератор.",
+  ]).slice(0, 3);
+
+  const stepsBlock = [
+    `### ⚡ ${summaryText || "**Быстрый вход**"}`,
+    ...welcomeSteps.map((step) => `• ${previewText(step, 380)}`),
+  ].join("\n");
+  const nonJjsBlock = [
+    `### 🧩 ${nonJjsUi.title}`,
+    previewText(nonJjsUi.description, 420),
+  ].join("\n");
+  const container = new ContainerBuilder()
+    .setAccentColor(0x5865F2)
+    .addTextDisplayComponents(
+      new TextDisplayBuilder().setContent(`# ${presentation.welcome.title}`)
+    )
+    .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(stepsBlock))
+    .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(nonJjsBlock))
+    .addSeparatorComponents(new SeparatorBuilder().setDivider(false))
+    .addActionRowComponents(...buildWelcomeComponents());
+
+  return {
+    flags: MessageFlags.IsComponentsV2,
+    embeds: [],
+    components: [container],
+  };
+}
+
+function compactWelcomeButtonLabel(value, fallback) {
+  const label = String(value || "").trim() || fallback;
+  return label.length > 80 ? `${label.slice(0, 77).trimEnd()}...` : label;
+}
+
+function compactQuickMainsButtonLabel(value) {
+  const label = String(value || "").trim() || "Сменить мейнов";
+  const normalized = label.toLowerCase();
+  return compactWelcomeButtonLabel(normalized === "сменить мейнов" ? "Быстро сменить мейнов" : label, "Быстро сменить мейнов");
+}
+
+function compactNonJjsButtonLabel(value) {
+  return compactWelcomeButtonLabel(String(value || "").trim() || "Я не играю в JJS", "Я не играю в JJS");
 }
 
 function buildWelcomeComponents() {
   const presentation = getPresentation();
   const nonJjsUi = getNonJjsUiConfig();
+  const beginLabel = compactWelcomeButtonLabel(presentation.welcome.buttons.begin, "Получить роль");
+  const quickMainsLabel = compactQuickMainsButtonLabel(presentation.welcome.buttons.quickMains);
+  const nonJjsLabel = compactNonJjsButtonLabel(nonJjsUi.buttonLabel);
   return [
     new ActionRowBuilder().addComponents(
       new ButtonBuilder()
         .setCustomId("onboard_begin")
-        .setLabel(presentation.welcome.buttons.begin)
+        .setLabel(beginLabel)
         .setEmoji("⚡")
         .setStyle(ButtonStyle.Primary),
       new ButtonBuilder()
         .setCustomId("onboard_non_ggs_start")
-        .setLabel(nonJjsUi.buttonLabel)
+        .setLabel(nonJjsLabel)
         .setEmoji("🧩")
         .setStyle(ButtonStyle.Success),
       new ButtonBuilder()
         .setCustomId("onboard_quick_mains")
-        .setLabel(presentation.welcome.buttons.quickMains)
+        .setLabel(quickMainsLabel)
         .setEmoji("🔁")
         .setStyle(ButtonStyle.Secondary)
     ),
@@ -7517,10 +7560,15 @@ function buildReviewEmbed(submission, statusLabel, extraFields = []) {
 }
 
 function getMessageComponentCustomIds(message) {
-  return (message?.components || [])
-    .flatMap((row) => row.components || [])
-    .map((component) => String(component.customId || "").trim())
-    .filter(Boolean);
+  const out = [];
+  const visit = (component) => {
+    if (!component) return;
+    const customId = String(component.customId || "").trim();
+    if (customId) out.push(customId);
+    for (const child of component.components || []) visit(child);
+  };
+  for (const component of message?.components || []) visit(component);
+  return out;
 }
 
 function messageHasRequiredCustomIds(message, requiredIds) {
@@ -7861,10 +7909,7 @@ async function refreshWelcomePanel(client) {
   nonGgsPanelState.channelId = welcomeChannel.id;
   nonGgsPanelState.messageId = "";
 
-  const welcomePayload = {
-    embeds: [buildWelcomeEmbed()],
-    components: buildWelcomeComponents(),
-  };
+  const welcomePayload = buildWelcomePanelPayload();
 
   const botId = client.user?.id;
   const welcomeMessage = await upsertManagedPanelMessage(welcomeChannel, panelState, welcomePayload, findExistingWelcomePanelMessage, botId);

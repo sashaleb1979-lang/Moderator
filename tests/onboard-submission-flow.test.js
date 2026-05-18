@@ -39,11 +39,12 @@ test("legacy welcome copy is normalized to the mains-first submission flow", () 
     defaultGraphicTierColors: DEFAULT_GRAPHIC_TIER_COLORS,
   });
 
-  assert.equal(resolved.welcome.description, "");
+  assert.match(resolved.welcome.description, /Быстрый вход/i);
   assert.equal(resolved.welcome.steps.length, 3);
-  assert.ok(resolved.welcome.steps.some((step) => /\*\*kills\*\* числом/i.test(step)));
+  assert.ok(resolved.welcome.steps.some((step) => /1-2 мейнов/i.test(step)));
+  assert.ok(resolved.welcome.steps.some((step) => /одно сообщение: kills/i.test(step)));
   assert.ok(resolved.welcome.steps.some((step) => /roblox username/i.test(step)));
-  assert.ok(resolved.welcome.steps.some((step) => /доступ выдаётся сразу после отправки/i.test(step)));
+  assert.ok(resolved.welcome.steps.some((step) => /доступ выдаётся сразу после отправки; kill-tier/i.test(step)));
   assert.ok(resolved.welcome.steps.every((step) => !/следующим сообщением/i.test(step)));
   assert.ok(resolved.welcome.steps.every((step) => !/сразу даст access-role/i.test(step)));
   assert.ok(resolved.welcome.steps.every((step) => !/доступ откроется по режиму сервера/i.test(step)));
@@ -74,11 +75,11 @@ test("ensurePresentationConfig rewrites persisted legacy welcome text", () => {
   });
 
   assert.equal(result.mutated, true);
-  assert.equal(dbConfig.presentation.welcome.description, "");
+  assert.match(dbConfig.presentation.welcome.description, /Быстрый вход/i);
   assert.equal(dbConfig.presentation.welcome.steps.length, 3);
-  assert.ok(dbConfig.presentation.welcome.steps.some((step) => /\*\*kills\*\* числом/i.test(step)));
+  assert.ok(dbConfig.presentation.welcome.steps.some((step) => /одно сообщение: kills/i.test(step)));
   assert.ok(dbConfig.presentation.welcome.steps.some((step) => /roblox username/i.test(step)));
-  assert.ok(dbConfig.presentation.welcome.steps.some((step) => /доступ выдаётся сразу после отправки/i.test(step)));
+  assert.ok(dbConfig.presentation.welcome.steps.some((step) => /доступ выдаётся сразу после отправки; kill-tier/i.test(step)));
 });
 
 test("ensurePresentationConfig removes outdated compact welcome summary", () => {
@@ -103,8 +104,8 @@ test("ensurePresentationConfig removes outdated compact welcome summary", () => 
   });
 
   assert.equal(result.mutated, true);
-  assert.equal(dbConfig.presentation.welcome.description, "");
-  assert.ok(dbConfig.presentation.welcome.steps.some((step) => /доступ выдаётся сразу после отправки/i.test(step)));
+  assert.match(dbConfig.presentation.welcome.description, /Быстрый вход/i);
+  assert.ok(dbConfig.presentation.welcome.steps.some((step) => /доступ выдаётся сразу после отправки; kill-tier/i.test(step)));
   assert.ok(dbConfig.presentation.welcome.steps.every((step) => !/бот откроет доступ/i.test(step)));
 });
 
@@ -132,7 +133,7 @@ test("ensurePresentationConfig compacts persisted long welcome flow", () => {
   });
 
   assert.equal(result.mutated, true);
-  assert.equal(dbConfig.presentation.welcome.description, "");
+  assert.match(dbConfig.presentation.welcome.description, /Быстрый вход/i);
   assert.equal(dbConfig.presentation.welcome.steps.length, 3);
   assert.ok(dbConfig.presentation.welcome.steps.every((step) => !/не обязательно/i.test(step)));
 });
