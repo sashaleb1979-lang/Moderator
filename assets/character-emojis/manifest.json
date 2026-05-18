@@ -1,0 +1,163 @@
+{
+  "sourceDir": "assets/characters",
+  "outputDir": "assets/character-emojis",
+  "size": 128,
+  "discordMaxBytes": 262144,
+  "total": 19,
+  "characters": [
+    {
+      "characterId": "honored_one",
+      "label": "Honored One",
+      "emojiName": "jjs_honored_one",
+      "file": "assets/character-emojis/jjs_honored_one.png",
+      "sourceFile": "assets/characters/honored_one.png",
+      "bytes": 34274
+    },
+    {
+      "characterId": "vessel",
+      "label": "Vessel",
+      "emojiName": "jjs_vessel",
+      "file": "assets/character-emojis/jjs_vessel.png",
+      "sourceFile": "assets/characters/vessel.png",
+      "bytes": 33156
+    },
+    {
+      "characterId": "restless_gambler",
+      "label": "Restless Gambler",
+      "emojiName": "jjs_restless_gambler",
+      "file": "assets/character-emojis/jjs_restless_gambler.png",
+      "sourceFile": "assets/characters/restless_gambler.png",
+      "bytes": 28767
+    },
+    {
+      "characterId": "ten_shadows",
+      "label": "Ten Shadows",
+      "emojiName": "jjs_ten_shadows",
+      "file": "assets/character-emojis/jjs_ten_shadows.png",
+      "sourceFile": "assets/characters/ten_shadows.png",
+      "bytes": 21693
+    },
+    {
+      "characterId": "perfection",
+      "label": "Perfection",
+      "emojiName": "jjs_perfection",
+      "file": "assets/character-emojis/jjs_perfection.png",
+      "sourceFile": "assets/characters/perfection.png",
+      "bytes": 38761
+    },
+    {
+      "characterId": "blood_manipulator",
+      "label": "Blood Manipulator",
+      "emojiName": "jjs_blood_manipulator",
+      "file": "assets/character-emojis/jjs_blood_manipulator.png",
+      "sourceFile": "assets/characters/blood_manipulator.png",
+      "bytes": 25440
+    },
+    {
+      "characterId": "switcher",
+      "label": "Switcher",
+      "emojiName": "jjs_switcher",
+      "file": "assets/character-emojis/jjs_switcher.png",
+      "sourceFile": "assets/characters/switcher.png",
+      "bytes": 40310
+    },
+    {
+      "characterId": "defense_attorney",
+      "label": "Defense Attorney",
+      "emojiName": "jjs_defense_attorney",
+      "file": "assets/character-emojis/jjs_defense_attorney.png",
+      "sourceFile": "assets/characters/defense_attorney.png",
+      "bytes": 30101
+    },
+    {
+      "characterId": "cursed_partners",
+      "label": "Cursed Partners",
+      "emojiName": "jjs_cursed_partners",
+      "file": "assets/character-emojis/jjs_cursed_partners.png",
+      "sourceFile": "assets/characters/cursed_partners.png",
+      "bytes": 34946
+    },
+    {
+      "characterId": "head_of_the_hei",
+      "label": "Head of the Hei",
+      "emojiName": "jjs_head_of_the_hei",
+      "file": "assets/character-emojis/jjs_head_of_the_hei.png",
+      "sourceFile": "assets/characters/head_of_the_hei.png",
+      "bytes": 35837
+    },
+    {
+      "characterId": "puppet_master",
+      "label": "Puppet Master",
+      "emojiName": "jjs_puppet_master",
+      "file": "assets/character-emojis/jjs_puppet_master.png",
+      "sourceFile": "assets/characters/puppet_master.png",
+      "bytes": 34261
+    },
+    {
+      "characterId": "salaryman",
+      "label": "Salaryman",
+      "emojiName": "jjs_salaryman",
+      "file": "assets/character-emojis/jjs_salaryman.png",
+      "sourceFile": "assets/characters/salaryman.png",
+      "bytes": 34121
+    },
+    {
+      "characterId": "locust_guy",
+      "label": "Locust Guy",
+      "emojiName": "jjs_locust_guy",
+      "file": "assets/character-emojis/jjs_locust_guy.png",
+      "sourceFile": "assets/characters/locust_guy.png",
+      "bytes": 10519
+    },
+    {
+      "characterId": "star_rage",
+      "label": "Star Rage",
+      "emojiName": "jjs_star_rage",
+      "file": "assets/character-emojis/jjs_star_rage.png",
+      "sourceFile": "assets/characters/star_rage.png",
+      "bytes": 31131
+    },
+    {
+      "characterId": "aspiring_mangaka",
+      "label": "Aspiring Mangaka",
+      "emojiName": "jjs_aspiring_mangaka",
+      "file": "assets/character-emojis/jjs_aspiring_mangaka.png",
+      "sourceFile": "assets/characters/aspiring_mangaka.png",
+      "bytes": 40388
+    },
+    {
+      "characterId": "lucky_coward",
+      "label": "Lucky Coward",
+      "emojiName": "jjs_lucky_coward",
+      "file": "assets/character-emojis/jjs_lucky_coward.png",
+      "sourceFile": "assets/characters/lucky_coward.png",
+      "bytes": 36310
+    },
+    {
+      "characterId": "disaster_plants",
+      "label": "Disaster Plants",
+      "emojiName": "jjs_disaster_plants",
+      "file": "assets/character-emojis/jjs_disaster_plants.png",
+      "sourceFile": "assets/characters/disaster_plants.png",
+      "bytes": 45802
+    },
+    {
+      "characterId": "crow_charmer",
+      "label": "Crow Charmer",
+      "emojiName": "jjs_crow_charmer",
+      "file": "assets/character-emojis/jjs_crow_charmer.png",
+      "sourceFile": "assets/characters/crow_charmer.png",
+      "bytes": 41212
+    },
+    {
+      "characterId": "ryu",
+      "label": "Ryu",
+      "emojiName": "jjs_ryu",
+      "file": "assets/character-emojis/jjs_ryu.png",
+      "sourceFile": "assets/characters/ryu.png",
+      "bytes": 42547
+    }
+  ],
+  "missing": [],
+  "oversized": []
+}

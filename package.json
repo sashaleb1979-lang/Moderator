@@ -6,6 +6,7 @@
   "main": "welcome-bot.js",
   "scripts": {
     "start": "node welcome-bot.js",
+    "prepare:character-emojis": "node scripts/prepare-character-emojis.js",
     "test": "node scripts/run-tests.js",
     "snapshot:db": "node scripts/snapshot-db.js"
   },

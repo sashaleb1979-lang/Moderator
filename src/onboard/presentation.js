@@ -21,11 +21,11 @@ const LEGACY_WELCOME_STEPS = [
   "Следующим сообщением отправь **скрин** в этот канал.",
   "Бот удалит скрин после обработки, сразу даст access-role, а kill-tier прилетит после проверки модератором.",
 ];
-const COMBINED_SUBMISSION_WELCOME_DESCRIPTION = "Маршрут простой: emoji-мейны, один пруф, мод-чек. Без лишней анкеты: если текущий режим требует сверку, бот сам попросит Roblox username.";
+const COMBINED_SUBMISSION_WELCOME_DESCRIPTION = "";
 const COMBINED_SUBMISSION_WELCOME_STEPS = [
-  "Жми **Получить роль** и выбирай **1-2 emoji-мейнов** на витрине.",
-  "Кидай **одно сообщение**: укажи **kills** числом и приложи скрин, где видны kills и **Roblox username**.",
-  "Дождись мод-чека: доступ откроется по режиму сервера, **kill-tier** прилетит после approve.",
+  "Жми **Получить роль** и выбери **1-2 emoji-мейнов** кнопками.",
+  "Отправь **одно сообщение**: **kills** числом + скрин, где видны kills и **Roblox username**.",
+  "После отправки бот откроет доступ; **kill-tier** прилетит после мод-чека.",
 ];
 
 const HARD_DEFAULT_PRESENTATION = {
@@ -94,6 +94,13 @@ function isLegacyWelcomeCopy(text) {
   return Boolean(normalized) && normalized.includes("следующим сообщением") && normalized.includes("скрин");
 }
 
+function isOutdatedCombinedWelcomeDescription(text) {
+  const normalized = cleanString(text).toLowerCase();
+  return normalized.includes("emoji-мейны")
+    && normalized.includes("один пруф")
+    && normalized.includes("мод-чек");
+}
+
 function firstNonEmpty(...values) {
   for (const value of values) {
     const text = cleanString(value);
@@ -113,7 +120,7 @@ function normalizeSteps(value, fallback) {
 function normalizeWelcomeDescription(value, fallback) {
   const text = cleanString(value);
   if (!text) return cleanString(fallback);
-  return isLegacyWelcomeCopy(text) ? cleanString(fallback) : text;
+  return isLegacyWelcomeCopy(text) || isOutdatedCombinedWelcomeDescription(text) ? cleanString(fallback) : text;
 }
 
 function isOutdatedWelcomeStepSet(steps) {
@@ -488,7 +495,7 @@ function ensurePresentationConfig(dbConfig, options = {}) {
   const hasOutdatedWelcomeSteps = Array.isArray(presentation.welcome.steps)
     && (presentation.welcome.steps.some((step) => isLegacyWelcomeCopy(step)) || isOutdatedWelcomeStepSet(presentation.welcome.steps));
 
-  if (isLegacyWelcomeCopy(presentation.welcome.description) || hasOutdatedWelcomeSteps) {
+  if (isLegacyWelcomeCopy(presentation.welcome.description) || isOutdatedCombinedWelcomeDescription(presentation.welcome.description) || hasOutdatedWelcomeSteps) {
     presentation.welcome.description = defaults.welcome.description;
     mutated = true;
   }

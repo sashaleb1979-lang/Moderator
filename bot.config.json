@@ -21,7 +21,7 @@
   },
   "ui": {
     "welcomeTitle": "Проходка на сервер",
-    "welcomeDescription": "Маршрут простой: emoji-мейны, один пруф, мод-чек. Без лишней анкеты: если текущий режим требует сверку, бот сам попросит Roblox username.",
+    "welcomeDescription": "",
     "getRoleButtonLabel": "Получить роль",
     "nonJjsTitle": "Я не играю в JJS",
     "nonJjsDescription": "Не играешь в JJS - жми кнопку ниже. Бот даст короткую капчу и отдельную роль доступа.",

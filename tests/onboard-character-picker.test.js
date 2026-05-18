@@ -2,7 +2,10 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
 const path = require("node:path");
+const { MessageFlags } = require("discord.js");
+const botConfig = require("../bot.config.json");
 
 const {
   DISCORD_EMOJI_MAX_BYTES,
@@ -13,10 +16,10 @@ const {
 } = require("../src/onboard/character-emojis");
 const {
   CHARACTER_PICKER_PAGE_SIZE,
+  buildCharacterPickerPayload,
   paginateCharacterPickerEntries,
-  renderCharacterPickerBoardPng,
   toggleCharacterPickerSelection,
-} = require("../src/onboard/character-picker-board");
+} = require("../src/onboard/character-picker");
 const {
   createPresentationDefaults,
   ensurePresentationConfig,
@@ -24,6 +27,7 @@ const {
 } = require("../src/onboard/presentation");
 
 const ASSETS_DIR = path.resolve(__dirname, "../assets/characters");
+const GENERATED_EMOJI_DIR = path.resolve(__dirname, "../assets/character-emojis");
 
 test("character emoji names are normalized, shortened, and collision-safe", () => {
   assert.equal(createCharacterEmojiName("honored_one"), "jjs_honored_one");
@@ -63,7 +67,7 @@ test("character emoji map normalizes records and preserves valid fallback entrie
 });
 
 test("character emoji renderer creates Discord-sized PNGs for current character art", async () => {
-  const files = require("node:fs").readdirSync(ASSETS_DIR).filter((file) => file.endsWith(".png"));
+  const files = fs.readdirSync(ASSETS_DIR).filter((file) => file.endsWith(".png"));
   assert.ok(files.length > 0);
 
   for (const file of files) {
@@ -74,8 +78,30 @@ test("character emoji renderer creates Discord-sized PNGs for current character 
   }
 });
 
+test("prepared character emoji upload kit covers the current character catalog", () => {
+  const manifestPath = path.join(GENERATED_EMOJI_DIR, "manifest.json");
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+  const configuredIds = (Array.isArray(botConfig.characters) ? botConfig.characters : [])
+    .map((entry) => entry.id)
+    .sort();
+  const generatedIds = manifest.characters.map((entry) => entry.characterId).sort();
+
+  assert.deepEqual(generatedIds, configuredIds);
+  assert.deepEqual(manifest.missing, []);
+  assert.deepEqual(manifest.oversized, []);
+
+  for (const entry of manifest.characters) {
+    const fullPath = path.resolve(__dirname, "..", entry.file);
+    const stat = fs.statSync(fullPath);
+    assert.equal(stat.size, entry.bytes, entry.file);
+    assert.ok(entry.bytes <= DISCORD_EMOJI_MAX_BYTES, entry.file);
+    assert.match(entry.emojiName, /^jjs_[a-z0-9_]{1,28}$/);
+  }
+});
+
 test("character picker pagination keeps all configured characters reachable", () => {
-  const entries = Array.from({ length: CHARACTER_PICKER_PAGE_SIZE * 2 + 5 }, (_, index) => ({
+  const extraOnLastPage = 3;
+  const entries = Array.from({ length: CHARACTER_PICKER_PAGE_SIZE * 2 + extraOnLastPage }, (_, index) => ({
     id: `character_${index + 1}`,
     label: `Character ${index + 1}`,
   }));
@@ -87,8 +113,34 @@ test("character picker pagination keeps all configured characters reachable", ()
   assert.equal(first.startIndex, 0);
   assert.equal(first.hasNext, true);
   assert.equal(last.page, 2);
-  assert.equal(last.items.length, 5);
+  assert.equal(last.items.length, extraOnLastPage);
   assert.equal(last.startIndex, CHARACTER_PICKER_PAGE_SIZE * 2);
+});
+
+test("current configured characters fit on one fast picker page", () => {
+  const entries = Object.entries(botConfig.characters || {}).map(([id, value]) => ({
+    id,
+    label: value?.name || value?.label || id,
+  }));
+  const pageInfo = paginateCharacterPickerEntries(entries, 0);
+
+  assert.equal(entries.length, 19);
+  assert.equal(pageInfo.items.length, entries.length);
+  assert.equal(pageInfo.hasNext, false);
+});
+
+test("character picker paginates only after twenty entries", () => {
+  const entries = Array.from({ length: 21 }, (_, index) => ({
+    id: `character_${index + 1}`,
+    label: `Character ${index + 1}`,
+  }));
+  const first = paginateCharacterPickerEntries(entries, 0);
+  const second = paginateCharacterPickerEntries(entries, 1);
+
+  assert.equal(first.items.length, 20);
+  assert.equal(first.hasNext, true);
+  assert.equal(second.items.length, 1);
+  assert.equal(second.hasPrev, true);
 });
 
 test("character picker toggle selects up to two mains and blocks the third", () => {
@@ -105,19 +157,48 @@ test("character picker toggle selects up to two mains and blocks the third", () 
   assert.deepEqual(removed.selectedIds, ["vessel"]);
 });
 
-test("character picker board renders a PNG for the current page", async () => {
-  const entries = ["honored_one", "vessel", "ten_shadows"].map((id) => ({ id, label: id }));
-  const pageInfo = paginateCharacterPickerEntries(entries, 0);
-  const buffer = await renderCharacterPickerBoardPng({
+test("character picker payload renders one dense emoji-button panel without attachments", () => {
+  const entries = Object.entries(botConfig.characters || {}).map(([id, value]) => ({
+    id,
+    label: value?.name || value?.label || id,
+  }));
+  const firstEntry = entries[0];
+  const payload = buildCharacterPickerPayload({
     entries,
-    pageInfo,
-    pageItems: pageInfo.items,
-    selectedIds: ["vessel"],
-    assetsDir: ASSETS_DIR,
+    picker: { mode: "quick", page: 0, selectedIds: [firstEntry.id] },
+    characterEmojis: {
+      [firstEntry.id]: { id: "123456789012345678", name: "jjs_first_character", animated: false },
+    },
   });
+  const rows = payload.components.map((row) => row.toJSON());
+  const json = JSON.stringify(rows);
+  const characterButtons = rows
+    .flatMap((row) => row.components || [])
+    .filter((component) => String(component.custom_id || "").startsWith("onboard_main_toggle:"));
 
-  assert.ok(Buffer.isBuffer(buffer));
-  assert.ok(buffer.length > 5000);
+  assert.equal(payload.flags, MessageFlags.Ephemeral);
+  assert.equal(payload.files, undefined);
+  assert.equal(payload.components.length, 5);
+  assert.equal(characterButtons.length, entries.length);
+  assert.equal(rows[0].components.length, 5);
+  assert.equal(rows[3].components.length, 4);
+  assert.match(json, new RegExp(`onboard_main_toggle:${firstEntry.id}`));
+  assert.match(json, /jjs_first_character/);
+  assert.doesNotMatch(json, /mains-picker\.png/);
+  assert.doesNotMatch(json, /attachment:\/\//);
+});
+
+test("character picker payload falls back to text labels without emoji mapping", () => {
+  const entries = [{ id: "honored_one", label: "Годжо" }];
+  const payload = buildCharacterPickerPayload({
+    entries,
+    picker: { mode: "full", page: 0, selectedIds: [] },
+    characterEmojis: {},
+  });
+  const button = payload.components[0].toJSON().components[0];
+
+  assert.equal(button.label, "01 Годжо");
+  assert.equal(button.emoji, undefined);
 });
 
 test("presentation normalization preserves character emoji config", () => {

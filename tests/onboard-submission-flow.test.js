@@ -39,12 +39,14 @@ test("legacy welcome copy is normalized to the mains-first submission flow", () 
     defaultGraphicTierColors: DEFAULT_GRAPHIC_TIER_COLORS,
   });
 
-  assert.match(resolved.welcome.description, /если текущий режим требует сверку/i);
+  assert.equal(resolved.welcome.description, "");
   assert.equal(resolved.welcome.steps.length, 3);
-  assert.ok(resolved.welcome.steps.some((step) => /укажи \*\*kills\*\*/i.test(step)));
+  assert.ok(resolved.welcome.steps.some((step) => /\*\*kills\*\* числом/i.test(step)));
   assert.ok(resolved.welcome.steps.some((step) => /roblox username/i.test(step)));
+  assert.ok(resolved.welcome.steps.some((step) => /после отправки бот откроет доступ/i.test(step)));
   assert.ok(resolved.welcome.steps.every((step) => !/следующим сообщением/i.test(step)));
   assert.ok(resolved.welcome.steps.every((step) => !/сразу даст access-role/i.test(step)));
+  assert.ok(resolved.welcome.steps.every((step) => !/доступ откроется по режиму сервера/i.test(step)));
 });
 
 test("ensurePresentationConfig rewrites persisted legacy welcome text", () => {
@@ -71,10 +73,36 @@ test("ensurePresentationConfig rewrites persisted legacy welcome text", () => {
   });
 
   assert.equal(result.mutated, true);
-  assert.match(dbConfig.presentation.welcome.description, /если текущий режим требует сверку/i);
+  assert.equal(dbConfig.presentation.welcome.description, "");
   assert.equal(dbConfig.presentation.welcome.steps.length, 3);
-  assert.ok(dbConfig.presentation.welcome.steps.some((step) => /укажи \*\*kills\*\*/i.test(step)));
+  assert.ok(dbConfig.presentation.welcome.steps.some((step) => /\*\*kills\*\* числом/i.test(step)));
   assert.ok(dbConfig.presentation.welcome.steps.some((step) => /roblox username/i.test(step)));
+  assert.ok(dbConfig.presentation.welcome.steps.some((step) => /после отправки бот откроет доступ/i.test(step)));
+});
+
+test("ensurePresentationConfig removes outdated compact welcome summary", () => {
+  const dbConfig = {
+    presentation: {
+      welcome: {
+        description: "Маршрут простой: emoji-мейны, один пруф, мод-чек. Без лишней анкеты: если текущий режим требует сверку, бот сам попросит Roblox username.",
+        steps: [
+          "Жми **Получить роль** и выбери **1-2 emoji-мейнов** кнопками.",
+          "Отправь **одно сообщение**: **kills** числом + скрин, где видны kills и **Roblox username**.",
+          "После отправки бот откроет доступ; **kill-tier** прилетит после мод-чека.",
+        ],
+      },
+    },
+  };
+
+  const result = ensurePresentationConfig(dbConfig, {
+    defaults: createPresentationDefaults({}, { defaultGraphicTierColors: DEFAULT_GRAPHIC_TIER_COLORS }),
+    defaultWelcomeChannelId: "welcome-home",
+    defaultTextTierlistChannelId: "text-home",
+    defaultGraphicTierColors: DEFAULT_GRAPHIC_TIER_COLORS,
+  });
+
+  assert.equal(result.mutated, true);
+  assert.equal(dbConfig.presentation.welcome.description, "");
 });
 
 test("ensurePresentationConfig compacts persisted long welcome flow", () => {
@@ -101,7 +129,7 @@ test("ensurePresentationConfig compacts persisted long welcome flow", () => {
   });
 
   assert.equal(result.mutated, true);
-  assert.match(dbConfig.presentation.welcome.description, /emoji-мейны, один пруф, мод-чек/i);
+  assert.equal(dbConfig.presentation.welcome.description, "");
   assert.equal(dbConfig.presentation.welcome.steps.length, 3);
   assert.ok(dbConfig.presentation.welcome.steps.every((step) => !/не обязательно/i.test(step)));
 });
