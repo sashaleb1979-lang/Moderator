@@ -10,6 +10,8 @@ const {
   buildHelpReplyPayload,
   buildModeratorPanelPayload,
   buildPanelTextModal,
+  buildRobloxConfirmPayload,
+  buildRobloxMissingPayload,
   buildRobloxUsernameModal,
   buildStartPanelPayload,
   buildStartGuidePayload,
@@ -106,6 +108,27 @@ test("draft setup renders level, count and toggles compactly", () => {
   assert.doesNotMatch(json, /"disabled":true/);
 });
 
+test("roblox identity panels gate missing and first-time confirmed profiles", () => {
+  const missing = buildRobloxMissingPayload();
+  const confirm = buildRobloxConfirmPayload({
+    username: "Krutoikira",
+    userId: "1265862594",
+    profileUrl: "https://www.roblox.com/users/1265862594/profile",
+  });
+  const missingJson = payloadJson(missing);
+  const confirmJson = payloadJson(confirm);
+
+  assert.equal(missing.flags, MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral);
+  assert.match(missingJson, /Roblox ник/);
+  assert.match(missingJson, /Внести ник/);
+  assert.match(missingJson, new RegExp(ANTITEAM_CUSTOM_IDS.requestRobloxNick.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  assert.match(confirmJson, /Подтверди Roblox/);
+  assert.match(confirmJson, /Krutoikira/);
+  assert.match(confirmJson, /Да, это мой/);
+  assert.match(confirmJson, /Другой ник/);
+  assert.match(confirmJson, /https:\/\/www\.roblox\.com\/users\/1265862594\/profile/);
+});
+
 test("draft setup requires description before submit", () => {
   const payload = buildTicketSetupPayload({
     kind: "standard",
@@ -148,7 +171,7 @@ test("public ticket is the main compact post and thread panel is buttons only", 
   assert.match(json, /Попросил 👤 <@author-1> • \*\*Anchor\*\*/);
   assert.doesNotMatch(json, /🎮/);
   assert.doesNotMatch(json, /Маршрут:/);
-  assert.match(json, /🟢 \*\*Лоутабельные\*\*: почти вся команда до ~2k kills; если есть 8k\+ игрок/);
+  assert.match(json, /🟢 \*\*Лоутабельные\*\*: почти вся команда до ~2k kills\./);
   assert.match(json, /### Помощники/);
   assert.match(json, /Пока никто не отозвался/);
   assert.match(json, /### Описание/);

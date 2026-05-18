@@ -169,6 +169,7 @@ const {
 const {
   flushActivityRuntime,
   recordActivityMessage,
+  recordActivityVoiceState,
   resumeActivityRuntime,
 } = require("./src/activity/runtime");
 const { ensureActivityState } = require("./src/activity/state");
@@ -219,6 +220,22 @@ const {
   getWelcomeRobloxIdentityLockText,
 } = require("./src/onboard/roblox-identity");
 const { resolveNonJjsCaptchaMode } = require("./src/onboard/non-jjs-mode");
+const {
+  DISCORD_EMOJI_MAX_BYTES,
+  createCharacterEmojiName,
+  getCharacterEmojiRecord,
+  normalizeCharacterEmojiMap,
+  renderCharacterEmojiPng,
+  resolveCharacterEmojiSyncName,
+  toEmojiMention,
+} = require("./src/onboard/character-emojis");
+const {
+  CHARACTER_PICKER_PAGE_SIZE,
+  buildCharacterPickerPayload: buildFastCharacterPickerPayload,
+  buildCharacterPickerStatusPayload,
+  paginateCharacterPickerEntries,
+  toggleCharacterPickerSelection,
+} = require("./src/onboard/character-picker");
 const {
   createPresentationDefaults,
   ensurePresentationConfig,
@@ -619,17 +636,17 @@ function buildRuntimeConfig(fileConfig = {}) {
       },
     },
     ui: {
-      welcomeTitle: String(fileConfig?.ui?.welcomeTitle || "Jujutsu Shinigans Onboarding").trim(),
+      welcomeTitle: String(fileConfig?.ui?.welcomeTitle || "Проходка на сервер").trim(),
       welcomeDescription: String(
         fileConfig?.ui?.welcomeDescription ||
-        "Нажми кнопку ниже, выбери 1 или 2 мейнов и отправь одним сообщением точное количество kills в тексте вместе со скрином. После подачи заявки бот сразу выдаст тебе роль доступа, а kill-tier роль прилетит после проверки модератором."
+        ""
       ).trim(),
       getRoleButtonLabel: String(fileConfig?.ui?.getRoleButtonLabel || "Получить роль").trim(),
       nonGgsTitle: String(fileConfig?.ui?.nonJjsTitle || fileConfig?.ui?.nonGgsTitle || "Я не играю в JJS").trim(),
       nonGgsDescription: String(
         fileConfig?.ui?.nonJjsDescription ||
         fileConfig?.ui?.nonGgsDescription ||
-        "Если ты не играешь в JJS, нажми кнопку ниже. Бот запустит 2 этапа капчи и после успешного прохождения выдаст отдельную роль доступа."
+        "Не играешь в JJS - жми кнопку ниже. Бот даст короткую капчу и отдельную роль доступа."
       ).trim(),
       nonGgsButtonLabel: String(fileConfig?.ui?.nonJjsButtonLabel || fileConfig?.ui?.nonGgsButtonLabel || "Я не играю в JJS").trim(),
       onboardingProofExampleImageUrl: envText(
@@ -2834,9 +2851,10 @@ async function replyWithCharacterPicker(interaction, mode = "full", method = "re
     page: 0,
     selectedIds: getInitialMainsPickerSelectedIds(interaction.user.id),
   });
-  const payload = buildMainsPickerPayload(interaction.user.id, {
+  const payload = await buildMainsPickerPayload(interaction.user.id, {
     picker,
     includeEphemeralFlag: method !== "update",
+    forUpdate: method === "update",
   });
   if (method === "update") {
     await interaction.update(payload);
@@ -2975,21 +2993,23 @@ async function completeMainSelection(interaction, selectedEntries, options = {})
     const uploadTarget = welcomeChannelId ? `<#${welcomeChannelId}>` : "welcome-канал";
     const needsRobloxIdentity = !(activeSubmitSession?.robloxUsername && activeSubmitSession?.robloxUserId);
     clearMainsPickerSession(interaction.user.id);
+    const appliedLabels = appliedEntries.map((entry) => formatCharacterLabelWithEmoji(entry));
     const content = activeSubmitSession?.mainCharacterIds?.length
       ? needsRobloxIdentity
-        ? `Мейны обновлены: **${appliedEntries.map((entry) => entry.label).join(", ")}**. Текущая загрузка тоже обновлена, теперь заново укажи Roblox username.`
-        : `Мейны обновлены: **${appliedEntries.map((entry) => entry.label).join(", ")}**. Текущая загрузка тоже обновлена, теперь просто отправь kills и скрин в ${uploadTarget}.`
+        ? `Мейны обновлены: **${appliedLabels.join(", ")}**. Текущая загрузка тоже обновлена, теперь заново укажи Roblox username.`
+        : `Мейны обновлены: **${appliedLabels.join(", ")}**. Текущая загрузка тоже обновлена, теперь просто отправь kills и скрин в ${uploadTarget}.`
       : syncedPending
-        ? `Мейны обновлены: **${appliedEntries.map((entry) => entry.label).join(", ")}**. Pending-заявка тоже обновлена.`
-        : `Мейны обновлены: **${appliedEntries.map((entry) => entry.label).join(", ")}**.`;
+        ? `Мейны обновлены: **${appliedLabels.join(", ")}**. Pending-заявка тоже обновлена.`
+        : `Мейны обновлены: **${appliedLabels.join(", ")}**.`;
 
     if (responseMethod === "update") {
+      const payload = { content, embeds: [], components: [], attachments: [] };
       if (usedDeferredUpdate) {
-        await interaction.editReply({ content, embeds: [], components: [] });
+        await interaction.editReply(payload);
         return;
       }
 
-      await interaction.update({ content, embeds: [], components: [] });
+      await interaction.update(payload);
       return;
     }
 
@@ -3009,6 +3029,7 @@ async function completeMainSelection(interaction, selectedEntries, options = {})
       includeEphemeralFlag: false,
       canManageRobloxIdentity: hasAdministratorAccess(interaction.member),
     });
+    payload.attachments = [];
     if (usedDeferredUpdate) {
       await interaction.editReply(payload);
       return;
@@ -3785,6 +3806,7 @@ function normalizeMainsPickerState(rawValue = {}) {
   const mode = rawValue?.mode === "quick" ? "quick" : "full";
   const query = String(rawValue?.query || "").trim().slice(0, 80);
   const page = Math.max(0, Number(rawValue?.page) || 0);
+  const statusText = String(rawValue?.statusText || "").trim().slice(0, 220);
   const selectedIds = [...new Set(
     (Array.isArray(rawValue?.selectedIds) ? rawValue.selectedIds : [])
       .map((value) => String(value || "").trim())
@@ -3796,6 +3818,7 @@ function normalizeMainsPickerState(rawValue = {}) {
     query,
     page,
     selectedIds,
+    statusText,
   };
 }
 
@@ -3820,21 +3843,160 @@ function clearMainsPickerSession(userId) {
   mainsPickerSessions.delete(userId);
 }
 
-function getMainsPickerEntries(rawQuery = "") {
-  return filterRolePanelPickerItems(
-    getCharacterPickerEntries().map((entry) => ({
-      ...entry,
-      description: entry.id,
-      keywords: `${entry.label} ${entry.id}`,
-    })),
-    rawQuery
+function getWelcomeCharacterEmojiMap() {
+  return normalizeCharacterEmojiMap(getPresentation().welcome.characterEmojis);
+}
+
+function getWelcomeCharacterEmoji(characterId) {
+  return getCharacterEmojiRecord(getWelcomeCharacterEmojiMap(), characterId);
+}
+
+function ensureStoredWelcomeCharacterEmojiMap() {
+  db.config ||= {};
+  db.config.presentation ||= {};
+  db.config.presentation.welcome ||= {};
+  const normalized = normalizeCharacterEmojiMap(db.config.presentation.welcome.characterEmojis);
+  db.config.presentation.welcome.characterEmojis = normalized;
+  return normalized;
+}
+
+function formatCharacterLabelWithEmoji(entry) {
+  const mention = toEmojiMention(getWelcomeCharacterEmoji(entry?.id));
+  const label = String(entry?.label || entry?.id || "").trim();
+  return [mention, label].filter(Boolean).join(" ");
+}
+
+async function syncCharacterEmojiAssets(client, actorTag = "") {
+  const guild = await getGuild(client).catch(() => null);
+  if (!guild) throw new Error("Не удалось получить guild.");
+  await guild.emojis.fetch().catch(() => null);
+
+  const fetchedMe = typeof guild.members.fetchMe === "function"
+    ? await guild.members.fetchMe().catch(() => null)
+    : null;
+  const me = guild.members.me || fetchedMe || await guild.members.fetch(client.user.id).catch(() => null);
+  const canCreateEmoji = Boolean(
+    me?.permissions?.has?.(PermissionsBitField.Flags.CreateGuildExpressions)
+    || me?.permissions?.has?.(PermissionsBitField.Flags.ManageGuildExpressions)
   );
+  const emojiMap = ensureStoredWelcomeCharacterEmojiMap();
+  const nextMap = { ...emojiMap };
+  const existingByName = new Map([...guild.emojis.cache.values()].map((emoji) => [String(emoji.name || "").trim(), emoji]));
+  const reservedNames = new Set();
+  const maxEmojis = Number(guild.maximumEmojis) || 0;
+  const entries = getCharacterPickerEntries();
+  const result = {
+    total: entries.length,
+    created: 0,
+    reused: 0,
+    skipped: 0,
+    issues: [],
+  };
+
+  for (const entry of entries) {
+    const characterId = String(entry.id || "").trim();
+    if (!characterId) continue;
+
+    const mapped = getCharacterEmojiRecord(nextMap, characterId);
+    const mappedEmoji = mapped?.id ? guild.emojis.cache.get(mapped.id) : null;
+    if (mappedEmoji) {
+      nextMap[characterId] = {
+        id: mappedEmoji.id,
+        name: mappedEmoji.name,
+        animated: mappedEmoji.animated === true,
+        syncedAt: mapped.syncedAt || nowIso(),
+      };
+      reservedNames.add(mappedEmoji.name);
+      result.reused += 1;
+      continue;
+    }
+
+    const emojiName = resolveCharacterEmojiSyncName(characterId, {
+      preferredName: mapped?.name || createCharacterEmojiName(characterId),
+      reservedNames,
+    });
+    let existingEmoji = existingByName.get(emojiName);
+
+    if (existingEmoji) {
+      nextMap[characterId] = {
+        id: existingEmoji.id,
+        name: existingEmoji.name,
+        animated: existingEmoji.animated === true,
+        syncedAt: nowIso(),
+      };
+      reservedNames.add(existingEmoji.name);
+      result.reused += 1;
+      continue;
+    }
+
+    const assetPath = path.join(CHARACTERS_ASSET_DIR, `${characterId}.png`);
+    if (!fs.existsSync(assetPath)) {
+      result.skipped += 1;
+      result.issues.push(`${entry.label || characterId}: нет assets/characters/${characterId}.png`);
+      continue;
+    }
+    if (!canCreateEmoji) {
+      result.skipped += 1;
+      result.issues.push(`${entry.label || characterId}: у бота нет права Create/Manage Guild Expressions`);
+      continue;
+    }
+    if (maxEmojis && guild.emojis.cache.size >= maxEmojis) {
+      result.skipped += 1;
+      result.issues.push(`${entry.label || characterId}: нет свободных emoji-слотов`);
+      continue;
+    }
+
+    try {
+      const emojiPng = await renderCharacterEmojiPng(assetPath);
+      if (emojiPng.length > DISCORD_EMOJI_MAX_BYTES) {
+        result.skipped += 1;
+        result.issues.push(`${entry.label || characterId}: emoji PNG больше 256 KiB`);
+        continue;
+      }
+
+      const emoji = await guild.emojis.create({
+        attachment: emojiPng,
+        name: emojiName,
+        reason: `character emoji sync by ${actorTag || "Moderator bot"}`,
+      });
+      nextMap[characterId] = {
+        id: emoji.id,
+        name: emoji.name,
+        animated: emoji.animated === true,
+        syncedAt: nowIso(),
+      };
+      reservedNames.add(emoji.name);
+      existingByName.set(emoji.name, emoji);
+      result.created += 1;
+    } catch (error) {
+      result.skipped += 1;
+      result.issues.push(`${entry.label || characterId}: ${formatRuntimeError(error).slice(0, 180)}`);
+    }
+  }
+
+  db.config.presentation.welcome.characterEmojis = normalizeCharacterEmojiMap(nextMap);
+  saveDb();
+  return result;
+}
+
+function formatCharacterEmojiSyncSummary(result) {
+  const lines = [
+    `Emoji персов: создано ${result.created}, переиспользовано ${result.reused}, пропущено ${result.skipped} из ${result.total}.`,
+    "Ручной fallback: Discord Server Settings -> Emoji -> Upload Emoji.",
+    "Готовые файлы лежат в `assets/character-emojis/*.png`; имя emoji ставь как имя файла без `.png`, например `jjs_honored_one`.",
+    "После ручной загрузки снова нажми `Залить emoji персов`: бот переиспользует emoji по имени и запишет mapping.",
+    "Если имя занято, автосинк уйдёт в короткий hash-suffix и покажет это в summary.",
+  ];
+  if (result.issues?.length) {
+    lines.push(`Первые проблемы: ${result.issues.slice(0, 4).join("; ")}${result.issues.length > 4 ? " ..." : ""}`);
+  }
+  return lines.join("\n");
 }
 
 function getMainsPickerSelectionLabels(selectedIds = []) {
   const selectedEntries = getSelectedCharacterEntries(selectedIds);
   return selectedEntries.length
-    ? selectedEntries.map((entry) => entry.label)
+    ? selectedEntries.map((entry) => formatCharacterLabelWithEmoji(entry))
     : selectedIds.map((value) => String(value || "").trim()).filter(Boolean);
 }
 
@@ -3857,76 +4019,20 @@ function getInitialMainsPickerSelectedIds(userId) {
   return [];
 }
 
-function getMainsPickerResultLines(pageInfo, selectedIds = []) {
-  if (!pageInfo.items.length) {
-    return ["Ничего не найдено. Попробуй другой запрос или сбрось поиск."];
-  }
-
-  return pageInfo.items.map((entry, index) => {
-    const number = pageInfo.page * Math.min(ROLE_PANEL_PICKER_PAGE_SIZE, 25) + index + 1;
-    const marker = selectedIds.includes(entry.id) ? "•" : "◦";
-    return `${number}. ${marker} ${previewText(entry.label, 70)} (${entry.id})`;
-  });
-}
-
-function buildMainsPickerSelectRow(picker, entries) {
-  const maxSelectable = Math.min(2, entries.length);
-  return new ActionRowBuilder().addComponents(
-    new StringSelectMenuBuilder()
-      .setCustomId("onboard_picker_select")
-      .setPlaceholder(maxSelectable === 1 ? "Выбери мейна" : "Выбери 1 или 2 мейнов")
-      .setMinValues(1)
-      .setMaxValues(maxSelectable)
-      .addOptions(entries.map((entry) => ({
-        label: normalizeCharacterSelectLabel(entry.label),
-        value: getCharacterSelectValue(entry.id),
-        default: picker.selectedIds.includes(entry.id),
-      })))
-  );
-}
-
-function buildMainsPickerPayload(userId, options = {}) {
+async function buildMainsPickerPayload(userId, options = {}) {
   const picker = options.picker || getMainsPickerSession(userId);
   if (!picker) {
-    const payload = { content: "Сессия выбора мейнов истекла. Нажми кнопку заново." };
-    return options.includeEphemeralFlag === false ? payload : ephemeralPayload(payload);
+    return buildCharacterPickerStatusPayload("Сессия выбора мейнов истекла. Нажми кнопку заново.", options);
   }
 
   const entries = getCharacterPickerEntries();
-  if (!entries.length) {
-    const payload = { content: "Нет доступных персонажей. Проверь конфигурацию characters в bot.config.json." };
-    return options.includeEphemeralFlag === false ? payload : ephemeralPayload(payload);
-  }
-  if (entries.length > 25) {
-    throw new Error(`Список мейнов слишком большой для Discord select menu: ${entries.length}.`);
-  }
-
-  const isQuick = picker.mode === "quick";
-  const selectedLabels = getMainsPickerSelectionLabels(picker.selectedIds);
-  const embed = new EmbedBuilder()
-    .setColor(0x5865F2)
-    .setTitle(isQuick ? "Сменить мейнов" : "Выбери мейнов")
-    .setDescription(
-      [
-        "Выбери одного или двух персонажей в меню ниже и нажми **Подтвердить**.",
-        selectedLabels.length ? `Текущий выбор: **${selectedLabels.join(", ")}**` : null,
-      ].filter(Boolean).join("\n")
-    );
-
-  const components = [
-    buildMainsPickerSelectRow(picker, entries),
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId("onboard_picker_continue")
-        .setLabel(isQuick ? "Сохранить" : "Подтвердить")
-        .setStyle(ButtonStyle.Success)
-        .setDisabled(!picker.selectedIds.length),
-      new ButtonBuilder().setCustomId("onboard_cancel").setLabel("Отмена").setStyle(ButtonStyle.Secondary)
-    ),
-  ];
-
-  const payload = { embeds: [embed], components };
-  return options.includeEphemeralFlag === false ? payload : ephemeralPayload(payload);
+  return buildFastCharacterPickerPayload({
+    entries,
+    picker,
+    characterEmojis: getWelcomeCharacterEmojiMap(),
+    includeEphemeralFlag: options.includeEphemeralFlag,
+    forUpdate: options.forUpdate,
+  });
 }
 
 function setNonGgsCaptchaSession(userId, value) {
@@ -4512,6 +4618,32 @@ async function resolveActivityMemberMeta(client, userId, guildHint = null) {
     ? member.joinedAt.toISOString()
     : null;
   return joinedAt ? { joinedAt } : null;
+}
+
+async function listCurrentActivityVoiceStates(client, guildHint = null) {
+  const guild = guildHint || await getGuild(client).catch(() => null);
+  if (!guild?.voiceStates?.cache) return [];
+  return [...guild.voiceStates.cache.values()].filter((voiceState) => voiceState?.channelId);
+}
+
+function formatActivityVoiceLogLine(result = {}) {
+  const session = result?.session && typeof result.session === "object" ? result.session : {};
+  const userId = String(session.userId || result.userId || "").trim() || "unknown";
+  const channelId = String(session.finalChannelId || session.currentChannelId || "").trim() || "none";
+  const durationSeconds = Math.max(0, Number(session.durationSeconds ?? session.voiceDurationSeconds) || 0);
+  const activeVoiceDurationSeconds = Math.max(0, Number(session.activeVoiceDurationSeconds) || 0);
+  const moveCount = Math.max(0, Number(session.moveCount) || 0);
+  const action = String(result.action || "unknown").trim() || "unknown";
+  return `[activity][voice] action=${action} user=${userId} channel=${channelId} duration=${durationSeconds}s active=${activeVoiceDurationSeconds}s moves=${moveCount}`;
+}
+
+function formatActivityDailyRoleSyncLogLine(result = {}) {
+  const syncedAt = String(result?.syncedAt || "").trim() || "unknown";
+  const targetUserCount = Math.max(0, Number(result?.targetUserCount) || 0);
+  const rebuiltUserCount = Math.max(0, Number(result?.rebuiltUserCount) || 0);
+  const appliedCount = Math.max(0, Number(result?.roleAssignment?.appliedCount) || 0);
+  const skippedCount = Math.max(0, Number(result?.roleAssignment?.skippedCount) || 0);
+  return `[activity][daily-sync] at=${syncedAt} targets=${targetUserCount} rebuilt=${rebuiltUserCount} applied=${appliedCount} skipped=${skippedCount}`;
 }
 
 async function listActivityRoleHolderUserIds(client, guildHint = null) {
@@ -6993,16 +7125,26 @@ async function purgeUserProfile(client, userId, moderatorTag) {
 function buildWelcomeEmbed() {
   const presentation = getPresentation();
   const nonJjsUi = getNonJjsUiConfig();
+  const summaryLines = String(presentation.welcome.description || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => `> ${line}`);
+  const steps = Array.isArray(presentation.welcome.steps)
+    ? presentation.welcome.steps.map((step) => String(step || "").trim()).filter(Boolean)
+    : [];
+  const descriptionLines = [
+    ...(summaryLines.length ? [...summaryLines, ""] : []),
+    "**Быстрый вход**",
+    ...steps.map((step) => `• ${step}`),
+    "",
+    `**${nonJjsUi.title}**`,
+    nonJjsUi.description,
+  ];
   return new EmbedBuilder()
+    .setColor(0x5865F2)
     .setTitle(presentation.welcome.title)
-    .setDescription([
-      presentation.welcome.description,
-      "",
-      ...presentation.welcome.steps.map((step, index) => `${index + 1}. ${step}`),
-      "",
-      `**${nonJjsUi.title}**`,
-      nonJjsUi.description,
-    ].join("\n"));
+    .setDescription(descriptionLines.join("\n"));
 }
 
 function buildWelcomeComponents() {
@@ -7013,14 +7155,17 @@ function buildWelcomeComponents() {
       new ButtonBuilder()
         .setCustomId("onboard_begin")
         .setLabel(presentation.welcome.buttons.begin)
+        .setEmoji("⚡")
         .setStyle(ButtonStyle.Primary),
       new ButtonBuilder()
         .setCustomId("onboard_non_ggs_start")
         .setLabel(nonJjsUi.buttonLabel)
+        .setEmoji("🧩")
         .setStyle(ButtonStyle.Success),
       new ButtonBuilder()
         .setCustomId("onboard_quick_mains")
         .setLabel(presentation.welcome.buttons.quickMains)
+        .setEmoji("🔁")
         .setStyle(ButtonStyle.Secondary)
     ),
   ];
@@ -7214,7 +7359,7 @@ function buildSubmitStepPayload(userId, options = {}) {
 
   const selectedEntries = getSelectedCharacterEntries(mainCharacterIds);
   const selectedLabels = selectedEntries.length
-    ? selectedEntries.map((entry) => entry.label)
+    ? selectedEntries.map((entry) => formatCharacterLabelWithEmoji(entry))
     : mainCharacterIds.map((value) => String(value || "").trim()).filter(Boolean);
   const welcomeChannelId = getResolvedChannelId("welcome");
   const uploadTarget = welcomeChannelId ? `<#${welcomeChannelId}>` : "welcome-канал";
@@ -7247,6 +7392,23 @@ function buildSubmitStepPayload(userId, options = {}) {
   }
   lines.push(...submitStepText.split(/\r?\n/).map((line) => line.trim()).filter(Boolean));
 
+  const actionRow = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId("onboard_change_mains")
+      .setLabel("Сменить мейнов")
+      .setEmoji("🔁")
+      .setStyle(ButtonStyle.Secondary)
+  );
+  if (hasRobloxIdentity && canManageRobloxIdentity) {
+    actionRow.addComponents(
+      new ButtonBuilder()
+        .setCustomId("onboard_set_roblox_username")
+        .setLabel("Сменить Roblox username")
+        .setEmoji("👤")
+        .setStyle(ButtonStyle.Secondary)
+    );
+  }
+
   const payload = {
     embeds: [
       new EmbedBuilder()
@@ -7254,18 +7416,8 @@ function buildSubmitStepPayload(userId, options = {}) {
         .setTitle(String(submitStepPresentation.title || "Готово. Кидай kills и общий скрин").trim())
         .setDescription(lines.filter(Boolean).join("\n")),
     ],
-    components: [
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId("onboard_change_mains").setLabel("Сменить мейнов").setStyle(ButtonStyle.Secondary)
-      ),
-    ],
+    components: [actionRow],
   };
-
-  if (hasRobloxIdentity && canManageRobloxIdentity) {
-    payload.components[0].addComponents(
-      new ButtonBuilder().setCustomId("onboard_set_roblox_username").setLabel("Сменить Roblox username").setStyle(ButtonStyle.Secondary)
-    );
-  }
 
   if (hasExampleImagePath) {
     const fileName = sanitizeFileName(path.basename(exampleImagePath) || "onboarding-proof-example.png");
@@ -7295,7 +7447,7 @@ function buildRobloxUsernameStepPayload(userId, options = {}) {
 
   const selectedEntries = getSelectedCharacterEntries(mainCharacterIds);
   const selectedLabels = selectedEntries.length
-    ? selectedEntries.map((entry) => entry.label)
+    ? selectedEntries.map((entry) => formatCharacterLabelWithEmoji(entry))
     : mainCharacterIds.map((value) => String(value || "").trim()).filter(Boolean);
   const kills = Number.isSafeInteger(options.kills)
     ? options.kills
@@ -9542,8 +9694,8 @@ async function buildModeratorPanelPayload(client, statusText = "", includeFlags 
         new ButtonBuilder().setCustomId("panel_refresh_welcome").setLabel("Обновить приветствие").setStyle(ButtonStyle.Primary),
         new ButtonBuilder().setCustomId("panel_refresh_tierlists").setLabel("Обновить тир-листы").setStyle(ButtonStyle.Primary),
         new ButtonBuilder().setCustomId("panel_sync_roles").setLabel("Синхронизировать роли").setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId("panel_open_roblox_stats").setLabel("Контроль Roblox").setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId(BOT_HELPER_PANEL_CONFIG_BUTTON_ID).setLabel("Bot helper").setStyle(ButtonStyle.Secondary)
+        new ButtonBuilder().setCustomId("panel_sync_character_emojis").setLabel("Залить emoji персов").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("panel_open_roblox_stats").setLabel("Контроль Roblox").setStyle(ButtonStyle.Secondary)
       ),
       new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId("panel_remind_missing").setLabel("Напомнить отсутствующим").setStyle(ButtonStyle.Danger),
@@ -9584,7 +9736,11 @@ async function buildModeratorPanelPayload(client, statusText = "", includeFlags 
           .setCustomId("panel_access_grant_after_approve")
           .setLabel("Роль после одобрения")
           .setStyle(currentAccessGrantMode === ONBOARD_ACCESS_GRANT_MODES.AFTER_APPROVE ? ButtonStyle.Success : ButtonStyle.Secondary)
-          .setDisabled(currentAccessGrantMode === ONBOARD_ACCESS_GRANT_MODES.AFTER_APPROVE)
+          .setDisabled(currentAccessGrantMode === ONBOARD_ACCESS_GRANT_MODES.AFTER_APPROVE),
+        new ButtonBuilder()
+          .setCustomId(BOT_HELPER_PANEL_CONFIG_BUTTON_ID)
+          .setLabel("Bot helper")
+          .setStyle(ButtonStyle.Secondary)
       ),
       new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId("panel_add_character").setLabel("Добавить персонажа").setStyle(ButtonStyle.Success),
@@ -13198,6 +13354,7 @@ const client = new Client({
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.GuildVoiceStates,
     GatewayIntentBits.MessageContent,
   ],
 });
@@ -13252,6 +13409,8 @@ client.once("clientReady", async () => {
         db,
         saveDb,
         runSerialized: runSerializedDbTask,
+        resolveMemberActivityMeta: (userId) => resolveActivityMemberMeta(client, userId),
+        listCurrentVoiceStates: () => listCurrentActivityVoiceStates(client),
       }),
       logError: (...args) => console.error(...args),
     }));
@@ -13399,20 +13558,24 @@ client.once("clientReady", async () => {
       resolveMemberActivityMeta: (userId) => resolveActivityMemberMeta(client, userId),
     }),
     activityFlushIntervalMs: ACTIVITY_RUNTIME_FLUSH_INTERVAL_MS,
-    runDailyActivityRoleSync: () => runDailyActivityRoleSync({
-      db,
-      saveDb,
-      runSerialized: runSerializedDbTask,
-      listManagedActivityRoleUserIds: () => listActivityRoleHolderUserIds(client),
-      resolveMemberRoleIds: (userId) => resolveActivityMemberRoleIds(client, userId),
-      resolveMemberActivityMeta: (userId) => resolveActivityMemberMeta(client, userId),
-      applyRoleChanges: ({ userId, addRoleIds, removeRoleIds }) => applyActivityMemberRoleChanges(client, {
-        userId,
-        addRoleIds,
-        removeRoleIds,
-        reason: "activity daily role sync",
-      }),
-    }),
+    runDailyActivityRoleSync: async () => {
+      const result = await runDailyActivityRoleSync({
+        db,
+        saveDb,
+        runSerialized: runSerializedDbTask,
+        listManagedActivityRoleUserIds: () => listActivityRoleHolderUserIds(client),
+        resolveMemberRoleIds: (userId) => resolveActivityMemberRoleIds(client, userId),
+        resolveMemberActivityMeta: (userId) => resolveActivityMemberMeta(client, userId),
+        applyRoleChanges: ({ userId, addRoleIds, removeRoleIds }) => applyActivityMemberRoleChanges(client, {
+          userId,
+          addRoleIds,
+          removeRoleIds,
+          reason: "activity daily role sync",
+        }),
+      });
+      console.log(formatActivityDailyRoleSyncLogLine(result));
+      return result;
+    },
     activityRoleSyncHours: ensureActivityState(db).config?.autoRoleSyncHours,
     runRobloxProfileRefreshJob: runScheduledRobloxProfileRefreshJob,
     syncRobloxPlaytime,
@@ -13716,7 +13879,7 @@ client.on("messageCreate", async (message) => {
   if (message.guildId !== GUILD_ID) return;
 
   try {
-    recordActivityMessage({
+    await runSerializedDbTask(() => recordActivityMessage({
       db,
       message: {
         guildId: message.guildId,
@@ -13724,7 +13887,7 @@ client.on("messageCreate", async (message) => {
         channelId: message.channelId,
         createdAt: message.createdAt,
       },
-    });
+    }), "activity-runtime-message-ingest");
   } catch (error) {
     console.error("Activity runtime message ingest failed:", error?.message || error);
   }
@@ -17909,6 +18072,7 @@ client.on("interactionCreate", async (interaction) => {
       "panel_refresh_welcome",
       "panel_refresh_tierlists",
       "panel_sync_roles",
+      "panel_sync_character_emojis",
       "panel_cleanup_orphan_characters",
       "panel_remind_missing",
       "panel_refresh_summary",
@@ -17937,6 +18101,9 @@ client.on("interactionCreate", async (interaction) => {
         await maybeLogSotCharacterHealthAlert(client, "panel-sync-roles");
         const synced = await syncApprovedTierRoles(client);
         statusText = `Роли пересинхронизированы. Tier-профилей: ${synced}. Персонажи: resolved ${managed.resolvedCharacters}, recovered ${managed.recoveredCharacters}, ambiguous ${managed.ambiguousCharacters}, unresolved ${managed.unresolvedCharacters}.`;
+      } else if (interaction.customId === "panel_sync_character_emojis") {
+        const result = await syncCharacterEmojiAssets(client, interaction.user.tag);
+        statusText = formatCharacterEmojiSyncSummary(result);
       } else if (interaction.customId === "panel_cleanup_orphan_characters") {
         const result = await cleanupOrphanCharacterRoles(client);
         statusText = result.removed
@@ -18230,10 +18397,51 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    if (interaction.customId === "onboard_picker_continue") {
+    if (interaction.customId.startsWith("onboard_main_toggle:")) {
       const picker = getMainsPickerSession(interaction.user.id);
       if (!picker) {
-        await interaction.update(buildMainsPickerPayload(interaction.user.id, { includeEphemeralFlag: false }));
+        await interaction.update(await buildMainsPickerPayload(interaction.user.id, { includeEphemeralFlag: false, forUpdate: true }));
+        return;
+      }
+
+      const characterId = interaction.customId.slice("onboard_main_toggle:".length);
+      const result = toggleCharacterPickerSelection(picker.selectedIds, characterId, { max: 2 });
+      setMainsPickerSession(interaction.user.id, {
+        selectedIds: result.selectedIds,
+        statusText: result.blocked && result.reason === "max-selected"
+          ? "Максимум два мейна. Сними одного выбранного, если хочешь заменить."
+          : "",
+      });
+      await interaction.update(await buildMainsPickerPayload(interaction.user.id, {
+        includeEphemeralFlag: false,
+        forUpdate: true,
+      }));
+      return;
+    }
+
+    if (interaction.customId === "onboard_main_prev" || interaction.customId === "onboard_main_next") {
+      const picker = getMainsPickerSession(interaction.user.id);
+      if (!picker) {
+        await interaction.update(await buildMainsPickerPayload(interaction.user.id, { includeEphemeralFlag: false, forUpdate: true }));
+        return;
+      }
+
+      const pageInfo = paginateCharacterPickerEntries(getCharacterPickerEntries(), picker.page, CHARACTER_PICKER_PAGE_SIZE);
+      setMainsPickerSession(interaction.user.id, {
+        page: interaction.customId === "onboard_main_prev" ? Math.max(0, pageInfo.page - 1) : pageInfo.page + 1,
+        statusText: "",
+      });
+      await interaction.update(await buildMainsPickerPayload(interaction.user.id, {
+        includeEphemeralFlag: false,
+        forUpdate: true,
+      }));
+      return;
+    }
+
+    if (interaction.customId === "onboard_main_confirm" || interaction.customId === "onboard_picker_continue") {
+      const picker = getMainsPickerSession(interaction.user.id);
+      if (!picker) {
+        await interaction.update(await buildMainsPickerPayload(interaction.user.id, { includeEphemeralFlag: false, forUpdate: true }));
         return;
       }
 
@@ -18249,7 +18457,7 @@ client.on("interactionCreate", async (interaction) => {
       clearMainsPickerSession(interaction.user.id);
       clearMainDraft(interaction.user.id);
       clearSubmitSession(interaction.user.id);
-      await interaction.update({ content: "Ок. Процесс отменён.", embeds: [], components: [] });
+      await interaction.update({ content: "Ок. Процесс отменён.", embeds: [], components: [], attachments: [] });
       return;
     }
 
@@ -18873,7 +19081,7 @@ client.on("interactionCreate", async (interaction) => {
     if (interaction.customId === "onboard_picker_select") {
       const picker = getMainsPickerSession(interaction.user.id);
       if (!picker) {
-        await interaction.update(buildMainsPickerPayload(interaction.user.id, { includeEphemeralFlag: false }));
+        await interaction.update(await buildMainsPickerPayload(interaction.user.id, { includeEphemeralFlag: false, forUpdate: true }));
         return;
       }
 
@@ -18882,8 +19090,9 @@ client.on("interactionCreate", async (interaction) => {
       )].slice(0, 2);
 
       setMainsPickerSession(interaction.user.id, { selectedIds: nextSelectedIds });
-      await interaction.update(buildMainsPickerPayload(interaction.user.id, {
+      await interaction.update(await buildMainsPickerPayload(interaction.user.id, {
         includeEphemeralFlag: false,
+        forUpdate: true,
       }));
       return;
     }
@@ -20816,6 +21025,25 @@ client.on("interactionCreate", async (interaction) => {
       await interaction.reply(ephemeralPayload({ content: "Заявка отклонена." }));
       return;
     }
+  }
+});
+
+client.on("voiceStateUpdate", async (oldState, newState) => {
+  const guildId = String(newState?.guild?.id || oldState?.guild?.id || "").trim();
+  if (guildId !== GUILD_ID) return;
+
+  try {
+    const result = await runSerializedDbTask(() => recordActivityVoiceState({
+      db,
+      oldState,
+      newState,
+      now: nowIso(),
+    }), "activity-runtime-voice-ingest");
+    if (result?.captured && result?.stateChanged) {
+      console.log(formatActivityVoiceLogLine(result));
+    }
+  } catch (error) {
+    console.error("Activity runtime voice ingest failed:", error?.message || error);
   }
 });
 

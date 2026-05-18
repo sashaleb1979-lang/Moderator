@@ -232,7 +232,7 @@ test("clan slash command rejects target without verified Roblox profile", async 
   assert.equal(db.sot.antiteam.drafts["mod-1"], undefined);
 });
 
-test("start panel submit button opens the Roblox username modal only when profile has no Roblox", async () => {
+test("start panel submit button shows a small Roblox panel when profile has no Roblox", async () => {
   const db = {};
   ensureAntiteamState(db);
   const operator = createAntiteamOperator({
@@ -242,8 +242,13 @@ test("start panel submit button opens the Roblox username modal only when profil
   const interaction = createButtonInteraction(ANTITEAM_CUSTOM_IDS.open, { id: "user-1", username: "User" });
 
   assert.equal(await operator.handleButtonInteraction(interaction), true);
-  assert.equal(interaction.calls[0][0], "showModal");
-  assert.equal(interaction.calls[0][1].data.custom_id, "at:roblox");
+  assert.equal(interaction.calls[0][0], "reply");
+  assert.match(JSON.stringify(interaction.calls[0][1].components[0].toJSON()), /Внести ник/);
+
+  const request = createButtonInteraction(ANTITEAM_CUSTOM_IDS.requestRobloxNick, { id: "user-1", username: "User" });
+  assert.equal(await operator.handleButtonInteraction(request), true);
+  assert.equal(request.calls[0][0], "showModal");
+  assert.equal(request.calls[0][1].data.custom_id, "at:roblox");
 });
 
 test("start panel submit button ignores Roblox records without verified trust markers", async () => {
@@ -265,11 +270,11 @@ test("start panel submit button ignores Roblox records without verified trust ma
 
   assert.equal(await operator.handleButtonInteraction(interaction), true);
 
-  assert.equal(interaction.calls[0][0], "showModal");
-  assert.equal(interaction.calls[0][1].data.custom_id, "at:roblox");
+  assert.equal(interaction.calls[0][0], "reply");
+  assert.match(JSON.stringify(interaction.calls[0][1].components[0].toJSON()), /Roblox ник/);
 });
 
-test("start panel submit button reuses verified Roblox from profile", async () => {
+test("start panel asks to confirm verified Roblox once, then reuses it", async () => {
   const db = {};
   ensureAntiteamState(db).state.config.battalionRoleId = "battalion-role";
   const granted = [];
@@ -295,11 +300,23 @@ test("start panel submit button reuses verified Roblox from profile", async () =
 
   assert.equal(await operator.handleButtonInteraction(interaction), true);
 
-  assert.equal(interaction.calls[0][0], "deferReply");
-  assert.equal(interaction.calls[1][0], "editReply");
+  assert.equal(interaction.calls[0][0], "reply");
+  assert.match(JSON.stringify(interaction.calls[0][1].components[0].toJSON()), /Подтверди Roblox/);
+  assert.equal(db.sot.antiteam.drafts["user-1"], undefined);
+
+  const confirm = createButtonInteraction(ANTITEAM_CUSTOM_IDS.confirmRoblox, { id: "user-1", username: "User" });
+  assert.equal(await operator.handleButtonInteraction(confirm), true);
+
+  assert.deepEqual(confirm.calls.map((call) => call[0]), ["deferUpdate", "editReply"]);
   assert.equal(db.sot.antiteam.drafts["user-1"].roblox.username, "AlreadyLinked");
+  assert.equal(db.sot.antiteam.robloxConfirmations["user-1"].robloxUserId, "101");
   assert.deepEqual(granted, [{ userId: "user-1", roleId: "battalion-role" }]);
-  assert.match(JSON.stringify(interaction.calls[1][1].components[0].toJSON()), /Roblox: \*\*AlreadyLinked\*\* \(101\) • взят из профиля/);
+  assert.match(JSON.stringify(confirm.calls[1][1].components[0].toJSON()), /Roblox: \*\*AlreadyLinked\*\* \(101\) • подтверждён/);
+
+  const secondOpen = createButtonInteraction(ANTITEAM_CUSTOM_IDS.open, { id: "user-1", username: "User" });
+  assert.equal(await operator.handleButtonInteraction(secondOpen), true);
+  assert.deepEqual(secondOpen.calls.map((call) => call[0]), ["deferReply", "editReply"]);
+  assert.match(JSON.stringify(secondOpen.calls[1][1].components[0].toJSON()), /взят из профиля/);
 });
 
 test("start panel submit resets a stale clan draft back to the caller Roblox profile", async () => {
@@ -330,6 +347,7 @@ test("start panel submit resets a stale clan draft back to the caller Roblox pro
   const interaction = createButtonInteraction(ANTITEAM_CUSTOM_IDS.open, { id: "user-1", username: "User" });
 
   assert.equal(await operator.handleButtonInteraction(interaction), true);
+  assert.equal(await operator.handleButtonInteraction(createButtonInteraction(ANTITEAM_CUSTOM_IDS.confirmRoblox, { id: "user-1", username: "User" })), true);
 
   const draft = db.sot.antiteam.drafts["user-1"];
   assert.equal(draft.kind, "standard");

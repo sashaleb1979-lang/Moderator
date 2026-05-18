@@ -13,7 +13,9 @@ const {
   ensureAntiteamState,
   findIdleAntiteamTickets,
   getAntiteamDraft,
+  getRobloxConfirmation,
   incrementHelperStats,
+  markRobloxConfirmed,
   matchRobloxFriendsToDiscordProfiles,
   normalizeAntiteamDraft,
   recordAntiteamHelper,
@@ -36,6 +38,8 @@ const {
   buildPanelTextModal,
   buildPhotoRequestPayload,
   buildReportModal,
+  buildRobloxConfirmPayload,
+  buildRobloxMissingPayload,
   buildRobloxUsernameModal,
   buildStartPanelPayload,
   buildStartGuidePayload,
@@ -779,13 +783,18 @@ function createAntiteamOperator(options = {}) {
     if (!interaction?.isButton?.()) return false;
     const storedRoblox = getStoredRobloxSnapshot(interaction.user.id);
     if (storedRoblox) {
+      const confirmation = getRobloxConfirmation(db, interaction.user.id);
+      if (confirmation?.robloxUserId !== storedRoblox.userId) {
+        await interaction.reply(buildRobloxConfirmPayload(storedRoblox));
+        return true;
+      }
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       return openTicketDraftWithRoblox(interaction, storedRoblox, "standard", {
         response: "editReply",
         statusText: `Roblox взят из твоего профиля: ${storedRoblox.username}.`,
       });
     }
-    await interaction.showModal(buildRobloxUsernameModal({ customId: "at:roblox" }));
+    await interaction.reply(buildRobloxMissingPayload());
     return true;
   }
 
@@ -947,6 +956,25 @@ function createAntiteamOperator(options = {}) {
     if (id === ANTITEAM_CUSTOM_IDS.guide) {
       await interaction.reply(buildStartGuidePayload(getConfig()));
       return true;
+    }
+
+    if (id === ANTITEAM_CUSTOM_IDS.requestRobloxNick || id === ANTITEAM_CUSTOM_IDS.changeRoblox) {
+      await interaction.showModal(buildRobloxUsernameModal({ customId: "at:roblox" }));
+      return true;
+    }
+
+    if (id === ANTITEAM_CUSTOM_IDS.confirmRoblox) {
+      const storedRoblox = getStoredRobloxSnapshot(interaction.user.id);
+      if (!storedRoblox) {
+        await interaction.reply({ content: "Roblox в профиле больше не найден. Внеси ник вручную.", flags: MessageFlags.Ephemeral });
+        return true;
+      }
+      await interaction.deferUpdate();
+      await persist("antiteam-roblox-confirm", () => markRobloxConfirmed(db, interaction.user.id, storedRoblox.userId, { now: nowIso() }));
+      return openTicketDraftWithRoblox(interaction, storedRoblox, "standard", {
+        response: "editReply",
+        statusText: `Roblox подтверждён: ${storedRoblox.username}.`,
+      });
     }
 
     if (id === ANTITEAM_CUSTOM_IDS.config) {
