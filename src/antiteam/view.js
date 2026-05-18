@@ -936,9 +936,9 @@ function buildThreadPanelPayload(ticket = {}, config = createDefaultAntiteamConf
       .setStyle(ButtonStyle.Primary)
       .setDisabled(isClosed),
     new ButtonBuilder()
-      .setCustomId(ticketButtonId("direct_check", ticket.id))
-      .setLabel("🔓 Вход без др")
-      .setStyle(ButtonStyle.Secondary)
+      .setCustomId(ticketButtonId("toggle_direct", ticket.id))
+      .setLabel(ticket.directJoinEnabled ? "🔓 Вход без др: есть" : "🔒 Вход без др: нет")
+      .setStyle(ticket.directJoinEnabled ? ButtonStyle.Success : ButtonStyle.Secondary)
       .setDisabled(isClosed),
     new ButtonBuilder()
       .setCustomId(ticketButtonId("report", ticket.id))
@@ -957,37 +957,6 @@ function buildThreadPanelPayload(ticket = {}, config = createDefaultAntiteamConf
       .setDisabled(isClosed)
     )],
   };
-}
-
-function buildDirectJoinCheckPayload({ ticket = {}, directJoinUrl = "", profileUrl = "" } = {}) {
-  const targetLabel = ticket.kind === "clan" ? "якорю" : "автору";
-  const lines = directJoinUrl
-    ? [
-        `Пробная ссылка на сервер к ${targetLabel}.`,
-        "Если Roblox разрешает заход без добавления в друзья, тебя пустит сразу.",
-        "Если не пустило, нажми «Помочь» и иди через friend request или найденный быстрый путь.",
-      ]
-    : [
-        "Сейчас бот не видит точный сервер для прямой ссылки.",
-        "Нажми «Помочь»: бот даст профиль, friend request или быстрый путь, если найдёт друзей/сервер через API.",
-      ];
-
-  const container = new ContainerBuilder()
-    .setAccentColor(directJoinUrl ? 0x2E7D32 : 0x607D8B)
-    .addTextDisplayComponents(
-      new TextDisplayBuilder().setContent("# Вход без др"),
-      new TextDisplayBuilder().setContent(lines.join("\n"))
-    );
-
-  const buttons = [];
-  if (directJoinUrl) {
-    buttons.push(new ButtonBuilder().setLabel("🔓 Проверить вход").setStyle(ButtonStyle.Link).setURL(directJoinUrl));
-  }
-  if (profileUrl) {
-    buttons.push(new ButtonBuilder().setLabel("👤 Профиль").setStyle(ButtonStyle.Link).setURL(profileUrl));
-  }
-  if (buttons.length) container.addActionRowComponents(new ActionRowBuilder().addComponents(...buttons));
-  return buildPayload(container, { ephemeral: true });
 }
 
 function buildHelpReplyPayload({ ticket = {}, linkKind = "", directJoinUrl = "", profileUrl = "", friendRequestsUrl = "", bridgeLabel = "" } = {}) {
@@ -1149,7 +1118,6 @@ module.exports = {
   buildCloseSummaryModal,
   buildConfigModal,
   buildDescriptionModal,
-  buildDirectJoinCheckPayload,
   buildEscalateModal,
   buildHelperStatsPayload,
   buildHelpReplyPayload,

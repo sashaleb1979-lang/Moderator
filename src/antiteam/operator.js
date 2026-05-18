@@ -31,7 +31,6 @@ const {
   buildCloseSummaryModal,
   buildConfigModal,
   buildDescriptionModal,
-  buildDirectJoinCheckPayload,
   buildEscalateModal,
   buildHelperStatsPayload,
   buildHelpReplyPayload,
@@ -1156,18 +1155,24 @@ function createAntiteamOperator(options = {}) {
 
     if (action === "help") return handleHelp(interaction, ticketId);
 
-    if (action === "direct_check") {
+    if (action === "toggle_direct") {
       if (!ticket || ticket.status !== "open") {
         await interaction.reply({ content: "Эта миссия уже закрыта или не найдена.", flags: MessageFlags.Ephemeral });
         return true;
       }
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-      const directJoinUrl = await resolveDirectJoinUrl(ticket);
-      await interaction.editReply(buildDirectJoinCheckPayload({
-        ticket,
-        directJoinUrl,
-        profileUrl: getTicketProfileUrl(ticket),
+      if (!canCloseTicket(interaction, ticket)) {
+        await replyNoPermission(interaction);
+        return true;
+      }
+      await interaction.deferUpdate();
+      const updated = await persist("antiteam-ticket-toggle-direct", () => updateAntiteamTicket(db, ticket.id, (current) => {
+        current.directJoinEnabled = !current.directJoinEnabled;
+        current.updatedAt = nowIso();
+        current.lastActivityAt = nowIso();
+        return current;
       }));
+      await interaction.editReply(buildThreadPanelPayload(updated, getConfig())).catch(() => {});
+      await syncTicketMessages(updated).catch(() => {});
       return true;
     }
 

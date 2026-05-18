@@ -425,11 +425,10 @@ test("help button records friend-request path and notifies author only after hel
   assert.match(JSON.stringify(sentInteraction.calls.at(-1)[1].components[0].toJSON()), /Помощь принята/);
 });
 
-test("direct-check button lets anyone try no-friend join without recording helper stats", async () => {
+test("ticket direct-join toggle is limited to author or admin and updates the mission", async () => {
   const db = {};
   const state = ensureAntiteamState(db).state;
   state.config.channelId = "channel-1";
-  state.config.roblox.jjsPlaceId = "place-1";
   const draft = setAntiteamDraft(db, "author-1", {
     userTag: "Author",
     roblox: { userId: "101", username: "Anchor", profileUrl: "https://www.roblox.com/users/101/profile" },
@@ -442,25 +441,64 @@ test("direct-check button lets anyone try no-friend join without recording helpe
     id: "ticket-1",
     now: "2026-05-16T10:01:00.000Z",
   });
+  db.sot.antiteam.tickets["ticket-1"].message = {
+    channelId: "channel-1",
+    messageId: "message-1",
+    threadId: "thread-1",
+    threadPanelMessageId: "panel-1",
+  };
+  let publicEdit = null;
+  let panelEdit = null;
   const operator = createAntiteamOperator({
     db,
     now: () => "2026-05-16T10:02:00.000Z",
     saveDb() {},
-    getRobloxRuntimeState: () => ({
-      activeSessionsByDiscordUserId: {
-        "author-1": { gameId: "game-1" },
-      },
-    }),
+    fetchChannel: async (channelId) => {
+      if (channelId === "channel-1") {
+        return {
+          messages: {
+            fetch: async () => ({
+              edit: async (payload) => {
+                publicEdit = payload;
+              },
+            }),
+          },
+        };
+      }
+      if (channelId === "thread-1") {
+        return {
+          messages: {
+            fetch: async () => ({
+              edit: async (payload) => {
+                panelEdit = payload;
+              },
+            }),
+          },
+        };
+      }
+      return null;
+    },
   });
-  const interaction = createButtonInteraction(ticketButtonId("direct_check", "ticket-1"), { id: "any-1", username: "Any" });
+  const denied = createButtonInteraction(ticketButtonId("toggle_direct", "ticket-1"), { id: "any-1", username: "Any" });
 
-  assert.equal(await operator.handleButtonInteraction(interaction), true);
+  assert.equal(await operator.handleButtonInteraction(denied), true);
+  assert.equal(db.sot.antiteam.tickets["ticket-1"].directJoinEnabled, false);
+  assert.deepEqual(denied.calls.map((call) => call[0]), ["reply"]);
 
-  const json = JSON.stringify(interaction.calls.at(-1)[1].components[0].toJSON());
-  assert.match(json, /# Вход без др/);
-  assert.match(json, /gameInstanceId=game-1/);
+  const authorToggle = createButtonInteraction(ticketButtonId("toggle_direct", "ticket-1"), { id: "author-1", username: "Author" });
+  assert.equal(await operator.handleButtonInteraction(authorToggle), true);
+  assert.equal(db.sot.antiteam.tickets["ticket-1"].directJoinEnabled, true);
+  assert.deepEqual(authorToggle.calls.map((call) => call[0]), ["deferUpdate", "editReply"]);
+  assert.match(JSON.stringify(authorToggle.calls.at(-1)[1].components[0].toJSON()), /🔓 Вход без др: есть/);
+  assert.match(JSON.stringify(publicEdit.components[0].toJSON()), /Вход без др: \*\*есть\*\*/);
+  assert.match(JSON.stringify(panelEdit.components[0].toJSON()), /🔓 Вход без др: есть/);
   assert.equal(Object.keys(db.sot.antiteam.tickets["ticket-1"].helpers).length, 0);
   assert.deepEqual(db.sot.antiteam.stats.helpers, {});
+
+  const adminToggle = createButtonInteraction(ticketButtonId("toggle_direct", "ticket-1"), { id: "admin-1", username: "Admin" });
+  adminToggle.member = { permissions: { has: () => true }, roles: { cache: new Map() } };
+  assert.equal(await operator.handleButtonInteraction(adminToggle), true);
+  assert.equal(db.sot.antiteam.tickets["ticket-1"].directJoinEnabled, false);
 });
 
 test("help button acknowledges before ticket sync without thread notice spam", async () => {

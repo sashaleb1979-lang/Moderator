@@ -6,7 +6,6 @@ const { MessageFlags } = require("discord.js");
 const {
   ANTITEAM_CUSTOM_IDS,
   buildCloseReviewPayload,
-  buildDirectJoinCheckPayload,
   buildHelperStatsPayload,
   buildHelpReplyPayload,
   buildModeratorPanelPayload,
@@ -180,7 +179,7 @@ test("public ticket is the main compact post and thread panel is buttons only", 
   assert.match(json, /> Бить A\/B, тимятся у центра\./);
   assert.ok(json.indexOf("### Описание") < json.indexOf("### Помощники"));
   assert.match(threadJson, /🙋 Помочь/);
-  assert.match(threadJson, /🔓 Вход без др/);
+  assert.match(threadJson, /🔒 Вход без др: нет/);
   assert.match(threadJson, /⚠️ Пожаловаться/);
   assert.match(threadJson, /📈 Повысить/);
   assert.match(threadJson, /✅ Завершить/);
@@ -229,7 +228,7 @@ test("public ticket and thread panel disable actions after close", () => {
   assert.equal(buildThreadName(ticket), "⚫ 2-4 тимеров • author-1");
   assert.match(payloadJson(buildTicketPublicPayload(ticket)), /⚫ \*\*Средние\*\*: команда в основном 2k-8k kills/);
   assert.match(payloadJson(buildThreadPanelPayload(ticket)), /✅ Закрыто/);
-  assert.match(payloadJson(buildThreadPanelPayload(ticket)), /🔓 Вход без др/);
+  assert.match(payloadJson(buildThreadPanelPayload(ticket)), /🔒 Вход без др: нет/);
   assert.match(payloadJson(buildThreadPanelPayload(ticket)), /"disabled":true/);
   assert.equal(ticketButtonId("help", "ticket-1"), "at:help:ticket-1");
 });
@@ -454,24 +453,6 @@ test("helper reply exposes friend-request action only after help path needs it",
   assert.match(friendRequest, /📨 Отправил др, пусть примет/);
   assert.match(alreadyFriend, /Ты уже Roblox-друг автора/);
   assert.doesNotMatch(alreadyFriend, /Отправил др/);
-});
-
-test("direct join check payload is a public-safe no-permission helper", () => {
-  const withRoute = payloadJson(buildDirectJoinCheckPayload({
-    ticket: { id: "ticket-1", kind: "standard" },
-    directJoinUrl: "https://www.roblox.com/games/start?placeId=1&gameInstanceId=2",
-    profileUrl: "https://www.roblox.com/users/101/profile",
-  }));
-  const withoutRoute = payloadJson(buildDirectJoinCheckPayload({
-    ticket: { id: "ticket-1", kind: "clan" },
-    profileUrl: "https://www.roblox.com/users/101/profile",
-  }));
-
-  assert.match(withRoute, /# Вход без др/);
-  assert.match(withRoute, /🔓 Проверить вход/);
-  assert.match(withRoute, /Если Roblox разрешает заход без добавления в друзья/);
-  assert.match(withoutRoute, /не видит точный сервер/);
-  assert.doesNotMatch(withoutRoute, /🔓 Проверить вход/);
 });
 
 test("helper stats payload supports per-helper delete and full clear confirmation", () => {

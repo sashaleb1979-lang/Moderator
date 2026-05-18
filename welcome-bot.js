@@ -7075,59 +7075,71 @@ async function purgeUserProfile(client, userId, moderatorTag) {
 function buildWelcomeEmbed() {
   const presentation = getPresentation();
   const nonJjsUi = getNonJjsUiConfig();
-  const summaryText = String(presentation.welcome.description || "")
+  const summaryLines = String(presentation.welcome.description || "")
     .split(/\r?\n/)
     .map((line) => line.trim())
-    .filter(Boolean)
-    .join("\n");
+    .filter(Boolean);
   const steps = Array.isArray(presentation.welcome.steps)
     ? presentation.welcome.steps.map((step) => String(step || "").trim()).filter(Boolean)
     : [];
-  const stepFields = [
-    { name: "⚡ Мейны", value: steps[0] || "Нажми **Получить роль** и выбери **1-2 мейнов**." },
-    { name: "📎 Пруф", value: steps[1] || "Отправь **kills** числом и один скрин с Roblox username." },
-    { name: "✅ Доступ", value: steps[2] || "**Доступ выдаётся сразу после отправки.** **kill-tier** проверит модератор." },
-  ];
-  const embed = new EmbedBuilder()
-    .setColor(0xF0B429)
-    .setTitle(presentation.welcome.title)
-    .setDescription(summaryText || "**Выбор → пруф → доступ.** Один скрин, одно сообщение, роль сразу после отправки.")
-    .addFields(
-      ...stepFields.map((field) => ({
-        name: field.name,
-        value: previewText(field.value, 320),
-        inline: true,
-      })),
-      {
-        name: `🧩 ${nonJjsUi.title}`,
-        value: previewText(nonJjsUi.description, 420),
-        inline: false,
-      }
-    )
-    .setFooter({ text: "1-2 мейна • 1 сообщение • доступ после отправки" });
+  const welcomeSteps = (steps.length ? steps : [
+    "Нажми **Получить роль** и выбери **1-2 мейна**.",
+    "Отправь **одно сообщение**: **kills** числом + скрин с kills и **Roblox username**.",
+    "**Доступ выдаётся сразу после отправки.** **kill-tier** проверит модератор.",
+  ]).slice(0, 3);
+  const description = [
+    ...(summaryLines.length ? summaryLines : ["**Выбор → пруф → доступ.** 1-2 мейна, один пруф, роль сразу после отправки."]),
+    "",
+    "**Как пройти**",
+    ...welcomeSteps.map((step) => `• ${step}`),
+    "",
+    `**${nonJjsUi.title}**`,
+    previewText(nonJjsUi.description, 420),
+  ].filter((line) => line !== null && line !== undefined).join("\n");
 
-  return embed;
+  return new EmbedBuilder()
+    .setColor(0x5865F2)
+    .setTitle(presentation.welcome.title)
+    .setDescription(description);
+}
+
+function compactWelcomeButtonLabel(value, fallback) {
+  const label = String(value || "").trim() || fallback;
+  return label.length > 80 ? `${label.slice(0, 77).trimEnd()}...` : label;
+}
+
+function compactQuickMainsButtonLabel(value) {
+  const label = String(value || "").trim() || "Сменить мейнов";
+  return compactWelcomeButtonLabel(label.replace(/^Быстро\s+/i, "").trim() || "Сменить мейнов", "Сменить мейнов");
+}
+
+function compactNonJjsButtonLabel(value) {
+  const label = String(value || "").trim() || "Не играю в JJS";
+  return compactWelcomeButtonLabel(label.toLowerCase() === "я не играю в jjs" ? "Не играю в JJS" : label, "Не играю в JJS");
 }
 
 function buildWelcomeComponents() {
   const presentation = getPresentation();
   const nonJjsUi = getNonJjsUiConfig();
+  const beginLabel = compactWelcomeButtonLabel(presentation.welcome.buttons.begin, "Получить роль");
+  const quickMainsLabel = compactQuickMainsButtonLabel(presentation.welcome.buttons.quickMains);
+  const nonJjsLabel = compactNonJjsButtonLabel(nonJjsUi.buttonLabel);
   return [
     new ActionRowBuilder().addComponents(
       new ButtonBuilder()
         .setCustomId("onboard_begin")
-        .setLabel(presentation.welcome.buttons.begin)
+        .setLabel(beginLabel)
         .setEmoji("⚡")
         .setStyle(ButtonStyle.Primary),
       new ButtonBuilder()
-        .setCustomId("onboard_non_ggs_start")
-        .setLabel(nonJjsUi.buttonLabel)
-        .setEmoji("🧩")
-        .setStyle(ButtonStyle.Success),
-      new ButtonBuilder()
         .setCustomId("onboard_quick_mains")
-        .setLabel(presentation.welcome.buttons.quickMains)
+        .setLabel(quickMainsLabel)
         .setEmoji("🔁")
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId("onboard_non_ggs_start")
+        .setLabel(nonJjsLabel)
+        .setEmoji("🧩")
         .setStyle(ButtonStyle.Secondary)
     ),
   ];
