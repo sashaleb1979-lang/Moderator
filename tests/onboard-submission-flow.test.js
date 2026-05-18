@@ -39,8 +39,9 @@ test("legacy welcome copy is normalized to the mains-first submission flow", () 
     defaultGraphicTierColors: DEFAULT_GRAPHIC_TIER_COLORS,
   });
 
-  assert.match(resolved.welcome.description, /если текущий режим требует дополнительной проверки/i);
-  assert.ok(resolved.welcome.steps.some((step) => /указать kills/i.test(step)));
+  assert.match(resolved.welcome.description, /если текущий режим требует сверку/i);
+  assert.equal(resolved.welcome.steps.length, 3);
+  assert.ok(resolved.welcome.steps.some((step) => /укажи \*\*kills\*\*/i.test(step)));
   assert.ok(resolved.welcome.steps.some((step) => /roblox username/i.test(step)));
   assert.ok(resolved.welcome.steps.every((step) => !/следующим сообщением/i.test(step)));
   assert.ok(resolved.welcome.steps.every((step) => !/сразу даст access-role/i.test(step)));
@@ -70,9 +71,39 @@ test("ensurePresentationConfig rewrites persisted legacy welcome text", () => {
   });
 
   assert.equal(result.mutated, true);
-  assert.match(dbConfig.presentation.welcome.description, /если текущий режим требует дополнительной проверки/i);
-  assert.ok(dbConfig.presentation.welcome.steps.some((step) => /указать kills/i.test(step)));
+  assert.match(dbConfig.presentation.welcome.description, /если текущий режим требует сверку/i);
+  assert.equal(dbConfig.presentation.welcome.steps.length, 3);
+  assert.ok(dbConfig.presentation.welcome.steps.some((step) => /укажи \*\*kills\*\*/i.test(step)));
   assert.ok(dbConfig.presentation.welcome.steps.some((step) => /roblox username/i.test(step)));
+});
+
+test("ensurePresentationConfig compacts persisted long welcome flow", () => {
+  const dbConfig = {
+    presentation: {
+      welcome: {
+        description: "Здесь получаем доступ после простого опроса",
+        steps: [
+          "Нажми **Получить роль**.",
+          "Выбери **1 или 2** мейнов.",
+          "Отправь одним сообщением скрин экрана с открытым табом и точное количество килов.",
+          "Бот удалит скрин после обработки, сразу даст доступ к серверу.",
+          "Не обязательно укажи свой точный юзернейм в роблокс.",
+        ],
+      },
+    },
+  };
+
+  const result = ensurePresentationConfig(dbConfig, {
+    defaults: createPresentationDefaults({}, { defaultGraphicTierColors: DEFAULT_GRAPHIC_TIER_COLORS }),
+    defaultWelcomeChannelId: "welcome-home",
+    defaultTextTierlistChannelId: "text-home",
+    defaultGraphicTierColors: DEFAULT_GRAPHIC_TIER_COLORS,
+  });
+
+  assert.equal(result.mutated, true);
+  assert.match(dbConfig.presentation.welcome.description, /emoji-мейны, один пруф, мод-чек/i);
+  assert.equal(dbConfig.presentation.welcome.steps.length, 3);
+  assert.ok(dbConfig.presentation.welcome.steps.every((step) => !/не обязательно/i.test(step)));
 });
 
 test("parseKillsFromSubmittedText extracts a single kills value from free text", () => {

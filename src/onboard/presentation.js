@@ -1,5 +1,7 @@
 "use strict";
 
+const { normalizeCharacterEmojiMap } = require("./character-emojis");
+
 const HARD_DEFAULT_GRAPHIC_TIER_COLORS = {
   1: "#54a0ff",
   2: "#1dd1a1",
@@ -19,25 +21,23 @@ const LEGACY_WELCOME_STEPS = [
   "Следующим сообщением отправь **скрин** в этот канал.",
   "Бот удалит скрин после обработки, сразу даст access-role, а kill-tier прилетит после проверки модератором.",
 ];
-const COMBINED_SUBMISSION_WELCOME_DESCRIPTION = "Нажми кнопку ниже, выбери 1 или 2 мейнов, затем отправь одним сообщением точное количество kills и скрин, где одновременно видны kills и Roblox username. Если текущий режим требует дополнительной проверки, бот после этого попросит отдельно указать Roblox username для сверки. Kill-tier роль прилетит после проверки модератором.";
+const COMBINED_SUBMISSION_WELCOME_DESCRIPTION = "Маршрут простой: emoji-мейны, один пруф, мод-чек. Без лишней анкеты: если текущий режим требует сверку, бот сам попросит Roblox username.";
 const COMBINED_SUBMISSION_WELCOME_STEPS = [
-  "Нажми **Получить роль**.",
-  "Выбери **1 или 2** мейнов в панели и подтверди.",
-  "Одним сообщением нужно **указать kills** числом и прикрепить скрин, где одновременно видны kills и Roblox username.",
-  "Если бот попросит, отдельным шагом укажи **Roblox username** для сверки.",
-  "Бот удалит сообщение после обработки. Стартовая роль выдаётся сразу, после отправки на модерацию или только после approve — зависит от текущего режима.",
+  "Жми **Получить роль** и выбирай **1-2 emoji-мейнов** на витрине.",
+  "Кидай **одно сообщение**: укажи **kills** числом и приложи скрин, где видны kills и **Roblox username**.",
+  "Дождись мод-чека: доступ откроется по режиму сервера, **kill-tier** прилетит после approve.",
 ];
 
 const HARD_DEFAULT_PRESENTATION = {
   welcome: {
-    title: "Jujutsu Shinigans Onboarding",
+    title: "Проходка на сервер",
     description: COMBINED_SUBMISSION_WELCOME_DESCRIPTION,
     steps: COMBINED_SUBMISSION_WELCOME_STEPS,
     submitStep: {
       title: "Готово. Кидай kills и общий скрин",
       description: [
-        "Отправь одним сообщением в {{uploadTarget}} **точное число kills** в тексте и **один скрин** во вложении.",
-        "На этом же скрине обязательно должны быть одновременно видны и kills, и твой **уникальный Roblox username**.",
+        "Финальный пруф: одно сообщение в {{uploadTarget}}.",
+        "В тексте — **точное число kills**, во вложении — **один скрин**, где видны kills и твой **уникальный Roblox username**.",
         "После отправки kills бот отдельно попросит Roblox username и добавит его в модераторскую заявку.",
         "{{exampleNote}}",
       ].join("\n"),
@@ -46,6 +46,7 @@ const HARD_DEFAULT_PRESENTATION = {
       begin: "Получить роль",
       quickMains: "Быстро сменить мейнов",
     },
+    characterEmojis: {},
   },
   tierlist: {
     textTitle: "Текстовый тир-лист",
@@ -115,9 +116,18 @@ function normalizeWelcomeDescription(value, fallback) {
   return isLegacyWelcomeCopy(text) ? cleanString(fallback) : text;
 }
 
+function isOutdatedWelcomeStepSet(steps) {
+  if (!Array.isArray(steps) || steps.length <= 3) return false;
+  const text = steps.map((step) => cleanString(step).toLowerCase()).join("\n");
+  return text.includes("получить роль")
+    && text.includes("мейн")
+    && /kills?|кил/.test(text)
+    && text.includes("скрин");
+}
+
 function normalizeWelcomeSteps(value, fallback) {
   const steps = normalizeSteps(value, fallback);
-  return steps.some((step) => isLegacyWelcomeCopy(step)) ? [...fallback] : steps;
+  return steps.some((step) => isLegacyWelcomeCopy(step)) || isOutdatedWelcomeStepSet(steps) ? [...fallback] : steps;
 }
 
 function normalizeWelcomeSubmitStep(value, fallback = {}) {
@@ -291,6 +301,7 @@ function createPresentationDefaults(fileConfig = {}, options = {}) {
         begin: firstNonEmpty(welcomeButtons.begin, ui.getRoleButtonLabel, hardDefaults.welcome.buttons.begin),
         quickMains: firstNonEmpty(welcomeButtons.quickMains, ui.quickMainsButtonLabel, hardDefaults.welcome.buttons.quickMains),
       },
+      characterEmojis: normalizeCharacterEmojiMap(welcomeEmbed.characterEmojis, hardDefaults.welcome.characterEmojis),
     },
     tierlist: {
       textTitle: firstNonEmpty(ui.tierlistTitle, hardDefaults.tierlist.textTitle),
@@ -427,6 +438,7 @@ function ensurePresentationConfig(dbConfig, options = {}) {
   dbConfig.presentation.welcome ||= {};
   dbConfig.presentation.welcome.submitStep ||= {};
   dbConfig.presentation.welcome.buttons ||= {};
+  dbConfig.presentation.welcome.characterEmojis ||= {};
   dbConfig.presentation.tierlist ||= {};
   dbConfig.presentation.tierlist.labels ||= {};
   dbConfig.presentation.tierlist.graphic ||= {};
@@ -473,16 +485,24 @@ function ensurePresentationConfig(dbConfig, options = {}) {
     };
     mutated = true;
   }
-  if (isLegacyWelcomeCopy(presentation.welcome.description)) {
+  const hasOutdatedWelcomeSteps = Array.isArray(presentation.welcome.steps)
+    && (presentation.welcome.steps.some((step) => isLegacyWelcomeCopy(step)) || isOutdatedWelcomeStepSet(presentation.welcome.steps));
+
+  if (isLegacyWelcomeCopy(presentation.welcome.description) || hasOutdatedWelcomeSteps) {
     presentation.welcome.description = defaults.welcome.description;
     mutated = true;
   }
-  if (Array.isArray(presentation.welcome.steps) && presentation.welcome.steps.some((step) => isLegacyWelcomeCopy(step))) {
+  if (hasOutdatedWelcomeSteps) {
     presentation.welcome.steps = [...defaults.welcome.steps];
     mutated = true;
   }
   if (Object.prototype.hasOwnProperty.call(presentation.welcome.buttons, "myCard")) {
     delete presentation.welcome.buttons.myCard;
+    mutated = true;
+  }
+  const normalizedCharacterEmojis = normalizeCharacterEmojiMap(presentation.welcome.characterEmojis, defaults.welcome.characterEmojis);
+  if (JSON.stringify(presentation.welcome.characterEmojis) !== JSON.stringify(normalizedCharacterEmojis)) {
+    presentation.welcome.characterEmojis = normalizedCharacterEmojis;
     mutated = true;
   }
 
@@ -535,6 +555,7 @@ function resolvePresentation(dbConfig = {}, fileConfig = {}, options = {}) {
         begin: firstNonEmpty(welcome.buttons?.begin, defaults.welcome.buttons.begin),
         quickMains: firstNonEmpty(welcome.buttons?.quickMains, defaults.welcome.buttons.quickMains),
       },
+      characterEmojis: normalizeCharacterEmojiMap(welcome.characterEmojis, defaults.welcome.characterEmojis),
     },
     tierlist: {
       textTitle: firstNonEmpty(tierlist.textTitle, defaults.tierlist.textTitle),

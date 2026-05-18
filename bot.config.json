@@ -20,11 +20,11 @@
     }
   },
   "ui": {
-    "welcomeTitle": "Jujutsu Shinigans Onboarding",
-    "welcomeDescription": "Нажми кнопку ниже, выбери 1 или 2 мейнов, затем отправь одним сообщением точное количество kills и один скрин, на котором одновременно видны kills и твой Roblox username. Если текущий режим требует дополнительной проверки, бот после этого попросит отдельно указать Roblox username для сверки. Kill-tier роль прилетит после проверки модератором.",
+    "welcomeTitle": "Проходка на сервер",
+    "welcomeDescription": "Маршрут простой: emoji-мейны, один пруф, мод-чек. Без лишней анкеты: если текущий режим требует сверку, бот сам попросит Roblox username.",
     "getRoleButtonLabel": "Получить роль",
     "nonJjsTitle": "Я не играю в JJS",
-    "nonJjsDescription": "Если ты не играешь в JJS, нажми кнопку ниже. Бот запустит 2 этапа капчи и после успешного прохождения выдаст отдельную роль доступа.",
+    "nonJjsDescription": "Не играешь в JJS - жми кнопку ниже. Бот даст короткую капчу и отдельную роль доступа.",
     "nonJjsButtonLabel": "Я не играю в JJS",
     "onboardingProofExampleImageUrl": "",
     "onboardingProofExampleImagePath": "assets/onboarding-proof-example.png",
