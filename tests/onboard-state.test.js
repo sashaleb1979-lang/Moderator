@@ -56,6 +56,7 @@ const {
 const {
   createPresentationDefaults,
   ensurePresentationConfig,
+  getBotHelperPanelState,
   getGraphicTierlistBoardState,
   getNonGgsPanelState,
   getTextTierlistBoardState,
@@ -420,6 +421,43 @@ test("getNonGgsPanelState falls back to the welcome channel only when nonGgs sta
 
   assert.deepEqual(state, {
     channelId: "welcome-home",
+    messageId: "",
+  });
+});
+
+test("getBotHelperPanelState keeps its own channel instead of mirroring welcome panel state on read", () => {
+  const dbConfig = {
+    welcomePanel: {
+      channelId: "welcome-home",
+      messageId: "welcome-message",
+    },
+    botHelperPanel: {
+      channelId: "bot-chat-home",
+      messageId: "bot-helper-message",
+    },
+  };
+
+  const state = getBotHelperPanelState(dbConfig, "");
+
+  assert.deepEqual(state, {
+    channelId: "bot-chat-home",
+    messageId: "bot-helper-message",
+  });
+  assert.equal(dbConfig.botHelperPanel.channelId, "bot-chat-home");
+});
+
+test("getBotHelperPanelState falls back to an empty channel when helper state is missing", () => {
+  const dbConfig = {
+    welcomePanel: {
+      channelId: "welcome-home",
+      messageId: "welcome-message",
+    },
+  };
+
+  const state = getBotHelperPanelState(dbConfig, "");
+
+  assert.deepEqual(state, {
+    channelId: "",
     messageId: "",
   });
 });

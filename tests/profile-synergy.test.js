@@ -407,3 +407,103 @@ test("buildProfileSynergyState exposes social suggestions from canonical cache w
   assert.match(state.blocks.socialSuggestions.lines.join("\n"), /2\. <@peer-4> .* junpei .* 40 мин вместе .* 3 общ\. сесс\./);
   assert.match(state.blocks.socialSuggestions.lines.join("\n"), /Social-срез: обновлялся ~3 ч назад/);
 });
+
+test("buildProfileSynergyState derives friend overlap from server friend ids and population profiles", () => {
+  const state = buildProfileSynergyState({
+    now: "2026-05-16T12:00:00.000Z",
+    robloxSummary: {
+      serverFriendsCount: 3,
+      serverFriendsUserIds: ["rbx-1", "rbx-2", "rbx-3"],
+      serverFriendsComputedAt: "2026-05-16T08:00:00.000Z",
+    },
+    populationProfiles: [
+      {
+        userId: "friend-1",
+        profile: {
+          summary: {
+            preferredDisplayName: "Gojo",
+            activity: {
+              appliedActivityRoleKey: "active",
+              messages7d: 12,
+            },
+            roblox: {
+              userId: "rbx-1",
+              currentUsername: "GojoRb",
+              hasVerifiedAccount: true,
+              jjsMinutes7d: 150,
+            },
+          },
+        },
+      },
+      {
+        userId: "friend-2",
+        profile: {
+          summary: {
+            preferredDisplayName: "Megumi",
+            activity: {
+              messages7d: 0,
+              sessions7d: 0,
+            },
+            roblox: {
+              userId: "rbx-2",
+              currentUsername: "MegumiRb",
+              hasVerifiedAccount: true,
+              jjsMinutes7d: 0,
+            },
+          },
+        },
+      },
+      {
+        userId: "outsider",
+        profile: {
+          summary: {
+            preferredDisplayName: "Out",
+            roblox: {
+              userId: "rbx-9",
+              currentUsername: "OutRb",
+              hasVerifiedAccount: true,
+              jjsMinutes7d: 320,
+            },
+          },
+        },
+      },
+    ],
+  });
+
+  assert.equal(state.blocks.friendOverlap.title, "Roblox-друзья на сервере");
+  assert.match(state.blocks.friendOverlap.lines.join("\n"), /Roblox-друзей на сервере: 3 .* видимых профилей: 2 .* verified: 2 .* активны 7д: 1 .* играли в JJS 7д: 1/);
+  assert.match(state.blocks.friendOverlap.lines.join("\n"), /Список друзей обновлялся ~4 ч назад/);
+  assert.equal(state.blocks.friendsAlreadyHere.title, "Кто из друзей уже здесь");
+  assert.match(state.blocks.friendsAlreadyHere.lines.join("\n"), /1\. <@friend-1> .* Gojo .* Roblox GojoRb .* verified Roblox .* JJS 7д 150 мин .* activity active/);
+  assert.match(state.blocks.friendsAlreadyHere.lines.join("\n"), /2\. <@friend-2> .* Megumi .* Roblox MegumiRb .* verified Roblox/);
+});
+
+test("buildProfileSynergyState exposes voice summary from canonical mirror", () => {
+  const state = buildProfileSynergyState({
+    now: "2026-05-16T12:00:00.000Z",
+    voiceSummary: {
+      lifetimeSessionCount: 2,
+      sessionCount7d: 1,
+      sessionCount30d: 2,
+      incompleteSessionCount30d: 1,
+      voiceDurationSeconds7d: 5400,
+      voiceDurationSeconds30d: 9000,
+      lastVoiceSeenAt: "2026-05-16T10:30:00.000Z",
+      lastCapturedAt: "2026-05-16T10:30:00.000Z",
+      isInVoiceNow: true,
+      currentChannelId: "voice-lounge",
+      currentSessionStartedAt: "2026-05-16T11:10:00.000Z",
+      topChannels: [
+        { channelId: "voice-main", sessionCount: 2 },
+        { channelId: "voice-lounge", sessionCount: 1 },
+        { channelId: "voice-side", sessionCount: 1 },
+      ],
+    },
+  });
+
+  assert.equal(state.blocks.voiceSummary.title, "Voice-срез");
+  assert.match(state.blocks.voiceSummary.lines.join("\n"), /Voice 7д\/30д: 1,5 ч \/ 2,5 ч .* сессии 7д\/30д: 1 \/ 2 .* lifetime сессии: 2 .* неполных 30д: 1/);
+  assert.match(state.blocks.voiceSummary.lines.join("\n"), /Сейчас в voice: <#voice-lounge> .* 16\.05\.2026/);
+  assert.match(state.blocks.voiceSummary.lines.join("\n"), /Топ voice-каналы: <#voice-main> \(2\), <#voice-lounge> \(1\), <#voice-side> \(1\)/);
+  assert.match(state.blocks.voiceSummary.lines.join("\n"), /Voice-срез обновлялся ~1,5 ч назад/);
+});

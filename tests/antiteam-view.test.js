@@ -161,6 +161,28 @@ test("public ticket is the main compact post and thread panel is buttons only", 
   assert.doesNotMatch(threadJson, /Сбор помощи|Контекст|Маршрут|Бить A\/B/);
 });
 
+test("public ticket exposes an external help jump button once the thread panel exists", () => {
+  const payload = buildTicketPublicPayload({
+    id: "ticket-1",
+    kind: "standard",
+    status: "open",
+    createdBy: "author-1",
+    roblox: { username: "Anchor", userId: "101" },
+    level: "medium",
+    count: "2-4",
+    description: "Бить A/B.",
+    message: {
+      guildId: "guild-1",
+      threadId: "thread-1",
+      threadPanelMessageId: "panel-1",
+    },
+  });
+  const json = payloadJson(payload);
+
+  assert.match(json, /🙋 Прийти на помощь/);
+  assert.match(json, /https:\/\/discord\.com\/channels\/guild-1\/thread-1\/panel-1/);
+});
+
 test("clan draft and public ticket show selected Discord anchor", () => {
   const draftPayload = buildTicketSetupPayload({
     kind: "clan",
@@ -195,6 +217,7 @@ test("public ticket and thread panel disable actions after close", () => {
     helpers: {
       "helper-1": { userId: "helper-1", arrived: true },
     },
+    message: { guildId: "guild-1", threadId: "thread-1", threadPanelMessageId: "panel-1" },
     closeSummary: { text: "done", confirmedHelperIds: ["helper-1"] },
   };
 
@@ -202,6 +225,7 @@ test("public ticket and thread panel disable actions after close", () => {
   assert.equal(buildTicketTitle(ticket), "⚫ Завершено • 2-4 тимеров");
   assert.equal(buildThreadName(ticket), "⚫ 2-4 тимеров • author-1");
   assert.match(payloadJson(buildTicketPublicPayload(ticket)), /⚫ \*\*Средние\*\*: команда в основном 2k-8k kills/);
+  assert.doesNotMatch(payloadJson(buildTicketPublicPayload(ticket)), /Прийти на помощь/);
   assert.match(payloadJson(buildThreadPanelPayload(ticket)), /✅ Закрыто/);
   assert.match(payloadJson(buildThreadPanelPayload(ticket)), /"disabled":true/);
   assert.equal(ticketButtonId("help", "ticket-1"), "at:help:ticket-1");

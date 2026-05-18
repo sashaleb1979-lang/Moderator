@@ -34,6 +34,7 @@ test("profile helper message payload builds one private-open button", () => {
 
 test("profile payload renders overview, activity, rankings, roblox, and link buttons", () => {
   const payload = buildProfilePayload({
+    now: "2026-05-16T12:00:00.000Z",
     guildId: "guild-1",
     userId: "user-1",
     requesterUserId: "requester",
@@ -177,6 +178,7 @@ test("profile payload renders overview, activity, rankings, roblox, and link but
 
 test("profile payload switches sections by requested view", () => {
   const payload = buildProfilePayload({
+    now: "2026-05-16T12:00:00.000Z",
     guildId: "guild-1",
     userId: "user-1",
     requesterUserId: "requester",
@@ -185,6 +187,24 @@ test("profile payload switches sections by requested view", () => {
     profile: {
       summary: {
         preferredDisplayName: "Sasha",
+        voice: {
+          lifetimeSessionCount: 2,
+          sessionCount7d: 1,
+          sessionCount30d: 2,
+          incompleteSessionCount30d: 1,
+          voiceDurationSeconds7d: 5400,
+          voiceDurationSeconds30d: 9000,
+          lastVoiceSeenAt: "2026-05-16T10:30:00.000Z",
+          lastCapturedAt: "2026-05-16T10:30:00.000Z",
+          isInVoiceNow: true,
+          currentChannelId: "voice-lounge",
+          currentSessionStartedAt: "2026-05-16T11:10:00.000Z",
+          topChannels: [
+            { channelId: "voice-main", sessionCount: 2 },
+            { channelId: "voice-lounge", sessionCount: 1 },
+            { channelId: "voice-side", sessionCount: 1 },
+          ],
+        },
         activity: {
           appliedActivityRoleKey: "active",
           activityScore: 77,
@@ -207,6 +227,7 @@ test("profile payload switches sections by requested view", () => {
   const { textDisplays } = getProfileContainer(payload);
   assert.ok(textDisplays.some((component) => /\*\*Секция:\*\* Активность/.test(component.content)));
   assert.ok(textDisplays.some((component) => /### Активность/.test(component.content) && /Бакет: active/.test(component.content)));
+  assert.ok(textDisplays.some((component) => /### Voice-срез/.test(component.content) && /Voice 7д\/30д: 1,5 ч \/ 2,5 ч/.test(component.content) && /Сейчас в voice: <#voice-lounge>/.test(component.content)));
   assert.ok(textDisplays.some((component) => /### Детали activity/.test(component.content) && /Сообщения 90д: 400/.test(component.content)));
 });
 
@@ -358,8 +379,12 @@ test("profile payload renders enriched progress and social sections", () => {
         roblox: {
           hasVerifiedAccount: true,
           currentUsername: "GojoMain",
+          userId: "rbx-main",
           profileUrl: "https://www.roblox.com/users/123/profile",
           avatarUrl: "https://tr.rbxcdn.com/gojo-avatar.png",
+          serverFriendsCount: 3,
+          serverFriendsUserIds: ["rbx-friend-1", "rbx-friend-2", "rbx-friend-3"],
+          serverFriendsComputedAt: "2026-05-16T08:00:00.000Z",
           topCoPlayPeers: [
             {
               peerUserId: "peer-1",
@@ -408,11 +433,50 @@ test("profile payload renders enriched progress and social sections", () => {
       generalTechsThreadId: "general-thread",
       characters: [{ id: "gojo", name: "Gojo", threadId: "thread-1" }],
     },
+    populationProfiles: [
+      {
+        userId: "friend-1",
+        profile: {
+          summary: {
+            preferredDisplayName: "Friend One",
+            activity: {
+              appliedActivityRoleKey: "active",
+              messages7d: 10,
+            },
+            roblox: {
+              userId: "rbx-friend-1",
+              currentUsername: "FriendOneRb",
+              hasVerifiedAccount: true,
+              jjsMinutes7d: 160,
+            },
+          },
+        },
+      },
+      {
+        userId: "friend-2",
+        profile: {
+          summary: {
+            preferredDisplayName: "Friend Two",
+            activity: {
+              messages7d: 4,
+            },
+            roblox: {
+              userId: "rbx-friend-2",
+              currentUsername: "FriendTwoRb",
+              hasVerifiedAccount: true,
+              jjsMinutes7d: 0,
+            },
+          },
+        },
+      },
+    ],
   });
 
   const socialDisplays = getProfileContainer(socialPayload).textDisplays;
   assert.ok(socialDisplays.some((component) => /\*\*Секция:\*\* Соц/.test(component.content)));
   assert.ok(socialDisplays.some((component) => /### Roblox и соц/.test(component.content) && /Связка Roblox: подтверждена/.test(component.content)));
+  assert.ok(socialDisplays.some((component) => /### Roblox-друзья на сервере/.test(component.content) && /Roblox-друзей на сервере: 3 .* видимых профилей: 2 .* verified: 2 .* активны 7д: 2 .* играли в JJS 7д: 1/.test(component.content)));
+  assert.ok(socialDisplays.some((component) => /### Кто из друзей уже здесь/.test(component.content) && /1\. <@friend-1> .* Friend One .* Roblox FriendOneRb .* verified Roblox .* JJS 7д 160 мин .* activity active/.test(component.content) && /2\. <@friend-2> .* Friend Two .* Roblox FriendTwoRb .* verified Roblox .* 4 msg 7д/.test(component.content)));
   assert.ok(socialDisplays.some((component) => /### С кем чаще всего играет/.test(component.content) && /<@peer-1> • 210 мин вместе • 5 сесс\. • Roblox-друг/.test(component.content)));
   assert.ok(socialDisplays.some((component) => /### Скрытый круг/.test(component.content) && /1 кандидата по частым пересечениям в JJS/.test(component.content) && /<@peer-7> .* Todo .* Roblox TodoRb .* 70 мин вместе .* 2 общ\. сесс\. .* verified Roblox/.test(component.content)));
   assert.ok(socialDisplays.some((component) => /### Мейны и гайды/.test(component.content) && /Основные персонажи: Gojo/.test(component.content) && /Гайды по мейнам: 1\/1/.test(component.content) && /1\. Gojo — гайд доступен по кнопке/.test(component.content) && /Общие техи: доступны по кнопке\./.test(component.content)));

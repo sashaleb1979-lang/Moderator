@@ -132,10 +132,10 @@ function buildQuotedDescription(value = "", fallback = "описание не д
     .join("\n");
 }
 
-function buildPayload(container, { ephemeral = false } = {}) {
+function buildPayload(container, { ephemeral = false, extraComponents = [] } = {}) {
   return {
     flags: flags(ephemeral),
-    components: [container],
+    components: [container, ...(Array.isArray(extraComponents) ? extraComponents.filter(Boolean) : [])],
   };
 }
 
@@ -733,6 +733,24 @@ function formatPublicDifficulty(ticket = {}) {
   return `${isClosed ? "⚫" : level.emoji} **${level.label}**: ${descriptions[level.id] || level.description}`;
 }
 
+function buildDiscordChannelUrl(guildId = "", channelId = "", messageId = "") {
+  const normalizedGuildId = cleanString(guildId, 80);
+  const normalizedChannelId = cleanString(channelId, 80);
+  const normalizedMessageId = cleanString(messageId, 80);
+  if (!normalizedGuildId || !normalizedChannelId) return "";
+  return normalizedMessageId
+    ? `https://discord.com/channels/${normalizedGuildId}/${normalizedChannelId}/${normalizedMessageId}`
+    : `https://discord.com/channels/${normalizedGuildId}/${normalizedChannelId}`;
+}
+
+function buildPublicHelpJumpUrl(ticket = {}) {
+  const guildId = cleanString(ticket.message?.guildId, 80);
+  const threadId = cleanString(ticket.message?.threadId, 80);
+  const threadPanelMessageId = cleanString(ticket.message?.threadPanelMessageId, 80);
+  if (!guildId || !threadId) return "";
+  return buildDiscordChannelUrl(guildId, threadId, threadPanelMessageId);
+}
+
 function normalizeHelperIdSet(values = []) {
   return new Set((Array.isArray(values) ? values : [])
     .map((value) => cleanString(value, 80))
@@ -803,7 +821,17 @@ function buildTicketPublicPayload(ticket = {}, config = createDefaultAntiteamCon
       .addMediaGalleryComponents(media);
   }
 
-  const payload = buildPayload(container);
+  const publicHelpJumpUrl = isClosed ? "" : buildPublicHelpJumpUrl(ticket);
+  const payload = buildPayload(container, {
+    extraComponents: publicHelpJumpUrl ? [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setLabel("🙋 Прийти на помощь")
+          .setStyle(ButtonStyle.Link)
+          .setURL(publicHelpJumpUrl)
+      ),
+    ] : [],
+  });
   if (shouldAttachPhoto) {
     payload.files = [{ attachment: photoUrl, name: photoAttachmentName }];
   }

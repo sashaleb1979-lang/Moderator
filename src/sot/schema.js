@@ -38,6 +38,7 @@ const DEFAULT_INFLUENCE = {
 };
 const PANEL_MESSAGE_SLOTS = {
   welcome: ["main"],
+  botHelper: ["main"],
   nonGgs: ["main"],
   tierlistText: ["main", "summary", "pages"],
   tierlistGraphic: ["main"],
@@ -338,6 +339,10 @@ function buildPanelMap(dbConfig = {}) {
       channelId: dbConfig.welcomePanel?.channelId,
       messageIds: { main: dbConfig.welcomePanel?.messageId },
     }, PANEL_MESSAGE_SLOTS.welcome),
+    botHelper: createPanelRecord({
+      channelId: dbConfig.botHelperPanel?.channelId,
+      messageIds: { main: dbConfig.botHelperPanel?.messageId },
+    }, PANEL_MESSAGE_SLOTS.botHelper),
     nonGgs: createPanelRecord({
       channelId: dbConfig.nonGgsPanel?.channelId,
       messageIds: { main: dbConfig.nonGgsPanel?.messageId },

@@ -321,7 +321,7 @@ Kill milestones:
 ### Статус
 Top co-play peers уже существуют как source facts.
 Base suggestions cache implemented for Phase 2.
-Base Phase 6 read-side block `Скрытый круг` is live via `src/profile/synergy.js`; richer friend-overlap and medium-tie layers remain future work.
+Base Phase 6 read-side blocks `Roblox-друзья на сервере`, `Кто из друзей уже здесь` и `Скрытый круг` are live via `src/profile/synergy.js`; medium-tie layer remains future work.
 
 ### Owner
 1. Raw source facts: [src/runtime/roblox-jobs.js](src/runtime/roblox-jobs.js)
@@ -357,12 +357,23 @@ Base Phase 6 read-side block `Скрытый круг` is live via `src/profile/
 `часто пересекаетесь в одной JJS-сессии`
 
 ### Текущая V1-Подача
-Profile social section теперь может показывать отдельный block `Скрытый круг`:
-1. summary line по числу frequent non-friend candidates;
-2. до 3 peer lines с Discord mention, display/Roblox label, minutesTogether и shared sessions;
-3. freshness line по `sourceComputedAt`, если она есть.
+Profile social section теперь может показывать три отдельных derived blocks:
+1. `Roblox-друзья на сервере`:
+  - summary line по `serverFriendsCount`;
+  - visible-overlap count через матч `summary.roblox.userId` из injected `populationProfiles` против `serverFriendsUserIds`;
+  - verified / active7d / JJS7d counters;
+  - freshness line по `serverFriendsComputedAt`, если она есть.
+2. `Кто из друзей уже здесь`:
+  - до 3 resolved overlaps;
+  - Discord mention, display/Roblox label, verified marker;
+  - JJS 7d minutes или activity hint, если он есть.
+3. `Скрытый круг`:
+  - summary line по числу frequent non-friend candidates;
+  - до 3 peer lines с Discord mention, display/Roblox label, minutesTogether и shared sessions;
+  - freshness line по `sourceComputedAt`, если она есть.
 
-Этот block использует уже существующий derived cache и не требует нового runtime collection layer.
+Friend-overlap blocks используют уже существующие `serverFriends*` fields плюс read-side injected `populationProfiles` и не требуют нового runtime collection layer.
+`Скрытый круг` использует уже существующий derived cache и тоже не требует нового runtime collection layer.
 
 ### Ненадёжно Когда
 1. `inferred`: вся co-play логика основана на совпадении tracked JJS gameId;
@@ -376,6 +387,7 @@ Profile social section теперь может показывать отдель
 2. Если suggestions пусты, допустим честный empty-state block вместо исчезновения раздела.
 3. Если есть `serverFriendsCount`, empty state может говорить, что друзья на сервере уже есть, но явный hidden-circle сигнал пока не накопился.
 4. Если `sourceComputedAt` старый, block должен прямо говорить, что social-sрез мог устареть.
+5. Если `visible profiles < serverFriendsCount`, friend-overlap block должен явно оставаться observational: часть Roblox-друзей может быть без видимого server profile match.
 
 ---
 

@@ -385,6 +385,31 @@ function createAntiteamOperator(options = {}) {
     return Boolean(value) && !value.startsWith("opaque:") && !value.startsWith("root:");
   }
 
+  function getConfiguredRobloxPlaceId() {
+    const config = getConfig();
+    const optionPlaceId = typeof options.robloxPlaceId === "function" ? options.robloxPlaceId() : options.robloxPlaceId;
+    return cleanString(config.roblox.jjsPlaceId || optionPlaceId, 40);
+  }
+
+  function getDirectJoinPlaceId(presence = {}) {
+    return cleanString(presence?.placeId || presence?.rootPlaceId || getConfiguredRobloxPlaceId(), 40);
+  }
+
+  function getApiPresenceMatchKey(presence = {}, fallbackGameId = "") {
+    const concreteGameId = cleanString(presence?.gameId, 120);
+    if (isConcreteRobloxGameId(concreteGameId)) return `game:${concreteGameId}`;
+
+    const rootPlaceId = cleanString(presence?.rootPlaceId, 40);
+    if (rootPlaceId) return `root:${rootPlaceId}`;
+
+    const placeId = cleanString(presence?.placeId, 40);
+    if (placeId) return `place:${placeId}`;
+
+    const runtimeGameId = cleanString(fallbackGameId, 120);
+    if (runtimeGameId) return `runtime:${runtimeGameId}`;
+    return "";
+  }
+
   function getTicketRuntimeTargetGameId(ticket = {}) {
     const runtimeState = getRobloxRuntimeState();
     const activeSessions = runtimeState?.activeSessionsByDiscordUserId || {};
@@ -429,11 +454,11 @@ function createAntiteamOperator(options = {}) {
     }
 
     const targetPresence = presenceByRobloxId.get(targetRobloxId);
-    const targetGameId = cleanString(targetPresence?.gameId, 120) || runtimeTargetGameId;
-    if (!targetGameId) return [...presentIds];
+    const targetMatchKey = getApiPresenceMatchKey(targetPresence, runtimeTargetGameId);
+    if (!targetMatchKey) return [...presentIds];
     for (const [helperUserId, helperRobloxId] of helperRobloxByDiscordId.entries()) {
       const helperPresence = presenceByRobloxId.get(helperRobloxId);
-      if (cleanString(helperPresence?.gameId, 120) === targetGameId) presentIds.add(helperUserId);
+      if (getApiPresenceMatchKey(helperPresence) === targetMatchKey) presentIds.add(helperUserId);
     }
     return [...presentIds];
   }
@@ -517,6 +542,7 @@ function createAntiteamOperator(options = {}) {
 
       const updatedTicket = await persist("antiteam-ticket-message-refs", () => updateAntiteamTicket(db, ticket.id, (current) => {
         current.message = {
+          guildId: cleanString(thread?.guildId || publicMessage.guildId || channel.guildId, 80),
           channelId: channel.id,
           messageId: publicMessage.id,
           threadId: thread?.id || "",
@@ -527,6 +553,10 @@ function createAntiteamOperator(options = {}) {
         current.updatedAt = nowIso();
         return current;
       }));
+
+      if (typeof publicMessage.edit === "function") {
+        await publicMessage.edit(buildTicketPublicPayload(updatedTicket, config)).catch(() => {});
+      }
 
       await grantBattalionRole(ticket.createdBy, "antiteam request created").catch(() => null);
       await publishStartPanel().catch((error) => {
@@ -573,7 +603,7 @@ function createAntiteamOperator(options = {}) {
     const expectedGameId = cleanString(requiredGameId, 120);
     const presence = presenceByRobloxId.get(userId);
     const gameId = cleanString(presence?.gameId, 120);
-    const placeId = cleanString(presence?.placeId, 40);
+    const placeId = getDirectJoinPlaceId(presence);
     if (!userId || !isConcreteRobloxGameId(gameId) || !placeId) return null;
     if (expectedGameId && gameId !== expectedGameId) return null;
     return {
@@ -786,6 +816,10 @@ function createAntiteamOperator(options = {}) {
     const ticket = state.tickets[ticketId];
     if (!ticket || ticket.status !== "open") {
       await interaction.reply({ content: "Эта миссия уже закрыта или не найдена.", flags: MessageFlags.Ephemeral });
+      return true;
+    }
+    if (cleanString(interaction.user.id, 80) === cleanString(ticket.createdBy, 80)) {
+      await interaction.reply({ content: "Ты уже позвал помощь по этой заявке. Самому откликаться нельзя.", flags: MessageFlags.Ephemeral });
       return true;
     }
 

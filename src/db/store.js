@@ -63,6 +63,10 @@ function createDefaultDbState({
         channelId: appConfig.channels.welcomeChannelId,
         messageId: "",
       },
+      botHelperPanel: {
+        channelId: "",
+        messageId: "",
+      },
       nonGgsPanel: {
         channelId: appConfig.channels.welcomeChannelId,
         messageId: "",
@@ -134,6 +138,7 @@ function createDbStore({
     const migrated = ensurePresentationConfig(db.config, {
       defaults: createPresentationDefaults(fileConfig, { defaultGraphicTierColors }),
       defaultWelcomeChannelId: appConfig.channels.welcomeChannelId,
+      defaultBotHelperChannelId: "",
       defaultTextTierlistChannelId: appConfig.channels.tierlistChannelId || "",
       defaultGraphicTierColors,
     });
@@ -212,6 +217,7 @@ function createDbStore({
     ensurePresentationConfig(workingDb.config, {
       defaults: createPresentationDefaults(fileConfig, { defaultGraphicTierColors }),
       defaultWelcomeChannelId: appConfig.channels.welcomeChannelId,
+      defaultBotHelperChannelId: "",
       defaultTextTierlistChannelId: appConfig.channels.tierlistChannelId || "",
       defaultGraphicTierColors,
     });

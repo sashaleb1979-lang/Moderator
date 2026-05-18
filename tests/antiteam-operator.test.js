@@ -485,6 +485,36 @@ test("help button acknowledges before ticket sync without thread notice spam", a
   assert.ok(events.includes("panel.edit"));
 });
 
+test("ticket author cannot respond to their own help request", async () => {
+  const db = {};
+  const state = ensureAntiteamState(db).state;
+  state.config.channelId = "channel-1";
+  const draft = setAntiteamDraft(db, "author-1", {
+    userTag: "Author",
+    roblox: { userId: "101", username: "Anchor", profileUrl: "https://www.roblox.com/users/101/profile" },
+    level: "medium",
+    count: "2-4",
+    description: "Нужна помощь у центра.",
+  }, { now: "2026-05-16T10:00:00.000Z" });
+  createAntiteamTicketFromDraft(db, draft, {
+    id: "ticket-own",
+    now: "2026-05-16T10:01:00.000Z",
+  });
+
+  const operator = createAntiteamOperator({
+    db,
+    saveDb() {},
+  });
+  const interaction = createButtonInteraction("at:help:ticket-own", { id: "author-1", username: "Author" });
+
+  assert.equal(await operator.handleButtonInteraction(interaction), true);
+
+  assert.equal(interaction.calls[0][0], "reply");
+  assert.equal(interaction.calls[0][1].content, "Ты уже позвал помощь по этой заявке. Самому откликаться нельзя.");
+  assert.equal(interaction.calls[0][1].flags, MessageFlags.Ephemeral);
+  assert.deepEqual(db.sot.antiteam.tickets["ticket-own"].helpers, {});
+});
+
 test("ticket sync annotates public helper count with API-present helpers", async () => {
   const db = {
     profiles: {
@@ -550,6 +580,73 @@ test("ticket sync annotates public helper count with API-present helpers", async
   const json = JSON.stringify(publicEdit.components[0].toJSON());
   assert.match(json, /Откликнулись: \*\*1\*\* \(API в игре: \*\*1\*\*\)/);
   assert.doesNotMatch(json, /пришли: \*\*0\*\*/);
+});
+
+test("ticket sync counts API-present helpers by shared root place when gameId is unavailable", async () => {
+  const db = {
+    profiles: {
+      "helper-1": {
+        domains: { roblox: { userId: "202", username: "HelperRoblox", verificationStatus: "verified" } },
+      },
+    },
+  };
+  const state = ensureAntiteamState(db).state;
+  state.config.channelId = "channel-1";
+  const draft = setAntiteamDraft(db, "author-1", {
+    userTag: "Author",
+    roblox: { userId: "101", username: "Anchor", profileUrl: "https://www.roblox.com/users/101/profile" },
+    level: "medium",
+    count: "2-4",
+    description: "Нужна помощь в центре.",
+  }, { now: "2026-05-16T10:00:00.000Z" });
+  createAntiteamTicketFromDraft(db, draft, {
+    id: "ticket-root-api",
+    now: "2026-05-16T10:01:00.000Z",
+  });
+  db.sot.antiteam.tickets["ticket-root-api"].message = {
+    channelId: "channel-1",
+    messageId: "message-1",
+    threadId: "thread-1",
+    threadPanelMessageId: "panel-1",
+  };
+
+  let publicEdit = null;
+  const operator = createAntiteamOperator({
+    db,
+    now: () => "2026-05-16T10:02:00.000Z",
+    saveDb() {},
+    getProfile: () => ({ domains: { roblox: { userId: "202", username: "HelperRoblox", verificationStatus: "verified" } } }),
+    fetchRobloxPresences: async (robloxUserIds) => robloxUserIds
+      .map((robloxUserId) => {
+        if (robloxUserId === "101") return { userId: 101, rootPlaceId: 555 };
+        if (robloxUserId === "202") return { userId: 202, rootPlaceId: 555 };
+        return null;
+      })
+      .filter(Boolean),
+    fetchChannel: async (channelId) => {
+      if (channelId === "channel-1") {
+        return {
+          messages: {
+            fetch: async () => ({
+              edit: async (payload) => {
+                publicEdit = payload;
+              },
+            }),
+          },
+        };
+      }
+      return {
+        messages: {
+          fetch: async () => ({ edit: async () => {} }),
+        },
+      };
+    },
+  });
+
+  assert.equal(await operator.handleButtonInteraction(createButtonInteraction("at:help:ticket-root-api")), true);
+
+  const json = JSON.stringify(publicEdit.components[0].toJSON());
+  assert.match(json, /Откликнулись: \*\*1\*\* \(API в игре: \*\*1\*\*\)/);
 });
 
 test("clan friend-request notice pings the selected anchor in the thread", async () => {
@@ -663,7 +760,7 @@ test("help button can route through a Roblox friend currently in the author's ga
   assert.doesNotMatch(json, /Отправил др/);
 });
 
-test("direct join help skips generic fallback links when Roblox does not expose an exact live server", async () => {
+test("direct join help uses root place fallback when Roblox omits placeId", async () => {
   const db = {};
   const state = ensureAntiteamState(db).state;
   state.config.channelId = "channel-1";
@@ -693,7 +790,43 @@ test("direct join help skips generic fallback links when Roblox does not expose 
   const ticket = db.sot.antiteam.tickets["ticket-direct"];
   assert.equal(ticket.helpers["helper-1"].linkKind, "direct");
   const json = JSON.stringify(interaction.calls.at(-1)[1].components[0].toJSON());
-  assert.doesNotMatch(json, /root-1/);
+  assert.match(json, /Прямая ссылка подключения/);
+  assert.match(json, /root-1/);
+  assert.match(json, /🔗 Подключиться/);
+  assert.match(json, /Профиль/);
+});
+
+test("direct join help still hides links when Roblox does not expose a concrete live game id", async () => {
+  const db = {};
+  const state = ensureAntiteamState(db).state;
+  state.config.channelId = "channel-1";
+  const draft = setAntiteamDraft(db, "author-1", {
+    userTag: "Author",
+    roblox: { userId: "101", username: "Anchor", profileUrl: "https://www.roblox.com/users/101/profile" },
+    level: "medium",
+    count: "2-4",
+    description: "Цели A/B.",
+    directJoinEnabled: true,
+  }, { now: "2026-05-16T10:00:00.000Z" });
+  createAntiteamTicketFromDraft(db, draft, {
+    id: "ticket-direct-no-game",
+    now: "2026-05-16T10:01:00.000Z",
+  });
+
+  const operator = createAntiteamOperator({
+    db,
+    now: () => "2026-05-16T10:02:00.000Z",
+    saveDb() {},
+    fetchRobloxPresences: async () => [{ userId: 101, rootPlaceId: 555 }],
+  });
+  const interaction = createButtonInteraction("at:help:ticket-direct-no-game");
+
+  assert.equal(await operator.handleButtonInteraction(interaction), true);
+
+  const ticket = db.sot.antiteam.tickets["ticket-direct-no-game"];
+  assert.equal(ticket.helpers["helper-1"].linkKind, "direct");
+  const json = JSON.stringify(interaction.calls.at(-1)[1].components[0].toJSON());
+  assert.doesNotMatch(json, /Прямая ссылка подключения/);
   assert.doesNotMatch(json, /🔗 Подключиться/);
   assert.match(json, /Профиль/);
 });
@@ -889,6 +1022,7 @@ test("clan draft submit publishes without photo", async () => {
   }, { now: "2026-05-16T10:00:00.000Z" });
   const sentToChannel = [];
   const sentToThread = [];
+  const publicEdits = [];
   const thread = {
     id: "thread-1",
     isTextBased: () => true,
@@ -906,6 +1040,10 @@ test("clan draft submit publishes without photo", async () => {
       sentToChannel.push(payload);
       return {
         id: `message-${sentToChannel.length}`,
+        guildId: "guild-1",
+        edit: async (editPayload) => {
+          publicEdits.push(editPayload);
+        },
         startThread: async () => thread,
       };
     },
@@ -922,9 +1060,12 @@ test("clan draft submit publishes without photo", async () => {
 
   const ticket = Object.values(db.sot.antiteam.tickets)[0];
   assert.equal(ticket.kind, "clan");
+  assert.equal(ticket.message.guildId, "guild-1");
   assert.equal(sentToChannel.length, 2);
+  assert.equal(publicEdits.length, 1);
   assert.equal(sentToChannel[0].files, undefined);
   assert.match(JSON.stringify(sentToChannel[0].components[0].toJSON()), /ФАЙТ С ХН/);
+  assert.match(JSON.stringify(publicEdits[0].components[1].toJSON()), /Прийти на помощь/);
   assert.deepEqual(interaction.calls.map((call) => call[0]), ["deferUpdate", "editReply"]);
   assert.match(interaction.calls.at(-1)[1].content, /Заявка опубликована/);
 });

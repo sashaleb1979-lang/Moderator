@@ -283,6 +283,7 @@ function normalizeHelperRecord(value = {}, userId = "") {
 function normalizeMessageRefs(value = {}) {
   const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
   return {
+    guildId: cleanString(source.guildId, 80),
     channelId: cleanString(source.channelId, 80),
     messageId: cleanString(source.messageId, 80),
     threadId: cleanString(source.threadId, 80),

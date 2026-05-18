@@ -206,6 +206,15 @@ const {
 } = require("./src/onboard/access-grant-mode");
 const { ONBOARD_BEGIN_ROUTES, resolveOnboardBeginRoute } = require("./src/onboard/begin-state");
 const {
+  BOT_HELPER_PANEL_ACTION_IDS,
+  BOT_HELPER_PANEL_CHANNEL_INPUT_ID,
+  BOT_HELPER_PANEL_CONFIG_BUTTON_ID,
+  BOT_HELPER_PANEL_CONFIG_MODAL_ID,
+  BOT_HELPER_PANEL_SLOT,
+  buildBotHelperPanelPayload,
+  getBotHelperPanelRequiredCustomIds,
+} = require("./src/onboard/bot-helper-panel");
+const {
   canManageWelcomeRobloxIdentity,
   getWelcomeRobloxIdentityLockText,
 } = require("./src/onboard/roblox-identity");
@@ -213,6 +222,7 @@ const { resolveNonJjsCaptchaMode } = require("./src/onboard/non-jjs-mode");
 const {
   createPresentationDefaults,
   ensurePresentationConfig,
+  getBotHelperPanelState: readBotHelperPanelState,
   getGraphicTierlistBoardState,
   getNonGgsPanelState: readNonGgsPanelState,
   getTextTierlistBoardState,
@@ -1252,6 +1262,15 @@ function getResolvedWelcomePanelSnapshot() {
 
 function getResolvedNonGgsPanelSnapshot() {
   const record = getResolvedPanelRecord("nonGgs");
+  return {
+    channelId: String(record?.channelId?.value || "").trim(),
+    messageId: getPanelRecordValue(record),
+    lastUpdated: record?.lastUpdated || null,
+  };
+}
+
+function getResolvedBotHelperPanelSnapshot() {
+  const record = getResolvedPanelRecord(BOT_HELPER_PANEL_SLOT);
   return {
     channelId: String(record?.channelId?.value || "").trim(),
     messageId: getPanelRecordValue(record),
@@ -3388,6 +3407,10 @@ async function syncPendingSubmissionMainsForUser(client, userId, selectedEntries
 
 function getWelcomePanelState() {
   return readWelcomePanelState(db.config, appConfig.channels.welcomeChannelId);
+}
+
+function getBotHelperPanelState() {
+  return readBotHelperPanelState(db.config, "");
 }
 
 function getNonGgsPanelState() {
@@ -7388,6 +7411,14 @@ async function findExistingNonGgsPanelMessage(channel) {
   );
 }
 
+async function findExistingBotHelperPanelMessage(channel) {
+  const botId = client.user?.id;
+  return findManagedMessageInChannel(
+    channel,
+    (message) => message.author?.id === botId && messageHasRequiredCustomIds(message, getBotHelperPanelRequiredCustomIds())
+  );
+}
+
 async function findExistingGraphicTierlistMessage(channel) {
   const botId = client.user?.id;
   return findManagedMessageInChannel(
@@ -7531,6 +7562,135 @@ async function upsertManagedPanelMessage(channel, state, payload, findExisting, 
   return message;
 }
 
+async function refreshBotHelperPanel(client, options = {}) {
+  const state = syncLegacyPanelSnapshot(getBotHelperPanelState(), getResolvedBotHelperPanelSnapshot());
+  const channelId = String(options.channelId || state.channelId || "").trim();
+  if (!channelId || isPlaceholder(channelId)) return null;
+
+  const channel = await client.channels.fetch(channelId).catch(() => null);
+  if (!channel?.isTextBased()) {
+    if (options.strict) {
+      throw new Error("bot helper panel channel не указывает на текстовый канал");
+    }
+    console.warn("botHelperPanel channelId не указывает на текстовый канал, пропускаем refreshBotHelperPanel");
+    return null;
+  }
+
+  const botId = client.user?.id;
+  let message = null;
+
+  if (!options.forceRecreate) {
+    message = await fetchStoredBotMessage(channel, state, "messageId", botId);
+    if (!message) {
+      message = await findExistingBotHelperPanelMessage(channel);
+      if (message && state.messageId !== message.id) {
+        state.messageId = message.id;
+        saveDb();
+      }
+    }
+  }
+
+  if (message && (options.bump || options.forceRecreate)) {
+    await deleteManagedChannelMessage(client, channel.id, message.id);
+    if (state.messageId === message.id) {
+      state.messageId = "";
+    }
+    message = null;
+  }
+
+  if (!message) {
+    message = await channel.send(buildBotHelperPanelPayload());
+    state.messageId = message.id;
+  } else {
+    await message.edit(buildBotHelperPanelPayload());
+  }
+
+  state.channelId = channel.id;
+  saveDb();
+  return { message, channel };
+}
+
+async function repostBotHelperPanelToChannel(client, targetChannelId) {
+  const state = syncLegacyPanelSnapshot(getBotHelperPanelState(), getResolvedBotHelperPanelSnapshot());
+  const nextChannelId = String(targetChannelId || "").trim();
+  if (!nextChannelId || isPlaceholder(nextChannelId)) {
+    throw new Error("Нужно указать текстовый канал для helper-панели.");
+  }
+
+  const targetChannel = await client.channels.fetch(nextChannelId).catch(() => null);
+  if (!targetChannel?.isTextBased()) {
+    throw new Error("Указанный канал helper-панели не является текстовым.");
+  }
+
+  const previousState = {
+    channelId: String(state.channelId || "").trim(),
+    messageId: String(state.messageId || "").trim(),
+  };
+
+  state.channelId = nextChannelId;
+  state.messageId = "";
+  saveDb();
+
+  try {
+    const result = await refreshBotHelperPanel(client, { forceRecreate: true, strict: true });
+    const nextMessageId = result?.message?.id || "";
+
+    if (previousState.messageId && (previousState.channelId !== nextChannelId || previousState.messageId !== nextMessageId)) {
+      await deleteManagedChannelMessage(client, previousState.channelId || nextChannelId, previousState.messageId);
+    }
+
+    return {
+      channelId: nextChannelId,
+      previousChannelId: previousState.channelId,
+      messageId: nextMessageId,
+    };
+  } catch (error) {
+    state.channelId = previousState.channelId;
+    state.messageId = previousState.messageId;
+    saveDb();
+    throw error;
+  }
+}
+
+async function clearBotHelperManagedPanel(client) {
+  const state = getBotHelperPanelState();
+  const previousChannelId = String(state.channelId || "").trim();
+  const previousMessageId = String(state.messageId || "").trim();
+
+  state.channelId = "";
+  state.messageId = "";
+  saveDb();
+
+  const deleted = previousMessageId
+    ? await deleteManagedChannelMessage(client, previousChannelId, previousMessageId)
+    : false;
+
+  return {
+    ok: true,
+    channelId: "",
+    messageId: "",
+    deletedMessageId: deleted ? previousMessageId : "",
+  };
+}
+
+async function maybeBumpBotHelperPanelForMessage(client, message) {
+  const helperChannelId = String(getResolvedBotHelperPanelSnapshot().channelId || "").trim();
+  if (!helperChannelId || helperChannelId !== message.channelId) {
+    return false;
+  }
+
+  const welcomeChannelId = String(getResolvedChannelId("welcome") || "").trim();
+  if (helperChannelId === welcomeChannelId) {
+    return false;
+  }
+
+  await runSerializedDbTask(
+    () => refreshBotHelperPanel(client, { bump: true }),
+    `bot-helper-panel-bump:${message.channelId}`
+  );
+  return true;
+}
+
 async function refreshWelcomePanel(client) {
   const panelState = syncLegacyPanelSnapshot(getWelcomePanelState(), getResolvedWelcomePanelSnapshot());
   const legacyNonGgsPanelState = getNonGgsPanelState();
@@ -7562,8 +7722,14 @@ async function refreshWelcomePanel(client) {
   }
 
   await cleanupWelcomeChannelMessages(welcomeChannel, [welcomeMessage.id]);
+  let botHelperMessage = null;
+  try {
+    botHelperMessage = (await refreshBotHelperPanel(client))?.message || null;
+  } catch (error) {
+    console.warn(`Bot helper panel refresh failed: ${formatRuntimeError(error)}`);
+  }
   saveDb();
-  return { welcomeMessage, nonGgsMessage: null };
+  return { welcomeMessage, nonGgsMessage: null, botHelperMessage };
 }
 
 async function ensureWelcomePanel(client) {
@@ -9321,7 +9487,7 @@ async function buildModeratorPanelPayload(client, statusText = "", includeFlags 
       `Топ игрок: **${stats.topEntry ? `${stats.topEntry.displayName} — ${formatNumber(stats.topEntry.approvedKills)} kills` : "—"}**`,
     ].join("\n"))
     .addFields(
-      { name: "Обновить welcome", value: "Пересобирает welcome-панель и сообщение входа.", inline: true },
+      { name: "Обновить welcome", value: "Пересобирает welcome-панель и helper-сообщение в bot-chat.", inline: true },
       { name: "Обновить тир-листы", value: "Перестраивает верхний graphic-board и нижний текстовый рейтинг в dedicated канале.", inline: true },
       { name: "Синк tier-ролей", value: "Перепривязывает tier-роли всем подтверждённым игрокам по текущей базе.", inline: true },
       { name: "Напомнить отсутствующим", value: "Шлёт DM пользователям вне тир-листа с встроенным постером из репозитория.", inline: true },
@@ -9354,6 +9520,7 @@ async function buildModeratorPanelPayload(client, statusText = "", includeFlags 
         name: "Каналы",
         value: [
           `Welcome: ${formatChannelMention(getResolvedChannelId("welcome"))}`,
+          `Bot helper: ${formatChannelMention(getResolvedBotHelperPanelSnapshot().channelId)}`,
           `Review: ${formatChannelMention(getResolvedChannelId("review"))}`,
           `Text tierlist: ${formatChannelMention(getResolvedChannelId("tierlistText"))}`,
           `Graphic tierlist: ${formatChannelMention(getResolvedChannelId("tierlistGraphic"))}`,
@@ -9375,7 +9542,8 @@ async function buildModeratorPanelPayload(client, statusText = "", includeFlags 
         new ButtonBuilder().setCustomId("panel_refresh_welcome").setLabel("Обновить приветствие").setStyle(ButtonStyle.Primary),
         new ButtonBuilder().setCustomId("panel_refresh_tierlists").setLabel("Обновить тир-листы").setStyle(ButtonStyle.Primary),
         new ButtonBuilder().setCustomId("panel_sync_roles").setLabel("Синхронизировать роли").setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId("panel_open_roblox_stats").setLabel("Контроль Roblox").setStyle(ButtonStyle.Secondary)
+        new ButtonBuilder().setCustomId("panel_open_roblox_stats").setLabel("Контроль Roblox").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId(BOT_HELPER_PANEL_CONFIG_BUTTON_ID).setLabel("Bot helper").setStyle(ButtonStyle.Secondary)
       ),
       new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId("panel_remind_missing").setLabel("Напомнить отсутствующим").setStyle(ButtonStyle.Danger),
@@ -12921,6 +13089,13 @@ async function applyManualPanelOverride(client, slot, channelId = "") {
     return clearWelcomeManagedPanel(client, normalizedSlot);
   }
 
+  if (normalizedSlot === BOT_HELPER_PANEL_SLOT) {
+    if (channelId) {
+      return repostBotHelperPanelToChannel(client, channelId);
+    }
+    return clearBotHelperManagedPanel(client);
+  }
+
   if (normalizedSlot === "eloSubmit") {
     const liveState = getLiveLegacyEloState();
     if (!liveState.ok) {
@@ -13719,10 +13894,18 @@ client.on("messageCreate", async (message) => {
     scheduleDeleteMessage,
     helperDeleteMs: PROFILE_HELPER_MESSAGE_DELETE_MS,
   })) {
+    await maybeBumpBotHelperPanelForMessage(client, message).catch((error) => {
+      console.error("Bot helper panel bump after profile helper failed:", error?.message || error);
+    });
     return;
   }
 
-  if (message.channelId !== getResolvedChannelId("welcome")) return;
+  if (message.channelId !== getResolvedChannelId("welcome")) {
+    await maybeBumpBotHelperPanelForMessage(client, message).catch((error) => {
+      console.error("Bot helper panel bump failed:", error?.message || error);
+    });
+    return;
+  }
 
   let session = getSubmitSession(message.author.id);
   const bootstrapMember = session
@@ -15881,6 +16064,27 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
+    if (interaction.customId === BOT_HELPER_PANEL_CONFIG_BUTTON_ID) {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      const modal = new ModalBuilder().setCustomId(BOT_HELPER_PANEL_CONFIG_MODAL_ID).setTitle("Bot helper panel");
+      const input = new TextInputBuilder()
+        .setCustomId(BOT_HELPER_PANEL_CHANNEL_INPUT_ID)
+        .setLabel("Bot-chat канал")
+        .setStyle(TextInputStyle.Short)
+        .setRequired(false)
+        .setMaxLength(40)
+        .setPlaceholder("#channel или 123456789012345678")
+        .setValue(String(getResolvedBotHelperPanelSnapshot().channelId || "").slice(0, 40));
+
+      modal.addComponents(new ActionRowBuilder().addComponents(input));
+      await interaction.showModal(modal);
+      return;
+    }
+
     if (interaction.customId.startsWith("welcome_editor_")) {
       if (!isModerator(interaction.member)) {
         await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
@@ -17724,7 +17928,7 @@ client.on("interactionCreate", async (interaction) => {
       let statusText = "Сводка обновлена.";
       if (interaction.customId === "panel_refresh_welcome") {
         await refreshWelcomePanel(client);
-        statusText = "Welcome-панель обновлена.";
+        statusText = "Welcome-панель и helper-панель обновлены.";
       } else if (interaction.customId === "panel_refresh_tierlists") {
         await refreshAllTierlists(client);
         statusText = "Graphic-board и текстовый тир-лист обновлены.";
@@ -17971,6 +18175,33 @@ client.on("interactionCreate", async (interaction) => {
 
     if (interaction.customId === "onboard_change_mains") {
       await openCharacterPicker(interaction, "full", "update");
+      return;
+    }
+
+    if (interaction.customId === BOT_HELPER_PANEL_ACTION_IDS.roblox) {
+      const session = getSubmitSession(interaction.user.id);
+      const pending = getPendingSubmissionForUser(interaction.user.id);
+      if (session?.mainCharacterIds?.length || pending?.id) {
+        const robloxIdentityLockText = getWelcomeRobloxIdentityLockText({
+          session,
+          pending,
+          canManage: hasAdministratorAccess(interaction.member),
+        });
+        if (robloxIdentityLockText) {
+          await interaction.reply(ephemeralPayload({ content: robloxIdentityLockText }));
+          return;
+        }
+
+        const profileSnapshot = buildCanonicalRobloxBindingSnapshot(db.profiles?.[interaction.user.id]?.domains?.roblox || db.profiles?.[interaction.user.id] || {});
+        await interaction.showModal(buildRobloxUsernameModal(
+          "onboard_roblox_username_modal",
+          session?.robloxUsername || pending?.robloxUsername || profileSnapshot.username || ""
+        ));
+        return;
+      }
+
+      const profileSnapshot = buildCanonicalRobloxBindingSnapshot(db.profiles?.[interaction.user.id]?.domains?.roblox || db.profiles?.[interaction.user.id] || {});
+      await interaction.showModal(buildRobloxUsernameModal("profile_bind_roblox_modal", profileSnapshot.username || ""));
       return;
     }
 
@@ -18870,6 +19101,53 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
+    if (interaction.customId === "profile_bind_roblox_modal") {
+      const robloxUsernameInput = interaction.fields.getTextInputValue("roblox_username");
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+      let robloxUser = null;
+      try {
+        robloxUser = await resolveRobloxUserByUsername(robloxUsernameInput);
+      } catch (error) {
+        await interaction.editReply(String(error?.message || error || "Не удалось проверить Roblox username."));
+        return;
+      }
+
+      if (!robloxUser) {
+        await interaction.editReply("Такой Roblox username не найден через Roblox API. Проверь написание и попробуй ещё раз.");
+        return;
+      }
+
+      db.profiles ||= {};
+      const previousProfile = cloneJsonValue(db.profiles?.[interaction.user.id]);
+      const hadProfile = Boolean(db.profiles?.[interaction.user.id]);
+      const updatedAt = nowIso();
+
+      try {
+        const profile = getProfile(interaction.user.id);
+        profile.displayName ||= interaction.member?.displayName || interaction.user.globalName || interaction.user.username;
+        profile.username ||= interaction.user.username;
+
+        writeCanonicalRobloxBinding(interaction.user.id, profile, robloxUser, {
+          verificationStatus: "verified",
+          verifiedAt: updatedAt,
+          updatedAt,
+          source: "profile_button",
+        });
+        saveDb();
+      } catch (error) {
+        restoreRecordValue(db.profiles, interaction.user.id, previousProfile, hadProfile);
+        await interaction.editReply(String(error?.message || error || "Не удалось сохранить Roblox username."));
+        return;
+      }
+
+      await logLine(client, `ROBLOX BIND: <@${interaction.user.id}> -> ${robloxUser.name} (${robloxUser.id}) via helper/profile`).catch((error) => {
+        console.warn(`Roblox bind log failed for ${interaction.user.id}: ${formatRuntimeError(error)}`);
+      });
+      await interaction.editReply(`Roblox username подтверждён: **${robloxUser.name}** (ID ${robloxUser.id}). Профиль обновлён.`);
+      return;
+    }
+
     if (await handleSotReportModalSubmitInteraction({
       interaction,
       client,
@@ -19432,6 +19710,43 @@ client.on("interactionCreate", async (interaction) => {
       statusText += "Каналы сохранены.";
 
       await interaction.editReply(await buildModeratorPanelPayload(client, statusText, false));
+      return;
+    }
+
+    if (interaction.customId === BOT_HELPER_PANEL_CONFIG_MODAL_ID) {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+      const currentChannelId = String(getResolvedBotHelperPanelSnapshot().channelId || "").trim();
+      const nextChannelId = parseRequestedChannelId(
+        interaction.fields.getTextInputValue(BOT_HELPER_PANEL_CHANNEL_INPUT_ID),
+        ""
+      );
+
+      if (currentChannelId === nextChannelId) {
+        await interaction.editReply(await buildModeratorPanelPayload(client, "Изменений по helper-панели нет.", false));
+        return;
+      }
+
+      try {
+        const result = await writeAndApplyNativePanelOverride(client, BOT_HELPER_PANEL_SLOT, nextChannelId);
+        const statusText = result.cleared
+          ? (result.applyResult?.deletedMessageId
+            ? `Helper-панель отключена. Старое сообщение ${result.applyResult.deletedMessageId} удалено.`
+            : "Helper-панель отключена.")
+          : `Helper-панель перенесена в ${formatChannelMention(result.channel?.id || nextChannelId)}.`;
+        await interaction.editReply(await buildModeratorPanelPayload(client, statusText, false));
+      } catch (error) {
+        await interaction.editReply(await buildModeratorPanelPayload(
+          client,
+          `Не удалось сохранить helper-панель: ${String(error?.message || error || "неизвестная ошибка")}`,
+          false
+        ));
+      }
       return;
     }
 

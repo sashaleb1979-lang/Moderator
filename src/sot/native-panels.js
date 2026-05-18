@@ -4,6 +4,7 @@ const { PANEL_MESSAGE_SLOTS, createRecord, ensureSotState, normalizePanelRecord 
 
 const CORE_PANEL_SLOT_LABELS = {
   welcome: "Welcome panel",
+  botHelper: "Bot helper panel",
   nonGgs: "non-JJS panel",
   eloSubmit: "Legacy ELO submit panel",
   eloGraphic: "Legacy ELO graphic panel",
@@ -31,6 +32,10 @@ function normalizePanelSlot(slot) {
   const normalized = text.toLowerCase().replace(/[\s_:-]+/g, "");
   const aliases = {
     welcome: "welcome",
+    bothelper: "botHelper",
+    botchat: "botHelper",
+    helper: "botHelper",
+    helperpanel: "botHelper",
     nonggs: "nonGgs",
     nonjjs: "nonGgs",
     captcha: "nonGgs",

@@ -331,6 +331,24 @@ function ensureWelcomePanelState(dbConfig, defaultChannelId = "") {
   };
 }
 
+function ensureBotHelperPanelState(dbConfig, defaultChannelId = "") {
+  const fallbackChannelId = cleanString(defaultChannelId);
+  const previousChannelId = cleanString(dbConfig?.botHelperPanel?.channelId);
+  const previousMessageId = cleanString(dbConfig?.botHelperPanel?.messageId);
+
+  dbConfig.botHelperPanel ||= { channelId: fallbackChannelId, messageId: "" };
+
+  const nextChannelId = previousChannelId || fallbackChannelId;
+  const nextMessageId = previousMessageId;
+  dbConfig.botHelperPanel.channelId = nextChannelId;
+  dbConfig.botHelperPanel.messageId = nextMessageId;
+
+  return {
+    state: dbConfig.botHelperPanel,
+    migrated: previousChannelId !== nextChannelId || previousMessageId !== nextMessageId,
+  };
+}
+
 function ensureNonGgsPanelState(dbConfig, defaultChannelId = "", fallbackChannelId = "") {
   const fallback = cleanString(fallbackChannelId || defaultChannelId);
   const previousChannelId = cleanString(dbConfig?.nonGgsPanel?.channelId);
@@ -413,6 +431,8 @@ function ensurePresentationConfig(dbConfig, options = {}) {
 
   const welcomePanelResult = ensureWelcomePanelState(dbConfig, options.defaultWelcomeChannelId || "");
   if (welcomePanelResult.migrated) mutated = true;
+  const botHelperPanelResult = ensureBotHelperPanelState(dbConfig, options.defaultBotHelperChannelId || "");
+  if (botHelperPanelResult.migrated) mutated = true;
   const nonGgsPanelResult = ensureNonGgsPanelState(
     dbConfig,
     options.defaultWelcomeChannelId || "",
@@ -565,6 +585,10 @@ function getWelcomePanelState(dbConfig, defaultChannelId = "") {
   return ensureWelcomePanelState(dbConfig, defaultChannelId).state;
 }
 
+function getBotHelperPanelState(dbConfig, defaultChannelId = "") {
+  return ensureBotHelperPanelState(dbConfig, defaultChannelId).state;
+}
+
 function getNonGgsPanelState(dbConfig, defaultChannelId = "", fallbackChannelId = "") {
   return ensureNonGgsPanelState(dbConfig, defaultChannelId, fallbackChannelId).state;
 }
@@ -587,6 +611,7 @@ module.exports = {
   HARD_DEFAULT_PRESENTATION,
   createPresentationDefaults,
   ensurePresentationConfig,
+  getBotHelperPanelState,
   getGraphicTierlistBoardState,
   getNonGgsPanelState,
   getTextTierlistBoardState,

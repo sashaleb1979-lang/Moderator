@@ -27,6 +27,24 @@ test("profile read-model composes derived sections, links, and verification fact
           lastProofWindowReviewedAt: "2026-05-15T00:00:00.000Z",
           lastProofWindowApprovedKills: 120,
         },
+        voice: {
+          lifetimeSessionCount: 2,
+          sessionCount7d: 1,
+          sessionCount30d: 2,
+          incompleteSessionCount30d: 1,
+          voiceDurationSeconds7d: 5400,
+          voiceDurationSeconds30d: 9000,
+          lastVoiceSeenAt: "2026-05-16T10:30:00.000Z",
+          lastCapturedAt: "2026-05-16T10:30:00.000Z",
+          isInVoiceNow: true,
+          currentChannelId: "voice-lounge",
+          currentSessionStartedAt: "2026-05-16T11:10:00.000Z",
+          topChannels: [
+            { channelId: "voice-main", sessionCount: 2 },
+            { channelId: "voice-lounge", sessionCount: 1 },
+            { channelId: "voice-side", sessionCount: 1 },
+          ],
+        },
         activity: {
           appliedActivityRoleKey: "active",
           activityScore: 77,
@@ -59,11 +77,14 @@ test("profile read-model composes derived sections, links, and verification fact
           hasVerifiedAccount: true,
           currentUsername: "GojoMain",
           currentDisplayName: "Gojo The Strongest",
+          userId: "rbx-main",
           previousUsername: "OldGojo",
           renameCount: 2,
           profileUrl: "https://www.roblox.com/users/123/profile",
           avatarUrl: "https://tr.rbxcdn.com/gojo-avatar.png",
           serverFriendsCount: 3,
+          serverFriendsUserIds: ["rbx-friend-1", "rbx-friend-2", "rbx-friend-3"],
+          serverFriendsComputedAt: "2026-05-16T08:00:00.000Z",
           jjsMinutes7d: 180,
           jjsMinutes30d: 420,
           totalJjsMinutes: 5000,
@@ -158,6 +179,43 @@ test("profile read-model composes derived sections, links, and verification fact
       generalTechsThreadId: "general-thread",
       characters: [{ id: "gojo", name: "Gojo", threadId: "thread-1" }],
     },
+    populationProfiles: [
+      {
+        userId: "friend-1",
+        profile: {
+          summary: {
+            preferredDisplayName: "Friend One",
+            activity: {
+              appliedActivityRoleKey: "active",
+              messages7d: 10,
+            },
+            roblox: {
+              userId: "rbx-friend-1",
+              currentUsername: "FriendOneRb",
+              hasVerifiedAccount: true,
+              jjsMinutes7d: 160,
+            },
+          },
+        },
+      },
+      {
+        userId: "friend-2",
+        profile: {
+          summary: {
+            preferredDisplayName: "Friend Two",
+            activity: {
+              messages7d: 4,
+            },
+            roblox: {
+              userId: "rbx-friend-2",
+              currentUsername: "FriendTwoRb",
+              hasVerifiedAccount: true,
+              jjsMinutes7d: 0,
+            },
+          },
+        },
+      },
+    ],
   });
 
   assert.equal(readModel.userId, "user-1");
@@ -192,21 +250,30 @@ test("profile read-model composes derived sections, links, and verification fact
   assert.match(readModel.sections.progress[3].lines.join("\n"), /Последняя проверка:/);
   assert.match(readModel.sections.progress[4].lines.join("\n"), /Текущий рейтинг: ELO 145 \/ tier 2/);
   assert.match(readModel.sections.progress[4].lines.join("\n"), /Tierlist-заявка: есть/);
-  assert.match(readModel.sections.activity[1].lines.join("\n"), /Сообщения 90д: 400/);
+  assert.equal(readModel.sections.activity[1].title, "Voice-срез");
+  assert.match(readModel.sections.activity[1].lines.join("\n"), /Voice 7д\/30д: 1,5 ч \/ 2,5 ч .* сессии 7д\/30д: 1 \/ 2 .* lifetime сессии: 2 .* неполных 30д: 1/);
+  assert.match(readModel.sections.activity[1].lines.join("\n"), /Сейчас в voice: <#voice-lounge> .* 16\.05\.2026/);
+  assert.match(readModel.sections.activity[1].lines.join("\n"), /Топ voice-каналы: <#voice-main> \(2\), <#voice-lounge> \(1\), <#voice-side> \(1\)/);
+  assert.match(readModel.sections.activity[2].lines.join("\n"), /Сообщения 90д: 400/);
   assert.match(readModel.sections.social[0].lines.join("\n"), /Связка Roblox: подтверждена/);
   assert.match(readModel.sections.social[0].lines.join("\n"), /Аккаунт: GojoMain/);
   assert.match(readModel.sections.social[0].lines.join("\n"), /Display в Roblox: Gojo The Strongest/);
   assert.match(readModel.sections.social[0].lines.join("\n"), /Смен username Roblox: 2/);
   assert.match(readModel.sections.social[0].lines.join("\n"), /JJS минут 7д: 180/);
   assert.match(readModel.sections.social[0].lines.join("\n"), /JJS сессий всего: 9/);
-  assert.match(readModel.sections.social[1].lines.join("\n"), /<@peer-1> • 210 мин вместе • 5 сесс\. • Roblox-друг/);
-  assert.match(readModel.sections.social[1].lines.join("\n"), /<@peer-2> • 140 мин вместе • 3 сесс\. • частый non-friend/);
-  assert.equal(readModel.sections.social[2].title, "Скрытый круг");
-  assert.match(readModel.sections.social[2].lines.join("\n"), /явных frequent non-friend пересечений пока не видно, хотя Roblox-друзья на сервере уже есть \(3\)/);
-  assert.match(readModel.sections.social[3].lines.join("\n"), /Гайды по мейнам: 1\/1/);
-  assert.match(readModel.sections.social[3].lines.join("\n"), /1\. Gojo — гайд доступен по кнопке/);
-  assert.match(readModel.sections.social[3].lines.join("\n"), /Основной tierlist-пик: Gojo • входит в список мейнов/);
-  assert.match(readModel.sections.social[3].lines.join("\n"), /Общие техи: доступны по кнопке\./);
+  assert.equal(readModel.sections.social[1].title, "Roblox-друзья на сервере");
+  assert.match(readModel.sections.social[1].lines.join("\n"), /Roblox-друзей на сервере: 3 .* видимых профилей: 2 .* verified: 2 .* активны 7д: 2 .* играли в JJS 7д: 1/);
+  assert.equal(readModel.sections.social[2].title, "Кто из друзей уже здесь");
+  assert.match(readModel.sections.social[2].lines.join("\n"), /1\. <@friend-1> .* Friend One .* Roblox FriendOneRb .* verified Roblox .* JJS 7д 160 мин .* activity active/);
+  assert.match(readModel.sections.social[2].lines.join("\n"), /2\. <@friend-2> .* Friend Two .* Roblox FriendTwoRb .* verified Roblox .* 4 msg 7д/);
+  assert.match(readModel.sections.social[3].lines.join("\n"), /<@peer-1> • 210 мин вместе • 5 сесс\. • Roblox-друг/);
+  assert.match(readModel.sections.social[3].lines.join("\n"), /<@peer-2> • 140 мин вместе • 3 сесс\. • частый non-friend/);
+  assert.equal(readModel.sections.social[4].title, "Скрытый круг");
+  assert.match(readModel.sections.social[4].lines.join("\n"), /явных frequent non-friend пересечений пока не видно, хотя Roblox-друзья на сервере уже есть \(3\)/);
+  assert.match(readModel.sections.social[5].lines.join("\n"), /Гайды по мейнам: 1\/1/);
+  assert.match(readModel.sections.social[5].lines.join("\n"), /1\. Gojo — гайд доступен по кнопке/);
+  assert.match(readModel.sections.social[5].lines.join("\n"), /Основной tierlist-пик: Gojo • входит в список мейнов/);
+  assert.match(readModel.sections.social[5].lines.join("\n"), /Общие техи: доступны по кнопке\./);
   assert.equal(readModel.comboLinks[0].label, "Gojo");
   assert.equal(readModel.comboLinks[0].buttonLabel, "Гайд: Gojo");
   assert.equal(readModel.robloxProfileUrl, "https://www.roblox.com/users/123/profile");

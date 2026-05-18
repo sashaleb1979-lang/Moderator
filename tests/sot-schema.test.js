@@ -18,6 +18,10 @@ function createLegacyDbFixture() {
         channelId: "welcome-db",
         messageId: "welcome-message",
       },
+      botHelperPanel: {
+        channelId: "bot-helper-db",
+        messageId: "bot-helper-message",
+      },
       nonGgsPanel: {
         channelId: "welcome-db",
         messageId: "non-ggs-message",
@@ -204,6 +208,8 @@ test("ensureSotState migrates legacy config into the new v1 SoT shape", () => {
   assert.equal(db.sot.channels.welcome.value, "welcome-db");
   assert.equal(db.sot.channels.review.value, "review-db");
   assert.equal(db.sot.channels.tierlistText.value, "tier-text-db");
+  assert.equal(db.sot.panels.botHelper.channelId.value, "bot-helper-db");
+  assert.equal(db.sot.panels.botHelper.messageIds.main.value, "bot-helper-message");
   assert.equal(db.sot.roles.moderator.value, "mod-role");
   assert.equal(db.sot.roles.killTier[3].value, "tier-3-config");
   assert.equal(db.sot.roles.killTier[5], null);

@@ -18,6 +18,10 @@ function createContext(overrides = {}) {
           channelId: "welcome-channel",
           messageId: "welcome-message",
         },
+        botHelperPanel: {
+          channelId: "bot-helper-channel",
+          messageId: "bot-helper-message",
+        },
         tierlistBoard: {
           text: {
             channelId: "tier-text-channel",
@@ -90,9 +94,28 @@ test("resolvePanelRecord falls back to legacy panel snapshots when db.sot is abs
 test("resolveAllPanelRecords returns every tracked panel slot", () => {
   const result = resolveAllPanelRecords(createContext());
 
+  assert.equal(result.botHelper.messageIds.main.value, "bot-helper-message");
   assert.equal(result.tierlistGraphic.messageIds.main.value, "tier-graphic-message");
   assert.equal(result.eloSubmit.channelId.value, "elo-submit-channel");
   assert.equal(result.nonGgs.channelId, null);
+});
+
+test("writeNativePanelRecord stores manual bot helper override and resolvePanelRecord prefers it", () => {
+  const context = createContext();
+
+  const result = writeNativePanelRecord(context.db, {
+    slot: "bot-helper",
+    channelId: "bot-helper-manual-channel",
+    source: "manual",
+    lastUpdated: "2026-05-05T10:20:00.000Z",
+  });
+
+  assert.equal(result.mutated, true);
+  assert.equal(result.record.channelId.value, "bot-helper-manual-channel");
+
+  const resolved = resolvePanelRecord({ slot: "botHelper", ...context });
+  assert.equal(resolved.channelId.value, "bot-helper-manual-channel");
+  assert.equal(resolved.messageIds.main.value, "bot-helper-message");
 });
 
 test("writeNativePanelRecord stores manual welcome panel override and resolvePanelRecord prefers it", () => {
@@ -211,6 +234,14 @@ test("clearNativePanelRecord removes manual nonGgs panel override and falls back
 });
 
 test("normalizePanelSlot accepts nonJjs aliases and rejects unsupported slots", () => {
+  assert.deepEqual(normalizePanelSlot("bot-chat"), {
+    canonical: "botHelper",
+    label: "Bot helper panel",
+  });
+  assert.deepEqual(normalizePanelSlot("helper"), {
+    canonical: "botHelper",
+    label: "Bot helper panel",
+  });
   assert.deepEqual(normalizePanelSlot("non-ggs"), {
     canonical: "nonGgs",
     label: "non-JJS panel",

@@ -45,6 +45,14 @@ function formatDays(value, digits = 1) {
   return `${formatHours(value, digits)} д`;
 }
 
+function formatDateTime(value) {
+  const timestamp = Number.isFinite(Number(value))
+    ? Number(value)
+    : Date.parse(String(value || ""));
+  if (!Number.isFinite(timestamp)) return "—";
+  return new Date(timestamp).toLocaleString("ru-RU");
+}
+
 function clampScore(value, min = 0, max = 100) {
   const amount = Number(value);
   if (!Number.isFinite(amount)) return min;
@@ -1096,6 +1104,242 @@ function buildSocialSuggestionsBlock({ profile = null, robloxSummary = {}, isSel
   };
 }
 
+function buildFriendOverlapState({ robloxSummary = {}, populationProfiles = [] } = {}) {
+  const serverFriendRobloxIds = [...new Set(
+    (Array.isArray(robloxSummary?.serverFriendsUserIds) ? robloxSummary.serverFriendsUserIds : [])
+      .map((entry) => cleanString(entry, 80))
+      .filter(Boolean)
+  )];
+  const overlapSet = new Set(serverFriendRobloxIds);
+  const overlaps = [];
+  const seenDiscordUserIds = new Set();
+
+  for (const entry of normalizePopulationProfileEntries(populationProfiles)) {
+    const profile = entry?.profile && typeof entry.profile === "object" ? entry.profile : {};
+    const summary = profile?.summary && typeof profile.summary === "object" ? profile.summary : {};
+    const activitySummary = summary?.activity && typeof summary.activity === "object" ? summary.activity : {};
+    const summaryRoblox = summary?.roblox && typeof summary.roblox === "object" ? summary.roblox : {};
+    const domainRoblox = profile?.domains?.roblox && typeof profile.domains.roblox === "object" ? profile.domains.roblox : {};
+    const discordUserId = cleanString(entry?.userId, 80);
+    const robloxUserId = cleanString(summaryRoblox?.userId || domainRoblox?.userId, 80);
+    if (!discordUserId || !robloxUserId || !overlapSet.has(robloxUserId) || seenDiscordUserIds.has(discordUserId)) continue;
+    seenDiscordUserIds.add(discordUserId);
+
+    const jjsMinutes7d = normalizeFiniteNumber(summaryRoblox?.jjsMinutes7d);
+    const messages7d = normalizeFiniteNumber(activitySummary?.messages7d);
+    const sessions7d = normalizeFiniteNumber(activitySummary?.sessions7d);
+
+    overlaps.push({
+      userId: discordUserId,
+      displayName: cleanString(summary?.preferredDisplayName || profile?.displayName || profile?.username || discordUserId, 120),
+      robloxUsername: cleanString(summaryRoblox?.currentUsername || summaryRoblox?.username || domainRoblox?.username, 120),
+      hasVerifiedRoblox: summaryRoblox?.hasVerifiedAccount === true
+        || (cleanString(summaryRoblox?.verificationStatus || domainRoblox?.verificationStatus, 40) === "verified" && Boolean(robloxUserId)),
+      appliedActivityRoleKey: cleanString(activitySummary?.appliedActivityRoleKey || activitySummary?.desiredActivityRoleKey, 80),
+      messages7d,
+      sessions7d,
+      jjsMinutes7d,
+      isActive7d: (Number.isFinite(messages7d) && messages7d > 0)
+        || (Number.isFinite(sessions7d) && sessions7d > 0)
+        || (Number.isFinite(jjsMinutes7d) && jjsMinutes7d > 0),
+      playedJjs7d: Number.isFinite(jjsMinutes7d) && jjsMinutes7d > 0,
+    });
+  }
+
+  overlaps.sort((left, right) => {
+    if (right.playedJjs7d !== left.playedJjs7d) return right.playedJjs7d ? 1 : -1;
+    if (right.isActive7d !== left.isActive7d) return right.isActive7d ? 1 : -1;
+    const jjsDiff = (Number(right.jjsMinutes7d) || 0) - (Number(left.jjsMinutes7d) || 0);
+    if (jjsDiff) return jjsDiff;
+    const messageDiff = (Number(right.messages7d) || 0) - (Number(left.messages7d) || 0);
+    if (messageDiff) return messageDiff;
+    return cleanString(left.displayName, 120).localeCompare(cleanString(right.displayName, 120), "ru");
+  });
+
+  return {
+    totalServerFriends: Number.isFinite(normalizeFiniteNumber(robloxSummary?.serverFriendsCount))
+      ? normalizeFiniteNumber(robloxSummary.serverFriendsCount)
+      : serverFriendRobloxIds.length,
+    overlaps,
+    verifiedCount: overlaps.filter((entry) => entry.hasVerifiedRoblox === true).length,
+    active7dCount: overlaps.filter((entry) => entry.isActive7d === true).length,
+    jjs7dCount: overlaps.filter((entry) => entry.playedJjs7d === true).length,
+    computedAt: cleanString(robloxSummary?.serverFriendsComputedAt, 80) || null,
+  };
+}
+
+function buildFriendOverlapFreshnessLine(state = {}, now) {
+  const hoursSinceComputed = computeElapsedHours(state?.computedAt, now);
+  if (!Number.isFinite(hoursSinceComputed)) return null;
+  if (hoursSinceComputed <= 24) {
+    return `Список друзей обновлялся ~${formatHours(hoursSinceComputed)} ч назад.`;
+  }
+  return `Список друзей уже ~${formatHours(hoursSinceComputed)} ч не обновлялся, так что часть overlap могла устареть.`;
+}
+
+function buildFriendOverlapBlock({ robloxSummary = {}, populationProfiles = [], now } = {}) {
+  const state = buildFriendOverlapState({ robloxSummary, populationProfiles });
+  if (!Number.isFinite(state.totalServerFriends) || state.totalServerFriends <= 0) {
+    return null;
+  }
+
+  const lines = [
+    [
+      `Roblox-друзей на сервере: ${formatNumber(state.totalServerFriends)}`,
+      `видимых профилей: ${formatNumber(state.overlaps.length)}`,
+      `verified: ${formatNumber(state.verifiedCount)}`,
+      `активны 7д: ${formatNumber(state.active7dCount)}`,
+      `играли в JJS 7д: ${formatNumber(state.jjs7dCount)}`,
+    ].join(" • "),
+  ];
+
+  const freshnessLine = buildFriendOverlapFreshnessLine(state, now);
+  if (freshnessLine) lines.push(freshnessLine);
+
+  return {
+    title: "Roblox-друзья на сервере",
+    lines,
+  };
+}
+
+function buildFriendOverlapEntryLine(entry = {}, index = 0) {
+  const parts = [`${Number(index) + 1}. <@${cleanString(entry?.userId, 80) || "unknown"}>`];
+  const displayName = cleanString(entry?.displayName, 120);
+  const robloxUsername = cleanString(entry?.robloxUsername, 120);
+  if (displayName && displayName !== cleanString(entry?.userId, 80)) {
+    parts.push(displayName);
+  }
+  if (robloxUsername) {
+    parts.push(`Roblox ${robloxUsername}`);
+  }
+  if (entry?.hasVerifiedRoblox === true) {
+    parts.push("verified Roblox");
+  }
+  if (Number.isFinite(entry?.jjsMinutes7d) && entry.jjsMinutes7d > 0) {
+    parts.push(`JJS 7д ${formatNumber(entry.jjsMinutes7d)} мин`);
+  }
+  if (cleanString(entry?.appliedActivityRoleKey, 80)) {
+    parts.push(`activity ${cleanString(entry.appliedActivityRoleKey, 80)}`);
+  } else if (Number.isFinite(entry?.messages7d) && entry.messages7d > 0) {
+    parts.push(`${formatNumber(entry.messages7d)} msg 7д`);
+  }
+  return parts.join(" • ");
+}
+
+function buildFriendsAlreadyHereBlock({ robloxSummary = {}, populationProfiles = [] } = {}) {
+  const state = buildFriendOverlapState({ robloxSummary, populationProfiles });
+  if (!state.overlaps.length) return null;
+
+  return {
+    title: "Кто из друзей уже здесь",
+    lines: state.overlaps.slice(0, 3).map((entry, index) => buildFriendOverlapEntryLine(entry, index)),
+  };
+}
+
+function formatVoiceHoursFromSeconds(value, digits = 1) {
+  const seconds = normalizeFiniteNumber(value);
+  if (!Number.isFinite(seconds)) return "—";
+  return `${formatHours(seconds / 3600, digits)} ч`;
+}
+
+function formatChannelMention(channelId) {
+  const normalized = cleanString(channelId, 80);
+  return normalized ? `<#${normalized}>` : null;
+}
+
+function buildVoiceTopChannelsLine(topChannels = [], limit = 3) {
+  const items = (Array.isArray(topChannels) ? topChannels : [])
+    .slice(0, Math.max(1, Number(limit) || 3))
+    .map((entry) => {
+      const channelMention = formatChannelMention(entry?.channelId);
+      if (!channelMention) return null;
+      const sessionCount = normalizeFiniteNumber(entry?.sessionCount);
+      return `${channelMention}${Number.isFinite(sessionCount) ? ` (${formatNumber(sessionCount)})` : ""}`;
+    })
+    .filter(Boolean);
+
+  if (!items.length) return null;
+  return `Топ voice-каналы: ${items.join(", ")}`;
+}
+
+function buildVoiceFreshnessLine(voiceSummary = {}, now) {
+  const hoursSinceCaptured = computeElapsedHours(voiceSummary?.lastCapturedAt, now);
+  if (!Number.isFinite(hoursSinceCaptured)) return null;
+  if (hoursSinceCaptured <= 24) {
+    return `Voice-срез обновлялся ~${formatHours(hoursSinceCaptured)} ч назад.`;
+  }
+  return `Voice-срез уже ~${formatHours(hoursSinceCaptured)} ч не обновлялся, так что часть voice-активности могла не попасть.`;
+}
+
+function buildVoiceSummaryBlock({ voiceSummary = {}, now } = {}) {
+  const summary = voiceSummary && typeof voiceSummary === "object" ? voiceSummary : {};
+  const sessionCount7d = normalizeFiniteNumber(summary.sessionCount7d);
+  const sessionCount30d = normalizeFiniteNumber(summary.sessionCount30d);
+  const incompleteSessionCount30d = normalizeFiniteNumber(summary.incompleteSessionCount30d);
+  const voiceDurationSeconds7d = normalizeFiniteNumber(summary.voiceDurationSeconds7d);
+  const voiceDurationSeconds30d = normalizeFiniteNumber(summary.voiceDurationSeconds30d);
+  const lifetimeSessionCount = normalizeFiniteNumber(summary.lifetimeSessionCount);
+  const topChannels = Array.isArray(summary.topChannels) ? summary.topChannels : [];
+  const hasSignal = summary.isInVoiceNow === true
+    || Boolean(summary.lastVoiceSeenAt)
+    || topChannels.length > 0
+    || (Number.isFinite(sessionCount7d) && sessionCount7d > 0)
+    || (Number.isFinite(sessionCount30d) && sessionCount30d > 0)
+    || (Number.isFinite(voiceDurationSeconds7d) && voiceDurationSeconds7d > 0)
+    || (Number.isFinite(voiceDurationSeconds30d) && voiceDurationSeconds30d > 0)
+    || (Number.isFinite(lifetimeSessionCount) && lifetimeSessionCount > 0);
+  if (!hasSignal) return null;
+
+  const lines = [];
+  const totalsBits = [];
+  if (Number.isFinite(voiceDurationSeconds7d) || Number.isFinite(voiceDurationSeconds30d)) {
+    totalsBits.push(`Voice 7д/30д: ${formatVoiceHoursFromSeconds(voiceDurationSeconds7d)} / ${formatVoiceHoursFromSeconds(voiceDurationSeconds30d)}`);
+  }
+  if (Number.isFinite(sessionCount7d) || Number.isFinite(sessionCount30d)) {
+    totalsBits.push(`сессии 7д/30д: ${formatNumber(sessionCount7d)} / ${formatNumber(sessionCount30d)}`);
+  }
+  if (Number.isFinite(lifetimeSessionCount) && lifetimeSessionCount > 0) {
+    totalsBits.push(`lifetime сессии: ${formatNumber(lifetimeSessionCount)}`);
+  }
+  if (Number.isFinite(incompleteSessionCount30d) && incompleteSessionCount30d > 0) {
+    totalsBits.push(`неполных 30д: ${formatNumber(incompleteSessionCount30d)}`);
+  }
+  if (totalsBits.length) {
+    lines.push(totalsBits.join(" • "));
+  }
+
+  const statusBits = [];
+  if (summary.isInVoiceNow === true) {
+    statusBits.push(`Сейчас в voice: ${formatChannelMention(summary.currentChannelId) || "канал не определён"}`);
+    if (summary.currentSessionStartedAt) {
+      statusBits.push(`с ${formatDateTime(summary.currentSessionStartedAt)}`);
+    }
+  } else if (summary.lastVoiceSeenAt) {
+    statusBits.push(`Последний voice: ${formatDateTime(summary.lastVoiceSeenAt)}`);
+  }
+  if (summary.lastSessionEndedAt && summary.isInVoiceNow !== true) {
+    statusBits.push(`последняя завершённая сессия ${formatDateTime(summary.lastSessionEndedAt)}`);
+  }
+  if (statusBits.length) {
+    lines.push(statusBits.join(" • "));
+  }
+
+  const topChannelsLine = buildVoiceTopChannelsLine(topChannels, 3);
+  if (topChannelsLine) {
+    lines.push(topChannelsLine);
+  }
+
+  const freshnessLine = buildVoiceFreshnessLine(summary, now);
+  if (freshnessLine) {
+    lines.push(freshnessLine);
+  }
+
+  return {
+    title: "Voice-срез",
+    lines,
+  };
+}
+
 function buildViewerHeroBlock({
   isSelf = false,
   approvedKills = null,
@@ -1289,6 +1533,15 @@ function buildProfileSynergyState(options = {}) {
       selfProgress: buildSelfProgressBlock({
         ...options,
         progressState: progress,
+      }),
+      friendOverlap: buildFriendOverlapBlock({
+        ...options,
+      }),
+      friendsAlreadyHere: buildFriendsAlreadyHereBlock({
+        ...options,
+      }),
+      voiceSummary: buildVoiceSummaryBlock({
+        ...options,
       }),
       socialSuggestions: buildSocialSuggestionsBlock({
         ...options,

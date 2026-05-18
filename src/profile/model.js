@@ -437,6 +437,7 @@ function buildProfileReadModel(options = {}) {
   const robloxSummary = summary.roblox && typeof summary.roblox === "object" ? summary.roblox : {};
   const verificationSummary = summary.verification && typeof summary.verification === "object" ? summary.verification : {};
   const progressSummary = summary.progress && typeof summary.progress === "object" ? summary.progress : {};
+  const voiceSummary = summary.voice && typeof summary.voice === "object" ? summary.voice : {};
   const pendingSubmission = options.pendingSubmission && typeof options.pendingSubmission === "object" ? options.pendingSubmission : null;
   const latestSubmission = options.latestSubmission && typeof options.latestSubmission === "object" ? options.latestSubmission : null;
   const approvedEntries = Array.isArray(options.approvedEntries) ? options.approvedEntries : [];
@@ -542,6 +543,7 @@ function buildProfileReadModel(options = {}) {
   const synergy = buildProfileSynergyState({
     profile,
     robloxSummary,
+    voiceSummary,
     progressSummary,
     activitySummary,
     eloSummary,
@@ -806,6 +808,7 @@ function buildProfileReadModel(options = {}) {
       ],
       activity: [
         { title: "Активность", lines: activityLines },
+        ...(synergy?.blocks?.voiceSummary ? [synergy.blocks.voiceSummary] : []),
         {
           title: "Детали activity",
           lines: [
@@ -828,6 +831,8 @@ function buildProfileReadModel(options = {}) {
       ],
       social: [
         { title: "Roblox и соц", lines: robloxLines },
+        ...(synergy?.blocks?.friendOverlap ? [synergy.blocks.friendOverlap] : []),
+        ...(synergy?.blocks?.friendsAlreadyHere ? [synergy.blocks.friendsAlreadyHere] : []),
         { title: "С кем чаще всего играет", lines: socialPeerLines },
         ...(synergy?.blocks?.socialSuggestions ? [synergy.blocks.socialSuggestions] : []),
         { title: "Мейны и гайды", lines: mainAndGuideLines },
