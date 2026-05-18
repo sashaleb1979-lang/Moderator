@@ -395,11 +395,12 @@ Friend-overlap blocks используют уже существующие `serv
 
 ### Статус
 Raw capture уже существует. Base profile-facing mirror implemented for Phase 2.
+Base read-side block `Voice-срез` is now live via `src/profile/synergy.js` and consumes `profile.summary.voice` without нового runtime collection layer.
 
 ### Owner
 1. Raw owner: [src/news/voice.js](src/news/voice.js)
 2. Canonical mirror: [src/integrations/shared-profile.js](src/integrations/shared-profile.js)
-3. Future read-side blocks: `src/profile/synergy.js`
+3. Read-side owner: `src/profile/synergy.js`
 
 ### Текущие Mirror-Поля
 1. `profile.domains.voice.summary.lifetimeSessionCount`
@@ -422,6 +423,13 @@ Raw capture уже существует. Base profile-facing mirror implemented 
 2. voice overlap с другими игроками;
 3. совместные voice+JJS ties.
 
+### Текущая V1-Подача
+Profile activity section теперь может показывать отдельный block `Voice-срез`:
+1. aggregated line по `voiceDurationSeconds7d/30d`, `sessionCount7d/30d`, `lifetimeSessionCount` и `incompleteSessionCount30d`;
+2. статусная line `сейчас в voice` или `последний voice`;
+3. top channels line по `topChannels`;
+4. freshness line по `lastCapturedAt`, если она есть.
+
 ### Ненадёжно Когда
 1. бот был оффлайн во время voice activity;
 2. остались incomplete/recovered sessions;
@@ -430,6 +438,7 @@ Raw capture уже существует. Base profile-facing mirror implemented 
 
 ### UI Copy Правило
 Если voice summary stale или incomplete, блок обязан маркироваться как неполный.
+В shipped v1 неполнота сейчас маркируется через `неполных 30д: N` и stale-copy по `lastCapturedAt`; per-contact overlap claims пока запрещены.
 
 ---
 

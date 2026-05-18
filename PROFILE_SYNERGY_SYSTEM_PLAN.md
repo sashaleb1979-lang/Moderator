@@ -645,7 +645,7 @@
 5. Strong ties layer закрыт в v1: server-friend overlap, кто из друзей уже здесь, top co-play peers и hidden-circle suggestions уже live. Medium inferred ties всё ещё future work; текущий shipped слой не притворяется broader social graph truth.
 
 ### Phase 7. Voice, Prime Time И Personal Readiness
-1. Voice summary.
+1. Voice summary. Базовый read-side block `Voice-срез` реализован в `src/profile/synergy.js` и вставляется в activity section через `src/profile/model.js` поверх `profile.summary.voice`.
 2. Prime time.
 3. Personal War Readiness basic.
 
