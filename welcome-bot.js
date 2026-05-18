@@ -2766,7 +2766,7 @@ function getCharacterPickerValidationError(characterEntries) {
 function buildManualMainSelectionModal(mode = "full") {
   const modal = new ModalBuilder()
     .setCustomId(mode === "quick" ? "onboard_manual_mains_quick_modal" : "onboard_manual_mains_modal")
-    .setTitle(mode === "quick" ? "Быстро сменить мейнов" : "Указать мейнов");
+    .setTitle(mode === "quick" ? "Сменить мейнов" : "Указать мейнов");
 
   const mainsInput = new TextInputBuilder()
     .setCustomId("mains")
@@ -7075,26 +7075,38 @@ async function purgeUserProfile(client, userId, moderatorTag) {
 function buildWelcomeEmbed() {
   const presentation = getPresentation();
   const nonJjsUi = getNonJjsUiConfig();
-  const summaryLines = String(presentation.welcome.description || "")
+  const summaryText = String(presentation.welcome.description || "")
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean)
-    .map((line) => `> ${line}`);
+    .join("\n");
   const steps = Array.isArray(presentation.welcome.steps)
     ? presentation.welcome.steps.map((step) => String(step || "").trim()).filter(Boolean)
     : [];
-  const descriptionLines = [
-    ...(summaryLines.length ? [...summaryLines, ""] : []),
-    "**Быстрый вход**",
-    ...steps.map((step) => `• ${step}`),
-    "",
-    `**${nonJjsUi.title}**`,
-    nonJjsUi.description,
+  const stepFields = [
+    { name: "⚡ Мейны", value: steps[0] || "Нажми **Получить роль** и выбери **1-2 мейнов**." },
+    { name: "📎 Пруф", value: steps[1] || "Отправь **kills** числом и один скрин с Roblox username." },
+    { name: "✅ Доступ", value: steps[2] || "**Доступ выдаётся сразу после отправки.** **kill-tier** проверит модератор." },
   ];
-  return new EmbedBuilder()
-    .setColor(0x5865F2)
+  const embed = new EmbedBuilder()
+    .setColor(0xF0B429)
     .setTitle(presentation.welcome.title)
-    .setDescription(descriptionLines.join("\n"));
+    .setDescription(summaryText || "**Выбор → пруф → доступ.** Один скрин, одно сообщение, роль сразу после отправки.")
+    .addFields(
+      ...stepFields.map((field) => ({
+        name: field.name,
+        value: previewText(field.value, 320),
+        inline: true,
+      })),
+      {
+        name: `🧩 ${nonJjsUi.title}`,
+        value: previewText(nonJjsUi.description, 420),
+        inline: false,
+      }
+    )
+    .setFooter({ text: "1-2 мейна • 1 сообщение • доступ после отправки" });
+
+  return embed;
 }
 
 function buildWelcomeComponents() {

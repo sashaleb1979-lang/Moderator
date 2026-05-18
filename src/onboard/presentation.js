@@ -21,11 +21,11 @@ const LEGACY_WELCOME_STEPS = [
   "Следующим сообщением отправь **скрин** в этот канал.",
   "Бот удалит скрин после обработки, сразу даст access-role, а kill-tier прилетит после проверки модератором.",
 ];
-const COMBINED_SUBMISSION_WELCOME_DESCRIPTION = "";
+const COMBINED_SUBMISSION_WELCOME_DESCRIPTION = "**Выбор → пруф → доступ.** Один скрин, одно сообщение, роль сразу после отправки.";
 const COMBINED_SUBMISSION_WELCOME_STEPS = [
-  "Нажми **Получить роль** и выбери **1-2 мейнов**.",
-  "Отправь **одно сообщение**: **kills** числом + скрин, где видны kills и **Roblox username**.",
-  "**Доступ выдаётся сразу после отправки**; **kill-tier** проверит модератор.",
+  "Кнопка **Получить роль** → **1-2 мейна**.",
+  "**kills** числом + **один скрин** с kills и **Roblox username**.",
+  "**Доступ выдаётся сразу после отправки.** **kill-tier** после проверки.",
 ];
 
 const HARD_DEFAULT_PRESENTATION = {
@@ -44,7 +44,7 @@ const HARD_DEFAULT_PRESENTATION = {
     },
     buttons: {
       begin: "Получить роль",
-      quickMains: "Быстро сменить мейнов",
+      quickMains: "Сменить мейнов",
     },
     characterEmojis: {},
   },
@@ -106,7 +106,9 @@ function isOutdatedWelcomeStepText(text) {
   return normalized.includes("дождись мод")
     || normalized.includes("доступ откроется по режиму")
     || normalized.includes("после отправки бот откроет доступ")
-    || normalized.includes("kill-tier прилетит");
+    || normalized.includes("kill-tier прилетит")
+    || normalized.includes("нажми **получить роль** и выбери **1-2 мейнов**")
+    || normalized.includes("**доступ выдаётся сразу после отправки**; **kill-tier** проверит модератор");
 }
 
 function firstNonEmpty(...values) {

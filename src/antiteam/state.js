@@ -229,6 +229,7 @@ function normalizeAntiteamDraft(value = {}, config = createDefaultAntiteamConfig
   const anchorUserId = kind === "clan" ? cleanString(source.anchorUserId, 80) : "";
   const anchorUserTag = kind === "clan" ? cleanString(source.anchorUserTag, 120) : "";
   const now = new Date().toISOString();
+  const photos = normalizePhotos(source.photos, source.photo);
   return {
     kind,
     userId: cleanString(source.userId, 80),
@@ -241,7 +242,8 @@ function normalizeAntiteamDraft(value = {}, config = createDefaultAntiteamConfig
     description: cleanString(source.description, 900),
     directJoinEnabled: normalizeBoolean(source.directJoinEnabled, false),
     photoWanted: normalizeBoolean(source.photoWanted, false),
-    photo: normalizePhoto(source.photo),
+    photo: photos[0] || null,
+    photos,
     selectedClanPingKeys: normalizeSelectedClanPingKeys(source.selectedClanPingKeys, config),
     createdAt: normalizeIsoTimestamp(source.createdAt, now),
     updatedAt: normalizeIsoTimestamp(source.updatedAt, now),
@@ -260,6 +262,24 @@ function normalizePhoto(value = {}) {
     size: normalizeNonNegativeInteger(source.size, 0),
     capturedAt: normalizeIsoTimestamp(source.capturedAt, null),
   };
+}
+
+function normalizePhotos(value = [], fallback = null) {
+  const input = Array.isArray(value) ? value : [];
+  const photos = [];
+  const seen = new Set();
+  for (const entry of input) {
+    const photo = normalizePhoto(entry);
+    if (!photo || seen.has(photo.url)) continue;
+    seen.add(photo.url);
+    photos.push(photo);
+    if (photos.length >= 10) break;
+  }
+  if (!photos.length) {
+    const photo = normalizePhoto(fallback);
+    if (photo) photos.push(photo);
+  }
+  return photos;
 }
 
 function normalizeHelperRecord(value = {}, userId = "") {
@@ -289,6 +309,7 @@ function normalizeMessageRefs(value = {}) {
     threadPanelMessageId: cleanString(source.threadPanelMessageId, 80),
     pingMessageId: cleanString(source.pingMessageId, 80),
     photoAttachmentName: cleanString(source.photoAttachmentName, 180),
+    photoAttachmentNames: normalizeUniqueStringArray(source.photoAttachmentNames, 10, 180),
   };
 }
 
@@ -297,6 +318,7 @@ function normalizeAntiteamTicket(value = {}, config = createDefaultAntiteamConfi
   const kind = normalizeTicketKind(source.kind, "standard");
   const anchorUserId = kind === "clan" ? cleanString(source.anchorUserId, 80) : "";
   const anchorUserTag = kind === "clan" ? cleanString(source.anchorUserTag, 120) : "";
+  const photos = normalizePhotos(source.photos, source.photo);
   const helpers = {};
   for (const [helperUserId, helper] of Object.entries(source.helpers || {})) {
     const normalized = normalizeHelperRecord(helper, helperUserId);
@@ -317,7 +339,8 @@ function normalizeAntiteamTicket(value = {}, config = createDefaultAntiteamConfi
     description: cleanString(source.description, 1200),
     directJoinEnabled: normalizeBoolean(source.directJoinEnabled, false),
     photoWanted: normalizeBoolean(source.photoWanted, false),
-    photo: normalizePhoto(source.photo),
+    photo: photos[0] || null,
+    photos,
     friendEligibleDiscordUserIds: normalizeUniqueStringArray(source.friendEligibleDiscordUserIds, 500, 80),
     selectedClanPingKeys: normalizeSelectedClanPingKeys(source.selectedClanPingKeys, config),
     helpers,
@@ -541,6 +564,7 @@ function createAntiteamTicketFromDraft(db = {}, draft = {}, options = {}) {
     directJoinEnabled: normalizedDraft.directJoinEnabled,
     photoWanted: normalizedDraft.photoWanted,
     photo: normalizedDraft.photo,
+    photos: normalizedDraft.photos,
     selectedClanPingKeys: normalizedDraft.selectedClanPingKeys,
     friendEligibleDiscordUserIds: options.friendEligibleDiscordUserIds,
     createdAt: now,
