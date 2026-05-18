@@ -7075,6 +7075,7 @@ async function purgeUserProfile(client, userId, moderatorTag) {
 function buildWelcomeEmbed() {
   const presentation = getPresentation();
   const nonJjsUi = getNonJjsUiConfig();
+  const nonJjsButtonLabel = compactNonJjsButtonLabel(nonJjsUi.buttonLabel);
   const summaryLines = String(presentation.welcome.description || "")
     .split(/\r?\n/)
     .map((line) => line.trim())
@@ -7085,16 +7086,27 @@ function buildWelcomeEmbed() {
   const welcomeSteps = (steps.length ? steps : [
     "Нажми **Получить роль** и выбери **1-2 мейна**.",
     "Отправь **одно сообщение**: **kills** числом + скрин с kills и **Roblox username**.",
-    "**Доступ выдаётся сразу после отправки.** **kill-tier** проверит модератор.",
+    "**Доступ выдаётся сразу после отправки.** **kill-tier**: после проверки модератором.",
   ]).slice(0, 3);
+  const stepBlocks = [
+    ["`01`", "Мейны", welcomeSteps[0]],
+    ["`02`", "Пруф", welcomeSteps[1]],
+    ["`03`", "Доступ", welcomeSteps[2]],
+  ].flatMap(([marker, title, text]) => [
+    `${marker} **${title}**`,
+    previewText(text, 320),
+    "",
+  ]);
   const description = [
-    ...(summaryLines.length ? summaryLines : ["**Выбор → пруф → доступ.** 1-2 мейна, один пруф, роль сразу после отправки."]),
+    ...(summaryLines.length ? summaryLines : [
+      "**Быстрый вход**",
+      "1 экран, 1 сообщение, доступ сразу после отправки.",
+    ]),
     "",
     "**Как пройти**",
-    ...welcomeSteps.map((step) => `• ${step}`),
-    "",
+    ...stepBlocks,
     `**${nonJjsUi.title}**`,
-    previewText(nonJjsUi.description, 420),
+    `Нажми **${nonJjsButtonLabel}**: бот даст короткую капчу и отдельную роль доступа.`,
   ].filter((line) => line !== null && line !== undefined).join("\n");
 
   return new EmbedBuilder()
