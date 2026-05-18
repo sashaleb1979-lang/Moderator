@@ -436,7 +436,10 @@ const {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  ContainerBuilder,
   StringSelectMenuBuilder,
+  SeparatorBuilder,
+  TextDisplayBuilder,
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
@@ -7072,47 +7075,57 @@ async function purgeUserProfile(client, userId, moderatorTag) {
   };
 }
 
-function buildWelcomeEmbed() {
+function buildWelcomePanelPayload() {
   const presentation = getPresentation();
   const nonJjsUi = getNonJjsUiConfig();
-  const nonJjsButtonLabel = compactNonJjsButtonLabel(nonJjsUi.buttonLabel);
-  const summaryLines = String(presentation.welcome.description || "")
+  const summaryText = String(presentation.welcome.description || "")
     .split(/\r?\n/)
     .map((line) => line.trim())
-    .filter(Boolean);
+    .filter(Boolean)
+    .join("\n");
   const steps = Array.isArray(presentation.welcome.steps)
     ? presentation.welcome.steps.map((step) => String(step || "").trim()).filter(Boolean)
     : [];
   const welcomeSteps = (steps.length ? steps : [
     "Нажми **Получить роль** и выбери **1-2 мейна**.",
     "Отправь **одно сообщение**: **kills** числом + скрин с kills и **Roblox username**.",
-    "**Доступ выдаётся сразу после отправки.** **kill-tier**: после проверки модератором.",
+    "**Доступ выдаётся сразу после отправки.** **kill-tier** проверит модератор.",
   ]).slice(0, 3);
-  const stepBlocks = [
-    ["`01`", "Мейны", welcomeSteps[0]],
-    ["`02`", "Пруф", welcomeSteps[1]],
-    ["`03`", "Доступ", welcomeSteps[2]],
-  ].flatMap(([marker, title, text]) => [
-    `${marker} **${title}**`,
-    previewText(text, 320),
-    "",
-  ]);
-  const description = [
-    ...(summaryLines.length ? summaryLines : [
-      "**Быстрый вход**",
-      "1 экран, 1 сообщение, доступ сразу после отправки.",
-    ]),
-    "",
-    "**Как пройти**",
-    ...stepBlocks,
-    `**${nonJjsUi.title}**`,
-    `Нажми **${nonJjsButtonLabel}**: бот даст короткую капчу и отдельную роль доступа.`,
-  ].filter((line) => line !== null && line !== undefined).join("\n");
 
-  return new EmbedBuilder()
-    .setColor(0x5865F2)
-    .setTitle(presentation.welcome.title)
-    .setDescription(description);
+  const quickStrip = [
+    "⚡ `1-2 мейна`",
+    "📎 `один пруф`",
+    "✅ `роль сразу`",
+  ].join("   ");
+  const stepsBlock = [
+    "**Как пройти**",
+    `**⚡ Мейны**\n${previewText(welcomeSteps[0], 320)}`,
+    `**📎 Пруф**\n${previewText(welcomeSteps[1], 360)}`,
+    `**✅ Доступ**\n${previewText(welcomeSteps[2], 320)}`,
+  ].join("\n\n");
+  const nonJjsBlock = [
+    `**🧩 ${nonJjsUi.title}**`,
+    previewText(nonJjsUi.description, 420),
+  ].join("\n");
+  const container = new ContainerBuilder()
+    .setAccentColor(0x5865F2)
+    .addTextDisplayComponents(
+      new TextDisplayBuilder().setContent(`# ${presentation.welcome.title}`),
+      new TextDisplayBuilder().setContent(`> ${summaryText || "**Выбор → пруф → доступ.** 1-2 мейна, один пруф, роль сразу после отправки."}`),
+      new TextDisplayBuilder().setContent(quickStrip)
+    )
+    .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(stepsBlock))
+    .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(nonJjsBlock))
+    .addSeparatorComponents(new SeparatorBuilder().setDivider(false))
+    .addActionRowComponents(...buildWelcomeComponents());
+
+  return {
+    flags: MessageFlags.IsComponentsV2,
+    embeds: [],
+    components: [container],
+  };
 }
 
 function compactWelcomeButtonLabel(value, fallback) {
@@ -7503,10 +7516,15 @@ function buildReviewEmbed(submission, statusLabel, extraFields = []) {
 }
 
 function getMessageComponentCustomIds(message) {
-  return (message?.components || [])
-    .flatMap((row) => row.components || [])
-    .map((component) => String(component.customId || "").trim())
-    .filter(Boolean);
+  const out = [];
+  const visit = (component) => {
+    if (!component) return;
+    const customId = String(component.customId || "").trim();
+    if (customId) out.push(customId);
+    for (const child of component.components || []) visit(child);
+  };
+  for (const component of message?.components || []) visit(component);
+  return out;
 }
 
 function messageHasRequiredCustomIds(message, requiredIds) {
@@ -7710,10 +7728,7 @@ async function refreshWelcomePanel(client) {
   nonGgsPanelState.channelId = welcomeChannel.id;
   nonGgsPanelState.messageId = "";
 
-  const welcomePayload = {
-    embeds: [buildWelcomeEmbed()],
-    components: buildWelcomeComponents(),
-  };
+  const welcomePayload = buildWelcomePanelPayload();
 
   const botId = client.user?.id;
   const welcomeMessage = await upsertManagedPanelMessage(welcomeChannel, panelState, welcomePayload, findExistingWelcomePanelMessage, botId);

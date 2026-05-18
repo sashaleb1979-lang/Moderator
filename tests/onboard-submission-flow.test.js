@@ -39,7 +39,7 @@ test("legacy welcome copy is normalized to the mains-first submission flow", () 
     defaultGraphicTierColors: DEFAULT_GRAPHIC_TIER_COLORS,
   });
 
-  assert.match(resolved.welcome.description, /Быстрый вход/i);
+  assert.match(resolved.welcome.description, /Выбор → пруф → доступ/i);
   assert.equal(resolved.welcome.steps.length, 3);
   assert.ok(resolved.welcome.steps.some((step) => /\*\*kills\*\* числом/i.test(step)));
   assert.ok(resolved.welcome.steps.some((step) => /roblox username/i.test(step)));
@@ -74,7 +74,7 @@ test("ensurePresentationConfig rewrites persisted legacy welcome text", () => {
   });
 
   assert.equal(result.mutated, true);
-  assert.match(dbConfig.presentation.welcome.description, /Быстрый вход/i);
+  assert.match(dbConfig.presentation.welcome.description, /Выбор → пруф → доступ/i);
   assert.equal(dbConfig.presentation.welcome.steps.length, 3);
   assert.ok(dbConfig.presentation.welcome.steps.some((step) => /\*\*kills\*\* числом/i.test(step)));
   assert.ok(dbConfig.presentation.welcome.steps.some((step) => /roblox username/i.test(step)));
@@ -103,7 +103,7 @@ test("ensurePresentationConfig removes outdated compact welcome summary", () => 
   });
 
   assert.equal(result.mutated, true);
-  assert.match(dbConfig.presentation.welcome.description, /Быстрый вход/i);
+  assert.match(dbConfig.presentation.welcome.description, /Выбор → пруф → доступ/i);
   assert.ok(dbConfig.presentation.welcome.steps.some((step) => /доступ выдаётся сразу после отправки/i.test(step)));
   assert.ok(dbConfig.presentation.welcome.steps.every((step) => !/бот откроет доступ/i.test(step)));
 });
@@ -132,7 +132,7 @@ test("ensurePresentationConfig compacts persisted long welcome flow", () => {
   });
 
   assert.equal(result.mutated, true);
-  assert.match(dbConfig.presentation.welcome.description, /Быстрый вход/i);
+  assert.match(dbConfig.presentation.welcome.description, /Выбор → пруф → доступ/i);
   assert.equal(dbConfig.presentation.welcome.steps.length, 3);
   assert.ok(dbConfig.presentation.welcome.steps.every((step) => !/не обязательно/i.test(step)));
 });
