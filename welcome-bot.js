@@ -271,7 +271,10 @@ const {
   createSerializedMutationRunner,
   createSerializedTaskRunner,
 } = require("./src/runtime/serialized-task-runner");
-const { safeDeferEphemeralReply } = require("./src/runtime/interaction-ack");
+const {
+  safeDeferComponentUpdate,
+  safeDeferEphemeralReply,
+} = require("./src/runtime/interaction-ack");
 const {
   buildRobloxPeriodicJobs,
   buildClientReadyPeriodicJobs,
@@ -2962,8 +2965,17 @@ async function deferComponentInteractionWithAsyncPayload(interaction, options = 
 
   const errorText = String(options.errorText || "Не удалось обновить сообщение.").trim() || "Не удалось обновить сообщение.";
   const logLabel = String(options.logLabel || "Async interaction update failed").trim() || "Async interaction update failed";
+  const logWarning = typeof options.logWarning === "function"
+    ? options.logWarning
+    : (message) => console.warn(message);
 
-  await interaction.deferUpdate();
+  const acked = await safeDeferComponentUpdate(interaction, {
+    label: logLabel,
+    logWarning,
+  });
+  if (!acked) {
+    return false;
+  }
 
   try {
     const payload = await buildPayload();
@@ -2972,6 +2984,8 @@ async function deferComponentInteractionWithAsyncPayload(interaction, options = 
     console.error(`${logLabel}:`, error);
     await interaction.editReply(buildPlainInteractionPayload(`${errorText}: ${formatInteractionErrorText(error)}`)).catch(() => {});
   }
+
+  return true;
 }
 
 async function fallbackToManualMainSelection(interaction, mode = "full", error = null) {

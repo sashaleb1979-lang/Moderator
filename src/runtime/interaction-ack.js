@@ -41,7 +41,29 @@ async function safeDeferEphemeralReply(interaction, options = {}) {
   }
 }
 
+async function safeDeferComponentUpdate(interaction, options = {}) {
+  if (!interaction) return false;
+  if (interaction.deferred || interaction.replied) return true;
+
+  const logWarning = typeof options.logWarning === "function"
+    ? options.logWarning
+    : () => {};
+  const ackLabel = getAckLabel(interaction, options.label);
+
+  try {
+    await interaction.deferUpdate();
+    return true;
+  } catch (error) {
+    if (isUnknownInteractionError(error)) {
+      logWarning(`${ackLabel}: interaction ack expired before deferUpdate.`);
+      return false;
+    }
+    throw error;
+  }
+}
+
 module.exports = {
   isUnknownInteractionError,
+  safeDeferComponentUpdate,
   safeDeferEphemeralReply,
 };
