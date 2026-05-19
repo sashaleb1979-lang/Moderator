@@ -295,6 +295,27 @@ test("start panel accepts legacy verified Roblox records with verifiedAt fallbac
   assert.match(JSON.stringify(interaction.calls[0][1].components[0].toJSON()), /Подтверди Roblox/);
 });
 
+test("start panel ignores legacy verified Roblox records with invalid Roblox user id", async () => {
+  const db = {};
+  ensureAntiteamState(db);
+  const operator = createAntiteamOperator({
+    db,
+    saveDb() {},
+    getProfile: () => ({
+      robloxUserId: "broken-id",
+      robloxUsername: "LegacyLinked",
+      robloxDisplayName: "Legacy Linked",
+      robloxVerifiedAt: "2026-05-16T10:00:00.000Z",
+    }),
+  });
+  const interaction = createButtonInteraction(ANTITEAM_CUSTOM_IDS.open, { id: "user-1", username: "User" });
+
+  assert.equal(await operator.handleButtonInteraction(interaction), true);
+
+  assert.equal(interaction.calls[0][0], "reply");
+  assert.match(JSON.stringify(interaction.calls[0][1].components[0].toJSON()), /Roblox ник/);
+});
+
 test("start panel rejects failed Roblox records even with stale verified markers", async () => {
   const db = {};
   ensureAntiteamState(db);

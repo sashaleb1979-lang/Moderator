@@ -100,4 +100,15 @@ test("buildProfileRobloxIdentitySession keeps user id only for verified profile 
     robloxUserId: "",
     robloxDisplayName: "Kolhoz",
   });
+
+  assert.deepEqual(buildProfileRobloxIdentitySession({
+    currentUsername: "KolhozU",
+    currentDisplayName: "Kolhoz",
+    userId: "not-a-number",
+    verificationStatus: "verified",
+  }), {
+    robloxUsername: "KolhozU",
+    robloxUserId: "",
+    robloxDisplayName: "Kolhoz",
+  });
 });

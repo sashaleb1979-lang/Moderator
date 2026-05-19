@@ -15,6 +15,7 @@ const {
   normalizeIntegrationState,
   normalizeProgressDomainState,
   normalizeRobloxDomainState,
+  resolveUsableVerifiedRobloxIdentity,
   normalizeSeasonArchiveDomainState,
   syncSharedProfiles,
 } = require("../src/integrations/shared-profile");
@@ -1196,4 +1197,26 @@ test("normalizeSeasonArchiveDomainState dedupes by day and keeps the latest vali
   assert.equal(normalized.snapshots[1].dayKey, "2026-05-19");
   assert.equal(normalized.snapshots[1].approvedKills, 4320);
   assert.deepEqual(normalized.snapshots[1].socialSuggestionPeerUserIds, ["peer-4", "peer-5"]);
+});
+
+test("resolveUsableVerifiedRobloxIdentity rejects invalid Roblox user ids even for verified legacy records", () => {
+  assert.equal(resolveUsableVerifiedRobloxIdentity({
+    userId: "broken-id",
+    username: "KolhozU",
+    verificationStatus: "verified",
+  }), null);
+
+  assert.deepEqual(resolveUsableVerifiedRobloxIdentity({
+    userId: "9843941555",
+    username: "KolhozU",
+    verificationStatus: "verified",
+  }), {
+    userId: "9843941555",
+    username: "KolhozU",
+    displayName: "",
+    avatarUrl: "",
+    profileUrl: "https://www.roblox.com/users/9843941555/profile",
+    verificationStatus: "verified",
+    verifiedAt: null,
+  });
 });

@@ -865,7 +865,7 @@ function createAntiteamOperator(options = {}) {
         return true;
       }
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-      return openTicketDraftWithRoblox(interaction, storedRoblox, "standard", {
+      return await openTicketDraftWithRoblox(interaction, storedRoblox, "standard", {
         response: "editReply",
         statusText: `Roblox взят из твоего профиля: ${storedRoblox.username}.`,
       });
@@ -1011,7 +1011,7 @@ function createAntiteamOperator(options = {}) {
         return true;
       }
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-      return openTicketDraftWithRoblox(interaction, storedRoblox, "clan", {
+      return await openTicketDraftWithRoblox(interaction, storedRoblox, "clan", {
         response: "editReply",
         anchorUser,
         statusText: `Якорь: <@${anchorUser.id}> • Roblox: ${storedRoblox.username}. Он должен оставаться на сервере.`,
@@ -1026,7 +1026,7 @@ function createAntiteamOperator(options = {}) {
     const id = interaction.customId;
 
     if (id === ANTITEAM_CUSTOM_IDS.open) {
-      return handleStartPanelOpenInteraction(interaction);
+      return await handleStartPanelOpenInteraction(interaction);
     }
 
     if (id === ANTITEAM_CUSTOM_IDS.guide) {
@@ -1047,7 +1047,7 @@ function createAntiteamOperator(options = {}) {
       }
       await interaction.deferUpdate();
       await persist("antiteam-roblox-confirm", () => markRobloxConfirmed(db, interaction.user.id, storedRoblox.userId, { now: nowIso() }));
-      return openTicketDraftWithRoblox(interaction, storedRoblox, "standard", {
+      return await openTicketDraftWithRoblox(interaction, storedRoblox, "standard", {
         response: "editReply",
         statusText: `Roblox подтверждён: ${storedRoblox.username}.`,
       });
@@ -1261,7 +1261,7 @@ function createAntiteamOperator(options = {}) {
     const extra = parts.slice(3).join(":");
     const ticket = getState().tickets[ticketId];
 
-    if (action === "help") return handleHelp(interaction, ticketId);
+    if (action === "help") return await handleHelp(interaction, ticketId);
 
     if (action === "toggle_direct") {
       if (!ticket || ticket.status !== "open") {
@@ -1443,7 +1443,7 @@ function createAntiteamOperator(options = {}) {
       await interaction.editReply("Такой Roblox ник не найден через Roblox API.");
       return true;
     }
-    return openTicketDraftWithRoblox(interaction, robloxUser, kind, {
+    return await openTicketDraftWithRoblox(interaction, robloxUser, kind, {
       response: "editReply",
       statusText: kind === "clan"
         ? `Якорь подтверждён: ${cleanString(robloxUser.username || robloxUser.name, 120)}. Это не привязка к твоему профилю.`

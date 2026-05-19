@@ -1027,7 +1027,7 @@ function normalizeRobloxDomainState(value = {}) {
 
 function resolveUsableVerifiedRobloxIdentity(value = {}) {
   const source = value && typeof value === "object" ? value : {};
-  const userId = cleanString(source.userId ?? source.robloxUserId ?? source.id, 40);
+  const userId = normalizeRobloxPlatformUserId(source.userId ?? source.robloxUserId ?? source.id);
   const username = cleanString(
     source.username ?? source.currentUsername ?? source.robloxUsername ?? source.name,
     120

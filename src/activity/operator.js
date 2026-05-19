@@ -2756,7 +2756,7 @@ async function handleActivityPanelButtonInteraction({
   }
 
   if (customId === "panel_open_activity") {
-    return runActivityPanelInteractionAction({
+    return await runActivityPanelInteractionAction({
       interaction,
       replyError,
       customId,
@@ -2769,7 +2769,7 @@ async function handleActivityPanelButtonInteraction({
 
   const requestedView = parseActivityPanelButtonView(customId);
   if (customId.startsWith("activity_panel_view_") && requestedView) {
-    return runActivityPanelInteractionAction({
+    return await runActivityPanelInteractionAction({
       interaction,
       replyError,
       customId,
@@ -2785,7 +2785,7 @@ async function handleActivityPanelButtonInteraction({
   }
 
   if (customId.startsWith("activity_panel_refresh_") && requestedView) {
-    return runActivityPanelInteractionAction({
+    return await runActivityPanelInteractionAction({
       interaction,
       replyError,
       customId,
@@ -2801,7 +2801,7 @@ async function handleActivityPanelButtonInteraction({
   }
 
   if (customId === "activity_panel_back") {
-    return runActivityPanelInteractionAction({
+    return await runActivityPanelInteractionAction({
       interaction,
       replyError,
       customId,
@@ -2813,7 +2813,7 @@ async function handleActivityPanelButtonInteraction({
   }
 
   if (customId === "activity_panel_config_access") {
-    return runActivityPanelInteractionAction({
+    return await runActivityPanelInteractionAction({
       interaction,
       replyError,
       customId,
@@ -2825,7 +2825,7 @@ async function handleActivityPanelButtonInteraction({
   }
 
   if (customId === "activity_panel_config_roles_primary") {
-    return runActivityPanelInteractionAction({
+    return await runActivityPanelInteractionAction({
       interaction,
       replyError,
       customId,
@@ -2842,7 +2842,7 @@ async function handleActivityPanelButtonInteraction({
   }
 
   if (customId === "activity_panel_config_roles_secondary") {
-    return runActivityPanelInteractionAction({
+    return await runActivityPanelInteractionAction({
       interaction,
       replyError,
       customId,
@@ -2859,7 +2859,7 @@ async function handleActivityPanelButtonInteraction({
   }
 
   if (customId === "activity_panel_config_watch_save") {
-    return runActivityPanelInteractionAction({
+    return await runActivityPanelInteractionAction({
       interaction,
       replyError,
       customId,
@@ -2871,7 +2871,7 @@ async function handleActivityPanelButtonInteraction({
   }
 
   if (customId === "activity_panel_config_watch_remove") {
-    return runActivityPanelInteractionAction({
+    return await runActivityPanelInteractionAction({
       interaction,
       replyError,
       customId,
@@ -2883,7 +2883,7 @@ async function handleActivityPanelButtonInteraction({
   }
 
   if (customId === "activity_panel_inspect_user") {
-    return runActivityPanelInteractionAction({
+    return await runActivityPanelInteractionAction({
       interaction,
       replyError,
       customId,
@@ -2894,8 +2894,8 @@ async function handleActivityPanelButtonInteraction({
     });
   }
 
-  await interaction.deferUpdate();
   if (customId === "activity_panel_historical_import") {
+    await interaction.deferUpdate();
     let result;
     try {
       result = await runHistoricalImport({
@@ -2933,6 +2933,7 @@ async function handleActivityPanelButtonInteraction({
   }
 
   if (customId === "activity_panel_rebuild_metrics") {
+    await interaction.deferUpdate();
     let result;
     try {
       result = await runRebuildMetrics({
@@ -2962,6 +2963,7 @@ async function handleActivityPanelButtonInteraction({
   }
 
   if (customId === "activity_panel_sync_roles") {
+    await interaction.deferUpdate();
     let result;
     try {
       result = await runSyncRoles({
@@ -3039,7 +3041,7 @@ async function handleActivityPanelModalSubmitInteraction({
     await replySuccess(interaction, payload);
   };
 
-  if (typeof interaction?.deferReply === "function" && !interaction.deferred && !interaction.replied) {
+  if (customId !== "activity_panel_inspect_user_modal" && typeof interaction?.deferReply === "function") {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     usedDeferredReply = true;
   }
