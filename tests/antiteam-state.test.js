@@ -3,6 +3,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const {
+  ANTITEAM_HELPER_REWARD_THRESHOLDS,
   closeAntiteamTicket,
   createAntiteamTicketFromDraft,
   clearHelperStats,
@@ -23,6 +24,11 @@ test("antiteam state normalizes config, drafts, tickets and helper stats", () =>
         config: {
           battalionRoleId: "battalion-role",
           battalionLeadRoleId: "lead-role",
+          helperRewardRoles: {
+            "1": "role-one",
+            "5": "<@&role-five>",
+            role10: "role-ten",
+          },
           missionAutoArchiveMinutes: 90,
           panel: {
             title: "Custom",
@@ -42,6 +48,11 @@ test("antiteam state normalizes config, drafts, tickets and helper stats", () =>
   assert.equal(state.config.clanPingRoles.find((role) => role.key === "battalion_lead").roleId, "lead-role");
   assert.equal(state.config.panel.title, "Custom");
   assert.equal(state.config.panel.accentColor, 0x112233);
+  assert.deepEqual(ANTITEAM_HELPER_REWARD_THRESHOLDS, [1, 5, 10, 20, 50]);
+  assert.equal(state.config.helperRewardRoles["1"], "role-one");
+  assert.equal(state.config.helperRewardRoles["5"], "<@&role-five>");
+  assert.equal(state.config.helperRewardRoles["10"], "role-ten");
+  assert.equal(state.config.helperRewardRoles["20"], "");
   assert.deepEqual(state.tickets, {});
   assert.deepEqual(state.stats.helpers, {});
 });

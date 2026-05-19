@@ -18,6 +18,7 @@ const {
 } = require("discord.js");
 const {
   ANTITEAM_COUNTS,
+  ANTITEAM_HELPER_REWARD_THRESHOLDS,
   ANTITEAM_LEVELS,
   cleanString,
   createDefaultAntiteamConfig,
@@ -41,6 +42,8 @@ const ANTITEAM_CUSTOM_IDS = Object.freeze({
   stats: "at:stats",
   statsClear: "at:stats:clear",
   statsClearConfirm: "at:stats:clear_confirm",
+  statsRoles: "at:stats:roles",
+  statsSyncRoles: "at:stats:sync_roles",
   levelSelect: "at:level",
   countSelect: "at:count",
   clanRolesSelect: "at:clan_roles",
@@ -182,6 +185,7 @@ function buildQuotedDescription(value = "", fallback = "описание не д
 function buildPayload(container, { ephemeral = false, extraComponents = [] } = {}) {
   return {
     flags: flags(ephemeral),
+    allowedMentions: { parse: [] },
     components: [container, ...(Array.isArray(extraComponents) ? extraComponents.filter(Boolean) : [])],
   };
 }
@@ -194,7 +198,7 @@ function buildStartPanelPayload(config = createDefaultAntiteamConfig()) {
       new TextDisplayBuilder().setContent(`# ${panel.title}`),
       new TextDisplayBuilder().setContent(panel.description),
       new TextDisplayBuilder().setContent([
-        `Батальён: ${formatRoleMention(config.battalionRoleId)}`,
+        `На помощь пингуется роль: ${formatRoleMention(config.battalionRoleId)}`,
         panel.details,
       ].filter(Boolean).join("\n"))
     )
@@ -342,18 +346,26 @@ function statsButtonId(action, extra = "") {
 }
 
 function buildHelperStatsPayload(state = {}, page = 0, statusText = "", { confirmClear = false } = {}) {
+  const config = createDefaultAntiteamConfig(state.config);
   const helpers = Object.entries(state.stats?.helpers || {})
     .map(([userId, stats]) => ({
       userId,
       responded: Number(stats?.responded) || 0,
       linkGranted: Number(stats?.linkGranted) || 0,
       confirmedArrived: Number(stats?.confirmedArrived) || 0,
+      points: Number(stats?.confirmedArrived) || 0,
       lastTicketId: cleanString(stats?.lastTicketId, 80),
       lastHelpedAt: cleanString(stats?.lastHelpedAt, 80),
     }))
     .sort((left, right) => (right.confirmedArrived - left.confirmedArrived)
       || (right.responded - left.responded)
       || left.userId.localeCompare(right.userId));
+  const totalPoints = helpers.reduce((sum, helper) => sum + helper.points, 0);
+  const rewardRows = ANTITEAM_HELPER_REWARD_THRESHOLDS.map((threshold) => {
+    const roleId = config.helperRewardRoles?.[String(threshold)] || "";
+    return `**${threshold}+**: ${formatRoleMention(roleId)}`;
+  });
+  const hasRewardRoles = ANTITEAM_HELPER_REWARD_THRESHOLDS.some((threshold) => cleanString(config.helperRewardRoles?.[String(threshold)], 80));
   const pageSize = 5;
   const totalPages = Math.max(1, Math.ceil(helpers.length / pageSize));
   const currentPage = Math.min(Math.max(Number.parseInt(page, 10) || 0, 0), totalPages - 1);
@@ -363,11 +375,14 @@ function buildHelperStatsPayload(state = {}, page = 0, statusText = "", { confir
     .addTextDisplayComponents(
       new TextDisplayBuilder().setContent("# 📊 Статистика помощи"),
       new TextDisplayBuilder().setContent([
-        `Записей: **${helpers.length}** • страница **${currentPage + 1}/${totalPages}**`,
+        `Записей: **${helpers.length}** • очков: **${totalPoints}** • страница **${currentPage + 1}/${totalPages}**`,
+        "Очки = подтверждённые приходы при закрытии миссии.",
         statusText,
         confirmClear ? "Подтверди полную очистку. История заявок не будет удалена." : "",
       ].filter(Boolean).join("\n"))
     );
+
+  container.addTextDisplayComponents(buildText("Роли за очки помощи", rewardRows));
 
   if (!visibleHelpers.length) {
     container.addTextDisplayComponents(new TextDisplayBuilder().setContent("Пока нет сохранённой статистики helper-ов."));
@@ -378,6 +393,7 @@ function buildHelperStatsPayload(state = {}, page = 0, statusText = "", { confir
       new SectionBuilder()
         .addTextDisplayComponents(new TextDisplayBuilder().setContent([
           `<@${helper.userId}>`,
+          `Очки помощи: **${helper.points}**`,
           `Откликнулся: **${helper.responded}** • ссылки: **${helper.linkGranted}** • пришёл: **${helper.confirmedArrived}**`,
           helper.lastHelpedAt ? `Последняя помощь: ${helper.lastHelpedAt}` : "",
         ].filter(Boolean).join("\n")))
@@ -410,6 +426,12 @@ function buildHelperStatsPayload(state = {}, page = 0, statusText = "", { confir
   container.addActionRowComponents(
     new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId(ANTITEAM_CUSTOM_IDS.refreshPanel).setLabel("↩️ В панель").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId(ANTITEAM_CUSTOM_IDS.statsRoles).setLabel("🎖️ Роли").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId(ANTITEAM_CUSTOM_IDS.statsSyncRoles)
+        .setLabel("🔁 Выдать роли")
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(!helpers.length || !hasRewardRoles),
       new ButtonBuilder()
         .setCustomId(confirmClear ? ANTITEAM_CUSTOM_IDS.statsClearConfirm : ANTITEAM_CUSTOM_IDS.statsClear)
         .setLabel(confirmClear ? "🔥 Да, стереть всё" : "🧹 Очистить всё")
@@ -419,6 +441,27 @@ function buildHelperStatsPayload(state = {}, page = 0, statusText = "", { confir
   );
 
   return buildPayload(container, { ephemeral: true });
+}
+
+function buildHelperRewardRolesModal(config = createDefaultAntiteamConfig()) {
+  const normalized = createDefaultAntiteamConfig(config);
+  const rows = ANTITEAM_HELPER_REWARD_THRESHOLDS.map((threshold) => {
+    const key = String(threshold);
+    return new ActionRowBuilder().addComponents(
+      new TextInputBuilder()
+        .setCustomId(`role_${key}`)
+        .setLabel(`Роль за ${key}+ помощи`)
+        .setPlaceholder("@role или id; пусто = не выдавать")
+        .setStyle(TextInputStyle.Short)
+        .setRequired(false)
+        .setMaxLength(80)
+        .setValue(cleanString(normalized.helperRewardRoles?.[key], 80))
+    );
+  });
+  return new ModalBuilder()
+    .setCustomId("at:stats:roles_modal")
+    .setTitle("Роли за помощь")
+    .addComponents(...rows);
 }
 
 function buildPanelTextModal(config = createDefaultAntiteamConfig()) {
@@ -987,7 +1030,16 @@ function buildThreadPanelPayload(ticket = {}, config = createDefaultAntiteamConf
   };
 }
 
-function buildHelpReplyPayload({ ticket = {}, linkKind = "", directJoinUrl = "", profileUrl = "", friendRequestsUrl = "", bridgeLabel = "" } = {}) {
+function buildHelpReplyPayload({
+  ticket = {},
+  linkKind = "",
+  directJoinUrl = "",
+  profileUrl = "",
+  friendRequestsUrl = "",
+  bridgeLabel = "",
+  helperRobloxKnown = true,
+  friendRequestNotified = false,
+} = {}) {
   const lines = [];
   const targetLabel = ticket.kind === "clan" ? "якоря" : "автора";
   if (linkKind === "direct") {
@@ -1001,12 +1053,21 @@ function buildHelpReplyPayload({ ticket = {}, linkKind = "", directJoinUrl = "",
   if (linkKind === "direct" || linkKind === "friend_direct" || linkKind === "bridge_direct") {
     if (directJoinUrl) lines.push(`[Прямая ссылка подключения](${directJoinUrl})`);
     if (profileUrl) lines.push(`[Roblox профиль ${targetLabel}](${profileUrl})`);
+    if (directJoinUrl && profileUrl) lines.push("Если подключение не работает, открой профиль и нажми **Join**.");
   } else {
-    lines.push(`Отправь ${targetLabel} friend request в Roblox.`);
+    if (helperRobloxKnown) {
+      lines.push(`Отправь ${targetLabel} friend request в Roblox.`);
+    } else {
+      lines.push(`Roblox у тебя не привязан, поэтому бот не знает, друзья ли вы с ${targetLabel}.`);
+      lines.push("На всякий случай можно уведомить автора, что ты кинул friend request.");
+    }
     if (directJoinUrl) lines.push(`[Ссылка подключения](${directJoinUrl}) станет рабочей после добавления в друзья.`);
     if (profileUrl) lines.push(`[Roblox профиль ${targetLabel}](${profileUrl})`);
     if (friendRequestsUrl) lines.push(`[Где принимают заявки Roblox](${friendRequestsUrl})`);
-    lines.push("После отправки friend request нажми кнопку ниже, чтобы пингануть автора в ветке.");
+    if (directJoinUrl && profileUrl) lines.push("Если ссылка не пустила после принятия др, открой профиль и нажми **Join**.");
+    lines.push(friendRequestNotified
+      ? "Автор уже получил уведомление в ветке."
+      : "После отправки friend request нажми кнопку ниже, чтобы пингануть автора в ветке.");
   }
 
   const container = new ContainerBuilder()
@@ -1027,8 +1088,9 @@ function buildHelpReplyPayload({ ticket = {}, linkKind = "", directJoinUrl = "",
     buttons.push(
       new ButtonBuilder()
         .setCustomId(ticketButtonId("friend_request_sent", ticket.id))
-        .setLabel("📨 Отправил др, пусть примет")
+        .setLabel(friendRequestNotified ? "📨 Автор уже пингован" : "📨 Отправил др, пусть примет")
         .setStyle(ButtonStyle.Primary)
+        .setDisabled(friendRequestNotified)
     );
   }
   if (buttons.length) container.addActionRowComponents(new ActionRowBuilder().addComponents(...buttons.slice(0, 5)));
@@ -1147,6 +1209,7 @@ module.exports = {
   buildConfigModal,
   buildDescriptionModal,
   buildEscalateModal,
+  buildHelperRewardRolesModal,
   buildHelperStatsPayload,
   buildHelpReplyPayload,
   buildModeratorPanelPayload,

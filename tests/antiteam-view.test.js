@@ -6,6 +6,7 @@ const { MessageFlags } = require("discord.js");
 const {
   ANTITEAM_CUSTOM_IDS,
   buildCloseReviewPayload,
+  buildHelperRewardRolesModal,
   buildHelperStatsPayload,
   buildHelpReplyPayload,
   buildModeratorPanelPayload,
@@ -42,8 +43,11 @@ test("start panel is Components V2 and exposes submit button", () => {
   });
 
   assert.equal(payload.flags, MessageFlags.IsComponentsV2);
+  assert.deepEqual(payload.allowedMentions, { parse: [] });
   assert.match(payloadJson(payload), /Вызов батальона/);
   assert.match(payloadJson(payload), /Создать антитим/);
+  assert.match(payloadJson(payload), /На помощь пингуется роль/);
+  assert.doesNotMatch(payloadJson(payload), /Батальён:/);
   assert.match(payloadJson(payload), new RegExp(ANTITEAM_CUSTOM_IDS.guide.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   assert.match(payloadJson(payload), new RegExp(ANTITEAM_CUSTOM_IDS.open.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 });
@@ -472,15 +476,35 @@ test("helper reply exposes friend-request action only after help path needs it",
     directJoinUrl: "https://www.roblox.com/games/start?placeId=1&gameInstanceId=2",
     profileUrl: "https://www.roblox.com/users/101/profile",
   }));
+  const unknownHelper = payloadJson(buildHelpReplyPayload({
+    ticket: { id: "ticket-1", kind: "standard" },
+    linkKind: "friend_request",
+    directJoinUrl: "https://www.roblox.com/games/start?userId=101",
+    profileUrl: "https://www.roblox.com/users/101/profile",
+    friendRequestsUrl: "https://www.roblox.com/users/friends#!/friend-requests",
+    helperRobloxKnown: false,
+    friendRequestNotified: true,
+  }));
 
   assert.match(friendRequest, /станет рабочей после добавления в друзья/);
+  assert.match(friendRequest, /открой профиль и нажми \*\*Join\*\*/);
   assert.match(friendRequest, /📨 Отправил др, пусть примет/);
   assert.match(alreadyFriend, /Ты уже Roblox-друг автора/);
+  assert.match(alreadyFriend, /Если подключение не работает, открой профиль и нажми \*\*Join\*\*/);
   assert.doesNotMatch(alreadyFriend, /Отправил др/);
+  assert.match(unknownHelper, /Roblox у тебя не привязан/);
+  assert.match(unknownHelper, /Автор уже получил уведомление/);
+  assert.match(unknownHelper, /"disabled":true/);
 });
 
 test("helper stats payload supports per-helper delete and full clear confirmation", () => {
   const state = normalizeAntiteamState({
+    config: {
+      helperRewardRoles: {
+        "1": "role-1",
+        "5": "role-5",
+      },
+    },
     stats: {
       helpers: {
         "helper-1": { responded: 3, linkGranted: 2, confirmedArrived: 1, lastHelpedAt: "2026-05-16T10:00:00.000Z" },
@@ -493,9 +517,19 @@ test("helper stats payload supports per-helper delete and full clear confirmatio
 
   assert.equal(payload.flags, MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral);
   assert.match(json, /<@helper-1>/);
+  assert.match(json, /очков: \*\*1\*\*/);
+  assert.match(json, /Очки помощи: \*\*1\*\*/);
+  assert.match(json, /Роли за очки помощи/);
+  assert.match(json, /<@&role-1>/);
+  assert.match(json, /🎖️ Роли/);
+  assert.match(json, /🔁 Выдать роли/);
   assert.match(json, /🗑️ Удалить/);
   assert.match(json, /🧹 Очистить всё/);
   assert.match(payloadJson(confirmPayload), /Да, стереть всё/);
+  const modal = buildHelperRewardRolesModal(state.config).toJSON();
+  assert.equal(modal.custom_id, "at:stats:roles_modal");
+  assert.equal(modal.components[0].components[0].custom_id, "role_1");
+  assert.equal(modal.components[1].components[0].value, "role-5");
 });
 
 test("close review payload paginates helper arrival toggles", () => {
