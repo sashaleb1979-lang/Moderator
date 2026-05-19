@@ -25,6 +25,20 @@ const {
   diagnosePanels: diagnoseSotPanels,
   diagnoseRoles: diagnoseSotRoles,
 } = require("./src/sot/diagnostics");
+const { syncSotShadowState: syncShadowSotState } = require("./src/sot/loader");
+const {
+  compareSotVsLegacy,
+  summarizeCompareMismatches,
+} = require("./src/sot/legacy-bridge/compare");
+const {
+  syncLegacyCharacterWrites,
+  syncLegacyChannelWrites,
+  syncLegacyInfluenceWrites,
+  syncLegacyIntegrationWrites,
+  syncLegacyPanelWrites,
+  syncLegacyPresentationWrites,
+  syncLegacyRoleWrites,
+} = require("./src/sot/legacy-bridge/write");
 const {
   buildConfiguredCharacterCatalogView,
   clearNativeCharacterRecord,
@@ -220,6 +234,22 @@ const {
   runRobloxPlaytimeSyncJob,
 } = require("./src/runtime/roblox-jobs");
 const {
+  buildClientReadyPeriodicJobs,
+  buildRobloxPeriodicJobs,
+  runClientReadyCore,
+  scheduleClientReadyIntervals,
+  schedulePeriodicJobs,
+} = require("./src/runtime/client-ready-core");
+const {
+  mergeRobloxRuntimeConfig,
+  normalizeRobloxPanelSettingsPatch,
+  rebuildRobloxIntervalHandles,
+} = require("./src/runtime/roblox-runtime-support");
+const {
+  createSerializedMutationRunner,
+  createSerializedTaskRunner,
+} = require("./src/runtime/serialized-task-runner");
+const {
   buildRobloxStatsPanelPayload,
   createRobloxPanelTelemetry,
   handleRobloxStatsPanelButtonInteraction,
@@ -255,6 +285,14 @@ const {
   resolveLegacyTierlistCharacterImagePath,
   saveLegacyTierlistState,
 } = require("./src/integrations/tierlist-live");
+const {
+  DEFAULT_GRAPHIC_TIER_COLORS,
+  clearGraphicAvatarCache,
+  clearGraphicAvatarCacheForUser,
+  isPureimageAvailable,
+  renderGraphicTierlistPng,
+  setAvatarCacheDir,
+} = require("./graphic-tierlist");
 const {
   buildLegacyTierlistClusterLookup,
   buildLegacyCharacterSyncIndex,
@@ -709,6 +747,7 @@ function normalizeCharacterCatalog(value, fallback = []) {
 
 function validateRuntimeConfig(config) {
   const errors = [];
+  const warnings = [];
 
   if (!DISCORD_TOKEN) errors.push("DISCORD_TOKEN отсутствует в .env");
   if (!GUILD_ID) errors.push("GUILD_ID отсутствует в .env");
@@ -719,8 +758,8 @@ function validateRuntimeConfig(config) {
   }
 
   if (config?.roles) {
-    if (isPlaceholder(config.roles.moderatorRoleId)) errors.push("roles.moderatorRoleId не заполнен");
-    if (isPlaceholder(config.roles.accessRoleId)) errors.push("roles.accessRoleId не заполнен");
+    if (isPlaceholder(config.roles.moderatorRoleId)) warnings.push("roles.moderatorRoleId не заполнен");
+    if (isPlaceholder(config.roles.accessRoleId)) warnings.push("roles.accessRoleId не заполнен");
   } else {
     errors.push("roles отсутствует в bot.config.json");
   }
@@ -747,11 +786,16 @@ function validateRuntimeConfig(config) {
   if (errors.length) {
     throw new Error(`Конфиг заполнен не полностью:\n- ${errors.join("\n- ")}`);
   }
+
+  return warnings;
 }
 
 const fileConfig = loadJsonFile(CONFIG_PATH, {});
 const appConfig = buildRuntimeConfig(fileConfig);
-validateRuntimeConfig(appConfig);
+const runtimeConfigWarnings = validateRuntimeConfig(appConfig);
+if (runtimeConfigWarnings.length) {
+  console.warn(`Startup config degraded:\n- ${runtimeConfigWarnings.join("\n- ")}`);
+}
 
 function buildSotLegacyOptions(currentDb) {
   const liveTierlistState = getLiveLegacyTierlistState(currentDb);

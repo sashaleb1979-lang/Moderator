@@ -1,0 +1,1068 @@
+{
+  "config": {
+    "welcomePanel": {
+      "channelId": "REPLACE_WELCOME_CHANNEL_ID",
+      "messageId": ""
+    },
+    "botHelperPanel": {
+      "channelId": "",
+      "messageId": ""
+    },
+    "nonGgsPanel": {
+      "channelId": "REPLACE_WELCOME_CHANNEL_ID",
+      "messageId": ""
+    },
+    "tierlistBoard": {
+      "text": {
+        "channelId": "REPLACE_TIERLIST_CHANNEL_ID",
+        "messageIdSummary": "",
+        "messageIdPages": ""
+      },
+      "graphic": {
+        "channelId": "REPLACE_TIERLIST_CHANNEL_ID",
+        "messageId": "",
+        "lastUpdated": null
+      }
+    },
+    "generatedRoles": {
+      "characters": {},
+      "characterLabels": {},
+      "tiers": {}
+    },
+    "integrations": {
+      "integrationStateVersion": 1,
+      "elo": {
+        "mode": "dormant",
+        "status": "not_started",
+        "sourcePath": "",
+        "lastImportAt": null,
+        "lastSyncAt": null,
+        "roleGrantEnabled": true,
+        "submitPanel": {
+          "channelId": "",
+          "messageId": ""
+        },
+        "graphicBoard": {
+          "channelId": "",
+          "messageId": "",
+          "lastUpdated": null
+        }
+      },
+      "tierlist": {
+        "mode": "dormant",
+        "status": "not_started",
+        "sourcePath": "",
+        "lastImportAt": null,
+        "lastSyncAt": null,
+        "dashboard": {
+          "channelId": "",
+          "messageId": "",
+          "lastUpdated": null
+        },
+        "summary": {
+          "channelId": "",
+          "messageId": "",
+          "lastUpdated": null
+        }
+      },
+      "roblox": {},
+      "verification": {
+        "enabled": false,
+        "status": "",
+        "mode": "",
+        "callbackBaseUrl": "",
+        "reportChannelId": "",
+        "verificationChannelId": "",
+        "lastSyncAt": null,
+        "stageTexts": {},
+        "riskRules": {},
+        "deadline": {},
+        "entryMessage": {
+          "channelId": "",
+          "messageId": ""
+        }
+      }
+    },
+    "onboardMode": {
+      "mode": "normal",
+      "changedAt": null,
+      "changedBy": ""
+    },
+    "accessGrant": {
+      "mode": "after_submit",
+      "changedAt": null,
+      "changedBy": ""
+    },
+    "autonomyGuard": {
+      "primaryAdminUserId": "",
+      "targetUserId": "",
+      "protectedRole": {
+        "roleId": "",
+        "name": "",
+        "color": ""
+      },
+      "isolatedUserIds": [],
+      "warningCounters": {}
+    },
+    "characters": [
+      {
+        "id": "honored_one",
+        "label": "Honored One",
+        "roleId": ""
+      },
+      {
+        "id": "vessel",
+        "label": "Vessel",
+        "roleId": ""
+      },
+      {
+        "id": "restless_gambler",
+        "label": "Restless Gambler",
+        "roleId": ""
+      },
+      {
+        "id": "ten_shadows",
+        "label": "Ten Shadows",
+        "roleId": ""
+      },
+      {
+        "id": "perfection",
+        "label": "Perfection",
+        "roleId": ""
+      },
+      {
+        "id": "blood_manipulator",
+        "label": "Blood Manipulator",
+        "roleId": ""
+      },
+      {
+        "id": "switcher",
+        "label": "Switcher",
+        "roleId": ""
+      },
+      {
+        "id": "defense_attorney",
+        "label": "Defense Attorney",
+        "roleId": ""
+      },
+      {
+        "id": "cursed_partners",
+        "label": "Cursed Partners",
+        "roleId": ""
+      },
+      {
+        "id": "head_of_the_hei",
+        "label": "Head of the Hei",
+        "roleId": ""
+      },
+      {
+        "id": "puppet_master",
+        "label": "Puppet Master",
+        "roleId": ""
+      },
+      {
+        "id": "salaryman",
+        "label": "Salaryman",
+        "roleId": ""
+      },
+      {
+        "id": "locust_guy",
+        "label": "Locust Guy",
+        "roleId": ""
+      },
+      {
+        "id": "star_rage",
+        "label": "Star Rage",
+        "roleId": ""
+      },
+      {
+        "id": "aspiring_mangaka",
+        "label": "Aspiring Mangaka",
+        "roleId": ""
+      },
+      {
+        "id": "lucky_coward",
+        "label": "Lucky Coward",
+        "roleId": ""
+      },
+      {
+        "id": "disaster_plants",
+        "label": "Disaster Plants",
+        "roleId": ""
+      },
+      {
+        "id": "crow_charmer",
+        "label": "Crow Charmer",
+        "roleId": ""
+      },
+      {
+        "id": "ryu",
+        "label": "Ryu",
+        "roleId": ""
+      }
+    ],
+    "presentation": {
+      "welcome": {
+        "submitStep": {},
+        "buttons": {},
+        "characterEmojis": {}
+      },
+      "tierlist": {
+        "labels": {},
+        "graphic": {
+          "image": {},
+          "colors": {},
+          "outline": {},
+          "panel": {
+            "selectedTier": 5
+          }
+        }
+      },
+      "nonGgs": {}
+    },
+    "notificationChannelId": "",
+    "reviewChannelId": ""
+  },
+  "profiles": {},
+  "submissions": {},
+  "cooldowns": {},
+  "roleGrantMessages": {},
+  "sot": {
+    "sotVersion": 1,
+    "lastVerifiedAt": null,
+    "channels": {
+      "welcome": {
+        "value": "REPLACE_WELCOME_CHANNEL_ID",
+        "source": "configured",
+        "verifiedAt": null
+      },
+      "review": {
+        "value": "REPLACE_REVIEW_CHANNEL_ID",
+        "source": "configured",
+        "verifiedAt": null
+      },
+      "tierlistText": {
+        "value": "REPLACE_TIERLIST_CHANNEL_ID",
+        "source": "configured",
+        "verifiedAt": null
+      },
+      "tierlistGraphic": {
+        "value": "REPLACE_TIERLIST_CHANNEL_ID",
+        "source": "configured",
+        "verifiedAt": null
+      },
+      "log": null,
+      "eloSubmit": null,
+      "eloGraphic": null,
+      "tierlistDashboard": null,
+      "tierlistSummary": null
+    },
+    "roles": {
+      "moderator": {
+        "value": "REPLACE_MODERATOR_ROLE_ID",
+        "source": "configured",
+        "verifiedAt": null
+      },
+      "accessNormal": {
+        "value": "REPLACE_ACCESS_ROLE_ID",
+        "source": "configured",
+        "verifiedAt": null
+      },
+      "accessWartime": {
+        "value": "1496376994966011954",
+        "source": "configured",
+        "verifiedAt": null
+      },
+      "accessNonJjs": null,
+      "accessCompanion": null,
+      "verifyAccess": null,
+      "killTier": {
+        "1": null,
+        "2": null,
+        "3": null,
+        "4": null,
+        "5": null
+      },
+      "killMilestone": {
+        "20k": null,
+        "30k": null
+      },
+      "legacyEloTier": {
+        "1": null,
+        "2": null,
+        "3": null,
+        "4": null
+      }
+    },
+    "characters": {
+      "honored_one": {
+        "id": "honored_one",
+        "label": "Годжо",
+        "englishLabel": "Honored One",
+        "roleId": "",
+        "source": "alias",
+        "verifiedAt": null,
+        "evidence": {
+          "aliasNames": [
+            "Годжо"
+          ]
+        }
+      },
+      "vessel": {
+        "id": "vessel",
+        "label": "Юджи",
+        "englishLabel": "Vessel",
+        "roleId": "",
+        "source": "alias",
+        "verifiedAt": null,
+        "evidence": {
+          "aliasNames": [
+            "Юджи"
+          ]
+        }
+      },
+      "restless_gambler": {
+        "id": "restless_gambler",
+        "label": "Хакари",
+        "englishLabel": "Restless Gambler",
+        "roleId": "",
+        "source": "alias",
+        "verifiedAt": null,
+        "evidence": {
+          "aliasNames": [
+            "Хакари"
+          ]
+        }
+      },
+      "ten_shadows": {
+        "id": "ten_shadows",
+        "label": "Мегуми",
+        "englishLabel": "Ten Shadows",
+        "roleId": "",
+        "source": "alias",
+        "verifiedAt": null,
+        "evidence": {
+          "aliasNames": [
+            "Мегуми"
+          ]
+        }
+      },
+      "perfection": {
+        "id": "perfection",
+        "label": "Махито",
+        "englishLabel": "Perfection",
+        "roleId": "",
+        "source": "alias",
+        "verifiedAt": null,
+        "evidence": {
+          "aliasNames": [
+            "Махито"
+          ]
+        }
+      },
+      "blood_manipulator": {
+        "id": "blood_manipulator",
+        "label": "Чосо",
+        "englishLabel": "Blood Manipulator",
+        "roleId": "",
+        "source": "alias",
+        "verifiedAt": null,
+        "evidence": {
+          "aliasNames": [
+            "Чосо"
+          ]
+        }
+      },
+      "switcher": {
+        "id": "switcher",
+        "label": "Тодо",
+        "englishLabel": "Switcher",
+        "roleId": "",
+        "source": "alias",
+        "verifiedAt": null,
+        "evidence": {
+          "aliasNames": [
+            "Тодо"
+          ]
+        }
+      },
+      "defense_attorney": {
+        "id": "defense_attorney",
+        "label": "Хигурума",
+        "englishLabel": "Defense Attorney",
+        "roleId": "",
+        "source": "alias",
+        "verifiedAt": null,
+        "evidence": {
+          "aliasNames": [
+            "Хигурума",
+            "Хигурама"
+          ]
+        }
+      },
+      "cursed_partners": {
+        "id": "cursed_partners",
+        "label": "Юта",
+        "englishLabel": "Cursed Partners",
+        "roleId": "",
+        "source": "alias",
+        "verifiedAt": null,
+        "evidence": {
+          "aliasNames": [
+            "Юта",
+            "Юта Оккоцу"
+          ]
+        }
+      },
+      "head_of_the_hei": {
+        "id": "head_of_the_hei",
+        "label": "Наоя",
+        "englishLabel": "Head of the Hei",
+        "roleId": "",
+        "source": "alias",
+        "verifiedAt": null,
+        "evidence": {
+          "aliasNames": [
+            "Наоя",
+            "Наобито"
+          ]
+        }
+      },
+      "puppet_master": {
+        "id": "puppet_master",
+        "label": "Мехамару",
+        "englishLabel": "Puppet Master",
+        "roleId": "",
+        "source": "alias",
+        "verifiedAt": null,
+        "evidence": {
+          "aliasNames": [
+            "Мехамару"
+          ]
+        }
+      },
+      "salaryman": {
+        "id": "salaryman",
+        "label": "Нанами",
+        "englishLabel": "Salaryman",
+        "roleId": "",
+        "source": "alias",
+        "verifiedAt": null,
+        "evidence": {
+          "aliasNames": [
+            "Нанами"
+          ]
+        }
+      },
+      "locust_guy": {
+        "id": "locust_guy",
+        "label": "Локуст Гай",
+        "englishLabel": "Locust Guy",
+        "roleId": "",
+        "source": "alias",
+        "verifiedAt": null,
+        "evidence": {
+          "aliasNames": [
+            "Локуст Гай",
+            "Локуст"
+          ]
+        }
+      },
+      "star_rage": {
+        "id": "star_rage",
+        "label": "Юки",
+        "englishLabel": "Star Rage",
+        "roleId": "",
+        "source": "alias",
+        "verifiedAt": null,
+        "evidence": {
+          "aliasNames": [
+            "Юки"
+          ]
+        }
+      },
+      "aspiring_mangaka": {
+        "id": "aspiring_mangaka",
+        "label": "Чарльз",
+        "englishLabel": "Aspiring Mangaka",
+        "roleId": "",
+        "source": "alias",
+        "verifiedAt": null,
+        "evidence": {
+          "aliasNames": [
+            "Чарльз",
+            "Шарль",
+            "Mangaka",
+            "Мангака"
+          ]
+        }
+      },
+      "lucky_coward": {
+        "id": "lucky_coward",
+        "label": "Харута",
+        "englishLabel": "Lucky Coward",
+        "roleId": "",
+        "source": "alias",
+        "verifiedAt": null,
+        "evidence": {
+          "aliasNames": [
+            "Харута"
+          ]
+        }
+      },
+      "disaster_plants": {
+        "id": "disaster_plants",
+        "label": "Ханами",
+        "englishLabel": "Disaster Plants",
+        "roleId": "",
+        "source": "alias",
+        "verifiedAt": null,
+        "evidence": {
+          "aliasNames": [
+            "Ханами"
+          ]
+        }
+      },
+      "crow_charmer": {
+        "id": "crow_charmer",
+        "label": "Мэй Мэй",
+        "englishLabel": "Crow Charmer",
+        "roleId": "",
+        "source": "alias",
+        "verifiedAt": null,
+        "evidence": {
+          "aliasNames": [
+            "Мэй Мэй",
+            "Мей Мей",
+            "Мэй-Мэй",
+            "Меи Меи"
+          ]
+        }
+      },
+      "ryu": {
+        "id": "ryu",
+        "label": "Рю",
+        "englishLabel": "Ryu",
+        "roleId": "",
+        "source": "alias",
+        "verifiedAt": null,
+        "evidence": {
+          "aliasNames": [
+            "Рю",
+            "Рю Ишигори"
+          ]
+        }
+      }
+    },
+    "panels": {
+      "welcome": {
+        "channelId": {
+          "value": "REPLACE_WELCOME_CHANNEL_ID",
+          "source": "manual",
+          "verifiedAt": null
+        },
+        "messageIds": {
+          "main": null
+        },
+        "lastUpdated": null
+      },
+      "botHelper": {
+        "channelId": null,
+        "messageIds": {
+          "main": null
+        },
+        "lastUpdated": null
+      },
+      "nonGgs": {
+        "channelId": {
+          "value": "REPLACE_WELCOME_CHANNEL_ID",
+          "source": "manual",
+          "verifiedAt": null
+        },
+        "messageIds": {
+          "main": null
+        },
+        "lastUpdated": null
+      },
+      "tierlistText": {
+        "channelId": {
+          "value": "REPLACE_TIERLIST_CHANNEL_ID",
+          "source": "manual",
+          "verifiedAt": null
+        },
+        "messageIds": {
+          "main": null,
+          "summary": null,
+          "pages": null
+        },
+        "lastUpdated": null
+      },
+      "tierlistGraphic": {
+        "channelId": {
+          "value": "REPLACE_TIERLIST_CHANNEL_ID",
+          "source": "manual",
+          "verifiedAt": null
+        },
+        "messageIds": {
+          "main": null
+        },
+        "lastUpdated": null
+      },
+      "eloSubmit": {
+        "channelId": null,
+        "messageIds": {
+          "main": null
+        },
+        "lastUpdated": null
+      },
+      "eloGraphic": {
+        "channelId": null,
+        "messageIds": {
+          "main": null
+        },
+        "lastUpdated": null
+      },
+      "tierlistDashboard": {
+        "channelId": null,
+        "messageIds": {
+          "main": null
+        },
+        "lastUpdated": null
+      },
+      "tierlistSummary": {
+        "channelId": null,
+        "messageIds": {
+          "main": null
+        },
+        "lastUpdated": null
+      }
+    },
+    "presentation": {
+      "welcome": {
+        "title": "Проходка на сервер",
+        "description": "**Быстрый вход**",
+        "steps": [
+          "Нажми **Получить роль** и выбери **1-2 мейнов**.",
+          "Отправь **одно сообщение: kills** числом + скрин, где видны **kills** и **Roblox username**.",
+          "**Доступ выдаётся сразу после отправки; kill-tier** проверит модератор."
+        ],
+        "submitStep": {
+          "title": "Готово. Кидай kills и общий скрин",
+          "description": "Одно сообщение в {{uploadTarget}}.\nТекст: **kills** числом. Вложение: **один скрин**, где видны kills и **Roblox username**.\nПосле отправки доступ выдаётся сразу; **kill-tier** проверит модератор.\n{{exampleNote}}"
+        },
+        "buttons": {
+          "begin": "Получить роль",
+          "quickMains": "Быстро сменить мейнов"
+        },
+        "characterEmojis": {}
+      },
+      "tierlist": {
+        "textTitle": "Текстовый тир-лист",
+        "graphicTitle": "Графический тир-лист",
+        "graphicMessageText": "Подтверждённые игроки и текущая расстановка по kills",
+        "labels": {
+          "1": "Низший ранг",
+          "2": "Средний ранг",
+          "3": "Высший ранг",
+          "4": "Особый ранг",
+          "5": "Абсолютный ранг",
+          "6": "Не фейкостановцы"
+        },
+        "graphic": {
+          "image": {
+            "width": null,
+            "height": null,
+            "icon": null
+          },
+          "colors": {
+            "1": "#4d96ff",
+            "2": "#43aa8b",
+            "3": "#f9c74f",
+            "4": "#f46036",
+            "5": "#d7263d",
+            "6": "#7f8c8d"
+          },
+          "outline": {
+            "roleId": "",
+            "roleIds": [],
+            "color": "#ffffff",
+            "rules": []
+          },
+          "panel": {
+            "selectedTier": 5
+          }
+        }
+      },
+      "nonGgs": {}
+    },
+    "modes": {
+      "onboard": {
+        "value": "normal",
+        "source": "configured",
+        "verifiedAt": null
+      }
+    },
+    "integrations": {
+      "elo": {
+        "sourcePath": "",
+        "mode": "dormant",
+        "status": "not_started",
+        "lastImportAt": null,
+        "lastSyncAt": null,
+        "roleGrantEnabled": true,
+        "submitPanel": {
+          "channelId": "",
+          "messageId": ""
+        },
+        "graphicBoard": {
+          "channelId": "",
+          "messageId": "",
+          "lastUpdated": null
+        }
+      },
+      "roblox": {},
+      "tierlist": {
+        "sourcePath": "",
+        "mode": "dormant",
+        "status": "not_started",
+        "lastImportAt": null,
+        "lastSyncAt": null,
+        "dashboard": {
+          "channelId": "",
+          "messageId": "",
+          "lastUpdated": null
+        },
+        "summary": {
+          "channelId": "",
+          "messageId": "",
+          "lastUpdated": null
+        }
+      },
+      "verification": {
+        "enabled": false,
+        "status": "",
+        "mode": "",
+        "callbackBaseUrl": "",
+        "reportChannelId": "",
+        "verificationChannelId": "",
+        "lastSyncAt": null,
+        "stageTexts": {
+          "entry": "Нажми кнопку, авторизуйся через Discord OAuth и дождись результата.",
+          "manualReview": "Если система не может принять решение автоматически, она отправит отчёт модераторам.",
+          "approved": "После успешной проверки бот снимет verify-role и выдаст стартовый доступ.",
+          "rejected": "Если модератор отклонит проверку, доступ не будет выдан."
+        },
+        "riskRules": {
+          "enemyGuildIds": [],
+          "enemyUserIds": [],
+          "enemyInviteCodes": [],
+          "enemyInviterUserIds": [],
+          "manualTags": []
+        },
+        "deadline": {
+          "pendingDays": 7,
+          "reportOnly": true
+        },
+        "entryMessage": {
+          "channelId": "",
+          "messageId": ""
+        }
+      }
+    },
+    "activity": {
+      "config": {
+        "sessionGapMinutes": 45,
+        "scoreWindowDays": 30,
+        "maxEffectiveSessionsPerDay": 3.2,
+        "sessionWeightMin": 0.35,
+        "sessionWeightMax": 1.15,
+        "roleEligibilityMinMemberDays": 3,
+        "roleBoostEndMemberDays": 7,
+        "roleBoostMaxMultiplier": 1.15,
+        "newcomerRoleMaxMemberDays": 7,
+        "autoRoleSyncHours": 24,
+        "adminRoleIds": [],
+        "moderatorRoleIds": [],
+        "channelWeightPresets": {
+          "main_chat": 1,
+          "normal_chat": 1,
+          "small_chat": 1.15,
+          "event": 0.9,
+          "media": 0.7,
+          "flood": 0.35,
+          "admin": 0,
+          "ignored": 0
+        },
+        "activityRoleIds": {
+          "core": null,
+          "stable": null,
+          "active": null,
+          "floating": null,
+          "weak": null,
+          "newcomer": null,
+          "dead": null
+        },
+        "activityRoleThresholds": {
+          "core": 94,
+          "stable": 77,
+          "active": 61,
+          "floating": 42,
+          "weak": 18,
+          "dead": 0
+        },
+        "sessionBaseValues": {
+          "single": 0.45,
+          "burst": 0.75,
+          "full": 1
+        },
+        "activityScoreWeights": {
+          "sessions": 36,
+          "days": 31,
+          "freshness": 18,
+          "messages": 10,
+          "voice": 8,
+          "activeVoice": 6,
+          "diversity": 5
+        },
+        "activityScoreWindows": {
+          "sessions": 50,
+          "days": 20,
+          "messages": 250,
+          "voiceHours": 20,
+          "activeVoiceHours": 12
+        },
+        "diversityBonuses": {
+          "2": 2,
+          "3": 4,
+          "4": 5
+        },
+        "freshnessBuckets": [
+          {
+            "maxDays": 1,
+            "score": 18
+          },
+          {
+            "maxDays": 3,
+            "score": 16
+          },
+          {
+            "maxDays": 7,
+            "score": 11
+          },
+          {
+            "maxDays": 14,
+            "score": 7
+          },
+          {
+            "maxDays": 21,
+            "score": 3
+          },
+          {
+            "maxDays": null,
+            "score": 0
+          }
+        ],
+        "antiSpamCaps": [
+          {
+            "maxActiveDays": 2,
+            "maxScore": 35
+          },
+          {
+            "maxActiveDays": 4,
+            "maxScore": 50
+          },
+          {
+            "maxActiveDays": 7,
+            "maxScore": 65
+          },
+          {
+            "maxActiveDays": 10,
+            "maxScore": 75
+          }
+        ]
+      },
+      "watchedChannels": [],
+      "globalUserSessions": [],
+      "globalVoiceSessions": [],
+      "channelDailyStats": [],
+      "userChannelDailyStats": [],
+      "userVoiceDailyStats": [],
+      "userSnapshots": {},
+      "calibrationRuns": [],
+      "ops": {
+        "moderationAuditLog": []
+      },
+      "runtime": {
+        "openSessions": {},
+        "openVoiceSessions": {},
+        "dirtyUsers": [],
+        "lastFlushAt": null,
+        "lastFlushStats": null,
+        "lastResumeAt": null,
+        "lastFullRecalcAt": null,
+        "lastRebuildAndRoleSyncAt": null,
+        "lastRebuildAndRoleSyncStats": null,
+        "lastDailyRoleSyncAt": null,
+        "lastDailyRoleSyncStats": null,
+        "lastRolesOnlySyncAt": null,
+        "lastRolesOnlySyncStats": null,
+        "errors": []
+      }
+    },
+    "antiteam": {
+      "version": 1,
+      "config": {
+        "channelId": "",
+        "panelMessageId": "",
+        "battalionRoleId": "",
+        "battalionLeadRoleId": "",
+        "clanCallerRoleId": "",
+        "missionAutoArchiveMinutes": 60,
+        "missionAutoCloseMinutes": 120,
+        "panel": {
+          "title": "⚔️ Антитим",
+          "description": "Быстрый вызов батальёна против тимеров. Roblox ник проверяется автоматически, после заявки создаётся ветка миссии.",
+          "details": "Если Roblox уже привязан в профиле, ник спрашивать не будем. Для заявки нужны сила команды, число тимеров и ники/киллы целей.",
+          "buttonLabel": "⚔️ Подать заявку",
+          "guideButtonLabel": "Что дальше?",
+          "accentColor": 15022389
+        },
+        "clanPingRoles": [
+          {
+            "key": "battalion",
+            "label": "Батальён",
+            "roleId": "",
+            "defaultEnabled": true
+          },
+          {
+            "key": "battalion_lead",
+            "label": "Глава батальонов",
+            "roleId": "",
+            "defaultEnabled": true
+          },
+          {
+            "key": "cavalry",
+            "label": "Конная дивизия",
+            "roleId": "",
+            "defaultEnabled": false
+          },
+          {
+            "key": "eleven_k",
+            "label": "11k+",
+            "roleId": "",
+            "defaultEnabled": false
+          },
+          {
+            "key": "lcorp",
+            "label": "LCorp clan",
+            "roleId": "",
+            "defaultEnabled": false
+          },
+          {
+            "key": "core",
+            "label": "ЯДРО",
+            "roleId": "",
+            "defaultEnabled": false
+          },
+          {
+            "key": "regular",
+            "label": "Постоялец",
+            "roleId": "",
+            "defaultEnabled": false
+          }
+        ],
+        "helperRewardRoles": {
+          "1": "",
+          "5": "",
+          "10": "",
+          "20": "",
+          "50": ""
+        },
+        "roblox": {
+          "jjsPlaceId": "",
+          "profileUrlTemplate": "https://www.roblox.com/users/{userId}/profile",
+          "directJoinUrlTemplate": "https://www.roblox.com/games/start?placeId={placeId}&gameInstanceId={gameId}",
+          "gameUrlTemplate": "https://www.roblox.com/games/{placeId}",
+          "friendRequestsUrl": "https://www.roblox.com/users/friends#!/friend-requests"
+        }
+      },
+      "drafts": {},
+      "photoRequests": {},
+      "robloxConfirmations": {},
+      "tickets": {},
+      "stats": {
+        "helpers": {}
+      }
+    },
+    "news": {
+      "config": {
+        "enabled": false,
+        "schedule": {
+          "publishHourMsk": 21,
+          "tickMinutes": 5
+        },
+        "channels": {
+          "publicChannelId": "",
+          "staffChannelId": ""
+        },
+        "voice": {
+          "topCount": 5,
+          "includeFullList": true,
+          "fullListFormat": "single_line",
+          "publishFullListInThread": true
+        },
+        "moderation": {
+          "includeLeavesPublic": true,
+          "includeBansPublic": true,
+          "staffIncludeActorDetails": true
+        },
+        "presentation": {
+          "visualMode": "edition",
+          "masthead": "Daily Edition",
+          "postThreadEnabled": true,
+          "accentColor": "#D6A441",
+          "accentColorAlt": "#5DA9E9",
+          "backgroundColor": "#101418"
+        }
+      },
+      "voice": {
+        "openSessions": {},
+        "finalizedSessions": [],
+        "lastPrunedAt": null
+      },
+      "moderation": {
+        "events": [],
+        "lastPrunedAt": null
+      },
+      "dailyDigests": {},
+      "runtime": {
+        "lastCompileStartedAt": null,
+        "lastCompileFinishedAt": null,
+        "lastCompiledDayKey": null,
+        "lastPublishedDayKey": null,
+        "lastPublishStatus": null,
+        "lastFailure": null,
+        "lastAuditCounts": null,
+        "lastCoverageSummary": null,
+        "lastPreviewRequest": null,
+        "lastVoiceCaptureAt": null,
+        "lastModerationCaptureAt": null,
+        "errors": []
+      }
+    },
+    "influence": {
+      "default": 1,
+      "tiers": {
+        "1": 2,
+        "2": 2.5,
+        "3": 3,
+        "4": 3.5,
+        "5": 4
+      },
+      "milestones": {
+        "20k": 4.5,
+        "30k": 5
+      }
+    }
+  }
+}
