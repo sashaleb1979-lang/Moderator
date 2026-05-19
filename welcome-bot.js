@@ -1594,6 +1594,63 @@ async function applyTierlistNonFakeClusterMutation(client, targetId, enabled) {
   return { result, refreshWarnings };
 }
 
+async function applyTierlistNonFakeClusterBulkMutation(client, targetIds, enabled) {
+  const normalizedTargetIds = [...new Set(
+    (Array.isArray(targetIds) ? targetIds : [targetIds])
+      .map((targetId) => String(targetId || "").trim())
+      .filter(Boolean)
+  )];
+
+  let result = { changed: false, enabled: false, userIds: getTierlistNonFakeUserIds(db.config) };
+  const changedIds = [];
+  const unchangedIds = [];
+
+  await applyUiMutation(client, "none", () => {
+    for (const targetId of normalizedTargetIds) {
+      result = setTierlistNonFakeUser(db.config, targetId, enabled);
+      if (result.changed) {
+        changedIds.push(targetId);
+      } else {
+        unchangedIds.push(targetId);
+      }
+    }
+  });
+
+  const refreshWarnings = [];
+  await refreshGraphicTierlistBoard(client).catch((error) => {
+    refreshWarnings.push(`PNG: ${formatRuntimeError(error)}`);
+  });
+  await refreshTextTierlistBoard(client, { page: 0 }).catch((error) => {
+    refreshWarnings.push(`Текст: ${formatRuntimeError(error)}`);
+  });
+
+  return { result, refreshWarnings, targetIds: normalizedTargetIds, changedIds, unchangedIds };
+}
+
+async function resolveTierlistNonFakeRoleTargetIds(client, role) {
+  const roleId = String(role?.id || "").trim();
+  if (!roleId) {
+    return { roleId: "", roleName: "", targetIds: [] };
+  }
+
+  const guild = role.guild || await getGuild(client).catch(() => null);
+  if (!guild) {
+    return { roleId, roleName: String(role?.name || roleId), targetIds: [] };
+  }
+
+  await guild.members.fetch().catch(() => null);
+  const targetIds = [...guild.members.cache.values()]
+    .filter((member) => member?.user && !member.user.bot && member.roles?.cache?.has(roleId))
+    .map((member) => String(member.id || "").trim())
+    .filter(Boolean);
+
+  return {
+    roleId,
+    roleName: String(role?.name || roleId),
+    targetIds: [...new Set(targetIds)],
+  };
+}
+
 function buildTierlistNonFakeMutationText(targetId, enabled, result, refreshWarnings = []) {
   const statusText = enabled
     ? (result?.changed ? "добавлен в remembered T6-кластер" : "уже был в remembered T6-кластере")
@@ -1604,6 +1661,53 @@ function buildTierlistNonFakeMutationText(targetId, enabled, result, refreshWarn
     `Сейчас remembered не фейкостановцев: ${result?.userIds?.length || 0}.`,
     "Kill-tier роли не меняются: меняется только display-кластер тир-листа.",
   ];
+  if (refreshWarnings.length) {
+    lines.push(`Борды обновлены с предупреждениями: ${refreshWarnings.join("; ")}`);
+  }
+  return lines.join("\n");
+}
+
+function buildTierlistNonFakeTargetPreview(userIds = [], limit = 10) {
+  const safeUserIds = (Array.isArray(userIds) ? userIds : []).filter(Boolean);
+  if (!safeUserIds.length) return "";
+  const preview = safeUserIds.slice(0, limit).map((userId) => `<@${userId}>`).join(", ");
+  return safeUserIds.length > limit ? `${preview} и ещё ${safeUserIds.length - limit}` : preview;
+}
+
+function buildTierlistNonFakeBulkMutationText(mutation, enabled, options = {}) {
+  const safeMutation = mutation && typeof mutation === "object" ? mutation : {};
+  const changedIds = Array.isArray(safeMutation.changedIds) ? safeMutation.changedIds : [];
+  const unchangedIds = Array.isArray(safeMutation.unchangedIds) ? safeMutation.unchangedIds : [];
+  const targetIds = Array.isArray(safeMutation.targetIds) ? safeMutation.targetIds : [];
+  const skippedIsolatedIds = Array.isArray(options.skippedIsolatedIds) ? options.skippedIsolatedIds : [];
+  const refreshWarnings = Array.isArray(safeMutation.refreshWarnings) ? safeMutation.refreshWarnings : [];
+  const actionText = enabled ? "Добавлены" : "Убраны";
+  const unchangedText = enabled ? "Уже были в remembered T6-кластере" : "Уже отсутствовали в remembered T6-кластере";
+
+  const lines = [
+    `Обработано участников: ${targetIds.length}.`,
+    `${actionText}: ${changedIds.length}.`,
+    `${unchangedText}: ${unchangedIds.length}.`,
+    `Сейчас remembered не фейкостановцев: ${safeMutation.result?.userIds?.length || 0}.`,
+    "Kill-tier роли не меняются: меняется только display-кластер тир-листа.",
+  ];
+
+  if (options.roleId) {
+    lines.push(`Источник по роли: <@&${options.roleId}> (${options.roleName || options.roleId}).`);
+  }
+
+  const changedPreview = buildTierlistNonFakeTargetPreview(changedIds);
+  if (changedPreview) {
+    lines.push(`${actionText}: ${changedPreview}.`);
+  }
+  const unchangedPreview = buildTierlistNonFakeTargetPreview(unchangedIds);
+  if (unchangedPreview) {
+    lines.push(`${unchangedText}: ${unchangedPreview}.`);
+  }
+  const skippedPreview = buildTierlistNonFakeTargetPreview(skippedIsolatedIds);
+  if (skippedPreview) {
+    lines.push(`Пропущены из-за изолятора: ${skippedPreview}.`);
+  }
   if (refreshWarnings.length) {
     lines.push(`Борды обновлены с предупреждениями: ${refreshWarnings.join("; ")}`);
   }
@@ -2928,8 +3032,56 @@ function buildPlainInteractionPayload(content, includeFlags = false) {
   return includeFlags ? ephemeralPayload(payload) : payload;
 }
 
+function normalizeInteractionReplyPayload(payload, includeFlags = true) {
+  if (typeof payload === "string") {
+    return buildPlainInteractionPayload(payload, includeFlags);
+  }
+
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return buildPlainInteractionPayload(String(payload || "").trim() || "Готово.", includeFlags);
+  }
+
+  if (!includeFlags || Object.prototype.hasOwnProperty.call(payload, "flags")) {
+    return payload;
+  }
+
+  return ephemeralPayload(payload);
+}
+
 function formatInteractionErrorText(error, fallback = "неизвестная ошибка", limit = 220) {
   return String(error?.message || error || fallback).slice(0, Math.max(0, Number(limit) || 0));
+}
+
+async function replyWithInteractionFailureFallback(interaction, message) {
+  const replyPayload = normalizeInteractionReplyPayload(message, true);
+  const editPayload = normalizeInteractionEditPayload(buildPlainInteractionPayload(message));
+
+  if (interaction?.deferred && typeof interaction.editReply === "function") {
+    await interaction.editReply(editPayload).catch(() => {});
+    return;
+  }
+
+  if (interaction?.replied && typeof interaction.followUp === "function") {
+    await interaction.followUp(replyPayload).catch(() => {});
+    return;
+  }
+
+  if (typeof interaction?.reply === "function") {
+    await interaction.reply(replyPayload).catch(() => {});
+  }
+}
+
+async function runInteractionHandlerSafely(interaction, label, errorPrefix, handler) {
+  try {
+    return await handler();
+  } catch (error) {
+    console.error(`${label}:`, error?.message || error);
+    await replyWithInteractionFailureFallback(
+      interaction,
+      `${errorPrefix}: ${formatInteractionErrorText(error)}`
+    );
+    return true;
+  }
 }
 
 async function replyWithAsyncInteractionPayload(interaction, options = {}) {
@@ -15594,25 +15746,68 @@ client.on("interactionCreate", async (interaction) => {
       }
 
       const targetUser = interaction.options.getUser("target");
+      const targetsInput = (interaction.options.getString("targets") || "").trim();
       const userIdInput = (interaction.options.getString("user_id") || "").trim();
-      const targetId = targetUser?.id || parseRequestedUserId(userIdInput, "");
-      if (!targetId) {
-        await interaction.editReply("Укажи `target` или корректный `user_id`.");
+      const userIdsInput = (interaction.options.getString("user_ids") || "").trim();
+      const targetRole = interaction.options.getRole("role");
+      const parsedTargets = parseRequestedUserIdList(targetsInput, [], 50);
+      const parsedUserIds = parseRequestedUserIdList(userIdsInput, [], 50);
+      const invalidEntries = [...new Set([...parsedTargets.invalidEntries, ...parsedUserIds.invalidEntries])];
+      if (invalidEntries.length) {
+        await interaction.editReply("В `targets` и `user_ids` указывай только user mention или Discord ID, разделяя пробелами, запятыми или новыми строками.");
+        return;
+      }
+      if (parsedTargets.truncated || parsedUserIds.truncated) {
+        await interaction.editReply("За один запуск через `targets` и `user_ids` можно обработать не больше 50 уникальных участников на каждое поле.");
         return;
       }
 
-      if (await replyAutonomyGuardIsolatedTarget(interaction, targetId, { editReply: true })) {
+      const roleTargets = targetRole
+        ? await resolveTierlistNonFakeRoleTargetIds(client, targetRole)
+        : { roleId: "", roleName: "", targetIds: [] };
+
+      const targetIds = [...new Set([
+        targetUser?.id || "",
+        parseRequestedUserId(userIdInput, ""),
+        ...parsedTargets.userIds,
+        ...parsedUserIds.userIds,
+        ...roleTargets.targetIds,
+      ].filter(Boolean))];
+      if (!targetIds.length) {
+        await interaction.editReply("Укажи `target`, `targets`, корректный `user_id`/`user_ids` или выбери `role`.");
+        return;
+      }
+
+      const skippedIsolatedIds = targetIds.filter((targetId) => isAutonomyGuardIsolatedUser(db, targetId));
+      const allowedTargetIds = targetIds.filter((targetId) => !isAutonomyGuardIsolatedUser(db, targetId));
+      if (!allowedTargetIds.length) {
+        if (targetIds.length === 1) {
+          await replyAutonomyGuardIsolatedTarget(interaction, targetIds[0], { editReply: true });
+          return;
+        }
+
+        await interaction.editReply(`Все выбранные участники в изоляторе: ${buildTierlistNonFakeTargetPreview(skippedIsolatedIds)}.`);
         return;
       }
 
       try {
-        const mutationResult = await applyTierlistNonFakeClusterMutation(client, targetId, action === "add");
-        await interaction.editReply(buildTierlistNonFakeMutationText(
-          targetId,
-          action === "add",
-          mutationResult.result,
-          mutationResult.refreshWarnings
-        ));
+        if (allowedTargetIds.length === 1 && targetIds.length === 1 && !roleTargets.roleId) {
+          const mutationResult = await applyTierlistNonFakeClusterMutation(client, allowedTargetIds[0], action === "add");
+          await interaction.editReply(buildTierlistNonFakeMutationText(
+            allowedTargetIds[0],
+            action === "add",
+            mutationResult.result,
+            mutationResult.refreshWarnings
+          ));
+          return;
+        }
+
+        const mutationResult = await applyTierlistNonFakeClusterBulkMutation(client, allowedTargetIds, action === "add");
+        await interaction.editReply(buildTierlistNonFakeBulkMutationText(mutationResult, action === "add", {
+          roleId: roleTargets.roleId,
+          roleName: roleTargets.roleName,
+          skippedIsolatedIds,
+        }));
       } catch (error) {
         await interaction.editReply(`Не удалось обновить remembered T6-кластер: ${String(error?.message || error || "неизвестная ошибка").slice(0, 260)}`);
       }
@@ -19975,33 +20170,38 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    if (await handleVerificationPanelModalSubmitInteraction({
+    if (await runInteractionHandlerSafely(
       interaction,
-      client,
-      isModerator,
-      replyNoPermission: (currentInteraction) => currentInteraction.reply(ephemeralPayload({ content: "Нет прав." })),
-      buildPanelReply: (view, statusText) => buildVerificationPanelReplySafe(view, statusText, false),
-      getCurrentIntegration: getVerificationIntegrationState,
-      parseBooleanInput: parseVerificationBooleanInput,
-      parseListInput: parseVerificationListInput,
-      parseRequestedRoleId,
-      parseRequestedChannelId,
-      resolveRequestedRoleId: (value, fallbackRoleId = "") => resolveRequestedRoleIdFromGuild(client, value, fallbackRoleId),
-      resolveRequestedChannelId: (value, fallbackChannelId = "") => resolveRequestedChannelIdFromGuild(client, value, fallbackChannelId),
-      parseRequestedUserId,
-      cleanText: cleanVerificationText,
-      nowIso,
-      writeIntegrationSnapshot: (patch) => writeNativeIntegrationSnapshot(db, { slot: "verification", patch }),
-      writeVerifyRole: (roleId) => writeNativeRoleRecord(db, { slot: "verifyAccess", roleId }),
-      clearVerifyRole: () => clearNativeRoleRecord(db, { slot: "verifyAccess" }),
-      saveDb,
-      startRuntime: startVerificationRuntime,
-      ensureEntryMessage: ensureVerificationEntryMessage,
-      ensurePendingProfile: ensureVerificationPendingProfile,
-      postManualReport: postVerificationManualReport,
-      updateProfile: updateVerificationProfile,
-      computeReportDueAt: computeVerificationReportDueAt,
-    })) {
+      "Verification modal interaction failed",
+      "Не удалось обработать verification-форму",
+      () => handleVerificationPanelModalSubmitInteraction({
+        interaction,
+        client,
+        isModerator,
+        replyNoPermission: (currentInteraction) => currentInteraction.reply(ephemeralPayload({ content: "Нет прав." })),
+        buildPanelReply: (view, statusText) => buildVerificationPanelReplySafe(view, statusText, false),
+        getCurrentIntegration: getVerificationIntegrationState,
+        parseBooleanInput: parseVerificationBooleanInput,
+        parseListInput: parseVerificationListInput,
+        parseRequestedRoleId,
+        parseRequestedChannelId,
+        resolveRequestedRoleId: (value, fallbackRoleId = "") => resolveRequestedRoleIdFromGuild(client, value, fallbackRoleId),
+        resolveRequestedChannelId: (value, fallbackChannelId = "") => resolveRequestedChannelIdFromGuild(client, value, fallbackChannelId),
+        parseRequestedUserId,
+        cleanText: cleanVerificationText,
+        nowIso,
+        writeIntegrationSnapshot: (patch) => writeNativeIntegrationSnapshot(db, { slot: "verification", patch }),
+        writeVerifyRole: (roleId) => writeNativeRoleRecord(db, { slot: "verifyAccess", roleId }),
+        clearVerifyRole: () => clearNativeRoleRecord(db, { slot: "verifyAccess" }),
+        saveDb,
+        startRuntime: startVerificationRuntime,
+        ensureEntryMessage: ensureVerificationEntryMessage,
+        ensurePendingProfile: ensureVerificationPendingProfile,
+        postManualReport: postVerificationManualReport,
+        updateProfile: updateVerificationProfile,
+        computeReportDueAt: computeVerificationReportDueAt,
+      })
+    )) {
       return;
     }
 
@@ -20217,58 +20417,68 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    if (await handleSotReportModalSubmitInteraction({
+    if (await runInteractionHandlerSafely(
       interaction,
-      client,
-      isModerator,
-      replyNoPermission: () => interaction.reply(ephemeralPayload({ content: "Нет прав." })),
-      replyError: (_interaction, text) => interaction.reply(ephemeralPayload({ content: text })),
-      replyWithGroundTruthSotReport,
-      parseRequestedRoleId,
-      parseRequestedChannelId,
-      normalizeSotReportChannelSlot,
-      normalizeNativeRoleSlot,
-      getConfiguredManagedCharacterCatalog,
-      getManagedCharacterCatalog,
-      clearNativeCharacterRecord: (options) => clearNativeCharacterRecord(db, options),
-      writeNativeCharacterRecord: (options) => writeNativeCharacterRecord(db, options),
-      getGuild,
-      getManagedCharacterRecoveryExcludedRoleIds,
-      nowIso,
-      saveDb,
-      invalidateLiveCharacterStatsContext,
-      formatRoleMention,
-      formatChannelMention,
-      previewText,
-      normalizeNativePanelSlot,
-      writeAndApplyNativePanelOverride,
-      applyGroundTruthReportChannelLink,
-      clearNativeRoleRecord: (options) => clearNativeRoleRecord(db, options),
-      writeNativeRoleRecord: (options) => writeNativeRoleRecord(db, options),
-    })) {
+      "SOT report modal interaction failed",
+      "Не удалось обработать SoT-форму",
+      () => handleSotReportModalSubmitInteraction({
+        interaction,
+        client,
+        isModerator,
+        replyNoPermission: (currentInteraction) => currentInteraction.reply(ephemeralPayload({ content: "Нет прав." })),
+        replyError: (currentInteraction, payload) => currentInteraction.reply(normalizeInteractionReplyPayload(payload, true)),
+        replyWithGroundTruthSotReport,
+        parseRequestedRoleId,
+        parseRequestedChannelId,
+        normalizeSotReportChannelSlot,
+        normalizeNativeRoleSlot,
+        getConfiguredManagedCharacterCatalog,
+        getManagedCharacterCatalog,
+        clearNativeCharacterRecord: (options) => clearNativeCharacterRecord(db, options),
+        writeNativeCharacterRecord: (options) => writeNativeCharacterRecord(db, options),
+        getGuild,
+        getManagedCharacterRecoveryExcludedRoleIds,
+        nowIso,
+        saveDb,
+        invalidateLiveCharacterStatsContext,
+        formatRoleMention,
+        formatChannelMention,
+        previewText,
+        normalizeNativePanelSlot,
+        writeAndApplyNativePanelOverride,
+        applyGroundTruthReportChannelLink,
+        clearNativeRoleRecord: (options) => clearNativeRoleRecord(db, options),
+        writeNativeRoleRecord: (options) => writeNativeRoleRecord(db, options),
+      })
+    )) {
       return;
     }
 
-    if (await handleActivityPanelModalSubmitInteraction({
+    if (await runInteractionHandlerSafely(
       interaction,
-      db,
-      isModerator: hasActivityPanelAccess,
-      replyNoPermission: () => interaction.reply(ephemeralPayload({ content: "Нет прав." })),
-      replyError: (_interaction, text) => interaction.reply(ephemeralPayload({ content: text })),
-      replySuccess: (_interaction, text) => interaction.reply(ephemeralPayload({ content: text })),
-      parseRequestedUserId,
-      parseRequestedRoleId,
-      parseRequestedChannelId,
-      resolveMemberRoleIds: (userId) => resolveActivityMemberRoleIds(client, userId, interaction.guild || null),
-      resolveChannel: async (channelId) => {
-        const guild = interaction.guild || await getGuild(client).catch(() => null);
-        const cachedChannel = guild?.channels?.cache?.get(channelId) || client.channels?.cache?.get?.(channelId) || null;
-        if (cachedChannel) return cachedChannel;
-        return client.channels.fetch(channelId).catch(() => null);
-      },
-      saveDb,
-      runSerialized: runSerializedDbTask,
-    })) {
+      "Activity panel modal interaction failed",
+      "Не удалось обработать Activity-форму",
+      () => handleActivityPanelModalSubmitInteraction({
+        interaction,
+        db,
+        isModerator: hasActivityPanelAccess,
+        replyNoPermission: (currentInteraction) => currentInteraction.reply(ephemeralPayload({ content: "Нет прав." })),
+        replyError: (currentInteraction, payload) => currentInteraction.reply(normalizeInteractionReplyPayload(payload, true)),
+        replySuccess: (currentInteraction, payload) => currentInteraction.reply(normalizeInteractionReplyPayload(payload, true)),
+        parseRequestedUserId,
+        parseRequestedRoleId,
+        parseRequestedChannelId,
+        resolveMemberRoleIds: (userId) => resolveActivityMemberRoleIds(client, userId, interaction.guild || null),
+        resolveChannel: async (channelId) => {
+          const guild = interaction.guild || await getGuild(client).catch(() => null);
+          const cachedChannel = guild?.channels?.cache?.get(channelId) || client.channels?.cache?.get?.(channelId) || null;
+          if (cachedChannel) return cachedChannel;
+          return client.channels.fetch(channelId).catch(() => null);
+        },
+        saveDb,
+        runSerialized: runSerializedDbTask,
+      })
+    )) {
       return;
     }
 
@@ -20788,44 +20998,35 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
-      const currentChannelId = String(getResolvedBotHelperPanelSnapshot().channelId || "").trim();
-      const nextChannelId = parseRequestedChannelId(
-        interaction.fields.getTextInputValue(BOT_HELPER_PANEL_CHANNEL_INPUT_ID),
-        ""
-      );
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
-      if (currentChannelId === nextChannelId) {
-        await replyWithAsyncInteractionPayload(interaction, {
-          loadingText: "Проверяю helper-панель...",
-          buildPayload: () => buildBotHelperSettingsReplySafe(client, "Изменений по helper-панели нет.", false),
-          errorText: "Не удалось открыть helper-панель.",
-          logLabel: "Bot helper settings unchanged failed",
-        });
-        return;
+      try {
+        const currentChannelId = String(getResolvedBotHelperPanelSnapshot().channelId || "").trim();
+        const nextChannelId = parseRequestedChannelId(
+          interaction.fields.getTextInputValue(BOT_HELPER_PANEL_CHANNEL_INPUT_ID),
+          ""
+        );
+
+        if (currentChannelId === nextChannelId) {
+          await interaction.editReply(await buildBotHelperSettingsReplySafe(client, "Изменений по helper-панели нет.", false));
+          return;
+        }
+
+        const result = await writeAndApplyNativePanelOverride(client, BOT_HELPER_PANEL_SLOT, nextChannelId);
+        const statusText = result.cleared
+          ? (result.applyResult?.deletedMessageId
+            ? `Helper-панель отключена. Старое сообщение ${result.applyResult.deletedMessageId} удалено.`
+            : "Helper-панель отключена.")
+          : `Helper-панель перенесена в ${formatChannelMention(result.channel?.id || nextChannelId)}.`;
+        await interaction.editReply(await buildBotHelperSettingsReplySafe(client, statusText, false));
+      } catch (error) {
+        console.error("Bot helper settings modal failed:", error?.message || error);
+        await interaction.editReply(await buildBotHelperSettingsReplySafe(
+          client,
+          `Не удалось сохранить helper-панель: ${String(error?.message || error || "неизвестная ошибка")}`,
+          false
+        )).catch(() => {});
       }
-
-      await replyWithAsyncInteractionPayload(interaction, {
-        loadingText: nextChannelId ? "Сохраняю helper-панель..." : "Отключаю helper-панель...",
-        buildPayload: async () => {
-          try {
-            const result = await writeAndApplyNativePanelOverride(client, BOT_HELPER_PANEL_SLOT, nextChannelId);
-            const statusText = result.cleared
-              ? (result.applyResult?.deletedMessageId
-                ? `Helper-панель отключена. Старое сообщение ${result.applyResult.deletedMessageId} удалено.`
-                : "Helper-панель отключена.")
-              : `Helper-панель перенесена в ${formatChannelMention(result.channel?.id || nextChannelId)}.`;
-            return buildBotHelperSettingsReplySafe(client, statusText, false);
-          } catch (error) {
-            return buildBotHelperSettingsReplySafe(
-              client,
-              `Не удалось сохранить helper-панель: ${String(error?.message || error || "неизвестная ошибка")}`,
-              false
-            );
-          }
-        },
-        errorText: "Не удалось сохранить helper-панель.",
-        logLabel: "Bot helper settings modal failed",
-      });
       return;
     }
 

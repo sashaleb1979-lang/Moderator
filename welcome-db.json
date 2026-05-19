@@ -922,9 +922,9 @@
         "dirtyUsers": [],
         "lastFlushAt": null,
         "lastFlushStats": null,
-        "lastResumeAt": "2026-05-19T13:21:31.965Z",
-        "lastFullRecalcAt": "2026-05-19T13:21:31.982Z",
-        "lastRebuildAndRoleSyncAt": "2026-05-19T13:21:31.982Z",
+        "lastResumeAt": "2026-05-19T20:13:49.569Z",
+        "lastFullRecalcAt": "2026-05-19T20:13:49.589Z",
+        "lastRebuildAndRoleSyncAt": "2026-05-19T20:13:49.589Z",
         "lastRebuildAndRoleSyncStats": {
           "targetUserCount": 0,
           "managedRoleHolderCount": 0,
@@ -939,7 +939,7 @@
           "skipReasonCounts": {},
           "syncMode": "rebuild_and_sync"
         },
-        "lastDailyRoleSyncAt": "2026-05-19T13:21:31.982Z",
+        "lastDailyRoleSyncAt": "2026-05-19T20:13:49.589Z",
         "lastDailyRoleSyncStats": {
           "targetUserCount": 0,
           "managedRoleHolderCount": 0,
