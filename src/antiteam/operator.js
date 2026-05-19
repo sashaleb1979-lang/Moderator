@@ -581,15 +581,13 @@ function createAntiteamOperator(options = {}) {
     }
   }
 
-  async function resolveDirectJoinUrlForRobloxUserId(robloxUserId = "") {
-    return (await resolveDirectJoinTargetForRobloxUserId(robloxUserId))?.directJoinUrl || "";
+  function buildRobloxUserJoinUrl(robloxUserId = "") {
+    const userId = cleanString(robloxUserId, 40);
+    return userId ? `https://www.roblox.com/games/start?userId=${encodeURIComponent(userId)}` : "";
   }
 
-  function getConfiguredRobloxPlaceId() {
-    const configPlaceId = cleanString(getConfig().roblox?.jjsPlaceId, 40);
-    if (configPlaceId) return configPlaceId;
-    if (typeof options.robloxPlaceId === "function") return cleanString(options.robloxPlaceId(), 40);
-    return cleanString(options.robloxPlaceId, 40);
+  async function resolveDirectJoinUrlForRobloxUserId(robloxUserId = "") {
+    return (await resolveDirectJoinTargetForRobloxUserId(robloxUserId))?.directJoinUrl || "";
   }
 
   async function fetchRobloxPresenceMap(robloxUserIds = [], errorLabel = "Antiteam Roblox presence lookup failed:") {
@@ -646,8 +644,13 @@ function createAntiteamOperator(options = {}) {
   }
 
   async function resolveDirectJoinTargetForRobloxUserId(robloxUserId = "", { requiredGameId = "" } = {}) {
+    const userId = cleanString(robloxUserId, 40);
     const presenceByRobloxId = await fetchRobloxPresenceMap([robloxUserId], "Antiteam direct-join lookup failed:");
-    return getExactDirectJoinTarget(presenceByRobloxId, robloxUserId, { requiredGameId });
+    const exactTarget = getExactDirectJoinTarget(presenceByRobloxId, userId, { requiredGameId });
+    if (exactTarget) return exactTarget;
+    if (requiredGameId) return null;
+    const fallbackUrl = buildRobloxUserJoinUrl(userId);
+    return fallbackUrl ? { userId, gameId: "", placeId: "", directJoinUrl: fallbackUrl } : null;
   }
 
   async function resolveDirectJoinTarget(ticket = {}, { requiredGameId = "" } = {}) {
@@ -1554,6 +1557,7 @@ function createAntiteamOperator(options = {}) {
         await replyNoPermission(interaction);
         return true;
       }
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       const summary = interaction.fields.getTextInputValue("summary");
       const confirmedHelperIds = Object.values(ticket.helpers || {}).filter((helper) => helper.arrived).map((helper) => helper.userId);
       const updated = await persist("antiteam-close", () => {
@@ -1572,7 +1576,7 @@ function createAntiteamOperator(options = {}) {
         return closed;
       });
       await finalizeClosedTicket(updated);
-      await interaction.reply({ content: "Антитим закрыт. Итог записан в заявку.", flags: MessageFlags.Ephemeral });
+      await interaction.editReply({ content: "Антитим закрыт. Итог записан в заявку.", components: [] });
       return true;
     }
 

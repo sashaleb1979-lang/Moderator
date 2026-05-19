@@ -425,6 +425,41 @@ test("help button records friend-request path and notifies author only after hel
   assert.match(JSON.stringify(sentInteraction.calls.at(-1)[1].components[0].toJSON()), /Помощь принята/);
 });
 
+test("friend-request help always includes a direct Roblox user join link", async () => {
+  const db = {};
+  const state = ensureAntiteamState(db).state;
+  state.config.channelId = "channel-1";
+  const draft = setAntiteamDraft(db, "author-1", {
+    userTag: "Author",
+    roblox: { userId: "101", username: "Anchor", profileUrl: "https://www.roblox.com/users/101/profile" },
+    level: "medium",
+    count: "2-4",
+    description: "Тимятся у центра.",
+    directJoinEnabled: false,
+  }, { now: "2026-05-16T10:00:00.000Z" });
+  createAntiteamTicketFromDraft(db, draft, {
+    id: "ticket-user-link",
+    now: "2026-05-16T10:01:00.000Z",
+  });
+  const operator = createAntiteamOperator({
+    db,
+    now: () => "2026-05-16T10:02:00.000Z",
+    saveDb() {},
+    getProfile: () => ({ domains: { roblox: { userId: "202", username: "HelperRoblox", verificationStatus: "verified" } } }),
+  });
+  const interaction = createButtonInteraction("at:help:ticket-user-link");
+
+  assert.equal(await operator.handleButtonInteraction(interaction), true);
+
+  const ticket = db.sot.antiteam.tickets["ticket-user-link"];
+  assert.equal(ticket.helpers["helper-1"].linkKind, "friend_request");
+  const json = JSON.stringify(interaction.calls.at(-1)[1].components[0].toJSON());
+  assert.match(json, /Ссылка подключения/);
+  assert.match(json, /games\/start\?userId=101/);
+  assert.match(json, /станет рабочей после добавления в друзья/);
+  assert.match(json, /🔗 Подключиться/);
+});
+
 test("ticket direct-join toggle is limited to author or admin and updates the mission", async () => {
   const db = {};
   const state = ensureAntiteamState(db).state;
@@ -900,7 +935,7 @@ test("direct join help uses root place fallback when Roblox omits placeId", asyn
   assert.match(json, /Профиль/);
 });
 
-test("direct join help still hides links when Roblox does not expose a concrete live game id", async () => {
+test("direct join help falls back to Roblox user join link when server id is hidden", async () => {
   const db = {};
   const state = ensureAntiteamState(db).state;
   state.config.channelId = "channel-1";
@@ -930,8 +965,9 @@ test("direct join help still hides links when Roblox does not expose a concrete 
   const ticket = db.sot.antiteam.tickets["ticket-direct-no-game"];
   assert.equal(ticket.helpers["helper-1"].linkKind, "direct");
   const json = JSON.stringify(interaction.calls.at(-1)[1].components[0].toJSON());
-  assert.doesNotMatch(json, /Прямая ссылка подключения/);
-  assert.doesNotMatch(json, /🔗 Подключиться/);
+  assert.match(json, /Прямая ссылка подключения/);
+  assert.match(json, /games\/start\?userId=101/);
+  assert.match(json, /🔗 Подключиться/);
   assert.match(json, /Профиль/);
 });
 
@@ -1423,6 +1459,8 @@ test("closing ticket edits messages and renames thread with gray marker", async 
 
   assert.equal(await operator.handleModalSubmitInteraction(interaction), true);
 
+  assert.deepEqual(interaction.calls.map((call) => call[0]), ["deferReply", "editReply"]);
+  assert.equal(interaction.calls.at(-1)[1].content, "Антитим закрыт. Итог записан в заявку.");
   assert.equal(renamedTo, "⚫ 2-4 тимеров • Author");
   assert.match(JSON.stringify(publicEdit.components[0].toJSON()), /⚫ Завершено • 2-4 тимеров/);
   assert.match(JSON.stringify(threadPanelEdit.components[0].toJSON()), /✅ Закрыто/);
