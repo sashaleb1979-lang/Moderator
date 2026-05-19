@@ -27,6 +27,8 @@ function resolveBaseRoleRecord(slot, appRoles = {}) {
       return createRecord(appRoles.wartimeAccessRoleId, "configured");
     case "accessNonJjs":
       return createRecord(appRoles.nonGgsAccessRoleId || appRoles.nonJjsAccessRoleId, "configured");
+    case "accessCompanion":
+      return createRecord(appRoles.accessCompanionRoleId, "configured");
     case "verifyAccess":
       return createRecord(appRoles.verifyAccessRoleId, "configured");
     default:
@@ -37,7 +39,7 @@ function resolveBaseRoleRecord(slot, appRoles = {}) {
 function resolveRoleRecord({ slot, db = {}, appConfig = {} } = {}) {
   const appRoles = getAppRoles(appConfig);
   const record = resolveBaseRoleRecord(slot, appRoles);
-  if (!record && !["moderator", "accessNormal", "accessWartime", "accessNonJjs", "verifyAccess"].includes(slot)) {
+  if (!record && !["moderator", "accessNormal", "accessWartime", "accessNonJjs", "accessCompanion", "verifyAccess"].includes(slot)) {
     return null;
   }
 
@@ -88,6 +90,7 @@ function resolveAllRoleRecords({ db = {}, appConfig = {} } = {}) {
     accessNormal: resolveRoleRecord({ slot: "accessNormal", db, appConfig }),
     accessWartime: resolveRoleRecord({ slot: "accessWartime", db, appConfig }),
     accessNonJjs: resolveRoleRecord({ slot: "accessNonJjs", db, appConfig }),
+    accessCompanion: resolveRoleRecord({ slot: "accessCompanion", db, appConfig }),
     verifyAccess: resolveRoleRecord({ slot: "verifyAccess", db, appConfig }),
     killTier: Object.fromEntries(KILL_TIER_SLOTS.map((tier) => [tier, resolveKillTierRole({ tier, db, appConfig })])),
     killMilestone: Object.fromEntries(KILL_MILESTONE_SLOTS.map((milestone) => [milestone, resolveKillMilestoneRole({ milestone, db, appConfig })])),

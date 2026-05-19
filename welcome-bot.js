@@ -32,71 +32,6 @@ const {
 } = require("./src/sot/native-characters");
 const {
   clearNativeRoleRecord,
-  normalizeRoleSlot: normalizeNativeRoleSlot,
-  writeNativeRoleRecord,
-} = require("./src/sot/native-roles");
-const {
-  clearNativeIntegrationSourcePath,
-  writeNativeIntegrationSnapshot,
-  writeNativeIntegrationRoleGrantEnabled,
-  writeNativeIntegrationSourcePath,
-} = require("./src/sot/native-integrations");
-const {
-  clearNativePanelRecord,
-  normalizePanelSlot: normalizeNativePanelSlot,
-  writeNativePanelRecord,
-} = require("./src/sot/native-panels");
-const { getCharacterAliasNames } = require("./src/sot/character-aliases");
-const { compareSotVsLegacy, summarizeCompareMismatches } = require("./src/sot/legacy-bridge/compare");
-const {
-  handleSotReportButtonInteraction,
-  handleSotReportModalOpenInteraction,
-  handleSotReportModalSubmitInteraction,
-} = require("./src/sot/report-operator");
-const { getSotReportIntegrationSnapshots } = require("./src/sot/report-integrations");
-const { resolveAllCharacterRecords } = require("./src/sot/resolver/characters");
-const {
-  getActionableSotCharacterAlertState,
-  runSotStartupAlerts,
-  scheduleSotAlertTicks,
-} = require("./src/sot/runtime-alerts");
-const { createSerializedMutationRunner, createSerializedTaskRunner } = require("./src/runtime/serialized-task-runner");
-const {
-  clearIntervalHandles,
-  mergeRobloxRuntimeConfig,
-  normalizeRobloxPanelSettingsPatch,
-  rebuildRobloxIntervalHandles,
-} = require("./src/runtime/roblox-runtime-support");
-const { buildClientReadyPeriodicJobs, buildRobloxPeriodicJobs, runClientReadyCore, scheduleClientReadyIntervals, schedulePeriodicJobs } = require("./src/runtime/client-ready-core");
-const {
-  syncLegacyGraphicTierlistBoardSnapshot,
-  syncLegacyPanelSnapshot,
-  syncLegacyTextTierlistBoardSnapshot,
-} = require("./src/sot/legacy-bridge/panels");
-const { syncLegacyCharacterWrites, syncLegacyChannelWrites, syncLegacyInfluenceWrites, syncLegacyIntegrationWrites, syncLegacyPanelWrites, syncLegacyPresentationWrites, syncLegacyRoleWrites } = require("./src/sot/legacy-bridge/write");
-const { syncSotShadowState: syncShadowSotState } = require("./src/sot/loader");
-const {
-  renderGraphicTierlistPng,
-  setAvatarCacheDir,
-  clearGraphicAvatarCache,
-  clearGraphicAvatarCacheForUser,
-  isPureimageAvailable,
-  DEFAULT_GRAPHIC_TIER_COLORS,
-} = require("./graphic-tierlist");
-const { buildCommands } = require("./src/onboard/commands");
-const { buildComboCommands } = require("./src/combo-guide/commands");
-const {
-  publishGuideOrdered,
-  addCharacterToGuide,
-  removeCharacterFromGuide,
-  refreshNavigation,
-  deleteFullGuide,
-  downloadUrl,
-} = require("./src/combo-guide/publisher");
-const {
-  buildComboPanelPayload,
-  buildMessageSelectPayload,
-  buildEditModal,
   normalizeComboGuideEditorRoleIds,
 } = require("./src/combo-guide/editor");
 const {
@@ -199,6 +134,11 @@ const {
   normalizeOnboardAccessMode,
   resolveGrantedAccessRoleId,
 } = require("./src/onboard/access-mode");
+const {
+  collectAccessCompanionSourceRoleIds,
+  hasAnyAccessCompanionSourceRole,
+  shouldGrantAccessCompanionRole,
+} = require("./src/onboard/access-companion");
 const {
   ONBOARD_ACCESS_GRANT_MODES,
   createOnboardAccessGrantState,
@@ -626,6 +566,7 @@ function buildRuntimeConfig(fileConfig = {}) {
         "NON_JJS_ACCESS_ROLE_ID",
         envText("NON_GGS_ACCESS_ROLE_ID", fileConfig?.roles?.nonJjsAccessRoleId || fileConfig?.roles?.nonGgsAccessRoleId || "")
       ),
+      accessCompanionRoleId: envText("ACCESS_COMPANION_ROLE_ID", fileConfig?.roles?.accessCompanionRoleId || ""),
       killTierRoleIds: {
         1: envText("TIER_ROLE_1_ID", fileConfig?.roles?.killTierRoleIds?.["1"] || ""),
         2: envText("TIER_ROLE_2_ID", fileConfig?.roles?.killTierRoleIds?.["2"] || ""),
@@ -966,12 +907,12 @@ const syncRobloxPlaytime = robloxPanelTelemetry.wrapJob("playtime_sync", robloxJ
   logError: (...args) => console.error(...args),
 })));
 
-const flushRobloxRuntime = robloxPanelTelemetry.wrapJob("runtime_flush", robloxJobCoordinator.createRunner("runtime_flush", () => flushRobloxRuntimeState({
+const flushRobloxRuntime = robloxPanelTelemetry.wrapJob("runtime_flush", robloxJobCoordinator.createRunner("runtime_flush", () => runSerializedDbTask(() => flushRobloxRuntimeState({
   db,
   runtimeState: robloxRuntimeState,
   now: nowIso,
   saveDb,
-})));
+}), "roblox-runtime-flush")));
 
 function cloneJsonValue(value) {
   return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
@@ -4630,8 +4571,28 @@ async function resolveActivityMemberMeta(client, userId, guildHint = null) {
 
 async function listCurrentActivityVoiceStates(client, guildHint = null) {
   const guild = guildHint || await getGuild(client).catch(() => null);
-  if (!guild?.voiceStates?.cache) return [];
-  return [...guild.voiceStates.cache.values()].filter((voiceState) => voiceState?.channelId);
+  if (!guild) return [];
+
+  await guild.channels.fetch().catch(() => null);
+
+  const voiceStatesByUserId = new Map();
+  for (const voiceState of guild.voiceStates?.cache?.values?.() || []) {
+    const userId = String(voiceState?.id || voiceState?.member?.id || "").trim();
+    if (!userId || !voiceState?.channelId || voiceStatesByUserId.has(userId)) continue;
+    voiceStatesByUserId.set(userId, voiceState);
+  }
+
+  for (const channel of guild.channels?.cache?.values?.() || []) {
+    if (typeof channel?.isVoiceBased !== "function" || !channel.isVoiceBased()) continue;
+    for (const member of channel.members?.values?.() || []) {
+      const userId = String(member?.id || "").trim();
+      const voiceState = member?.voice || null;
+      if (!userId || !voiceState?.channelId || voiceStatesByUserId.has(userId)) continue;
+      voiceStatesByUserId.set(userId, voiceState);
+    }
+  }
+
+  return [...voiceStatesByUserId.values()];
 }
 
 function formatActivityVoiceLogLine(result = {}) {
@@ -4816,9 +4777,8 @@ function getAutonomyGuardProtectedRoleIds() {
   return collectAutonomyGuardProtectedRoleIds({
     protectedRoleId: getAutonomyGuardState().protectedRole?.roleId,
     accessRoleIds: [
-      getNormalAccessRoleId(),
-      getWartimeAccessRoleId(),
-      getNonJjsAccessRoleId(),
+      ...getCountedAccessRoleIds(),
+      getAccessCompanionRoleId(),
       getVerifyAccessRoleId(),
     ],
     tierRoleIds: getAllTierRoleIds(),
@@ -5616,8 +5576,27 @@ function getNonJjsAccessRoleId() {
   return getSotRole("accessNonJjs", { db, appConfig })?.value || "";
 }
 
+function getCountedAccessRoleIds() {
+  return collectAccessCompanionSourceRoleIds({
+    normalAccessRoleId: getNormalAccessRoleId(),
+    wartimeAccessRoleId: getWartimeAccessRoleId(),
+    nonJjsAccessRoleId: getNonJjsAccessRoleId(),
+  });
+}
+
 function getVerifyAccessRoleId() {
   return getSotRole("verifyAccess", { db, appConfig })?.value || "";
+}
+
+function getAccessCompanionRoleId() {
+  return getSotRole("accessCompanion", { db, appConfig })?.value || "";
+}
+
+function getAccessGrantRollbackRoleIds() {
+  return [...new Set([
+    ...getCountedAccessRoleIds(),
+    getAccessCompanionRoleId(),
+  ].filter(Boolean))];
 }
 
 function getModeratorRoleId() {
@@ -5692,6 +5671,14 @@ function getGrantedAccessRoleIdForMode(mode = getCurrentOnboardMode()) {
 function memberHasManagedStartAccessRole(member) {
   if (!member?.roles?.cache) return false;
   return getManagedStartAccessRoleIds().some((roleId) => roleId && member.roles.cache.has(roleId));
+}
+
+function memberHasAnyCountedAccessRole(member) {
+  if (!member?.roles?.cache) return false;
+  return hasAnyAccessCompanionSourceRole({
+    heldRoleIds: [...member.roles.cache.keys()],
+    sourceRoleIds: getCountedAccessRoleIds(),
+  });
 }
 
 function getOnboardModeValidationError(mode = getCurrentOnboardMode()) {
@@ -6518,7 +6505,7 @@ async function completeVerificationApprovedAccess(client, userId, accessMode = "
 
   const verifyRoleId = cleanVerificationText(getVerifyAccessRoleId(), 80);
   const releaseRoleIds = getVerificationQuarantineRoleIds();
-  const rolePoolIds = [...new Set([...releaseRoleIds, verifyRoleId].filter(Boolean))];
+  const rolePoolIds = [...new Set([...releaseRoleIds, verifyRoleId, getAccessCompanionRoleId()].filter(Boolean))];
   const snapshot = getRolePoolSnapshot(member, rolePoolIds);
 
   try {
@@ -6534,6 +6521,8 @@ async function completeVerificationApprovedAccess(client, userId, accessMode = "
       markVerificationRoleMutationIgnore(userId);
       await member.roles.remove(verifyRoleId, reason);
     }
+
+    await ensureAccessCompanionRoleForMember(member, reason);
   } catch (error) {
     await restoreRolePoolSnapshot(client, userId, rolePoolIds, snapshot, `${reason} rollback`);
     throw new Error(`Не удалось выпустить ${userId} из verification: ${formatRuntimeError(error)}`);
@@ -6846,6 +6835,74 @@ async function restoreRolePoolSnapshot(client, userId, roleIds, previousRoleIds,
   return true;
 }
 
+async function ensureAccessCompanionRoleForMember(member, reason = "access companion sync") {
+  const companionRoleId = getAccessCompanionRoleId();
+  const heldRoleIds = member?.roles?.cache ? [...member.roles.cache.keys()] : [];
+  const eligible = memberHasAnyCountedAccessRole(member);
+  const alreadyHad = Boolean(companionRoleId && member?.roles?.cache?.has?.(companionRoleId));
+
+  if (!member?.roles?.cache) {
+    return {
+      configured: Boolean(companionRoleId),
+      eligible: false,
+      alreadyHad: false,
+      granted: false,
+      missingMember: true,
+      member: null,
+      companionRoleId,
+    };
+  }
+
+  if (!shouldGrantAccessCompanionRole({
+    companionRoleId,
+    heldRoleIds,
+    sourceRoleIds: getCountedAccessRoleIds(),
+  })) {
+    return {
+      configured: Boolean(companionRoleId),
+      eligible,
+      alreadyHad,
+      granted: false,
+      missingMember: false,
+      member,
+      companionRoleId,
+    };
+  }
+
+  try {
+    await member.roles.add(companionRoleId, reason);
+  } catch (error) {
+    throw new Error(`Не удалось выдать доп. access-роль ${companionRoleId} пользователю ${member.id}: ${formatRuntimeError(error)}`);
+  }
+
+  return {
+    configured: true,
+    eligible: true,
+    alreadyHad: false,
+    granted: true,
+    missingMember: false,
+    member,
+    companionRoleId,
+  };
+}
+
+async function ensureAccessCompanionRoleForUser(client, userId, reason = "access companion sync") {
+  const member = await fetchMember(client, userId);
+  if (!member) {
+    return {
+      configured: Boolean(getAccessCompanionRoleId()),
+      eligible: false,
+      alreadyHad: false,
+      granted: false,
+      missingMember: true,
+      member: null,
+      companionRoleId: getAccessCompanionRoleId(),
+    };
+  }
+
+  return ensureAccessCompanionRoleForMember(member, reason);
+}
+
 async function ensureSingleTierRole(client, userId, targetTier, reason = "kill tier sync") {
   const member = await fetchMember(client, userId);
   if (!member) return;
@@ -6959,7 +7016,8 @@ async function grantAccessRole(client, userId, reason = "welcome application sub
     throw new Error("Не настроена роль стартового доступа для текущего режима.");
   }
   const managedRoleIds = getManagedStartAccessRoleIds();
-  const snapshot = getRolePoolSnapshot(member, managedRoleIds);
+  const rollbackRoleIds = [...new Set([...managedRoleIds, getAccessCompanionRoleId()].filter(Boolean))];
+  const snapshot = getRolePoolSnapshot(member, rollbackRoleIds);
   try {
     for (const roleId of managedRoleIds) {
       if (roleId !== targetRoleId && member.roles.cache.has(roleId)) {
@@ -6978,8 +7036,10 @@ async function grantAccessRole(client, userId, reason = "welcome application sub
         throw new Error(`Не удалось выдать стартовую роль ${targetRoleId} пользователю ${userId}: ${formatRuntimeError(error)}`);
       }
     }
+
+    await ensureAccessCompanionRoleForMember(member, reason);
   } catch (error) {
-    await restoreRolePoolSnapshot(client, userId, managedRoleIds, snapshot, `${reason} rollback`);
+    await restoreRolePoolSnapshot(client, userId, rollbackRoleIds, snapshot, `${reason} rollback`);
     throw error;
   }
   return true;
@@ -7006,8 +7066,18 @@ async function grantNonGgsAccessRole(client, userId, reason = "non-JJS captcha p
     throw new Error("NON_JJS_ACCESS_ROLE_ID не настроен. Укажи отдельную роль для доступа без JJS.");
   }
 
-  if (!member.roles.cache.has(roleId)) {
-    await member.roles.add(roleId, reason);
+  const rollbackRoleIds = [...new Set([roleId, getAccessCompanionRoleId()].filter(Boolean))];
+  const snapshot = getRolePoolSnapshot(member, rollbackRoleIds);
+
+  try {
+    if (!member.roles.cache.has(roleId)) {
+      await member.roles.add(roleId, reason);
+    }
+
+    await ensureAccessCompanionRoleForMember(member, reason);
+  } catch (error) {
+    await restoreRolePoolSnapshot(client, userId, rollbackRoleIds, snapshot, `${reason} rollback`);
+    throw error;
   }
 
   return true;
@@ -13317,6 +13387,85 @@ async function syncApprovedTierRoles(client, targetUserId = null) {
   return synced;
 }
 
+function createAccessCompanionSyncSummary() {
+  return {
+    configured: Boolean(getAccessCompanionRoleId()),
+    companionRoleId: getAccessCompanionRoleId(),
+    scanned: 0,
+    eligible: 0,
+    granted: 0,
+    alreadyHad: 0,
+    missingMembers: 0,
+    skippedWithoutAccess: 0,
+    skippedBots: 0,
+  };
+}
+
+function formatAccessCompanionSyncSummary(result = {}) {
+  if (result?.configured !== true) {
+    return "Доп. access-роль не настроена.";
+  }
+
+  return `Доп. access-роль: eligible ${result.eligible}, granted ${result.granted}, already had ${result.alreadyHad}.`;
+}
+
+async function syncAccessCompanionRoles(client, options = {}) {
+  const targetUserId = String(options?.targetUserId || "").trim();
+  const reason = String(options?.reason || "access companion sync").trim() || "access companion sync";
+  const result = createAccessCompanionSyncSummary();
+
+  if (!result.configured || getCountedAccessRoleIds().length === 0) {
+    return result;
+  }
+
+  if (targetUserId) {
+    result.scanned = 1;
+    const grantResult = await ensureAccessCompanionRoleForUser(client, targetUserId, reason);
+    if (grantResult.missingMember) {
+      result.missingMembers = 1;
+      return result;
+    }
+    if (grantResult.member?.user?.bot) {
+      result.skippedBots = 1;
+      return result;
+    }
+    if (grantResult.eligible) result.eligible = 1;
+    else result.skippedWithoutAccess = 1;
+    if (grantResult.alreadyHad) result.alreadyHad = 1;
+    if (grantResult.granted) result.granted = 1;
+    return result;
+  }
+
+  const guild = await getGuild(client).catch(() => null);
+  if (!guild) {
+    throw new Error("Не удалось получить guild для синхронизации доп. access-роли.");
+  }
+
+  const members = await guild.members.fetch().catch(() => null);
+  if (!members) {
+    throw new Error("Не удалось получить список участников guild для синхронизации доп. access-роли.");
+  }
+
+  for (const member of members.values()) {
+    result.scanned += 1;
+    if (member.user?.bot) {
+      result.skippedBots += 1;
+      continue;
+    }
+
+    const grantResult = await ensureAccessCompanionRoleForMember(member, reason);
+    if (grantResult.eligible) result.eligible += 1;
+    else {
+      result.skippedWithoutAccess += 1;
+      continue;
+    }
+    if (grantResult.alreadyHad) result.alreadyHad += 1;
+    if (grantResult.granted) result.granted += 1;
+  }
+
+  return result;
+}
+
 async function applyManualPanelOverride(client, slot, channelId = "") {
   const normalizedSlot = String(slot || "").trim();
   if (["welcome", "nonGgs"].includes(normalizedSlot)) {
@@ -13484,6 +13633,7 @@ client.once("clientReady", async () => {
       }),
       registerGuildCommands,
       syncApprovedTierRoles,
+      syncAccessCompanionRoles: (currentClient) => syncAccessCompanionRoles(currentClient, { reason: "startup access companion sync" }),
       refreshWelcomePanel,
       refreshAllTierlists,
       resumeActivityRuntime: () => resumeActivityRuntime({
@@ -13959,19 +14109,17 @@ client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
   if (message.guildId !== GUILD_ID) return;
 
-  try {
-    await runSerializedDbTask(() => recordActivityMessage({
-      db,
-      message: {
-        guildId: message.guildId,
-        userId: message.author.id,
-        channelId: message.channelId,
-        createdAt: message.createdAt,
-      },
-    }), "activity-runtime-message-ingest");
-  } catch (error) {
+  runSerializedDbTask(() => recordActivityMessage({
+    db,
+    message: {
+      guildId: message.guildId,
+      userId: message.author.id,
+      channelId: message.channelId,
+      createdAt: message.createdAt,
+    },
+  }), "activity-runtime-message-ingest").catch((error) => {
     console.error("Activity runtime message ingest failed:", error?.message || error);
-  }
+  });
 
   if (await getAntiteamOperator().handlePhotoMessage(message).catch((error) => {
     console.error("Antiteam photo flow failed:", error?.message || error);
@@ -14223,7 +14371,7 @@ client.on("messageCreate", async (message) => {
     return;
   }
 
-  const accessRoleIds = getManagedStartAccessRoleIds();
+  const accessRoleIds = getAccessGrantRollbackRoleIds();
   const previousProfile = cloneJsonValue(db.profiles?.[message.author.id]);
   const hadProfile = Boolean(db.profiles?.[message.author.id]);
   const hadCooldown = Object.prototype.hasOwnProperty.call(db.cooldowns || {}, message.author.id);
@@ -14837,7 +14985,7 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
-      const accessRoleIds = getManagedStartAccessRoleIds();
+      const accessRoleIds = getAccessGrantRollbackRoleIds();
       const previousProfile = cloneJsonValue(db.profiles?.[target.id]);
       const hadProfile = Boolean(db.profiles?.[target.id]);
       const accessMember = await fetchMember(client, target.id);
@@ -18181,7 +18329,8 @@ client.on("interactionCreate", async (interaction) => {
         const managed = await ensureManagedRoles(client);
         await maybeLogSotCharacterHealthAlert(client, "panel-sync-roles");
         const synced = await syncApprovedTierRoles(client);
-        statusText = `Роли пересинхронизированы. Tier-профилей: ${synced}. Персонажи: resolved ${managed.resolvedCharacters}, recovered ${managed.recoveredCharacters}, ambiguous ${managed.ambiguousCharacters}, unresolved ${managed.unresolvedCharacters}.`;
+        const companion = await syncAccessCompanionRoles(client, { reason: `panel sync roles by ${interaction.user.tag}` });
+        statusText = `Роли пересинхронизированы. Tier-профилей: ${synced}. Персонажи: resolved ${managed.resolvedCharacters}, recovered ${managed.recoveredCharacters}, ambiguous ${managed.ambiguousCharacters}, unresolved ${managed.unresolvedCharacters}. ${formatAccessCompanionSyncSummary(companion)}`;
       } else if (interaction.customId === "panel_sync_character_emojis") {
         const result = await syncCharacterEmojiAssets(client, interaction.user.tag);
         statusText = formatCharacterEmojiSyncSummary(result);
@@ -18609,6 +18758,9 @@ client.on("interactionCreate", async (interaction) => {
         const grantWartimeStarterRole = normalizeOnboardAccessMode(getCurrentOnboardMode()) === ONBOARD_ACCESS_MODES.WARTIME
           && Boolean(getWartimeAccessRoleId());
         let grantedWartimeStarterRole = false;
+        const wartimeRollbackRoleIds = grantWartimeStarterRole ? getAccessGrantRollbackRoleIds() : [];
+        const wartimeAccessMember = grantWartimeStarterRole ? await fetchMember(client, interaction.user.id) : null;
+        const wartimeSnapshot = grantWartimeStarterRole ? getRolePoolSnapshot(wartimeAccessMember, wartimeRollbackRoleIds) : [];
 
         if (grantWartimeStarterRole) {
           await grantAccessRole(client, interaction.user.id, "non-JJS captcha passed during wartime");
@@ -18619,7 +18771,13 @@ client.on("interactionCreate", async (interaction) => {
           await grantNonGgsAccessRole(client, interaction.user.id, "non-JJS captcha passed");
         } catch (error) {
           if (grantedWartimeStarterRole) {
-            await revokeAccessRole(client, interaction.user.id, "rollback wartime starter role after non-JJS grant failure").catch((rollbackError) => {
+            await restoreRolePoolSnapshot(
+              client,
+              interaction.user.id,
+              wartimeRollbackRoleIds,
+              wartimeSnapshot,
+              "rollback wartime starter role after non-JJS grant failure"
+            ).catch((rollbackError) => {
               console.warn(`Rollback wartime starter role failed for ${interaction.user.id}: ${formatRuntimeError(rollbackError)}`);
             });
           }
@@ -19285,7 +19443,7 @@ client.on("interactionCreate", async (interaction) => {
       );
 
       if (hasPendingProof) {
-        const accessRoleIds = getManagedStartAccessRoleIds();
+        const accessRoleIds = getAccessGrantRollbackRoleIds();
         const previousProfile = cloneJsonValue(db.profiles?.[interaction.user.id]);
         const hadProfile = Boolean(db.profiles?.[interaction.user.id]);
         const hadCooldown = Object.prototype.hasOwnProperty.call(db.cooldowns || {}, interaction.user.id);
@@ -21113,19 +21271,21 @@ client.on("voiceStateUpdate", async (oldState, newState) => {
   const guildId = String(newState?.guild?.id || oldState?.guild?.id || "").trim();
   if (guildId !== GUILD_ID) return;
 
-  try {
-    const result = await runSerializedDbTask(() => recordActivityVoiceState({
-      db,
-      oldState,
-      newState,
-      now: nowIso(),
-    }), "activity-runtime-voice-ingest");
-    if (result?.captured && result?.stateChanged) {
-      console.log(formatActivityVoiceLogLine(result));
-    }
-  } catch (error) {
-    console.error("Activity runtime voice ingest failed:", error?.message || error);
-  }
+  const eventRecordedAt = nowIso();
+  runSerializedDbTask(() => recordActivityVoiceState({
+    db,
+    oldState,
+    newState,
+    now: eventRecordedAt,
+  }), "activity-runtime-voice-ingest")
+    .then((result) => {
+      if (result?.captured && result?.stateChanged) {
+        console.log(formatActivityVoiceLogLine(result));
+      }
+    })
+    .catch((error) => {
+      console.error("Activity runtime voice ingest failed:", error?.message || error);
+    });
 });
 
 client.login(DISCORD_TOKEN);

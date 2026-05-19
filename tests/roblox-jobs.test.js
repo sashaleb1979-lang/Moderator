@@ -934,6 +934,7 @@ test("flushRobloxRuntime persists only when playtime runtime marked profiles dir
   const saved = [];
 
   runtimeState.dirtyDiscordUserIds.add("user_a");
+  runtimeState.dirtyReasonsByDiscordUserId.user_a = ["playtime_updated", "session_closed"];
   runtimeState.dirty = true;
 
   const result = flushRobloxRuntime({
@@ -948,9 +949,14 @@ test("flushRobloxRuntime persists only when playtime runtime marked profiles dir
   assert.deepEqual(result, {
     saved: true,
     dirtyUserCount: 1,
+    dirtyReasonCounts: {
+      playtime_updated: 1,
+      session_closed: 1,
+    },
     flushedAt: "2026-05-09T12:10:00.000Z",
   });
   assert.deepEqual(saved, ["saved"]);
   assert.equal(runtimeState.dirty, false);
   assert.equal(runtimeState.dirtyDiscordUserIds.size, 0);
+  assert.deepEqual(runtimeState.dirtyReasonsByDiscordUserId, {});
 });

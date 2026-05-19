@@ -247,11 +247,16 @@ function computeElapsedHours(fromValue, now) {
 function hasReliableTrackedJjsDelta(latestProofWindow = null, robloxSummary = {}) {
   const currentTotalJjsMinutes = normalizeFiniteNumber(robloxSummary?.totalJjsMinutes);
   const snapshotTotalJjsMinutes = normalizeFiniteNumber(latestProofWindow?.totalJjsMinutes);
-  const hasVerifiedRoblox = robloxSummary?.hasVerifiedAccount === true
-    || (cleanString(robloxSummary?.verificationStatus, 40) === "verified" && Boolean(cleanString(robloxSummary?.userId, 80)));
+  const trackingState = cleanString(robloxSummary?.trackingState, 40);
+  const hasTrackableRoblox = robloxSummary?.isTrackable === true
+    || trackingState === "trackable"
+    || ((robloxSummary?.isTrackable !== false && !trackingState)
+      && (robloxSummary?.hasVerifiedAccount === true
+        || (cleanString(robloxSummary?.verificationStatus, 40) === "verified" && Boolean(cleanString(robloxSummary?.userId, 80)))))
+    ;
 
   return latestProofWindow?.playtimeTracked === true
-    && hasVerifiedRoblox
+    && hasTrackableRoblox
     && Number.isFinite(currentTotalJjsMinutes)
     && Number.isFinite(snapshotTotalJjsMinutes)
     && currentTotalJjsMinutes >= snapshotTotalJjsMinutes;
@@ -1287,6 +1292,116 @@ function buildFriendsAlreadyHereBlock({ robloxSummary = {}, populationProfiles =
   };
 }
 
+function buildSocialEvolutionRangeLine(snapshots = []) {
+  const items = Array.isArray(snapshots) ? snapshots : [];
+  if (!items.length) return null;
+  const firstDayKey = cleanString(items[0]?.dayKey, 20);
+  const lastDayKey = cleanString(items.at(-1)?.dayKey, 20);
+  return `Соц-архив: ${formatNumber(items.length)} дневных срезов • ${formatDayRangeLabel(firstDayKey, lastDayKey)}`;
+}
+
+function getSocialEvolutionCount(snapshot = {}, fieldName = "serverFriendsCount") {
+  const value = normalizeFiniteNumber(snapshot?.[fieldName]);
+  return Number.isFinite(value) && value >= 0 ? value : 0;
+}
+
+function buildSocialEvolutionDeltaLabel(delta = 0) {
+  const amount = Number(delta) || 0;
+  if (amount > 0) return `+${formatNumber(amount)}`;
+  if (amount < 0) return `-${formatNumber(Math.abs(amount))}`;
+  return formatNumber(amount);
+}
+
+function findPeakSocialSnapshot(snapshots = []) {
+  let best = null;
+
+  for (const snapshot of Array.isArray(snapshots) ? snapshots : []) {
+    const peerCount = Array.isArray(snapshot?.topCoPlayPeerUserIds) ? snapshot.topCoPlayPeerUserIds.length : 0;
+    const friendCount = getSocialEvolutionCount(snapshot, "serverFriendsCount");
+    const suggestionCount = getSocialEvolutionCount(snapshot, "socialSuggestionCount");
+    const totalScore = peerCount * 100 + friendCount * 10 + suggestionCount;
+
+    if (!best) {
+      best = { snapshot, totalScore, peerCount, friendCount, suggestionCount };
+      continue;
+    }
+
+    if (totalScore > best.totalScore) {
+      best = { snapshot, totalScore, peerCount, friendCount, suggestionCount };
+      continue;
+    }
+
+    if (totalScore === best.totalScore
+      && cleanString(snapshot?.dayKey, 20).localeCompare(cleanString(best.snapshot?.dayKey, 20)) > 0) {
+      best = { snapshot, totalScore, peerCount, friendCount, suggestionCount };
+    }
+  }
+
+  return best;
+}
+
+function buildSocialEvolutionBlock({ profile = null } = {}) {
+  const snapshots = getSeasonArchiveSnapshots(profile);
+  if (!snapshots.length) return null;
+
+  const firstSnapshot = snapshots[0];
+  const latestSnapshot = snapshots.at(-1);
+  const firstPeers = new Set(Array.isArray(firstSnapshot?.topCoPlayPeerUserIds) ? firstSnapshot.topCoPlayPeerUserIds.map((entry) => cleanString(entry, 80)).filter(Boolean) : []);
+  const latestPeers = new Set(Array.isArray(latestSnapshot?.topCoPlayPeerUserIds) ? latestSnapshot.topCoPlayPeerUserIds.map((entry) => cleanString(entry, 80)).filter(Boolean) : []);
+  const retainedPeers = [...latestPeers].filter((entry) => firstPeers.has(entry)).length;
+  const newPeers = [...latestPeers].filter((entry) => !firstPeers.has(entry)).length;
+  const droppedPeers = [...firstPeers].filter((entry) => !latestPeers.has(entry)).length;
+  const firstPeerCount = firstPeers.size;
+  const latestPeerCount = latestPeers.size;
+  const firstFriendCount = getSocialEvolutionCount(firstSnapshot, "serverFriendsCount");
+  const latestFriendCount = getSocialEvolutionCount(latestSnapshot, "serverFriendsCount");
+  const firstSuggestionCount = getSocialEvolutionCount(firstSnapshot, "socialSuggestionCount");
+  const latestSuggestionCount = getSocialEvolutionCount(latestSnapshot, "socialSuggestionCount");
+  const peak = findPeakSocialSnapshot(snapshots);
+
+  const lines = [buildSocialEvolutionRangeLine(snapshots)];
+  if (snapshots.length < 7) {
+    lines.push(`Социальная эволюция: история ещё короткая (${formatNumber(snapshots.length)}/7 дневных срезов).`);
+    return {
+      title: "Социальная эволюция",
+      lines: lines.filter(Boolean),
+    };
+  }
+
+  lines.push(
+    [
+      `Игровой круг: ${formatNumber(firstPeerCount)} -> ${formatNumber(latestPeerCount)} частых напарн. (${buildSocialEvolutionDeltaLabel(latestPeerCount - firstPeerCount)})`,
+      `Roblox-друзей: ${formatNumber(firstFriendCount)} -> ${formatNumber(latestFriendCount)} (${buildSocialEvolutionDeltaLabel(latestFriendCount - firstFriendCount)})`,
+      `скрытый круг: ${formatNumber(firstSuggestionCount)} -> ${formatNumber(latestSuggestionCount)} (${buildSocialEvolutionDeltaLabel(latestSuggestionCount - firstSuggestionCount)})`,
+    ].join(" • ")
+  );
+
+  lines.push(
+    [
+      `Смена ядра: удержались ${formatNumber(retainedPeers)}`,
+      `новых ${formatNumber(newPeers)}`,
+      `выпало ${formatNumber(droppedPeers)}`,
+      "считается только по top peer archive, не по всему social graph",
+    ].join(" • ")
+  );
+
+  if (peak?.snapshot) {
+    lines.push(
+      [
+        `Пик круга: ${formatDayLabel(peak.snapshot.dayKey)}`,
+        `${formatNumber(peak.peerCount)} частых напарн.`,
+        `Roblox-друзей ${formatNumber(peak.friendCount)}`,
+        `кандидатов ${formatNumber(peak.suggestionCount)}`,
+      ].join(" • ")
+    );
+  }
+
+  return {
+    title: "Социальная эволюция",
+    lines: lines.filter(Boolean),
+  };
+}
+
 function formatVoiceHoursFromSeconds(value, digits = 1) {
   const seconds = normalizeFiniteNumber(value);
   if (!Number.isFinite(seconds)) return "—";
@@ -1674,6 +1789,105 @@ function buildBestPeriodsBlock({ profile = null } = {}) {
   };
 }
 
+function buildSeasonStoryNarrative(firstSnapshot = null, latestSnapshot = null) {
+  const firstKills = normalizeFiniteNumber(firstSnapshot?.approvedKills);
+  const latestKills = normalizeFiniteNumber(latestSnapshot?.approvedKills);
+  const firstActivity = normalizeFiniteNumber(firstSnapshot?.activityScore);
+  const latestActivity = normalizeFiniteNumber(latestSnapshot?.activityScore);
+  const firstPeers = Array.isArray(firstSnapshot?.topCoPlayPeerUserIds) ? firstSnapshot.topCoPlayPeerUserIds.length : 0;
+  const latestPeers = Array.isArray(latestSnapshot?.topCoPlayPeerUserIds) ? latestSnapshot.topCoPlayPeerUserIds.length : 0;
+  const killDelta = Number.isFinite(firstKills) && Number.isFinite(latestKills) ? latestKills - firstKills : null;
+  const activityDelta = Number.isFinite(firstActivity) && Number.isFinite(latestActivity) ? latestActivity - firstActivity : null;
+  const peerDelta = latestPeers - firstPeers;
+
+  if ((Number(killDelta) || 0) > 0 && (Number(activityDelta) || 0) > 0 && peerDelta > 0) {
+    return "Нарратив: сезон разогнался: kills, activity и игровой круг выросли вместе.";
+  }
+  if ((Number(killDelta) || 0) > 0 && (Number(activityDelta) || 0) < 0) {
+    return "Нарратив: kills росли, но живая активность к концу сезона стала тише.";
+  }
+  if ((Number(killDelta) || 0) <= 0 && (Number(activityDelta) || 0) > 0) {
+    return "Нарратив: онлайн и activity ожили, но kill-прогресс почти не сдвинулся.";
+  }
+  if (peerDelta > 0) {
+    return "Нарратив: ядро круга стало шире, даже без резкого скачка по kills.";
+  }
+  return "Нарратив: сезон шёл ровно, без явного разворота по форме и кругу.";
+}
+
+function buildSeasonStoryFocusLine(firstSnapshot = null, latestSnapshot = null) {
+  const firstMain = cleanString(firstSnapshot?.mainCharacterLabels?.[0] || firstSnapshot?.tierlistMainName, 120);
+  const latestMain = cleanString(latestSnapshot?.mainCharacterLabels?.[0] || latestSnapshot?.tierlistMainName, 120);
+  if (!firstMain && !latestMain) {
+    return "Фокус сезона: main и tierlist-фокус ещё не читаются из архива.";
+  }
+  if (firstMain && latestMain && firstMain.toLowerCase() === latestMain.toLowerCase()) {
+    return `Фокус сезона: ${latestMain} удержался главным опорным персонажем.`;
+  }
+  if (firstMain && latestMain) {
+    return `Фокус сезона: акцент сместился с ${firstMain} на ${latestMain}.`;
+  }
+  return `Фокус сезона: текущий опорный персонаж — ${latestMain || firstMain}.`;
+}
+
+function buildSeasonStoryPeakLine(snapshots = []) {
+  const peakSnapshot = selectBestSeasonArchiveSnapshot(snapshots, "jjsMinutes7d");
+  if (!peakSnapshot) return null;
+
+  const bits = [
+    `Сильнейший срез: ${formatDayLabel(peakSnapshot.dayKey)}`,
+    `${formatHours((normalizeFiniteNumber(peakSnapshot.jjsMinutes7d, 0)) / 60)} ч JJS за rolling 7д`,
+  ];
+  if (Number.isFinite(normalizeFiniteNumber(peakSnapshot.activityScore))) {
+    bits.push(`activity ${formatNumber(peakSnapshot.activityScore)}`);
+  }
+  if (Number.isFinite(normalizeFiniteNumber(peakSnapshot.voiceDurationSeconds7d)) && Number(peakSnapshot.voiceDurationSeconds7d) > 0) {
+    bits.push(`voice ${formatHours(Number(peakSnapshot.voiceDurationSeconds7d) / 3600)} ч`);
+  }
+  const peerCount = Array.isArray(peakSnapshot?.topCoPlayPeerUserIds) ? peakSnapshot.topCoPlayPeerUserIds.length : 0;
+  if (peerCount > 0) {
+    bits.push(`${formatNumber(peerCount)} частых напарн.`);
+  }
+  return bits.join(" • ");
+}
+
+function buildSeasonStoryBlock({ profile = null } = {}) {
+  const snapshots = getSeasonArchiveSnapshots(profile);
+  if (!snapshots.length) return null;
+
+  const firstSnapshot = snapshots[0];
+  const latestSnapshot = snapshots.at(-1);
+  const firstKills = normalizeFiniteNumber(firstSnapshot?.approvedKills);
+  const latestKills = normalizeFiniteNumber(latestSnapshot?.approvedKills);
+  const firstActivity = normalizeFiniteNumber(firstSnapshot?.activityScore);
+  const latestActivity = normalizeFiniteNumber(latestSnapshot?.activityScore);
+  const firstPeers = Array.isArray(firstSnapshot?.topCoPlayPeerUserIds) ? firstSnapshot.topCoPlayPeerUserIds.length : 0;
+  const latestPeers = Array.isArray(latestSnapshot?.topCoPlayPeerUserIds) ? latestSnapshot.topCoPlayPeerUserIds.length : 0;
+
+  const lines = [buildSeasonArchiveCoverageLine(snapshots)];
+  if (snapshots.length < 7) {
+    lines.push(`История сезона: данные ещё копятся (${formatNumber(snapshots.length)}/7 дневных срезов).`);
+    return {
+      title: "История сезона",
+      lines: lines.filter(Boolean),
+    };
+  }
+
+  lines.push([
+    `Траектория: ${formatNumber(firstKills)} -> ${formatNumber(latestKills)} kills (${formatSignedNumber((latestKills || 0) - (firstKills || 0))})`,
+    `activity ${formatNumber(firstActivity)} -> ${formatNumber(latestActivity)} (${formatSignedNumber((latestActivity || 0) - (firstActivity || 0))})`,
+    `${formatNumber(firstPeers)} -> ${formatNumber(latestPeers)} частых напарн.`,
+  ].join(" • "));
+  lines.push(buildSeasonStoryNarrative(firstSnapshot, latestSnapshot));
+  lines.push(buildSeasonStoryFocusLine(firstSnapshot, latestSnapshot));
+  lines.push(buildSeasonStoryPeakLine(snapshots));
+
+  return {
+    title: "История сезона",
+    lines: lines.filter(Boolean),
+  };
+}
+
 function buildElapsedRecencyLabel(hours) {
   const normalizedHours = normalizeFiniteNumber(hours);
   if (!Number.isFinite(normalizedHours)) return null;
@@ -1967,6 +2181,9 @@ function buildProfileSynergyState(options = {}) {
       friendsAlreadyHere: buildFriendsAlreadyHereBlock({
         ...options,
       }),
+      socialEvolution: buildSocialEvolutionBlock({
+        ...options,
+      }),
       voiceSummary: buildVoiceSummaryBlock({
         ...options,
       }),
@@ -1974,6 +2191,9 @@ function buildProfileSynergyState(options = {}) {
         ...options,
       }),
       bestPeriods: buildBestPeriodsBlock({
+        ...options,
+      }),
+      seasonStory: buildSeasonStoryBlock({
         ...options,
       }),
       personalWarReadiness: buildPersonalWarReadinessBlock({

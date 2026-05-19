@@ -49,6 +49,23 @@ test("buildProofWindowSnapshot captures Roblox playtime scaffolding and tracking
   });
 });
 
+test("buildProofWindowSnapshot keeps repairable verified Roblox out of tracked playtime", () => {
+  const snapshot = buildProofWindowSnapshot({
+    approvedKills: 4320,
+    reviewedAt: "2026-05-12T10:00:00.000Z",
+    roblox: {
+      username: "GojoMain",
+      verificationStatus: "verified",
+      playtime: {
+        totalJjsMinutes: 140,
+      },
+    },
+  });
+
+  assert.equal(snapshot.playtimeTracked, false);
+  assert.equal(snapshot.totalJjsMinutes, 140);
+});
+
 test("appendProofWindowSnapshot dedupes identical windows and caps history", () => {
   const profile = {
     domains: {

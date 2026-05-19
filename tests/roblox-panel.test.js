@@ -230,6 +230,13 @@ test("buildRobloxStatsPanelPayload renders one simple authenticated list with se
         },
       },
     },
+    appConfig: {
+      roblox: {
+        jjsUniverseId: 100,
+        jjsRootPlaceId: 200,
+        jjsPlaceId: 300,
+      },
+    },
     statusText: "manual refresh completed",
   });
 
@@ -247,9 +254,53 @@ test("buildRobloxStatsPanelPayload renders one simple authenticated list with se
   assert.match(embed.description, /✓ Gojo -> GojoRb/);
   assert.match(embed.description, /— Manual User/);
   assert.match(embed.description, /— Repairable User -> RepairableRb/);
-  assert.equal(embed.fields.length, 1);
-  assert.equal(embed.fields[0].name, "Последнее действие");
-  assert.equal(embed.fields[0].value, "manual refresh completed");
+  assert.equal(embed.fields.length, 4);
+  assert.equal(embed.fields[0].name, "Покрытие");
+  assert.match(embed.fields[0].value, /Проверено: \*\*3\*\*/);
+  assert.match(embed.fields[0].value, /Trackable для playtime: \*\*1\*\*/);
+  assert.match(embed.fields[0].value, /Починится по username: \*\*1\*\*/);
+  assert.match(embed.fields[0].value, /Нужен manual rebind: \*\*1\*\*/);
+  assert.equal(embed.fields[1].name, "JJS и runtime");
+  assert.match(embed.fields[1].value, /Сейчас в JJS: \*\*0\*\*/);
+  assert.match(embed.fields[1].value, /Несохранённых runtime-профилей: \*\*0\*\*/);
+  assert.equal(embed.fields[2].name, "Проблемы");
+  assert.equal(embed.fields[2].value, "Критичных блокеров сейчас не видно.");
+  assert.equal(embed.fields[3].name, "Последнее действие");
+  assert.equal(embed.fields[3].value, "manual refresh completed");
+});
+
+test("buildRobloxStatsPanelPayload surfaces compact operator diagnostics without restoring old views", () => {
+  const payload = buildRobloxStatsPanelPayload({
+    db: {
+      profiles: {
+        repairable_user: {
+          userId: "repairable_user",
+          displayName: "Repairable User",
+          domains: {
+            roblox: {
+              username: "RepairableRb",
+              verificationStatus: "verified",
+            },
+          },
+        },
+      },
+    },
+    runtimeState: {
+      dirtyDiscordUserIds: new Set(["repairable_user"]),
+      dirtyReasonsByDiscordUserId: {
+        repairable_user: ["binding_sanitized", "binding_repaired"],
+      },
+    },
+  });
+
+  const embed = payload.embeds[0].data;
+  assert.equal(embed.fields[0].name, "Покрытие");
+  assert.match(embed.fields[0].value, /Починится по username: \*\*1\*\*/);
+  assert.equal(embed.fields[1].name, "JJS и runtime");
+  assert.match(embed.fields[1].value, /Несохранённых runtime-профилей: \*\*1\*\*/);
+  assert.match(embed.fields[1].value, /Причины pending flush: .*сбитый userId: \*\*1\*\*.*починка привязки: \*\*1\*\*/i);
+  assert.equal(embed.fields[2].name, "Проблемы");
+  assert.match(embed.fields[2].value, /JJS IDs не настроены/i);
 });
 
 test("buildRobloxStatsPanelPayload keeps passive verified users in the list even without runtime visibility", () => {

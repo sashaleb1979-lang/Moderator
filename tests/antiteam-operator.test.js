@@ -274,6 +274,52 @@ test("start panel submit button ignores Roblox records without verified trust ma
   assert.match(JSON.stringify(interaction.calls[0][1].components[0].toJSON()), /Roblox ник/);
 });
 
+test("start panel accepts legacy verified Roblox records with verifiedAt fallback", async () => {
+  const db = {};
+  ensureAntiteamState(db);
+  const operator = createAntiteamOperator({
+    db,
+    saveDb() {},
+    getProfile: () => ({
+      robloxUserId: "101",
+      robloxUsername: "LegacyLinked",
+      robloxDisplayName: "Legacy Linked",
+      robloxVerifiedAt: "2026-05-16T10:00:00.000Z",
+    }),
+  });
+  const interaction = createButtonInteraction(ANTITEAM_CUSTOM_IDS.open, { id: "user-1", username: "User" });
+
+  assert.equal(await operator.handleButtonInteraction(interaction), true);
+
+  assert.equal(interaction.calls[0][0], "reply");
+  assert.match(JSON.stringify(interaction.calls[0][1].components[0].toJSON()), /Подтверди Roblox/);
+});
+
+test("start panel rejects failed Roblox records even with stale verified markers", async () => {
+  const db = {};
+  ensureAntiteamState(db);
+  const operator = createAntiteamOperator({
+    db,
+    saveDb() {},
+    getProfile: () => ({
+      summary: {
+        roblox: {
+          userId: "101",
+          currentUsername: "BrokenLinked",
+          hasVerifiedAccount: true,
+          verificationStatus: "failed",
+        },
+      },
+    }),
+  });
+  const interaction = createButtonInteraction(ANTITEAM_CUSTOM_IDS.open, { id: "user-1", username: "User" });
+
+  assert.equal(await operator.handleButtonInteraction(interaction), true);
+
+  assert.equal(interaction.calls[0][0], "reply");
+  assert.match(JSON.stringify(interaction.calls[0][1].components[0].toJSON()), /Roblox ник/);
+});
+
 test("start panel asks to confirm verified Roblox once, then reuses it", async () => {
   const db = {};
   ensureAntiteamState(db).state.config.battalionRoleId = "battalion-role";

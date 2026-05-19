@@ -1025,6 +1025,44 @@ function normalizeRobloxDomainState(value = {}) {
   };
 }
 
+function resolveUsableVerifiedRobloxIdentity(value = {}) {
+  const source = value && typeof value === "object" ? value : {};
+  const userId = cleanString(source.userId ?? source.robloxUserId ?? source.id, 40);
+  const username = cleanString(
+    source.username ?? source.currentUsername ?? source.robloxUsername ?? source.name,
+    120
+  );
+  const displayName = cleanString(
+    source.displayName ?? source.currentDisplayName ?? source.robloxDisplayName,
+    120
+  );
+  const avatarUrl = cleanString(source.avatarUrl ?? source.robloxAvatarUrl, 2000);
+  const verificationStatus = cleanString(source.verificationStatus, 40).toLowerCase();
+  const recordStatus = cleanString(source.status, 40).toLowerCase();
+  const verifiedAt = cleanString(source.verifiedAt ?? source.robloxVerifiedAt, 80);
+  const unusableStatuses = new Set(["failed", "unverified", "rejected", "denied"]);
+  const explicitlyUnusable = unusableStatuses.has(verificationStatus)
+    || (!verificationStatus && unusableStatuses.has(recordStatus));
+  const trusted = verificationStatus === "verified"
+    || recordStatus === "verified"
+    || source.hasVerifiedAccount === true
+    || Boolean(verifiedAt);
+
+  if (!userId || !username || explicitlyUnusable || !trusted) {
+    return null;
+  }
+
+  return {
+    userId,
+    username,
+    displayName,
+    avatarUrl,
+    profileUrl: cleanString(source.profileUrl ?? source.robloxProfileUrl, 500) || buildRobloxProfileUrl(userId),
+    verificationStatus: verificationStatus || recordStatus || "verified",
+    verifiedAt: verifiedAt || null,
+  };
+}
+
 function getRobloxTrackabilityState(roblox = {}) {
   const verificationStatus = cleanString(roblox?.verificationStatus, 40).toLowerCase() || "unverified";
   const userId = cleanString(roblox?.userId, 40);
@@ -1155,6 +1193,7 @@ function buildSharedProfileSummary(profile = {}, domains = {}) {
     getRobloxLastRenameSeenAt(roblox.username, roblox.usernameHistory),
     getRobloxLastRenameSeenAt(roblox.displayName, roblox.displayNameHistory),
   ]);
+  const robloxHasVerifiedAccount = roblox.verificationStatus === "verified";
   const robloxTrackingState = getRobloxTrackabilityState(roblox);
   const robloxTrackingBlocker = getRobloxTrackabilityBlocker(roblox, robloxTrackingState);
   const robloxIsTrackable = robloxTrackingState === "trackable";
@@ -1213,7 +1252,7 @@ function buildSharedProfileSummary(profile = {}, domains = {}) {
       lastRoleAppliedAt: activity.lastRoleAppliedAt,
     },
     roblox: {
-      hasVerifiedAccount: robloxIsTrackable,
+      hasVerifiedAccount: robloxHasVerifiedAccount,
       isTrackable: robloxIsTrackable,
       trackingState: robloxTrackingState,
       trackingBlocker: robloxTrackingBlocker,
@@ -1618,6 +1657,7 @@ module.exports = {
   normalizeActivityDomainState,
   normalizeIntegrationState,
   normalizeProgressDomainState,
+  resolveUsableVerifiedRobloxIdentity,
   getRobloxTrackabilityBlocker,
   getRobloxTrackabilityState,
   normalizeRobloxDomainState,

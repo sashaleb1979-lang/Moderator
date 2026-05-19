@@ -536,7 +536,7 @@ Phase 8 character wiki layer is live.
 ## 12. Season Archive Storage
 
 ### Статус
-Phase 9 groundwork is live.
+Phase 9 storage foundation is live and already feeds the first story-layer blocks.
 
 ### Owner
 1. Snapshot shaping + append owner: [src/profile/synergy-snapshots.js](src/profile/synergy-snapshots.js)
@@ -566,13 +566,132 @@ Phase 9 groundwork is live.
 4. archive stores rollups, not per-session causality, so future copy must not invent exact reasons why a day was strong or weak.
 
 ### UI Copy Правило
-1. пока read-side blocks не построены, не выдавать archive как готовый user-facing story;
+1. archive остаётся storage-слоем: user-facing story blocks должны честно говорить, что они собраны по daily rollups, а не по полным session logs;
 2. если история короче нужного окна, говорить `Данные сезона ещё копятся.`;
 3. не называть `лучший период` или `сильнейшую форму`, если окно собрано из неполной истории.
 
 ---
 
-## 13. Text-Tierlist Grades И `Кто Ты Сейчас`
+## 13. Best-Period Summaries
+
+### Статус
+Phase 9 best-period read-side is live.
+
+### Owner
+1. Derived owner: [src/profile/synergy.js](src/profile/synergy.js)
+2. Read-model composition: [src/profile/model.js](src/profile/model.js)
+3. Renderer surface: [src/profile/view.js](src/profile/view.js)
+
+### Источники
+1. `profile.domains.seasonArchive.snapshots[].jjsMinutes7d`
+2. `profile.domains.seasonArchive.snapshots[].jjsMinutes30d`
+3. `profile.domains.seasonArchive.snapshots[].activityScore`
+4. `profile.domains.seasonArchive.snapshots[].voiceDurationSeconds7d/30d`
+5. `profile.domains.seasonArchive.snapshots[].topCoPlayPeerUserIds`
+6. `profile.domains.seasonArchive.snapshots[].serverFriendsCount`
+7. `profile.domains.seasonArchive.snapshots[].socialSuggestionCount`
+
+### Формула
+1. snapshots сортируются по `dayKey`.
+2. Для `7д` выбирается snapshot с максимальным `jjsMinutes7d`.
+3. Для `30д` выбирается snapshot с максимальным `jjsMinutes30d`.
+4. При tie сначала выигрывает больший `activityScore`, затем более поздний `dayKey`.
+5. Range label строится как `[dayKey - (windowDays - 1), dayKey]`.
+6. `7д` block честно включается только после `>= 7` daily snapshots, `30д` — только после `>= 30`.
+
+### Ненадёжно Когда
+1. peak строится по rolling field snapshot'а, а не по полному per-day session journal;
+2. gaps в archive означают, что лучший период может быть недонаблюдён;
+3. social/voice contour у peak window зависит только от того, что попало в тот же daily snapshot.
+
+### UI Copy Правило
+1. при недостатке истории писать `данные сезона ещё копятся`;
+2. не называть `лучший день`, если источник — rolling 7d/30d snapshot;
+3. peak copy должна говорить именно про `пик 7д` / `пик 30д`, а не про абсолютную истину сезона.
+
+---
+
+## 14. Social Evolution
+
+### Статус
+Phase 9 social-evolution read-side is live.
+
+### Owner
+1. Derived owner: [src/profile/synergy.js](src/profile/synergy.js)
+2. Read-model composition: [src/profile/model.js](src/profile/model.js)
+3. Renderer surface: [src/profile/view.js](src/profile/view.js)
+
+### Источники
+1. `profile.domains.seasonArchive.snapshots[].topCoPlayPeerUserIds`
+2. `profile.domains.seasonArchive.snapshots[].serverFriendsCount`
+3. `profile.domains.seasonArchive.snapshots[].socialSuggestionCount`
+
+### Формула
+1. block сравнивает первый и последний daily snapshot в archive.
+2. `Игровой круг` = `topCoPlayPeerUserIds.length` first -> latest.
+3. `Roblox-друзей` = `serverFriendsCount` first -> latest.
+4. `Скрытый круг` = `socialSuggestionCount` first -> latest.
+5. `Смена ядра` считает `retained/new/dropped` только по пересечению `topCoPlayPeerUserIds` в первом и последнем snapshot.
+6. `Пик круга` выбирается по score `peerCount * 100 + friendCount * 10 + suggestionCount`; при tie выигрывает более поздний `dayKey`.
+7. Block честно включается только после `>= 7` daily snapshots.
+
+### Ненадёжно Когда
+1. это не весь social graph, а только archive top peers + aggregate counts;
+2. friend layer хранит count, а не friend identity timeline;
+3. retained/new/dropped считаются только по top peer archive, поэтому нельзя выдавать это за полную карту связей сервера.
+
+### UI Copy Правило
+1. прямо говорить, что `ядро` считается только по top peer archive;
+2. не обещать точный co-op, party или полный social graph;
+3. при короткой истории писать `история ещё короткая`.
+
+---
+
+## 15. Season Story
+
+### Статус
+Phase 9 season-story read-side is live.
+
+### Owner
+1. Derived owner: [src/profile/synergy.js](src/profile/synergy.js)
+2. Read-model composition: [src/profile/model.js](src/profile/model.js)
+3. Renderer surface: [src/profile/view.js](src/profile/view.js)
+
+### Источники
+1. `profile.domains.seasonArchive.snapshots[].approvedKills`
+2. `profile.domains.seasonArchive.snapshots[].activityScore`
+3. `profile.domains.seasonArchive.snapshots[].topCoPlayPeerUserIds`
+4. `profile.domains.seasonArchive.snapshots[].mainCharacterLabels`
+5. `profile.domains.seasonArchive.snapshots[].tierlistMainName`
+6. `profile.domains.seasonArchive.snapshots[].jjsMinutes7d`
+7. `profile.domains.seasonArchive.snapshots[].voiceDurationSeconds7d`
+
+### Формула
+1. block сравнивает первый и последний daily snapshot в archive.
+2. `Траектория` строится из `approvedKills`, `activityScore` и `topCoPlayPeerUserIds.length` first -> latest.
+3. `Нарратив` выбирается rule-based:
+  - kills up + activity up + peer count up => сезон разогнался;
+  - kills up + activity down => kills росли, но живая активность тише;
+  - kills flat/down + activity up => activity ожила без явного kill-progress;
+  - peer count up alone => круг стал шире;
+  - иначе сезон идёт ровно.
+4. `Фокус сезона` сравнивает ранний и поздний main label / tierlist main.
+5. `Сильнейший срез` берёт snapshot с максимальным `jjsMinutes7d` по тем же tie-break rules, что и best-period block.
+6. Block честно включается только после `>= 7` daily snapshots.
+
+### Ненадёжно Когда
+1. narrative rule-based и работает только на daily rollups;
+2. `Сильнейший срез` — это strongest rolling snapshot, а не точный single-day truth;
+3. если archive sparse или bot downtime длинный, story не должна притворяться цельной сезонной хроникой.
+
+### UI Copy Правило
+1. narrative phrasing должна быть мягкой, observational, не как hard lore о человеке;
+2. при короткой истории писать `данные ещё копятся`;
+3. не приписывать точные причины роста или спада без session-level causality.
+
+---
+
+## 16. Text-Tierlist Grades И `Кто Ты Сейчас`
 
 ### Статус
 Phase 5 viewer-first hero, separate Main Core block и population-calibrated grading are live.

@@ -261,6 +261,7 @@ async function runClientReadyCore(client, options = {}) {
     runSotStartupAlerts,
     registerGuildCommands,
     syncApprovedTierRoles,
+    syncAccessCompanionRoles = null,
     refreshWelcomePanel,
     refreshAllTierlists,
     resumeActivityRuntime = null,
@@ -271,6 +272,9 @@ async function runClientReadyCore(client, options = {}) {
   assertFunction(runSotStartupAlerts, "runSotStartupAlerts");
   assertFunction(registerGuildCommands, "registerGuildCommands");
   assertFunction(syncApprovedTierRoles, "syncApprovedTierRoles");
+  if (syncAccessCompanionRoles != null) {
+    assertFunction(syncAccessCompanionRoles, "syncAccessCompanionRoles");
+  }
   assertFunction(refreshWelcomePanel, "refreshWelcomePanel");
   assertFunction(refreshAllTierlists, "refreshAllTierlists");
   assertFunction(logError, "logError");
@@ -295,6 +299,12 @@ async function runClientReadyCore(client, options = {}) {
     logError("Tier role sync failed:", formatErrorText(error));
     return 0;
   });
+  if (typeof syncAccessCompanionRoles === "function") {
+    await Promise.resolve(syncAccessCompanionRoles(client)).catch((error) => {
+      logError("Access companion role sync failed:", formatErrorText(error));
+      return null;
+    });
+  }
   await Promise.resolve(refreshWelcomePanel(client)).catch((error) => {
     logError("Welcome panel refresh failed:", formatErrorText(error));
   });

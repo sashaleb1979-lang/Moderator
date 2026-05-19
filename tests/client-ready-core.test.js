@@ -311,6 +311,9 @@ test("runClientReadyCore preserves startup order for the core prelude", async ()
       calls.push(["syncApprovedTierRoles", currentClient]);
       return 0;
     },
+    async syncAccessCompanionRoles(currentClient) {
+      calls.push(["syncAccessCompanionRoles", currentClient]);
+    },
     async refreshWelcomePanel(currentClient) {
       calls.push(["refreshWelcomePanel", currentClient]);
     },
@@ -324,6 +327,7 @@ test("runClientReadyCore preserves startup order for the core prelude", async ()
     ["ensureManagedRoles", client],
     ["runSotStartupAlerts", client],
     ["syncApprovedTierRoles", client],
+    ["syncAccessCompanionRoles", client],
     ["refreshWelcomePanel", client],
     ["refreshAllTierlists", client],
   ]);
@@ -438,6 +442,49 @@ test("runClientReadyCore logs syncApprovedTierRoles failures and continues", asy
     "refreshAllTierlists",
   ]);
   assert.deepEqual(errors, ["Tier role sync failed: tier sync failed"]);
+});
+
+test("runClientReadyCore logs access companion sync failures and continues", async () => {
+  const calls = [];
+  const errors = [];
+
+  await runClientReadyCore({ id: "client" }, {
+    async registerGuildCommands() {
+      calls.push("registerGuildCommands");
+    },
+    async ensureManagedRoles() {
+      calls.push("ensureManagedRoles");
+      return {};
+    },
+    async runSotStartupAlerts() {
+      calls.push("runSotStartupAlerts");
+    },
+    async syncApprovedTierRoles() {
+      calls.push("syncApprovedTierRoles");
+    },
+    async syncAccessCompanionRoles() {
+      calls.push("syncAccessCompanionRoles");
+      throw new Error("companion sync failed");
+    },
+    async refreshWelcomePanel() {
+      calls.push("refreshWelcomePanel");
+    },
+    async refreshAllTierlists() {
+      calls.push("refreshAllTierlists");
+    },
+    logError: (...args) => errors.push(args.join(" ")),
+  });
+
+  assert.deepEqual(calls, [
+    "registerGuildCommands",
+    "ensureManagedRoles",
+    "runSotStartupAlerts",
+    "syncApprovedTierRoles",
+    "syncAccessCompanionRoles",
+    "refreshWelcomePanel",
+    "refreshAllTierlists",
+  ]);
+  assert.deepEqual(errors, ["Access companion role sync failed: companion sync failed"]);
 });
 
 test("runClientReadyCore logs welcome refresh failures and still refreshes tierlists", async () => {

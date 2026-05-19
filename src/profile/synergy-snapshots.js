@@ -2,6 +2,7 @@
 
 const {
   ensureSharedProfile,
+  getRobloxTrackabilityState,
   normalizeActivityDomainState,
   normalizeProgressDomainState,
   normalizeRobloxDomainState,
@@ -91,13 +92,14 @@ function buildSeasonArchivePeerUserIds(peers = [], limit = SEASON_ARCHIVE_PEER_L
 function buildProofWindowSnapshot({ approvedKills = null, killTier = null, reviewedAt = null, reviewedBy = null, roblox = null } = {}) {
   const normalizedRoblox = normalizeRobloxDomainState(roblox || {});
   const playtime = normalizedRoblox.playtime;
+  const isTrackableRoblox = getRobloxTrackabilityState(normalizedRoblox) === "trackable";
 
   return {
     approvedKills: normalizeNullableInteger(approvedKills, { min: 0 }),
     killTier: normalizeNullableInteger(killTier, { min: 1, max: 5 }),
     reviewedAt: normalizeNullableString(reviewedAt, 80),
     reviewedBy: normalizeNullableString(reviewedBy, 120),
-    playtimeTracked: normalizedRoblox.verificationStatus === "verified" && Boolean(normalizedRoblox.userId),
+    playtimeTracked: isTrackableRoblox,
     totalJjsMinutes: normalizeNonNegativeInteger(playtime?.totalJjsMinutes, 0),
     jjsMinutes7d: normalizeNonNegativeInteger(playtime?.jjsMinutes7d, 0),
     jjsMinutes30d: normalizeNonNegativeInteger(playtime?.jjsMinutes30d, 0),
@@ -122,6 +124,7 @@ function buildSeasonArchiveSnapshot({ profile = null, capturedAt = null, dayKey 
     ? sourceProfile.domains.tierlist
     : (sourceProfile?.summary?.tierlist && typeof sourceProfile.summary.tierlist === "object" ? sourceProfile.summary.tierlist : {});
   const topCoPlayPeerUserIds = buildSeasonArchivePeerUserIds(roblox?.coPlay?.peers, SEASON_ARCHIVE_PEER_LIMIT);
+  const isTrackableRoblox = getRobloxTrackabilityState(roblox) === "trackable";
 
   return {
     dayKey: normalizedDayKey,
@@ -141,7 +144,7 @@ function buildSeasonArchiveSnapshot({ profile = null, capturedAt = null, dayKey 
     lastSeenAt: normalizeNullableString(activity?.lastSeenAt, 80),
     appliedActivityRoleKey: normalizeNullableString(activity?.appliedActivityRoleKey, 80),
     desiredActivityRoleKey: normalizeNullableString(activity?.desiredActivityRoleKey, 80),
-    hasVerifiedRoblox: roblox?.verificationStatus === "verified" && Boolean(roblox?.userId),
+    hasVerifiedRoblox: isTrackableRoblox,
     robloxUserId: normalizeNullableString(roblox?.userId, 40),
     robloxUsername: normalizeNullableString(roblox?.username, 120),
     totalJjsMinutes: normalizeNonNegativeInteger(roblox?.playtime?.totalJjsMinutes, 0),

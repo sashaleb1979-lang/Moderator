@@ -174,6 +174,36 @@ test("buildProgressSynergyState stays honest when tracked Roblox baseline is unr
   assert.equal(state.reminderEligible, false);
 });
 
+test("buildProgressSynergyState does not overclaim reliable JJS delta for verified-but-repairable Roblox", () => {
+  const state = buildProgressSynergyState({
+    now: "2026-05-16T12:00:00.000Z",
+    profile: {
+      domains: {
+        progress: {
+          proofWindows: [
+            {
+              approvedKills: 4300,
+              reviewedAt: "2026-05-15T00:00:00.000Z",
+              playtimeTracked: true,
+              totalJjsMinutes: 120,
+            },
+          ],
+        },
+      },
+    },
+    robloxSummary: {
+      hasVerifiedAccount: true,
+      isTrackable: false,
+      trackingState: "repairable",
+      totalJjsMinutes: 900,
+    },
+  });
+
+  assert.equal(state.jjsHoursSinceLastApprovedKillsUpdate, null);
+  assert.equal(state.hasReliableJjsSinceLastApproved, false);
+  assert.equal(state.reminderEligible, false);
+});
+
 test("buildProfileSynergyState builds a self-progress block with growth window and countdowns", () => {
   const state = buildProfileSynergyState({
     now: "2026-05-16T12:00:00.000Z",
@@ -662,4 +692,153 @@ test("buildProfileSynergyState keeps best-periods copy honest while 30-day histo
   assert.equal(state.blocks.bestPeriods.title, "Лучшие периоды");
   assert.match(state.blocks.bestPeriods.lines.join("\n"), /Пик 7д: 06\.05\.2026-12\.05\.2026 .* 15 ч JJS .* activity 61 .* voice 1,5 ч/);
   assert.match(state.blocks.bestPeriods.lines.join("\n"), /Пик 30д: данные сезона ещё копятся \(12\/30 дневных срезов\)\./);
+});
+
+test("buildProfileSynergyState summarizes social evolution from season archive snapshots without overstating the graph", () => {
+  const state = buildProfileSynergyState({
+    profile: {
+      domains: {
+        seasonArchive: {
+          snapshots: [
+            {
+              dayKey: "2026-05-01",
+              capturedAt: "2026-05-01T12:00:00.000Z",
+              topCoPlayPeerUserIds: ["peer-1"],
+              serverFriendsCount: 1,
+              socialSuggestionCount: 0,
+            },
+            {
+              dayKey: "2026-05-03",
+              capturedAt: "2026-05-03T12:00:00.000Z",
+              topCoPlayPeerUserIds: ["peer-1", "peer-2"],
+              serverFriendsCount: 1,
+              socialSuggestionCount: 1,
+            },
+            {
+              dayKey: "2026-05-05",
+              capturedAt: "2026-05-05T12:00:00.000Z",
+              topCoPlayPeerUserIds: ["peer-1", "peer-2", "peer-3"],
+              serverFriendsCount: 2,
+              socialSuggestionCount: 2,
+            },
+            {
+              dayKey: "2026-05-06",
+              capturedAt: "2026-05-06T12:00:00.000Z",
+              topCoPlayPeerUserIds: ["peer-1", "peer-2", "peer-3"],
+              serverFriendsCount: 2,
+              socialSuggestionCount: 2,
+            },
+            {
+              dayKey: "2026-05-07",
+              capturedAt: "2026-05-07T12:00:00.000Z",
+              topCoPlayPeerUserIds: ["peer-1", "peer-2", "peer-4"],
+              serverFriendsCount: 2,
+              socialSuggestionCount: 3,
+            },
+            {
+              dayKey: "2026-05-08",
+              capturedAt: "2026-05-08T12:00:00.000Z",
+              topCoPlayPeerUserIds: ["peer-1", "peer-2", "peer-4"],
+              serverFriendsCount: 3,
+              socialSuggestionCount: 3,
+            },
+            {
+              dayKey: "2026-05-09",
+              capturedAt: "2026-05-09T12:00:00.000Z",
+              topCoPlayPeerUserIds: ["peer-1", "peer-2", "peer-4"],
+              serverFriendsCount: 3,
+              socialSuggestionCount: 3,
+            },
+          ],
+        },
+      },
+    },
+  });
+
+  assert.equal(state.blocks.socialEvolution.title, "Социальная эволюция");
+  assert.match(state.blocks.socialEvolution.lines.join("\n"), /Соц-архив: 7 дневных срезов .* 01\.05\.2026-09\.05\.2026/);
+  assert.match(state.blocks.socialEvolution.lines.join("\n"), /Игровой круг: 1 -> 3 частых напарн\. \(\+2\) .* Roblox-друзей: 1 -> 3 \(\+2\) .* скрытый круг: 0 -> 3 \(\+3\)/);
+  assert.match(state.blocks.socialEvolution.lines.join("\n"), /Смена ядра: удержались 1 .* новых 2 .* выпало 0 .* top peer archive/);
+  assert.match(state.blocks.socialEvolution.lines.join("\n"), /Пик круга: 09\.05\.2026 .* 3 частых напарн\. .* Roblox-друзей 3 .* кандидатов 3/);
+});
+
+test("buildProfileSynergyState keeps social evolution gated while archive history is still short", () => {
+  const state = buildProfileSynergyState({
+    profile: {
+      domains: {
+        seasonArchive: {
+          snapshots: [
+            {
+              dayKey: "2026-05-01",
+              capturedAt: "2026-05-01T12:00:00.000Z",
+              topCoPlayPeerUserIds: ["peer-1"],
+              serverFriendsCount: 1,
+              socialSuggestionCount: 0,
+            },
+            {
+              dayKey: "2026-05-02",
+              capturedAt: "2026-05-02T12:00:00.000Z",
+              topCoPlayPeerUserIds: ["peer-1", "peer-2"],
+              serverFriendsCount: 1,
+              socialSuggestionCount: 1,
+            },
+            {
+              dayKey: "2026-05-03",
+              capturedAt: "2026-05-03T12:00:00.000Z",
+              topCoPlayPeerUserIds: ["peer-1", "peer-2"],
+              serverFriendsCount: 2,
+              socialSuggestionCount: 1,
+            },
+          ],
+        },
+      },
+    },
+  });
+
+  assert.equal(state.blocks.socialEvolution.title, "Социальная эволюция");
+  assert.match(state.blocks.socialEvolution.lines.join("\n"), /Социальная эволюция: история ещё короткая \(3\/7 дневных срезов\)\./);
+});
+
+test("buildProfileSynergyState derives a season story narrative from season archive snapshots", () => {
+  const state = buildProfileSynergyState({
+    profile: {
+      domains: {
+        seasonArchive: {
+          snapshots: buildSeasonArchiveSnapshots({
+            startDayKey: "2026-05-01",
+            dayCount: 12,
+            peak7Index: 11,
+            peak30Index: 11,
+          }),
+        },
+      },
+    },
+  });
+
+  assert.equal(state.blocks.seasonStory.title, "История сезона");
+  assert.match(state.blocks.seasonStory.lines.join("\n"), /Архив сезона: 12 дневных срезов .* 01\.05\.2026-12\.05\.2026/);
+  assert.match(state.blocks.seasonStory.lines.join("\n"), /Траектория: 3.?200 -> 3.?750 kills \(\+550\) .* activity 50 -> 61 \(\+11\) .* 1 -> 3 частых напарн\./);
+  assert.match(state.blocks.seasonStory.lines.join("\n"), /Нарратив: сезон разогнался: kills, activity и игровой круг выросли вместе\./);
+  assert.match(state.blocks.seasonStory.lines.join("\n"), /Фокус сезона: Gojo удержался главным опорным персонажем\./);
+  assert.match(state.blocks.seasonStory.lines.join("\n"), /Сильнейший срез: 12\.05\.2026 .* 15 ч JJS за rolling 7д .* activity 61 .* voice 1,5 ч .* 3 частых напарн\./);
+});
+
+test("buildProfileSynergyState keeps season story gated while archive history is still short", () => {
+  const state = buildProfileSynergyState({
+    profile: {
+      domains: {
+        seasonArchive: {
+          snapshots: buildSeasonArchiveSnapshots({
+            startDayKey: "2026-05-01",
+            dayCount: 3,
+            peak7Index: 2,
+            peak30Index: 2,
+          }),
+        },
+      },
+    },
+  });
+
+  assert.equal(state.blocks.seasonStory.title, "История сезона");
+  assert.match(state.blocks.seasonStory.lines.join("\n"), /История сезона: данные ещё копятся \(3\/7 дневных срезов\)\./);
 });

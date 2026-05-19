@@ -88,6 +88,7 @@ function flattenRoleRecords(roles = {}) {
     accessNormal: roles?.accessNormal || null,
     accessWartime: roles?.accessWartime || null,
     accessNonJjs: roles?.accessNonJjs || null,
+    accessCompanion: roles?.accessCompanion || null,
     ...Object.fromEntries(KILL_TIER_SLOTS.map((tier) => [`killTier.${tier}`, roles?.killTier?.[tier] || roles?.killTier?.[String(tier)] || null])),
     ...Object.fromEntries(KILL_MILESTONE_SLOTS.map((milestone) => [`killMilestone.${milestone}`, roles?.killMilestone?.[milestone] || roles?.killMilestone?.[String(milestone)] || null])),
     ...Object.fromEntries(LEGACY_ELO_TIER_SLOTS.map((tier) => [`legacyEloTier.${tier}`, roles?.legacyEloTier?.[tier] || roles?.legacyEloTier?.[String(tier)] || null])),

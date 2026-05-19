@@ -39,7 +39,7 @@ function collectSotChanges(previousState = {}, nextState = {}) {
     pushChange(changes, "channels", slot, previous.channels?.[slot], next.channels?.[slot]);
   }
 
-  for (const slot of ["moderator", "accessNormal", "accessWartime", "accessNonJjs"]) {
+  for (const slot of ["moderator", "accessNormal", "accessWartime", "accessNonJjs", "accessCompanion"]) {
     pushChange(changes, "roles", slot, previous.roles?.[slot], next.roles?.[slot]);
   }
   for (const tier of KILL_TIER_SLOTS) {

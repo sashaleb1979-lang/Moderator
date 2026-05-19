@@ -131,6 +131,7 @@ function createAppConfigFixture() {
       accessRoleId: "access-role",
       wartimeAccessRoleId: "wartime-role",
       nonGgsAccessRoleId: "non-ggs-role",
+      accessCompanionRoleId: "companion-role",
       killMilestoneRoleIds: {
         "20k": "milestone-20k-config",
         "30k": "milestone-30k-config",
@@ -211,6 +212,7 @@ test("ensureSotState migrates legacy config into the new v1 SoT shape", () => {
   assert.equal(db.sot.panels.botHelper.channelId.value, "bot-helper-db");
   assert.equal(db.sot.panels.botHelper.messageIds.main.value, "bot-helper-message");
   assert.equal(db.sot.roles.moderator.value, "mod-role");
+  assert.equal(db.sot.roles.accessCompanion.value, "companion-role");
   assert.equal(db.sot.roles.killTier[3].value, "tier-3-config");
   assert.equal(db.sot.roles.killTier[5], null);
   assert.equal(db.sot.roles.killMilestone["20k"].value, "milestone-20k-config");

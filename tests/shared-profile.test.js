@@ -903,15 +903,17 @@ test("ensureSharedProfile summary exposes Roblox trackability state and blocker"
   assert.equal(repairable.summary.roblox.isTrackable, false);
   assert.equal(repairable.summary.roblox.trackingState, "repairable");
   assert.equal(repairable.summary.roblox.trackingBlocker, "invalid_user_id");
-  assert.equal(repairable.summary.roblox.hasVerifiedAccount, false);
+  assert.equal(repairable.summary.roblox.hasVerifiedAccount, true);
 
   assert.equal(manualOnly.summary.roblox.isTrackable, false);
   assert.equal(manualOnly.summary.roblox.trackingState, "manual_only");
   assert.equal(manualOnly.summary.roblox.trackingBlocker, "missing_username");
+  assert.equal(manualOnly.summary.roblox.hasVerifiedAccount, true);
 
   assert.equal(pending.summary.roblox.isTrackable, false);
   assert.equal(pending.summary.roblox.trackingState, "pending");
   assert.equal(pending.summary.roblox.trackingBlocker, "pending_verification");
+  assert.equal(pending.summary.roblox.hasVerifiedAccount, false);
 });
 
 test("ensureSharedProfile preserves verification domain and derives verification summary", () => {

@@ -7,6 +7,7 @@ const BASE_ROLE_SLOT_LABELS = {
   accessNormal: "Access normal",
   accessWartime: "Access wartime",
   accessNonJjs: "Access nonJJS",
+  accessCompanion: "Access companion",
   verifyAccess: "Verify access",
 };
 
@@ -46,6 +47,8 @@ function normalizeRoleSlot(slot) {
     nonjjs: "accessNonJjs",
     accessnonggs: "accessNonJjs",
     nonggs: "accessNonJjs",
+    accesscompanion: "accessCompanion",
+    companion: "accessCompanion",
     verifyaccess: "verifyAccess",
     verify: "verifyAccess",
   };

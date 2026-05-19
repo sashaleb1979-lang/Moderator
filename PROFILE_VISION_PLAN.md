@@ -39,13 +39,15 @@
 21. Кнопка `Привязать Roblox` больше не зависит от onboarding session: у неё отдельный profile-only modal path с reuse существующих identity lock rules и canonical profile writer.
 22. Self-profile теперь яснее объясняет ELO flow прямо в overview: CTA и helper copy говорят, что сначала нужен текст с числом ELO, а потом следующим сообщением скрин.
 23. Phase 8 character wiki layer теперь live: profile quick-links умеют показывать JJS wiki buttons по мейнам из canonical character catalog, а `Main Core` и `Мейны и гайды` отражают wiki coverage рядом с combo-guide coverage.
-24. Phase 9 groundwork начат в live code: ежедневный `seasonArchive` rollup теперь сохраняется в canonical shared profiles и планировщик уже пишет один idempotent snapshot на день для каждого профиля.
+24. Phase 9 groundwork теперь не просто заведён, а уже работает как база story-layer UI: ежедневный `seasonArchive` rollup сохраняется в canonical shared profiles и пишет один idempotent snapshot на день для каждого профиля.
+25. Phase 9 story layers теперь live в profile read-side: `Лучшие периоды`, `Социальная эволюция` и `История сезона` уже рендерятся из canonical season archive с честными short-history gates и без выдуманной причинности.
 
 ### Реализовано Частично
 1. Базовые данные профиля уже стали заметно богаче, верхняя сводка теперь лучше показывает readiness/status и получила отдельный hero-слой, но до финального "богатого" продуктового экрана ещё не доведены все разделы.
 2. ELO, tierlist, Roblox и server activity уже подключены и читаются лучше, но presentation ещё можно сделать визуально сильнее в соседних секциях, не раздувая lean overview обратно.
 3. Мейны и guide/wiki quick-links уже поданы заметно лучше и canonical wiki-layer теперь live, но отдельный контент-блок по каждому main всё ещё future work.
-4. Media/avatar presentation уже добавлен через Components V2 thumbnail + media gallery, но визуальная polish-итерация ещё не доведена до финального вида.
+4. Story layers уже live, но их честность пока ограничена тем, сколько daily archive history накопилось; в короткой истории профиль специально говорит, что сезон ещё копится.
+5. Media/avatar presentation уже добавлен через Components V2 thumbnail + media gallery, но визуальная polish-итерация ещё не доведена до финального вида.
 
 ### Пока Не Закрыто
 1. Нет финального Discord smoke-check в живом рантайме после последнего рефактора.
@@ -54,8 +56,8 @@
 
 ### Текущее Техническое Состояние
 1. `node --check welcome-bot.js` — ok.
-2. Focused profile/runtime tests — зелёные, включая seasonArchive storage + scheduler slice.
-3. Полный active test tree по `tests/*.test.js` даёт 614 pass / 0 fail.
+2. Focused profile/runtime tests — зелёные, включая Phase 9 story layers поверх season archive.
+3. Полный active test tree по `tests/*.test.js` даёт 637 pass / 0 fail.
 4. Для этого repo bare `node --test` не является честной проверкой active tree, потому что подтягивает backup/quarantine surfaces; для рабочей валидации нужно явно перечислять `tests/*.test.js`.
 
 ## Главные Приоритеты Пользователя

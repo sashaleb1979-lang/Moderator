@@ -20,6 +20,7 @@ function createContext() {
         accessRoleId: "access-config",
         wartimeAccessRoleId: "wartime-config",
         nonJjsAccessRoleId: "nonjjs-config",
+        accessCompanionRoleId: "companion-config",
         verifyAccessRoleId: "verify-config",
         killMilestoneRoleIds: {
           "20k": "milestone-20k-config",
@@ -47,6 +48,7 @@ function createContext() {
           accessNormal: null,
           accessWartime: null,
           accessNonJjs: null,
+          accessCompanion: null,
           verifyAccess: null,
           killTier: {
             1: null,
@@ -232,6 +234,7 @@ test("syncLegacyRoleWrites updates configured and generated role slots without t
 
   assert.equal(result.mutated, true);
   assert.deepEqual(result.writtenSlots.sort(), [
+    "accessCompanion",
     "accessNonJjs",
     "accessNormal",
     "accessWartime",
@@ -248,6 +251,7 @@ test("syncLegacyRoleWrites updates configured and generated role slots without t
   ]);
   assert.equal(context.db.sot.roles.moderator.value, "moderator-config");
   assert.equal(context.db.sot.roles.accessNormal.value, "access-config");
+  assert.equal(context.db.sot.roles.accessCompanion.value, "companion-config");
   assert.equal(context.db.sot.roles.verifyAccess.value, "verify-config");
   assert.equal(context.db.sot.roles.killTier[5].value, "tier-5-generated");
   assert.equal(context.db.sot.roles.killMilestone["20k"].value, "milestone-20k-config");

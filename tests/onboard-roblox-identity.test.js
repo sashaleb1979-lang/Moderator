@@ -77,4 +77,27 @@ test("buildProfileRobloxIdentitySession keeps user id only for verified profile 
     robloxUserId: "",
     robloxDisplayName: "Kolhoz",
   });
+
+  assert.deepEqual(buildProfileRobloxIdentitySession({
+    currentUsername: "KolhozU",
+    currentDisplayName: "Kolhoz",
+    userId: "9843941555",
+    verifiedAt: "2026-05-19T10:00:00.000Z",
+  }), {
+    robloxUsername: "KolhozU",
+    robloxUserId: "9843941555",
+    robloxDisplayName: "Kolhoz",
+  });
+
+  assert.deepEqual(buildProfileRobloxIdentitySession({
+    currentUsername: "KolhozU",
+    currentDisplayName: "Kolhoz",
+    userId: "9843941555",
+    hasVerifiedAccount: true,
+    verificationStatus: "failed",
+  }), {
+    robloxUsername: "KolhozU",
+    robloxUserId: "",
+    robloxDisplayName: "Kolhoz",
+  });
 });

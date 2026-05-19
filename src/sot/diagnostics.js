@@ -104,6 +104,7 @@ function flattenRoleEntries(roleRecords = {}) {
     { slot: "accessNormal", record: roleRecords.accessNormal },
     { slot: "accessWartime", record: roleRecords.accessWartime },
     { slot: "accessNonJjs", record: roleRecords.accessNonJjs },
+    { slot: "accessCompanion", record: roleRecords.accessCompanion },
     ...KILL_TIER_SLOTS.map((tier) => ({ slot: `killTier.${tier}`, record: roleRecords.killTier?.[tier] || null })),
     ...KILL_MILESTONE_SLOTS.map((milestone) => ({ slot: `killMilestone.${milestone}`, record: roleRecords.killMilestone?.[milestone] || null })),
     ...LEGACY_ELO_TIER_SLOTS.map((tier) => ({ slot: `legacyEloTier.${tier}`, record: roleRecords.legacyEloTier?.[tier] || null })),

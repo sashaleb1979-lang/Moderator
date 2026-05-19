@@ -654,14 +654,14 @@
 2. Main Core enrichment поверх character wiki links. Реализован в `src/profile/model.js` и `src/profile/synergy.js`: profile quick-links теперь умеют показывать JJS wiki buttons по мейнам, а `Main Core` и `Мейны и гайды` честно отражают wiki coverage рядом с combo-guide coverage.
 
 ### Phase 9. Story Layers
-1. Season Story.
-2. Social evolution.
-3. Best-period summaries.
-4. Groundwork now live: daily `seasonArchive` snapshots are persisted at `db.profiles[userId].domains.seasonArchive.snapshots` via `src/profile/synergy-snapshots.js`, normalized in `src/integrations/shared-profile.js`, and scheduled through `src/runtime/client-ready-core.js` + `welcome-bot.js`.
-5. Honest current state: storage and scheduler are shipped, but public story/read-side blocks are still pending until archive history accumulates.
+1. Season Story. Базовый read-side block `История сезона` реализован в `src/profile/synergy.js` и вставляется в activity section через `src/profile/model.js`.
+2. Social evolution. Базовый read-side block `Социальная эволюция` реализован в `src/profile/synergy.js` и вставляется в social section через `src/profile/model.js`.
+3. Best-period summaries. Базовый read-side block `Лучшие периоды` реализован в `src/profile/synergy.js` и вставляется в activity section через `src/profile/model.js`.
+4. Groundwork underneath them live: daily `seasonArchive` snapshots are persisted at `db.profiles[userId].domains.seasonArchive.snapshots` via `src/profile/synergy-snapshots.js`, normalized in `src/integrations/shared-profile.js`, and scheduled through `src/runtime/client-ready-core.js` + `welcome-bot.js`.
+5. Honest current state: story blocks уже live, но они говорят только то, что можно вывести из daily rollups, и жёстко включают short-history gates вместо выдуманной сезонной уверенности.
 
 ### Phase 10. Burn-In И Sync Docs
-1. Focused tests.
-2. Full `node --test`.
-3. Discord smoke.
-4. Sync `PROFILE_VISION_PLAN.md`, `PROFILE_SYNERGY_SYSTEM_PLAN.md` и `PROFILE_SYNERGY_CALCULATION_SPEC.md`.
+1. Focused tests. Выполнено для `tests/profile-synergy.test.js`, `tests/profile-model.test.js` и `tests/profile-view.test.js`.
+2. Full active-tree `node --test`. Выполнено по `tests/*.test.js`: 637 pass / 0 fail.
+3. Discord smoke. Всё ещё pending.
+4. Sync `PROFILE_VISION_PLAN.md`, `PROFILE_SYNERGY_SYSTEM_PLAN.md` и `PROFILE_SYNERGY_CALCULATION_SPEC.md`. Обновлено под текущий Phase 9 state.

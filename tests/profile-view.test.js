@@ -325,6 +325,7 @@ test("profile payload switches sections by requested view", () => {
   assert.ok(textDisplays.some((component) => /### Voice-срез/.test(component.content) && /Voice 7д\/30д: 1,5 ч \/ 2,5 ч/.test(component.content) && /Сейчас в voice: <#voice-lounge>/.test(component.content)));
   assert.ok(textDisplays.some((component) => /### Prime time МСК/.test(component.content) && /Чаще всего играет с 19:00 до 23:00 МСК .* окно 305 мин/.test(component.content) && /Пиковый час: 20:00/.test(component.content)));
   assert.ok(textDisplays.some((component) => /### Лучшие периоды/.test(component.content) && /Пик 7д: 06\.05\.2026-12\.05\.2026 .* 15 ч JJS/.test(component.content)));
+  assert.ok(textDisplays.some((component) => /### История сезона/.test(component.content) && /Траектория: 3.?200 -> 3.?750 kills \(\+550\)/.test(component.content) && /Нарратив: сезон разогнался/.test(component.content)));
   assert.ok(textDisplays.some((component) => /### Детали activity/.test(component.content) && /Сообщения 90д: 400/.test(component.content)));
 });
 
@@ -405,6 +406,45 @@ test("profile payload renders enriched progress and social sections", () => {
   assert.ok(progressDisplays.some((component) => /### История approved ростов/.test(component.content) && /1\. 100 -> 120/.test(component.content) && /2\. 80 -> 100/.test(component.content)));
   assert.ok(progressDisplays.some((component) => /### Заявки и проверки/.test(component.content) && /Последняя проверка:/.test(component.content)));
   assert.ok(progressDisplays.some((component) => /### ELO и Tierlist/.test(component.content) && /Текущий рейтинг: ELO 145 \/ tier 2/.test(component.content) && /Tierlist-заявка: есть/.test(component.content)));
+
+  const socialEvolutionPayload = buildProfilePayload({
+    guildId: "guild-1",
+    userId: "user-1",
+    requesterUserId: "requester",
+    targetDisplayName: "Sasha",
+    view: "social",
+    profile: {
+      summary: {
+        preferredDisplayName: "Sasha",
+        roblox: {
+          hasVerifiedAccount: true,
+          currentUsername: "GojoMain",
+          serverFriendsCount: 3,
+          topCoPlayPeers: [
+            {
+              peerUserId: "peer-1",
+              minutesTogether: 210,
+              sessionsTogether: 5,
+              isRobloxFriend: true,
+            },
+          ],
+        },
+      },
+      domains: {
+        seasonArchive: {
+          snapshots: buildSeasonArchiveSnapshots({
+            startDayKey: "2026-05-01",
+            dayCount: 12,
+            peak7Index: 11,
+          }),
+        },
+      },
+    },
+  });
+
+  const socialSectionDisplays = getProfileContainer(socialEvolutionPayload).textDisplays;
+  assert.ok(socialSectionDisplays.some((component) => /\*\*Секция:\*\* Соц/.test(component.content)));
+  assert.ok(socialSectionDisplays.some((component) => /### Социальная эволюция/.test(component.content) && /Соц-архив: 12 дневных срезов/.test(component.content) && /Игровой круг: 1 -> 3 частых напарн\./.test(component.content)));
 
   const selfProgressPayload = buildProfilePayload({
     now: "2026-05-16T12:00:00.000Z",
@@ -569,14 +609,14 @@ test("profile payload renders enriched progress and social sections", () => {
     ],
   });
 
-  const socialDisplays = getProfileContainer(socialPayload).textDisplays;
-  assert.ok(socialDisplays.some((component) => /\*\*Секция:\*\* Соц/.test(component.content)));
-  assert.ok(socialDisplays.some((component) => /### Roblox и соц/.test(component.content) && /Связка Roblox: подтверждена/.test(component.content)));
-  assert.ok(socialDisplays.some((component) => /### Roblox-друзья на сервере/.test(component.content) && /Roblox-друзей на сервере: 3 .* видимых профилей: 2 .* verified: 2 .* активны 7д: 2 .* играли в JJS 7д: 1/.test(component.content)));
-  assert.ok(socialDisplays.some((component) => /### Кто из друзей уже здесь/.test(component.content) && /1\. <@friend-1> .* Friend One .* Roblox FriendOneRb .* verified Roblox .* JJS 7д 160 мин .* activity active/.test(component.content) && /2\. <@friend-2> .* Friend Two .* Roblox FriendTwoRb .* verified Roblox .* 4 msg 7д/.test(component.content)));
-  assert.ok(socialDisplays.some((component) => /### С кем чаще всего играет/.test(component.content) && /<@peer-1> • 210 мин вместе • 5 сесс\. • Roblox-друг/.test(component.content)));
-  assert.ok(socialDisplays.some((component) => /### Скрытый круг/.test(component.content) && /1 кандидата по частым пересечениям в JJS/.test(component.content) && /<@peer-7> .* Todo .* Roblox TodoRb .* 70 мин вместе .* 2 общ\. сесс\. .* verified Roblox/.test(component.content)));
-  assert.ok(socialDisplays.some((component) => /### Мейны и гайды/.test(component.content) && /Основные персонажи: Gojo/.test(component.content) && /Гайды по мейнам: 1\/1/.test(component.content) && /1\. Gojo — гайд доступен по кнопке/.test(component.content) && /Общие техи: доступны по кнопке\./.test(component.content)));
+  const socialViewDisplays = getProfileContainer(socialPayload).textDisplays;
+  assert.ok(socialViewDisplays.some((component) => /\*\*Секция:\*\* Соц/.test(component.content)));
+  assert.ok(socialViewDisplays.some((component) => /### Roblox и соц/.test(component.content) && /Связка Roblox: подтверждена/.test(component.content)));
+  assert.ok(socialViewDisplays.some((component) => /### Roblox-друзья на сервере/.test(component.content) && /Roblox-друзей на сервере: 3 .* видимых профилей: 2 .* verified: 2 .* активны 7д: 2 .* играли в JJS 7д: 1/.test(component.content)));
+  assert.ok(socialViewDisplays.some((component) => /### Кто из друзей уже здесь/.test(component.content) && /1\. <@friend-1> .* Friend One .* Roblox FriendOneRb .* verified Roblox .* JJS 7д 160 мин .* activity active/.test(component.content) && /2\. <@friend-2> .* Friend Two .* Roblox FriendTwoRb .* verified Roblox .* 4 msg 7д/.test(component.content)));
+  assert.ok(socialViewDisplays.some((component) => /### С кем чаще всего играет/.test(component.content) && /<@peer-1> • 210 мин вместе • 5 сесс\. • Roblox-друг/.test(component.content)));
+  assert.ok(socialViewDisplays.some((component) => /### Скрытый круг/.test(component.content) && /1 кандидата по частым пересечениям в JJS/.test(component.content) && /<@peer-7> .* Todo .* Roblox TodoRb .* 70 мин вместе .* 2 общ\. сесс\. .* verified Roblox/.test(component.content)));
+  assert.ok(socialViewDisplays.some((component) => /### Мейны и гайды/.test(component.content) && /Основные персонажи: Gojo/.test(component.content) && /Гайды по мейнам: 1\/1/.test(component.content) && /1\. Gojo — гайд доступен по кнопке/.test(component.content) && /Общие техи: доступны по кнопке\./.test(component.content)));
   assert.match(JSON.stringify(getProfileContainer(socialPayload).container), /https:\/\/tr\.rbxcdn\.com\/gojo-avatar\.png/);
   assert.match(JSON.stringify(getProfileContainer(socialPayload).container), /https:\/\/cdn\.discordapp\.com\/oauth-avatar\.png/);
 });

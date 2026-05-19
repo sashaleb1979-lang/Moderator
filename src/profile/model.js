@@ -903,6 +903,7 @@ function buildProfileReadModel(options = {}) {
         ...(synergy?.blocks?.voiceSummary ? [synergy.blocks.voiceSummary] : []),
         ...(synergy?.blocks?.primeTime ? [synergy.blocks.primeTime] : []),
         ...(synergy?.blocks?.bestPeriods ? [synergy.blocks.bestPeriods] : []),
+        ...(synergy?.blocks?.seasonStory ? [synergy.blocks.seasonStory] : []),
         {
           title: "Детали activity",
           lines: [
@@ -927,6 +928,7 @@ function buildProfileReadModel(options = {}) {
         { title: "Roblox и соц", lines: robloxLines },
         ...(synergy?.blocks?.friendOverlap ? [synergy.blocks.friendOverlap] : []),
         ...(synergy?.blocks?.friendsAlreadyHere ? [synergy.blocks.friendsAlreadyHere] : []),
+        ...(synergy?.blocks?.socialEvolution ? [synergy.blocks.socialEvolution] : []),
         { title: "С кем чаще всего играет", lines: socialPeerLines },
         ...(synergy?.blocks?.socialSuggestions ? [synergy.blocks.socialSuggestions] : []),
         { title: "Мейны и гайды", lines: mainAndGuideLines },

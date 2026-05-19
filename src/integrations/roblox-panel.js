@@ -11,6 +11,10 @@ const {
   getRobloxTrackabilityBlocker,
   getRobloxTrackabilityState,
 } = require("./shared-profile");
+const {
+  getRobloxRuntimeDirtyReasonCounts,
+  getRobloxRuntimeDirtyReasonsForUser,
+} = require("../runtime/roblox-jobs");
 
 const ROBLOX_PANEL_TOP_LIMIT = 5;
 const ROBLOX_PANEL_ISSUE_LIMIT = 4;
@@ -163,6 +167,7 @@ function summarizeTelemetryResult(kind, result = {}) {
     return {
       saved: summary.saved === true,
       dirtyUserCount: normalizeNonNegativeInteger(summary.dirtyUserCount, 0),
+      dirtyReasonCounts: normalizeRuntimeDirtyReasonCounts(summary.dirtyReasonCounts),
       flushedAt: cleanString(summary.flushedAt, 80) || null,
     };
   }
@@ -255,6 +260,60 @@ function hasRuntimeDirtyUser(runtimeState = {}, userId = "") {
   return false;
 }
 
+function normalizeRuntimeDirtyReasonCounts(value = {}) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+
+  const normalized = {};
+  for (const [reason, amount] of Object.entries(value)) {
+    const normalizedReason = cleanString(reason, 80).toLowerCase();
+    const normalizedCount = normalizeNonNegativeInteger(amount, 0);
+    if (!normalizedReason || normalizedCount <= 0) continue;
+    normalized[normalizedReason] = normalizedCount;
+  }
+
+  return normalized;
+}
+
+function formatRuntimeDirtyReasonLabel(reason = "") {
+  const normalized = cleanString(reason, 80).toLowerCase();
+  if (normalized === "binding_sanitized") return "сбитый userId";
+  if (normalized === "binding_repaired") return "починка привязки";
+  if (normalized === "session_started") return "старт сессии";
+  if (normalized === "session_closed") return "закрытие сессии";
+  if (normalized === "playtime_updated") return "обновление времени";
+  if (normalized === "coplay_updated") return "обновление co-play";
+  return normalized || "runtime change";
+}
+
+function formatRuntimeDirtyReasonList(reasons = []) {
+  const normalized = [...new Set((Array.isArray(reasons) ? reasons : [])
+    .map((reason) => formatRuntimeDirtyReasonLabel(reason))
+    .filter(Boolean))];
+  return normalized.join(", ");
+}
+
+function formatRuntimeDirtyReasonCounts(reasonCounts = {}, { boldCounts = false } = {}) {
+  const normalizedCounts = normalizeRuntimeDirtyReasonCounts(reasonCounts);
+  const preferredOrder = [
+    "binding_sanitized",
+    "binding_repaired",
+    "session_started",
+    "session_closed",
+    "playtime_updated",
+    "coplay_updated",
+  ];
+  const orderedReasons = [
+    ...preferredOrder.filter((reason) => normalizedCounts[reason] > 0),
+    ...Object.keys(normalizedCounts)
+      .filter((reason) => !preferredOrder.includes(reason))
+      .sort((left, right) => left.localeCompare(right, "ru")),
+  ];
+
+  return orderedReasons
+    .map((reason) => `${formatRuntimeDirtyReasonLabel(reason)}: ${boldCounts ? `**${normalizedCounts[reason]}**` : normalizedCounts[reason]}`)
+    .join(", ");
+}
+
 function isJjsConfigured(appConfig = {}) {
   const roblox = appConfig?.roblox || {};
   return Boolean(
@@ -328,7 +387,8 @@ function buildRobloxEntryNote(entry = {}, options = {}) {
   }
 
   if (entry.dirtyRuntime) {
-    parts.push("ожидает сохранения runtime");
+    const dirtyReasonText = formatRuntimeDirtyReasonList(entry.dirtyRuntimeReasons);
+    parts.push(dirtyReasonText ? `ожидает flush: ${dirtyReasonText}` : "ожидает сохранения runtime");
   }
 
   if (!parts.length && entry.activityState === "never_seen") {
@@ -401,6 +461,7 @@ function collectRobloxPanelEntries(db = {}, runtimeState = {}, options = {}) {
         currentSessionStartedAt: cleanString(summary.currentSessionStartedAt, 80) || null,
         lastSeenInJjsAt: cleanString(summary.lastSeenInJjsAt, 80) || null,
         dirtyRuntime: hasRuntimeDirtyUser(runtimeState, userId),
+        dirtyRuntimeReasons: getRobloxRuntimeDirtyReasonsForUser(runtimeState, userId),
         isActiveInRuntime: Boolean(runtimeSession),
         trackingState,
         trackingBlocker,
@@ -436,6 +497,7 @@ function cloneTelemetryJobState(job = {}, runtimeState = {}) {
       activeSessionCount: getRuntimeActiveSessionCount(runtimeState),
       activeCoPlayPairCount: getRuntimeActiveCoPlayPairCount(runtimeState),
       dirtyUserCount: getRuntimeDirtyUserCount(runtimeState),
+      dirtyReasonCounts: getRobloxRuntimeDirtyReasonCounts(runtimeState),
     },
   };
 }
@@ -712,7 +774,7 @@ function formatRobloxRuntimeFlushLine(job = {}) {
     ? "pending_flush"
     : normalizedStatus;
 
-  return formatRobloxJobLine({
+  const baseLine = formatRobloxJobLine({
     ...job,
     status: effectiveStatus,
     summary: {
@@ -720,6 +782,11 @@ function formatRobloxRuntimeFlushLine(job = {}) {
       dirtyUserCount: runtimeDirtyUserCount,
     },
   });
+  const dirtyReasonCounts = Object.keys(normalizeRuntimeDirtyReasonCounts(job.runtime?.dirtyReasonCounts)).length
+    ? job.runtime?.dirtyReasonCounts
+    : job.summary?.dirtyReasonCounts;
+  const dirtyReasonText = formatRuntimeDirtyReasonCounts(dirtyReasonCounts);
+  return dirtyReasonText ? `${baseLine} | причины: ${dirtyReasonText}` : baseLine;
 }
 
 function formatTopEntry(entry = {}, index = 0) {
@@ -809,14 +876,21 @@ function buildRobloxCoverageFieldValue(snapshot = {}) {
 
 function buildRobloxRuntimeFieldValue(snapshot = {}) {
   const playtimeTrackingEnabled = snapshot.config?.playtimeTrackingEnabled !== false;
-  return [
+  const runtimeLines = [
     `Сейчас в JJS: **${snapshot.totals?.activeJjsUsers || 0}**`,
     `Несохранённых runtime-профилей: **${snapshot.totals?.dirtyRuntimeUsers || 0}**`,
+  ];
+  const dirtyReasonText = formatRuntimeDirtyReasonCounts(snapshot.jobs?.runtimeFlush?.runtime?.dirtyReasonCounts, { boldCounts: true });
+  if ((snapshot.totals?.dirtyRuntimeUsers || 0) > 0) {
+    runtimeLines.push(dirtyReasonText ? `Причины pending flush: ${dirtyReasonText}` : "Причины pending flush: runtime ещё без классификации");
+  }
+  runtimeLines.push(
     `Активных co-play пар: **${snapshot.totals?.activeCoPlayPairs || 0}**`,
     playtimeTrackingEnabled
       ? `Последний синк playtime: ${formatDateTime(snapshot.jobs?.playtimeSync?.lastFinishedAt || snapshot.jobs?.playtimeSync?.lastStartedAt)}`
-      : "Последний синк playtime: выключен в настройках",
-  ].join("\n");
+      : "Последний синк playtime: выключен в настройках"
+  );
+  return runtimeLines.join("\n");
 }
 
 function buildRobloxBackgroundJobsFieldValue(snapshot = {}) {
@@ -1000,7 +1074,24 @@ function buildRobloxStatsPanelPayload({ db = {}, runtimeState = {}, telemetry = 
   const snapshot = getRobloxStatsPanelSnapshot({ db, runtimeState, telemetry, appConfig });
   const embed = new EmbedBuilder()
     .setTitle("Roblox")
-    .setDescription(buildRobloxSimplePanelDescription(snapshot));
+    .setDescription(buildRobloxSimplePanelDescription(snapshot))
+    .addFields(
+      {
+        name: "Покрытие",
+        value: buildRobloxCoverageFieldValue(snapshot),
+        inline: false,
+      },
+      {
+        name: "JJS и runtime",
+        value: buildRobloxRuntimeFieldValue(snapshot),
+        inline: false,
+      },
+      {
+        name: "Проблемы",
+        value: buildRobloxErrorsSummaryFieldValue(snapshot),
+        inline: false,
+      }
+    );
 
   if (statusText) {
     embed.addFields({

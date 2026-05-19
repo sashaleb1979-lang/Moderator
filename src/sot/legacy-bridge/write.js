@@ -16,7 +16,7 @@ const {
 const { getConfiguredChannelValue, getLegacyChannelRecord } = require("../resolver/channels");
 const { selectPreferredRecord } = require("../resolver/priority");
 
-const BASE_ROLE_SLOTS = ["moderator", "accessNormal", "accessWartime", "accessNonJjs", "verifyAccess"];
+const BASE_ROLE_SLOTS = ["moderator", "accessNormal", "accessWartime", "accessNonJjs", "accessCompanion", "verifyAccess"];
 
 function clone(value) {
   if (value === undefined) return undefined;
@@ -206,6 +206,8 @@ function buildLegacyBaseRoleRecord(slot, { appConfig = {} } = {}) {
       return createRecord(appRoles.wartimeAccessRoleId, "configured");
     case "accessNonJjs":
       return createRecord(appRoles.nonGgsAccessRoleId || appRoles.nonJjsAccessRoleId, "configured");
+    case "accessCompanion":
+      return createRecord(appRoles.accessCompanionRoleId, "configured");
     case "verifyAccess":
       return createRecord(appRoles.verifyAccessRoleId, "configured");
     default:
@@ -242,6 +244,7 @@ function buildLegacyRoleRecords({ db = {}, appConfig = {} } = {}) {
     accessNormal: buildLegacyBaseRoleRecord("accessNormal", { appConfig }),
     accessWartime: buildLegacyBaseRoleRecord("accessWartime", { appConfig }),
     accessNonJjs: buildLegacyBaseRoleRecord("accessNonJjs", { appConfig }),
+    accessCompanion: buildLegacyBaseRoleRecord("accessCompanion", { appConfig }),
     verifyAccess: buildLegacyBaseRoleRecord("verifyAccess", { appConfig }),
     killTier: Object.fromEntries(KILL_TIER_SLOTS.map((tier) => [tier, buildLegacyKillTierRecord(tier, { db, appConfig })])),
     killMilestone: Object.fromEntries(KILL_MILESTONE_SLOTS.map((milestone) => [milestone, buildLegacyKillMilestoneRecord(milestone, { appConfig })])),

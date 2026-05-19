@@ -34,6 +34,7 @@ function createContext(overrides = {}) {
         accessRoleId: "access-config",
         wartimeAccessRoleId: "wartime-config",
         nonGgsAccessRoleId: "nonjjs-config",
+        accessCompanionRoleId: "companion-config",
         verifyAccessRoleId: "verify-config",
         killMilestoneRoleIds: {
           "20k": "milestone-20k-config",
@@ -194,6 +195,7 @@ test("resolveAllRoleRecords returns all base, tier and milestone role slots", ()
 
   assert.equal(result.moderator.value, "moderator-config");
   assert.equal(result.accessNormal.value, "access-config");
+  assert.equal(result.accessCompanion.value, "companion-config");
   assert.equal(result.verifyAccess.value, "verify-config");
   assert.equal(result.killTier[1].value, "tier-1-config");
   assert.equal(result.killTier[5].value, "tier-5-generated");
@@ -371,6 +373,12 @@ test("normalizeRoleSlot accepts nonJjs aliases and rejects unknown slots", () =>
     label: "Verify access",
     domain: "base",
     key: "verifyAccess",
+  });
+  assert.deepEqual(normalizeRoleSlot("companion"), {
+    canonical: "accessCompanion",
+    label: "Access companion",
+    domain: "base",
+    key: "accessCompanion",
   });
   assert.deepEqual(normalizeRoleSlot("killTier:4"), {
     canonical: "killTier:4",

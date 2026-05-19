@@ -217,6 +217,7 @@ function createEmptySotState() {
       accessNormal: null,
       accessWartime: null,
       accessNonJjs: null,
+      accessCompanion: null,
       verifyAccess: null,
       killTier: Object.fromEntries(KILL_TIER_SLOTS.map((tier) => [tier, null])),
       killMilestone: Object.fromEntries(KILL_MILESTONE_SLOTS.map((milestone) => [milestone, null])),
@@ -505,6 +506,7 @@ function migrateLegacyState(db = {}, options = {}) {
   next.roles.accessNormal = roleRecord(appRoles.accessRoleId);
   next.roles.accessWartime = roleRecord(appRoles.wartimeAccessRoleId);
   next.roles.accessNonJjs = roleRecord(appRoles.nonGgsAccessRoleId || appRoles.nonJjsAccessRoleId);
+  next.roles.accessCompanion = roleRecord(appRoles.accessCompanionRoleId);
   next.roles.verifyAccess = roleRecord(appRoles.verifyAccessRoleId);
   for (const tier of KILL_TIER_SLOTS) {
     next.roles.killTier[tier] = roleRecord(appRoles.killTierRoleIds?.[tier] || appRoles.killTierRoleIds?.[String(tier)], dbConfig.generatedRoles?.tiers?.[tier] || dbConfig.generatedRoles?.tiers?.[String(tier)]);
@@ -545,6 +547,7 @@ function normalizeSotState(value = {}) {
   next.roles.accessNormal = normalizeRecord(source.roles?.accessNormal, "configured");
   next.roles.accessWartime = normalizeRecord(source.roles?.accessWartime, "configured");
   next.roles.accessNonJjs = normalizeRecord(source.roles?.accessNonJjs, "configured");
+  next.roles.accessCompanion = normalizeRecord(source.roles?.accessCompanion, "configured");
   next.roles.verifyAccess = normalizeRecord(source.roles?.verifyAccess, "configured");
   for (const tier of KILL_TIER_SLOTS) {
     next.roles.killTier[tier] = normalizeRecord(source.roles?.killTier?.[tier] || source.roles?.killTier?.[String(tier)], "configured");
@@ -603,7 +606,7 @@ function mergeRolesAcrossLegacyRefresh(existingRoles = {}, refreshedRoles = {}) 
   const currentRoles = existingRoles && typeof existingRoles === "object" && !Array.isArray(existingRoles)
     ? existingRoles
     : {};
-  const baseRoleSlots = ["moderator", "accessNormal", "accessWartime", "accessNonJjs", "verifyAccess"];
+  const baseRoleSlots = ["moderator", "accessNormal", "accessWartime", "accessNonJjs", "accessCompanion", "verifyAccess"];
 
   for (const slot of baseRoleSlots) {
     const currentRecord = normalizeRecord(currentRoles?.[slot], "configured");

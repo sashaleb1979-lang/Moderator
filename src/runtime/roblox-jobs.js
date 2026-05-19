@@ -36,11 +36,91 @@ function normalizeCandidateUserIds(userIds = []) {
   return unique;
 }
 
+const ROBLOX_RUNTIME_DIRTY_REASONS = new Set([
+  "binding_sanitized",
+  "binding_repaired",
+  "session_started",
+  "session_closed",
+  "playtime_updated",
+  "coplay_updated",
+]);
+
+function normalizeRuntimeDiscordUserId(value = "") {
+  return String(value || "").trim().slice(0, 80);
+}
+
+function normalizeRobloxRuntimeDirtyReason(value = "") {
+  const normalized = String(value || "").trim().toLowerCase();
+  return ROBLOX_RUNTIME_DIRTY_REASONS.has(normalized) ? normalized : "";
+}
+
+function normalizeRobloxRuntimeDirtyReasonList(value = []) {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.map((entry) => normalizeRobloxRuntimeDirtyReason(entry)).filter(Boolean))];
+}
+
+function normalizeRobloxRuntimeDirtyReasonMap(value = {}) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+
+  const normalized = {};
+  for (const [userId, reasons] of Object.entries(value)) {
+    const normalizedUserId = normalizeRuntimeDiscordUserId(userId);
+    const normalizedReasons = normalizeRobloxRuntimeDirtyReasonList(reasons);
+    if (!normalizedUserId || !normalizedReasons.length) continue;
+    normalized[normalizedUserId] = normalizedReasons;
+  }
+
+  return normalized;
+}
+
+function getRobloxRuntimeDirtyReasonsForUser(runtimeState = {}, userId = "") {
+  const normalizedUserId = normalizeRuntimeDiscordUserId(userId);
+  if (!normalizedUserId) return [];
+  return normalizeRobloxRuntimeDirtyReasonList(runtimeState?.dirtyReasonsByDiscordUserId?.[normalizedUserId]);
+}
+
+function getRobloxRuntimeDirtyReasonCounts(runtimeState = {}, userIds = null) {
+  const dirtyReasonMap = normalizeRobloxRuntimeDirtyReasonMap(runtimeState?.dirtyReasonsByDiscordUserId);
+  const allowedUserIds = Array.isArray(userIds)
+    ? new Set(userIds.map((userId) => normalizeRuntimeDiscordUserId(userId)).filter(Boolean))
+    : null;
+  const counts = {};
+
+  for (const [userId, reasons] of Object.entries(dirtyReasonMap)) {
+    if (allowedUserIds && !allowedUserIds.has(userId)) continue;
+    for (const reason of reasons) {
+      counts[reason] = (counts[reason] || 0) + 1;
+    }
+  }
+
+  return counts;
+}
+
+function markRobloxRuntimeDirty(runtimeState = null, discordUserId = "", reason = "") {
+  const state = ensureRobloxRuntimeState(runtimeState);
+  const normalizedUserId = normalizeRuntimeDiscordUserId(discordUserId);
+  const normalizedReason = normalizeRobloxRuntimeDirtyReason(reason);
+  if (!normalizedUserId) return state;
+
+  state.dirtyDiscordUserIds.add(normalizedUserId);
+  state.dirty = true;
+
+  if (normalizedReason) {
+    state.dirtyReasonsByDiscordUserId[normalizedUserId] = normalizeRobloxRuntimeDirtyReasonList([
+      ...(Array.isArray(state.dirtyReasonsByDiscordUserId[normalizedUserId]) ? state.dirtyReasonsByDiscordUserId[normalizedUserId] : []),
+      normalizedReason,
+    ]);
+  }
+
+  return state;
+}
+
 function createRobloxRuntimeState() {
   return {
     activeSessionsByDiscordUserId: {},
     activeCoPlayPairsByKey: {},
     dirtyDiscordUserIds: new Set(),
+    dirtyReasonsByDiscordUserId: {},
     dirty: false,
     lastPlaytimeSyncAt: null,
     lastFlushAt: null,
@@ -61,6 +141,7 @@ function ensureRobloxRuntimeState(runtimeState = null) {
   if (!(state.dirtyDiscordUserIds instanceof Set)) {
     state.dirtyDiscordUserIds = new Set(Array.isArray(state.dirtyDiscordUserIds) ? state.dirtyDiscordUserIds : []);
   }
+  state.dirtyReasonsByDiscordUserId = normalizeRobloxRuntimeDirtyReasonMap(state.dirtyReasonsByDiscordUserId);
 
   state.dirty = state.dirty === true;
   state.lastPlaytimeSyncAt = state.lastPlaytimeSyncAt || null;
@@ -166,10 +247,7 @@ async function repairRobloxVerifiedBindings(options = {}) {
   const sanitizedCount = sanitizedDiscordUserIds.length;
   if (runtimeState?.dirtyDiscordUserIds instanceof Set) {
     for (const discordUserId of sanitizedDiscordUserIds) {
-      runtimeState.dirtyDiscordUserIds.add(discordUserId);
-    }
-    if (sanitizedDiscordUserIds.length) {
-      runtimeState.dirty = true;
+      markRobloxRuntimeDirty(runtimeState, discordUserId, "binding_sanitized");
     }
   }
 
@@ -196,8 +274,7 @@ async function repairRobloxVerifiedBindings(options = {}) {
   const candidatesByUsername = new Map();
   for (const candidate of candidates) {
     if (candidate.hadSanitizedUserId && runtimeState?.dirtyDiscordUserIds instanceof Set) {
-      runtimeState.dirtyDiscordUserIds.add(candidate.discordUserId);
-      runtimeState.dirty = true;
+      markRobloxRuntimeDirty(runtimeState, candidate.discordUserId, "binding_sanitized");
     }
 
     const key = candidate.username.toLowerCase();
@@ -246,8 +323,7 @@ async function repairRobloxVerifiedBindings(options = {}) {
           profiles[candidate.discordUserId] = ensureSharedProfile(candidate.profile, candidate.discordUserId).profile;
 
           if (runtimeState?.dirtyDiscordUserIds instanceof Set) {
-            runtimeState.dirtyDiscordUserIds.add(candidate.discordUserId);
-            runtimeState.dirty = true;
+            markRobloxRuntimeDirty(runtimeState, candidate.discordUserId, "binding_repaired");
           }
           repairedCount += 1;
         }
@@ -771,11 +847,13 @@ async function runRobloxPlaytimeSyncJob(options = {}) {
         playtime.sessionCount += 1;
         playtime.currentSessionStartedAt = nowIso;
         startedSessionCount += 1;
+        markRobloxRuntimeDirty(runtimeState, candidate.discordUserId, "session_started");
       }
       if (deltaMinutes > 0) {
         playtime.totalJjsMinutes += deltaMinutes;
         playtime.dailyBuckets = appendDailyMinutes(playtime.dailyBuckets, nowIso, deltaMinutes);
         playtime.hourlyBucketsMsk = appendHourlyMinutes(playtime.hourlyBucketsMsk, nowIso, deltaMinutes);
+        markRobloxRuntimeDirty(runtimeState, candidate.discordUserId, "playtime_updated");
       }
 
       recalculatePlaytimeWindows(playtime, nowIso);
@@ -799,6 +877,7 @@ async function runRobloxPlaytimeSyncJob(options = {}) {
       playtime.currentSessionStartedAt = null;
       recalculatePlaytimeWindows(playtime, nowIso);
       touchedDiscordUserIds.add(candidate.discordUserId);
+      markRobloxRuntimeDirty(runtimeState, candidate.discordUserId, "session_closed");
       if (activeSession) {
         closedSessionCount += 1;
       }
@@ -851,6 +930,8 @@ async function runRobloxPlaytimeSyncJob(options = {}) {
         activePairKeys.add(pairKey);
         touchedDiscordUserIds.add(left.discordUserId);
         touchedDiscordUserIds.add(right.discordUserId);
+        markRobloxRuntimeDirty(runtimeState, left.discordUserId, "coplay_updated");
+        markRobloxRuntimeDirty(runtimeState, right.discordUserId, "coplay_updated");
       }
     }
   }
@@ -867,7 +948,7 @@ async function runRobloxPlaytimeSyncJob(options = {}) {
 
   for (const discordUserId of touchedDiscordUserIds) {
     profiles[discordUserId] = ensureSharedProfile(profiles[discordUserId], discordUserId).profile;
-    runtimeState.dirtyDiscordUserIds.add(discordUserId);
+    markRobloxRuntimeDirty(runtimeState, discordUserId);
   }
 
   runtimeState.lastPlaytimeSyncAt = nowIso;
@@ -905,6 +986,7 @@ function flushRobloxRuntime(options = {}) {
   assertFunction(saveDb, "saveDb");
 
   const dirtyUserIds = [...runtimeState.dirtyDiscordUserIds];
+  const dirtyReasonCounts = getRobloxRuntimeDirtyReasonCounts(runtimeState, dirtyUserIds);
   for (const discordUserId of dirtyUserIds) {
     db.profiles[discordUserId] = ensureSharedProfile(db.profiles[discordUserId], discordUserId).profile;
   }
@@ -915,12 +997,14 @@ function flushRobloxRuntime(options = {}) {
   }
 
   runtimeState.dirtyDiscordUserIds.clear();
+  runtimeState.dirtyReasonsByDiscordUserId = {};
   runtimeState.dirty = false;
   runtimeState.lastFlushAt = nowIso;
 
   return {
     saved,
     dirtyUserCount: dirtyUserIds.length,
+    dirtyReasonCounts,
     flushedAt: nowIso,
   };
 }
@@ -929,6 +1013,8 @@ module.exports = {
   createRobloxJobCoordinator,
   createRobloxRuntimeState,
   flushRobloxRuntime,
+  getRobloxRuntimeDirtyReasonCounts,
+  getRobloxRuntimeDirtyReasonsForUser,
   runRobloxProfileRefreshJob,
   runRobloxPlaytimeSyncJob,
   runRobloxPlaytimeCycle,

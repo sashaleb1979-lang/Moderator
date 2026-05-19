@@ -1,6 +1,7 @@
 "use strict";
 
 const { MessageFlags, PermissionsBitField } = require("discord.js");
+const { resolveUsableVerifiedRobloxIdentity } = require("../integrations/shared-profile");
 const {
   ANTITEAM_LEVELS,
   cleanString,
@@ -777,26 +778,16 @@ function createAntiteamOperator(options = {}) {
     ].filter(Boolean);
 
     for (const roblox of candidates) {
-      const robloxUserId = cleanString(roblox.userId || roblox.robloxUserId || roblox.id, 40);
-      const username = cleanString(roblox.username || roblox.currentUsername || roblox.robloxUsername || roblox.name, 120);
-      const verificationStatus = cleanString(roblox.verificationStatus, 40).toLowerCase();
-      const recordStatus = cleanString(roblox.status, 40).toLowerCase();
-      const trusted = verificationStatus === "verified"
-        || recordStatus === "verified"
-        || roblox.hasVerifiedAccount === true
-        || Boolean(cleanString(roblox.verifiedAt || roblox.robloxVerifiedAt, 80));
-      const unusableStatuses = new Set(["failed", "unverified", "rejected", "denied"]);
-      const explicitlyUnusable = unusableStatuses.has(verificationStatus)
-        || (!verificationStatus && unusableStatuses.has(recordStatus));
-      if (!robloxUserId || !username || explicitlyUnusable || !trusted) continue;
+      const identity = resolveUsableVerifiedRobloxIdentity(roblox);
+      if (!identity) continue;
       return {
-        id: robloxUserId,
-        userId: robloxUserId,
-        name: username,
-        username,
-        displayName: cleanString(roblox.displayName || roblox.robloxDisplayName, 120),
-        avatarUrl: cleanString(roblox.avatarUrl || roblox.robloxAvatarUrl, 2000),
-        profileUrl: cleanString(roblox.profileUrl, 500) || `https://www.roblox.com/users/${robloxUserId}/profile`,
+        id: identity.userId,
+        userId: identity.userId,
+        name: identity.username,
+        username: identity.username,
+        displayName: identity.displayName,
+        avatarUrl: identity.avatarUrl,
+        profileUrl: identity.profileUrl,
       };
     }
     return null;

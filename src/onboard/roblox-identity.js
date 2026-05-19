@@ -1,5 +1,7 @@
 "use strict";
 
+const { resolveUsableVerifiedRobloxIdentity } = require("../integrations/shared-profile");
+
 const WELCOME_ROBLOX_IDENTITY_LOCK_TEXT = "Roblox username уже подтверждён. В welcome-панели его можно только добавить, если он ещё не указан. Изменить может только админ.";
 
 function cleanString(value, limit = 2000) {
@@ -23,14 +25,11 @@ function getWelcomeRobloxIdentityLockText(value = {}) {
 
 function buildProfileRobloxIdentitySession(value = {}) {
   const source = value && typeof value === "object" ? value : {};
-  const verificationStatus = cleanString(source.verificationStatus || source.status, 40).toLowerCase();
-  const hasVerifiedAccount = source.hasVerifiedAccount === true || verificationStatus === "verified";
+  const usableIdentity = resolveUsableVerifiedRobloxIdentity(source);
 
   return {
     robloxUsername: cleanString(source.robloxUsername ?? source.currentUsername ?? source.username, 120),
-    robloxUserId: hasVerifiedAccount
-      ? cleanString(source.robloxUserId ?? source.userId, 80)
-      : "",
+    robloxUserId: usableIdentity?.userId || "",
     robloxDisplayName: cleanString(source.robloxDisplayName ?? source.currentDisplayName ?? source.displayName, 120),
   };
 }
