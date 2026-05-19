@@ -12,12 +12,14 @@ const {
   getLegacyEloTierRole: getSotLegacyEloTierRole,
   getRole: getSotRole,
   listCharacters: listSotCharacters,
+  resolveAllCharacterRecords,
   getIntegration: getSotIntegration,
   getInfluence: getSotInfluence,
   getLegacyInfluenceConfig: getSotLegacyInfluenceConfig,
   getPanel: getSotPanel,
   getPresentation: getSotPresentation,
 } = require("./src/sot");
+const { syncSotShadowState: syncSotShadowStateCore } = require("./src/sot/loader");
 const {
   createGuildSnapshot: createSotGuildSnapshot,
   diagnoseChannels: diagnoseSotChannels,
@@ -25,11 +27,43 @@ const {
   diagnosePanels: diagnoseSotPanels,
   diagnoseRoles: diagnoseSotRoles,
 } = require("./src/sot/diagnostics");
+const { compareSotVsLegacy } = require("./src/sot/legacy-bridge/compare");
+const {
+  syncLegacyGraphicTierlistBoardSnapshot,
+  syncLegacyPanelSnapshot,
+  syncLegacyTextTierlistBoardSnapshot,
+} = require("./src/sot/legacy-bridge/panels");
+const {
+  syncLegacyCharacterWrites,
+  syncLegacyChannelWrites,
+  syncLegacyInfluenceWrites,
+  syncLegacyIntegrationWrites,
+  syncLegacyPanelWrites,
+  syncLegacyPresentationWrites,
+  syncLegacyRoleWrites,
+} = require("./src/sot/legacy-bridge/write");
+const { getCharacterAliasNames } = require("./src/sot/character-aliases");
 const {
   buildConfiguredCharacterCatalogView,
   clearNativeCharacterRecord,
   writeNativeCharacterRecord,
 } = require("./src/sot/native-characters");
+const {
+  clearNativeIntegrationSourcePath,
+  writeNativeIntegrationRoleGrantEnabled,
+  writeNativeIntegrationSnapshot,
+  writeNativeIntegrationSourcePath,
+} = require("./src/sot/native-integrations");
+const {
+  getActionableSotCharacterAlertState,
+  runSotStartupAlerts,
+  scheduleSotAlertTicks,
+} = require("./src/sot/runtime-alerts");
+const {
+  handleSotReportButtonInteraction,
+  handleSotReportModalOpenInteraction,
+  handleSotReportModalSubmitInteraction,
+} = require("./src/sot/report-operator");
 const {
   clearNativeRoleRecord,
   normalizeComboGuideEditorRoleIds,
@@ -145,6 +179,7 @@ const {
   getOnboardAccessGrantModeLabel,
   normalizeOnboardAccessGrantMode,
 } = require("./src/onboard/access-grant-mode");
+const { buildCommands } = require("./src/onboard/commands");
 const { ONBOARD_BEGIN_ROUTES, resolveOnboardBeginRoute } = require("./src/onboard/begin-state");
 const {
   BOT_HELPER_PANEL_ACTION_IDS,
@@ -214,6 +249,7 @@ const {
 const { createProfileOperator } = require("./src/profile/operator");
 const { createAntiteamOperator } = require("./src/antiteam/operator");
 const { ANTITEAM_COMMAND_NAME } = require("./src/antiteam/view");
+const { buildComboCommands } = require("./src/combo-guide/commands");
 const {
   createRobloxApiClient,
 } = require("./src/integrations/roblox-service");
@@ -224,6 +260,23 @@ const {
   runRobloxProfileRefreshJob: runRobloxProfileRefreshJobCore,
   runRobloxPlaytimeSyncJob,
 } = require("./src/runtime/roblox-jobs");
+const {
+  clearIntervalHandles,
+  mergeRobloxRuntimeConfig,
+  normalizeRobloxPanelSettingsPatch,
+  rebuildRobloxIntervalHandles,
+} = require("./src/runtime/roblox-runtime-support");
+const {
+  createSerializedMutationRunner,
+  createSerializedTaskRunner,
+} = require("./src/runtime/serialized-task-runner");
+const {
+  buildRobloxPeriodicJobs,
+  buildClientReadyPeriodicJobs,
+  runClientReadyCore,
+  scheduleClientReadyIntervals,
+  schedulePeriodicJobs,
+} = require("./src/runtime/client-ready-core");
 const {
   buildRobloxStatsPanelPayload,
   createRobloxPanelTelemetry,
@@ -354,6 +407,14 @@ const {
   resolveEffectiveSubmittedKills,
   resolveResumableMainCharacterIds,
 } = require("./src/onboard/submission-message");
+const {
+  DEFAULT_GRAPHIC_TIER_COLORS,
+  clearGraphicAvatarCache,
+  clearGraphicAvatarCacheForUser,
+  isPureimageAvailable,
+  renderGraphicTierlistPng,
+  setAvatarCacheDir,
+} = require("./graphic-tierlist");
 let nonGgsCaptchaModule = null;
 try {
   nonGgsCaptchaModule = require("./src/onboard/non-jjs-captcha");
@@ -714,6 +775,7 @@ function normalizeCharacterCatalog(value, fallback = []) {
 
 function validateRuntimeConfig(config) {
   const errors = [];
+  const warnings = [];
 
   if (!DISCORD_TOKEN) errors.push("DISCORD_TOKEN отсутствует в .env");
   if (!GUILD_ID) errors.push("GUILD_ID отсутствует в .env");
@@ -724,8 +786,8 @@ function validateRuntimeConfig(config) {
   }
 
   if (config?.roles) {
-    if (isPlaceholder(config.roles.moderatorRoleId)) errors.push("roles.moderatorRoleId не заполнен");
-    if (isPlaceholder(config.roles.accessRoleId)) errors.push("roles.accessRoleId не заполнен");
+    if (isPlaceholder(config.roles.moderatorRoleId)) warnings.push("roles.moderatorRoleId не заполнен");
+    if (isPlaceholder(config.roles.accessRoleId)) warnings.push("roles.accessRoleId не заполнен");
   } else {
     errors.push("roles отсутствует в bot.config.json");
   }
@@ -752,11 +814,16 @@ function validateRuntimeConfig(config) {
   if (errors.length) {
     throw new Error(`Конфиг заполнен не полностью:\n- ${errors.join("\n- ")}`);
   }
+
+  return warnings;
 }
 
 const fileConfig = loadJsonFile(CONFIG_PATH, {});
 const appConfig = buildRuntimeConfig(fileConfig);
-validateRuntimeConfig(appConfig);
+const startupValidationWarnings = validateRuntimeConfig(appConfig);
+if (startupValidationWarnings.length) {
+  console.warn(`[startup] Продолжаю в degraded mode:\n- ${startupValidationWarnings.join("\n- ")}`);
+}
 
 function buildSotLegacyOptions(currentDb) {
   const liveTierlistState = getLiveLegacyTierlistState(currentDb);
@@ -778,7 +845,7 @@ function buildSotLegacyOptions(currentDb) {
 }
 
 function syncSotShadowState(currentDb) {
-  return syncShadowSotState(currentDb, buildSotLegacyOptions(currentDb));
+  return syncSotShadowStateCore(currentDb, buildSotLegacyOptions(currentDb));
 }
 
 function syncSotCoreDualWrite(currentDb) {
@@ -2830,6 +2897,83 @@ async function respondToOnboardError(interaction, message) {
   }
 
   await interaction.followUp(payload).catch(() => {});
+}
+
+function normalizeInteractionEditPayload(payload) {
+  if (typeof payload === "string") return payload;
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return payload;
+
+  const {
+    flags,
+    ephemeral,
+    fetchReply,
+    withResponse,
+    ...nextPayload
+  } = payload;
+
+  return nextPayload;
+}
+
+function buildPlainInteractionPayload(content, includeFlags = false) {
+  const payload = {
+    content: String(content || "").trim() || "Готово.",
+    embeds: [],
+    components: [],
+  };
+  return includeFlags ? ephemeralPayload(payload) : payload;
+}
+
+function formatInteractionErrorText(error, fallback = "неизвестная ошибка", limit = 220) {
+  return String(error?.message || error || fallback).slice(0, Math.max(0, Number(limit) || 0));
+}
+
+async function replyWithAsyncInteractionPayload(interaction, options = {}) {
+  const buildPayload = typeof options.buildPayload === "function"
+    ? options.buildPayload
+    : null;
+  if (!buildPayload) {
+    throw new Error("buildPayload function is required");
+  }
+
+  const loadingText = String(options.loadingText || "Обрабатываю...").trim() || "Обрабатываю...";
+  const errorText = String(options.errorText || "Не удалось выполнить действие.").trim() || "Не удалось выполнить действие.";
+  const logLabel = String(options.logLabel || "Async interaction reply failed").trim() || "Async interaction reply failed";
+
+  await interaction.reply(ephemeralPayload({ content: loadingText }));
+
+  void (async () => {
+    try {
+      const payload = await buildPayload();
+      await interaction.editReply(normalizeInteractionEditPayload(payload));
+    } catch (error) {
+      console.error(`${logLabel}:`, error);
+      await interaction.editReply(buildPlainInteractionPayload(`${errorText}: ${formatInteractionErrorText(error)}`)).catch(() => {});
+    }
+  })();
+}
+
+async function deferComponentInteractionWithAsyncPayload(interaction, options = {}) {
+  const buildPayload = typeof options.buildPayload === "function"
+    ? options.buildPayload
+    : null;
+  if (!buildPayload) {
+    throw new Error("buildPayload function is required");
+  }
+
+  const errorText = String(options.errorText || "Не удалось обновить сообщение.").trim() || "Не удалось обновить сообщение.";
+  const logLabel = String(options.logLabel || "Async interaction update failed").trim() || "Async interaction update failed";
+
+  await interaction.deferUpdate();
+
+  void (async () => {
+    try {
+      const payload = await buildPayload();
+      await interaction.editReply(normalizeInteractionEditPayload(payload));
+    } catch (error) {
+      console.error(`${logLabel}:`, error);
+      await interaction.editReply(buildPlainInteractionPayload(`${errorText}: ${formatInteractionErrorText(error)}`)).catch(() => {});
+    }
+  })();
 }
 
 async function fallbackToManualMainSelection(interaction, mode = "full", error = null) {
@@ -6758,6 +6902,16 @@ async function buildVerificationPanelReply(view = "home", statusText = "", inclu
   return includeFlags ? ephemeralPayload(payload) : payload;
 }
 
+async function buildVerificationPanelReplySafe(view = "home", statusText = "", includeFlags = true) {
+  try {
+    return await buildVerificationPanelReply(view, statusText, includeFlags);
+  } catch (error) {
+    const prefix = String(statusText || "").trim();
+    const content = `${prefix ? `${prefix}\n\n` : ""}Не удалось собрать verification panel: ${formatInteractionErrorText(error)}`;
+    return buildPlainInteractionPayload(content, includeFlags);
+  }
+}
+
 function buildOnboardModeStatusLines() {
   const state = getOnboardModeState();
   const normalRoleId = getNormalAccessRoleId();
@@ -7990,6 +8144,16 @@ async function buildBotHelperSettingsReply(client, statusText = "", includeFlags
   });
 
   return includeFlags ? ephemeralPayload(payload) : payload;
+}
+
+async function buildBotHelperSettingsReplySafe(client, statusText = "", includeFlags = true) {
+  try {
+    return await buildBotHelperSettingsReply(client, statusText, includeFlags);
+  } catch (error) {
+    const prefix = String(statusText || "").trim();
+    const content = `${prefix ? `${prefix}\n\n` : ""}Не удалось обновить helper settings: ${formatInteractionErrorText(error)}`;
+    return buildPlainInteractionPayload(content, includeFlags);
+  }
 }
 
 async function refreshBotHelperPanel(client, options = {}) {
@@ -10065,6 +10229,16 @@ async function buildModeratorPanelPayload(client, statusText = "", includeFlags 
   };
 
   return includeFlags ? ephemeralPayload(payload) : payload;
+}
+
+async function buildModeratorPanelPayloadSafe(client, statusText = "", includeFlags = true) {
+  try {
+    return await buildModeratorPanelPayload(client, statusText, includeFlags);
+  } catch (error) {
+    const prefix = String(statusText || "").trim();
+    const content = `${prefix ? `${prefix}\n\n` : ""}Не удалось собрать onboarding panel: ${formatInteractionErrorText(error)}`;
+    return buildPlainInteractionPayload(content, includeFlags);
+  }
 }
 
 function buildModeratorApocalypseConfirmPayload(statusText = "", includeFlags = true) {
@@ -14690,7 +14864,12 @@ client.on("interactionCreate", async (interaction) => {
 
       const subcommand = interaction.options.getSubcommand();
       if (subcommand === "panel") {
-        await interaction.reply(await buildVerificationPanelReply());
+        await replyWithAsyncInteractionPayload(interaction, {
+          loadingText: "Собираю verification panel...",
+          buildPayload: () => buildVerificationPanelReplySafe("home", "", false),
+          errorText: "Не удалось открыть verification panel.",
+          logLabel: "Verification panel open failed",
+        });
         return;
       }
 
@@ -14906,7 +15085,12 @@ client.on("interactionCreate", async (interaction) => {
 
     if (subcommand === "panel") {
       try {
-        await interaction.reply(await buildModeratorPanelPayload(client));
+        await replyWithAsyncInteractionPayload(interaction, {
+          loadingText: "Собираю мод-панель...",
+          buildPayload: () => buildModeratorPanelPayloadSafe(client, "", false),
+          errorText: "Не удалось открыть мод-панель.",
+          logLabel: "Onboarding panel open failed",
+        });
       } catch (error) {
         console.error("onboard panel failed:", error);
         await interaction.reply(ephemeralPayload({
@@ -15406,8 +15590,8 @@ client.on("interactionCreate", async (interaction) => {
       replyNoPermission: async (currentInteraction) => {
         await currentInteraction.reply(ephemeralPayload({ content: "Нет прав." }));
       },
-      buildView: async (view, statusText, includeFlags) => buildVerificationPanelReply(view, statusText, includeFlags),
-      buildBackPayload: async () => buildModeratorPanelPayload(client, "", false),
+      buildView: async (view, statusText, includeFlags) => buildVerificationPanelReplySafe(view, statusText, includeFlags),
+      buildBackPayload: async () => buildModeratorPanelPayloadSafe(client, "", false),
       buildModal: async (customId) => {
         const integration = getVerificationIntegrationState();
         if (customId === VERIFY_PANEL_CONFIG_INFRA_ID) {
@@ -16648,8 +16832,12 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-      await interaction.editReply(await buildBotHelperSettingsReply(client, "", false));
+      await replyWithAsyncInteractionPayload(interaction, {
+        loadingText: "Собираю helper-панель...",
+        buildPayload: () => buildBotHelperSettingsReplySafe(client, "", false),
+        errorText: "Не удалось открыть helper-панель.",
+        logLabel: "Bot helper settings open failed",
+      });
       return;
     }
 
@@ -16681,50 +16869,64 @@ client.on("interactionCreate", async (interaction) => {
       }
 
       if (interaction.customId === BOT_HELPER_PANEL_EDITOR_CUSTOM_IDS.refresh) {
-        await interaction.deferUpdate();
-        await interaction.editReply(await buildBotHelperSettingsReply(client, "Состояние helper-панели обновлено.", false));
+        await deferComponentInteractionWithAsyncPayload(interaction, {
+          buildPayload: () => buildBotHelperSettingsReplySafe(client, "Состояние helper-панели обновлено.", false),
+          errorText: "Не удалось обновить helper-панель.",
+          logLabel: "Bot helper settings refresh failed",
+        });
         return;
       }
 
       if (interaction.customId === BOT_HELPER_PANEL_EDITOR_CUSTOM_IDS.resendNow) {
-        await interaction.deferUpdate();
-        try {
-          const snapshot = await getBotHelperPanelRuntimeSnapshot(client);
-          if (!snapshot.channelId || isPlaceholder(snapshot.channelId)) {
-            await interaction.editReply(await buildBotHelperSettingsReply(client, "Сначала укажи канал для helper-панели.", false));
-            return;
-          }
-          await refreshBotHelperPanel(client, {
-            forceRecreate: true,
-            channelId: snapshot.channelId,
-            strict: true,
-          });
-          await interaction.editReply(await buildBotHelperSettingsReply(client, "Helper-панель отправлена заново.", false));
-        } catch (error) {
-          await interaction.editReply(await buildBotHelperSettingsReply(
-            client,
-            `Не удалось отправить helper-панель заново: ${String(error?.message || error || "неизвестная ошибка")}`,
-            false
-          ));
-        }
+        await deferComponentInteractionWithAsyncPayload(interaction, {
+          buildPayload: async () => {
+            try {
+              const snapshot = await getBotHelperPanelRuntimeSnapshot(client);
+              if (!snapshot.channelId || isPlaceholder(snapshot.channelId)) {
+                return buildBotHelperSettingsReplySafe(client, "Сначала укажи канал для helper-панели.", false);
+              }
+
+              await refreshBotHelperPanel(client, {
+                forceRecreate: true,
+                channelId: snapshot.channelId,
+                strict: true,
+              });
+
+              return buildBotHelperSettingsReplySafe(client, "Helper-панель отправлена заново.", false);
+            } catch (error) {
+              return buildBotHelperSettingsReplySafe(
+                client,
+                `Не удалось отправить helper-панель заново: ${String(error?.message || error || "неизвестная ошибка")}`,
+                false
+              );
+            }
+          },
+          errorText: "Не удалось переотправить helper-панель.",
+          logLabel: "Bot helper settings resend failed",
+        });
         return;
       }
 
       if (interaction.customId === BOT_HELPER_PANEL_EDITOR_CUSTOM_IDS.disable) {
-        await interaction.deferUpdate();
-        try {
-          const result = await writeAndApplyNativePanelOverride(client, BOT_HELPER_PANEL_SLOT, "");
-          const statusText = result.applyResult?.deletedMessageId
-            ? `Helper-панель отключена. Старое сообщение ${result.applyResult.deletedMessageId} удалено.`
-            : "Helper-панель отключена.";
-          await interaction.editReply(await buildBotHelperSettingsReply(client, statusText, false));
-        } catch (error) {
-          await interaction.editReply(await buildBotHelperSettingsReply(
-            client,
-            `Не удалось отключить helper-панель: ${String(error?.message || error || "неизвестная ошибка")}`,
-            false
-          ));
-        }
+        await deferComponentInteractionWithAsyncPayload(interaction, {
+          buildPayload: async () => {
+            try {
+              const result = await writeAndApplyNativePanelOverride(client, BOT_HELPER_PANEL_SLOT, "");
+              const statusText = result.applyResult?.deletedMessageId
+                ? `Helper-панель отключена. Старое сообщение ${result.applyResult.deletedMessageId} удалено.`
+                : "Helper-панель отключена.";
+              return buildBotHelperSettingsReplySafe(client, statusText, false);
+            } catch (error) {
+              return buildBotHelperSettingsReplySafe(
+                client,
+                `Не удалось отключить helper-панель: ${String(error?.message || error || "неизвестная ошибка")}`,
+                false
+              );
+            }
+          },
+          errorText: "Не удалось отключить helper-панель.",
+          logLabel: "Bot helper settings disable failed",
+        });
         return;
       }
 
@@ -16946,11 +17148,15 @@ client.on("interactionCreate", async (interaction) => {
       state.changedBy = interaction.user.tag;
       saveDb();
 
-      await interaction.update(await buildModeratorPanelPayload(
-        client,
-        "Режим онбординга переключён на апокалипсис. Новые участники без ролей будут удаляться при входе.",
-        false
-      ));
+      await deferComponentInteractionWithAsyncPayload(interaction, {
+        buildPayload: () => buildModeratorPanelPayloadSafe(
+          client,
+          "Режим онбординга переключён на апокалипсис. Новые участники без ролей будут удаляться при входе.",
+          false
+        ),
+        errorText: "Не удалось обновить мод-панель.",
+        logLabel: "Apocalypse mode confirm failed",
+      });
       return;
     }
 
@@ -16960,7 +17166,11 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
-      await interaction.update(await buildModeratorPanelPayload(client, "Включение апокалипсиса отменено.", false));
+      await deferComponentInteractionWithAsyncPayload(interaction, {
+        buildPayload: () => buildModeratorPanelPayloadSafe(client, "Включение апокалипсиса отменено.", false),
+        errorText: "Не удалось обновить мод-панель.",
+        logLabel: "Apocalypse mode cancel failed",
+      });
       return;
     }
 
@@ -17051,7 +17261,11 @@ client.on("interactionCreate", async (interaction) => {
       }
 
       if (interaction.customId === "tierlist_panel_back") {
-        await interaction.update(await buildModeratorPanelPayload(client, "", false));
+        await deferComponentInteractionWithAsyncPayload(interaction, {
+          buildPayload: () => buildModeratorPanelPayloadSafe(client, "", false),
+          errorText: "Не удалось вернуться к мод-панели.",
+          logLabel: "Tierlist panel back failed",
+        });
         return;
       }
 
@@ -17290,7 +17504,12 @@ client.on("interactionCreate", async (interaction) => {
 
       const user = getLegacyTierlistWizardUser(liveState.rawState, interaction.user.id);
       if (Array.isArray(user.wizQueue) && user.wizQueue.length && canUseLegacyTierlistCurrentWizard(liveState.rawState, interaction.user.id)) {
-        await interaction.reply(ephemeralPayload(await buildLegacyTierlistWizardPayload(liveState, interaction.user.id)));
+        await replyWithAsyncInteractionPayload(interaction, {
+          loadingText: "Открываю тир-лист...",
+          buildPayload: async () => ephemeralPayload(await buildLegacyTierlistWizardPayload(liveState, interaction.user.id)),
+          errorText: "Не удалось открыть тир-лист.",
+          logLabel: "Legacy tierlist wizard resume failed",
+        });
         return;
       }
 
@@ -17299,7 +17518,12 @@ client.on("interactionCreate", async (interaction) => {
 
       startLegacyTierlistWizard(liveState, interaction.user.id, "full");
       persistLiveLegacyTierlistState(liveState);
-      await interaction.reply(ephemeralPayload(await buildLegacyTierlistWizardPayload(liveState, interaction.user.id)));
+      await replyWithAsyncInteractionPayload(interaction, {
+        loadingText: "Готовлю тир-лист...",
+        buildPayload: async () => ephemeralPayload(await buildLegacyTierlistWizardPayload(liveState, interaction.user.id)),
+        errorText: "Не удалось открыть тир-лист.",
+        logLabel: "Legacy tierlist wizard start failed",
+      });
       return;
     }
 
@@ -17320,7 +17544,12 @@ client.on("interactionCreate", async (interaction) => {
       }
 
       if (Array.isArray(user.wizQueue) && user.wizQueue.length) {
-        await interaction.reply(ephemeralPayload(await buildLegacyTierlistWizardPayload(liveState, interaction.user.id)));
+        await replyWithAsyncInteractionPayload(interaction, {
+          loadingText: "Открываю оценку новых...",
+          buildPayload: async () => ephemeralPayload(await buildLegacyTierlistWizardPayload(liveState, interaction.user.id)),
+          errorText: "Не удалось открыть оценку новых.",
+          logLabel: "Legacy tierlist targeted wizard resume failed",
+        });
         return;
       }
 
@@ -18055,7 +18284,11 @@ client.on("interactionCreate", async (interaction) => {
       }
 
       if (interaction.customId === "elo_panel_back") {
-        await interaction.update(await buildModeratorPanelPayload(client, "", false));
+        await deferComponentInteractionWithAsyncPayload(interaction, {
+          buildPayload: () => buildModeratorPanelPayloadSafe(client, "", false),
+          errorText: "Не удалось вернуться к мод-панели.",
+          logLabel: "ELO panel back failed",
+        });
         return;
       }
 
@@ -18371,7 +18604,12 @@ client.on("interactionCreate", async (interaction) => {
     }
 
     if (interaction.customId === "elo_submit_card") {
-      await interaction.reply(await buildLegacyEloMyCardPayload(client, interaction.user.id));
+      await replyWithAsyncInteractionPayload(interaction, {
+        loadingText: "Собираю ELO карточку...",
+        buildPayload: () => buildLegacyEloMyCardPayload(client, interaction.user.id),
+        errorText: "Не удалось открыть ELO карточку.",
+        logLabel: "Legacy ELO my card open failed",
+      });
       return;
     }
 
@@ -18707,12 +18945,28 @@ client.on("interactionCreate", async (interaction) => {
       clearNonGgsCaptchaSession(interaction.user.id);
 
       try {
-        setNonGgsCaptchaSession(interaction.user.id, createNonGgsCaptchaSession(null, 1, { mode: captchaMode.mode }));
-        await interaction.update(await buildNonGgsCaptchaPayload(
-          interaction.user.id,
-          getNonJjsCaptchaStartText(captchaMode),
-          { includeEphemeralFlag: false }
-        ));
+        await deferComponentInteractionWithAsyncPayload(interaction, {
+          buildPayload: async () => {
+            try {
+              setNonGgsCaptchaSession(interaction.user.id, createNonGgsCaptchaSession(null, 1, { mode: captchaMode.mode }));
+              return await buildNonGgsCaptchaPayload(
+                interaction.user.id,
+                getNonJjsCaptchaStartText(captchaMode),
+                { includeEphemeralFlag: false }
+              );
+            } catch (error) {
+              clearNonGgsCaptchaSession(interaction.user.id);
+              return {
+                content: `Не удалось запустить JJS-капчу: ${String(error?.message || error || "неизвестная ошибка")}\nПапка с картинками: \`${NON_GGS_CAPTCHA_ASSET_DIR}\``,
+                embeds: [],
+                components: [],
+                attachments: [],
+              };
+            }
+          },
+          errorText: "Не удалось открыть JJS-капчу.",
+          logLabel: "Non-JJS captcha start failed",
+        });
       } catch (error) {
         clearNonGgsCaptchaSession(interaction.user.id);
         await interaction.update({
@@ -18884,7 +19138,11 @@ client.on("interactionCreate", async (interaction) => {
     if (interaction.customId.startsWith("onboard_main_toggle:")) {
       const picker = getMainsPickerSession(interaction.user.id);
       if (!picker) {
-        await interaction.update(await buildMainsPickerPayload(interaction.user.id, { includeEphemeralFlag: false, forUpdate: true }));
+        await deferComponentInteractionWithAsyncPayload(interaction, {
+          buildPayload: () => buildMainsPickerPayload(interaction.user.id, { includeEphemeralFlag: false, forUpdate: true }),
+          errorText: "Не удалось обновить выбор мейнов.",
+          logLabel: "Mains picker toggle refresh failed",
+        });
         return;
       }
 
@@ -18896,17 +19154,25 @@ client.on("interactionCreate", async (interaction) => {
           ? "Максимум два мейна. Сними одного выбранного, если хочешь заменить."
           : "",
       });
-      await interaction.update(await buildMainsPickerPayload(interaction.user.id, {
-        includeEphemeralFlag: false,
-        forUpdate: true,
-      }));
+      await deferComponentInteractionWithAsyncPayload(interaction, {
+        buildPayload: () => buildMainsPickerPayload(interaction.user.id, {
+          includeEphemeralFlag: false,
+          forUpdate: true,
+        }),
+        errorText: "Не удалось обновить выбор мейнов.",
+        logLabel: "Mains picker toggle apply failed",
+      });
       return;
     }
 
     if (interaction.customId === "onboard_main_prev" || interaction.customId === "onboard_main_next") {
       const picker = getMainsPickerSession(interaction.user.id);
       if (!picker) {
-        await interaction.update(await buildMainsPickerPayload(interaction.user.id, { includeEphemeralFlag: false, forUpdate: true }));
+        await deferComponentInteractionWithAsyncPayload(interaction, {
+          buildPayload: () => buildMainsPickerPayload(interaction.user.id, { includeEphemeralFlag: false, forUpdate: true }),
+          errorText: "Не удалось обновить выбор мейнов.",
+          logLabel: "Mains picker page refresh failed",
+        });
         return;
       }
 
@@ -18915,17 +19181,25 @@ client.on("interactionCreate", async (interaction) => {
         page: interaction.customId === "onboard_main_prev" ? Math.max(0, pageInfo.page - 1) : pageInfo.page + 1,
         statusText: "",
       });
-      await interaction.update(await buildMainsPickerPayload(interaction.user.id, {
-        includeEphemeralFlag: false,
-        forUpdate: true,
-      }));
+      await deferComponentInteractionWithAsyncPayload(interaction, {
+        buildPayload: () => buildMainsPickerPayload(interaction.user.id, {
+          includeEphemeralFlag: false,
+          forUpdate: true,
+        }),
+        errorText: "Не удалось обновить выбор мейнов.",
+        logLabel: "Mains picker page apply failed",
+      });
       return;
     }
 
     if (interaction.customId === "onboard_main_confirm" || interaction.customId === "onboard_picker_continue") {
       const picker = getMainsPickerSession(interaction.user.id);
       if (!picker) {
-        await interaction.update(await buildMainsPickerPayload(interaction.user.id, { includeEphemeralFlag: false, forUpdate: true }));
+        await deferComponentInteractionWithAsyncPayload(interaction, {
+          buildPayload: () => buildMainsPickerPayload(interaction.user.id, { includeEphemeralFlag: false, forUpdate: true }),
+          errorText: "Не удалось обновить выбор мейнов.",
+          logLabel: "Mains picker confirm refresh failed",
+        });
         return;
       }
 
@@ -19184,7 +19458,11 @@ client.on("interactionCreate", async (interaction) => {
         query: "",
         page: 0,
       });
-      await interaction.update(await buildRolePanelPickerPayload(client, interaction.user.id, "Показываю все роли сервера.", false));
+      await deferComponentInteractionWithAsyncPayload(interaction, {
+        buildPayload: () => buildRolePanelPickerPayload(client, interaction.user.id, "Показываю все роли сервера.", false),
+        errorText: "Не удалось открыть выбор роли.",
+        logLabel: "Combo editor role picker open failed",
+      });
       return;
     }
 
@@ -19574,7 +19852,11 @@ client.on("interactionCreate", async (interaction) => {
     if (interaction.customId === "onboard_picker_select") {
       const picker = getMainsPickerSession(interaction.user.id);
       if (!picker) {
-        await interaction.update(await buildMainsPickerPayload(interaction.user.id, { includeEphemeralFlag: false, forUpdate: true }));
+        await deferComponentInteractionWithAsyncPayload(interaction, {
+          buildPayload: () => buildMainsPickerPayload(interaction.user.id, { includeEphemeralFlag: false, forUpdate: true }),
+          errorText: "Не удалось обновить выбор мейнов.",
+          logLabel: "Mains picker select refresh failed",
+        });
         return;
       }
 
@@ -19583,10 +19865,14 @@ client.on("interactionCreate", async (interaction) => {
       )].slice(0, 2);
 
       setMainsPickerSession(interaction.user.id, { selectedIds: nextSelectedIds });
-      await interaction.update(await buildMainsPickerPayload(interaction.user.id, {
-        includeEphemeralFlag: false,
-        forUpdate: true,
-      }));
+      await deferComponentInteractionWithAsyncPayload(interaction, {
+        buildPayload: () => buildMainsPickerPayload(interaction.user.id, {
+          includeEphemeralFlag: false,
+          forUpdate: true,
+        }),
+        errorText: "Не удалось обновить выбор мейнов.",
+        logLabel: "Mains picker select apply failed",
+      });
       return;
     }
 
@@ -19613,7 +19899,7 @@ client.on("interactionCreate", async (interaction) => {
       client,
       isModerator,
       replyNoPermission: (currentInteraction) => currentInteraction.reply(ephemeralPayload({ content: "Нет прав." })),
-      buildPanelReply: (view, statusText) => buildVerificationPanelReply(view, statusText, false),
+      buildPanelReply: (view, statusText) => buildVerificationPanelReplySafe(view, statusText, false),
       getCurrentIntegration: getVerificationIntegrationState,
       parseBooleanInput: parseVerificationBooleanInput,
       parseListInput: parseVerificationListInput,
@@ -20421,8 +20707,6 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-
       const currentChannelId = String(getResolvedBotHelperPanelSnapshot().channelId || "").trim();
       const nextChannelId = parseRequestedChannelId(
         interaction.fields.getTextInputValue(BOT_HELPER_PANEL_CHANNEL_INPUT_ID),
@@ -20430,25 +20714,37 @@ client.on("interactionCreate", async (interaction) => {
       );
 
       if (currentChannelId === nextChannelId) {
-        await interaction.editReply(await buildBotHelperSettingsReply(client, "Изменений по helper-панели нет.", false));
+        await replyWithAsyncInteractionPayload(interaction, {
+          loadingText: "Проверяю helper-панель...",
+          buildPayload: () => buildBotHelperSettingsReplySafe(client, "Изменений по helper-панели нет.", false),
+          errorText: "Не удалось открыть helper-панель.",
+          logLabel: "Bot helper settings unchanged failed",
+        });
         return;
       }
 
-      try {
-        const result = await writeAndApplyNativePanelOverride(client, BOT_HELPER_PANEL_SLOT, nextChannelId);
-        const statusText = result.cleared
-          ? (result.applyResult?.deletedMessageId
-            ? `Helper-панель отключена. Старое сообщение ${result.applyResult.deletedMessageId} удалено.`
-            : "Helper-панель отключена.")
-          : `Helper-панель перенесена в ${formatChannelMention(result.channel?.id || nextChannelId)}.`;
-        await interaction.editReply(await buildBotHelperSettingsReply(client, statusText, false));
-      } catch (error) {
-        await interaction.editReply(await buildBotHelperSettingsReply(
-          client,
-          `Не удалось сохранить helper-панель: ${String(error?.message || error || "неизвестная ошибка")}`,
-          false
-        ));
-      }
+      await replyWithAsyncInteractionPayload(interaction, {
+        loadingText: nextChannelId ? "Сохраняю helper-панель..." : "Отключаю helper-панель...",
+        buildPayload: async () => {
+          try {
+            const result = await writeAndApplyNativePanelOverride(client, BOT_HELPER_PANEL_SLOT, nextChannelId);
+            const statusText = result.cleared
+              ? (result.applyResult?.deletedMessageId
+                ? `Helper-панель отключена. Старое сообщение ${result.applyResult.deletedMessageId} удалено.`
+                : "Helper-панель отключена.")
+              : `Helper-панель перенесена в ${formatChannelMention(result.channel?.id || nextChannelId)}.`;
+            return buildBotHelperSettingsReplySafe(client, statusText, false);
+          } catch (error) {
+            return buildBotHelperSettingsReplySafe(
+              client,
+              `Не удалось сохранить helper-панель: ${String(error?.message || error || "неизвестная ошибка")}`,
+              false
+            );
+          }
+        },
+        errorText: "Не удалось сохранить helper-панель.",
+        logLabel: "Bot helper settings modal failed",
+      });
       return;
     }
 

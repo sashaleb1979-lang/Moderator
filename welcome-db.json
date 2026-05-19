@@ -6,7 +6,8 @@
     },
     "botHelperPanel": {
       "channelId": "",
-      "messageId": ""
+      "messageId": "",
+      "lastSentAt": ""
     },
     "nonGgsPanel": {
       "channelId": "REPLACE_WELCOME_CHANNEL_ID",
@@ -274,7 +275,11 @@
         "verifiedAt": null
       },
       "accessNonJjs": null,
-      "accessCompanion": null,
+      "accessCompanion": {
+        "value": "1506227654234214421",
+        "source": "configured",
+        "verifiedAt": null
+      },
       "verifyAccess": null,
       "killTier": {
         "1": null,
@@ -917,9 +922,9 @@
         "dirtyUsers": [],
         "lastFlushAt": null,
         "lastFlushStats": null,
-        "lastResumeAt": "2026-05-19T08:37:29.192Z",
-        "lastFullRecalcAt": "2026-05-19T08:37:29.227Z",
-        "lastRebuildAndRoleSyncAt": "2026-05-19T08:37:29.227Z",
+        "lastResumeAt": "2026-05-19T11:17:25.174Z",
+        "lastFullRecalcAt": "2026-05-19T11:17:25.213Z",
+        "lastRebuildAndRoleSyncAt": "2026-05-19T11:17:25.213Z",
         "lastRebuildAndRoleSyncStats": {
           "targetUserCount": 0,
           "managedRoleHolderCount": 0,
@@ -934,7 +939,7 @@
           "skipReasonCounts": {},
           "syncMode": "rebuild_and_sync"
         },
-        "lastDailyRoleSyncAt": "2026-05-19T08:37:29.227Z",
+        "lastDailyRoleSyncAt": "2026-05-19T11:17:25.213Z",
         "lastDailyRoleSyncStats": {
           "targetUserCount": 0,
           "managedRoleHolderCount": 0,

@@ -665,3 +665,123 @@
 2. Full active-tree `node --test`. Выполнено по `tests/*.test.js`: 637 pass / 0 fail.
 3. Discord smoke. Всё ещё pending.
 4. Sync `PROFILE_VISION_PLAN.md`, `PROFILE_SYNERGY_SYSTEM_PLAN.md` и `PROFILE_SYNERGY_CALCULATION_SPEC.md`. Обновлено под текущий Phase 9 state.
+
+## 11. План Закрытия Незаполненных Частей
+
+### 11.1. Целевое Состояние Профиля
+Идеальная система профиля в этом repo должна оставаться не набором красивых блоков, а одним каноническим продуктовым контуром с чёткими владельцами.
+
+Целевое состояние:
+1. один канонический profile surface для slash, message trigger, open button, nav button и legacy my-card совместимости;
+2. один канонический read-model с режимами `self`, `viewer` и `compact-card`, без дублирования бизнес-логики по поверхностям;
+3. один derived owner для narrative, grade, season-story, readiness, social-map и progress CTA;
+4. один storage boundary: write-side helpers пишут snapshots и mirrors, а read-side только читает canonical truth;
+5. каждый rich block либо опирается на baseline/archive, либо честно деградирует в `данные ещё копятся`, без фейковой уверенности;
+6. `welcome-bot.js` остаётся thin router, а не возвращается к inline orchestration.
+
+### 11.2. Идеальная Слоевая Архитектура
+1. Runtime routing owner: `src/profile/operator.js`.
+   Здесь должны жить все profile entry flows, modal/button branching, compat bridges и публичные runtime handlers.
+2. Pure access owner: `src/profile/access.js`.
+   Любые новые gates, staff bypass, self-vs-other visibility и compat checks должны приходить сюда, а не в operator/view.
+3. Entry parsing owner: `src/profile/entry.js`.
+   Все trigger/custom-id/display-mode parse rules должны оставаться здесь.
+4. Canonical per-profile storage owner: `src/integrations/shared-profile.js`.
+   Он нормализует profile domains и mirrors, но не считает story/grade/business formulas.
+5. Snapshot write-side owner: `src/profile/synergy-snapshots.js`.
+   Туда должны расти proof-window writes, daily season archive, будущие weekly rollups и любые baseline snapshot helpers.
+6. Derived read-side owner: `src/profile/synergy.js`.
+   Все rich formulas, taxonomy, narrative, social inference и CTA должны жить только здесь.
+7. Read-model composition owner: `src/profile/model.js`.
+   Его задача: разложить готовые blocks по section order и mode-specific composition, не возвращая formulas inline.
+8. Components V2 render owner: `src/profile/view.js`.
+   Он владеет layout, hero/media variants, quick-link chunking, section presentation states и compact-card rendering.
+9. Legacy compat owner: рекомендуется отдельный seam `src/profile/legacy-compat.js` или submodule внутри operator.
+   Старые `my-card`/preview-compatible paths нельзя снова раскидывать по `welcome-bot.js`; compat должен жить в одной переходной точке до cutover.
+10. Cross-user analytics baseline owner: рекомендуется отдельный canonical store вне `profile.domains.*`, например `db.analytics.profilePopulationSnapshots`.
+    Population snapshots и другие cross-user baselines не стоит прятать внутрь одного user profile domain.
+
+### 11.3. Незаполнённые Продуктовые Зоны
+1. Surface unification.
+   Профиль уже силён локально, но старые profile/my-card поверхности ещё не сведены к одному каноническому read-model/render path.
+2. Richer narrative depth.
+   Текущие hero/stability/archetype/story blocks уже полезны, но всё ещё базовые по taxonomy и baseline depth.
+3. Main-centric content.
+   Guide/wiki coverage уже есть, но отдельного сильного content-block по каждому main пока нет.
+4. Presentation final polish.
+   Hero/media/readability уже лучше старого состояния, но UI ещё не дотянут до финального "круче и в подробностях" уровня.
+5. Live runtime confidence.
+   Нет закрытого Discord smoke и нет полного cutover confidence по compat surfaces.
+
+### 11.4. Рекомендуемый Порядок Закрытия
+
+#### Phase 11. Canonical Surface Unification
+1. Ввести единый `displayMode` contract: `self`, `viewer`, `compact-card`.
+2. Перевести legacy `my-card` и все preview-like surfaces на тот же `src/profile/model.js` + `src/profile/view.js` stack.
+3. Оставить в compat слое только mapping старых entrypoints и payload expectations.
+4. После перевода удалить старые inline payload builders и разрозненные access/target branches.
+
+Критерий готовности:
+1. все profile/my-card entrypoints идут через `src/profile/operator.js`;
+2. ACL/target parsing не дублируются вне `access.js` и `entry.js`;
+3. старые surfaces отличаются только `displayMode`, а не отдельной логикой.
+
+#### Phase 12. Honest Depth Layer
+1. Добавить persisted population snapshots как отдельный baseline для grade/archetype stability.
+2. Добавить weekly season rollups поверх daily archive, чтобы story blocks могли честно говорить не только про daily peaks.
+3. Расширить stability/archetype taxonomy в `src/profile/synergy.js` только поверх baseline-backed rules.
+4. Не выпускать richer story copy, пока не существует baseline/snapshot owner для её опоры.
+
+Критерий готовности:
+1. viewer hero и stability/status block больше не зависят только от on-demand population snapshot;
+2. season story умеет опираться и на daily, и на weekly baseline без выдумывания причинности;
+3. отсутствие baselines продолжает падать в honest fallback copy.
+
+#### Phase 13. Main Dossier Layer
+1. Ввести отдельный derived block `Main Dossier` или эквивалентный section внутри `src/profile/synergy.js`.
+2. Использовать только честные источники: declared mains, tierlist main, character catalog, guide/wiki coverage, visible activity context.
+3. Не делать ложную per-character performance attribution, пока для неё нет telemetry.
+4. Дать по каждому main короткий actionable summary: роль в профиле, coverage ссылками, tierlist context, соседние useful actions.
+
+Критерий готовности:
+1. section помогает понять main-identity игрока, а не просто повторяет список персонажей;
+2. content не обещает `этот рост сделан именно на этом main`, если это нечем подтвердить;
+3. quick links и dossier читаются как один продуктовый слой.
+
+#### Phase 14. Presentation Finalization
+1. Закрепить section states: `rich`, `compact`, `degraded`, `empty`.
+2. Укрепить hero layout и media policy внутри `src/profile/view.js`, не перетаскивая presentation rules в model/synergy.
+3. Сделать читаемую и плотную visual hierarchy для overview/activity/social/character/progress sections.
+4. Довести compact-card mode до канонического варианта, а не урезанного legacy остатка.
+
+Критерий готовности:
+1. self/viewer/compact modes выглядят как одна система, а не три случайных экрана;
+2. пустые и partial-state профили выглядят намеренно, а не как аварийный fallback;
+3. view остаётся pure rendering owner без business logic drift.
+
+#### Phase 15. Burn-In, Smoke И Cutover
+1. Прогнать live Discord smoke по self-profile, other-profile и compact-card surface.
+2. Добавить shadow-compare логирование для compat phase, если старый и новый payload путь ещё живут параллельно.
+3. После стабильного burn-in удалить legacy payload paths и оставить один canonical route.
+4. Зафиксировать post-cutover SoT в vision/spec/memory.
+
+Критерий готовности:
+1. один canonical runtime route;
+2. один canonical read-model/render stack;
+3. green tests + live smoke без ручных compat исключений.
+
+### 11.5. Жёсткие Архитектурные Правила На Будущее
+1. Не возвращать formulas, narrative или grading в `welcome-bot.js`, `src/profile/model.js` и `src/profile/view.js`.
+2. Не читать raw runtime/news events напрямую из `src/profile/synergy.js`; только canonical mirrors и snapshots.
+3. Не делать новые profile surfaces мимо `src/profile/operator.js`.
+4. Не объявлять новые сильные product claims без baseline/snapshot owner и explicit unreliable copy.
+5. Каждый новый profile block должен приходить с owner test, model composition test, view rendering test и partial-state fallback test.
+
+### 11.6. Практический Следующий Шаг
+Если двигаться не вширь, а в правильном порядке, следующий лучший slice сейчас такой:
+1. сначала Phase 11 surface unification;
+2. потом Phase 12 persisted baselines;
+3. потом Phase 13 main dossier;
+4. и только после этого финальный visual polish/cutover.
+
+Именно такой порядок даёт максимальную честность архитектуры: сначала один канонический путь, потом deeper truthful data, потом richer product layer, а не наоборот.
