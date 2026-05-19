@@ -1171,6 +1171,7 @@ test("clan draft submit publishes without photo", async () => {
   const sentToChannel = [];
   const sentToThread = [];
   const publicEdits = [];
+  let startThreadOptions = null;
   const thread = {
     id: "thread-1",
     isTextBased: () => true,
@@ -1192,7 +1193,10 @@ test("clan draft submit publishes without photo", async () => {
         edit: async (editPayload) => {
           publicEdits.push(editPayload);
         },
-        startThread: async () => thread,
+        startThread: async (options) => {
+          startThreadOptions = options;
+          return thread;
+        },
       };
     },
   };
@@ -1212,6 +1216,9 @@ test("clan draft submit publishes without photo", async () => {
   assert.equal(sentToChannel.length, 2);
   assert.equal(publicEdits.length, 1);
   assert.equal(sentToChannel[0].files, undefined);
+  assert.equal(Object.prototype.hasOwnProperty.call(startThreadOptions, "type"), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(startThreadOptions, "invitable"), false);
+  assert.equal(startThreadOptions.autoArchiveDuration, 60);
   assert.match(JSON.stringify(sentToChannel[0].components[0].toJSON()), /ФАЙТ С ХН/);
   assert.match(JSON.stringify(publicEdits[0].components[1].toJSON()), /Прийти на помощь/);
   assert.deepEqual(interaction.calls.map((call) => call[0]), ["deferUpdate", "editReply"]);
@@ -1303,11 +1310,16 @@ test("description modal updates the same setup message when update is available"
 test("moderator stats controls delete one helper and clear the aggregate table", async () => {
   const db = {};
   const state = ensureAntiteamState(db).state;
+  state.config.helperRewardRoles = { "1": "role-1", "5": "role-5", "10": "", "20": "", "50": "" };
   state.stats.helpers["helper-1"] = { responded: 2, linkGranted: 2, confirmedArrived: 1, lastHelpedAt: "2026-05-16T10:00:00.000Z" };
-  state.stats.helpers["helper-2"] = { responded: 1, linkGranted: 1, confirmedArrived: 0, lastHelpedAt: "2026-05-16T10:01:00.000Z" };
+  state.stats.helpers["helper-2"] = { responded: 1, linkGranted: 1, confirmedArrived: 5, lastHelpedAt: "2026-05-16T10:01:00.000Z" };
+  const granted = [];
   const operator = createAntiteamOperator({
     db,
     saveDb() {},
+    grantRole: async (userId, roleId) => {
+      granted.push({ userId, roleId });
+    },
   });
   const member = { permissions: { has: () => true }, roles: { cache: new Map() } };
 
@@ -1315,6 +1327,32 @@ test("moderator stats controls delete one helper and clear the aggregate table",
   open.member = member;
   assert.equal(await operator.handleButtonInteraction(open), true);
   assert.match(JSON.stringify(open.calls[0][1].components[0].toJSON()), /Статистика помощи/);
+
+  const rolesPanel = createButtonInteraction(ANTITEAM_CUSTOM_IDS.statsRoles, { id: "mod-1", username: "Mod" });
+  rolesPanel.member = member;
+  assert.equal(await operator.handleButtonInteraction(rolesPanel), true);
+  assert.equal(rolesPanel.calls[0][0], "showModal");
+  assert.equal(rolesPanel.calls[0][1].data.custom_id, "at:stats:roles_modal");
+
+  const syncRoles = createButtonInteraction(ANTITEAM_CUSTOM_IDS.statsSyncRoles, { id: "mod-1", username: "Mod" });
+  syncRoles.member = member;
+  assert.equal(await operator.handleButtonInteraction(syncRoles), true);
+  assert.deepEqual(granted, [
+    { userId: "helper-1", roleId: "role-1" },
+    { userId: "helper-2", roleId: "role-1" },
+    { userId: "helper-2", roleId: "role-5" },
+  ]);
+
+  const rolesModal = createModalInteraction("at:stats:roles_modal", {
+    role_1: "<@&11111>",
+    role_5: "22222",
+    role_10: "",
+    role_20: "",
+    role_50: "",
+  }, { id: "mod-1", username: "Mod" }, member);
+  assert.equal(await operator.handleModalSubmitInteraction(rolesModal), true);
+  assert.equal(db.sot.antiteam.config.helperRewardRoles["1"], "11111");
+  assert.equal(db.sot.antiteam.config.helperRewardRoles["5"], "22222");
 
   const deleteOne = createButtonInteraction("at:stats:delete:helper-1:0", { id: "mod-1", username: "Mod" });
   deleteOne.member = member;
@@ -1560,6 +1598,9 @@ test("closing ticket removes ping message, locks thread, archives it, and remove
 
 test("closing ticket writes helper result markers into the public message", async () => {
   const db = {};
+  const state = ensureAntiteamState(db).state;
+  state.config.helperRewardRoles = { "1": "role-1", "5": "role-5", "10": "", "20": "", "50": "" };
+  state.stats.helpers["helper-1"] = { responded: 4, linkGranted: 4, confirmedArrived: 4, lastHelpedAt: "2026-05-16T09:00:00.000Z" };
   const draft = setAntiteamDraft(db, "author-1", {
     userTag: "Author",
     roblox: { userId: "101", username: "Anchor" },
@@ -1593,10 +1634,14 @@ test("closing ticket writes helper result markers into the public message", asyn
   };
 
   let publicEdit = null;
+  const granted = [];
   const operator = createAntiteamOperator({
     db,
     now: () => "2026-05-16T10:04:00.000Z",
     saveDb() {},
+    grantRole: async (userId, roleId) => {
+      granted.push({ userId, roleId });
+    },
     fetchChannel: async (channelId) => channelId === "channel-1"
       ? {
         messages: {
@@ -1626,6 +1671,11 @@ test("closing ticket writes helper result markers into the public message", asyn
 
   assert.match(JSON.stringify(publicEdit.components[0].toJSON()), /### Помощники/);
   assert.match(JSON.stringify(publicEdit.components[0].toJSON()), /✅ <@helper-1> • ❌ <@helper-2>/);
+  assert.equal(db.sot.antiteam.stats.helpers["helper-1"].confirmedArrived, 5);
+  assert.deepEqual(granted, [
+    { userId: "helper-1", roleId: "role-1" },
+    { userId: "helper-1", roleId: "role-5" },
+  ]);
 });
 
 test("auto-close reuses thread cleanup and archives the mission", async () => {

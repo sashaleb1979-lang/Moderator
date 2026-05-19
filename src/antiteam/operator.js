@@ -1,7 +1,8 @@
 "use strict";
 
-const { MessageFlags, PermissionsBitField } = require("discord.js");
+const { ChannelType, MessageFlags, PermissionsBitField } = require("discord.js");
 const {
+  ANTITEAM_HELPER_REWARD_THRESHOLDS,
   ANTITEAM_LEVELS,
   cleanString,
   clearAntiteamDraft,
@@ -32,6 +33,7 @@ const {
   buildConfigModal,
   buildDescriptionModal,
   buildEscalateModal,
+  buildHelperRewardRolesModal,
   buildHelperStatsPayload,
   buildHelpReplyPayload,
   buildModeratorPanelPayload,
@@ -317,17 +319,64 @@ function createAntiteamOperator(options = {}) {
     return null;
   }
 
-  async function grantBattalionRole(userId, reason = "antiteam participant") {
-    const roleId = cleanString(getConfig().battalionRoleId, 80);
-    if (!roleId) return { skipped: "missing-role" };
+  async function grantConfiguredRole(userId, roleId, reason = "antiteam role grant") {
+    const normalizedRoleId = cleanString(roleId, 80);
+    if (!normalizedRoleId) return { skipped: "missing-role" };
     if (typeof options.grantRole === "function") {
-      return options.grantRole(userId, roleId, reason);
+      const result = await options.grantRole(userId, normalizedRoleId, reason);
+      return result || { granted: true, roleId: normalizedRoleId };
     }
     const member = typeof options.fetchMember === "function" ? await options.fetchMember(userId).catch(() => null) : null;
     if (!member?.roles?.add) return { skipped: "missing-member" };
-    if (member.roles.cache?.has?.(roleId)) return { skipped: "already-has-role" };
-    await member.roles.add(roleId, reason);
-    return { granted: true, roleId };
+    if (member.roles.cache?.has?.(normalizedRoleId)) return { skipped: "already-has-role" };
+    await member.roles.add(normalizedRoleId, reason);
+    return { granted: true, roleId: normalizedRoleId };
+  }
+
+  async function grantBattalionRole(userId, reason = "antiteam participant") {
+    const roleId = cleanString(getConfig().battalionRoleId, 80);
+    if (!roleId) return { skipped: "missing-role" };
+    return grantConfiguredRole(userId, roleId, reason);
+  }
+
+  function getHelperRewardRoleIds(stats = {}, config = getConfig()) {
+    const points = Number(stats?.confirmedArrived) || 0;
+    if (points <= 0) return [];
+    const roleIds = [];
+    for (const threshold of ANTITEAM_HELPER_REWARD_THRESHOLDS) {
+      if (points < threshold) continue;
+      const roleId = cleanString(config.helperRewardRoles?.[String(threshold)], 80);
+      if (roleId) roleIds.push(roleId);
+    }
+    return [...new Set(roleIds)];
+  }
+
+  async function grantHelperRewardRoles(userId, stats = {}, reason = "antiteam helper reward") {
+    const roleIds = getHelperRewardRoleIds(stats);
+    let granted = 0;
+    for (const roleId of roleIds) {
+      const result = await grantConfiguredRole(userId, roleId, reason).catch((error) => {
+        logError(`Antiteam helper reward role failed [${userId}/${roleId}]:`, error?.message || error);
+        return null;
+      });
+      if (result && !result.skipped) granted += 1;
+    }
+    return { users: roleIds.length ? 1 : 0, roles: granted };
+  }
+
+  async function syncHelperRewardRoles(userIds = null) {
+    const helpers = getState().stats?.helpers || {};
+    const ids = Array.isArray(userIds) ? userIds : Object.keys(helpers);
+    let users = 0;
+    let roles = 0;
+    for (const userId of ids) {
+      const stats = helpers[userId];
+      if (!stats) continue;
+      const result = await grantHelperRewardRoles(userId, stats, "antiteam helper reward sync");
+      users += result.users;
+      roles += result.roles;
+    }
+    return { users, roles };
   }
 
   async function collectFriendEligibleDiscordIds(draft = {}) {
@@ -516,6 +565,10 @@ function createAntiteamOperator(options = {}) {
     if (!config.channelId) throw new Error("Канал антитима не настроен.");
     const channel = await fetchTextChannel(config.channelId);
     if (!channel?.isTextBased?.()) throw new Error("Канал антитима не найден или не текстовый.");
+    const channelType = Number(channel.type);
+    if (Number.isSafeInteger(channelType) && channelType !== ChannelType.GuildText) {
+      throw new Error("Канал антитима должен быть обычным текстовым каналом, чтобы миссии создавали Public Thread.");
+    }
 
     const friendEligibleDiscordUserIds = await collectFriendEligibleDiscordIds(draft);
     const ticket = await persist("antiteam-ticket-create", () => createAntiteamTicketFromDraft(db, draft, {
@@ -528,6 +581,7 @@ function createAntiteamOperator(options = {}) {
         attachPhoto: Boolean(ticket.photos?.length || ticket.photo?.url),
       });
       const publicMessage = await channel.send(publicPayload);
+      // Discord creates a public thread when a thread starts from a public channel message.
       const thread = typeof publicMessage.startThread === "function"
         ? await publicMessage.startThread({
           name: buildThreadName(ticket).slice(0, 100),
@@ -1088,6 +1142,30 @@ function createAntiteamOperator(options = {}) {
       return true;
     }
 
+    if (id === ANTITEAM_CUSTOM_IDS.statsRoles) {
+      if (!isModerator(interaction.member)) {
+        await replyNoPermission(interaction);
+        return true;
+      }
+      await interaction.showModal(buildHelperRewardRolesModal(getConfig()));
+      return true;
+    }
+
+    if (id === ANTITEAM_CUSTOM_IDS.statsSyncRoles) {
+      if (!isModerator(interaction.member)) {
+        await replyNoPermission(interaction);
+        return true;
+      }
+      await interaction.deferUpdate();
+      const result = await syncHelperRewardRoles();
+      await interaction.editReply(buildHelperStatsPayload(
+        getState(),
+        0,
+        `Роли проверены: пользователей с порогами **${result.users}**, успешных выдач/проверок **${result.roles}**.`
+      ));
+      return true;
+    }
+
     if (id.startsWith("at:stats:page:") || id.startsWith("at:stats:delete:")) {
       if (!isModerator(interaction.member)) {
         await replyNoPermission(interaction);
@@ -1433,6 +1511,29 @@ function createAntiteamOperator(options = {}) {
       return true;
     }
 
+    if (id === "at:stats:roles_modal") {
+      if (!isModerator(interaction.member)) {
+        await replyNoPermission(interaction);
+        return true;
+      }
+      const previous = getConfig();
+      const helperRewardRoles = {};
+      for (const threshold of ANTITEAM_HELPER_REWARD_THRESHOLDS) {
+        helperRewardRoles[String(threshold)] = parseEntityId(interaction.fields.getTextInputValue(`role_${threshold}`));
+      }
+      const nextConfig = createDefaultAntiteamConfig({
+        ...previous,
+        helperRewardRoles,
+      });
+      await persist("antiteam-helper-reward-roles", () => {
+        const state = getState();
+        state.config = nextConfig;
+        return { mutated: true };
+      });
+      await interaction.reply(buildHelperStatsPayload(getState(), 0, "Роли за очки помощи сохранены."));
+      return true;
+    }
+
     if (id === "at:panel_text:modal") {
       if (!isModerator(interaction.member)) {
         await replyNoPermission(interaction);
@@ -1590,6 +1691,9 @@ function createAntiteamOperator(options = {}) {
           }, { now: nowIso() });
         }
         return closed;
+      });
+      await syncHelperRewardRoles(confirmedHelperIds).catch((error) => {
+        logError("Antiteam helper reward sync after close failed:", error?.message || error);
       });
       await finalizeClosedTicket(updated);
       await interaction.editReply({ content: "Антитим закрыт. Итог записан в заявку.", components: [] });

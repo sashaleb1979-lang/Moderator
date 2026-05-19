@@ -40,6 +40,7 @@ const ANTITEAM_COUNTS = Object.freeze({
 const ANTITEAM_TICKET_KINDS = Object.freeze(["standard", "clan"]);
 const ANTITEAM_TICKET_STATUSES = Object.freeze(["draft", "photo_pending", "open", "closed", "cancelled"]);
 const DISCORD_THREAD_AUTO_ARCHIVE_MINUTES = Object.freeze([60, 1440, 4320, 10080]);
+const ANTITEAM_HELPER_REWARD_THRESHOLDS = Object.freeze([1, 5, 10, 20, 50]);
 
 const DEFAULT_CLAN_PING_ROLES = Object.freeze([
   { key: "battalion", label: "Батальён", roleId: "", defaultEnabled: true },
@@ -169,6 +170,16 @@ function normalizeStartPanelConfig(value = {}) {
   };
 }
 
+function normalizeHelperRewardRoles(value = {}) {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const roles = {};
+  for (const threshold of ANTITEAM_HELPER_REWARD_THRESHOLDS) {
+    const key = String(threshold);
+    roles[key] = cleanString(source[key] ?? source[threshold] ?? source[`role${threshold}`] ?? source[`points${threshold}`], 80);
+  }
+  return roles;
+}
+
 function createDefaultAntiteamConfig(value = {}) {
   const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
   const roblox = source.roblox && typeof source.roblox === "object" && !Array.isArray(source.roblox) ? source.roblox : {};
@@ -182,6 +193,7 @@ function createDefaultAntiteamConfig(value = {}) {
     missionAutoCloseMinutes: normalizePositiveInteger(source.missionAutoCloseMinutes, 120),
     panel: normalizeStartPanelConfig(source.panel),
     clanPingRoles: normalizeClanPingRoles(source.clanPingRoles),
+    helperRewardRoles: normalizeHelperRewardRoles(source.helperRewardRoles),
     roblox: {
       jjsPlaceId: cleanString(roblox.jjsPlaceId || source.robloxPlaceId, 40),
       profileUrlTemplate: cleanString(roblox.profileUrlTemplate, 500) || "https://www.roblox.com/users/{userId}/profile",
@@ -712,6 +724,7 @@ function matchRobloxFriendsToDiscordProfiles(profiles = {}, friends = []) {
 
 module.exports = {
   ANTITEAM_COUNTS,
+  ANTITEAM_HELPER_REWARD_THRESHOLDS,
   ANTITEAM_LEVELS,
   ANTITEAM_TICKET_KINDS,
   ANTITEAM_TICKET_STATUSES,
