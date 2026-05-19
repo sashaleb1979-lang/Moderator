@@ -53,8 +53,23 @@ function shouldGrantAccessCompanionRole({
   });
 }
 
+function collectAccessCompanionCandidateUserIds({
+  sourceRoleMemberIds = [],
+  cachedMemberIds = [],
+  profileUserIds = [],
+} = {}) {
+  return [
+    ...new Set([
+      ...normalizeRoleIdSet(sourceRoleMemberIds),
+      ...normalizeRoleIdSet(cachedMemberIds),
+      ...normalizeRoleIdSet(profileUserIds),
+    ]),
+  ];
+}
+
 module.exports = {
   cleanRoleId,
+  collectAccessCompanionCandidateUserIds,
   collectAccessCompanionSourceRoleIds,
   hasAnyAccessCompanionSourceRole,
   normalizeRoleIdSet,

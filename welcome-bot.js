@@ -169,6 +169,7 @@ const {
   resolveGrantedAccessRoleId,
 } = require("./src/onboard/access-mode");
 const {
+  collectAccessCompanionCandidateUserIds,
   collectAccessCompanionSourceRoleIds,
   hasAnyAccessCompanionSourceRole,
   shouldGrantAccessCompanionRole,
@@ -2941,15 +2942,13 @@ async function replyWithAsyncInteractionPayload(interaction, options = {}) {
 
   await interaction.reply(ephemeralPayload({ content: loadingText }));
 
-  void (async () => {
-    try {
-      const payload = await buildPayload();
-      await interaction.editReply(normalizeInteractionEditPayload(payload));
-    } catch (error) {
-      console.error(`${logLabel}:`, error);
-      await interaction.editReply(buildPlainInteractionPayload(`${errorText}: ${formatInteractionErrorText(error)}`)).catch(() => {});
-    }
-  })();
+  try {
+    const payload = await buildPayload();
+    await interaction.editReply(normalizeInteractionEditPayload(payload));
+  } catch (error) {
+    console.error(`${logLabel}:`, error);
+    await interaction.editReply(buildPlainInteractionPayload(`${errorText}: ${formatInteractionErrorText(error)}`)).catch(() => {});
+  }
 }
 
 async function deferComponentInteractionWithAsyncPayload(interaction, options = {}) {
@@ -2965,15 +2964,13 @@ async function deferComponentInteractionWithAsyncPayload(interaction, options = 
 
   await interaction.deferUpdate();
 
-  void (async () => {
-    try {
-      const payload = await buildPayload();
-      await interaction.editReply(normalizeInteractionEditPayload(payload));
-    } catch (error) {
-      console.error(`${logLabel}:`, error);
-      await interaction.editReply(buildPlainInteractionPayload(`${errorText}: ${formatInteractionErrorText(error)}`)).catch(() => {});
-    }
-  })();
+  try {
+    const payload = await buildPayload();
+    await interaction.editReply(normalizeInteractionEditPayload(payload));
+  } catch (error) {
+    console.error(`${logLabel}:`, error);
+    await interaction.editReply(buildPlainInteractionPayload(`${errorText}: ${formatInteractionErrorText(error)}`)).catch(() => {});
+  }
 }
 
 async function fallbackToManualMainSelection(interaction, mode = "full", error = null) {
@@ -13759,6 +13756,7 @@ function createAccessCompanionSyncSummary() {
   return {
     configured: Boolean(getAccessCompanionRoleId()),
     companionRoleId: getAccessCompanionRoleId(),
+    fallbackUsed: false,
     scanned: 0,
     eligible: 0,
     granted: 0,
@@ -13774,7 +13772,59 @@ function formatAccessCompanionSyncSummary(result = {}) {
     return "Доп. access-роль не настроена.";
   }
 
-  return `Доп. access-роль: eligible ${result.eligible}, granted ${result.granted}, already had ${result.alreadyHad}.`;
+  const fallbackNote = result?.fallbackUsed ? " Fallback targeted scan used." : "";
+  return `Доп. access-роль: eligible ${result.eligible}, granted ${result.granted}, already had ${result.alreadyHad}.${fallbackNote}`;
+}
+
+function collectAccessCompanionFallbackUserIds(guild) {
+  const sourceRoleMemberIds = [];
+  for (const roleId of getCountedAccessRoleIds()) {
+    const role = guild?.roles?.cache?.get(roleId);
+    if (!role?.members?.size) continue;
+    sourceRoleMemberIds.push(...role.members.keys());
+  }
+
+  return collectAccessCompanionCandidateUserIds({
+    sourceRoleMemberIds,
+    cachedMemberIds: guild?.members?.cache ? [...guild.members.cache.keys()] : [],
+    profileUserIds: Object.keys(db.profiles || {}),
+  });
+}
+
+async function fetchAccessCompanionFallbackMembers(guild, userIds = []) {
+  const members = new Map();
+  const pendingUserIds = [];
+
+  for (const userId of userIds) {
+    const normalizedUserId = String(userId || "").trim();
+    if (!normalizedUserId) continue;
+    const cachedMember = guild?.members?.cache?.get(normalizedUserId) || null;
+    if (cachedMember) {
+      members.set(cachedMember.id, cachedMember);
+      continue;
+    }
+    pendingUserIds.push(normalizedUserId);
+  }
+
+  for (let index = 0; index < pendingUserIds.length; index += 100) {
+    const chunk = pendingUserIds.slice(index, index + 100);
+    if (!chunk.length) continue;
+
+    const fetched = await guild.members.fetch({ user: chunk }).catch(() => null);
+    if (fetched?.values) {
+      for (const member of fetched.values()) {
+        members.set(member.id, member);
+      }
+      continue;
+    }
+
+    for (const userId of chunk) {
+      const member = await guild.members.fetch(userId).catch(() => null);
+      if (member) members.set(member.id, member);
+    }
+  }
+
+  return members;
 }
 
 async function syncAccessCompanionRoles(client, options = {}) {
@@ -13809,9 +13859,16 @@ async function syncAccessCompanionRoles(client, options = {}) {
     throw new Error("Не удалось получить guild для синхронизации доп. access-роли.");
   }
 
-  const members = await guild.members.fetch().catch(() => null);
+  let members = await guild.members.fetch().catch(() => null);
   if (!members) {
-    throw new Error("Не удалось получить список участников guild для синхронизации доп. access-роли.");
+    await guild.roles.fetch().catch(() => null);
+    const fallbackUserIds = collectAccessCompanionFallbackUserIds(guild);
+    if (!fallbackUserIds.length) {
+      result.fallbackUsed = true;
+      return result;
+    }
+    members = await fetchAccessCompanionFallbackMembers(guild, fallbackUserIds);
+    result.fallbackUsed = true;
   }
 
   for (const member of members.values()) {

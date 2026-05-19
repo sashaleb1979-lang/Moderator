@@ -4,6 +4,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const {
+  collectAccessCompanionCandidateUserIds,
   collectAccessCompanionSourceRoleIds,
   hasAnyAccessCompanionSourceRole,
   shouldGrantAccessCompanionRole,
@@ -57,4 +58,12 @@ test("shouldGrantAccessCompanionRole skips when companion role is already presen
     heldRoleIds: ["base-role"],
     sourceRoleIds: ["base-role", "wartime-role", "nonjjs-role"],
   }), false);
+});
+
+test("collectAccessCompanionCandidateUserIds prefers source-role and cache ids before profile fallbacks", () => {
+  assert.deepEqual(collectAccessCompanionCandidateUserIds({
+    sourceRoleMemberIds: [" role-user ", "shared-user"],
+    cachedMemberIds: ["shared-user", "cached-user"],
+    profileUserIds: ["cached-user", "profile-user", ""],
+  }), ["role-user", "shared-user", "cached-user", "profile-user"]);
 });
