@@ -38,11 +38,13 @@
 20. Верх профиля визуально усилен: появился compact hero-блок с thumbnail/avatar и быстрой сводкой по прогрессу, фокусу и readiness, а для профилей без аватара этот же слой корректно падает в text-display без V2-ошибок.
 21. Кнопка `Привязать Roblox` больше не зависит от onboarding session: у неё отдельный profile-only modal path с reuse существующих identity lock rules и canonical profile writer.
 22. Self-profile теперь яснее объясняет ELO flow прямо в overview: CTA и helper copy говорят, что сначала нужен текст с числом ELO, а потом следующим сообщением скрин.
+23. Phase 8 character wiki layer теперь live: profile quick-links умеют показывать JJS wiki buttons по мейнам из canonical character catalog, а `Main Core` и `Мейны и гайды` отражают wiki coverage рядом с combo-guide coverage.
+24. Phase 9 groundwork начат в live code: ежедневный `seasonArchive` rollup теперь сохраняется в canonical shared profiles и планировщик уже пишет один idempotent snapshot на день для каждого профиля.
 
 ### Реализовано Частично
 1. Базовые данные профиля уже стали заметно богаче, верхняя сводка теперь лучше показывает readiness/status и получила отдельный hero-слой, но до финального "богатого" продуктового экрана ещё не доведены все разделы.
 2. ELO, tierlist, Roblox и server activity уже подключены и читаются лучше, но presentation ещё можно сделать визуально сильнее в соседних секциях, не раздувая lean overview обратно.
-3. Мейны и guide-связки уже поданы заметно лучше, но полноценный wiki-слой и отдельный контент-блок по каждому main пока не доведены до финальной формы.
+3. Мейны и guide/wiki quick-links уже поданы заметно лучше и canonical wiki-layer теперь live, но отдельный контент-блок по каждому main всё ещё future work.
 4. Media/avatar presentation уже добавлен через Components V2 thumbnail + media gallery, но визуальная polish-итерация ещё не доведена до финального вида.
 
 ### Пока Не Закрыто
@@ -52,11 +54,9 @@
 
 ### Текущее Техническое Состояние
 1. `node --check welcome-bot.js` — ok.
-2. Focused profile tests — зелёные.
-3. Полный `node --test` даёт 1315 pass / 2 fail.
-4. Полный `node --test` падает только на старых quarantine leftovers, а не на активном profile code:
-   - [backups/quarantine-20260510-213529/deploy-verification-live-leftovers/tests/elo-graphic.test.js](backups/quarantine-20260510-213529/deploy-verification-live-leftovers/tests/elo-graphic.test.js)
-   - [backups/quarantine-20260510-213529/deploy-verification-live-leftovers/tests/non-jjs-captcha.test.js](backups/quarantine-20260510-213529/deploy-verification-live-leftovers/tests/non-jjs-captcha.test.js)
+2. Focused profile/runtime tests — зелёные, включая seasonArchive storage + scheduler slice.
+3. Полный active test tree по `tests/*.test.js` даёт 614 pass / 0 fail.
+4. Для этого repo bare `node --test` не является честной проверкой active tree, потому что подтягивает backup/quarantine surfaces; для рабочей валидации нужно явно перечислять `tests/*.test.js`.
 
 ## Главные Приоритеты Пользователя
 
@@ -125,7 +125,7 @@
 | Статистика по серверу | Частично | База уже есть, partial-state polish добавлен, верхний hero/overview стал сильнее, но summary можно усиливать дальше |
 | Роли | Сделано | В профиле уже выводятся role mentions |
 | Мейны | Частично | Есть richer main-block с guide coverage по каждому main, но presentation ещё можно усиливать |
-| Wiki / guides | Частично | Есть direct guide links, coverage по main и общие техи, но нет полноценного wiki-source и отдельного wiki-блока |
+| Wiki / guides | Сделано | Direct guide links и canonical JJS wiki links теперь приходят из character catalog, а профиль показывает coverage по main и общие техи в одном link-layer |
 | Последние изменения по kills | Сделано | Есть блок последнего роста и история нескольких последних approved изменений, протянутая и в live runtime |
 | Roblox-linked account | Частично | База, media и social context уже есть, а profile bind теперь работает как отдельный action без onboarding session; дальше нужен только UX polish |
 | Ранги | Частично | Rank/progression уже богаче, но всё ещё можно усилить верхнюю сводку и объясняющие тексты |

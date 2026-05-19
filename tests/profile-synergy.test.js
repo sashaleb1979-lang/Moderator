@@ -84,6 +84,36 @@ function makePopulationProfile({
   };
 }
 
+function shiftIsoDayKey(dayKey = "", offsetDays = 0) {
+  const timestamp = Date.parse(`${dayKey}T12:00:00.000Z`);
+  return new Date(timestamp + offsetDays * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+}
+
+function buildSeasonArchiveSnapshots({ startDayKey = "2026-04-01", dayCount = 12, peak7Index = null, peak30Index = null } = {}) {
+  const normalizedPeak7Index = Number.isInteger(peak7Index) ? peak7Index : Math.max(0, dayCount - 1);
+  const normalizedPeak30Index = Number.isInteger(peak30Index) ? peak30Index : Math.max(0, dayCount - 1);
+
+  return Array.from({ length: dayCount }, (_entry, index) => {
+    const dayKey = shiftIsoDayKey(startDayKey, index);
+    return {
+      dayKey,
+      capturedAt: `${dayKey}T12:00:00.000Z`,
+      approvedKills: 3200 + index * 50,
+      killTier: 3,
+      mainCharacterLabels: ["Gojo"],
+      tierlistMainName: "Gojo",
+      activityScore: 50 + index,
+      jjsMinutes7d: index === normalizedPeak7Index ? 900 : 180 + index * 20,
+      jjsMinutes30d: index === normalizedPeak30Index ? 2400 : 600 + index * 25,
+      voiceDurationSeconds7d: index === normalizedPeak7Index ? 5400 : index * 300,
+      voiceDurationSeconds30d: index === normalizedPeak30Index ? 18000 : index * 600,
+      topCoPlayPeerUserIds: Array.from({ length: Math.min(3, Math.floor(index / 4) + 1) }, (_peer, peerIndex) => `peer-${peerIndex + 1}`),
+      socialSuggestionCount: Math.min(4, Math.floor(index / 3)),
+      serverFriendsCount: 2,
+    };
+  });
+}
+
 test("buildProgressSynergyState derives wall-clock and JJS hours since latest approved proof window", () => {
   const state = buildProgressSynergyState({
     now: "2026-05-16T12:00:00.000Z",
@@ -259,6 +289,12 @@ test("buildProfileSynergyState builds a viewer-first hero block and Main Core su
         url: "https://discord.com/channels/guild-1/thread-1",
       },
       {
+        kind: "wiki",
+        label: "Gojo",
+        mainLabel: "Gojo",
+        url: "https://jujutsu-shenanigans.fandom.com/wiki/Gojo",
+      },
+      {
         kind: "general",
         label: "Общие техи",
         url: "https://discord.com/channels/guild-1/general-thread",
@@ -292,7 +328,7 @@ test("buildProfileSynergyState builds a viewer-first hero block and Main Core su
   assert.match(state.blocks.viewerMainCore.lines.join("\n"), /Ядро пиков: Gojo-main/);
   assert.match(state.blocks.viewerMainCore.lines.join("\n"), /Серверный контур: форма B\+ .* рост C- .* стабильность C- .* #2 по kills .* ELO 145 \/ tier 2/);
   assert.match(state.blocks.viewerMainCore.lines.join("\n"), /Игровая связка: чаще всего с <@peer-1> .* 210 мин вместе .* 5 сесс\. .* Roblox-друг/);
-  assert.match(state.blocks.viewerMainCore.lines.join("\n"), /Гайд-контур: гайды 1\/1 по мейнам .* общие техи доступны/);
+  assert.match(state.blocks.viewerMainCore.lines.join("\n"), /Гайд-контур: гайды 1\/1 по мейнам .* wiki 1\/1 по мейнам .* общие техи доступны/);
 });
 
 test("buildProfileSynergyState calibrates viewer grades against population baseline", () => {
@@ -506,4 +542,124 @@ test("buildProfileSynergyState exposes voice summary from canonical mirror", () 
   assert.match(state.blocks.voiceSummary.lines.join("\n"), /Сейчас в voice: <#voice-lounge> .* 16\.05\.2026/);
   assert.match(state.blocks.voiceSummary.lines.join("\n"), /Топ voice-каналы: <#voice-main> \(2\), <#voice-lounge> \(1\), <#voice-side> \(1\)/);
   assert.match(state.blocks.voiceSummary.lines.join("\n"), /Voice-срез обновлялся ~1,5 ч назад/);
+});
+
+test("buildProfileSynergyState derives prime time from hourly MSK buckets", () => {
+  const state = buildProfileSynergyState({
+    now: "2026-05-16T12:00:00.000Z",
+    profile: {
+      domains: {
+        roblox: {
+          playtime: {
+            hourlyBucketsMsk: {
+              "2026-05-14T19": 20,
+              "2026-05-14T20": 50,
+              "2026-05-14T21": 35,
+              "2026-05-15T19": 40,
+              "2026-05-15T20": 70,
+              "2026-05-15T21": 60,
+              "2026-05-15T22": 30,
+              "2026-05-16T09": 10,
+            },
+          },
+        },
+      },
+    },
+  });
+
+  assert.equal(state.blocks.primeTime.title, "Prime time МСК");
+  assert.match(state.blocks.primeTime.lines.join("\n"), /Чаще всего играет с 19:00 до 23:00 МСК .* окно 305 мин/);
+  assert.match(state.blocks.primeTime.lines.join("\n"), /Пиковый час: 20:00 .* активных часов: 5 .* tracked минут в bucket-слое: 315/);
+  assert.match(state.blocks.primeTime.lines.join("\n"), /Hourly-срез обновлялся ~6 ч назад/);
+});
+
+test("buildProfileSynergyState derives personal war readiness from existing profile signals", () => {
+  const state = buildProfileSynergyState({
+    now: "2026-05-16T12:00:00.000Z",
+    profile: {
+      domains: {
+        progress: {
+          proofWindows: [
+            {
+              approvedKills: 120,
+              reviewedAt: "2026-05-15T00:00:00.000Z",
+              playtimeTracked: true,
+              totalJjsMinutes: 120,
+            },
+          ],
+        },
+        roblox: {
+          playtime: {
+            hourlyBucketsMsk: {
+              "2026-05-14T19": 20,
+              "2026-05-14T20": 50,
+              "2026-05-14T21": 35,
+              "2026-05-15T19": 40,
+              "2026-05-15T20": 70,
+              "2026-05-15T21": 60,
+              "2026-05-15T22": 30,
+              "2026-05-16T09": 10,
+            },
+          },
+        },
+      },
+    },
+    robloxSummary: {
+      hasVerifiedAccount: true,
+      totalJjsMinutes: 300,
+      jjsMinutes7d: 180,
+    },
+    activitySummary: {
+      lastSeenAt: "2026-05-10T12:00:00.000Z",
+    },
+  });
+
+  assert.equal(state.blocks.personalWarReadiness.title, "War Readiness");
+  assert.match(state.blocks.personalWarReadiness.lines.join("\n"), /Готовность к вару: высокая/);
+  assert.match(state.blocks.personalWarReadiness.lines.join("\n"), /Roblox 7д: 3 ч .* Discord last seen: ~6 д .* proof freshness: ~36 ч назад/);
+  assert.match(state.blocks.personalWarReadiness.lines.join("\n"), /Prime time: 19:00-23:00 МСК/);
+});
+
+test("buildProfileSynergyState summarizes best periods from season archive snapshots", () => {
+  const state = buildProfileSynergyState({
+    profile: {
+      domains: {
+        seasonArchive: {
+          snapshots: buildSeasonArchiveSnapshots({
+            startDayKey: "2026-04-01",
+            dayCount: 35,
+            peak7Index: 20,
+            peak30Index: 32,
+          }),
+        },
+      },
+    },
+  });
+
+  assert.equal(state.blocks.bestPeriods.title, "Лучшие периоды");
+  assert.match(state.blocks.bestPeriods.lines.join("\n"), /Архив сезона: 35 дневных срезов .* 01\.04\.2026-05\.05\.2026/);
+  assert.match(state.blocks.bestPeriods.lines.join("\n"), /Пик 7д: 15\.04\.2026-21\.04\.2026 .* 15 ч JJS .* activity 70 .* voice 1,5 ч .* 3 частых напарн\./);
+  assert.match(state.blocks.bestPeriods.lines.join("\n"), /Контур 7д-пика: 4.?200 kills .* tier 3 .* мейн Gojo .* Roblox-друзей 2 .* кандидатов 4/);
+  assert.match(state.blocks.bestPeriods.lines.join("\n"), /Пик 30д: 04\.04\.2026-03\.05\.2026 .* 40 ч JJS .* activity 82 .* voice 5 ч .* 3 частых напарн\./);
+});
+
+test("buildProfileSynergyState keeps best-periods copy honest while 30-day history is still short", () => {
+  const state = buildProfileSynergyState({
+    profile: {
+      domains: {
+        seasonArchive: {
+          snapshots: buildSeasonArchiveSnapshots({
+            startDayKey: "2026-05-01",
+            dayCount: 12,
+            peak7Index: 11,
+            peak30Index: 11,
+          }),
+        },
+      },
+    },
+  });
+
+  assert.equal(state.blocks.bestPeriods.title, "Лучшие периоды");
+  assert.match(state.blocks.bestPeriods.lines.join("\n"), /Пик 7д: 06\.05\.2026-12\.05\.2026 .* 15 ч JJS .* activity 61 .* voice 1,5 ч/);
+  assert.match(state.blocks.bestPeriods.lines.join("\n"), /Пик 30д: данные сезона ещё копятся \(12\/30 дневных срезов\)\./);
 });

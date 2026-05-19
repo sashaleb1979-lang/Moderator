@@ -118,6 +118,7 @@ function buildClientReadyPeriodicJobs(options = {}) {
     runRobloxProfileRefreshJob,
     flushActivityRuntime,
     runDailyActivityRoleSync,
+    runProfileSeasonArchiveSnapshot,
     flushRobloxRuntime,
     syncRobloxPlaytime,
     getResolvedIntegrationSourcePath = null,
@@ -126,6 +127,7 @@ function buildClientReadyPeriodicJobs(options = {}) {
     legacyTierlistSummaryRefreshMs = 0,
     activityFlushIntervalMs = 0,
     activityRoleSyncHours = 0,
+    profileSeasonArchiveHours = 0,
     now = null,
     roblox = {},
     verification = {},
@@ -144,6 +146,9 @@ function buildClientReadyPeriodicJobs(options = {}) {
   }
   if (runDailyActivityRoleSync != null) {
     assertFunction(runDailyActivityRoleSync, "runDailyActivityRoleSync");
+  }
+  if (runProfileSeasonArchiveSnapshot != null) {
+    assertFunction(runProfileSeasonArchiveSnapshot, "runProfileSeasonArchiveSnapshot");
   }
   if (syncRobloxPlaytime != null) {
     assertFunction(syncRobloxPlaytime, "syncRobloxPlaytime");
@@ -196,6 +201,15 @@ function buildClientReadyPeriodicJobs(options = {}) {
         now
       ),
       errorLabel: "Activity daily role sync failed",
+    });
+  }
+
+  if (typeof runProfileSeasonArchiveSnapshot === "function") {
+    periodicJobs.push({
+      run: runProfileSeasonArchiveSnapshot,
+      intervalMs: Math.max(1, Number(profileSeasonArchiveHours) || 24) * 60 * 60 * 1000,
+      initialDelayMs: 0,
+      errorLabel: "Profile season archive snapshot failed",
     });
   }
 

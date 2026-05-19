@@ -109,6 +109,7 @@ function normalizeCharacterRecord(value) {
   const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
   const id = cleanString(source.id, 120);
   if (!id) return null;
+  const wikiUrl = cleanString(source.wikiUrl, 2000);
   const normalized = {
     id,
     label: cleanString(source.label, 200) || id,
@@ -120,13 +121,16 @@ function normalizeCharacterRecord(value) {
       ? clone(source.evidence)
       : undefined,
   };
+  if (wikiUrl) {
+    normalized.wikiUrl = wikiUrl;
+  }
   if (Array.isArray(source.history) && source.history.length) {
     normalized.history = clone(source.history);
   }
   return normalized;
 }
 
-function createCharacterRecord({ id, label, englishLabel, roleId = "", source = "configured", verifiedAt = null, evidence, history }) {
+function createCharacterRecord({ id, label, englishLabel, roleId = "", source = "configured", verifiedAt = null, evidence, history, wikiUrl }) {
   return normalizeCharacterRecord({
     id,
     label,
@@ -136,6 +140,7 @@ function createCharacterRecord({ id, label, englishLabel, roleId = "", source = 
     verifiedAt,
     evidence,
     history,
+    wikiUrl,
   });
 }
 
@@ -289,6 +294,7 @@ function buildCharacterMap(dbConfig = {}, appConfig = {}, options = {}) {
         id,
         label: "",
         englishLabel: "",
+        wikiUrl: "",
         configuredRoleId: "",
         historicalRoleId: "",
         aliasNames: [],
@@ -301,6 +307,7 @@ function buildCharacterMap(dbConfig = {}, appConfig = {}, options = {}) {
     const target = ensureEntry(entry.id);
     target.label = target.label || entry.label;
     target.englishLabel = target.englishLabel || entry.label;
+    target.wikiUrl = target.wikiUrl || cleanString(entry.wikiUrl, 2000);
     target.configuredRoleId = target.configuredRoleId || entry.roleId;
     target.historicalRoleId = target.historicalRoleId || cleanString(historicalRoleIds[entry.id], 80);
     target.aliasNames = getCharacterAliasNames(entry.id);
@@ -320,6 +327,7 @@ function buildCharacterMap(dbConfig = {}, appConfig = {}, options = {}) {
       roleId,
       source: entry.configuredRoleId ? "configured" : aliasNames.length ? "alias" : entry.historicalRoleId ? "recovered" : "configured",
       evidence: Object.keys(evidence).length ? evidence : undefined,
+      wikiUrl: entry.wikiUrl,
     });
   }
   return characters;

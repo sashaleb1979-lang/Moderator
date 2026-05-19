@@ -93,10 +93,18 @@ Rolling hour-level buckets по JJS playtime, собранные в москов
 4. возможна грубость на границе часа, потому что все минуты текущего delta кладутся в hour bucket, соответствующий `nowIso`.
 
 ### UI Copy Правило
-Пока derived user-facing features поверх hourly buckets не выведены в профиль, эти buckets не показываются напрямую.
-Когда появится prime time:
-1. если накоплено меньше 7 дней history, copy должен говорить `пока по неполной истории`;
-2. если capture stale, copy должен говорить `по последним доступным данным`.
+Базовый derived block `Prime time МСК` уже выведен в profile activity section через `src/profile/synergy.js`.
+Текущая V1-подача:
+1. best 4-hour MSK window по сумме минут из `hourlyBucketsMsk`;
+2. peak single hour внутри aggregated hour-of-day totals;
+3. freshness line по последнему bucket key;
+4. если buckets ещё короткие, block должен честно говорить `Hourly buckets пока ещё короткие`.
+
+### Ограничения Prime Time V1
+1. окно пока считается по всем удержанным hourly buckets, а не по строго отдельному 7d/30d окну;
+2. best window сейчас = 4 consecutive hours, это read-side heuristic, а не канонический gameplay session boundary;
+3. freshness считается из plain MSK hour key через допущение UTC+03:00;
+4. stale copy всё ещё обязательна, если latest bucket старый.
 
 ---
 
@@ -442,11 +450,133 @@ Profile activity section теперь может показывать отдел
 
 ---
 
-## 10. Text-Tierlist Grades И `Кто Ты Сейчас`
+## 10. Personal War Readiness Basic
+
+### Статус
+Base read-side block `War Readiness` is live via `src/profile/synergy.js`.
+Он не требует clan source, K/D или нового runtime collection layer.
+
+### Owner
+1. Derived owner: [src/profile/synergy.js](src/profile/synergy.js)
+2. Read-model composition: [src/profile/model.js](src/profile/model.js)
+
+### Источники
+1. `profile.summary.roblox.jjsMinutes7d`
+2. `profile.summary.activity.lastSeenAt`
+3. `progress.hoursSinceLastApprovedKillsUpdate`
+4. derived prime-time state from `profile.domains.roblox.playtime.hourlyBucketsMsk`
+
+### Формула V1
+Внутренний readiness score пользователю не показывается напрямую, но уровень строится из четырёх сигналов:
+1. Roblox 7д: `+35 / +25 / +15 / +8 / +0` для `>=600 / >=300 / >=120 / >0 / 0` минут;
+2. Discord last seen: `+25 / +18 / +10 / +0` для `<=2д / <=7д / <=14д / старше`;
+3. proof freshness: `+25 / +15 / +6 / +0` для `<=72ч / <=7д / <=14д / старше или отсутствует`;
+4. prime-time signal: `+15`, если hourly window уже читается, и `+8`, если buckets есть, но ещё короткие.
+
+Уровень:
+1. `высокая` при score `>= 70`
+2. `средняя` при score `>= 45`
+3. `слабая` иначе
+
+### Текущая V1-Подача
+Overview section теперь может показывать block `War Readiness`:
+1. уровень `высокая / средняя / слабая`;
+2. строку с Roblox 7д, Discord last seen и proof freshness;
+3. строку с prime time или честным fallback про короткие buckets.
+
+### Ненадёжно Когда
+1. readiness здесь описывает operational readiness по свежести активности, а не боевой skill;
+2. без clan source block не умеет делать clan-aware выводы;
+3. без K/D и combat stats block не должен притворяться оценкой силы в бою;
+4. prime-time часть наследует все ограничения `hourlyBucketsMsk`.
+
+### UI Copy Правило
+1. не показывать raw numeric score пользователю;
+2. если proof history нет, copy должна говорить `нет approved history`;
+3. если prime-time buckets короткие, copy должна говорить `hourly buckets пока ещё короткие`.
+
+---
+
+## 11. Character Wiki Layer
+
+### Статус
+Phase 8 character wiki layer is live.
+
+### Owner
+1. Canonical character metadata owner: [src/sot/schema.js](src/sot/schema.js), [src/sot/resolver/characters.js](src/sot/resolver/characters.js), [src/sot/native-characters.js](src/sot/native-characters.js)
+2. Runtime catalog export: [welcome-bot.js](welcome-bot.js)
+3. Read-model enrichment: [src/profile/model.js](src/profile/model.js)
+4. Main Core wording: [src/profile/synergy.js](src/profile/synergy.js)
+5. Renderer seam unchanged: [src/profile/view.js](src/profile/view.js)
+
+### Источники
+1. `appConfig.characters[].wikiUrl` как canonical configured source;
+2. persisted SoT character record `characters[id].wikiUrl`, если manual/native path уже обогатил character metadata;
+3. `profile.mainCharacterIds[]` и `profile.mainCharacterLabels[]` для сопоставления main -> character catalog entry;
+4. existing combo-guide links для соседнего guide layer.
+
+### Текущая V1-Подача
+1. quick-link row теперь может показывать external buttons `JJS Wiki: <main>` рядом с combo guides и Roblox profile;
+2. `Main Core` line `Гайд-контур` теперь честно показывает не только guide coverage, но и wiki coverage по мейнам;
+3. social section `Мейны и гайды` теперь отдельно отмечает `JJS wiki по мейнам` и наличие wiki по каждому main.
+
+### Ненадёжно Когда
+1. `wikiUrl` считается trustworthy только как canonical character metadata; profile snapshots сами по себе не владеют wiki links;
+2. если `profile.mainCharacterIds[]`/labels не совпадают с canonical character catalog, wiki button не должен фабриковаться;
+3. текущий слой не проверяет live-доступность fandom page и не валидирует slug по сети на runtime;
+4. прямые fandom URLs в `bot.config.json` нужно обновлять вручную, если внешний wiki меняет slug или структуру.
+
+### UI Copy Правило
+1. не притворяться, что wiki есть, если canonical match не найден;
+2. не смешивать wiki availability с combo-guide truth: это два разных внешних источника;
+3. в Main Core и `Мейны и гайды` говорить именно про `wiki coverage`, а не про gameplay mastery.
+
+---
+
+## 12. Season Archive Storage
+
+### Статус
+Phase 9 groundwork is live.
+
+### Owner
+1. Snapshot shaping + append owner: [src/profile/synergy-snapshots.js](src/profile/synergy-snapshots.js)
+2. Canonical normalization owner: [src/integrations/shared-profile.js](src/integrations/shared-profile.js)
+3. Daily scheduler descriptor owner: [src/runtime/client-ready-core.js](src/runtime/client-ready-core.js)
+4. Runtime job execution + persistence: [welcome-bot.js](welcome-bot.js)
+
+### Persisted Shape
+1. Canonical path: `profile.domains.seasonArchive.snapshots[]`
+2. Each snapshot stores at least `dayKey`, `capturedAt`, approved-kill state, access/main/tierlist state, activity summary, Roblox playtime/social rollups, proof-window counters, voice summary counters and social suggestion peer ids.
+3. Snapshots are deduped by `dayKey` and capped to 120 retained days.
+4. Re-running the daily job on the same day replaces that day snapshot instead of appending duplicates.
+
+### Источники
+1. onboarding/access fields from the shared profile root;
+2. `profile.domains.activity`;
+3. `profile.domains.roblox.playtime`, `serverFriends`, `coPlay`;
+4. `profile.domains.progress.proofWindows`;
+5. `profile.domains.voice.summary`;
+6. `profile.domains.social.suggestions`;
+7. `profile.domains.tierlist`.
+
+### Ненадёжно Когда
+1. archive describes only the days when the bot successfully ran and current mirrors were available;
+2. long downtime or stale mirrors create honest gaps, not silent interpolation;
+3. until 30+ daily snapshots accumulate, Season Story / Best Period copy must say that history is still short;
+4. archive stores rollups, not per-session causality, so future copy must not invent exact reasons why a day was strong or weak.
+
+### UI Copy Правило
+1. пока read-side blocks не построены, не выдавать archive как готовый user-facing story;
+2. если история короче нужного окна, говорить `Данные сезона ещё копятся.`;
+3. не называть `лучший период` или `сильнейшую форму`, если окно собрано из неполной истории.
+
+---
+
+## 13. Text-Tierlist Grades И `Кто Ты Сейчас`
 
 ### Статус
 Phase 5 viewer-first hero, separate Main Core block и population-calibrated grading are live.
-Future work: persisted population snapshots and richer Main Core enrichment поверх wiki/voice/social layers.
+Future work: persisted population snapshots and richer Main Core enrichment поверх voice/social layers.
 
 ### Owner
 1. Derived owner: [src/profile/synergy.js](src/profile/synergy.js)

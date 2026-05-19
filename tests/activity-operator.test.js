@@ -298,6 +298,57 @@ test("applyInitialActivityRoleAssignments cleans duplicate managed roles when de
   assert.equal(db.profiles.duplicate.domains.activity.appliedActivityRoleKey, null);
 });
 
+test("applyInitialActivityRoleAssignments does not mark newcomer as applied when newcomer mapping is missing", async () => {
+  const db = {
+    profiles: {
+      newcomer: {
+        userId: "newcomer",
+        domains: {
+          activity: {
+            desiredActivityRoleKey: null,
+            appliedActivityRoleKey: "weak",
+            roleEligibilityStatus: "gated_new_member",
+            roleEligibleForActivityRole: false,
+            daysSinceGuildJoin: 1.2,
+          },
+        },
+      },
+    },
+  };
+
+  updateActivityConfig(db, {
+    activityRoleIds: {
+      weak: "role-weak",
+    },
+  });
+
+  const roleChanges = [];
+  const result = await applyInitialActivityRoleAssignments({
+    db,
+    userIds: ["newcomer"],
+    resolveMemberRoleIds() {
+      return ["role-weak"];
+    },
+    async applyRoleChanges(change) {
+      roleChanges.push(change);
+      return true;
+    },
+    now: "2026-05-09T12:00:00.000Z",
+  });
+
+  assert.equal(result.appliedCount, 1);
+  assert.deepEqual(roleChanges, [
+    {
+      userId: "newcomer",
+      desiredRoleKey: "newcomer",
+      desiredRoleId: null,
+      addRoleIds: [],
+      removeRoleIds: ["role-weak"],
+    },
+  ]);
+  assert.equal(db.profiles.newcomer.domains.activity.appliedActivityRoleKey, null);
+});
+
 test("runDailyActivityRoleSync targets activity-owned users instead of every profile record", async () => {
   const db = {
     profiles: {
@@ -1095,7 +1146,117 @@ test("getActivityUserInspection marks contradictory persisted mirror states as a
   assert.match(inspection.diagnosis.recommendedAction, /roles-only sync .* небезопасен/i);
 });
 
-test("buildActivityRoleAssignmentPlan removes managed activity roles from gated new members", () => {
+test("getActivityUserInspection explains gated newcomers through the newcomer window", () => {
+  const db = {
+    profiles: {
+      newcomer: {
+        userId: "newcomer",
+        domains: {
+          activity: {
+            desiredActivityRoleKey: null,
+            appliedActivityRoleKey: null,
+            roleEligibilityStatus: "gated_new_member",
+            roleEligibleForActivityRole: false,
+            daysSinceGuildJoin: 1.2,
+          },
+        },
+      },
+    },
+    sot: {
+      activity: {
+        config: {},
+        watchedChannels: [],
+        globalUserSessions: [],
+        userChannelDailyStats: [],
+        userSnapshots: {},
+        calibrationRuns: [],
+        ops: { moderationAuditLog: [] },
+        runtime: {
+          openSessions: {},
+          dirtyUsers: [],
+        },
+      },
+    },
+  };
+
+  updateActivityConfig(db, {
+    activityRoleIds: {
+      newcomer: "role-newcomer",
+      weak: "role-weak",
+    },
+  });
+
+  const inspection = getActivityUserInspection({
+    db,
+    userId: "newcomer",
+    memberRoleIds: [],
+  });
+
+  assert.equal(inspection.roleAssignmentPlan.desiredRoleKey, "newcomer");
+  assert.equal(inspection.diagnosis.statusCode, "gated_new_member");
+  assert.match(inspection.diagnosis.summary, /newcomer-окне/i);
+  assert.match(inspection.diagnosis.recommendedAction, /newcomer-роль может выдаться автоматически/i);
+});
+
+test("getActivityUserInspection treats boosted newcomer as an effective newcomer role instead of below-threshold", () => {
+  const db = {
+    profiles: {
+      newcomer: {
+        userId: "newcomer",
+        domains: {
+          activity: {
+            desiredActivityRoleKey: "dead",
+            appliedActivityRoleKey: "newcomer",
+            roleEligibilityStatus: "boosted_new_member",
+            roleEligibleForActivityRole: true,
+            daysSinceGuildJoin: 4.2,
+          },
+        },
+      },
+    },
+    sot: {
+      activity: {
+        config: {},
+        watchedChannels: [],
+        globalUserSessions: [],
+        userChannelDailyStats: [{ userId: "newcomer" }],
+        userSnapshots: {
+          newcomer: {
+            desiredActivityRoleKey: "dead",
+            appliedActivityRoleKey: "newcomer",
+            roleEligibilityStatus: "boosted_new_member",
+            roleEligibleForActivityRole: true,
+            daysSinceGuildJoin: 4.2,
+          },
+        },
+        calibrationRuns: [],
+        ops: { moderationAuditLog: [] },
+        runtime: {
+          openSessions: {},
+          dirtyUsers: [],
+        },
+      },
+    },
+  };
+
+  updateActivityConfig(db, {
+    activityRoleIds: {
+      newcomer: "role-newcomer",
+    },
+  });
+
+  const inspection = getActivityUserInspection({
+    db,
+    userId: "newcomer",
+    memberRoleIds: ["role-newcomer"],
+  });
+
+  assert.equal(inspection.roleAssignmentPlan.desiredRoleKey, "newcomer");
+  assert.equal(inspection.diagnosis.statusCode, "role_synced");
+  assert.match(inspection.diagnosis.summary, /Newcomer-роль уже соответствует/i);
+});
+
+test("buildActivityRoleAssignmentPlan assigns newcomer role to gated new members before their first activity rank", () => {
   const db = {
     profiles: {
       newcomer: {
@@ -1106,6 +1267,7 @@ test("buildActivityRoleAssignmentPlan removes managed activity roles from gated 
             appliedActivityRoleKey: "weak",
             roleEligibilityStatus: "gated_new_member",
             roleEligibleForActivityRole: false,
+            daysSinceGuildJoin: 1.5,
           },
         },
       },
@@ -1114,6 +1276,7 @@ test("buildActivityRoleAssignmentPlan removes managed activity roles from gated 
 
   updateActivityConfig(db, {
     activityRoleIds: {
+      newcomer: "role-newcomer",
       weak: "role-weak",
       floating: "role-floating",
     },
@@ -1126,10 +1289,122 @@ test("buildActivityRoleAssignmentPlan removes managed activity roles from gated 
   });
 
   assert.equal(plan.shouldApply, true);
+  assert.equal(plan.desiredRoleKey, "newcomer");
+  assert.equal(plan.desiredRoleId, "role-newcomer");
+  assert.deepEqual(plan.addRoleIds, ["role-newcomer"]);
+  assert.deepEqual(plan.removeRoleIds, ["role-weak"]);
+});
+
+test("buildActivityRoleAssignmentPlan keeps newcomer role for eligible members without a first scored rank inside newcomer window", () => {
+  const db = {
+    profiles: {
+      newcomer: {
+        userId: "newcomer",
+        domains: {
+          activity: {
+            desiredActivityRoleKey: "dead",
+            appliedActivityRoleKey: "newcomer",
+            roleEligibilityStatus: "boosted_new_member",
+            roleEligibleForActivityRole: true,
+            daysSinceGuildJoin: 4.2,
+          },
+        },
+      },
+    },
+  };
+
+  updateActivityConfig(db, {
+    activityRoleIds: {
+      newcomer: "role-newcomer",
+      dead: "role-dead",
+    },
+  });
+
+  const plan = buildActivityRoleAssignmentPlan({
+    db,
+    userId: "newcomer",
+    memberRoleIds: ["role-newcomer"],
+  });
+
+  assert.equal(plan.shouldApply, false);
+  assert.equal(plan.skipReason, "unchanged");
+  assert.equal(plan.desiredRoleKey, "newcomer");
+  assert.equal(plan.desiredRoleId, "role-newcomer");
+});
+
+test("buildActivityRoleAssignmentPlan removes newcomer role after the first scored rank was already earned", () => {
+  const db = {
+    profiles: {
+      veteran: {
+        userId: "veteran",
+        domains: {
+          activity: {
+            desiredActivityRoleKey: "dead",
+            appliedActivityRoleKey: "newcomer",
+            firstActivityRoleGrantedAt: "2026-05-08T12:00:00.000Z",
+            roleEligibilityStatus: "boosted_new_member",
+            roleEligibleForActivityRole: true,
+            daysSinceGuildJoin: 4.8,
+          },
+        },
+      },
+    },
+  };
+
+  updateActivityConfig(db, {
+    activityRoleIds: {
+      newcomer: "role-newcomer",
+    },
+  });
+
+  const plan = buildActivityRoleAssignmentPlan({
+    db,
+    userId: "veteran",
+    memberRoleIds: ["role-newcomer"],
+  });
+
+  assert.equal(plan.shouldApply, true);
+  assert.equal(plan.desiredRoleKey, "dead");
+  assert.equal(plan.desiredRoleId, null);
+  assert.deepEqual(plan.addRoleIds, []);
+  assert.deepEqual(plan.removeRoleIds, ["role-newcomer"]);
+});
+
+test("buildActivityRoleAssignmentPlan keeps join_age_unknown newcomer-safe-off", () => {
+  const db = {
+    profiles: {
+      unknown: {
+        userId: "unknown",
+        domains: {
+          activity: {
+            desiredActivityRoleKey: null,
+            appliedActivityRoleKey: "newcomer",
+            roleEligibilityStatus: "join_age_unknown",
+            roleEligibleForActivityRole: false,
+            daysSinceGuildJoin: null,
+          },
+        },
+      },
+    },
+  };
+
+  updateActivityConfig(db, {
+    activityRoleIds: {
+      newcomer: "role-newcomer",
+    },
+  });
+
+  const plan = buildActivityRoleAssignmentPlan({
+    db,
+    userId: "unknown",
+    memberRoleIds: ["role-newcomer"],
+  });
+
+  assert.equal(plan.shouldApply, true);
   assert.equal(plan.desiredRoleKey, null);
   assert.equal(plan.desiredRoleId, null);
   assert.deepEqual(plan.addRoleIds, []);
-  assert.deepEqual(plan.removeRoleIds, ["role-weak"]);
+  assert.deepEqual(plan.removeRoleIds, ["role-newcomer"]);
 });
 
 test("runDailyActivityRoleSync rebuilds snapshots with member age metadata and applies boosted roles", async () => {
@@ -1215,6 +1490,7 @@ test("runDailyActivityRoleSync rebuilds snapshots with member age metadata and a
   assert.equal(db.profiles["user-1"].domains.activity.activityScoreMultiplier, 1.15);
   assert.equal(db.profiles["user-1"].domains.activity.desiredActivityRoleKey, "weak");
   assert.equal(db.profiles["user-1"].domains.activity.appliedActivityRoleKey, "weak");
+  assert.equal(db.profiles["user-1"].domains.activity.firstActivityRoleGrantedAt, "2026-05-09T12:00:00.000Z");
   assert.equal(db.sot.activity.runtime.lastDailyRoleSyncAt, "2026-05-09T12:00:00.000Z");
   assert.equal(db.sot.activity.runtime.lastRebuildAndRoleSyncAt, "2026-05-09T12:00:00.000Z");
   assert.deepEqual(db.sot.activity.runtime.lastDailyRoleSyncStats, {

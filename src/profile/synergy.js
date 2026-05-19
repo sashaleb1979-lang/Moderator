@@ -9,6 +9,7 @@ const KILL_TIER_THRESHOLDS = Object.freeze([
 
 const KILL_MILESTONES = Object.freeze([20000, 30000]);
 const MIN_POPULATION_BASELINE = 5;
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 function cleanString(value, limit = 2000) {
   return String(value || "").trim().slice(0, Math.max(0, Number(limit) || 0));
@@ -178,6 +179,52 @@ function resolveNowTimestamp(now) {
   if (typeof now === "function") return resolveNowTimestamp(now());
   const fromValue = resolveTimestamp(now);
   return Number.isFinite(fromValue) ? fromValue : Date.now();
+}
+
+function parseIsoDayKey(value) {
+  const text = cleanString(value, 20);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return NaN;
+  const [year, month, day] = text.split("-").map((entry) => Number(entry));
+  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return NaN;
+  return Date.UTC(year, month - 1, day, 12, 0, 0, 0);
+}
+
+function shiftIsoDayKey(value, offsetDays = 0) {
+  const timestamp = parseIsoDayKey(value);
+  if (!Number.isFinite(timestamp)) return null;
+  return new Date(timestamp + Math.trunc(offsetDays) * MS_PER_DAY).toISOString().slice(0, 10);
+}
+
+function formatDayLabel(value) {
+  const timestamp = parseIsoDayKey(value);
+  if (!Number.isFinite(timestamp)) return "—";
+  return new Intl.DateTimeFormat("ru-RU", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+  }).format(new Date(timestamp));
+}
+
+function formatDayRangeLabel(startDayKey, endDayKey) {
+  const startLabel = formatDayLabel(startDayKey);
+  const endLabel = formatDayLabel(endDayKey);
+  if (startLabel === "—") return endLabel;
+  if (endLabel === "—") return startLabel;
+  return `${startLabel}-${endLabel}`;
+}
+
+function computeDaySpan(firstDayKey, lastDayKey) {
+  const firstTimestamp = parseIsoDayKey(firstDayKey);
+  const lastTimestamp = parseIsoDayKey(lastDayKey);
+  if (!Number.isFinite(firstTimestamp) || !Number.isFinite(lastTimestamp) || lastTimestamp < firstTimestamp) return null;
+  return Math.round((lastTimestamp - firstTimestamp) / MS_PER_DAY) + 1;
+}
+
+function getSeasonArchiveSnapshots(profile = {}) {
+  return (Array.isArray(profile?.domains?.seasonArchive?.snapshots) ? profile.domains.seasonArchive.snapshots : [])
+    .filter((entry) => cleanString(entry?.dayKey, 20))
+    .slice()
+    .sort((left, right) => cleanString(left?.dayKey, 20).localeCompare(cleanString(right?.dayKey, 20)));
 }
 
 function getLatestProofWindow(profile = {}) {
@@ -972,11 +1019,15 @@ function buildMainCoreGuideLine({ mainCharacterLabels = [], comboLinks = [] } = 
     .filter(Boolean);
   const links = Array.isArray(comboLinks) ? comboLinks : [];
   const mainGuideCount = links.filter((entry) => entry?.kind === "main").length;
+  const mainWikiCount = links.filter((entry) => entry?.kind === "wiki").length;
   const hasGeneralGuide = links.some((entry) => entry?.kind === "general");
   const parts = [];
 
   if (mains.length) {
     parts.push(`гайды ${formatNumber(Math.min(mainGuideCount, mains.length))}/${formatNumber(mains.length)} по мейнам`);
+    if (mainWikiCount) {
+      parts.push(`wiki ${formatNumber(Math.min(mainWikiCount, mains.length))}/${formatNumber(mains.length)} по мейнам`);
+    }
   }
   if (hasGeneralGuide) {
     parts.push("общие техи доступны");
@@ -1340,6 +1391,382 @@ function buildVoiceSummaryBlock({ voiceSummary = {}, now } = {}) {
   };
 }
 
+function listHourlyMskBuckets(profile = null) {
+  return Object.entries(profile?.domains?.roblox?.playtime?.hourlyBucketsMsk || {})
+    .filter(([bucketKey, minutes]) => /^\d{4}-\d{2}-\d{2}T\d{2}$/.test(bucketKey) && Number(minutes) > 0)
+    .map(([bucketKey, minutes]) => ({
+      bucketKey,
+      minutes: Number(minutes) || 0,
+      hour: Number(bucketKey.slice(11, 13)),
+    }))
+    .filter((entry) => Number.isFinite(entry.hour) && entry.hour >= 0 && entry.hour <= 23)
+    .sort((left, right) => left.bucketKey.localeCompare(right.bucketKey));
+}
+
+function resolveMskHourKeyTimestamp(bucketKey) {
+  const match = String(bucketKey || "").match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2})$/);
+  if (!match) return null;
+  const [, year, month, day, hour] = match;
+  const timestamp = Date.UTC(
+    Number(year),
+    Number(month) - 1,
+    Number(day),
+    Number(hour) - 3,
+    0,
+    0,
+    0
+  );
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function formatHourLabel(hour) {
+  const normalizedHour = Number(hour);
+  if (!Number.isFinite(normalizedHour)) return "—";
+  return `${String(((normalizedHour % 24) + 24) % 24).padStart(2, "0")}:00`;
+}
+
+function buildPrimeTimeState({ profile = null } = {}) {
+  const buckets = listHourlyMskBuckets(profile);
+  if (!buckets.length) {
+    return {
+      buckets,
+      totalMinutes: 0,
+      activeHourCount: 0,
+      latestBucketKey: null,
+      peakHour: null,
+      bestWindow: null,
+      insufficient: true,
+    };
+  }
+
+  const totalsByHour = Array.from({ length: 24 }, () => 0);
+  let totalMinutes = 0;
+  for (const entry of buckets) {
+    totalsByHour[entry.hour] += entry.minutes;
+    totalMinutes += entry.minutes;
+  }
+
+  const activeHourCount = totalsByHour.filter((entry) => entry > 0).length;
+  const peakHour = totalsByHour.reduce((bestIndex, value, index, source) => {
+    if (!Number.isFinite(source[bestIndex]) || value > source[bestIndex]) return index;
+    return bestIndex;
+  }, 0);
+
+  let bestWindow = null;
+  for (let startHour = 0; startHour < 24; startHour += 1) {
+    let minutes = 0;
+    for (let offset = 0; offset < 4; offset += 1) {
+      minutes += totalsByHour[(startHour + offset) % 24] || 0;
+    }
+    if (!bestWindow || minutes > bestWindow.minutes) {
+      bestWindow = {
+        startHour,
+        endHourExclusive: (startHour + 4) % 24,
+        minutes,
+      };
+    }
+  }
+
+  return {
+    buckets,
+    totalMinutes,
+    activeHourCount,
+    latestBucketKey: buckets.at(-1)?.bucketKey || null,
+    peakHour,
+    bestWindow,
+    insufficient: buckets.length < 3 || totalMinutes < 90,
+  };
+}
+
+function buildPrimeTimeFreshnessLine(state = {}, now) {
+  const latestBucketTimestamp = resolveMskHourKeyTimestamp(state?.latestBucketKey);
+  const hoursSinceLatestBucket = computeElapsedHours(latestBucketTimestamp, now);
+  if (!Number.isFinite(hoursSinceLatestBucket)) return null;
+  if (hoursSinceLatestBucket <= 24) {
+    return `Hourly-срез обновлялся ~${formatHours(hoursSinceLatestBucket)} ч назад.`;
+  }
+  return `Hourly-срез уже ~${formatHours(hoursSinceLatestBucket)} ч не обновлялся, так что prime time может быть неполным.`;
+}
+
+function buildPrimeTimeBlock({ profile = null, now } = {}) {
+  const state = buildPrimeTimeState({ profile });
+  if (!state.buckets.length) return null;
+
+  const lines = [];
+  if (state.insufficient || !state.bestWindow || state.bestWindow.minutes <= 0) {
+    lines.push(`Hourly buckets пока ещё короткие: активных часов ${formatNumber(state.activeHourCount)} • tracked минут ${formatNumber(state.totalMinutes)}.`);
+  } else {
+    lines.push(
+      `Чаще всего играет с ${formatHourLabel(state.bestWindow.startHour)} до ${formatHourLabel(state.bestWindow.endHourExclusive)} МСК • окно ${formatNumber(state.bestWindow.minutes)} мин`
+    );
+    lines.push(
+      `Пиковый час: ${formatHourLabel(state.peakHour)} • активных часов: ${formatNumber(state.activeHourCount)} • tracked минут в bucket-слое: ${formatNumber(state.totalMinutes)}`
+    );
+  }
+
+  const freshnessLine = buildPrimeTimeFreshnessLine(state, now);
+  if (freshnessLine) {
+    lines.push(freshnessLine);
+  }
+
+  return {
+    title: "Prime time МСК",
+    lines,
+  };
+}
+
+function selectBestSeasonArchiveSnapshot(snapshots = [], metricField = "jjsMinutes7d") {
+  let best = null;
+
+  for (const snapshot of Array.isArray(snapshots) ? snapshots : []) {
+    const metric = normalizeFiniteNumber(snapshot?.[metricField]);
+    if (!Number.isFinite(metric) || metric <= 0) continue;
+
+    if (!best) {
+      best = snapshot;
+      continue;
+    }
+
+    const bestMetric = normalizeFiniteNumber(best?.[metricField], 0);
+    if (metric > bestMetric) {
+      best = snapshot;
+      continue;
+    }
+
+    if (metric === bestMetric) {
+      const activityScore = normalizeFiniteNumber(snapshot?.activityScore, -1);
+      const bestActivityScore = normalizeFiniteNumber(best?.activityScore, -1);
+      if (activityScore > bestActivityScore) {
+        best = snapshot;
+        continue;
+      }
+
+      if (activityScore === bestActivityScore
+        && cleanString(snapshot?.dayKey, 20).localeCompare(cleanString(best?.dayKey, 20)) > 0) {
+        best = snapshot;
+      }
+    }
+  }
+
+  return best;
+}
+
+function buildBestPeriodState(snapshot = null, windowDays = 7) {
+  if (!snapshot) return null;
+
+  const normalizedWindowDays = Math.max(1, Number(windowDays) || 1);
+  const endDayKey = cleanString(snapshot?.dayKey, 20);
+  const startDayKey = shiftIsoDayKey(endDayKey, -(normalizedWindowDays - 1)) || endDayKey;
+  const windowMinutes = normalizeFiniteNumber(
+    normalizedWindowDays >= 30 ? snapshot?.jjsMinutes30d : snapshot?.jjsMinutes7d
+  );
+  const voiceDurationSeconds = normalizeFiniteNumber(
+    normalizedWindowDays >= 30 ? snapshot?.voiceDurationSeconds30d : snapshot?.voiceDurationSeconds7d
+  );
+  const mainCharacterLabels = Array.isArray(snapshot?.mainCharacterLabels) ? snapshot.mainCharacterLabels : [];
+
+  return {
+    dayKey: endDayKey,
+    rangeLabel: formatDayRangeLabel(startDayKey, endDayKey),
+    jjsHours: Number.isFinite(windowMinutes) ? windowMinutes / 60 : null,
+    activityScore: normalizeFiniteNumber(snapshot?.activityScore),
+    voiceHours: Number.isFinite(voiceDurationSeconds) ? voiceDurationSeconds / 3600 : null,
+    approvedKills: normalizeFiniteNumber(snapshot?.approvedKills),
+    killTier: normalizeFiniteNumber(snapshot?.killTier),
+    mainLabel: cleanString(mainCharacterLabels[0] || snapshot?.tierlistMainName, 120) || null,
+    peerCount: Array.isArray(snapshot?.topCoPlayPeerUserIds) ? snapshot.topCoPlayPeerUserIds.length : 0,
+    serverFriendsCount: normalizeFiniteNumber(snapshot?.serverFriendsCount),
+    socialSuggestionCount: normalizeFiniteNumber(snapshot?.socialSuggestionCount),
+  };
+}
+
+function buildBestPeriodLine(label, periodState = null, snapshotCount = 0, windowDays = 7) {
+  if (!periodState) {
+    if (snapshotCount < windowDays) {
+      return `Пик ${label}: данные сезона ещё копятся (${formatNumber(snapshotCount)}/${formatNumber(windowDays)} дневных срезов).`;
+    }
+    return `Пик ${label}: в архиве ещё нет явного Roblox-окна.`;
+  }
+
+  const bits = [
+    `Пик ${label}: ${periodState.rangeLabel}`,
+    `${formatHours(periodState.jjsHours)} ч JJS`,
+  ];
+  if (Number.isFinite(periodState.activityScore)) {
+    bits.push(`activity ${formatNumber(periodState.activityScore)}`);
+  }
+  if (Number.isFinite(periodState.voiceHours) && periodState.voiceHours > 0) {
+    bits.push(`voice ${formatHours(periodState.voiceHours)} ч`);
+  }
+  if (Number.isFinite(periodState.peerCount) && periodState.peerCount > 0) {
+    bits.push(`${formatNumber(periodState.peerCount)} частых напарн.`);
+  }
+  return bits.join(" • ");
+}
+
+function buildBestPeriodContourLine(label, periodState = null) {
+  if (!periodState) return null;
+
+  const bits = [];
+  if (Number.isFinite(periodState.approvedKills)) {
+    bits.push(`${formatNumber(periodState.approvedKills)} kills`);
+  }
+  if (Number.isFinite(periodState.killTier) && periodState.killTier > 0) {
+    bits.push(`tier ${formatNumber(periodState.killTier)}`);
+  }
+  if (periodState.mainLabel) {
+    bits.push(`мейн ${periodState.mainLabel}`);
+  }
+  if (Number.isFinite(periodState.serverFriendsCount) && periodState.serverFriendsCount > 0) {
+    bits.push(`Roblox-друзей ${formatNumber(periodState.serverFriendsCount)}`);
+  }
+  if (Number.isFinite(periodState.socialSuggestionCount) && periodState.socialSuggestionCount > 0) {
+    bits.push(`кандидатов ${formatNumber(periodState.socialSuggestionCount)}`);
+  }
+  if (!bits.length) return null;
+
+  return `Контур ${label}-пика: ${bits.join(" • ")}`;
+}
+
+function buildSeasonArchiveCoverageLine(snapshots = []) {
+  const items = Array.isArray(snapshots) ? snapshots : [];
+  if (!items.length) return null;
+  const firstDayKey = cleanString(items[0]?.dayKey, 20);
+  const lastDayKey = cleanString(items.at(-1)?.dayKey, 20);
+  const spanDays = computeDaySpan(firstDayKey, lastDayKey);
+  const bits = [
+    `Архив сезона: ${formatNumber(items.length)} дневных срезов`,
+    formatDayRangeLabel(firstDayKey, lastDayKey),
+  ];
+  if (Number.isFinite(spanDays) && spanDays > items.length) {
+    bits.push("история с пробелами");
+  }
+  return bits.join(" • ");
+}
+
+function buildBestPeriodsBlock({ profile = null } = {}) {
+  const snapshots = getSeasonArchiveSnapshots(profile);
+  if (!snapshots.length) return null;
+
+  const best7 = snapshots.length >= 7
+    ? buildBestPeriodState(selectBestSeasonArchiveSnapshot(snapshots, "jjsMinutes7d"), 7)
+    : null;
+  const best30 = snapshots.length >= 30
+    ? buildBestPeriodState(selectBestSeasonArchiveSnapshot(snapshots, "jjsMinutes30d"), 30)
+    : null;
+  const lines = [
+    buildSeasonArchiveCoverageLine(snapshots),
+    buildBestPeriodLine("7д", best7, snapshots.length, 7),
+    buildBestPeriodContourLine("7д", best7),
+    buildBestPeriodLine("30д", best30, snapshots.length, 30),
+  ];
+
+  const best30ContourLine = best30 && best30.dayKey !== best7?.dayKey
+    ? buildBestPeriodContourLine("30д", best30)
+    : null;
+  if (best30ContourLine) {
+    lines.push(best30ContourLine);
+  }
+
+  return {
+    title: "Лучшие периоды",
+    lines: lines.filter(Boolean),
+  };
+}
+
+function buildElapsedRecencyLabel(hours) {
+  const normalizedHours = normalizeFiniteNumber(hours);
+  if (!Number.isFinite(normalizedHours)) return null;
+  if (normalizedHours < 48) {
+    return `~${formatHours(normalizedHours)} ч назад`;
+  }
+  return `~${formatDays(normalizedHours / 24)}`;
+}
+
+function scoreWarReadiness({ robloxSummary = {}, activitySummary = {}, progressState = {}, primeTimeState = {} } = {}) {
+  let score = 0;
+  const jjsMinutes7d = normalizeFiniteNumber(robloxSummary?.jjsMinutes7d);
+  if (Number.isFinite(jjsMinutes7d) && jjsMinutes7d > 0) {
+    if (jjsMinutes7d >= 600) score += 35;
+    else if (jjsMinutes7d >= 300) score += 25;
+    else if (jjsMinutes7d >= 120) score += 15;
+    else score += 8;
+  }
+
+  const discordSeenHours = computeElapsedHours(activitySummary?.lastSeenAt, progressState?.now);
+  if (Number.isFinite(discordSeenHours)) {
+    if (discordSeenHours <= 48) score += 25;
+    else if (discordSeenHours <= 7 * 24) score += 18;
+    else if (discordSeenHours <= 14 * 24) score += 10;
+  }
+
+  const proofFreshnessHours = normalizeFiniteNumber(progressState?.hoursSinceLastApprovedKillsUpdate);
+  if (Number.isFinite(proofFreshnessHours)) {
+    if (proofFreshnessHours <= 72) score += 25;
+    else if (proofFreshnessHours <= 7 * 24) score += 15;
+    else if (proofFreshnessHours <= 14 * 24) score += 6;
+  }
+
+  if (primeTimeState?.bestWindow?.minutes > 0) {
+    score += primeTimeState.insufficient ? 8 : 15;
+  }
+
+  return score;
+}
+
+function buildWarReadinessLevel(score = 0) {
+  const normalizedScore = normalizeFiniteNumber(score, 0);
+  if (normalizedScore >= 70) return "высокая";
+  if (normalizedScore >= 45) return "средняя";
+  return "слабая";
+}
+
+function buildPersonalWarReadinessBlock({ profile = null, robloxSummary = {}, activitySummary = {}, progressState = {}, now } = {}) {
+  const primeTimeState = buildPrimeTimeState({ profile });
+  const jjsMinutes7d = normalizeFiniteNumber(robloxSummary?.jjsMinutes7d);
+  const discordSeenHours = computeElapsedHours(activitySummary?.lastSeenAt, now);
+  const proofFreshnessHours = normalizeFiniteNumber(progressState?.hoursSinceLastApprovedKillsUpdate);
+  const hasSignal = (Number.isFinite(jjsMinutes7d) && jjsMinutes7d > 0)
+    || Number.isFinite(discordSeenHours)
+    || Number.isFinite(proofFreshnessHours)
+    || primeTimeState.buckets.length > 0;
+  if (!hasSignal) return null;
+
+  const score = scoreWarReadiness({
+    robloxSummary,
+    activitySummary,
+    progressState: {
+      ...progressState,
+      now,
+    },
+    primeTimeState,
+  });
+
+  const lines = [
+    `Готовность к вару: ${buildWarReadinessLevel(score)}`,
+    [
+      `Roblox 7д: ${Number.isFinite(jjsMinutes7d) ? `${formatHours(jjsMinutes7d / 60)} ч` : "нет сигнала"}`,
+      `Discord last seen: ${buildElapsedRecencyLabel(discordSeenHours) || "нет сигнала"}`,
+      `proof freshness: ${buildElapsedRecencyLabel(proofFreshnessHours) || "нет approved history"}`,
+    ].join(" • "),
+  ];
+
+  if (primeTimeState.buckets.length) {
+    if (primeTimeState.insufficient || !primeTimeState.bestWindow || primeTimeState.bestWindow.minutes <= 0) {
+      lines.push("Prime time: hourly buckets пока ещё короткие.");
+    } else {
+      lines.push(`Prime time: ${formatHourLabel(primeTimeState.bestWindow.startHour)}-${formatHourLabel(primeTimeState.bestWindow.endHourExclusive)} МСК`);
+    }
+  } else {
+    lines.push("Prime time: ещё не накоплен.");
+  }
+
+  return {
+    title: "War Readiness",
+    lines,
+  };
+}
+
 function buildViewerHeroBlock({
   isSelf = false,
   approvedKills = null,
@@ -1542,6 +1969,16 @@ function buildProfileSynergyState(options = {}) {
       }),
       voiceSummary: buildVoiceSummaryBlock({
         ...options,
+      }),
+      primeTime: buildPrimeTimeBlock({
+        ...options,
+      }),
+      bestPeriods: buildBestPeriodsBlock({
+        ...options,
+      }),
+      personalWarReadiness: buildPersonalWarReadinessBlock({
+        ...options,
+        progressState: progress,
       }),
       socialSuggestions: buildSocialSuggestionsBlock({
         ...options,

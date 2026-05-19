@@ -37,6 +37,7 @@ const DEFAULT_ACTIVITY_ROLE_IDS = Object.freeze({
   active: null,
   floating: null,
   weak: null,
+  newcomer: null,
   dead: null,
 });
 
@@ -90,6 +91,7 @@ const DEFAULT_ACTIVITY_MEMBER_RULES = Object.freeze({
   roleEligibilityMinMemberDays: 3,
   roleBoostEndMemberDays: 7,
   roleBoostMaxMultiplier: 1.15,
+  newcomerRoleMaxMemberDays: 7,
   autoRoleSyncHours: 24,
 });
 
@@ -177,6 +179,7 @@ function createDefaultActivityConfig() {
     roleEligibilityMinMemberDays: DEFAULT_ACTIVITY_MEMBER_RULES.roleEligibilityMinMemberDays,
     roleBoostEndMemberDays: DEFAULT_ACTIVITY_MEMBER_RULES.roleBoostEndMemberDays,
     roleBoostMaxMultiplier: DEFAULT_ACTIVITY_MEMBER_RULES.roleBoostMaxMultiplier,
+    newcomerRoleMaxMemberDays: DEFAULT_ACTIVITY_MEMBER_RULES.newcomerRoleMaxMemberDays,
     autoRoleSyncHours: DEFAULT_ACTIVITY_MEMBER_RULES.autoRoleSyncHours,
     adminRoleIds: [],
     moderatorRoleIds: [],
@@ -287,6 +290,10 @@ function normalizeActivityConfig(value = {}) {
     1,
     normalizePositiveNumber(source.roleBoostMaxMultiplier, defaults.roleBoostMaxMultiplier)
   );
+  const newcomerRoleMaxMemberDays = Math.max(
+    roleEligibilityMinMemberDays,
+    normalizeNonNegativeNumber(source.newcomerRoleMaxMemberDays, defaults.newcomerRoleMaxMemberDays)
+  );
 
   return {
     ...clone(source),
@@ -301,6 +308,7 @@ function normalizeActivityConfig(value = {}) {
     roleEligibilityMinMemberDays,
     roleBoostEndMemberDays,
     roleBoostMaxMultiplier,
+    newcomerRoleMaxMemberDays,
     autoRoleSyncHours: normalizePositiveNumber(source.autoRoleSyncHours, defaults.autoRoleSyncHours),
     adminRoleIds: normalizeStringArray(source.adminRoleIds, 25, 80),
     moderatorRoleIds: normalizeStringArray(source.moderatorRoleIds, 25, 80),

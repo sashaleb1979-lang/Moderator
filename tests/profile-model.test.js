@@ -5,6 +5,34 @@ const assert = require("node:assert/strict");
 
 const { buildProfileReadModel } = require("../src/profile/model");
 
+function shiftIsoDayKey(dayKey = "", offsetDays = 0) {
+  const timestamp = Date.parse(`${dayKey}T12:00:00.000Z`);
+  return new Date(timestamp + offsetDays * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+}
+
+function buildSeasonArchiveSnapshots({ startDayKey = "2026-05-01", dayCount = 12, peak7Index = null } = {}) {
+  const normalizedPeak7Index = Number.isInteger(peak7Index) ? peak7Index : Math.max(0, dayCount - 1);
+
+  return Array.from({ length: dayCount }, (_entry, index) => {
+    const dayKey = shiftIsoDayKey(startDayKey, index);
+    return {
+      dayKey,
+      capturedAt: `${dayKey}T12:00:00.000Z`,
+      approvedKills: 3200 + index * 50,
+      killTier: 3,
+      mainCharacterLabels: ["Gojo"],
+      tierlistMainName: "Gojo",
+      activityScore: 50 + index,
+      jjsMinutes7d: index === normalizedPeak7Index ? 900 : 180 + index * 20,
+      jjsMinutes30d: 600 + index * 25,
+      voiceDurationSeconds7d: index === normalizedPeak7Index ? 5400 : index * 300,
+      topCoPlayPeerUserIds: Array.from({ length: Math.min(3, Math.floor(index / 4) + 1) }, (_peer, peerIndex) => `peer-${peerIndex + 1}`),
+      socialSuggestionCount: Math.min(4, Math.floor(index / 3)),
+      serverFriendsCount: 2,
+    };
+  });
+}
+
 test("profile read-model composes derived sections, links, and verification facts", () => {
   const readModel = buildProfileReadModel({
     now: "2026-05-16T12:00:00.000Z",
@@ -121,6 +149,20 @@ test("profile read-model composes derived sections, links, and verification fact
         },
       },
       domains: {
+        roblox: {
+          playtime: {
+            hourlyBucketsMsk: {
+              "2026-05-14T19": 20,
+              "2026-05-14T20": 50,
+              "2026-05-14T21": 35,
+              "2026-05-15T19": 40,
+              "2026-05-15T20": 70,
+              "2026-05-15T21": 60,
+              "2026-05-15T22": 30,
+              "2026-05-16T09": 10,
+            },
+          },
+        },
         progress: {
           proofWindows: [
             {
@@ -131,6 +173,13 @@ test("profile read-model composes derived sections, links, and verification fact
               totalJjsMinutes: 180,
             },
           ],
+        },
+        seasonArchive: {
+          snapshots: buildSeasonArchiveSnapshots({
+            startDayKey: "2026-05-01",
+            dayCount: 12,
+            peak7Index: 11,
+          }),
         },
       },
     },
@@ -179,6 +228,13 @@ test("profile read-model composes derived sections, links, and verification fact
       generalTechsThreadId: "general-thread",
       characters: [{ id: "gojo", name: "Gojo", threadId: "thread-1" }],
     },
+    characterCatalog: [
+      {
+        id: "gojo",
+        label: "Gojo",
+        wikiUrl: "https://jujutsu-shenanigans.fandom.com/wiki/Gojo",
+      },
+    ],
     populationProfiles: [
       {
         userId: "friend-1",
@@ -239,10 +295,14 @@ test("profile read-model composes derived sections, links, and verification fact
   assert.match(readModel.sections.overview[1].lines.join("\n"), /Ядро пиков: Gojo-main/);
   assert.match(readModel.sections.overview[1].lines.join("\n"), /Серверный контур: форма B\+ .* #2 по kills .* ELO 145 \/ tier 2/);
   assert.match(readModel.sections.overview[1].lines.join("\n"), /Игровая связка: чаще всего с <@peer-1> .* Roblox-друг/);
-  assert.match(readModel.sections.overview[1].lines.join("\n"), /Гайд-контур: гайды 1\/1 по мейнам .* общие техи доступны/);
+  assert.match(readModel.sections.overview[1].lines.join("\n"), /Гайд-контур: гайды 1\/1 по мейнам .* wiki 1\/1 по мейнам .* общие техи доступны/);
   assert.match(readModel.sections.overview[2].lines.join("\n"), /JJS доступ: открыт с/);
   assert.match(readModel.sections.overview[2].lines.join("\n"), /Верификация: verified/);
   assert.match(readModel.sections.overview[2].lines.join("\n"), /Roblox-связка: подтверждена/);
+  assert.equal(readModel.sections.overview[3].title, "War Readiness");
+  assert.match(readModel.sections.overview[3].lines.join("\n"), /Готовность к вару: высокая/);
+  assert.match(readModel.sections.overview[3].lines.join("\n"), /Roblox 7д: 3 ч .* Discord last seen: ~6 д .* proof freshness: ~36 ч назад/);
+  assert.match(readModel.sections.overview[3].lines.join("\n"), /Prime time: 19:00-23:00 МСК/);
   assert.match(readModel.sections.progress[0].lines.join("\n"), /Место по kills: #2/);
   assert.match(readModel.sections.progress[1].lines.join("\n"), /Прирост: \+20 kills/);
   assert.match(readModel.sections.progress[2].lines.join("\n"), /1\. 100 -> 120/);
@@ -254,7 +314,14 @@ test("profile read-model composes derived sections, links, and verification fact
   assert.match(readModel.sections.activity[1].lines.join("\n"), /Voice 7д\/30д: 1,5 ч \/ 2,5 ч .* сессии 7д\/30д: 1 \/ 2 .* lifetime сессии: 2 .* неполных 30д: 1/);
   assert.match(readModel.sections.activity[1].lines.join("\n"), /Сейчас в voice: <#voice-lounge> .* 16\.05\.2026/);
   assert.match(readModel.sections.activity[1].lines.join("\n"), /Топ voice-каналы: <#voice-main> \(2\), <#voice-lounge> \(1\), <#voice-side> \(1\)/);
-  assert.match(readModel.sections.activity[2].lines.join("\n"), /Сообщения 90д: 400/);
+  assert.equal(readModel.sections.activity[2].title, "Prime time МСК");
+  assert.match(readModel.sections.activity[2].lines.join("\n"), /Чаще всего играет с 19:00 до 23:00 МСК .* окно 305 мин/);
+  assert.match(readModel.sections.activity[2].lines.join("\n"), /Пиковый час: 20:00 .* активных часов: 5 .* tracked минут в bucket-слое: 315/);
+  assert.equal(readModel.sections.activity[3].title, "Лучшие периоды");
+  assert.match(readModel.sections.activity[3].lines.join("\n"), /Архив сезона: 12 дневных срезов .* 01\.05\.2026-12\.05\.2026/);
+  assert.match(readModel.sections.activity[3].lines.join("\n"), /Пик 7д: 06\.05\.2026-12\.05\.2026 .* 15 ч JJS .* activity 61 .* voice 1,5 ч/);
+  assert.match(readModel.sections.activity[3].lines.join("\n"), /Пик 30д: данные сезона ещё копятся \(12\/30 дневных срезов\)\./);
+  assert.match(readModel.sections.activity[4].lines.join("\n"), /Сообщения 90д: 400/);
   assert.match(readModel.sections.social[0].lines.join("\n"), /Связка Roblox: подтверждена/);
   assert.match(readModel.sections.social[0].lines.join("\n"), /Аккаунт: GojoMain/);
   assert.match(readModel.sections.social[0].lines.join("\n"), /Display в Roblox: Gojo The Strongest/);
@@ -271,11 +338,13 @@ test("profile read-model composes derived sections, links, and verification fact
   assert.equal(readModel.sections.social[4].title, "Скрытый круг");
   assert.match(readModel.sections.social[4].lines.join("\n"), /явных frequent non-friend пересечений пока не видно, хотя Roblox-друзья на сервере уже есть \(3\)/);
   assert.match(readModel.sections.social[5].lines.join("\n"), /Гайды по мейнам: 1\/1/);
-  assert.match(readModel.sections.social[5].lines.join("\n"), /1\. Gojo — гайд доступен по кнопке/);
+  assert.match(readModel.sections.social[5].lines.join("\n"), /JJS wiki по мейнам: 1\/1/);
+  assert.match(readModel.sections.social[5].lines.join("\n"), /1\. Gojo — гайд доступен по кнопке .* JJS wiki доступна по кнопке/);
   assert.match(readModel.sections.social[5].lines.join("\n"), /Основной tierlist-пик: Gojo • входит в список мейнов/);
   assert.match(readModel.sections.social[5].lines.join("\n"), /Общие техи: доступны по кнопке\./);
   assert.equal(readModel.comboLinks[0].label, "Gojo");
   assert.equal(readModel.comboLinks[0].buttonLabel, "Гайд: Gojo");
+  assert.equal(readModel.comboLinks[1].buttonLabel, "JJS Wiki: Gojo");
   assert.equal(readModel.robloxProfileUrl, "https://www.roblox.com/users/123/profile");
   assert.ok(readModel.verificationLines.some((line) => /verified/.test(line)));
   assert.equal(readModel.emptyStateNote, null);

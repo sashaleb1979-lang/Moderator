@@ -955,7 +955,9 @@ test("command builder includes new admin refresh and editor subcommands", () => 
   const onboardCommand = buildCommands().find((command) => command.name === "onboard");
   const nonfakeCommand = onboardCommand.options.find((option) => option.type === 1 && option.name === "nonfake");
   assert.equal(Boolean(nonfakeCommand), true);
+  assert.equal(nonfakeCommand.options.some((option) => option.name === "targets"), true);
   assert.equal(nonfakeCommand.options.some((option) => option.name === "user_ids"), true);
+  assert.equal(nonfakeCommand.options.some((option) => option.name === "role"), true);
 });
 
 test("command builder registers onboard, rolepanel, verify, profile, and antiteam top-level commands", () => {

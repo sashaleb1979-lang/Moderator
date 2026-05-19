@@ -24,7 +24,9 @@ test("createEmptyActivityState seeds config and empty activity collections", () 
   assert.equal(state.config.roleEligibilityMinMemberDays, 3);
   assert.equal(state.config.roleBoostEndMemberDays, 7);
   assert.equal(state.config.roleBoostMaxMultiplier, 1.15);
+  assert.equal(state.config.newcomerRoleMaxMemberDays, 7);
   assert.equal(state.config.autoRoleSyncHours, 24);
+  assert.equal(state.config.activityRoleIds.newcomer, null);
   assert.equal(state.config.channelWeightPresets.main_chat, 1);
   assert.deepEqual(state.watchedChannels, []);
   assert.deepEqual(state.globalUserSessions, []);
@@ -46,6 +48,7 @@ test("normalizeActivityState deduplicates watched channels and normalizes config
       roleEligibilityMinMemberDays: "4",
       roleBoostEndMemberDays: "8",
       roleBoostMaxMultiplier: "1.2",
+      newcomerRoleMaxMemberDays: "9",
       moderatorRoleIds: ["mod-1", "", "mod-1", "mod-2"],
     },
     watchedChannels: [
@@ -74,6 +77,7 @@ test("normalizeActivityState deduplicates watched channels and normalizes config
   assert.equal(state.config.roleEligibilityMinMemberDays, 4);
   assert.equal(state.config.roleBoostEndMemberDays, 8);
   assert.equal(state.config.roleBoostMaxMultiplier, 1.2);
+  assert.equal(state.config.newcomerRoleMaxMemberDays, 9);
   assert.deepEqual(state.config.moderatorRoleIds, ["mod-1", "mod-2"]);
   assert.equal(state.watchedChannels.length, 2);
   assert.deepEqual(state.watchedChannels[0], {
@@ -158,7 +162,11 @@ test("updateActivityConfig merges partial overrides and keeps defaults available
 
   const result = updateActivityConfig(db, {
     sessionGapMinutes: 50,
+    newcomerRoleMaxMemberDays: 10,
     adminRoleIds: ["admin-1", "", "admin-1"],
+    activityRoleIds: {
+      newcomer: "newcomer-1",
+    },
     activityRoleThresholds: {
       core: 90,
       weak: 20,
@@ -167,7 +175,9 @@ test("updateActivityConfig merges partial overrides and keeps defaults available
 
   assert.equal(result.mutated, true);
   assert.equal(result.config.sessionGapMinutes, 50);
+  assert.equal(result.config.newcomerRoleMaxMemberDays, 10);
   assert.deepEqual(result.config.adminRoleIds, ["admin-1"]);
+  assert.equal(result.config.activityRoleIds.newcomer, "newcomer-1");
   assert.equal(result.config.activityRoleThresholds.core, 90);
   assert.equal(result.config.activityRoleThresholds.weak, 20);
   assert.equal(result.config.activityRoleThresholds.stable, 77);

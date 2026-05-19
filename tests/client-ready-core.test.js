@@ -204,6 +204,22 @@ test("buildClientReadyPeriodicJobs schedules daily activity rebuild and role syn
   });
 });
 
+test("buildClientReadyPeriodicJobs adds a daily profile season archive snapshot job by default", () => {
+  const periodicJobs = buildClientReadyPeriodicJobs({
+    runAutoResendTick() {},
+    async refreshLegacyTierlistSummaryMessage() {},
+    runProfileSeasonArchiveSnapshot() {},
+  });
+
+  const archiveJob = periodicJobs.find((job) => job.errorLabel === "Profile season archive snapshot failed");
+  assert.deepEqual(archiveJob, {
+    run: archiveJob.run,
+    intervalMs: 86400000,
+    initialDelayMs: 0,
+    errorLabel: "Profile season archive snapshot failed",
+  });
+});
+
 test("buildClientReadyPeriodicJobs preserves daily activity sync cadence across restart using the last successful run time", () => {
   const periodicJobs = buildClientReadyPeriodicJobs({
     runAutoResendTick() {},

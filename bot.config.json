@@ -11,6 +11,7 @@
     "wartimeAccessRoleId": "1496376994966011954",
     "verifyAccessRoleId": "",
     "nonJjsAccessRoleId": "",
+    "accessCompanionRoleId": "",
     "killTierRoleIds": {
       "1": "",
       "2": "",
@@ -103,96 +104,115 @@
     {
       "id": "honored_one",
       "label": "Honored One",
+      "wikiUrl": "https://jujutsu-shenanigans.fandom.com/wiki/Honored_One",
       "roleId": ""
     },
     {
       "id": "vessel",
       "label": "Vessel",
+      "wikiUrl": "https://jujutsu-shenanigans.fandom.com/wiki/Vessel",
       "roleId": ""
     },
     {
       "id": "restless_gambler",
       "label": "Restless Gambler",
+      "wikiUrl": "https://jujutsu-shenanigans.fandom.com/wiki/Restless_Gambler",
       "roleId": ""
     },
     {
       "id": "ten_shadows",
       "label": "Ten Shadows",
+      "wikiUrl": "https://jujutsu-shenanigans.fandom.com/wiki/Ten_Shadows",
       "roleId": ""
     },
     {
       "id": "perfection",
       "label": "Perfection",
+      "wikiUrl": "https://jujutsu-shenanigans.fandom.com/wiki/Perfection",
       "roleId": ""
     },
     {
       "id": "blood_manipulator",
       "label": "Blood Manipulator",
+      "wikiUrl": "https://jujutsu-shenanigans.fandom.com/wiki/Blood_Manipulator",
       "roleId": ""
     },
     {
       "id": "switcher",
       "label": "Switcher",
+      "wikiUrl": "https://jujutsu-shenanigans.fandom.com/wiki/Switcher",
       "roleId": ""
     },
     {
       "id": "defense_attorney",
       "label": "Defense Attorney",
+      "wikiUrl": "https://jujutsu-shenanigans.fandom.com/wiki/Defense_Attorney",
       "roleId": ""
     },
     {
       "id": "cursed_partners",
       "label": "Cursed Partners",
+      "wikiUrl": "https://jujutsu-shenanigans.fandom.com/wiki/Cursed_Partners",
       "roleId": ""
     },
     {
       "id": "head_of_the_hei",
       "label": "Head of the Hei",
+      "wikiUrl": "https://jujutsu-shenanigans.fandom.com/wiki/Head_of_the_Hei",
       "roleId": ""
     },
     {
       "id": "puppet_master",
       "label": "Puppet Master",
+      "wikiUrl": "https://jujutsu-shenanigans.fandom.com/wiki/Puppet_Master",
       "roleId": ""
     },
     {
       "id": "salaryman",
       "label": "Salaryman",
+      "wikiUrl": "https://jujutsu-shenanigans.fandom.com/wiki/Salaryman",
       "roleId": ""
     },
     {
       "id": "locust_guy",
       "label": "Locust Guy",
+      "wikiUrl": "https://jujutsu-shenanigans.fandom.com/wiki/Locust_Guy",
       "roleId": ""
     },
     {
       "id": "star_rage",
       "label": "Star Rage",
+      "wikiUrl": "https://jujutsu-shenanigans.fandom.com/wiki/Star_Rage",
       "roleId": ""
     },
     {
       "id": "aspiring_mangaka",
       "label": "Aspiring Mangaka",
+      "wikiUrl": "https://jujutsu-shenanigans.fandom.com/wiki/Aspiring_Mangaka",
       "roleId": ""
     },
     {
       "id": "lucky_coward",
       "label": "Lucky Coward",
+      "wikiUrl": "https://jujutsu-shenanigans.fandom.com/wiki/Lucky_Coward",
       "roleId": ""
     },
     {
       "id": "disaster_plants",
       "label": "Disaster Plants",
+      "wikiUrl": "https://jujutsu-shenanigans.fandom.com/wiki/Disaster_Plants",
       "roleId": ""
     },
     {
       "id": "crow_charmer",
       "label": "Crow Charmer",
+      "wikiUrl": "https://jujutsu-shenanigans.fandom.com/wiki/Crow_Charmer",
       "roleId": ""
     },
     {
       "id": "ryu",
       "label": "Ryu",
+      "wikiUrl": "https://jujutsu-shenanigans.fandom.com/wiki/Ryu",
       "roleId": ""
     }
   ]

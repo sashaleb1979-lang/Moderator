@@ -249,6 +249,68 @@ function buildComboThreadLinks({ guideState = {}, mainCharacterIds = [], mainCha
   return links;
 }
 
+function buildCharacterWikiLinks({ characterCatalog = [], mainCharacterIds = [], mainCharacterLabels = [] } = {}) {
+  const catalog = Array.isArray(characterCatalog) ? characterCatalog : [];
+  const catalogById = new Map();
+  const catalogByLabel = new Map();
+
+  for (const entry of catalog) {
+    const keyId = normalizeComboLookupKey(entry?.id);
+    if (keyId) catalogById.set(keyId, entry);
+
+    for (const candidate of [entry?.label, entry?.englishLabel]) {
+      const keyLabel = normalizeComboLookupKey(candidate);
+      if (keyLabel && !catalogByLabel.has(keyLabel)) {
+        catalogByLabel.set(keyLabel, entry);
+      }
+    }
+  }
+
+  const ids = Array.isArray(mainCharacterIds) ? mainCharacterIds : [];
+  const labels = Array.isArray(mainCharacterLabels) ? mainCharacterLabels : [];
+  const links = [];
+  const seenUrls = new Set();
+
+  for (let index = 0; index < Math.max(ids.length, labels.length); index += 1) {
+    const mainId = normalizeComboLookupKey(ids[index]);
+    const mainLabel = cleanString(labels[index], 80);
+    const entry = (mainId && catalogById.get(mainId)) || catalogByLabel.get(normalizeComboLookupKey(mainLabel));
+    const url = normalizeMediaUrl(entry?.wikiUrl, 2000);
+    if (!url || seenUrls.has(url)) continue;
+    seenUrls.add(url);
+    const resolvedLabel = cleanString(mainLabel || entry?.label || entry?.englishLabel || entry?.id, 80) || `Main ${links.length + 1}`;
+    links.push({
+      label: resolvedLabel,
+      buttonLabel: cleanString(`JJS Wiki: ${resolvedLabel}`, 80) || "JJS Wiki",
+      kind: "wiki",
+      mainLabel: resolvedLabel,
+      url,
+    });
+    if (links.length >= 2) break;
+  }
+
+  return links;
+}
+
+function mergeProfileLinks(guideLinks = [], wikiLinks = []) {
+  const mainGuideLinks = (Array.isArray(guideLinks) ? guideLinks : []).filter((entry) => entry?.kind === "main");
+  const generalGuideLinks = (Array.isArray(guideLinks) ? guideLinks : []).filter((entry) => entry?.kind === "general");
+  const merged = [];
+  const seenUrls = new Set();
+
+  for (const entry of [...mainGuideLinks, ...(Array.isArray(wikiLinks) ? wikiLinks : []), ...generalGuideLinks]) {
+    const url = normalizeMediaUrl(entry?.url, 2000);
+    if (!url || seenUrls.has(url)) continue;
+    seenUrls.add(url);
+    merged.push({
+      ...entry,
+      url,
+    });
+  }
+
+  return merged;
+}
+
 function computeGuideCoverage(mainCharacterLabels = [], comboLinks = []) {
   const mains = (Array.isArray(mainCharacterLabels) ? mainCharacterLabels : [])
     .map((entry) => cleanString(entry, 80))
@@ -259,10 +321,17 @@ function computeGuideCoverage(mainCharacterLabels = [], comboLinks = []) {
       .map((entry) => normalizeComboLookupKey(entry?.mainLabel || entry?.label))
       .filter(Boolean)
   );
+  const coveredMainWikiKeys = new Set(
+    (Array.isArray(comboLinks) ? comboLinks : [])
+      .filter((entry) => entry?.kind === "wiki")
+      .map((entry) => normalizeComboLookupKey(entry?.mainLabel || entry?.label))
+      .filter(Boolean)
+  );
 
   return {
     mainCount: mains.length,
     coveredMainCount: mains.filter((entry) => coveredMainGuideKeys.has(normalizeComboLookupKey(entry))).length,
+    coveredMainWikiCount: mains.filter((entry) => coveredMainWikiKeys.has(normalizeComboLookupKey(entry))).length,
     hasGeneralGuide: (Array.isArray(comboLinks) ? comboLinks : []).some((entry) => entry?.kind === "general"),
   };
 }
@@ -286,13 +355,28 @@ function buildMainAndGuideLines({
       .map((entry) => normalizeComboLookupKey(entry?.mainLabel || entry?.label))
       .filter(Boolean)
   );
+  const mainWikiLookup = new Set(
+    (Array.isArray(comboLinks) ? comboLinks : [])
+      .filter((entry) => entry?.kind === "wiki")
+      .map((entry) => normalizeComboLookupKey(entry?.mainLabel || entry?.label))
+      .filter(Boolean)
+  );
 
   if (mains.length) {
     lines.push(`Основные персонажи: ${mains.join(", ")}`);
     lines.push(`Гайды по мейнам: ${guideCoverage.coveredMainCount}/${mains.length}`);
+    if (guideCoverage.coveredMainWikiCount) {
+      lines.push(`JJS wiki по мейнам: ${guideCoverage.coveredMainWikiCount}/${mains.length}`);
+    }
     for (let index = 0; index < mains.length; index += 1) {
       const mainLabel = mains[index];
-      lines.push(`${index + 1}. ${mainLabel} — ${mainGuideLookup.has(normalizeComboLookupKey(mainLabel)) ? "гайд доступен по кнопке" : "гайд пока не привязан"}`);
+      const guideBits = [
+        mainGuideLookup.has(normalizeComboLookupKey(mainLabel)) ? "гайд доступен по кнопке" : "гайд пока не привязан",
+      ];
+      if (mainWikiLookup.has(normalizeComboLookupKey(mainLabel))) {
+        guideBits.push("JJS wiki доступна по кнопке");
+      }
+      lines.push(`${index + 1}. ${mainLabel} — ${guideBits.join(" • ")}`);
     }
   } else {
     lines.push("Мейны пока не указаны.");
@@ -442,6 +526,7 @@ function buildProfileReadModel(options = {}) {
   const latestSubmission = options.latestSubmission && typeof options.latestSubmission === "object" ? options.latestSubmission : null;
   const approvedEntries = Array.isArray(options.approvedEntries) ? options.approvedEntries : [];
   const populationProfiles = Array.isArray(options.populationProfiles) ? options.populationProfiles : [];
+  const characterCatalog = Array.isArray(options.characterCatalog) ? options.characterCatalog : [];
   const recentKillChange = options.recentKillChange && typeof options.recentKillChange === "object" ? options.recentKillChange : null;
   const recentKillChanges = normalizeRecentKillChanges(options.recentKillChanges, recentKillChange, 3);
   const roleMentions = Array.isArray(options.roleMentions) ? options.roleMentions.filter(Boolean) : [];
@@ -457,12 +542,18 @@ function buildProfileReadModel(options = {}) {
   const standing = computeKillStanding(approvedEntries, userId);
   const approvedKills = normalizeFiniteNumber(profile?.approvedKills ?? onboardingSummary.approvedKills);
   const killTier = normalizeFiniteNumber(profile?.killTier ?? onboardingSummary.killTier);
-  const comboLinks = buildComboThreadLinks({
+  const comboGuideLinks = buildComboThreadLinks({
     guideState: options.comboGuideState,
     mainCharacterIds,
     mainCharacterLabels,
     guildId: options.guildId,
   });
+  const characterWikiLinks = buildCharacterWikiLinks({
+    characterCatalog,
+    mainCharacterIds,
+    mainCharacterLabels,
+  });
+  const comboLinks = mergeProfileLinks(comboGuideLinks, characterWikiLinks);
   const targetAvatarUrl = normalizeMediaUrl(options.targetAvatarUrl, 2000);
   const hasVerifiedRoblox = robloxSummary.hasVerifiedAccount === true;
   const verifiedRobloxLabel = hasVerifiedRoblox
@@ -805,10 +896,13 @@ function buildProfileReadModel(options = {}) {
           title: "Готовность",
           lines: overviewStatusLines,
         },
+        ...(synergy?.blocks?.personalWarReadiness ? [synergy.blocks.personalWarReadiness] : []),
       ],
       activity: [
         { title: "Активность", lines: activityLines },
         ...(synergy?.blocks?.voiceSummary ? [synergy.blocks.voiceSummary] : []),
+        ...(synergy?.blocks?.primeTime ? [synergy.blocks.primeTime] : []),
+        ...(synergy?.blocks?.bestPeriods ? [synergy.blocks.bestPeriods] : []),
         {
           title: "Детали activity",
           lines: [

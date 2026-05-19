@@ -183,7 +183,8 @@ function hasMeaningfulVoiceFlagChange(currentFlags = {}, nextFlags = {}) {
 }
 
 function isActiveVoiceFlags(flags = {}) {
-  return normalizeVoiceFlag(flags?.selfMute) !== true;
+  return normalizeVoiceFlag(flags?.selfMute) !== true
+    && normalizeVoiceFlag(flags?.serverMute) !== true;
 }
 
 function buildVoiceSessionId(session) {
@@ -1069,6 +1070,7 @@ function rebuildActivityUserSnapshot({ db = {}, userId = "", now, memberActivity
       ? resolveDesiredActivityRoleKey(activityScore, config)
       : null,
     appliedActivityRoleKey: cleanString(existingActivity.appliedActivityRoleKey, 80) || null,
+    firstActivityRoleGrantedAt: normalizeIsoTimestamp(existingActivity.firstActivityRoleGrantedAt, null),
     manualOverride: existingActivity.manualOverride === true,
     autoRoleFrozen: existingActivity.autoRoleFrozen === true,
     recalculatedAt: currentTime,
@@ -1389,6 +1391,7 @@ async function flushActivityRuntime({ db = {}, now, saveDb, runSerialized, resol
     const config = state.config || {};
     const currentTime = getActivityRuntimeNow({ now });
     const openSessions = ensureOpenSessionMap(state);
+    const openVoiceSessions = ensureOpenVoiceSessionMap(state);
     const dirtyUsers = ensureDirtyUserSet(state);
     let finalizedSessionCount = 0;
 
@@ -1400,7 +1403,8 @@ async function flushActivityRuntime({ db = {}, now, saveDb, runSerialized, resol
     }
 
     const rebuiltUsers = [];
-    for (const userId of [...dirtyUsers]) {
+    const rebuildUserIds = new Set([...dirtyUsers, ...Object.keys(openVoiceSessions)]);
+    for (const userId of rebuildUserIds) {
       const { memberActivityMeta, error } = await safelyResolveMemberActivityMeta(resolveMemberActivityMeta, userId);
       if (error) {
         appendActivityRuntimeError(state, {

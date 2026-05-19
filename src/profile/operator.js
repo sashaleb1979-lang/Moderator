@@ -185,6 +185,9 @@ function createProfileOperator(options = {}) {
       comboGuideState: typeof options.getComboGuideState === "function"
         ? options.getComboGuideState()
         : null,
+      characterCatalog: typeof options.getCharacterCatalog === "function"
+        ? options.getCharacterCatalog()
+        : [],
       isSelf,
     });
 

@@ -10,6 +10,34 @@ const {
   buildProfilePayload,
 } = require("../src/profile/view");
 
+function shiftIsoDayKey(dayKey = "", offsetDays = 0) {
+  const timestamp = Date.parse(`${dayKey}T12:00:00.000Z`);
+  return new Date(timestamp + offsetDays * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+}
+
+function buildSeasonArchiveSnapshots({ startDayKey = "2026-05-01", dayCount = 12, peak7Index = null } = {}) {
+  const normalizedPeak7Index = Number.isInteger(peak7Index) ? peak7Index : Math.max(0, dayCount - 1);
+
+  return Array.from({ length: dayCount }, (_entry, index) => {
+    const dayKey = shiftIsoDayKey(startDayKey, index);
+    return {
+      dayKey,
+      capturedAt: `${dayKey}T12:00:00.000Z`,
+      approvedKills: 3200 + index * 50,
+      killTier: 3,
+      mainCharacterLabels: ["Gojo"],
+      tierlistMainName: "Gojo",
+      activityScore: 50 + index,
+      jjsMinutes7d: index === normalizedPeak7Index ? 900 : 180 + index * 20,
+      jjsMinutes30d: 600 + index * 25,
+      voiceDurationSeconds7d: index === normalizedPeak7Index ? 5400 : index * 300,
+      topCoPlayPeerUserIds: Array.from({ length: Math.min(3, Math.floor(index / 4) + 1) }, (_peer, peerIndex) => `peer-${peerIndex + 1}`),
+      socialSuggestionCount: Math.min(4, Math.floor(index / 3)),
+      serverFriendsCount: 2,
+    };
+  });
+}
+
 function getProfileContainer(payload) {
   const container = payload.components[0].toJSON();
   return {
@@ -48,6 +76,39 @@ test("profile payload renders overview, activity, rankings, roblox, and link but
       accessGrantedAt: "2026-05-01T10:00:00.000Z",
       mainCharacterIds: ["gojo"],
       mainCharacterLabels: ["Gojo"],
+      domains: {
+        progress: {
+          proofWindows: [
+            {
+              approvedKills: 120,
+              reviewedAt: "2026-05-15T00:00:00.000Z",
+              playtimeTracked: true,
+              totalJjsMinutes: 120,
+            },
+          ],
+        },
+        roblox: {
+          playtime: {
+            hourlyBucketsMsk: {
+              "2026-05-14T19": 20,
+              "2026-05-14T20": 50,
+              "2026-05-14T21": 35,
+              "2026-05-15T19": 40,
+              "2026-05-15T20": 70,
+              "2026-05-15T21": 60,
+              "2026-05-15T22": 30,
+              "2026-05-16T09": 10,
+            },
+          },
+        },
+        seasonArchive: {
+          snapshots: buildSeasonArchiveSnapshots({
+            startDayKey: "2026-05-01",
+            dayCount: 12,
+            peak7Index: 11,
+          }),
+        },
+      },
       summary: {
         preferredDisplayName: "Sasha",
         onboarding: { approvedKills: 120, killTier: 4 },
@@ -79,6 +140,7 @@ test("profile payload renders overview, activity, rankings, roblox, and link but
           profileUrl: "https://www.roblox.com/users/123/profile",
           avatarUrl: "https://tr.rbxcdn.com/gojo-avatar.png",
           serverFriendsCount: 3,
+          jjsMinutes7d: 180,
           sessionCount: 9,
           nonFriendPeerCount: 4,
           jjsMinutes30d: 420,
@@ -146,6 +208,13 @@ test("profile payload renders overview, activity, rankings, roblox, and link but
       generalTechsThreadId: "general-thread",
       characters: [{ id: "gojo", name: "Gojo", threadId: "thread-1" }],
     },
+    characterCatalog: [
+      {
+        id: "gojo",
+        label: "Gojo",
+        wikiUrl: "https://jujutsu-shenanigans.fandom.com/wiki/Gojo",
+      },
+    ],
   });
 
   assert.equal(payload.flags, MessageFlags.IsComponentsV2);
@@ -157,9 +226,11 @@ test("profile payload renders overview, activity, rankings, roblox, and link but
   assert.match(JSON.stringify(container), /Текст-тирлист: .* Килы A/);
   assert.match(JSON.stringify(container), /Сейчас это .* Gojo-main/);
   assert.ok(textDisplays.some((component) => /### Обзор/.test(component.content) && /Игрок: <@user-1>/.test(component.content) && /Подтверждённые kills: 120/.test(component.content) && /ELO: 145 \/ tier 2/.test(component.content)));
-  assert.ok(textDisplays.some((component) => /### Main Core/.test(component.content) && /Ядро пиков: Gojo-main/.test(component.content) && /Серверный контур: форма C- .* рост C- .* стабильность C-/.test(component.content) && /Игровая связка: чаще всего с <@peer-1>/.test(component.content)));
+  assert.ok(textDisplays.some((component) => /### Main Core/.test(component.content) && /Ядро пиков: Gojo-main/.test(component.content) && /Серверный контур: форма .* рост .* стабильность .* #2 по kills .* ELO 145 \/ tier 2/.test(component.content) && /Игровая связка: чаще всего с <@peer-1>/.test(component.content)));
+  assert.match(JSON.stringify(container), /Гайд-контур: гайды 1\/1 по мейнам .* wiki 1\/1 по мейнам .* общие техи доступны/);
   assert.doesNotMatch(JSON.stringify(container), /### Ключевые факты/);
   assert.ok(textDisplays.some((component) => /### Готовность/.test(component.content) && /JJS доступ: открыт с/.test(component.content) && /Верификация: verified/.test(component.content) && /Roblox-связка: подтверждена/.test(component.content)));
+  assert.ok(textDisplays.some((component) => /### War Readiness/.test(component.content) && /Готовность к вару: высокая/.test(component.content) && /Roblox 7д: 3 ч .* Discord last seen: ~6 д .* proof freshness: ~36 ч назад/.test(component.content) && /Prime time: 19:00-23:00 МСК/.test(component.content)));
   assert.ok(textDisplays.some((component) => /### Верификация/.test(component.content) && /verified/.test(component.content)));
   assert.match(JSON.stringify(container), /https:\/\/cdn\.discordapp\.com\/avatars\/user-1\/profile\.png/);
   assert.equal(actionRows.length, 2);
@@ -172,6 +243,7 @@ test("profile payload renders overview, activity, rankings, roblox, and link but
   })[view]));
   const buttons = actionRows[1].components;
   assert.ok(buttons.some((button) => button.label === "Гайд: Gojo"));
+  assert.ok(buttons.some((button) => button.label === "JJS Wiki: Gojo"));
   assert.ok(buttons.some((button) => button.label === "Общие техи"));
   assert.ok(buttons.some((button) => button.label === "Roblox профиль"));
 });
@@ -185,6 +257,29 @@ test("profile payload switches sections by requested view", () => {
     targetDisplayName: "Sasha",
     view: "activity",
     profile: {
+      domains: {
+        roblox: {
+          playtime: {
+            hourlyBucketsMsk: {
+              "2026-05-14T19": 20,
+              "2026-05-14T20": 50,
+              "2026-05-14T21": 35,
+              "2026-05-15T19": 40,
+              "2026-05-15T20": 70,
+              "2026-05-15T21": 60,
+              "2026-05-15T22": 30,
+              "2026-05-16T09": 10,
+            },
+          },
+        },
+        seasonArchive: {
+          snapshots: buildSeasonArchiveSnapshots({
+            startDayKey: "2026-05-01",
+            dayCount: 12,
+            peak7Index: 11,
+          }),
+        },
+      },
       summary: {
         preferredDisplayName: "Sasha",
         voice: {
@@ -228,6 +323,8 @@ test("profile payload switches sections by requested view", () => {
   assert.ok(textDisplays.some((component) => /\*\*Секция:\*\* Активность/.test(component.content)));
   assert.ok(textDisplays.some((component) => /### Активность/.test(component.content) && /Бакет: active/.test(component.content)));
   assert.ok(textDisplays.some((component) => /### Voice-срез/.test(component.content) && /Voice 7д\/30д: 1,5 ч \/ 2,5 ч/.test(component.content) && /Сейчас в voice: <#voice-lounge>/.test(component.content)));
+  assert.ok(textDisplays.some((component) => /### Prime time МСК/.test(component.content) && /Чаще всего играет с 19:00 до 23:00 МСК .* окно 305 мин/.test(component.content) && /Пиковый час: 20:00/.test(component.content)));
+  assert.ok(textDisplays.some((component) => /### Лучшие периоды/.test(component.content) && /Пик 7д: 06\.05\.2026-12\.05\.2026 .* 15 ч JJS/.test(component.content)));
   assert.ok(textDisplays.some((component) => /### Детали activity/.test(component.content) && /Сообщения 90д: 400/.test(component.content)));
 });
 

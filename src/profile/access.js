@@ -28,6 +28,10 @@ function isProfileRequesterDead(profile = null) {
     profile?.domains?.activity || profile?.activity || profile?.summary?.activity
   );
 
+   if (activity.appliedActivityRoleKey === "newcomer") {
+    return false;
+  }
+
   return activity.desiredActivityRoleKey === "dead" || activity.appliedActivityRoleKey === "dead";
 }
 

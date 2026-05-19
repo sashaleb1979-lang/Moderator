@@ -147,6 +147,13 @@ function createTestOperator(overrides = {}) {
       generalTechsThreadId: "general-thread",
       characters: [{ id: "gojo", name: "Gojo", threadId: "thread-1" }],
     }),
+    getCharacterCatalog: () => ([
+      {
+        id: "gojo",
+        label: "Gojo",
+        wikiUrl: "https://jujutsu-shenanigans.fandom.com/wiki/Gojo",
+      },
+    ]),
     ...overrides,
   });
 }
@@ -180,6 +187,7 @@ test("profile operator builds private payload from injected runtime readers", as
   assert.ok(container.components.some((component) => component.type === 1 && component.components.some((button) => button.custom_id === buildProfileNavCustomId("requester", "user-1", "progress"))));
   assert.ok(container.components.some((component) => component.type === 10 && /### Вклад/.test(component.content)));
   assert.ok(container.components.some((component) => component.type === 10 && /### История approved ростов/.test(component.content)));
+  assert.ok(container.components.some((component) => component.type === 1 && component.components.some((button) => button.label === "JJS Wiki: Gojo")));
   assert.match(JSON.stringify(container), /https:\/\/cdn\.discordapp\.com\/avatars\/user-1\/profile\.png/);
 });
 

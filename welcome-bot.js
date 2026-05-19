@@ -962,6 +962,7 @@ const syncRobloxPlaytime = robloxPanelTelemetry.wrapJob("playtime_sync", robloxJ
   now: nowIso,
   roblox: getEffectiveRobloxConfig(),
   fetchUserPresences: robloxApiClient.fetchUserPresences.bind(robloxApiClient),
+  fetchUsersByUsernames: robloxApiClient.fetchUsersByUsernames.bind(robloxApiClient),
   logError: (...args) => console.error(...args),
 })));
 
@@ -1221,6 +1222,7 @@ function getCharacterCatalog(currentDb = db) {
     id: String(entry?.id || "").trim(),
     label: String(entry?.label || entry?.id || "").trim(),
     roleId: String(entry?.roleId || "").trim(),
+    ...(String(entry?.wikiUrl || "").trim() ? { wikiUrl: String(entry.wikiUrl).trim() } : {}),
   }));
 }
 
@@ -5213,6 +5215,7 @@ function getProfileOperator() {
     getEloProfile: (userId) => getDormantEloProfileSnapshot(db, userId),
     getTierlistProfile: (userId) => getDormantTierlistProfileSnapshot(db, userId),
     getComboGuideState: () => db.comboGuide,
+    getCharacterCatalog: () => getCharacterCatalog(),
   });
 
   return profileOperator;
@@ -12465,6 +12468,39 @@ function parseRequestedUserId(value, fallbackUserId = "") {
   const mentionMatch = text.match(/^<@!?(\d+)>$/);
   const candidate = mentionMatch ? mentionMatch[1] : text.replace(/\s+/g, "");
   return /^\d{5,25}$/.test(candidate) ? candidate : "";
+}
+
+function parseRequestedUserIdList(value, fallbackUserIds = [], limit = 50) {
+  const source = Array.isArray(fallbackUserIds) ? fallbackUserIds : [fallbackUserIds];
+  const normalized = [];
+  const invalidEntries = [];
+  const seen = new Set();
+  let truncated = false;
+  const text = String(value || "").trim();
+  const candidates = text
+    ? text.split(/[;,\n\r\t ]+/g).map((entry) => entry.trim()).filter(Boolean)
+    : source.map((entry) => String(entry || "").trim()).filter(Boolean);
+
+  for (const entry of candidates) {
+    const userId = parseRequestedUserId(entry, "");
+    if (!userId) {
+      invalidEntries.push(entry);
+      continue;
+    }
+    if (seen.has(userId)) continue;
+    if (normalized.length >= limit) {
+      truncated = true;
+      continue;
+    }
+    seen.add(userId);
+    normalized.push(userId);
+  }
+
+  return {
+    userIds: normalized,
+    invalidEntries: [...new Set(invalidEntries)],
+    truncated,
+  };
 }
 
 function parseRequestedRoleId(value, fallbackRoleId = "") {

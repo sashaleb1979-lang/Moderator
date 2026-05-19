@@ -268,6 +268,7 @@ test("buildActivityOperatorPanelPayload separates overview, channels, roles, and
   const roleFieldTexts = rolesPayload.embeds[0].data.fields.map((field) => `${field.name}: ${field.value}`).join("\n");
   assert.match(roleFieldTexts, /Роль можно выдавать после \*\*3\*\* дней на сервере/);
   assert.match(roleFieldTexts, /Буст новичка: \*\*x1\.15\*\* -> x1\.00 к дню \*\*7\*\*/);
+  assert.match(roleFieldTexts, /Окно роли newcomer: до \*\*7\*\* дней без первого activity-ранга/);
   assert.match(roleFieldTexts, /Привязано activity-ролей: \*\*2\*\*/);
   assert.match(roleFieldTexts, /Последний режим: \*\*Только выдача ролей по готовым данным\*\*/);
   assert.match(roleFieldTexts, /Полный цикл:/);
@@ -623,6 +624,7 @@ test("handleActivityPanelModalSubmitInteraction updates access roles and activit
         getTextInputValue(fieldId) {
           if (fieldId === "activity_role_floating") return "444";
           if (fieldId === "activity_role_weak") return "<@&555>";
+          if (fieldId === "activity_role_newcomer") return "666";
           if (fieldId === "activity_role_dead") return "";
           return "";
         },
@@ -653,6 +655,7 @@ test("handleActivityPanelModalSubmitInteraction updates access roles and activit
   assert.equal(handledRoles, true);
   assert.equal(ensureActivityState(db).config.activityRoleIds.floating, "444");
   assert.equal(ensureActivityState(db).config.activityRoleIds.weak, "555");
+  assert.equal(ensureActivityState(db).config.activityRoleIds.newcomer, "666");
   assert.equal(ensureActivityState(db).config.activityRoleIds.dead, null);
   assert.match(replies[1][1], /Роли Activity обновлены/);
   assert.equal(saved.length, 2);
@@ -860,6 +863,93 @@ test("handleActivityPanelModalSubmitInteraction returns a rich inspection payloa
   assert.match(inspectionText, /profile mirror/i);
   assert.match(inspectionText, /roles-only sync/i);
   assert.match(inspectionText, /<@&role-weak>/);
+});
+
+test("handleActivityPanelModalSubmitInteraction shows effective newcomer role in inspection payload", async () => {
+  const replies = [];
+  const db = {
+    profiles: {
+      newcomer: {
+        userId: "newcomer",
+        displayName: "Boosted Newcomer",
+        domains: {
+          activity: {
+            desiredActivityRoleKey: "dead",
+            appliedActivityRoleKey: "newcomer",
+            roleEligibilityStatus: "boosted_new_member",
+            roleEligibleForActivityRole: true,
+            daysSinceGuildJoin: 4.2,
+            recalculatedAt: "2026-05-09T12:00:00.000Z",
+            lastSeenAt: "2026-05-09T11:50:00.000Z",
+          },
+        },
+      },
+    },
+    sot: {
+      activity: {
+        config: {},
+        watchedChannels: [],
+        globalUserSessions: [],
+        userChannelDailyStats: [{ userId: "newcomer" }],
+        userSnapshots: {
+          newcomer: {
+            desiredActivityRoleKey: "dead",
+            appliedActivityRoleKey: "newcomer",
+            roleEligibilityStatus: "boosted_new_member",
+            roleEligibleForActivityRole: true,
+            daysSinceGuildJoin: 4.2,
+            recalculatedAt: "2026-05-09T12:00:00.000Z",
+            lastSeenAt: "2026-05-09T11:50:00.000Z",
+          },
+        },
+        calibrationRuns: [],
+        ops: { moderationAuditLog: [] },
+        runtime: { openSessions: {}, dirtyUsers: [] },
+      },
+    },
+  };
+
+  updateActivityConfig(db, {
+    activityRoleIds: {
+      newcomer: "role-newcomer",
+    },
+  });
+
+  const handled = await handleActivityPanelModalSubmitInteraction({
+    interaction: {
+      customId: "activity_panel_inspect_user_modal",
+      member: { id: "mod-1" },
+      user: { id: "mod-1" },
+      fields: {
+        getTextInputValue(fieldId) {
+          if (fieldId === "activity_inspect_user_id") return "newcomer";
+          return "";
+        },
+      },
+    },
+    db,
+    isModerator: () => true,
+    replyNoPermission: async () => {
+      throw new Error("should not run");
+    },
+    replyError: async (_interaction, text) => {
+      replies.push(["error", text]);
+    },
+    replySuccess: async (_interaction, payload) => {
+      replies.push(["success", payload]);
+    },
+    parseRequestedUserId(value) {
+      return String(value || "").trim();
+    },
+    resolveMemberRoleIds() {
+      return ["role-newcomer"];
+    },
+  });
+
+  assert.equal(handled, true);
+  const inspectionText = replies[0][1].embeds[0].data.fields.map((field) => `${field.name}: ${field.value}`).join("\n");
+  assert.match(inspectionText, /Эффективная managed-role: \*\*newcomer\*\*/i);
+  assert.match(inspectionText, /Score tier: \*\*dead\*\*/i);
 });
 
 test("handleActivityPanelModalSubmitInteraction returns validation error for bad inspect-user input", async () => {

@@ -80,6 +80,12 @@ function buildCommands() {
               )
           )
           .addUserOption((option) => option.setName("target").setDescription("Игрок (если в сервере)"))
+          .addStringOption((option) =>
+            option
+              .setName("targets")
+              .setDescription("Несколько user mention/ID через пробел, запятую или новую строку")
+              .setMaxLength(1000)
+          )
           .addStringOption((option) => option.setName("user_id").setDescription("ID игрока, если пользователя нет в сервере"))
           .addStringOption((option) =>
             option
@@ -87,6 +93,7 @@ function buildCommands() {
               .setDescription("Несколько user mention/ID через пробел, запятую или новую строку")
               .setMaxLength(1000)
           )
+          .addRoleOption((option) => option.setName("role").setDescription("Добавить или убрать всех участников с этой роли"))
       )
       .addSubcommand((subcommand) =>
         subcommand

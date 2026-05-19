@@ -38,16 +38,18 @@ function buildNativeEvidence(currentRecord, nextEvidence, sameRole) {
   return evidence;
 }
 
-function writeNativeCharacterRecord(db = {}, {
-  characterId,
-  label,
-  englishLabel,
-  roleId = "",
-  source = "discovered",
-  verifiedAt = null,
-  evidence,
-  history,
-} = {}) {
+function writeNativeCharacterRecord(db = {}, options = {}) {
+  const {
+    characterId,
+    label,
+    englishLabel,
+    roleId = "",
+    source = "discovered",
+    verifiedAt = null,
+    evidence,
+    history,
+    wikiUrl,
+  } = options;
   const id = cleanString(characterId, 120);
   if (!id) throw new Error("characterId is required");
 
@@ -62,6 +64,7 @@ function writeNativeCharacterRecord(db = {}, {
   }
 
   const normalizedRoleId = cleanString(roleId, 80);
+  const hasWikiUrlOverride = Object.prototype.hasOwnProperty.call(options, "wikiUrl");
   const next = createCharacterRecord({
     id,
     label: cleanString(label, 200) || cleanString(current?.label, 200) || id,
@@ -71,6 +74,7 @@ function writeNativeCharacterRecord(db = {}, {
     verifiedAt,
     evidence: buildNativeEvidence(current, evidence, cleanString(current?.roleId, 80) === normalizedRoleId),
     history: Array.isArray(history) ? clone(history) : (Array.isArray(current?.history) ? clone(current.history) : undefined),
+    wikiUrl: hasWikiUrlOverride ? cleanString(wikiUrl, 2000) : cleanString(current?.wikiUrl, 2000),
   });
 
   if (isEqual(current, next)) {
@@ -89,14 +93,15 @@ function writeNativeCharacterRecord(db = {}, {
   };
 }
 
-function clearNativeCharacterRecord(db = {}, {
-  characterId,
-  label,
-  englishLabel,
-  source = "default",
-  evidence,
-} = {}) {
-  return writeNativeCharacterRecord(db, {
+function clearNativeCharacterRecord(db = {}, options = {}) {
+  const {
+    characterId,
+    label,
+    englishLabel,
+    source = "default",
+    evidence,
+  } = options;
+  const nextOptions = {
     characterId,
     label,
     englishLabel,
@@ -104,7 +109,11 @@ function clearNativeCharacterRecord(db = {}, {
     source,
     verifiedAt: null,
     evidence,
-  });
+  };
+  if (Object.prototype.hasOwnProperty.call(options, "wikiUrl")) {
+    nextOptions.wikiUrl = options.wikiUrl;
+  }
+  return writeNativeCharacterRecord(db, nextOptions);
 }
 
 function buildConfiguredCharacterCatalogView({
@@ -112,6 +121,11 @@ function buildConfiguredCharacterCatalogView({
   resolvedRecords = [],
   excludedCharacterIds = [],
 } = {}) {
+  const rawConfiguredById = new Map(
+    (Array.isArray(configuredCharacters) ? configuredCharacters : [])
+      .map((entry) => [cleanString(entry?.id, 120), entry])
+      .filter(([id]) => Boolean(id))
+  );
   const records = Array.isArray(resolvedRecords)
     ? resolvedRecords
     : (resolvedRecords && typeof resolvedRecords === "object" ? Object.values(resolvedRecords) : []);
@@ -131,6 +145,8 @@ function buildConfiguredCharacterCatalogView({
     .filter((entry) => !excludedIds.has(entry.id))
     .map((entry) => {
       const record = recordById.get(entry.id) || null;
+      const rawConfigured = rawConfiguredById.get(entry.id) || null;
+      const wikiUrl = cleanString(record?.wikiUrl, 2000) || cleanString(rawConfigured?.wikiUrl, 2000);
       return {
         id: entry.id,
         label: cleanString(record?.label, 200) || entry.label,
@@ -139,6 +155,7 @@ function buildConfiguredCharacterCatalogView({
         source: cleanString(record?.source, 40) || (cleanString(entry.roleId, 80) ? "configured" : "default"),
         verifiedAt: cleanString(record?.verifiedAt, 80),
         evidence: record?.evidence,
+        ...(wikiUrl ? { wikiUrl } : {}),
       };
     });
 }

@@ -17,6 +17,8 @@ const ROBLOX_FREQUENT_NON_FRIEND_SESSIONS = 2;
 const ROBLOX_PLAYTIME_BUCKET_LIMIT = 40;
 const ROBLOX_PLAYTIME_HOURLY_BUCKET_LIMIT = ROBLOX_PLAYTIME_BUCKET_LIMIT * 24;
 const PROFILE_PROOF_WINDOW_LIMIT = 10;
+const PROFILE_SEASON_ARCHIVE_LIMIT = 120;
+const PROFILE_SEASON_ARCHIVE_PEER_LIMIT = 10;
 const PROFILE_VOICE_TOP_CHANNEL_LIMIT = 10;
 const PROFILE_SOCIAL_SUGGESTION_LIMIT = 10;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
@@ -42,6 +44,17 @@ function normalizeNullableString(value, limit = 2000) {
 
 function normalizeNullableBoolean(value) {
   return typeof value === "boolean" ? value : null;
+}
+
+function normalizeIsoDayKey(value) {
+  const text = cleanString(value, 20);
+  return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : null;
+}
+
+function deriveIsoDayKey(value) {
+  const text = normalizeNullableString(value, 80);
+  const timestamp = Date.parse(text || "");
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString().slice(0, 10) : null;
 }
 
 function normalizeStringArray(value, limit = 50, itemLimit = 120) {
@@ -202,6 +215,7 @@ function normalizeActivityDomainState(value = {}) {
     roleEligibleForActivityRole: normalizeNullableBoolean(source.roleEligibleForActivityRole),
     desiredActivityRoleKey: normalizeNullableString(source.desiredActivityRoleKey, 80),
     appliedActivityRoleKey: normalizeNullableString(source.appliedActivityRoleKey, 80),
+    firstActivityRoleGrantedAt: normalizeNullableString(source.firstActivityRoleGrantedAt, 80),
     manualOverride: normalizeNullableBoolean(source.manualOverride),
     autoRoleFrozen: normalizeNullableBoolean(source.autoRoleFrozen),
     recalculatedAt: normalizeNullableString(source.recalculatedAt, 80),
@@ -429,6 +443,75 @@ function normalizeProgressDomainState(value = {}) {
 
   return {
     proofWindows: proofWindows.slice(-PROFILE_PROOF_WINDOW_LIMIT),
+  };
+}
+
+function normalizeSeasonArchiveSnapshot(value = {}) {
+  const source = value && typeof value === "object" ? value : {};
+  const dayKey = normalizeIsoDayKey(source.dayKey) || deriveIsoDayKey(source.capturedAt);
+  if (!dayKey) return null;
+
+  return {
+    dayKey,
+    capturedAt: normalizeNullableString(source.capturedAt, 80),
+    approvedKills: normalizeNullableInteger(source.approvedKills, { min: 0 }),
+    killTier: normalizeNullableInteger(source.killTier, { min: 1, max: 5 }),
+    hasAccess: source.hasAccess === true,
+    mainCharacterIds: normalizeStringArray(source.mainCharacterIds, 10, 80),
+    mainCharacterLabels: normalizeStringArray(source.mainCharacterLabels, 10, 120),
+    tierlistMainId: normalizeNullableString(source.tierlistMainId, 80),
+    tierlistMainName: normalizeNullableString(source.tierlistMainName, 120),
+    activityScore: normalizeNullableInteger(source.activityScore, { min: 0 }),
+    messages7d: normalizeNullableInteger(source.messages7d, { min: 0 }),
+    sessions7d: normalizeNullableInteger(source.sessions7d, { min: 0 }),
+    activeDays7d: normalizeNullableInteger(source.activeDays7d, { min: 0 }),
+    daysAbsent: normalizeNullableInteger(source.daysAbsent, { min: 0 }),
+    lastSeenAt: normalizeNullableString(source.lastSeenAt, 80),
+    appliedActivityRoleKey: normalizeNullableString(source.appliedActivityRoleKey, 80),
+    desiredActivityRoleKey: normalizeNullableString(source.desiredActivityRoleKey, 80),
+    hasVerifiedRoblox: source.hasVerifiedRoblox === true,
+    robloxUserId: normalizeNullableString(source.robloxUserId, 40),
+    robloxUsername: normalizeNullableString(source.robloxUsername, 120),
+    totalJjsMinutes: normalizeNonNegativeInteger(source.totalJjsMinutes, 0),
+    jjsMinutes7d: normalizeNonNegativeInteger(source.jjsMinutes7d, 0),
+    jjsMinutes30d: normalizeNonNegativeInteger(source.jjsMinutes30d, 0),
+    dayJjsMinutes: normalizeNonNegativeInteger(source.dayJjsMinutes, 0),
+    hourlyBucketCount: normalizeNonNegativeInteger(source.hourlyBucketCount, 0),
+    sessionCount: normalizeNonNegativeInteger(source.sessionCount, 0),
+    lastSeenInJjsAt: normalizeNullableString(source.lastSeenInJjsAt, 80),
+    serverFriendsCount: normalizeNonNegativeInteger(source.serverFriendsCount, 0),
+    frequentNonFriendCount: normalizeNonNegativeInteger(source.frequentNonFriendCount, 0),
+    topCoPlayPeerUserIds: normalizeStringArray(source.topCoPlayPeerUserIds, PROFILE_SEASON_ARCHIVE_PEER_LIMIT, 80),
+    proofWindowCount: normalizeNonNegativeInteger(source.proofWindowCount, 0),
+    lastProofWindowReviewedAt: normalizeNullableString(source.lastProofWindowReviewedAt, 80),
+    lastProofWindowApprovedKills: normalizeNullableInteger(source.lastProofWindowApprovedKills, { min: 0 }),
+    voiceSessionCount7d: normalizeNonNegativeInteger(source.voiceSessionCount7d, 0),
+    voiceDurationSeconds7d: normalizeNonNegativeInteger(source.voiceDurationSeconds7d, 0),
+    voiceSessionCount30d: normalizeNonNegativeInteger(source.voiceSessionCount30d, 0),
+    voiceDurationSeconds30d: normalizeNonNegativeInteger(source.voiceDurationSeconds30d, 0),
+    lastVoiceSeenAt: normalizeNullableString(source.lastVoiceSeenAt, 80),
+    socialSuggestionCount: normalizeNonNegativeInteger(source.socialSuggestionCount, 0),
+    socialSuggestionPeerUserIds: normalizeStringArray(source.socialSuggestionPeerUserIds, PROFILE_SEASON_ARCHIVE_PEER_LIMIT, 80),
+  };
+}
+
+function normalizeSeasonArchiveDomainState(value = {}) {
+  const source = value && typeof value === "object" ? value : {};
+  const snapshotsByDayKey = new Map();
+
+  for (const entry of Array.isArray(source.snapshots) ? source.snapshots : []) {
+    const normalized = normalizeSeasonArchiveSnapshot(entry);
+    if (!normalized) continue;
+    const current = snapshotsByDayKey.get(normalized.dayKey);
+    if (!current || String(current.capturedAt || "") <= String(normalized.capturedAt || "")) {
+      snapshotsByDayKey.set(normalized.dayKey, normalized);
+    }
+  }
+
+  return {
+    snapshots: [...snapshotsByDayKey.values()]
+      .sort((left, right) => left.dayKey.localeCompare(right.dayKey))
+      .slice(-PROFILE_SEASON_ARCHIVE_LIMIT),
   };
 }
 
@@ -942,6 +1025,51 @@ function normalizeRobloxDomainState(value = {}) {
   };
 }
 
+function getRobloxTrackabilityState(roblox = {}) {
+  const verificationStatus = cleanString(roblox?.verificationStatus, 40).toLowerCase() || "unverified";
+  const userId = cleanString(roblox?.userId, 40);
+  const username = cleanString(roblox?.username, 120);
+
+  if (verificationStatus === "verified") {
+    if (userId) {
+      return "trackable";
+    }
+    if (username) {
+      return "repairable";
+    }
+    return "manual_only";
+  }
+
+  if (verificationStatus === "pending") {
+    return "pending";
+  }
+
+  if (verificationStatus === "failed") {
+    return "failed";
+  }
+
+  return "unverified";
+}
+
+function getRobloxTrackabilityBlocker(roblox = {}, trackabilityState = getRobloxTrackabilityState(roblox)) {
+  if (trackabilityState === "repairable") {
+    return "invalid_user_id";
+  }
+  if (trackabilityState === "manual_only") {
+    return "missing_username";
+  }
+  if (trackabilityState === "pending") {
+    return "pending_verification";
+  }
+  if (trackabilityState === "failed") {
+    return "failed_verification";
+  }
+  if (trackabilityState === "unverified") {
+    return "unverified";
+  }
+  return "none";
+}
+
 function applyRobloxAccountSnapshot(profile = {}, snapshot = {}, options = {}) {
   const targetProfile = profile && typeof profile === "object" ? profile : {};
   const source = snapshot && typeof snapshot === "object" ? snapshot : {};
@@ -1013,6 +1141,7 @@ function buildSharedProfileSummary(profile = {}, domains = {}) {
   const roblox = domains.roblox || normalizeRobloxDomainState(profile?.domains?.roblox || profile);
   const verification = domains.verification || normalizeVerificationDomainState(profile?.domains?.verification || profile?.verification || profile?.summary?.verification);
   const progress = domains.progress || normalizeProgressDomainState(profile?.domains?.progress);
+  const seasonArchive = domains.seasonArchive || normalizeSeasonArchiveDomainState(profile?.domains?.seasonArchive);
   const voice = domains.voice || normalizeVoiceDomainState(profile?.domains?.voice);
   const social = domains.social || normalizeSocialDomainState(profile?.domains?.social);
   const previousUsername = getRobloxPreviousName(roblox.username, roblox.usernameHistory);
@@ -1026,6 +1155,9 @@ function buildSharedProfileSummary(profile = {}, domains = {}) {
     getRobloxLastRenameSeenAt(roblox.username, roblox.usernameHistory),
     getRobloxLastRenameSeenAt(roblox.displayName, roblox.displayNameHistory),
   ]);
+  const robloxTrackingState = getRobloxTrackabilityState(roblox);
+  const robloxTrackingBlocker = getRobloxTrackabilityBlocker(roblox, robloxTrackingState);
+  const robloxIsTrackable = robloxTrackingState === "trackable";
 
   return {
     preferredDisplayName: cleanString(profile.displayName, 200) || cleanString(profile.username, 120) || cleanString(profile.userId, 80),
@@ -1074,13 +1206,17 @@ function buildSharedProfileSummary(profile = {}, domains = {}) {
       roleEligibleForActivityRole: activity.roleEligibleForActivityRole,
       desiredActivityRoleKey: activity.desiredActivityRoleKey,
       appliedActivityRoleKey: activity.appliedActivityRoleKey,
+      firstActivityRoleGrantedAt: activity.firstActivityRoleGrantedAt,
       manualOverride: activity.manualOverride,
       autoRoleFrozen: activity.autoRoleFrozen,
       recalculatedAt: activity.recalculatedAt,
       lastRoleAppliedAt: activity.lastRoleAppliedAt,
     },
     roblox: {
-      hasVerifiedAccount: roblox.verificationStatus === "verified" && Boolean(roblox.userId),
+      hasVerifiedAccount: robloxIsTrackable,
+      isTrackable: robloxIsTrackable,
+      trackingState: robloxTrackingState,
+      trackingBlocker: robloxTrackingBlocker,
       currentUsername: roblox.username,
       currentDisplayName: roblox.displayName,
       username: roblox.username,
@@ -1181,6 +1317,7 @@ function ensureSharedProfile(profile = {}, userId = "", options = {}) {
   const roblox = normalizeRobloxDomainState(source?.domains?.roblox || buildLegacyRobloxSource(source));
   const verification = normalizeVerificationDomainState(source?.domains?.verification || source?.verification || source?.summary?.verification);
   const progress = normalizeProgressDomainState(source?.domains?.progress);
+  const seasonArchive = normalizeSeasonArchiveDomainState(source?.domains?.seasonArchive);
   const voice = hasOwn(options, "voice")
     ? normalizeVoiceDomainState(options.voice)
     : normalizeVoiceDomainState(source?.domains?.voice);
@@ -1214,6 +1351,7 @@ function ensureSharedProfile(profile = {}, userId = "", options = {}) {
       roblox,
       verification,
       progress,
+      seasonArchive,
       voice,
       social,
     },
@@ -1480,7 +1618,10 @@ module.exports = {
   normalizeActivityDomainState,
   normalizeIntegrationState,
   normalizeProgressDomainState,
+  getRobloxTrackabilityBlocker,
+  getRobloxTrackabilityState,
   normalizeRobloxDomainState,
+  normalizeSeasonArchiveDomainState,
   normalizeSocialDomainState,
   normalizeVoiceDomainState,
   syncSharedProfiles,

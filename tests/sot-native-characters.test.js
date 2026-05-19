@@ -12,8 +12,8 @@ const {
 test("buildConfiguredCharacterCatalogView enriches only configured characters from SoT records", () => {
   const result = buildConfiguredCharacterCatalogView({
     configuredCharacters: [
-      { id: "honored_one", label: "Honored One", roleId: "" },
-      { id: "vessel", label: "Vessel", roleId: "" },
+      { id: "honored_one", label: "Honored One", roleId: "", wikiUrl: "https://wiki/honored_one" },
+      { id: "vessel", label: "Vessel", roleId: "", wikiUrl: "https://wiki/vessel-configured" },
     ],
     resolvedRecords: [
       {
@@ -23,6 +23,7 @@ test("buildConfiguredCharacterCatalogView enriches only configured characters fr
         roleId: "role-yuji",
         source: "discovered",
         verifiedAt: "2026-05-04T10:00:00.000Z",
+        wikiUrl: "https://wiki/vessel-resolved",
       },
       {
         id: "manual_only",
@@ -43,6 +44,7 @@ test("buildConfiguredCharacterCatalogView enriches only configured characters fr
       source: "default",
       verifiedAt: "",
       evidence: undefined,
+      wikiUrl: "https://wiki/honored_one",
     },
     {
       id: "vessel",
@@ -52,6 +54,7 @@ test("buildConfiguredCharacterCatalogView enriches only configured characters fr
       source: "discovered",
       verifiedAt: "2026-05-04T10:00:00.000Z",
       evidence: undefined,
+      wikiUrl: "https://wiki/vessel-resolved",
     },
   ]);
 });
@@ -67,11 +70,13 @@ test("writeNativeCharacterRecord stores native-owned character binding in db.sot
     source: "discovered",
     verifiedAt: "2026-05-04T10:00:00.000Z",
     evidence: { overlap: 2 },
+    wikiUrl: "https://wiki/vessel",
   });
 
   assert.equal(result.mutated, true);
   assert.equal(db.sot.characters.vessel.roleId, "role-yuji");
   assert.equal(db.sot.characters.vessel.label, "Юджи");
+  assert.equal(db.sot.characters.vessel.wikiUrl, "https://wiki/vessel");
   assert.deepEqual(db.sot.characters.vessel.evidence, {
     overlap: 2,
     nativeWriter: true,
@@ -87,6 +92,7 @@ test("clearNativeCharacterRecord clears binding but keeps native ownership marke
           id: "vessel",
           label: "Юджи",
           englishLabel: "Vessel",
+          wikiUrl: "https://wiki/vessel",
           roleId: "role-yuji",
           source: "discovered",
           verifiedAt: "2026-05-04T10:00:00.000Z",
@@ -105,6 +111,7 @@ test("clearNativeCharacterRecord clears binding but keeps native ownership marke
   assert.equal(result.mutated, true);
   assert.equal(db.sot.characters.vessel.roleId, "");
   assert.equal(db.sot.characters.vessel.label, "Vessel");
+  assert.equal(db.sot.characters.vessel.wikiUrl, "https://wiki/vessel");
   assert.deepEqual(db.sot.characters.vessel.evidence, {
     nativeWriter: true,
   });

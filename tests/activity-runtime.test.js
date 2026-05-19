@@ -152,6 +152,29 @@ test("recordActivityVoiceState tracks voice lifecycle, active voice time, and st
   assert.equal(dailyRow.sessionsCount, 1);
 });
 
+test("recordActivityVoiceState does not count server-muted time as active voice", () => {
+  const db = {};
+
+  recordActivityVoiceState({
+    db,
+    oldState: { guildId: "guild-1", userId: "user-1", channelId: null },
+    newState: { guildId: "guild-1", userId: "user-1", channelId: "voice-main", selfMute: false, serverMute: true },
+    now: "2026-05-09T12:00:00.000Z",
+  });
+  const leaveResult = recordActivityVoiceState({
+    db,
+    oldState: { guildId: "guild-1", userId: "user-1", channelId: "voice-main", selfMute: false, serverMute: true },
+    newState: { guildId: "guild-1", userId: "user-1", channelId: null },
+    now: "2026-05-09T12:10:00.000Z",
+  });
+
+  assert.equal(leaveResult.action, "leave");
+  assert.equal(leaveResult.session.durationSeconds, 600);
+  assert.equal(leaveResult.session.activeVoiceDurationSeconds, 0);
+  assert.equal(db.sot.activity.userVoiceDailyStats[0].voiceDurationSeconds, 600);
+  assert.equal(db.sot.activity.userVoiceDailyStats[0].activeVoiceDurationSeconds, 0);
+});
+
 test("rebuildActivityUserSnapshot projects open voice sessions into current metrics and score", () => {
   const db = {
     profiles: {
@@ -232,6 +255,7 @@ test("rebuildActivityUserSnapshot computes 7/30/90 metrics and a desired role fr
             trustScore: 540,
             manualOverride: true,
             autoRoleFrozen: true,
+            firstActivityRoleGrantedAt: "2026-05-01T12:00:00.000Z",
           },
         },
       },
@@ -383,6 +407,7 @@ test("rebuildActivityUserSnapshot computes 7/30/90 metrics and a desired role fr
   assert.equal(snapshot.roleEligibleForActivityRole, false);
   assert.equal(snapshot.desiredActivityRoleKey, null);
   assert.equal(snapshot.trustScore, 540);
+  assert.equal(snapshot.firstActivityRoleGrantedAt, "2026-05-01T12:00:00.000Z");
   assert.equal(snapshot.manualOverride, true);
   assert.equal(snapshot.autoRoleFrozen, true);
 });
@@ -690,6 +715,42 @@ test("flushActivityRuntime finalizes stale sessions, keeps fresh sessions open, 
   assert.equal(db.profiles["user-fresh"].domains.activity.messages30d, 1);
   assert.equal(db.profiles["user-fresh"].summary.activity.sessions30d, 1);
   assert.equal(db.sot.activity.runtime.lastFlushAt, "2026-05-09T12:50:00.000Z");
+});
+
+test("flushActivityRuntime refreshes open voice session snapshots across repeated flushes", async () => {
+  const db = {
+    profiles: {
+      "user-voice": { userId: "user-voice", username: "voice" },
+    },
+  };
+
+  recordActivityVoiceState({
+    db,
+    oldState: { guildId: "guild-1", userId: "user-voice", channelId: null },
+    newState: { guildId: "guild-1", userId: "user-voice", channelId: "voice-main", selfMute: false },
+    now: "2026-05-09T12:00:00.000Z",
+  });
+
+  const firstFlush = await flushActivityRuntime({
+    db,
+    now: "2026-05-09T12:10:00.000Z",
+  });
+
+  assert.equal(firstFlush.rebuiltUserCount, 1);
+  assert.equal(db.sot.activity.userSnapshots["user-voice"].voiceDurationSeconds30d, 600);
+  assert.equal(db.sot.activity.userSnapshots["user-voice"].activeVoiceDurationSeconds30d, 600);
+  assert.equal(db.sot.activity.userSnapshots["user-voice"].lastSeenAt, "2026-05-09T12:10:00.000Z");
+
+  const secondFlush = await flushActivityRuntime({
+    db,
+    now: "2026-05-09T12:40:00.000Z",
+  });
+
+  assert.equal(secondFlush.rebuiltUserCount, 1);
+  assert.equal(db.sot.activity.userSnapshots["user-voice"].voiceDurationSeconds30d, 2400);
+  assert.equal(db.sot.activity.userSnapshots["user-voice"].activeVoiceDurationSeconds30d, 2400);
+  assert.equal(db.sot.activity.userSnapshots["user-voice"].lastSeenAt, "2026-05-09T12:40:00.000Z");
+  assert.equal(Boolean(db.sot.activity.runtime.openVoiceSessions["user-voice"]), true);
 });
 
 test("flushActivityRuntime records member metadata lookup failures and keeps unknown join age role-safe", async () => {

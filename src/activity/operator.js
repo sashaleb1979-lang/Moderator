@@ -99,7 +99,9 @@ const ACTIVITY_PANEL_BUTTON_IDS = Object.freeze([
     ]);
 
     const ACTIVITY_ROLE_MAPPING_PRIMARY_KEYS = Object.freeze(["core", "stable", "active"]);
-    const ACTIVITY_ROLE_MAPPING_SECONDARY_KEYS = Object.freeze(["floating", "weak", "dead"]);
+    const ACTIVITY_ROLE_MAPPING_SECONDARY_KEYS = Object.freeze(["floating", "weak", "newcomer", "dead"]);
+    const ACTIVITY_FIRST_RANK_ROLE_KEYS = new Set(["weak", "floating", "active", "stable", "core"]);
+    const ACTIVITY_NEWCOMER_ROLE_KEY = "newcomer";
     const ACTIVE_HISTORICAL_IMPORTS = new WeakSet();
 
     function clone(value) {
@@ -241,6 +243,54 @@ const ACTIVITY_PANEL_BUTTON_IDS = Object.freeze([
 
     function listActivityManagedRoleIds(config = {}) {
       return normalizeStringArray(Object.values(config.activityRoleIds || {}));
+    }
+
+    function isFirstActivityRankRoleKey(roleKey = "") {
+      return ACTIVITY_FIRST_RANK_ROLE_KEYS.has(cleanString(roleKey, 80));
+    }
+
+    function shouldUseNewcomerActivityRole({
+      activity = {},
+      config = {},
+      desiredRoleKey = null,
+      roleEligibilityStatus = null,
+      roleEligibleForActivityRole = false,
+    } = {}) {
+      if (isFirstActivityRankRoleKey(desiredRoleKey)) {
+        return false;
+      }
+
+      if (normalizeIsoTimestamp(activity.firstActivityRoleGrantedAt, null)) {
+        return false;
+      }
+
+      if (roleEligibilityStatus === "join_age_unknown") {
+        return false;
+      }
+
+      const rawDaysSinceGuildJoin = activity.daysSinceGuildJoin;
+      if (rawDaysSinceGuildJoin === null || rawDaysSinceGuildJoin === undefined || rawDaysSinceGuildJoin === "") {
+        return false;
+      }
+
+      const daysSinceGuildJoin = Number(rawDaysSinceGuildJoin);
+      if (!Number.isFinite(daysSinceGuildJoin) || daysSinceGuildJoin < 0) {
+        return false;
+      }
+
+      const newcomerRoleMaxMemberDays = Math.max(
+        0,
+        Number(config.newcomerRoleMaxMemberDays ?? config.roleBoostEndMemberDays ?? 7) || 0
+      );
+      if (daysSinceGuildJoin >= newcomerRoleMaxMemberDays) {
+        return false;
+      }
+
+      if (roleEligibilityStatus === "gated_new_member") {
+        return true;
+      }
+
+      return roleEligibleForActivityRole === true;
     }
 
     function formatRoleIdPreview(roleId) {
@@ -895,8 +945,13 @@ function syncAppliedActivityRoleMetadata(db, userId, { appliedActivityRoleKey, l
   const nextActivity = nextProfile.domains.activity && typeof nextProfile.domains.activity === "object"
     ? clone(nextProfile.domains.activity)
     : {};
-  nextActivity.appliedActivityRoleKey = normalizeNullableString(appliedActivityRoleKey, 80);
-  nextActivity.lastRoleAppliedAt = normalizeIsoTimestamp(lastRoleAppliedAt, null);
+  const normalizedAppliedActivityRoleKey = normalizeNullableString(appliedActivityRoleKey, 80);
+  const normalizedLastRoleAppliedAt = normalizeIsoTimestamp(lastRoleAppliedAt, null);
+  const existingFirstActivityRoleGrantedAt = normalizeIsoTimestamp(nextActivity.firstActivityRoleGrantedAt, null);
+  nextActivity.appliedActivityRoleKey = normalizedAppliedActivityRoleKey;
+  nextActivity.lastRoleAppliedAt = normalizedLastRoleAppliedAt;
+  nextActivity.firstActivityRoleGrantedAt = existingFirstActivityRoleGrantedAt
+    || (isFirstActivityRankRoleKey(normalizedAppliedActivityRoleKey) ? normalizedLastRoleAppliedAt : null);
   nextProfile.domains.activity = nextActivity;
   db.profiles[userId] = ensureSharedProfile(nextProfile, userId).profile;
 
@@ -906,6 +961,7 @@ function syncAppliedActivityRoleMetadata(db, userId, { appliedActivityRoleKey, l
       ...state.userSnapshots[userId],
       appliedActivityRoleKey: nextActivity.appliedActivityRoleKey,
       lastRoleAppliedAt: nextActivity.lastRoleAppliedAt,
+      firstActivityRoleGrantedAt: nextActivity.firstActivityRoleGrantedAt,
     };
   }
 
@@ -951,7 +1007,10 @@ function buildActivityUserInspectionPayload({ db = {}, userId = "", memberRoleId
     || cleanString(profile.username, 120)
     || inspection.userId
     || "unknown";
-  const desiredRoleKey = cleanString(snapshot?.desiredActivityRoleKey, 80) || "—";
+  const scoreDesiredRoleKey = cleanString(snapshot?.desiredActivityRoleKey, 80) || "—";
+  const effectiveRoleKey = cleanString(inspection.roleAssignmentPlan?.desiredRoleKey, 80)
+    || cleanString(snapshot?.desiredActivityRoleKey, 80)
+    || "—";
   const appliedRoleKey = cleanString(snapshot?.appliedActivityRoleKey, 80) || "—";
   const roleEligibilityStatus = cleanString(snapshot?.roleEligibilityStatus, 80) || "—";
   const summaryEmbed = new EmbedBuilder()
@@ -974,7 +1033,8 @@ function buildActivityUserInspectionPayload({ db = {}, userId = "", memberRoleId
       {
         name: "Роль и доступность sync",
         value: [
-          `Желаемый tier: **${desiredRoleKey}**`,
+          `Эффективная managed-role: **${effectiveRoleKey}**`,
+          `Score tier: **${scoreDesiredRoleKey}**`,
           `Последний applied tier: **${appliedRoleKey}**`,
           `Eligibility: **${roleEligibilityStatus}**`,
           `Можно full rebuild+sync: **${inspection.visibility.canRunRebuildAndSync ? "да" : "нет"}**`,
@@ -1632,6 +1692,7 @@ function buildActivityOperatorPanelPayload({
       buildActivityPanelField("Правила", [
         `Роль можно выдавать после **${Number(config.roleEligibilityMinMemberDays || 0)}** дней на сервере`,
         `Буст новичка: **x${roleBoostMaxMultiplier.toFixed(2)}** -> x1.00 к дню **${Number(config.roleBoostEndMemberDays || 0)}**`,
+        `Окно роли newcomer: до **${Number(config.newcomerRoleMaxMemberDays || 0)}** дней без первого activity-ранга`,
         `Snapshots под gate/boost: **${gatedSnapshotCount}** / **${boostedSnapshotCount}**`,
       ], true),
       buildActivityPanelField("Контур выдачи", [
@@ -1886,13 +1947,22 @@ function buildActivityRoleAssignmentPlan({ db = {}, userId = "", memberRoleIds =
   const config = state.config || {};
   const profile = ensureProfileRecord(db, normalizedUserId);
   const activity = resolveActivityRolePlanSource(state, profile, normalizedUserId);
-  const desiredRoleKey = normalizeNullableString(activity.desiredActivityRoleKey, 80);
-  const desiredRoleId = desiredRoleKey
-    ? normalizeNullableString(config.activityRoleIds?.[desiredRoleKey], 80)
-    : null;
+  const scoreDesiredRoleKey = normalizeNullableString(activity.desiredActivityRoleKey, 80);
   const roleEligibilityStatus = cleanString(activity.roleEligibilityStatus, 80) || null;
   const roleEligibleForActivityRole = activity.roleEligibleForActivityRole !== false
     && roleEligibilityStatus !== "gated_new_member";
+  const desiredRoleKey = shouldUseNewcomerActivityRole({
+    activity,
+    config,
+    desiredRoleKey: scoreDesiredRoleKey,
+    roleEligibilityStatus,
+    roleEligibleForActivityRole,
+  })
+    ? ACTIVITY_NEWCOMER_ROLE_KEY
+    : scoreDesiredRoleKey;
+  const desiredRoleId = desiredRoleKey
+    ? normalizeNullableString(config.activityRoleIds?.[desiredRoleKey], 80)
+    : null;
   const normalizedMemberRoleIds = normalizeStringArray(memberRoleIds, 5000);
   const managedRoleIds = listActivityManagedRoleIds(config);
 
@@ -1921,6 +1991,58 @@ function buildActivityRoleAssignmentPlan({ db = {}, userId = "", memberRoleIds =
   }
 
   if (!roleEligibleForActivityRole) {
+    if (desiredRoleKey === ACTIVITY_NEWCOMER_ROLE_KEY) {
+      const addRoleIds = desiredRoleId && !normalizedMemberRoleIds.includes(desiredRoleId) ? [desiredRoleId] : [];
+      const removeRoleIds = managedRoleIds.filter((roleId) => roleId !== desiredRoleId && normalizedMemberRoleIds.includes(roleId));
+      const metadataAlreadySynced = cleanString(activity.appliedActivityRoleKey, 80) === desiredRoleKey;
+
+      if (!desiredRoleId) {
+        if (!removeRoleIds.length) {
+          return {
+            userId: normalizedUserId,
+            shouldApply: false,
+            skipReason: "missing_role_mapping",
+            desiredRoleKey,
+            desiredRoleId: null,
+            addRoleIds: [],
+            removeRoleIds: [],
+          };
+        }
+
+        return {
+          userId: normalizedUserId,
+          shouldApply: true,
+          skipReason: null,
+          desiredRoleKey,
+          desiredRoleId: null,
+          addRoleIds: [],
+          removeRoleIds,
+        };
+      }
+
+      if (!addRoleIds.length && !removeRoleIds.length && metadataAlreadySynced) {
+        return {
+          userId: normalizedUserId,
+          shouldApply: false,
+          skipReason: "unchanged",
+          desiredRoleKey,
+          desiredRoleId,
+          addRoleIds: [],
+          removeRoleIds: [],
+        };
+      }
+
+      return {
+        userId: normalizedUserId,
+        shouldApply: true,
+        skipReason: null,
+        desiredRoleKey,
+        desiredRoleId,
+        addRoleIds,
+        removeRoleIds,
+      };
+    }
+
     const removeRoleIds = managedRoleIds.filter((roleId) => normalizedMemberRoleIds.includes(roleId));
     if (!removeRoleIds.length) {
       return {
@@ -2078,7 +2200,7 @@ async function applyInitialActivityRoleAssignments({
       }
 
       syncAppliedActivityRoleMetadata(db, userId, {
-        appliedActivityRoleKey: plan.desiredRoleKey,
+        appliedActivityRoleKey: plan.desiredRoleId ? plan.desiredRoleKey : null,
         lastRoleAppliedAt: appliedAt,
       });
       appliedUserIds.push(userId);

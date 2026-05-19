@@ -6,7 +6,11 @@ const {
   ButtonStyle,
   EmbedBuilder,
 } = require("discord.js");
-const { ensureSharedProfile } = require("./shared-profile");
+const {
+  ensureSharedProfile,
+  getRobloxTrackabilityBlocker,
+  getRobloxTrackabilityState,
+} = require("./shared-profile");
 
 const ROBLOX_PANEL_TOP_LIMIT = 5;
 const ROBLOX_PANEL_ISSUE_LIMIT = 4;
@@ -352,25 +356,6 @@ function getRobloxEntryPriority(entry = {}, options = {}) {
   return score;
 }
 
-function getRobloxTrackingState(entry = {}) {
-  if (entry.verificationStatus === "verified") {
-    if (entry.robloxUserId) {
-      return "trackable";
-    }
-    if (entry.robloxUsername) {
-      return "repairable";
-    }
-    return "manual_only";
-  }
-  if (entry.verificationStatus === "pending") {
-    return "pending";
-  }
-  if (entry.verificationStatus === "failed") {
-    return "failed";
-  }
-  return "unverified";
-}
-
 function getRobloxActivityState(entry = {}) {
   if (entry.trackingState !== "trackable") {
     return null;
@@ -387,26 +372,6 @@ function getRobloxActivityState(entry = {}) {
   return "never_seen";
 }
 
-function getRobloxTrackingBlocker(entry = {}, options = {}) {
-  const showRefreshDiagnostics = options.showRefreshDiagnostics !== false;
-  if (entry.verificationStatus !== "verified") {
-    return "none";
-  }
-  if (!entry.robloxUserId) {
-    return entry.robloxUsername ? "invalid_user_id" : "missing_username";
-  }
-  if (showRefreshDiagnostics && entry.refreshError) {
-    return "refresh_error";
-  }
-  if (showRefreshDiagnostics && !entry.lastRefreshAt) {
-    return "never_refreshed";
-  }
-  if (!entry.isActiveInRuntime && !entry.currentSessionStartedAt && !entry.lastSeenInJjsAt && normalizeNonNegativeInteger(entry.totalJjsMinutes, 0) === 0) {
-    return "zero_minutes";
-  }
-  return "none";
-}
-
 function collectRobloxPanelEntries(db = {}, runtimeState = {}, options = {}) {
   const showRefreshDiagnostics = options.showRefreshDiagnostics !== false;
   return Object.entries(db?.profiles || {})
@@ -416,6 +381,9 @@ function collectRobloxPanelEntries(db = {}, runtimeState = {}, options = {}) {
       if (!shouldIncludeRobloxEntry(summary)) {
         return null;
       }
+
+      const trackingState = cleanString(summary.trackingState, 40) || getRobloxTrackabilityState(summary);
+      const trackingBlocker = cleanString(summary.trackingBlocker, 40) || getRobloxTrackabilityBlocker(summary, trackingState);
 
       const runtimeSession = runtimeState?.activeSessionsByDiscordUserId?.[userId] || null;
       const entry = {
@@ -434,10 +402,10 @@ function collectRobloxPanelEntries(db = {}, runtimeState = {}, options = {}) {
         lastSeenInJjsAt: cleanString(summary.lastSeenInJjsAt, 80) || null,
         dirtyRuntime: hasRuntimeDirtyUser(runtimeState, userId),
         isActiveInRuntime: Boolean(runtimeSession),
+        trackingState,
+        trackingBlocker,
       };
-      entry.trackingState = getRobloxTrackingState(entry);
       entry.activityState = getRobloxActivityState(entry);
-      entry.trackingBlocker = getRobloxTrackingBlocker(entry, { showRefreshDiagnostics });
       entry.note = buildRobloxEntryNote(entry, { showRefreshDiagnostics });
       entry.displayReason = entry.note;
       entry.priorityScore = getRobloxEntryPriority(entry, { showRefreshDiagnostics });

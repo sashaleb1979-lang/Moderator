@@ -367,6 +367,9 @@ function resolveCharacterRecord({ characterId, db = {}, appConfig = {}, managedC
     ? selectedCandidate.evidence
     : fallbackIdentity.evidence;
   const verifiedAt = selectedCandidate?.verifiedAt || null;
+  const wikiUrl = cleanString(persisted?.wikiUrl, 2000)
+    || cleanString(catalogEntry?.wikiUrl, 2000)
+    || null;
 
   return createCharacterRecord({
     id,
@@ -376,6 +379,7 @@ function resolveCharacterRecord({ characterId, db = {}, appConfig = {}, managedC
     source,
     verifiedAt,
     evidence,
+    wikiUrl,
   });
 }
 

@@ -288,6 +288,7 @@ function resolveActivityUserInspectionDiagnosis({
 } = {}) {
   const roleEligibilityStatus = cleanString(snapshot?.roleEligibilityStatus, 80) || null;
   const desiredRoleKey = cleanString(snapshot?.desiredActivityRoleKey, 80) || null;
+  const effectiveDesiredRoleKey = cleanString(roleAssignmentPlan?.desiredRoleKey, 80) || desiredRoleKey;
 
   if (!snapshot && !hasLocalHistory) {
     return {
@@ -310,8 +311,8 @@ function resolveActivityUserInspectionDiagnosis({
   if (roleEligibilityStatus === "gated_new_member") {
     return {
       statusCode: "gated_new_member",
-      summary: "Пользователь младше порога и пока не может получить activity-роль.",
-      recommendedAction: "Ждать окончания gate; импорт или sync это правило не обойдут.",
+      summary: "Пользователь младше порога и остаётся в newcomer-окне до первого activity-ранга.",
+      recommendedAction: "Ждать окончания gate или первого scored rank-а; import/sync это окно не обойдут, но newcomer-роль может выдаться автоматически.",
     };
   }
 
@@ -353,6 +354,32 @@ function resolveActivityUserInspectionDiagnosis({
       summary: "Есть сохранённый snapshot, но нет локальной history-базы для полного пересчёта.",
       recommendedAction: "Если snapshot актуален, можно использовать roles-only sync. Для rebuild+sync нужен импорт истории.",
     };
+  }
+
+  if (effectiveDesiredRoleKey === "newcomer") {
+    if (roleAssignmentPlan?.skipReason === "missing_role_mapping") {
+      return {
+        statusCode: "missing_role_mapping",
+        summary: "Пользователь остаётся в newcomer-окне, но newcomer Discord-роль не привязана в Activity config.",
+        recommendedAction: "Заполни newcomer role mapping и затем повтори выдачу ролей.",
+      };
+    }
+
+    if (roleAssignmentPlan?.skipReason === "unchanged") {
+      return {
+        statusCode: "role_synced",
+        summary: "Newcomer-роль уже соответствует текущему окну участника.",
+        recommendedAction: "Ничего делать не нужно.",
+      };
+    }
+
+    if (roleAssignmentPlan?.shouldApply) {
+      return {
+        statusCode: "ready_to_apply",
+        summary: "Данные выглядят валидно, newcomer-роль можно применить прямо сейчас.",
+        recommendedAction: "Используй roles-only sync для быстрой выдачи newcomer-роли или полный пересчёт, если данные могли устареть.",
+      };
+    }
   }
 
   if (desiredRoleKey === "dead") {

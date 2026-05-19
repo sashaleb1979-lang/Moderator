@@ -38,7 +38,20 @@ test("profile viewer server tag resolves only for enabled guild identities", () 
 test("dead requester detection uses desired and applied activity dead buckets", () => {
   assert.equal(isProfileRequesterDead({ domains: { activity: { desiredActivityRoleKey: "dead" } } }), true);
   assert.equal(isProfileRequesterDead({ domains: { activity: { appliedActivityRoleKey: "dead" } } }), true);
+  assert.equal(isProfileRequesterDead({ domains: { activity: { desiredActivityRoleKey: "dead", appliedActivityRoleKey: "newcomer" } } }), false);
   assert.equal(isProfileRequesterDead({ domains: { activity: { desiredActivityRoleKey: "active" } } }), false);
+});
+
+test("boosted newcomer requester is not denied as dead when newcomer role is already applied", () => {
+  const access = resolveProfileAccess({
+    requesterProfile: { domains: { activity: { desiredActivityRoleKey: "dead", appliedActivityRoleKey: "newcomer" } } },
+    requesterMember: makeMember(makePrimaryGuild("TAG")),
+    requesterUserId: "requester",
+    targetUserId: "requester",
+  });
+
+  assert.equal(access.allowed, true);
+  assert.equal(access.isDeadRequester, false);
 });
 
 test("dead requester is denied both self and target profile access", () => {

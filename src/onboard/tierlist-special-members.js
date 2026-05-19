@@ -74,18 +74,6 @@ function applyTierlistSpecialMembers(entries = [], options = {}) {
           : Number(entry?.displayTier ?? entry?.killTier ?? entry?.tier) || null,
         isNonFakeTierMember,
       };
-    })
-    .sort((left, right) => {
-      if (Boolean(left.isNonFakeTierMember) !== Boolean(right.isNonFakeTierMember)) {
-        return Number(Boolean(left.isNonFakeTierMember)) - Number(Boolean(right.isNonFakeTierMember));
-      }
-
-      const leftKills = Number(left?.approvedKills) || 0;
-      const rightKills = Number(right?.approvedKills) || 0;
-      if (rightKills !== leftKills) return rightKills - leftKills;
-
-      return String(left?.displayName || left?.name || left?.userId || "")
-        .localeCompare(String(right?.displayName || right?.name || right?.userId || ""), "ru");
     });
 }
 

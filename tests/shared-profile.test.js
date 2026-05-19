@@ -15,6 +15,7 @@ const {
   normalizeIntegrationState,
   normalizeProgressDomainState,
   normalizeRobloxDomainState,
+  normalizeSeasonArchiveDomainState,
   syncSharedProfiles,
 } = require("../src/integrations/shared-profile");
 
@@ -853,6 +854,66 @@ test("ensureSharedProfile summary exposes rename, server friend, and frequent no
   assert.equal(result.profile.summary.roblox.topCoPlayPeers[2].isFrequentNonFriend, false);
 });
 
+test("ensureSharedProfile summary exposes Roblox trackability state and blocker", () => {
+  const trackable = ensureSharedProfile({
+    userId: "trackable-user",
+    domains: {
+      roblox: {
+        username: "TrackableRb",
+        userId: "123",
+        verificationStatus: "verified",
+      },
+    },
+  }, "trackable-user").profile;
+
+  const repairable = ensureSharedProfile({
+    userId: "repairable-user",
+    domains: {
+      roblox: {
+        username: "RepairableRb",
+        verificationStatus: "verified",
+      },
+    },
+  }, "repairable-user").profile;
+
+  const manualOnly = ensureSharedProfile({
+    userId: "manual-only-user",
+    domains: {
+      roblox: {
+        verificationStatus: "verified",
+      },
+    },
+  }, "manual-only-user").profile;
+
+  const pending = ensureSharedProfile({
+    userId: "pending-user",
+    domains: {
+      roblox: {
+        username: "PendingRb",
+        verificationStatus: "pending",
+      },
+    },
+  }, "pending-user").profile;
+
+  assert.equal(trackable.summary.roblox.isTrackable, true);
+  assert.equal(trackable.summary.roblox.trackingState, "trackable");
+  assert.equal(trackable.summary.roblox.trackingBlocker, "none");
+  assert.equal(trackable.summary.roblox.hasVerifiedAccount, true);
+
+  assert.equal(repairable.summary.roblox.isTrackable, false);
+  assert.equal(repairable.summary.roblox.trackingState, "repairable");
+  assert.equal(repairable.summary.roblox.trackingBlocker, "invalid_user_id");
+  assert.equal(repairable.summary.roblox.hasVerifiedAccount, false);
+
+  assert.equal(manualOnly.summary.roblox.isTrackable, false);
+  assert.equal(manualOnly.summary.roblox.trackingState, "manual_only");
+  assert.equal(manualOnly.summary.roblox.trackingBlocker, "missing_username");
+
+  assert.equal(pending.summary.roblox.isTrackable, false);
+  assert.equal(pending.summary.roblox.trackingState, "pending");
+  assert.equal(pending.summary.roblox.trackingBlocker, "pending_verification");
+});
+
 test("ensureSharedProfile preserves verification domain and derives verification summary", () => {
   const result = ensureSharedProfile({
     userId: "verify-100",
@@ -1098,4 +1159,39 @@ test("normalizeProgressDomainState dedupes proof windows and keeps the latest va
   });
   assert.equal(normalized.proofWindows[1].approvedKills, 4320);
   assert.equal(normalized.proofWindows[1].playtimeTracked, false);
+});
+
+test("normalizeSeasonArchiveDomainState dedupes by day and keeps the latest valid snapshot", () => {
+  const normalized = normalizeSeasonArchiveDomainState({
+    snapshots: [
+      {
+        dayKey: "2026-05-18",
+        capturedAt: "2026-05-18T10:00:00.000Z",
+        approvedKills: 4000,
+        topCoPlayPeerUserIds: ["peer-2", "peer-1"],
+      },
+      {
+        dayKey: "2026-05-18",
+        capturedAt: "2026-05-18T12:00:00.000Z",
+        approvedKills: 4050,
+        topCoPlayPeerUserIds: ["peer-1", "peer-1", "peer-3"],
+      },
+      {
+        capturedAt: "2026-05-19T12:00:00.000Z",
+        approvedKills: 4320,
+        socialSuggestionPeerUserIds: ["peer-4", "peer-4", "peer-5"],
+      },
+      {
+        approvedKills: 9999,
+      },
+    ],
+  });
+
+  assert.equal(normalized.snapshots.length, 2);
+  assert.equal(normalized.snapshots[0].dayKey, "2026-05-18");
+  assert.equal(normalized.snapshots[0].approvedKills, 4050);
+  assert.deepEqual(normalized.snapshots[0].topCoPlayPeerUserIds, ["peer-1", "peer-3"]);
+  assert.equal(normalized.snapshots[1].dayKey, "2026-05-19");
+  assert.equal(normalized.snapshots[1].approvedKills, 4320);
+  assert.deepEqual(normalized.snapshots[1].socialSuggestionPeerUserIds, ["peer-4", "peer-5"]);
 });
