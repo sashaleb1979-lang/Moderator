@@ -27,12 +27,16 @@ const {
   diagnosePanels: diagnoseSotPanels,
   diagnoseRoles: diagnoseSotRoles,
 } = require("./src/sot/diagnostics");
-const { compareSotVsLegacy } = require("./src/sot/legacy-bridge/compare");
+const {
+  compareSotVsLegacy,
+  summarizeCompareMismatches,
+} = require("./src/sot/legacy-bridge/compare");
 const {
   syncLegacyGraphicTierlistBoardSnapshot,
   syncLegacyPanelSnapshot,
   syncLegacyTextTierlistBoardSnapshot,
 } = require("./src/sot/legacy-bridge/panels");
+const { getSotReportIntegrationSnapshots } = require("./src/sot/report-integrations");
 const {
   syncLegacyCharacterWrites,
   syncLegacyChannelWrites,
@@ -48,6 +52,16 @@ const {
   clearNativeCharacterRecord,
   writeNativeCharacterRecord,
 } = require("./src/sot/native-characters");
+const {
+  clearNativePanelRecord,
+  normalizePanelSlot: normalizeNativePanelSlot,
+  writeNativePanelRecord,
+} = require("./src/sot/native-panels");
+const {
+  clearNativeRoleRecord,
+  normalizeRoleSlot: normalizeNativeRoleSlot,
+  writeNativeRoleRecord,
+} = require("./src/sot/native-roles");
 const {
   clearNativeIntegrationSourcePath,
   writeNativeIntegrationRoleGrantEnabled,
@@ -65,7 +79,6 @@ const {
   handleSotReportModalSubmitInteraction,
 } = require("./src/sot/report-operator");
 const {
-  clearNativeRoleRecord,
   normalizeComboGuideEditorRoleIds,
 } = require("./src/combo-guide/editor");
 const {
@@ -10482,6 +10495,7 @@ const SOT_REPORT_ROLE_LABELS = {
   accessNormal: "Access normal",
   accessWartime: "Access wartime",
   accessNonJjs: "Access nonJJS",
+  accessCompanion: "Access companion",
   "killTier.1": "Kill tier 1",
   "killTier.2": "Kill tier 2",
   "killTier.3": "Kill tier 3",
