@@ -17,6 +17,7 @@ const {
   buildRobloxUsernameModal,
   buildStartPanelPayload,
   buildStartGuidePayload,
+  buildSupportProgressPayload,
   buildThreadName,
   buildThreadPanelPayload,
   buildTicketPublicPayload,
@@ -25,6 +26,7 @@ const {
   ticketButtonId,
 } = require("../src/antiteam/view");
 const { normalizeAntiteamState } = require("../src/antiteam/state");
+const { getSupportProgressModel } = require("../src/antiteam/support-progress");
 
 function payloadJson(payload) {
   return JSON.stringify(payload.components.map((component) => component.toJSON()));
@@ -48,8 +50,31 @@ test("start panel is Components V2 and exposes submit button", () => {
   assert.match(payloadJson(payload), /Создать антитим/);
   assert.match(payloadJson(payload), /На помощь пингуется роль/);
   assert.doesNotMatch(payloadJson(payload), /Батальён:/);
+  assert.ok(payloadJson(payload).indexOf(ANTITEAM_CUSTOM_IDS.progress) < payloadJson(payload).indexOf(ANTITEAM_CUSTOM_IDS.guide));
+  assert.match(payloadJson(payload), /Мой прогресс/);
   assert.match(payloadJson(payload), new RegExp(ANTITEAM_CUSTOM_IDS.guide.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   assert.match(payloadJson(payload), new RegExp(ANTITEAM_CUSTOM_IDS.open.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+});
+
+test("support progress payload renders personal level card attachment", () => {
+  const zero = getSupportProgressModel(0);
+  const middle = getSupportProgressModel(7);
+  const max = getSupportProgressModel(55);
+  const payload = buildSupportProgressPayload(middle, { attachmentName: "progress.png" });
+  const json = payloadJson(payload);
+
+  assert.equal(zero.title, "Саппорт Ⅰ ур.");
+  assert.equal(zero.remaining, 1);
+  assert.equal(middle.title, "Саппорт Ⅱ ур.");
+  assert.equal(middle.next.label, "Саппорт Ⅲ ур.");
+  assert.equal(middle.remaining, 3);
+  assert.equal(max.title, "Саппорт Ⅴ ур.");
+  assert.equal(max.isMaxLevel, true);
+  assert.equal(payload.flags, MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral);
+  assert.match(json, /Прогресс помощи/);
+  assert.match(json, /Саппорт Ⅱ ур\./);
+  assert.match(json, /До Саппорт Ⅲ ур\.: 3 помощи/);
+  assert.match(json, /attachment:\/\/progress\.png/);
 });
 
 test("start guide and panel text modal expose polished setup copy", () => {

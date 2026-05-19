@@ -25,11 +25,16 @@ const {
   normalizeAntiteamCount,
   normalizeAntiteamLevel,
 } = require("./state");
+const {
+  SUPPORT_PROGRESS_LEVELS,
+  getSupportProgressModel,
+} = require("./support-progress");
 
 const ANTITEAM_COMMAND_NAME = "антитим";
 
 const ANTITEAM_CUSTOM_IDS = Object.freeze({
   open: "at:open",
+  progress: "at:progress",
   guide: "at:guide",
   requestRobloxNick: "at:roblox:request",
   confirmRoblox: "at:roblox:confirm",
@@ -210,6 +215,10 @@ function buildStartPanelPayload(config = createDefaultAntiteamConfig()) {
           .setLabel(panel.buttonLabel)
           .setStyle(ButtonStyle.Danger),
         new ButtonBuilder()
+          .setCustomId(ANTITEAM_CUSTOM_IDS.progress)
+          .setLabel("🛡️ Мой прогресс")
+          .setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder()
           .setCustomId(ANTITEAM_CUSTOM_IDS.guide)
           .setLabel(panel.guideButtonLabel)
           .setStyle(ButtonStyle.Secondary)
@@ -217,6 +226,36 @@ function buildStartPanelPayload(config = createDefaultAntiteamConfig()) {
     );
 
   return buildPayload(container);
+}
+
+function buildSupportProgressPayload(modelInput = {}, { attachmentName = "antiteam-support-progress.png" } = {}) {
+  const model = modelInput?.displayLevel ? modelInput : getSupportProgressModel(modelInput?.points || 0);
+  const accentColor = Number.isSafeInteger(model.displayLevel?.accentColor)
+    ? model.displayLevel.accentColor
+    : 0xE53935;
+  const container = new ContainerBuilder()
+    .setAccentColor(accentColor)
+    .addTextDisplayComponents(
+      new TextDisplayBuilder().setContent("# 🛡️ Прогресс помощи"),
+      new TextDisplayBuilder().setContent([
+        `**${model.title}** • ${model.pointsText}`,
+        model.nextText,
+        model.displayLevel?.description || "",
+      ].filter(Boolean).join("\n"))
+    )
+    .addMediaGalleryComponents(
+      new MediaGalleryBuilder().addItems(
+        new MediaGalleryItemBuilder()
+          .setURL(`attachment://${cleanString(attachmentName, 180) || "antiteam-support-progress.png"}`)
+      )
+    )
+    .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(
+      SUPPORT_PROGRESS_LEVELS
+        .map((level) => `${model.points >= level.threshold ? "●" : "○"} ${level.label}: ${level.threshold}+`)
+        .join("   ")
+    ));
+  return buildPayload(container, { ephemeral: true });
 }
 
 function buildStartGuidePayload(config = createDefaultAntiteamConfig()) {
@@ -1220,6 +1259,7 @@ module.exports = {
   buildRobloxMissingPayload,
   buildRobloxUsernameModal,
   buildStartPanelPayload,
+  buildSupportProgressPayload,
   buildStartGuidePayload,
   buildThreadName,
   buildThreadPanelPayload,
@@ -1230,5 +1270,6 @@ module.exports = {
   formatChannelMention,
   formatRoleMention,
   getLevelMeta,
+  SUPPORT_PROGRESS_LEVELS,
   ticketButtonId,
 };
