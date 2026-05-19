@@ -37,35 +37,56 @@ const BOT_HELPER_PANEL_REQUIRED_CUSTOM_IDS = Object.freeze([
 ]);
 
 function buildBotHelperPanelPayload() {
+  const embed = new EmbedBuilder()
+    .setColor(0x5865F2)
+    .setTitle("Bot Chat Helper • быстрые действия")
+    .setDescription([
+      "**Всё для заявок и профиля в одном месте.**",
+      "Выбери нужное действие кнопкой ниже — бот откроет форму без команд.",
+    ].join("\n"))
+    .addFields(
+      {
+        name: "Заявки",
+        value: [
+          "`Kills` — отправить статистику",
+          "`ELO` — подать рейтинг",
+        ].join("\n"),
+        inline: true,
+      },
+      {
+        name: "Профиль",
+        value: [
+          "`Roblox` — привязать аккаунт",
+          "`Персонажи` — обновить мейнов",
+        ].join("\n"),
+        inline: true,
+      }
+    )
+    .setFooter({ text: "Нажми кнопку ниже — остальное бот подскажет сам." });
+
   return {
-    embeds: [
-      new EmbedBuilder()
-        .setTitle("Bot Chat Helper")
-        .setDescription([
-          "Быстрые действия для заявок и привязок.",
-          "Нажми нужную кнопку: kills, Roblox, ELO или смена персонажей.",
-          `Если чат уедет вниз, бот поднимет это сообщение обратно через ${BOT_HELPER_PANEL_AUTO_RESEND_INTERVAL_HOURS} часов после новой активности под ним.`,
-        ].join("\n")),
-    ],
+    embeds: [embed],
     components: [
       new ActionRowBuilder().addComponents(
         new ButtonBuilder()
           .setCustomId(BOT_HELPER_PANEL_ACTION_IDS.kills)
-          .setLabel("Отправить kills")
+          .setLabel("Kills")
+          .setEmoji("⚔️")
           .setStyle(ButtonStyle.Primary),
         new ButtonBuilder()
           .setCustomId(BOT_HELPER_PANEL_ACTION_IDS.roblox)
-          .setLabel("Привязать Roblox")
-          .setStyle(ButtonStyle.Secondary)
-      ),
-      new ActionRowBuilder().addComponents(
+          .setLabel("Roblox")
+          .setEmoji("🔗")
+          .setStyle(ButtonStyle.Secondary),
         new ButtonBuilder()
           .setCustomId(BOT_HELPER_PANEL_ACTION_IDS.elo)
-          .setLabel("Отправить ELO")
-          .setStyle(ButtonStyle.Primary),
+          .setLabel("ELO")
+          .setEmoji("🏆")
+          .setStyle(ButtonStyle.Success),
         new ButtonBuilder()
           .setCustomId(BOT_HELPER_PANEL_ACTION_IDS.mains)
-          .setLabel("Сменить персонажей")
+          .setLabel("Персонажи")
+          .setEmoji("✨")
           .setStyle(ButtonStyle.Secondary)
       ),
     ],
