@@ -912,6 +912,8 @@ function createAntiteamOperator(options = {}) {
       profileUrl,
       friendRequestsUrl: getConfig().roblox.friendRequestsUrl,
       bridgeLabel: bridgeTarget?.roblox?.username || "",
+      helperRobloxKnown: Boolean(helperRoblox.userId),
+      friendRequestNotified: Boolean(updated.helpers?.[interaction.user.id]?.friendRequestNotifiedAt),
     }));
 
     await syncTicketMessages(updated).catch(() => {});
@@ -1224,6 +1226,18 @@ function createAntiteamOperator(options = {}) {
         return true;
       }
       await interaction.deferUpdate();
+      if (helper.friendRequestNotifiedAt) {
+        await interaction.editReply(buildHelpReplyPayload({
+          ticket,
+          linkKind: "friend_request",
+          directJoinUrl: await resolveDirectJoinUrl(ticket),
+          profileUrl: getTicketProfileUrl(ticket),
+          friendRequestsUrl: getConfig().roblox.friendRequestsUrl,
+          helperRobloxKnown: Boolean(helper.robloxUserId),
+          friendRequestNotified: true,
+        })).catch(() => {});
+        return true;
+      }
       const updated = await persist("antiteam-friend-request-sent", () => updateAntiteamTicket(db, ticket.id, (current) => {
         current.helpers ||= {};
         current.helpers[interaction.user.id] ||= helper;
@@ -1239,6 +1253,8 @@ function createAntiteamOperator(options = {}) {
         directJoinUrl: await resolveDirectJoinUrl(updated),
         profileUrl: getTicketProfileUrl(updated),
         friendRequestsUrl: getConfig().roblox.friendRequestsUrl,
+        helperRobloxKnown: Boolean(updated.helpers?.[interaction.user.id]?.robloxUserId),
+        friendRequestNotified: true,
       })).catch(() => {});
       return true;
     }

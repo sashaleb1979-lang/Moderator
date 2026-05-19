@@ -422,7 +422,13 @@ test("help button records friend-request path and notifies author only after hel
   assert.match(threadNotices[0].content, /<@helper-1> отправил тебе friend request/);
   assert.match(threadNotices[0].content, /Принять заявки/);
   assert.deepEqual(threadNotices[0].allowedMentions.users, ["author-1", "helper-1"]);
-  assert.match(JSON.stringify(sentInteraction.calls.at(-1)[1].components[0].toJSON()), /Помощь принята/);
+  const sentJson = JSON.stringify(sentInteraction.calls.at(-1)[1].components[0].toJSON());
+  assert.match(sentJson, /Помощь принята/);
+  assert.match(sentJson, /Автор уже получил уведомление/);
+  assert.match(sentJson, /"disabled":true/);
+
+  assert.equal(await operator.handleButtonInteraction(createButtonInteraction(ticketButtonId("friend_request_sent", "ticket-1"))), true);
+  assert.equal(threadNotices.length, 1);
 });
 
 test("friend-request help always includes a direct Roblox user join link", async () => {
@@ -445,7 +451,7 @@ test("friend-request help always includes a direct Roblox user join link", async
     db,
     now: () => "2026-05-16T10:02:00.000Z",
     saveDb() {},
-    getProfile: () => ({ domains: { roblox: { userId: "202", username: "HelperRoblox", verificationStatus: "verified" } } }),
+    getProfile: () => ({ domains: { roblox: {} } }),
   });
   const interaction = createButtonInteraction("at:help:ticket-user-link");
 
@@ -457,6 +463,7 @@ test("friend-request help always includes a direct Roblox user join link", async
   assert.match(json, /Ссылка подключения/);
   assert.match(json, /games\/start\?userId=101/);
   assert.match(json, /станет рабочей после добавления в друзья/);
+  assert.match(json, /Roblox у тебя не привязан/);
   assert.match(json, /🔗 Подключиться/);
 });
 

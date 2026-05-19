@@ -987,7 +987,16 @@ function buildThreadPanelPayload(ticket = {}, config = createDefaultAntiteamConf
   };
 }
 
-function buildHelpReplyPayload({ ticket = {}, linkKind = "", directJoinUrl = "", profileUrl = "", friendRequestsUrl = "", bridgeLabel = "" } = {}) {
+function buildHelpReplyPayload({
+  ticket = {},
+  linkKind = "",
+  directJoinUrl = "",
+  profileUrl = "",
+  friendRequestsUrl = "",
+  bridgeLabel = "",
+  helperRobloxKnown = true,
+  friendRequestNotified = false,
+} = {}) {
   const lines = [];
   const targetLabel = ticket.kind === "clan" ? "якоря" : "автора";
   if (linkKind === "direct") {
@@ -1001,12 +1010,21 @@ function buildHelpReplyPayload({ ticket = {}, linkKind = "", directJoinUrl = "",
   if (linkKind === "direct" || linkKind === "friend_direct" || linkKind === "bridge_direct") {
     if (directJoinUrl) lines.push(`[Прямая ссылка подключения](${directJoinUrl})`);
     if (profileUrl) lines.push(`[Roblox профиль ${targetLabel}](${profileUrl})`);
+    if (directJoinUrl && profileUrl) lines.push("Если подключение не работает, открой профиль и нажми **Join**.");
   } else {
-    lines.push(`Отправь ${targetLabel} friend request в Roblox.`);
+    if (helperRobloxKnown) {
+      lines.push(`Отправь ${targetLabel} friend request в Roblox.`);
+    } else {
+      lines.push(`Roblox у тебя не привязан, поэтому бот не знает, друзья ли вы с ${targetLabel}.`);
+      lines.push("На всякий случай можно уведомить автора, что ты кинул friend request.");
+    }
     if (directJoinUrl) lines.push(`[Ссылка подключения](${directJoinUrl}) станет рабочей после добавления в друзья.`);
     if (profileUrl) lines.push(`[Roblox профиль ${targetLabel}](${profileUrl})`);
     if (friendRequestsUrl) lines.push(`[Где принимают заявки Roblox](${friendRequestsUrl})`);
-    lines.push("После отправки friend request нажми кнопку ниже, чтобы пингануть автора в ветке.");
+    if (directJoinUrl && profileUrl) lines.push("Если ссылка не пустила после принятия др, открой профиль и нажми **Join**.");
+    lines.push(friendRequestNotified
+      ? "Автор уже получил уведомление в ветке."
+      : "После отправки friend request нажми кнопку ниже, чтобы пингануть автора в ветке.");
   }
 
   const container = new ContainerBuilder()
@@ -1027,8 +1045,9 @@ function buildHelpReplyPayload({ ticket = {}, linkKind = "", directJoinUrl = "",
     buttons.push(
       new ButtonBuilder()
         .setCustomId(ticketButtonId("friend_request_sent", ticket.id))
-        .setLabel("📨 Отправил др, пусть примет")
+        .setLabel(friendRequestNotified ? "📨 Автор уже пингован" : "📨 Отправил др, пусть примет")
         .setStyle(ButtonStyle.Primary)
+        .setDisabled(friendRequestNotified)
     );
   }
   if (buttons.length) container.addActionRowComponents(new ActionRowBuilder().addComponents(...buttons.slice(0, 5)));

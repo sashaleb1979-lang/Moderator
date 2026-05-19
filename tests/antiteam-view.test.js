@@ -472,11 +472,25 @@ test("helper reply exposes friend-request action only after help path needs it",
     directJoinUrl: "https://www.roblox.com/games/start?placeId=1&gameInstanceId=2",
     profileUrl: "https://www.roblox.com/users/101/profile",
   }));
+  const unknownHelper = payloadJson(buildHelpReplyPayload({
+    ticket: { id: "ticket-1", kind: "standard" },
+    linkKind: "friend_request",
+    directJoinUrl: "https://www.roblox.com/games/start?userId=101",
+    profileUrl: "https://www.roblox.com/users/101/profile",
+    friendRequestsUrl: "https://www.roblox.com/users/friends#!/friend-requests",
+    helperRobloxKnown: false,
+    friendRequestNotified: true,
+  }));
 
   assert.match(friendRequest, /станет рабочей после добавления в друзья/);
+  assert.match(friendRequest, /открой профиль и нажми \*\*Join\*\*/);
   assert.match(friendRequest, /📨 Отправил др, пусть примет/);
   assert.match(alreadyFriend, /Ты уже Roblox-друг автора/);
+  assert.match(alreadyFriend, /Если подключение не работает, открой профиль и нажми \*\*Join\*\*/);
   assert.doesNotMatch(alreadyFriend, /Отправил др/);
+  assert.match(unknownHelper, /Roblox у тебя не привязан/);
+  assert.match(unknownHelper, /Автор уже получил уведомление/);
+  assert.match(unknownHelper, /"disabled":true/);
 });
 
 test("helper stats payload supports per-helper delete and full clear confirmation", () => {
