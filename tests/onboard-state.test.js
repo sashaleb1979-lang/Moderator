@@ -434,6 +434,7 @@ test("getBotHelperPanelState keeps its own channel instead of mirroring welcome 
     botHelperPanel: {
       channelId: "bot-chat-home",
       messageId: "bot-helper-message",
+      lastSentAt: "2026-05-19T00:00:00.000Z",
     },
   };
 
@@ -442,6 +443,7 @@ test("getBotHelperPanelState keeps its own channel instead of mirroring welcome 
   assert.deepEqual(state, {
     channelId: "bot-chat-home",
     messageId: "bot-helper-message",
+    lastSentAt: "2026-05-19T00:00:00.000Z",
   });
   assert.equal(dbConfig.botHelperPanel.channelId, "bot-chat-home");
 });
@@ -459,6 +461,7 @@ test("getBotHelperPanelState falls back to an empty channel when helper state is
   assert.deepEqual(state, {
     channelId: "",
     messageId: "",
+    lastSentAt: "",
   });
 });
 

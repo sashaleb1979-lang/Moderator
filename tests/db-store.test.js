@@ -114,6 +114,7 @@ test("createDefaultDbState seeds expected onboarding defaults", () => {
 
   assert.equal(state.config.welcomePanel.channelId, "welcome-1");
   assert.equal(state.config.botHelperPanel.channelId, "");
+  assert.equal(state.config.botHelperPanel.lastSentAt, "");
   assert.equal(state.config.nonGgsPanel.channelId, "welcome-1");
   assert.deepEqual(state.config.accessGrant, { mode: "after_submit" });
   assert.deepEqual(state.config.autonomyGuard, createAutonomyGuardState({}));

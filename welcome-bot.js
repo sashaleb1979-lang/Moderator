@@ -25,20 +25,6 @@ const {
   diagnosePanels: diagnoseSotPanels,
   diagnoseRoles: diagnoseSotRoles,
 } = require("./src/sot/diagnostics");
-const { syncSotShadowState: syncShadowSotState } = require("./src/sot/loader");
-const {
-  compareSotVsLegacy,
-  summarizeCompareMismatches,
-} = require("./src/sot/legacy-bridge/compare");
-const {
-  syncLegacyCharacterWrites,
-  syncLegacyChannelWrites,
-  syncLegacyInfluenceWrites,
-  syncLegacyIntegrationWrites,
-  syncLegacyPanelWrites,
-  syncLegacyPresentationWrites,
-  syncLegacyRoleWrites,
-} = require("./src/sot/legacy-bridge/write");
 const {
   buildConfiguredCharacterCatalogView,
   clearNativeCharacterRecord,
@@ -162,11 +148,16 @@ const {
 const { ONBOARD_BEGIN_ROUTES, resolveOnboardBeginRoute } = require("./src/onboard/begin-state");
 const {
   BOT_HELPER_PANEL_ACTION_IDS,
+  BOT_HELPER_PANEL_AUTO_RESEND_INTERVAL_HOURS,
+  BOT_HELPER_PANEL_AUTO_RESEND_INTERVAL_MS,
   BOT_HELPER_PANEL_CHANNEL_INPUT_ID,
   BOT_HELPER_PANEL_CONFIG_BUTTON_ID,
   BOT_HELPER_PANEL_CONFIG_MODAL_ID,
+  BOT_HELPER_PANEL_EDITOR_CUSTOM_IDS,
   BOT_HELPER_PANEL_SLOT,
   buildBotHelperPanelPayload,
+  buildBotHelperSettingsPayload,
+  getBotHelperPanelResendDisposition,
   getBotHelperPanelRequiredCustomIds,
 } = require("./src/onboard/bot-helper-panel");
 const {
@@ -234,22 +225,6 @@ const {
   runRobloxPlaytimeSyncJob,
 } = require("./src/runtime/roblox-jobs");
 const {
-  buildClientReadyPeriodicJobs,
-  buildRobloxPeriodicJobs,
-  runClientReadyCore,
-  scheduleClientReadyIntervals,
-  schedulePeriodicJobs,
-} = require("./src/runtime/client-ready-core");
-const {
-  mergeRobloxRuntimeConfig,
-  normalizeRobloxPanelSettingsPatch,
-  rebuildRobloxIntervalHandles,
-} = require("./src/runtime/roblox-runtime-support");
-const {
-  createSerializedMutationRunner,
-  createSerializedTaskRunner,
-} = require("./src/runtime/serialized-task-runner");
-const {
   buildRobloxStatsPanelPayload,
   createRobloxPanelTelemetry,
   handleRobloxStatsPanelButtonInteraction,
@@ -285,14 +260,6 @@ const {
   resolveLegacyTierlistCharacterImagePath,
   saveLegacyTierlistState,
 } = require("./src/integrations/tierlist-live");
-const {
-  DEFAULT_GRAPHIC_TIER_COLORS,
-  clearGraphicAvatarCache,
-  clearGraphicAvatarCacheForUser,
-  isPureimageAvailable,
-  renderGraphicTierlistPng,
-  setAvatarCacheDir,
-} = require("./graphic-tierlist");
 const {
   buildLegacyTierlistClusterLookup,
   buildLegacyCharacterSyncIndex,
@@ -747,7 +714,6 @@ function normalizeCharacterCatalog(value, fallback = []) {
 
 function validateRuntimeConfig(config) {
   const errors = [];
-  const warnings = [];
 
   if (!DISCORD_TOKEN) errors.push("DISCORD_TOKEN отсутствует в .env");
   if (!GUILD_ID) errors.push("GUILD_ID отсутствует в .env");
@@ -758,8 +724,8 @@ function validateRuntimeConfig(config) {
   }
 
   if (config?.roles) {
-    if (isPlaceholder(config.roles.moderatorRoleId)) warnings.push("roles.moderatorRoleId не заполнен");
-    if (isPlaceholder(config.roles.accessRoleId)) warnings.push("roles.accessRoleId не заполнен");
+    if (isPlaceholder(config.roles.moderatorRoleId)) errors.push("roles.moderatorRoleId не заполнен");
+    if (isPlaceholder(config.roles.accessRoleId)) errors.push("roles.accessRoleId не заполнен");
   } else {
     errors.push("roles отсутствует в bot.config.json");
   }
@@ -786,16 +752,11 @@ function validateRuntimeConfig(config) {
   if (errors.length) {
     throw new Error(`Конфиг заполнен не полностью:\n- ${errors.join("\n- ")}`);
   }
-
-  return warnings;
 }
 
 const fileConfig = loadJsonFile(CONFIG_PATH, {});
 const appConfig = buildRuntimeConfig(fileConfig);
-const runtimeConfigWarnings = validateRuntimeConfig(appConfig);
-if (runtimeConfigWarnings.length) {
-  console.warn(`Startup config degraded:\n- ${runtimeConfigWarnings.join("\n- ")}`);
-}
+validateRuntimeConfig(appConfig);
 
 function buildSotLegacyOptions(currentDb) {
   const liveTierlistState = getLiveLegacyTierlistState(currentDb);
@@ -6566,7 +6527,7 @@ async function completeVerificationApprovedAccess(client, userId, accessMode = "
       await member.roles.remove(verifyRoleId, reason);
     }
 
-    await ensureAccessCompanionRoleForMember(member, reason);
+    await ensureAccessCompanionRoleForMemberBestEffort(member, reason, "verification access release");
   } catch (error) {
     await restoreRolePoolSnapshot(client, userId, rolePoolIds, snapshot, `${reason} rollback`);
     throw new Error(`Не удалось выпустить ${userId} из verification: ${formatRuntimeError(error)}`);
@@ -6947,6 +6908,26 @@ async function ensureAccessCompanionRoleForUser(client, userId, reason = "access
   return ensureAccessCompanionRoleForMember(member, reason);
 }
 
+async function ensureAccessCompanionRoleForMemberBestEffort(member, reason = "access companion sync", contextLabel = "access grant") {
+  try {
+    return await ensureAccessCompanionRoleForMember(member, reason);
+  } catch (error) {
+    console.warn(
+      `Access companion role grant skipped during ${contextLabel} for ${String(member?.id || "unknown").trim() || "unknown"}: ${formatRuntimeError(error)}`
+    );
+    return {
+      configured: Boolean(getAccessCompanionRoleId()),
+      eligible: memberHasAnyCountedAccessRole(member),
+      alreadyHad: Boolean(getAccessCompanionRoleId() && member?.roles?.cache?.has?.(getAccessCompanionRoleId())),
+      granted: false,
+      missingMember: !member?.roles?.cache,
+      member: member || null,
+      companionRoleId: getAccessCompanionRoleId(),
+      failed: true,
+    };
+  }
+}
+
 async function ensureSingleTierRole(client, userId, targetTier, reason = "kill tier sync") {
   const member = await fetchMember(client, userId);
   if (!member) return;
@@ -7081,7 +7062,7 @@ async function grantAccessRole(client, userId, reason = "welcome application sub
       }
     }
 
-    await ensureAccessCompanionRoleForMember(member, reason);
+    await ensureAccessCompanionRoleForMemberBestEffort(member, reason, "managed access grant");
   } catch (error) {
     await restoreRolePoolSnapshot(client, userId, rollbackRoleIds, snapshot, `${reason} rollback`);
     throw error;
@@ -7118,7 +7099,7 @@ async function grantNonGgsAccessRole(client, userId, reason = "non-JJS captcha p
       await member.roles.add(roleId, reason);
     }
 
-    await ensureAccessCompanionRoleForMember(member, reason);
+    await ensureAccessCompanionRoleForMemberBestEffort(member, reason, "non-JJS access grant");
   } catch (error) {
     await restoreRolePoolSnapshot(client, userId, rollbackRoleIds, snapshot, `${reason} rollback`);
     throw error;
@@ -7879,6 +7860,138 @@ async function upsertManagedPanelMessage(channel, state, payload, findExisting, 
   return message;
 }
 
+function rememberBotHelperPanelSentMessage(state, message) {
+  if (!state || typeof state !== "object" || !message?.id) return false;
+
+  const nextChannelId = String(message.channel?.id || state.channelId || "").trim();
+  const nextMessageId = String(message.id || "").trim();
+  const nextLastSentAt = message.createdAt instanceof Date
+    ? message.createdAt.toISOString()
+    : String(state.lastSentAt || "").trim() || nowIso();
+
+  let mutated = false;
+  if (nextChannelId && state.channelId !== nextChannelId) {
+    state.channelId = nextChannelId;
+    mutated = true;
+  }
+  if (state.messageId !== nextMessageId) {
+    state.messageId = nextMessageId;
+    mutated = true;
+  }
+  if (String(state.lastSentAt || "").trim() !== nextLastSentAt) {
+    state.lastSentAt = nextLastSentAt;
+    mutated = true;
+  }
+
+  return mutated;
+}
+
+async function resolveBotHelperPanelManagedMessage(client, channel, state) {
+  const botId = client.user?.id;
+  let mutated = false;
+  let message = await fetchStoredBotMessage(channel, state, "messageId", botId);
+
+  if (!message) {
+    message = await findExistingBotHelperPanelMessage(channel);
+    if (message && state.messageId !== message.id) {
+      state.messageId = message.id;
+      mutated = true;
+    }
+  }
+
+  if (message) {
+    mutated = rememberBotHelperPanelSentMessage(state, message) || mutated;
+  }
+
+  if (mutated) saveDb();
+  return message;
+}
+
+async function getBotHelperPanelRuntimeSnapshot(client) {
+  const state = syncLegacyPanelSnapshot(getBotHelperPanelState(), getResolvedBotHelperPanelSnapshot());
+  const channelId = String(state.channelId || "").trim();
+  const snapshot = {
+    state,
+    channelId,
+    channel: null,
+    message: null,
+    lastChannelMessage: null,
+    disposition: getBotHelperPanelResendDisposition({
+      panelMessageId: String(state.messageId || "").trim(),
+      lastChannelMessageId: "",
+      lastSentAt: state.lastSentAt,
+      autoResendIntervalMs: BOT_HELPER_PANEL_AUTO_RESEND_INTERVAL_MS,
+    }),
+  };
+
+  if (!channelId || isPlaceholder(channelId)) {
+    return snapshot;
+  }
+
+  const channel = await client.channels.fetch(channelId).catch(() => null);
+  if (!channel?.isTextBased()) {
+    return snapshot;
+  }
+
+  snapshot.channel = channel;
+  snapshot.message = await resolveBotHelperPanelManagedMessage(client, channel, state);
+
+  const lastMessages = await channel.messages.fetch({ limit: 1 }).catch(() => null);
+  snapshot.lastChannelMessage = lastMessages?.first?.() || null;
+  snapshot.disposition = getBotHelperPanelResendDisposition({
+    panelMessageId: String(snapshot.message?.id || state.messageId || "").trim(),
+    lastChannelMessageId: String(snapshot.lastChannelMessage?.id || "").trim(),
+    lastSentAt: state.lastSentAt || snapshot.message?.createdAt?.toISOString?.() || "",
+    autoResendIntervalMs: BOT_HELPER_PANEL_AUTO_RESEND_INTERVAL_MS,
+  });
+
+  return snapshot;
+}
+
+function describeBotHelperPanelActivity(snapshot) {
+  if (!snapshot?.channelId) {
+    return "Канал helper-панели не настроен.";
+  }
+  if (!snapshot.channel) {
+    return "Канал недоступен или не является текстовым.";
+  }
+  if (!snapshot.message && !snapshot.state?.messageId) {
+    return "Managed message отсутствует и будет создано при публикации.";
+  }
+  if (!snapshot.lastChannelMessage) {
+    return "После панели новых сообщений пока нет.";
+  }
+
+  const panelMessageId = String(snapshot.message?.id || snapshot.state?.messageId || "").trim();
+  if (panelMessageId && snapshot.lastChannelMessage.id === panelMessageId) {
+    return "После панели новых сообщений пока нет.";
+  }
+  if (snapshot.disposition?.needsResend) {
+    return "Есть новые сообщения ниже. Панель готова к auto-resend.";
+  }
+  if (snapshot.disposition?.hasActivityBelow) {
+    return "Есть новые сообщения ниже, но 12-часовое окно ещё не дошло.";
+  }
+
+  return "Состояние активности не определено.";
+}
+
+async function buildBotHelperSettingsReply(client, statusText = "", includeFlags = true) {
+  const snapshot = await getBotHelperPanelRuntimeSnapshot(client);
+  const payload = buildBotHelperSettingsPayload({
+    channelText: snapshot.channelId ? formatChannelMention(snapshot.channelId) : "Не настроен",
+    messageText: snapshot.state?.messageId
+      ? `${snapshot.state.messageId}${snapshot.message ? "" : " (не найдено)"}`
+      : "—",
+    lastSentText: snapshot.state?.lastSentAt ? formatDateTime(snapshot.state.lastSentAt) : "—",
+    activityText: describeBotHelperPanelActivity(snapshot),
+    autoResendText: `Каждые ${BOT_HELPER_PANEL_AUTO_RESEND_INTERVAL_HOURS} часов, только если под панелью были новые сообщения`,
+    statusText,
+  });
+
+  return includeFlags ? ephemeralPayload(payload) : payload;
+}
+
 async function refreshBotHelperPanel(client, options = {}) {
   const state = syncLegacyPanelSnapshot(getBotHelperPanelState(), getResolvedBotHelperPanelSnapshot());
   const channelId = String(options.channelId || state.channelId || "").trim();
@@ -7893,18 +8006,10 @@ async function refreshBotHelperPanel(client, options = {}) {
     return null;
   }
 
-  const botId = client.user?.id;
   let message = null;
 
   if (!options.forceRecreate) {
-    message = await fetchStoredBotMessage(channel, state, "messageId", botId);
-    if (!message) {
-      message = await findExistingBotHelperPanelMessage(channel);
-      if (message && state.messageId !== message.id) {
-        state.messageId = message.id;
-        saveDb();
-      }
-    }
+    message = await resolveBotHelperPanelManagedMessage(client, channel, state);
   }
 
   if (message && (options.bump || options.forceRecreate)) {
@@ -7917,9 +8022,12 @@ async function refreshBotHelperPanel(client, options = {}) {
 
   if (!message) {
     message = await channel.send(buildBotHelperPanelPayload());
-    state.messageId = message.id;
+    rememberBotHelperPanelSentMessage(state, message);
   } else {
     await message.edit(buildBotHelperPanelPayload());
+    if (!state.lastSentAt) {
+      rememberBotHelperPanelSentMessage(state, message);
+    }
   }
 
   state.channelId = channel.id;
@@ -7942,10 +8050,12 @@ async function repostBotHelperPanelToChannel(client, targetChannelId) {
   const previousState = {
     channelId: String(state.channelId || "").trim(),
     messageId: String(state.messageId || "").trim(),
+    lastSentAt: String(state.lastSentAt || "").trim(),
   };
 
   state.channelId = nextChannelId;
   state.messageId = "";
+  state.lastSentAt = "";
   saveDb();
 
   try {
@@ -7964,6 +8074,7 @@ async function repostBotHelperPanelToChannel(client, targetChannelId) {
   } catch (error) {
     state.channelId = previousState.channelId;
     state.messageId = previousState.messageId;
+    state.lastSentAt = previousState.lastSentAt;
     saveDb();
     throw error;
   }
@@ -7976,6 +8087,7 @@ async function clearBotHelperManagedPanel(client) {
 
   state.channelId = "";
   state.messageId = "";
+  state.lastSentAt = "";
   saveDb();
 
   const deleted = previousMessageId
@@ -7990,22 +8102,43 @@ async function clearBotHelperManagedPanel(client) {
   };
 }
 
-async function maybeBumpBotHelperPanelForMessage(client, message) {
-  const helperChannelId = String(getResolvedBotHelperPanelSnapshot().channelId || "").trim();
-  if (!helperChannelId || helperChannelId !== message.channelId) {
-    return false;
+async function autoResendBotHelperPanelIfNeeded(client) {
+  const snapshot = await getBotHelperPanelRuntimeSnapshot(client);
+  if (!snapshot.channelId || isPlaceholder(snapshot.channelId)) {
+    return { resent: false, reason: "unconfigured" };
+  }
+  if (!snapshot.channel) {
+    return { resent: false, reason: "invalid-channel" };
+  }
+  if (!snapshot.message) {
+    const refreshed = await refreshBotHelperPanel(client, { forceRecreate: true, strict: true });
+    return {
+      resent: Boolean(refreshed?.message),
+      restored: true,
+      channelId: snapshot.channelId,
+      messageId: refreshed?.message?.id || "",
+    };
+  }
+  if (!snapshot.disposition?.needsResend) {
+    return {
+      resent: false,
+      reason: snapshot.disposition?.hasActivityBelow ? "not-due-yet" : "no-activity",
+    };
   }
 
-  const welcomeChannelId = String(getResolvedChannelId("welcome") || "").trim();
-  if (helperChannelId === welcomeChannelId) {
-    return false;
-  }
+  const refreshed = await refreshBotHelperPanel(client, {
+    forceRecreate: true,
+    channelId: snapshot.channelId,
+    strict: true,
+  });
 
-  await runSerializedDbTask(
-    () => refreshBotHelperPanel(client, { bump: true }),
-    `bot-helper-panel-bump:${message.channelId}`
-  );
-  return true;
+  return {
+    resent: Boolean(refreshed?.message),
+    restored: false,
+    channelId: snapshot.channelId,
+    previousMessageId: snapshot.message.id,
+    messageId: refreshed?.message?.id || "",
+  };
 }
 
 async function refreshWelcomePanel(client) {
@@ -9584,6 +9717,23 @@ async function runAutoResendTick(client) {
     } catch (error) {
       console.error(`Auto-resend error for record ${record.id}:`, error);
     }
+  }
+
+  try {
+    const helperResult = await autoResendBotHelperPanelIfNeeded(client);
+    if (helperResult?.resent && helperResult.restored) {
+      await logLine(
+        client,
+        `BOT_HELPER_PANEL_RESTORED: channel=${helperResult.channelId} message=${helperResult.messageId}`
+      );
+    } else if (helperResult?.resent) {
+      await logLine(
+        client,
+        `BOT_HELPER_PANEL_AUTO_RESEND: channel=${helperResult.channelId} previous=${helperResult.previousMessageId || ""} newMessage=${helperResult.messageId}`
+      );
+    }
+  } catch (error) {
+    console.error("Bot helper auto-resend error:", error?.message || error);
   }
 }
 
@@ -14330,18 +14480,10 @@ client.on("messageCreate", async (message) => {
     scheduleDeleteMessage,
     helperDeleteMs: PROFILE_HELPER_MESSAGE_DELETE_MS,
   })) {
-    await maybeBumpBotHelperPanelForMessage(client, message).catch((error) => {
-      console.error("Bot helper panel bump after profile helper failed:", error?.message || error);
-    });
     return;
   }
 
-  if (message.channelId !== getResolvedChannelId("welcome")) {
-    await maybeBumpBotHelperPanelForMessage(client, message).catch((error) => {
-      console.error("Bot helper panel bump failed:", error?.message || error);
-    });
-    return;
-  }
+  if (message.channelId !== getResolvedChannelId("welcome")) return;
 
   let session = getSubmitSession(message.author.id);
   const bootstrapMember = session
@@ -16506,18 +16648,86 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
-      const modal = new ModalBuilder().setCustomId(BOT_HELPER_PANEL_CONFIG_MODAL_ID).setTitle("Bot helper panel");
-      const input = new TextInputBuilder()
-        .setCustomId(BOT_HELPER_PANEL_CHANNEL_INPUT_ID)
-        .setLabel("Bot-chat канал")
-        .setStyle(TextInputStyle.Short)
-        .setRequired(false)
-        .setMaxLength(40)
-        .setPlaceholder("#channel или 123456789012345678")
-        .setValue(String(getResolvedBotHelperPanelSnapshot().channelId || "").slice(0, 40));
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      await interaction.editReply(await buildBotHelperSettingsReply(client, "", false));
+      return;
+    }
 
-      modal.addComponents(new ActionRowBuilder().addComponents(input));
-      await interaction.showModal(modal);
+    if (Object.values(BOT_HELPER_PANEL_EDITOR_CUSTOM_IDS).includes(interaction.customId)) {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      if (interaction.customId === BOT_HELPER_PANEL_EDITOR_CUSTOM_IDS.close) {
+        await interaction.update({ content: "Bot helper settings закрыты.", embeds: [], components: [] });
+        return;
+      }
+
+      if (interaction.customId === BOT_HELPER_PANEL_EDITOR_CUSTOM_IDS.setChannel) {
+        const modal = new ModalBuilder().setCustomId(BOT_HELPER_PANEL_CONFIG_MODAL_ID).setTitle("Bot helper panel");
+        const input = new TextInputBuilder()
+          .setCustomId(BOT_HELPER_PANEL_CHANNEL_INPUT_ID)
+          .setLabel("Bot-chat канал")
+          .setStyle(TextInputStyle.Short)
+          .setRequired(false)
+          .setMaxLength(40)
+          .setPlaceholder("#channel или 123456789012345678")
+          .setValue(String(getResolvedBotHelperPanelSnapshot().channelId || "").slice(0, 40));
+
+        modal.addComponents(new ActionRowBuilder().addComponents(input));
+        await interaction.showModal(modal);
+        return;
+      }
+
+      if (interaction.customId === BOT_HELPER_PANEL_EDITOR_CUSTOM_IDS.refresh) {
+        await interaction.deferUpdate();
+        await interaction.editReply(await buildBotHelperSettingsReply(client, "Состояние helper-панели обновлено.", false));
+        return;
+      }
+
+      if (interaction.customId === BOT_HELPER_PANEL_EDITOR_CUSTOM_IDS.resendNow) {
+        await interaction.deferUpdate();
+        try {
+          const snapshot = await getBotHelperPanelRuntimeSnapshot(client);
+          if (!snapshot.channelId || isPlaceholder(snapshot.channelId)) {
+            await interaction.editReply(await buildBotHelperSettingsReply(client, "Сначала укажи канал для helper-панели.", false));
+            return;
+          }
+          await refreshBotHelperPanel(client, {
+            forceRecreate: true,
+            channelId: snapshot.channelId,
+            strict: true,
+          });
+          await interaction.editReply(await buildBotHelperSettingsReply(client, "Helper-панель отправлена заново.", false));
+        } catch (error) {
+          await interaction.editReply(await buildBotHelperSettingsReply(
+            client,
+            `Не удалось отправить helper-панель заново: ${String(error?.message || error || "неизвестная ошибка")}`,
+            false
+          ));
+        }
+        return;
+      }
+
+      if (interaction.customId === BOT_HELPER_PANEL_EDITOR_CUSTOM_IDS.disable) {
+        await interaction.deferUpdate();
+        try {
+          const result = await writeAndApplyNativePanelOverride(client, BOT_HELPER_PANEL_SLOT, "");
+          const statusText = result.applyResult?.deletedMessageId
+            ? `Helper-панель отключена. Старое сообщение ${result.applyResult.deletedMessageId} удалено.`
+            : "Helper-панель отключена.";
+          await interaction.editReply(await buildBotHelperSettingsReply(client, statusText, false));
+        } catch (error) {
+          await interaction.editReply(await buildBotHelperSettingsReply(
+            client,
+            `Не удалось отключить helper-панель: ${String(error?.message || error || "неизвестная ошибка")}`,
+            false
+          ));
+        }
+        return;
+      }
+
       return;
     }
 
@@ -20220,7 +20430,7 @@ client.on("interactionCreate", async (interaction) => {
       );
 
       if (currentChannelId === nextChannelId) {
-        await interaction.editReply(await buildModeratorPanelPayload(client, "Изменений по helper-панели нет.", false));
+        await interaction.editReply(await buildBotHelperSettingsReply(client, "Изменений по helper-панели нет.", false));
         return;
       }
 
@@ -20231,9 +20441,9 @@ client.on("interactionCreate", async (interaction) => {
             ? `Helper-панель отключена. Старое сообщение ${result.applyResult.deletedMessageId} удалено.`
             : "Helper-панель отключена.")
           : `Helper-панель перенесена в ${formatChannelMention(result.channel?.id || nextChannelId)}.`;
-        await interaction.editReply(await buildModeratorPanelPayload(client, statusText, false));
+        await interaction.editReply(await buildBotHelperSettingsReply(client, statusText, false));
       } catch (error) {
-        await interaction.editReply(await buildModeratorPanelPayload(
+        await interaction.editReply(await buildBotHelperSettingsReply(
           client,
           `Не удалось сохранить helper-панель: ${String(error?.message || error || "неизвестная ошибка")}`,
           false

@@ -300,12 +300,13 @@
         "label": "Годжо",
         "englishLabel": "Honored One",
         "roleId": "",
-        "source": "alias",
+        "source": "default",
         "verifiedAt": null,
         "evidence": {
           "aliasNames": [
             "Годжо"
-          ]
+          ],
+          "nativeWriter": true
         }
       },
       "vessel": {
@@ -313,12 +314,13 @@
         "label": "Юджи",
         "englishLabel": "Vessel",
         "roleId": "",
-        "source": "alias",
+        "source": "default",
         "verifiedAt": null,
         "evidence": {
           "aliasNames": [
             "Юджи"
-          ]
+          ],
+          "nativeWriter": true
         }
       },
       "restless_gambler": {
@@ -326,12 +328,13 @@
         "label": "Хакари",
         "englishLabel": "Restless Gambler",
         "roleId": "",
-        "source": "alias",
+        "source": "default",
         "verifiedAt": null,
         "evidence": {
           "aliasNames": [
             "Хакари"
-          ]
+          ],
+          "nativeWriter": true
         }
       },
       "ten_shadows": {
@@ -339,12 +342,13 @@
         "label": "Мегуми",
         "englishLabel": "Ten Shadows",
         "roleId": "",
-        "source": "alias",
+        "source": "default",
         "verifiedAt": null,
         "evidence": {
           "aliasNames": [
             "Мегуми"
-          ]
+          ],
+          "nativeWriter": true
         }
       },
       "perfection": {
@@ -352,12 +356,13 @@
         "label": "Махито",
         "englishLabel": "Perfection",
         "roleId": "",
-        "source": "alias",
+        "source": "default",
         "verifiedAt": null,
         "evidence": {
           "aliasNames": [
             "Махито"
-          ]
+          ],
+          "nativeWriter": true
         }
       },
       "blood_manipulator": {
@@ -365,12 +370,13 @@
         "label": "Чосо",
         "englishLabel": "Blood Manipulator",
         "roleId": "",
-        "source": "alias",
+        "source": "default",
         "verifiedAt": null,
         "evidence": {
           "aliasNames": [
             "Чосо"
-          ]
+          ],
+          "nativeWriter": true
         }
       },
       "switcher": {
@@ -378,12 +384,13 @@
         "label": "Тодо",
         "englishLabel": "Switcher",
         "roleId": "",
-        "source": "alias",
+        "source": "default",
         "verifiedAt": null,
         "evidence": {
           "aliasNames": [
             "Тодо"
-          ]
+          ],
+          "nativeWriter": true
         }
       },
       "defense_attorney": {
@@ -391,13 +398,14 @@
         "label": "Хигурума",
         "englishLabel": "Defense Attorney",
         "roleId": "",
-        "source": "alias",
+        "source": "default",
         "verifiedAt": null,
         "evidence": {
           "aliasNames": [
             "Хигурума",
             "Хигурама"
-          ]
+          ],
+          "nativeWriter": true
         }
       },
       "cursed_partners": {
@@ -405,13 +413,14 @@
         "label": "Юта",
         "englishLabel": "Cursed Partners",
         "roleId": "",
-        "source": "alias",
+        "source": "default",
         "verifiedAt": null,
         "evidence": {
           "aliasNames": [
             "Юта",
             "Юта Оккоцу"
-          ]
+          ],
+          "nativeWriter": true
         }
       },
       "head_of_the_hei": {
@@ -419,13 +428,14 @@
         "label": "Наоя",
         "englishLabel": "Head of the Hei",
         "roleId": "",
-        "source": "alias",
+        "source": "default",
         "verifiedAt": null,
         "evidence": {
           "aliasNames": [
             "Наоя",
             "Наобито"
-          ]
+          ],
+          "nativeWriter": true
         }
       },
       "puppet_master": {
@@ -433,12 +443,13 @@
         "label": "Мехамару",
         "englishLabel": "Puppet Master",
         "roleId": "",
-        "source": "alias",
+        "source": "default",
         "verifiedAt": null,
         "evidence": {
           "aliasNames": [
             "Мехамару"
-          ]
+          ],
+          "nativeWriter": true
         }
       },
       "salaryman": {
@@ -446,12 +457,13 @@
         "label": "Нанами",
         "englishLabel": "Salaryman",
         "roleId": "",
-        "source": "alias",
+        "source": "default",
         "verifiedAt": null,
         "evidence": {
           "aliasNames": [
             "Нанами"
-          ]
+          ],
+          "nativeWriter": true
         }
       },
       "locust_guy": {
@@ -459,13 +471,14 @@
         "label": "Локуст Гай",
         "englishLabel": "Locust Guy",
         "roleId": "",
-        "source": "alias",
+        "source": "default",
         "verifiedAt": null,
         "evidence": {
           "aliasNames": [
             "Локуст Гай",
             "Локуст"
-          ]
+          ],
+          "nativeWriter": true
         }
       },
       "star_rage": {
@@ -473,12 +486,13 @@
         "label": "Юки",
         "englishLabel": "Star Rage",
         "roleId": "",
-        "source": "alias",
+        "source": "default",
         "verifiedAt": null,
         "evidence": {
           "aliasNames": [
             "Юки"
-          ]
+          ],
+          "nativeWriter": true
         }
       },
       "aspiring_mangaka": {
@@ -486,7 +500,7 @@
         "label": "Чарльз",
         "englishLabel": "Aspiring Mangaka",
         "roleId": "",
-        "source": "alias",
+        "source": "default",
         "verifiedAt": null,
         "evidence": {
           "aliasNames": [
@@ -494,7 +508,8 @@
             "Шарль",
             "Mangaka",
             "Мангака"
-          ]
+          ],
+          "nativeWriter": true
         }
       },
       "lucky_coward": {
@@ -502,12 +517,13 @@
         "label": "Харута",
         "englishLabel": "Lucky Coward",
         "roleId": "",
-        "source": "alias",
+        "source": "default",
         "verifiedAt": null,
         "evidence": {
           "aliasNames": [
             "Харута"
-          ]
+          ],
+          "nativeWriter": true
         }
       },
       "disaster_plants": {
@@ -515,12 +531,13 @@
         "label": "Ханами",
         "englishLabel": "Disaster Plants",
         "roleId": "",
-        "source": "alias",
+        "source": "default",
         "verifiedAt": null,
         "evidence": {
           "aliasNames": [
             "Ханами"
-          ]
+          ],
+          "nativeWriter": true
         }
       },
       "crow_charmer": {
@@ -528,7 +545,7 @@
         "label": "Мэй Мэй",
         "englishLabel": "Crow Charmer",
         "roleId": "",
-        "source": "alias",
+        "source": "default",
         "verifiedAt": null,
         "evidence": {
           "aliasNames": [
@@ -536,7 +553,8 @@
             "Мей Мей",
             "Мэй-Мэй",
             "Меи Меи"
-          ]
+          ],
+          "nativeWriter": true
         }
       },
       "ryu": {
@@ -544,13 +562,14 @@
         "label": "Рю",
         "englishLabel": "Ryu",
         "roleId": "",
-        "source": "alias",
+        "source": "default",
         "verifiedAt": null,
         "evidence": {
           "aliasNames": [
             "Рю",
             "Рю Ишигори"
-          ]
+          ],
+          "nativeWriter": true
         }
       }
     },
@@ -898,12 +917,38 @@
         "dirtyUsers": [],
         "lastFlushAt": null,
         "lastFlushStats": null,
-        "lastResumeAt": null,
-        "lastFullRecalcAt": null,
-        "lastRebuildAndRoleSyncAt": null,
-        "lastRebuildAndRoleSyncStats": null,
-        "lastDailyRoleSyncAt": null,
-        "lastDailyRoleSyncStats": null,
+        "lastResumeAt": "2026-05-19T08:37:29.192Z",
+        "lastFullRecalcAt": "2026-05-19T08:37:29.227Z",
+        "lastRebuildAndRoleSyncAt": "2026-05-19T08:37:29.227Z",
+        "lastRebuildAndRoleSyncStats": {
+          "targetUserCount": 0,
+          "managedRoleHolderCount": 0,
+          "localActivityTargetCount": 0,
+          "missingLocalHistoryUserCount": 0,
+          "snapshotWithoutLocalHistoryUserCount": 0,
+          "mirrorOnlyPersistedUserCount": 0,
+          "managedRoleHolderWithoutPersistedActivityUserCount": 0,
+          "rebuiltUserCount": 0,
+          "appliedCount": 0,
+          "skippedCount": 0,
+          "skipReasonCounts": {},
+          "syncMode": "rebuild_and_sync"
+        },
+        "lastDailyRoleSyncAt": "2026-05-19T08:37:29.227Z",
+        "lastDailyRoleSyncStats": {
+          "targetUserCount": 0,
+          "managedRoleHolderCount": 0,
+          "localActivityTargetCount": 0,
+          "missingLocalHistoryUserCount": 0,
+          "snapshotWithoutLocalHistoryUserCount": 0,
+          "mirrorOnlyPersistedUserCount": 0,
+          "managedRoleHolderWithoutPersistedActivityUserCount": 0,
+          "rebuiltUserCount": 0,
+          "appliedCount": 0,
+          "skippedCount": 0,
+          "skipReasonCounts": {},
+          "syncMode": "rebuild_and_sync"
+        },
         "lastRolesOnlySyncAt": null,
         "lastRolesOnlySyncStats": null,
         "errors": []

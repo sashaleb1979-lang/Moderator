@@ -368,17 +368,20 @@ function ensureBotHelperPanelState(dbConfig, defaultChannelId = "") {
   const fallbackChannelId = cleanString(defaultChannelId);
   const previousChannelId = cleanString(dbConfig?.botHelperPanel?.channelId);
   const previousMessageId = cleanString(dbConfig?.botHelperPanel?.messageId);
+  const previousLastSentAt = cleanString(dbConfig?.botHelperPanel?.lastSentAt);
 
-  dbConfig.botHelperPanel ||= { channelId: fallbackChannelId, messageId: "" };
+  dbConfig.botHelperPanel ||= { channelId: fallbackChannelId, messageId: "", lastSentAt: "" };
 
   const nextChannelId = previousChannelId || fallbackChannelId;
   const nextMessageId = previousMessageId;
+  const nextLastSentAt = previousLastSentAt;
   dbConfig.botHelperPanel.channelId = nextChannelId;
   dbConfig.botHelperPanel.messageId = nextMessageId;
+  dbConfig.botHelperPanel.lastSentAt = nextLastSentAt;
 
   return {
     state: dbConfig.botHelperPanel,
-    migrated: previousChannelId !== nextChannelId || previousMessageId !== nextMessageId,
+    migrated: previousChannelId !== nextChannelId || previousMessageId !== nextMessageId || previousLastSentAt !== nextLastSentAt,
   };
 }
 

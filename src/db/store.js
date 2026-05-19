@@ -66,6 +66,7 @@ function createDefaultDbState({
       botHelperPanel: {
         channelId: "",
         messageId: "",
+        lastSentAt: "",
       },
       nonGgsPanel: {
         channelId: appConfig.channels.welcomeChannelId,
