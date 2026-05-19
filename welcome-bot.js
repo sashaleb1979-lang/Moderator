@@ -271,6 +271,7 @@ const {
   createSerializedMutationRunner,
   createSerializedTaskRunner,
 } = require("./src/runtime/serialized-task-runner");
+const { safeDeferEphemeralReply } = require("./src/runtime/interaction-ack");
 const {
   buildRobloxPeriodicJobs,
   buildClientReadyPeriodicJobs,
@@ -10739,7 +10740,12 @@ async function buildGroundTruthSotReportPayload(client, statusText = "", include
 }
 
 async function replyWithGroundTruthSotReport(interaction, client, statusText = "") {
-  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  if (!await safeDeferEphemeralReply(interaction, {
+    label: "onboard sotreport",
+    logWarning: (...args) => console.warn(...args),
+  })) {
+    return;
+  }
   await interaction.editReply(await buildGroundTruthSotReportPayload(client, statusText, false));
 }
 
@@ -15125,6 +15131,21 @@ client.on("interactionCreate", async (interaction) => {
     const subcommand = interaction.options.getSubcommand();
     const primaryAdminUserId = getAutonomyGuardPrimaryAdminUserId();
     const isIsolatorCommand = subcommand === "isolator" || subcommand === "isolatoroff";
+    const deferredOnboardSubcommands = new Set([
+      "movegraphic",
+      "movetext",
+      "movenotices",
+      "targetrole",
+      "target",
+      "targetclear",
+      "isolator",
+      "isolatoroff",
+      "modset",
+      "robloxauth",
+      "deleteprofile",
+      "nonfake",
+      "removetier",
+    ]);
 
     if (isIsolatorCommand) {
       if (!primaryAdminUserId) {
@@ -15138,6 +15159,15 @@ client.on("interactionCreate", async (interaction) => {
     } else if (!isModerator(interaction.member)) {
       await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
       return;
+    }
+
+    if (deferredOnboardSubcommands.has(subcommand)) {
+      if (!await safeDeferEphemeralReply(interaction, {
+        label: `onboard ${subcommand}`,
+        logWarning: (...args) => console.warn(...args),
+      })) {
+        return;
+      }
     }
 
     if (subcommand === "panel") {
@@ -15168,7 +15198,6 @@ client.on("interactionCreate", async (interaction) => {
     }
 
     if (subcommand === "movegraphic") {
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       const targetChannel = interaction.options.getChannel("channel", true);
       if (!targetChannel?.isTextBased?.()) {
         await interaction.editReply("Нужен текстовый канал.");
@@ -15184,7 +15213,6 @@ client.on("interactionCreate", async (interaction) => {
     }
 
     if (subcommand === "movetext") {
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       const targetChannel = interaction.options.getChannel("channel", true);
       if (!targetChannel?.isTextBased?.()) {
         await interaction.editReply("Нужен текстовый канал.");
@@ -15200,7 +15228,6 @@ client.on("interactionCreate", async (interaction) => {
     }
 
     if (subcommand === "movenotices") {
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       const targetChannel = interaction.options.getChannel("channel", true);
       if (!targetChannel?.isTextBased?.()) {
         await interaction.editReply("Нужен текстовый канал.");
@@ -15216,8 +15243,6 @@ client.on("interactionCreate", async (interaction) => {
     }
 
     if (subcommand === "targetrole") {
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-
       const roleName = String(interaction.options.getString("name", true) || "").trim().slice(0, 100);
       const roleColor = normalizeHexColor(interaction.options.getString("color", true));
       if (!roleName) {
@@ -15265,8 +15290,6 @@ client.on("interactionCreate", async (interaction) => {
     }
 
     if (subcommand === "target") {
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-
       const target = interaction.options.getUser("target", true);
       if (await replyAutonomyGuardIsolatedTarget(interaction, target.id, { editReply: true })) {
         return;
@@ -15310,8 +15333,6 @@ client.on("interactionCreate", async (interaction) => {
     }
 
     if (subcommand === "targetclear") {
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-
       const state = getAutonomyGuardState();
       const previousTargetUserId = state.targetUserId;
       if (!previousTargetUserId) {
@@ -15334,8 +15355,6 @@ client.on("interactionCreate", async (interaction) => {
     }
 
     if (subcommand === "isolator") {
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-
       const target = interaction.options.getUser("target", true);
       if (target.id === primaryAdminUserId) {
         await interaction.editReply("Главного админа нельзя отправить в изолятор.");
@@ -15363,8 +15382,6 @@ client.on("interactionCreate", async (interaction) => {
     }
 
     if (subcommand === "isolatoroff") {
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-
       const target = interaction.options.getUser("target", true);
       const removed = removeAutonomyGuardIsolatedUserId(db, target.id);
       if (!removed) {
@@ -15379,8 +15396,6 @@ client.on("interactionCreate", async (interaction) => {
     }
 
     if (subcommand === "modset") {
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-
       const targetUser = interaction.options.getUser("target");
       const userIdInput = (interaction.options.getString("user_id") || "").trim();
       const screenshot = interaction.options.getAttachment("screenshot", true);
@@ -15448,8 +15463,6 @@ client.on("interactionCreate", async (interaction) => {
     }
 
     if (subcommand === "robloxauth") {
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-
       const targetUser = interaction.options.getUser("target");
       const userIdInput = (interaction.options.getString("user_id") || "").trim();
       const robloxUsernameInput = interaction.options.getString("roblox_username", true);
@@ -15522,7 +15535,6 @@ client.on("interactionCreate", async (interaction) => {
     }
 
     if (subcommand === "deleteprofile") {
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       const targetUser = interaction.options.getUser("target");
       const userIdInput = (interaction.options.getString("user_id") || "").trim();
       let targetId = targetUser?.id || null;
@@ -15556,7 +15568,6 @@ client.on("interactionCreate", async (interaction) => {
     }
 
     if (subcommand === "nonfake") {
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       const action = String(interaction.options.getString("action", true) || "").trim().toLowerCase();
 
       if (action === "list") {
@@ -15595,7 +15606,6 @@ client.on("interactionCreate", async (interaction) => {
     }
 
     if (subcommand === "removetier") {
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       const targetUser = interaction.options.getUser("target");
       const userIdInput = (interaction.options.getString("user_id") || "").trim();
       let targetId = targetUser?.id || null;
