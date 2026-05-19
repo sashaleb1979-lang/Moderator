@@ -240,31 +240,40 @@ function drawText(ctx, text, x, y, px, color = "#ffffff", kind = "regular") {
   ctx.fillText(String(text || ""), Math.round(x), Math.round(y));
 }
 
+function drawCenteredText(ctx, text, x, y, width, px, color = "#ffffff", kind = "regular", minPx = 14) {
+  const fit = fitText(ctx, text, width, px, minPx, kind);
+  setFont(ctx, fit.px, kind);
+  fill(ctx, color);
+  const textWidth = measureText(ctx, fit.text);
+  ctx.fillText(fit.text, Math.round(x + (width - textWidth) / 2), Math.round(y));
+}
+
 function drawMilestoneRail(ctx, model, x, y, width) {
-  drawRect(ctx, x, y, width, 8, "#2a2e38");
-  drawRect(ctx, x, y, Math.floor(width * model.totalProgress), 8, model.displayLevel.accentHex || "#ff2a2a");
+  drawRect(ctx, x, y, width, 6, "#2a2e38");
+  drawRect(ctx, x, y, Math.floor(width * model.totalProgress), 6, model.displayLevel.accentHex || "#ff2a2a");
   const maxThreshold = SUPPORT_PROGRESS_LEVELS.at(-1).threshold;
   for (const level of SUPPORT_PROGRESS_LEVELS) {
     const centerX = x + Math.floor(width * clamp(level.threshold / maxThreshold));
     const unlocked = model.points >= level.threshold;
-    drawRect(ctx, centerX - 5, y - 9, 10, 26, unlocked ? (level.accentHex || "#ff2a2a") : "#474c59");
-    drawText(ctx, String(level.threshold), centerX - (level.threshold >= 10 ? 12 : 6), y + 45, 20, unlocked ? "#ffffff" : "#858b99", "bold");
+    const markerColor = unlocked ? (level.accentHex || "#ff2a2a") : "#474c59";
+    drawRect(ctx, centerX - 5, y - 10, 10, 26, markerColor);
+    drawRect(ctx, centerX - 2, y - 15, 4, 36, unlocked ? "#ffffff" : "#5d6370");
+    drawCenteredText(ctx, String(level.threshold), centerX - 22, y + 42, 44, 19, unlocked ? "#ffffff" : "#858b99", "bold", 14);
   }
 }
 
 function drawSegmentProgress(ctx, model, x, y, width, height) {
-  drawRect(ctx, x, y, width, height, "#252a34");
-  drawRect(ctx, x + 4, y + 4, width - 8, height - 8, "#111319");
+  drawRect(ctx, x, y, width, height, "#2c313d");
+  drawRect(ctx, x + 4, y + 4, width - 8, height - 8, "#10131a");
   const progressWidth = Math.max(0, Math.floor((width - 8) * model.segmentProgress));
-  drawRect(ctx, x + 4, y + 4, progressWidth, height - 8, model.displayLevel.accentHex || "#ff2a2a");
+  if (progressWidth > 0) {
+    drawRect(ctx, x + 4, y + 4, progressWidth, height - 8, model.displayLevel.accentHex || "#ff2a2a");
+  }
   stroke(ctx, "#555b68", 2);
   ctx.strokeRect(x + 1, y + 1, width - 2, height - 2);
-  const percent = model.isMaxLevel ? "MAX" : `${Math.floor(model.segmentProgress * 100)}%`;
-  const fit = fitText(ctx, percent, width - 20, 24, 16, "bold");
-  setFont(ctx, fit.px, "bold");
-  fill(ctx, "#ffffff");
-  const textWidth = measureText(ctx, fit.text);
-  ctx.fillText(fit.text, x + Math.floor((width - textWidth) / 2), y + Math.floor(height / 2) + 9);
+  const targetThreshold = model.next?.threshold || SUPPORT_PROGRESS_LEVELS.at(-1).threshold;
+  const progressText = model.isMaxLevel ? "MAX" : `${model.points} / ${targetThreshold}`;
+  drawCenteredText(ctx, progressText, x + 10, y + Math.floor(height / 2) + 9, width - 20, 24, "#ffffff", "bold", 16);
 }
 
 async function renderSupportProgressCard(options = {}) {
@@ -278,38 +287,57 @@ async function renderSupportProgressCard(options = {}) {
   const image = PImage.make(width, height);
   const ctx = image.getContext("2d");
   const accent = model.displayLevel.accentHex || hexColor(model.displayLevel.accentColor, "#e53935");
+  const panelX = 34;
+  const panelY = 34;
+  const panelWidth = width - 68;
+  const panelHeight = height - 68;
+  const leftX = 58;
+  const leftY = 68;
+  const leftWidth = 238;
+  const leftHeight = 352;
+  const contentX = 348;
+  const contentRight = width - 72;
+  const contentWidth = contentRight - contentX;
+  const chipWidth = 186;
+  const chipX = contentRight - chipWidth;
 
   drawRect(ctx, 0, 0, width, height, "#0f1117");
   drawRect(ctx, 0, 0, width, 8, accent);
   drawRect(ctx, 0, height - 8, width, 8, "#272b35");
-  drawPanel(ctx, 34, 34, width - 68, height - 68, "#1a1d25", "#303541");
+  drawPanel(ctx, panelX, panelY, panelWidth, panelHeight, "#1a1d25", "#303541");
 
-  drawRect(ctx, 58, 58, 250, 342, "#111319");
-  stroke(ctx, accent, 3);
-  ctx.strokeRect(60, 60, 246, 338);
-  drawRect(ctx, 74, 74, 218, 300, "#08090d");
+  drawRect(ctx, leftX + 8, leftY + 8, leftWidth, leftHeight, "rgba(0,0,0,0.16)");
+  drawRect(ctx, leftX, leftY, leftWidth, leftHeight, "#11141b");
+  stroke(ctx, "#323846", 2);
+  ctx.strokeRect(leftX + 1, leftY + 1, leftWidth - 2, leftHeight - 2);
+  drawRect(ctx, leftX, leftY, 5, leftHeight, accent);
+  drawRect(ctx, leftX + 16, leftY + 16, leftWidth - 32, 252, "#08090d");
 
   const shield = await decodeShield(model.displayLevel, options.assetsDir || defaultShieldAssetsDir());
-  drawContainImage(ctx, shield, 74, 76, 218, 264);
-  drawText(ctx, model.current ? `LEVEL ${model.displayLevel.level}` : "LOCKED", 118, 378, 24, model.current ? "#ffffff" : "#9aa1ad", "bold");
+  drawContainImage(ctx, shield, leftX + 42, leftY + 52, leftWidth - 84, 184);
+  drawCenteredText(ctx, model.current ? `LEVEL ${model.displayLevel.level}` : "LOCKED", leftX + 18, leftY + 308, leftWidth - 36, 24, model.current ? "#ffffff" : "#9aa1ad", "bold", 18);
 
-  drawText(ctx, "АНТИТИМ SUPPORT", 350, 86, 22, "#9da5b4", "bold");
-  const title = fitText(ctx, toPngSafeRoman(model.title), width - 410, 58, 32, "bold");
-  drawText(ctx, title.text, 348, 142, title.px, "#ffffff", "bold");
-  drawText(ctx, model.subtitle, 352, 180, 24, "#c9ced8", "regular");
-  drawText(ctx, displayName, 352, 220, 28, "#ffffff", "bold");
-  drawText(ctx, model.pointsText, 352, 254, 28, accent, "bold");
-
-  drawSegmentProgress(ctx, model, 350, 286, width - 420, 46);
-  drawText(ctx, toPngSafeRoman(model.nextText), 350, 370, 25, "#ffffff", "bold");
-  const description = fitText(ctx, model.displayLevel.description, width - 410, 22, 16, "regular");
-  drawText(ctx, description.text, 350, 408, description.px, "#aeb5c2", "regular");
-  drawMilestoneRail(ctx, model, 352, 448, width - 426);
-
-  drawRect(ctx, width - 270, 64, 196, 44, "#111319");
+  drawText(ctx, "АНТИТИМ SUPPORT", contentX, 86, 22, "#9da5b4", "bold");
+  drawRect(ctx, chipX, 64, chipWidth, 44, "#111319");
   stroke(ctx, accent, 2);
-  ctx.strokeRect(width - 270, 64, 196, 44);
-  drawText(ctx, model.isMaxLevel ? "ПИК ОТКРЫТ" : "ДО НОВОГО УР.", width - 252, 94, 21, "#ffffff", "bold");
+  ctx.strokeRect(chipX + 1, 65, chipWidth - 2, 42);
+  drawCenteredText(ctx, model.isMaxLevel ? "ПИК ОТКРЫТ" : "ДО НОВОГО УР.", chipX + 12, 94, chipWidth - 24, 20, "#ffffff", "bold", 14);
+
+  const titleMaxWidth = Math.max(320, chipX - contentX - 34);
+  const title = fitText(ctx, toPngSafeRoman(model.title), titleMaxWidth, 52, 32, "bold");
+  drawText(ctx, title.text, contentX - 2, 142, title.px, "#ffffff", "bold");
+  drawText(ctx, model.subtitle, contentX + 2, 180, 24, "#c9ced8", "regular");
+  const displayNameFit = fitText(ctx, displayName, contentWidth, 28, 18, "bold");
+  drawText(ctx, displayNameFit.text, contentX + 2, 220, displayNameFit.px, "#ffffff", "bold");
+  const pointsFit = fitText(ctx, model.pointsText, contentWidth, 28, 18, "bold");
+  drawText(ctx, pointsFit.text, contentX + 2, 254, pointsFit.px, accent, "bold");
+
+  drawSegmentProgress(ctx, model, contentX, 286, contentWidth, 46);
+  const nextText = fitText(ctx, toPngSafeRoman(model.nextText), contentWidth, 25, 17, "bold");
+  drawText(ctx, nextText.text, contentX, 370, nextText.px, "#ffffff", "bold");
+  const description = fitText(ctx, model.displayLevel.description, contentWidth, 22, 16, "regular");
+  drawText(ctx, description.text, contentX, 408, description.px, "#aeb5c2", "regular");
+  drawMilestoneRail(ctx, model, contentX + 4, 448, contentWidth - 8);
 
   const chunks = [];
   const stream = new PassThrough();
