@@ -141,6 +141,19 @@ function parsePingModeInput(value, fallback = "battalion") {
   return normalizeAntiteamPingMode(normalized, fallback);
 }
 
+function parseEntityIdList(value = "", limit = 25) {
+  const roleIds = [];
+  const seen = new Set();
+  for (const token of String(value || "").split(/[\s,;]+/)) {
+    const roleId = parseEntityId(token);
+    if (!roleId || seen.has(roleId)) continue;
+    seen.add(roleId);
+    roleIds.push(roleId);
+    if (roleIds.length >= limit) break;
+  }
+  return roleIds;
+}
+
 function parseColorInput(value, fallback = 0xE53935) {
   const text = cleanString(value, 20).replace(/^#/, "");
   if (/^[0-9a-f]{6}$/i.test(text)) return Number.parseInt(text, 16);
@@ -173,7 +186,13 @@ function getConfiguredClanRoleIds(ticket = {}, config = createDefaultAntiteamCon
 
 function getTicketPingRoleIds(ticket = {}, config = createDefaultAntiteamConfig()) {
   if (ticket.kind === "clan") return getConfiguredClanRoleIds(ticket, config);
-  return cleanString(config.battalionRoleId, 80) ? [config.battalionRoleId] : [];
+  return [
+    config.battalionRoleId,
+    ...(Array.isArray(config.battalionPingRoleIds) ? config.battalionPingRoleIds : []),
+  ]
+    .map((roleId) => cleanString(roleId, 80))
+    .filter(Boolean)
+    .filter((roleId, index, roleIds) => roleIds.indexOf(roleId) === index);
 }
 
 function isImageAttachment(attachment = {}) {
@@ -1096,6 +1115,27 @@ function createAntiteamOperator(options = {}) {
       return true;
     }
 
+    if (id === ANTITEAM_CUSTOM_IDS.joinBattalion) {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      let result = null;
+      try {
+        result = await grantBattalionRole(interaction.user.id, "antiteam battalion self-join");
+      } catch (error) {
+        logError("Antiteam battalion self-join failed:", error?.message || error);
+        await interaction.editReply({ content: "Не смог выдать роль батальёна. Проверь права бота и роль в настройках.", components: [] });
+        return true;
+      }
+      const message = result?.skipped === "missing-role"
+        ? "Роль батальёна пока не настроена."
+        : result?.skipped === "missing-member"
+          ? "Не смог найти тебя на сервере для выдачи роли."
+          : result?.skipped === "already-has-role"
+            ? "Ты уже в батальоне."
+            : "Готово, выдал роль батальёна.";
+      await interaction.editReply({ content: message, components: [] });
+      return true;
+    }
+
     if (id === ANTITEAM_CUSTOM_IDS.requestRobloxNick || id === ANTITEAM_CUSTOM_IDS.changeRoblox) {
       await interaction.showModal(buildRobloxUsernameModal({ customId: "at:roblox" }));
       return true;
@@ -1614,6 +1654,7 @@ function createAntiteamOperator(options = {}) {
         ...previous,
         pingMode: parsePingModeInput(interaction.fields.getTextInputValue("ping_mode"), previous.pingMode),
         extraPingRoleId: parseEntityId(interaction.fields.getTextInputValue("extra_ping_role_id")),
+        battalionPingRoleIds: parseEntityIdList(interaction.fields.getTextInputValue("battalion_ping_role_ids")),
       });
       await persist("antiteam-ping-config", () => {
         const state = getState();

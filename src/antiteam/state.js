@@ -195,6 +195,11 @@ function createDefaultAntiteamConfig(value = {}) {
     channelId: cleanString(source.channelId, 80),
     panelMessageId: cleanString(source.panelMessageId, 80),
     battalionRoleId: cleanString(source.battalionRoleId, 80),
+    battalionPingRoleIds: normalizeUniqueStringArray(
+      source.battalionPingRoleIds ?? source.basePingRoleIds ?? source.extraBattalionPingRoleIds,
+      25,
+      80
+    ),
     battalionLeadRoleId: cleanString(source.battalionLeadRoleId, 80),
     clanCallerRoleId: cleanString(source.clanCallerRoleId, 80),
     pingMode: normalizeAntiteamPingMode(source.pingMode, "battalion"),

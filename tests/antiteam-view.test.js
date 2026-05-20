@@ -51,6 +51,8 @@ test("start panel is Components V2 and exposes submit button", () => {
   assert.match(payloadJson(payload), /Создать антитим/);
   assert.match(payloadJson(payload), /Система пинга/);
   assert.doesNotMatch(payloadJson(payload), /Батальён:/);
+  assert.match(payloadJson(payload), /Вступить в батальён/);
+  assert.match(payloadJson(payload), new RegExp(ANTITEAM_CUSTOM_IDS.joinBattalion.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   assert.ok(payloadJson(payload).indexOf(ANTITEAM_CUSTOM_IDS.progress) < payloadJson(payload).indexOf(ANTITEAM_CUSTOM_IDS.guide));
   assert.match(payloadJson(payload), /Мой прогресс/);
   assert.match(payloadJson(payload), new RegExp(ANTITEAM_CUSTOM_IDS.guide.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
@@ -531,11 +533,14 @@ test("ping config modal exposes the three ping systems", () => {
   const modal = buildPingConfigModal({
     pingMode: "custom_role",
     extraPingRoleId: "role-2",
+    battalionPingRoleIds: ["role-3", "role-4"],
   });
   const json = JSON.stringify(modal.toJSON());
 
   assert.match(json, /battalion \/ role \/ everyone/);
   assert.match(json, /role-2/);
+  assert.match(json, /Доп\. роли базового пинга/);
+  assert.match(json, /role-3\\nrole-4/);
 });
 
 test("helper stats payload supports per-helper delete and full clear confirmation", () => {

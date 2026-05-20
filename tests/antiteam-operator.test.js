@@ -426,6 +426,31 @@ test("support progress button renders personal PNG from helper stats", async () 
   assert.equal(interaction.calls.at(-1)[1].files[0].name, "antiteam-support-progress.png");
 });
 
+test("join battalion button grants the base battalion role only", async () => {
+  const db = {};
+  const state = ensureAntiteamState(db).state;
+  state.config.battalionRoleId = "battalion-role";
+  state.config.battalionPingRoleIds = ["extra-ping-role"];
+  const granted = [];
+  const operator = createAntiteamOperator({
+    db,
+    saveDb() {},
+    grantRole: async (userId, roleId, reason) => {
+      granted.push({ userId, roleId, reason });
+      return { granted: true, roleId };
+    },
+  });
+  const interaction = createButtonInteraction(ANTITEAM_CUSTOM_IDS.joinBattalion, { id: "user-1", username: "User" });
+
+  assert.equal(await operator.handleButtonInteraction(interaction), true);
+
+  assert.deepEqual(interaction.calls.map((call) => call[0]), ["deferReply", "editReply"]);
+  assert.equal(interaction.calls.at(-1)[1].content, "Готово, выдал роль батальёна.");
+  assert.deepEqual(granted, [
+    { userId: "user-1", roleId: "battalion-role", reason: "antiteam battalion self-join" },
+  ]);
+});
+
 test("start panel submit resets a stale clan draft back to the caller Roblox profile", async () => {
   const db = {};
   setAntiteamDraft(db, "user-1", {
@@ -1331,6 +1356,7 @@ test("standard draft submit sends battalion ping and transient configured role p
   const state = ensureAntiteamState(db).state;
   state.config.channelId = "channel-1";
   state.config.battalionRoleId = "battalion-role";
+  state.config.battalionPingRoleIds = ["extra-base-role"];
   state.config.pingMode = "custom_role";
   state.config.extraPingRoleId = "extra-role";
   setAntiteamDraft(db, "user-1", {
@@ -1391,8 +1417,8 @@ test("standard draft submit sends battalion ping and transient configured role p
   const ticket = Object.values(db.sot.antiteam.tickets)[0];
   assert.equal(ticket.message.pingMessageId, "thread-message-1");
   assert.equal(sentToThread.length, 3);
-  assert.equal(sentToThread[0].content, "<@&battalion-role>");
-  assert.deepEqual(sentToThread[0].allowedMentions, { roles: ["battalion-role"] });
+  assert.equal(sentToThread[0].content, "<@&battalion-role> <@&extra-base-role>");
+  assert.deepEqual(sentToThread[0].allowedMentions, { roles: ["battalion-role", "extra-base-role"] });
   assert.equal(sentToThread[1].content, "<@&extra-role>");
   assert.deepEqual(sentToThread[1].allowedMentions, { roles: ["extra-role"] });
   assert.deepEqual(scheduledDelays, [500]);
@@ -2085,7 +2111,11 @@ test("ping config controls are available in moderator panel and save mode", asyn
 
   const modal = createModalInteraction(
     "at:ping:config_modal",
-    { ping_mode: "everyone", extra_ping_role_id: "<@&55555>" },
+    {
+      ping_mode: "everyone",
+      extra_ping_role_id: "<@&55555>",
+      battalion_ping_role_ids: "<@&66666>\n77777\n<@&66666>",
+    },
     { id: "mod-1", username: "Mod" },
     member
   );
@@ -2093,6 +2123,7 @@ test("ping config controls are available in moderator panel and save mode", asyn
   assert.equal(await operator.handleModalSubmitInteraction(modal), true);
   assert.equal(db.sot.antiteam.config.pingMode, "everyone");
   assert.equal(db.sot.antiteam.config.extraPingRoleId, "55555");
+  assert.deepEqual(db.sot.antiteam.config.battalionPingRoleIds, ["66666", "77777"]);
   assert.match(JSON.stringify(modal.calls.at(-1)[1].components[0].toJSON()), /Пинг-система сохранена/);
 });
 
