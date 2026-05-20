@@ -120,6 +120,11 @@ function formatAntiteamPingMode(config = createDefaultAntiteamConfig()) {
   return basePing;
 }
 
+function formatStartPanelPingLine(config = createDefaultAntiteamConfig()) {
+  const basePing = formatRoleMentionList(getBattalionPingRoleIds(config), "батальён пока не настроен");
+  return `Пингуются те, кто в ${basePing}`;
+}
+
 function getPhotoAttachmentName(photo = {}) {
   if (!photo || typeof photo !== "object") return "antiteam-photo.png";
   const rawName = cleanString(photo.name, 180).replace(/[^A-Za-z0-9._-]+/g, "_");
@@ -235,7 +240,7 @@ function buildStartPanelPayload(config = createDefaultAntiteamConfig()) {
       new TextDisplayBuilder().setContent(`# ${panel.title}`),
       new TextDisplayBuilder().setContent(panel.description),
       new TextDisplayBuilder().setContent([
-        `Система пинга: ${formatAntiteamPingMode(normalized)}`,
+        formatStartPanelPingLine(normalized),
         panel.details,
       ].filter(Boolean).join("\n"))
     )
