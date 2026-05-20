@@ -13615,61 +13615,6 @@ function buildLegacyEloSubmitAwaitPayload(channelId, rawText = "") {
   });
 }
 
-async function buildLegacyEloMyCardPayload(client, userId) {
-  const liveState = getLiveLegacyEloState();
-  if (!liveState.ok) {
-    return buildLegacyEloStateErrorPayload("Не удалось открыть legacy ELO данные", liveState);
-  }
-
-  const rating = getLegacyEloRating(liveState.rawDb, userId);
-  const pending = getPendingLegacyEloSubmissionForUser(liveState.rawDb, userId);
-  const session = getLegacyEloSubmitSession(userId);
-
-  if (rating) {
-    const approvedSubmission = getLatestLegacyEloSubmissionForUser(liveState.rawDb, userId, ["approved"]);
-    const proofUrl = approvedSubmission?.reviewAttachmentUrl || approvedSubmission?.screenshotUrl || rating.proofUrl || "";
-    const embed = new EmbedBuilder()
-      .setTitle("Моя ELO карточка")
-      .setDescription([
-        "Статус: **в тир-листе**",
-        `ELO: **${formatNumber(rating.elo)}**`,
-        `Тир: **${rating.tier ?? "—"}**`,
-        rating.updatedAt ? `Обновлено: **${formatDateTime(rating.updatedAt)}**` : null,
-        proofUrl ? `[Открыть скрин](${proofUrl})` : null,
-      ].filter(Boolean).join("\n"));
-
-    if (rating.avatarUrl) embed.setThumbnail(rating.avatarUrl);
-    if (proofUrl) embed.setImage(proofUrl);
-    return ephemeralPayload({ embeds: [embed] });
-  }
-
-  if (pending) {
-    const proofUrl = pending.reviewAttachmentUrl || pending.screenshotUrl || "";
-    const embed = new EmbedBuilder()
-      .setTitle("Моя ELO карточка")
-      .setDescription([
-        "Статус: **заявка на проверке**",
-        `ELO: **${formatNumber(pending.elo)}**`,
-        `Тир по числу: **${pending.tier ?? "—"}**`,
-        `ID: **${pending.id || "—"}**`,
-        pending.createdAt ? `Создано: **${formatDateTime(pending.createdAt)}**` : null,
-        proofUrl ? `[Открыть скрин](${proofUrl})` : null,
-      ].filter(Boolean).join("\n"));
-
-    if (proofUrl) embed.setImage(proofUrl);
-    return ephemeralPayload({ embeds: [embed] });
-  }
-
-  if (session) {
-    return buildLegacyEloSubmitAwaitPayload(
-      session.channelId || getResolvedEloSubmitPanelSnapshot().channelId || getLegacyEloSubmitPanelState(liveState.rawDb).channelId || "",
-      session.rawText
-    );
-  }
-
-  return ephemeralPayload({ content: "Тебя пока нет в ELO тир-листе и активной заявки тоже нет." });
-}
-
 async function ensureLegacyEloSubmitHubMessage(client, liveState, forcedChannelId = null) {
   if (!liveState?.ok) throw new Error("Legacy ELO state is unavailable");
 
@@ -17160,12 +17105,13 @@ client.on("interactionCreate", async (interaction) => {
       isModerator,
       replyNoPermission: () => interaction.reply(ephemeralPayload({ content: "Нет прав." })),
       buildModeratorPanelPayload,
-      buildRobloxPanelPayload: ({ statusText = "" } = {}) => buildRobloxStatsPanelPayload({
+      buildRobloxPanelPayload: ({ statusText = "", viewMode = "overview" } = {}) => buildRobloxStatsPanelPayload({
         db,
         runtimeState: robloxRuntimeState,
         telemetry: robloxPanelTelemetry,
         appConfig: getEffectiveAppConfig(),
         statusText,
+        viewMode,
       }),
       updateRobloxSettings: (patch = {}) => {
         const previousSnapshot = captureRobloxIntegrationSnapshot();
@@ -19047,16 +18993,6 @@ client.on("interactionCreate", async (interaction) => {
 
       modal.addComponents(new ActionRowBuilder().addComponents(textInput));
       await interaction.showModal(modal);
-      return;
-    }
-
-    if (interaction.customId === "elo_submit_card") {
-      await replyWithAsyncInteractionPayload(interaction, {
-        loadingText: "Собираю ELO карточку...",
-        buildPayload: () => buildLegacyEloMyCardPayload(client, interaction.user.id),
-        errorText: "Не удалось открыть ELO карточку.",
-        logLabel: "Legacy ELO my card open failed",
-      });
       return;
     }
 

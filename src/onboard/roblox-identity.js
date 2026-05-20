@@ -109,13 +109,13 @@ function hasConfirmedRobloxIdentity(value = {}) {
 }
 
 function canManageWelcomeRobloxIdentity(value = {}) {
-  const state = value && typeof value === "object" ? value : {};
-  if (state.canManage === true) return true;
-  return !hasConfirmedRobloxIdentity(state.session) && !hasConfirmedRobloxIdentity(state.pending);
+  void value;
+  return true;
 }
 
 function getWelcomeRobloxIdentityLockText(value = {}) {
-  return canManageWelcomeRobloxIdentity(value) ? null : WELCOME_ROBLOX_IDENTITY_LOCK_TEXT;
+  void value;
+  return null;
 }
 
 function buildProfileRobloxIdentitySession(value = {}) {

@@ -1046,3 +1046,195 @@ Activity уже не “пара счётчиков сообщений”, а п
 3. крупный cutover;
 4. закрытие legacy surface;
 5. появление новой корневой продуктовой системы.
+
+---
+
+## 16. Живой Audit Ledger
+
+Дата старта живого ledger: 20.05.2026.
+
+Этот раздел переводит файл из разового master snapshot в накопительный audit layer.
+Он не заменяет узкие доменные документы вроде SOURCE_OF_TRUTH_REWRITE_PLAN.md, ACTIVITY_SYSTEM_REBUILD_PLAN.md, ROBLOX_TRACKING_CHECKLIST_AUDIT.md или PROFILE_SYNERGY_SYSTEM_PLAN.md.
+Его задача:
+1. держать в одном месте активную очередь audit-wave по системе;
+2. разделять подтверждённые findings, hypotheses и verification evidence;
+3. фиксировать owner seam, где реально контролируется поведение;
+4. уменьшать риск повторной потери знания между сессиями, recovery и rollout.
+
+### 16.1. Правила Записи В Ledger
+
+1. confirmed finding здесь фиксируется только если есть хотя бы один жёсткий якорь: controlling code path, существующий тест, воспроизводимый runtime симптом, лог или явный contract mismatch;
+2. hypotheses не смешиваются с багами и всегда содержат следующий проверочный шаг;
+3. подозрение на потерянный файл или потерянную работу нельзя объявлять фактом без сверки current main с import graph, test inventory, owner map и root docs;
+4. каждая audit-wave должна обновлять не только список рисков, но и owner seam, verification evidence и следующий срез;
+5. этот раздел должен обновляться инкрементально, а не переписываться целиком при каждом новом проходе.
+
+### 16.2. Severity Bands Для Находок
+
+1. Boot blocker — ломает запуск процесса, регистрацию команд или базовый ready-path;
+2. Data drift — создаёт расхождение между persisted truth layers, shared-profile, SoT или legacy shadows;
+3. Runtime degradation — не валит бот целиком, но ломает часть runtime, jobs, sync или operator workflows;
+4. Operator UX / moderation risk — даёт неверную, неполную или хрупкую управляющую поверхность;
+5. Coverage gap — опасное место, где регрессия легко проходит мимо тестов и smoke-check;
+6. Doc drift — документация или handoff слой уже заметно отстают от реального owner path.
+
+### 16.3. Текущая Очередь Audit Waves
+
+1. Wave A: startup и ready-path.
+   Owner anchors:
+   1. welcome-bot.js;
+   2. src/runtime/client-ready-core.js;
+   3. src/db/store.js;
+   4. tests/welcome-bot-startup-smoke.test.js.
+   Почему сначала:
+   1. это общий kill-switch почти для всей системы;
+   2. именно здесь концентрируются import brittleness, fail-fast semantics и degraded startup behaviour.
+2. Wave B: SoT и legacy-compat.
+   Owner anchors:
+   1. src/sot/loader.js;
+   2. src/sot/schema.js;
+   3. src/sot/legacy-bridge/write.js;
+   4. src/sot/legacy-bridge/compare.js;
+   5. src/db/store.js.
+   Почему сразу после startup:
+   1. почти все крупные persisted seams проходят через SoT bridge и normalization path;
+   2. любые выводы о якобы потерянной логике нужно проверять именно здесь, а не по старым snapshot.
+3. Wave C: activity system.
+   Owner anchors:
+   1. src/activity/runtime.js;
+   2. src/activity/operator.js;
+   3. src/activity/state.js;
+   4. src/activity/user-state.js.
+4. Wave D: Roblox integration.
+   Owner anchors:
+   1. src/runtime/roblox-jobs.js;
+   2. src/runtime/roblox-runtime-support.js;
+   3. src/integrations/roblox-playtime.js;
+   4. src/integrations/shared-profile.js.
+5. Wave E: verification.
+   Owner anchors:
+   1. src/verification/runtime.js;
+   2. src/verification/operator.js;
+   3. welcome-bot.js startup wiring.
+6. Wave F: profile и synergy.
+   Owner anchors:
+   1. src/profile/access.js;
+   2. src/profile/entry.js;
+   3. src/profile/model.js;
+   4. src/profile/operator.js;
+   5. src/profile/view.js;
+   6. PROFILE_SYNERGY_SYSTEM_PLAN.md;
+   7. PROFILE_SYNERGY_CALCULATION_SPEC.md.
+
+### 16.4. Подтверждённые Findings На Стартовом Срезе
+
+1. Severity: Boot blocker.
+   Finding:
+   runClientReadyCore сейчас теряет degraded startup summary: welcome-bot.js ожидает поле degraded, но src/runtime/client-ready-core.js возвращает только generated.
+   Evidence:
+   1. в welcome-bot.js clientReady path делает destructuring `({ generated, degraded: startupDegraded } = await runClientReadyCore(...))` и затем пишет в lastClientReadyCoreDegraded только то, что пришло в startupDegraded;
+   2. в src/runtime/client-ready-core.js runClientReadyCore после soft-fail шагов возвращает `return { generated };` без массива degraded;
+   3. узкий runtime check на текущем дереве подтвердил это: при ошибке runSotStartupAlerts функция вернула только `{ generated: { resolvedCharacters: 1 } }`, а ошибка осталась только в logError;
+   4. tests/client-ready-core.test.js проходят зелёно и проверяют только generated/result order, не проверяя degraded return shape;
+   5. tests/activity-operator-panel.test.js отдельно ожидает, что operator payload умеет показывать startup degraded details, то есть потребитель degraded surface реально существует.
+   Practical meaning:
+   1. SoT Ground Truth и activity operator startup health сейчас могут показывать `OK`, даже если ready-core завершился в degraded mode;
+   2. это не просто doc gap, а реальный observability defect в operational startup health;
+   3. одновременно это coverage gap: профильный test-file ready-core не ловит потерю degraded contract.
+
+2. Severity: Boot blocker.
+   Finding:
+   startup critical path действительно сконцентрирован в одном owner seam вокруг src/runtime/client-ready-core.js, и registerGuildCommands является первой hard-fail точкой этого пути.
+   Evidence:
+   1. runClientReadyCore сначала вызывает registerGuildCommands и на ошибке поднимает ClientReadyCoreError;
+   2. ensureManagedRoles, runSotStartupAlerts, syncApprovedTierRoles, refreshWelcomePanel, refreshAllTierlists и resumeActivityRuntime обрабатываются как soft-fail с logError;
+   3. tests/welcome-bot-startup-smoke.test.js отдельно существует именно для класса missing import / ReferenceError regressions и требует ready log.
+   Practical meaning:
+   1. любые выводы о стабильности startup нельзя делать только по обычным unit tests;
+   2. потери import bindings в welcome-bot.js или ready-core зависимостях остаются высокорисковым классом регрессий.
+
+3. Severity: Data drift.
+   Finding:
+   src/db/store.js уже является активным multi-truth normalization seam, а не простым JSON read/write helper.
+   Evidence:
+   1. load() одновременно нормализует onboard/access/autonomy/integrations state, делает dormant imports, syncSharedProfiles и syncSotState;
+   2. save() перед записью делает syncSharedProfiles, затем dualWriteSotState, затем syncSotState;
+   3. это означает, что одна операция сохранения уже затрагивает shared-profile, SoT и legacy-compatible projections сразу.
+   Practical meaning:
+   1. баг в одном домене может повредить persisted shape соседних слоёв даже без прямой правки их модулей;
+   2. проверка подозрений на потерянную логику должна идти через store/load/save seams, а не только через UI flows.
+
+4. Severity: Runtime degradation.
+   Finding:
+   activity runtime уже живёт как отдельный owner seam, но flush/resume path одновременно пересобирает user snapshots, зеркалит их в profile и пишет db.sot.activity.
+   Evidence:
+   1. flushActivityRuntime в src/activity/runtime.js финализирует сессии, rebuild-ит snapshots для dirty users, вызывает mirrorActivitySnapshotToProfile и затем пишет db.sot.activity = state;
+   2. resumeActivityRuntime восстанавливает persisted mirrors, пытается гидрировать live voice state, rebuild-ит touched users и снова зеркалит их в profile;
+   3. оба пути зависят от saveDb, runSerialized и resolveMemberActivityMeta как от correctness-critical зависимостей.
+   Practical meaning:
+   1. activity нельзя аудировать только как локальный state machine;
+   2. это кросс-доменный runtime seam между SoT, shared-profile и live guild state.
+
+5. Severity: Runtime degradation.
+   Finding:
+   Roblox runtime уже имеет собственный serialization/coordinator layer, поэтому главные риски здесь не в отсутствии структуры, а в starvation, failure semantics и config wiring.
+   Evidence:
+   1. createRobloxJobCoordinator в src/runtime/roblox-jobs.js сериализует jobs через queueTail и не допускает параллельного запуска одного kind;
+   2. runRobloxPlaytimeCycle считает processed/failed batches отдельно и не валит весь цикл только из-за одного batch failure;
+   3. runRobloxPlaytimeSyncJob сначала проходит repairRobloxVerifiedBindings, затем строит verified candidates и только потом идёт в presence sync.
+   Practical meaning:
+   1. аудит Roblox должен смотреть на batch starvation, repair wiring и queue ownership, а не сводиться к поиску одной функции polling;
+   2. runtime regression здесь может оставаться частичной и долго маскироваться под degraded freshness вместо явного падения.
+
+6. Severity: Coverage gap.
+   Finding:
+   startup smoke уже является обязательным защитным контуром для hot path, но это всё ещё отдельный специализированный smoke, а не полное end-to-end покрытие orchestration.
+   Evidence:
+   1. tests/welcome-bot-startup-smoke.test.js поднимает welcome-bot.js через clientReady smoke path;
+   2. тест специально слушает console.error на ReferenceError и is not defined;
+   3. из этого следует, что обычный зелёный npm test сам по себе недостаточен для вывода о безопасности правок в startup/import hot path.
+   Practical meaning:
+   1. все будущие правки в startup, ready-core, SoT wiring и import surfaces должны валидироваться этим smoke отдельно;
+   2. отсутствие более широкого orchestration smoke остаётся отдельной blind spot зоной.
+
+### 16.5. Working Hypotheses, Которые Нужно Доказать Или Снять
+
+1. Severity: Boot blocker.
+   Hypothesis:
+   локальный syntax-check welcome-bot.js через vm.Script уже однажды упал при зелёном npm test, и это нужно либо воспроизвести, либо снять как ложный след терминального контекста.
+   Что нужно для проверки:
+   1. повторить parse-check с захватом stderr;
+   2. сопоставить результат с tests/welcome-bot-startup-smoke.test.js;
+   3. если воспроизводится, выяснить, это синтаксис, shell quoting или неиспользуемый runtime path.
+
+2. Severity: Coverage gap.
+   Hypothesis:
+   в проекте всё ещё есть заметные интеграционные дыры между startup, SoT, activity, Roblox, verification и shared-profile, которые не прикрыты ни одним сквозным тестом.
+   Что нужно для проверки:
+   1. собрать matrix test-to-owner coverage;
+   2. отдельно отметить cross-domain mutations, которые проверяются только косвенно;
+   3. зафиксировать, где нужен новый smoke или focused integration test.
+
+3. Severity: Doc drift.
+   Hypothesis:
+   часть root-docs уже полезна как историческая память, но не даёт актуального phase-state на 20.05.2026 без сверки с кодом.
+   Что нужно для проверки:
+   1. после каждой wave отмечать, какой документ остаётся freshest source для домена;
+   2. отдельным проходом сопоставить status формулировки из старых audit docs с текущими owner paths в коде.
+
+### 16.6. Verification Baseline На Момент Старта Ledger
+
+1. По текущему локальному состоянию из терминального контекста полный npm test проходит зелёно;
+2. для startup и hot-path изменений минимальный защитный порядок должен быть таким:
+   1. focused domain tests;
+   2. полный node scripts/run-tests.js;
+   3. node --test tests/welcome-bot-startup-smoke.test.js;
+3. для runtime-only выводов этого недостаточно:
+   1. нужны Railway/Discord логи;
+   2. нужен ручной smoke по operator flows, если затронут live routing.
+
+### 16.7. Следующий Конкретный Срез
+
+1. следующий update этого ledger должен быть посвящён Wave A и Wave B, а не общему обзору;
+2. в первую очередь нужно пройти startup/ready-path и SoT load/save/dual-write seams с фиксацией уже не только risk surfaces, но и конкретных bugs, imperfections и coverage gaps;
+3. новые доменные findings нужно складывать сюда, а не распылять по новым root-файлам без острой необходимости.
