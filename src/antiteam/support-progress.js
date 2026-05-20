@@ -249,16 +249,23 @@ function drawCenteredText(ctx, text, x, y, width, px, color = "#ffffff", kind = 
 }
 
 function drawMilestoneRail(ctx, model, x, y, width) {
-  drawRect(ctx, x, y, width, 6, "#2a2e38");
-  drawRect(ctx, x, y, Math.floor(width * model.totalProgress), 6, model.displayLevel.accentHex || "#ff2a2a");
+  const accent = model.displayLevel.accentHex || "#ff2a2a";
+  const railX = x + 16;
+  const railWidth = Math.max(1, width - 32);
+  drawRect(ctx, railX, y, railWidth, 6, "#2a2e38");
+  drawRect(ctx, railX, y, Math.floor(railWidth * model.totalProgress), 6, accent);
   const maxThreshold = SUPPORT_PROGRESS_LEVELS.at(-1).threshold;
   for (const level of SUPPORT_PROGRESS_LEVELS) {
-    const centerX = x + Math.floor(width * clamp(level.threshold / maxThreshold));
+    const centerX = railX + Math.floor(railWidth * clamp(level.threshold / maxThreshold));
     const unlocked = model.points >= level.threshold;
-    const markerColor = unlocked ? (level.accentHex || "#ff2a2a") : "#474c59";
-    drawRect(ctx, centerX - 5, y - 10, 10, 26, markerColor);
-    drawRect(ctx, centerX - 2, y - 15, 4, 36, unlocked ? "#ffffff" : "#5d6370");
-    drawCenteredText(ctx, String(level.threshold), centerX - 22, y + 42, 44, 19, unlocked ? "#ffffff" : "#858b99", "bold", 14);
+    drawRect(ctx, centerX - 4, y - 9, 8, 24, unlocked ? (level.accentHex || accent) : "#474c59");
+    drawCenteredText(ctx, String(level.threshold), centerX - 24, y + 48, 48, 18, unlocked ? "#ffffff" : "#858b99", "bold", 14);
+  }
+
+  if (model.points > 0) {
+    const progressX = railX + Math.floor(railWidth * model.totalProgress);
+    drawRect(ctx, progressX - 5, y - 17, 10, 40, "#111319");
+    drawRect(ctx, progressX - 3, y - 15, 6, 36, "#ffffff");
   }
 }
 
@@ -337,7 +344,7 @@ async function renderSupportProgressCard(options = {}) {
   drawText(ctx, nextText.text, contentX, 370, nextText.px, "#ffffff", "bold");
   const description = fitText(ctx, model.displayLevel.description, contentWidth, 22, 16, "regular");
   drawText(ctx, description.text, contentX, 408, description.px, "#aeb5c2", "regular");
-  drawMilestoneRail(ctx, model, contentX + 4, 448, contentWidth - 8);
+  drawMilestoneRail(ctx, model, contentX + 4, 428, contentWidth - 8);
 
   const chunks = [];
   const stream = new PassThrough();
