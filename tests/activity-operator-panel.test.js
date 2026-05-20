@@ -780,11 +780,17 @@ test("handleActivityPanelModalSubmitInteraction returns a rich inspection payloa
       "123456789012345678": {
         userId: "123456789012345678",
         displayName: "Mirror User",
+        summary: {
+          voice: {
+            voiceDurationSeconds30d: 10800,
+          },
+        },
         domains: {
           activity: {
             activityScore: 31,
             baseActivityScore: 27,
             activityScoreMultiplier: 1.15,
+            voiceScoringMode: "smart",
             desiredActivityRoleKey: "weak",
             appliedActivityRoleKey: null,
             roleEligibilityStatus: "eligible",
@@ -795,6 +801,7 @@ test("handleActivityPanelModalSubmitInteraction returns a rich inspection payloa
             sessions7d: 3,
             sessions30d: 9,
             sessions90d: 12,
+            voiceDurationSeconds30d: 10800,
             activeDays7d: 3,
             activeDays30d: 8,
             activeDays90d: 11,
@@ -802,6 +809,12 @@ test("handleActivityPanelModalSubmitInteraction returns a rich inspection payloa
             weightedMessages30d: 52,
             globalEffectiveSessions30d: 9,
             effectiveActiveDays30d: 8,
+            effectiveVoiceHours30d: 2.4,
+            effectiveActiveVoiceSignalHours30d: 1.6,
+            voiceEngagementRatio30d: 0.67,
+            voiceEngagementMultiplier: 0.84,
+            voicePart: 5.9,
+            activeVoicePart: 3.8,
             daysAbsent: 0,
             daysSinceGuildJoin: 5,
             guildJoinedAt: "2026-05-04T12:00:00.000Z",
@@ -860,9 +873,15 @@ test("handleActivityPanelModalSubmitInteraction returns a rich inspection payloa
   assert.equal(replies[0][1].embeds.length, 2);
   assert.match(replies[0][1].embeds[0].data.title, /Mirror User/);
   const inspectionText = replies[0][1].embeds[0].data.fields.map((field) => `${field.name}: ${field.value}`).join("\n");
+  const metricsText = replies[0][1].embeds[1].data.fields.map((field) => `${field.name}: ${field.value}`).join("\n");
   assert.match(inspectionText, /profile mirror/i);
   assert.match(inspectionText, /roles-only sync/i);
   assert.match(inspectionText, /<@&role-weak>/);
+  assert.match(metricsText, /Voice scoring: Режим: \*\*smart\*\*/i);
+  assert.match(metricsText, /Raw voice 30d: \*\*3 ч\*\*/i);
+  assert.match(metricsText, /Effective voice 30d: \*\*2,4 ч\*\*/i);
+  assert.match(metricsText, /Engagement: \*\*67,0%\*\* .* multiplier: \*\*x0,84\*\*/i);
+  assert.match(metricsText, /Meaningful segment: \*\*>= 90s\*\* .* debounce: \*\*5s\*\*/i);
 });
 
 test("handleActivityPanelModalSubmitInteraction shows effective newcomer role in inspection payload", async () => {

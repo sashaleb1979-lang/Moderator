@@ -73,6 +73,15 @@ test("ensureSharedProfile preserves activity role timing fields in domains and s
         baseActivityScore: 26,
         activityScore: 30,
         activityScoreMultiplier: 1.15,
+        voiceScoringMode: "smart",
+        voiceDurationSeconds30d: 10800,
+        effectiveVoiceHours30d: 9.2,
+        effectiveActiveVoiceSignalHours30d: 5.4,
+        effectiveVoiceDays30d: 4.5,
+        voiceEngagementRatio30d: 0.59,
+        voiceEngagementMultiplier: 0.88,
+        voicePart: 6.2,
+        activeVoicePart: 4.1,
         guildJoinedAt: "2026-05-04T12:00:00.000Z",
         daysSinceGuildJoin: 5,
         roleEligibilityStatus: "boosted_new_member",
@@ -85,12 +94,22 @@ test("ensureSharedProfile preserves activity role timing fields in domains and s
 
   assert.equal(result.profile.domains.activity.baseActivityScore, 26);
   assert.equal(result.profile.domains.activity.activityScoreMultiplier, 1.15);
+  assert.equal(result.profile.domains.activity.voiceScoringMode, "smart");
+  assert.equal(result.profile.domains.activity.voiceDurationSeconds30d, 10800);
+  assert.equal(result.profile.domains.activity.effectiveVoiceHours30d, 9.2);
+  assert.equal(result.profile.domains.activity.voiceEngagementRatio30d, 0.59);
+  assert.equal(result.profile.domains.activity.voicePart, 6.2);
   assert.equal(result.profile.domains.activity.guildJoinedAt, "2026-05-04T12:00:00.000Z");
   assert.equal(result.profile.domains.activity.daysSinceGuildJoin, 5);
   assert.equal(result.profile.domains.activity.roleEligibilityStatus, "boosted_new_member");
   assert.equal(result.profile.domains.activity.roleEligibleForActivityRole, true);
   assert.equal(result.profile.summary.activity.baseActivityScore, 26);
   assert.equal(result.profile.summary.activity.activityScoreMultiplier, 1.15);
+  assert.equal(result.profile.summary.activity.voiceScoringMode, "smart");
+  assert.equal(result.profile.summary.activity.voiceDurationSeconds30d, 10800);
+  assert.equal(result.profile.summary.activity.effectiveVoiceHours30d, 9.2);
+  assert.equal(result.profile.summary.activity.voiceEngagementRatio30d, 0.59);
+  assert.equal(result.profile.summary.activity.activeVoicePart, 4.1);
   assert.equal(result.profile.summary.activity.guildJoinedAt, "2026-05-04T12:00:00.000Z");
   assert.equal(result.profile.summary.activity.daysSinceGuildJoin, 5);
   assert.equal(result.profile.summary.activity.roleEligibilityStatus, "boosted_new_member");

@@ -76,6 +76,7 @@ test("profile read-model composes derived sections, links, and verification fact
         activity: {
           appliedActivityRoleKey: "active",
           activityScore: 77,
+          voiceScoringMode: "smart",
           messages7d: 35,
           messages30d: 210,
           messages90d: 400,
@@ -84,6 +85,13 @@ test("profile read-model composes derived sections, links, and verification fact
           sessions90d: 40,
           activeDays7d: 4,
           activeDays30d: 12,
+          effectiveVoiceHours30d: 2.1,
+          effectiveActiveVoiceSignalHours30d: 1.7,
+          effectiveVoiceDays30d: 1.6,
+          voiceEngagementRatio30d: 0.81,
+          voiceEngagementMultiplier: 0.91,
+          voicePart: 6.1,
+          activeVoicePart: 4.4,
           activeWatchedChannels30d: 5,
           daysAbsent: 2,
           roleEligibilityStatus: "eligible",
@@ -335,6 +343,11 @@ test("profile read-model composes derived sections, links, and verification fact
   assert.match(readModel.sections.activity[4].lines.join("\n"), /Нарратив: сезон разогнался: kills, activity и игровой круг выросли вместе\./);
   assert.match(readModel.sections.activity[4].lines.join("\n"), /Фокус сезона: Gojo удержался главным опорным персонажем\./);
   assert.match(readModel.sections.activity[5].lines.join("\n"), /Сообщения 90д: 400/);
+  assert.match(readModel.sections.activity[0].lines.join("\n"), /Voice raw\/effective 30д: 2,5 ч \/ 2,1 ч/);
+  assert.match(readModel.sections.activity[0].lines.join("\n"), /Voice signal 30д: 1,7 ч .* effective дни: 1,6/);
+  assert.match(readModel.sections.activity[0].lines.join("\n"), /Voice engagement: 81\.0% .* credit x0,91 .* вклад 6,1 \+ 4,4/);
+  assert.match(readModel.sections.activity[1].lines.join("\n"), /В score: effective 30д 2,1 ч .* active signal 1,7 ч .* engagement 81,0% .* x0,91/);
+  assert.match(readModel.sections.activity[1].lines.join("\n"), /Voice credit: 6,1 \+ 4,4 очков/);
   assert.match(readModel.sections.social[0].lines.join("\n"), /Связка Roblox: подтверждена/);
   assert.match(readModel.sections.social[0].lines.join("\n"), /Аккаунт: GojoMain/);
   assert.match(readModel.sections.social[0].lines.join("\n"), /Display в Roblox: Gojo The Strongest/);

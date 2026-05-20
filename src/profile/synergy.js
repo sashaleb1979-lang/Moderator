@@ -47,6 +47,15 @@ function formatHours(value, digits = 1) {
   }).format(amount);
 }
 
+function formatPercent(value, digits = 1) {
+  const amount = Number(value);
+  if (!Number.isFinite(amount)) return "—";
+  return `${new Intl.NumberFormat("ru-RU", {
+    minimumFractionDigits: Math.max(0, Number(digits) || 0),
+    maximumFractionDigits: Math.max(0, Number(digits) || 0),
+  }).format(amount)}%`;
+}
+
 function formatDays(value, digits = 1) {
   return `${formatHours(value, digits)} д`;
 }
@@ -1452,14 +1461,21 @@ function buildVoiceFreshnessLine(voiceSummary = {}, now) {
   return `Voice-срез уже ~${formatHours(hoursSinceCaptured)} ч не обновлялся, так что часть voice-активности могла не попасть.`;
 }
 
-function buildVoiceSummaryBlock({ voiceSummary = {}, now } = {}) {
+function buildVoiceSummaryBlock({ voiceSummary = {}, activitySummary = {}, now } = {}) {
   const summary = voiceSummary && typeof voiceSummary === "object" ? voiceSummary : {};
+  const activity = activitySummary && typeof activitySummary === "object" ? activitySummary : {};
   const sessionCount7d = normalizeFiniteNumber(summary.sessionCount7d);
   const sessionCount30d = normalizeFiniteNumber(summary.sessionCount30d);
   const incompleteSessionCount30d = normalizeFiniteNumber(summary.incompleteSessionCount30d);
   const voiceDurationSeconds7d = normalizeFiniteNumber(summary.voiceDurationSeconds7d);
   const voiceDurationSeconds30d = normalizeFiniteNumber(summary.voiceDurationSeconds30d);
   const lifetimeSessionCount = normalizeFiniteNumber(summary.lifetimeSessionCount);
+  const effectiveVoiceHours30d = normalizeNullableFiniteNumber(activity.effectiveVoiceHours30d);
+  const effectiveActiveVoiceSignalHours30d = normalizeNullableFiniteNumber(activity.effectiveActiveVoiceSignalHours30d);
+  const voiceEngagementRatio30d = normalizeNullableFiniteNumber(activity.voiceEngagementRatio30d);
+  const voiceEngagementMultiplier = normalizeNullableFiniteNumber(activity.voiceEngagementMultiplier);
+  const voicePart = normalizeNullableFiniteNumber(activity.voicePart);
+  const activeVoicePart = normalizeNullableFiniteNumber(activity.activeVoicePart);
   const topChannels = Array.isArray(summary.topChannels) ? summary.topChannels : [];
   const hasSignal = summary.isInVoiceNow === true
     || Boolean(summary.lastVoiceSeenAt)
@@ -1487,6 +1503,27 @@ function buildVoiceSummaryBlock({ voiceSummary = {}, now } = {}) {
   }
   if (totalsBits.length) {
     lines.push(totalsBits.join(" • "));
+  }
+
+  const explainBits = [];
+  if (Number.isFinite(effectiveVoiceHours30d)) {
+    explainBits.push(`effective 30д ${formatHours(effectiveVoiceHours30d)} ч`);
+  }
+  if (Number.isFinite(effectiveActiveVoiceSignalHours30d)) {
+    explainBits.push(`active signal ${formatHours(effectiveActiveVoiceSignalHours30d)} ч`);
+  }
+  if (Number.isFinite(voiceEngagementRatio30d)) {
+    explainBits.push(`engagement ${formatPercent(voiceEngagementRatio30d * 100)}`);
+  }
+  if (Number.isFinite(voiceEngagementMultiplier)) {
+    explainBits.push(`x${formatHours(voiceEngagementMultiplier, 2)}`);
+  }
+  if (explainBits.length) {
+    lines.push(`В score: ${explainBits.join(" • ")}`);
+  }
+
+  if (Number.isFinite(voicePart) || Number.isFinite(activeVoicePart)) {
+    lines.push(`Voice credit: ${formatHours(voicePart)} + ${formatHours(activeVoicePart)} очков`);
   }
 
   const statusBits = [];

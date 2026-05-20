@@ -187,6 +187,29 @@ function isActiveVoiceFlags(flags = {}) {
     && normalizeVoiceFlag(flags?.serverMute) !== true;
 }
 
+function getVoiceSegmentDurationSeconds(startedAt, endedAt) {
+  const startedMs = Date.parse(String(startedAt || ""));
+  const endedMs = Date.parse(String(endedAt || ""));
+  if (!Number.isFinite(startedMs) || !Number.isFinite(endedMs) || endedMs <= startedMs) {
+    return 0;
+  }
+  return Math.max(0, Math.floor((endedMs - startedMs) / 1000));
+}
+
+function getMeaningfulActiveVoiceSegmentSeconds(config = {}) {
+  return Math.max(0, Number(config.voiceScoring?.minMeaningfulActiveSegmentSeconds) || 0);
+}
+
+function getVoiceToggleDebounceSeconds(config = {}) {
+  return Math.max(0, Number(config.voiceScoring?.toggleDebounceSeconds) || 0);
+}
+
+function shouldDebounceVoiceFlagChange(session, currentTime, config = {}) {
+  const debounceSeconds = getVoiceToggleDebounceSeconds(config);
+  if (debounceSeconds <= 0) return false;
+  return getVoiceSegmentDurationSeconds(session?.lastStateChangedAt, currentTime) <= debounceSeconds;
+}
+
 function buildVoiceSessionId(session) {
   return [
     cleanString(session.guildId, 80) || "guild",
@@ -282,7 +305,7 @@ function ensureIncompleteVoiceSession(session, reason = "unknown") {
   return session;
 }
 
-function accumulateOpenVoiceSessionSegment(session, endedAt) {
+function accumulateOpenVoiceSessionSegment(session, endedAt, config = {}) {
   const endedAtIso = normalizeIsoTimestamp(endedAt, null);
   const startedAtIso = normalizeIsoTimestamp(session?.lastStateChangedAt, null);
   if (!endedAtIso || !startedAtIso) {
@@ -293,13 +316,14 @@ function accumulateOpenVoiceSessionSegment(session, endedAt) {
   const isActiveVoice = isActiveVoiceFlags(session);
   const isStreaming = normalizeVoiceFlag(session?.streaming);
   const isVideo = normalizeVoiceFlag(session?.selfVideo);
-  let totalDurationSeconds = 0;
+  const totalDurationSeconds = segments.reduce((sum, segment) => sum + Number(segment.durationSeconds || 0), 0);
+  const countsMeaningfulActiveSegment = isActiveVoice
+    && totalDurationSeconds >= getMeaningfulActiveVoiceSegmentSeconds(config);
 
   for (const segment of segments) {
-    totalDurationSeconds += segment.durationSeconds;
     const dayEntry = getVoiceDayEntry(session, segment.date);
     dayEntry.voiceDurationSeconds += segment.durationSeconds;
-    if (isActiveVoice) {
+    if (countsMeaningfulActiveSegment) {
       dayEntry.activeVoiceDurationSeconds += segment.durationSeconds;
     }
     if (isStreaming) {
@@ -313,7 +337,7 @@ function accumulateOpenVoiceSessionSegment(session, endedAt) {
   }
 
   session.voiceDurationSeconds = Number(session.voiceDurationSeconds || 0) + totalDurationSeconds;
-  if (isActiveVoice) {
+  if (countsMeaningfulActiveSegment) {
     session.activeVoiceDurationSeconds = Number(session.activeVoiceDurationSeconds || 0) + totalDurationSeconds;
   }
   if (isStreaming) {
@@ -326,10 +350,10 @@ function accumulateOpenVoiceSessionSegment(session, endedAt) {
   return totalDurationSeconds;
 }
 
-function finalizeOpenVoiceSession(session, endedAt) {
+function finalizeOpenVoiceSession(session, endedAt, config = {}) {
   const finalizedSession = clone(session || {});
   const endedAtIso = normalizeIsoTimestamp(endedAt, finalizedSession?.lastStateChangedAt || finalizedSession?.joinedAt);
-  accumulateOpenVoiceSessionSegment(finalizedSession, endedAtIso);
+  accumulateOpenVoiceSessionSegment(finalizedSession, endedAtIso, config);
   finalizedSession.endedAt = endedAtIso;
   return {
     id: buildVoiceSessionId(finalizedSession),
@@ -395,7 +419,7 @@ function upsertUserVoiceDailyStat(state, record) {
 }
 
 function persistFinalizedVoiceSession(state, session, endedAt) {
-  const persistedSession = finalizeOpenVoiceSession(session, endedAt);
+  const persistedSession = finalizeOpenVoiceSession(session, endedAt, state.config || {});
   state.globalVoiceSessions ||= [];
   state.globalVoiceSessions.push(persistedSession);
 
@@ -450,7 +474,12 @@ function hydrateActivityVoiceSessionsOnResume(state, currentVoiceStates = [], cu
     const channelChanged = cleanString(session.currentChannelId, 80) !== currentVoiceState.channelId;
     const flagsChanged = hasMeaningfulVoiceFlagChange(session, currentVoiceState);
     if (channelChanged || flagsChanged) {
-      accumulateOpenVoiceSessionSegment(session, currentTime);
+      const shouldDebounceFlags = !channelChanged
+        && flagsChanged
+        && shouldDebounceVoiceFlagChange(session, currentTime, state.config || {});
+      if (!shouldDebounceFlags) {
+        accumulateOpenVoiceSessionSegment(session, currentTime, state.config || {});
+      }
       if (channelChanged) {
         session.currentChannelId = currentVoiceState.channelId;
         session.enteredChannelIds = uniqueChannelIds([...(session.enteredChannelIds || []), currentVoiceState.channelId]);
@@ -793,7 +822,7 @@ function collectUserVoiceSessionRows(state, userId, now) {
     .map((entry) => clone(entry));
   const openVoiceSession = ensureOpenVoiceSessionMap(state)[userId];
   if (openVoiceSession && now) {
-    rows.push(finalizeOpenVoiceSession(openVoiceSession, now));
+    rows.push(finalizeOpenVoiceSession(openVoiceSession, now, state.config || {}));
   }
   return rows;
 }
@@ -806,7 +835,7 @@ function collectUserVoiceDailyRows(state, userId, now) {
   const openVoiceSession = ensureOpenVoiceSessionMap(state)[userId];
   if (!openVoiceSession || !now) return rows;
 
-  const projectedSession = finalizeOpenVoiceSession(openVoiceSession, now);
+  const projectedSession = finalizeOpenVoiceSession(openVoiceSession, now, state.config || {});
   const sessionDate = getDateKey(projectedSession.joinedAt);
   for (const [date, dayEntry] of Object.entries(projectedSession.dayBreakdown || {})) {
     rows.push({
@@ -1267,6 +1296,7 @@ function mirrorActivitySnapshotToProfile(db, userId, snapshot) {
 
 function recordActivityVoiceState({ db = {}, oldState = {}, newState = {}, now } = {}) {
   const state = ensureActivityState(db);
+  const config = state.config || {};
   const currentTime = getActivityRuntimeNow({ now });
   const guildId = cleanString(newState?.guildId || newState?.guild?.id || oldState?.guildId || oldState?.guild?.id, 80);
   const userId = cleanString(newState?.userId || newState?.id || newState?.member?.id || oldState?.userId || oldState?.id || oldState?.member?.id, 80);
@@ -1357,7 +1387,19 @@ function recordActivityVoiceState({ db = {}, oldState = {}, newState = {}, now }
     return { captured: false, stateChanged: false, reason: "state_unchanged" };
   }
 
-  accumulateOpenVoiceSessionSegment(session, currentTime);
+  if (!channelChanged && flagsChanged && shouldDebounceVoiceFlagChange(session, currentTime, config)) {
+    Object.assign(session, nextFlags, { lastStateChangedAt: currentTime });
+    dirtyUsers.add(userId);
+    commitDirtyUserSet(state, dirtyUsers);
+    return {
+      captured: true,
+      stateChanged: true,
+      action: "state_update_debounced",
+      session: clone(session),
+    };
+  }
+
+  accumulateOpenVoiceSessionSegment(session, currentTime, config);
   if (channelChanged) {
     session.currentChannelId = nextChannelId;
     session.enteredChannelIds = uniqueChannelIds([...(session.enteredChannelIds || []), nextChannelId]);

@@ -205,6 +205,24 @@ const ACTIVITY_PANEL_BUTTON_IDS = Object.freeze([
       return new Date(timestamp).toLocaleString("ru-RU");
     }
 
+    function formatDecimalNumber(value, digits = 1) {
+      const amount = Number(value);
+      if (!Number.isFinite(amount)) return "—";
+      return new Intl.NumberFormat("ru-RU", {
+        minimumFractionDigits: 0,
+        maximumFractionDigits: Math.max(0, Number(digits) || 0),
+      }).format(amount);
+    }
+
+    function formatRatioPercent(value, digits = 1) {
+      const amount = Number(value);
+      if (!Number.isFinite(amount)) return "—";
+      return `${new Intl.NumberFormat("ru-RU", {
+        minimumFractionDigits: Math.max(0, Number(digits) || 0),
+        maximumFractionDigits: Math.max(0, Number(digits) || 0),
+      }).format(amount * 100)}%`;
+    }
+
     function normalizeActivityPanelView(value) {
       const view = cleanString(value, 40).toLowerCase();
       return ACTIVITY_PANEL_VIEWS.includes(view) ? view : ACTIVITY_PANEL_DEFAULT_VIEW;
@@ -1003,6 +1021,21 @@ function buildActivityUserInspectionPayload({ db = {}, userId = "", memberRoleId
   const inspection = getActivityUserInspection({ db, userId, memberRoleIds });
   const snapshot = inspection.snapshot || {};
   const profile = db.profiles?.[inspection.userId] || {};
+  const state = ensureActivityState(db);
+  const voiceScoringConfig = state.config?.voiceScoring || {};
+  const voiceSummary = profile?.summary?.voice && typeof profile.summary.voice === "object"
+    ? profile.summary.voice
+    : {};
+  const domainVoiceSummary = profile?.domains?.voice?.summary && typeof profile.domains.voice.summary === "object"
+    ? profile.domains.voice.summary
+    : {};
+  const rawVoiceHours30d = [
+    Number.isFinite(Number(snapshot.voiceDurationSeconds30d)) ? Number(snapshot.voiceDurationSeconds30d) / 3600 : null,
+    Number.isFinite(Number(voiceSummary.voiceDurationSeconds30d)) ? Number(voiceSummary.voiceDurationSeconds30d) / 3600 : null,
+    Number.isFinite(Number(domainVoiceSummary.voiceDurationSeconds30d)) ? Number(domainVoiceSummary.voiceDurationSeconds30d) / 3600 : null,
+  ]
+    .filter((value) => Number.isFinite(value))
+    .sort((left, right) => right - left)[0] ?? null;
   const label = cleanString(profile.displayName, 120)
     || cleanString(profile.username, 120)
     || inspection.userId
@@ -1100,6 +1133,19 @@ function buildActivityUserInspectionPayload({ db = {}, userId = "", memberRoleId
           `Effective sessions 30d: **${Number(snapshot.globalEffectiveSessions30d ?? 0)}**`,
           `Effective active days 30d: **${Number(snapshot.effectiveActiveDays30d ?? 0)}**`,
           `Guild joined: ${formatDateTime(snapshot.guildJoinedAt)} • days: **${snapshot.daysSinceGuildJoin ?? "—"}**`,
+        ].join("\n"),
+        inline: false,
+      },
+      {
+        name: "Voice scoring",
+        value: [
+          `Режим: **${cleanString(snapshot.voiceScoringMode, 40) || cleanString(voiceScoringConfig.mode, 40) || "—"}**`,
+          `Raw voice 30d: **${formatDecimalNumber(rawVoiceHours30d)} ч**`,
+          `Effective voice 30d: **${formatDecimalNumber(snapshot.effectiveVoiceHours30d)} ч**`,
+          `Active signal 30d: **${formatDecimalNumber(snapshot.effectiveActiveVoiceSignalHours30d ?? snapshot.activeVoiceSignalHours30d)} ч**`,
+          `Engagement: **${formatRatioPercent(snapshot.voiceEngagementRatio30d)}** • multiplier: **x${formatDecimalNumber(snapshot.voiceEngagementMultiplier ?? 1, 2)}**`,
+          `Voice credit: **${formatDecimalNumber(snapshot.voicePart)} + ${formatDecimalNumber(snapshot.activeVoicePart)}**`,
+          `Meaningful segment: **>= ${Number(voiceScoringConfig.minMeaningfulActiveSegmentSeconds || 0)}s** • debounce: **${Number(voiceScoringConfig.toggleDebounceSeconds || 0)}s**`,
         ].join("\n"),
         inline: false,
       }

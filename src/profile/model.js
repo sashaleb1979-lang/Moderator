@@ -736,6 +736,9 @@ function buildProfileReadModel(options = {}) {
   });
 
   const activityLines = [];
+  const rawVoiceHours30d = Number.isFinite(Number(voiceSummary.voiceDurationSeconds30d))
+    ? Number(voiceSummary.voiceDurationSeconds30d) / 3600
+    : null;
   if (activitySummary.appliedActivityRoleKey || activitySummary.desiredActivityRoleKey) {
     activityLines.push(`Бакет: ${cleanString(activitySummary.appliedActivityRoleKey || activitySummary.desiredActivityRoleKey, 80)}`);
   }
@@ -750,6 +753,20 @@ function buildProfileReadModel(options = {}) {
   }
   if (Number.isFinite(Number(activitySummary.activeDays30d))) {
     activityLines.push(`Активные дни 30д: ${formatNumber(activitySummary.activeDays30d)}`);
+  }
+  if (Number.isFinite(rawVoiceHours30d) || Number.isFinite(Number(activitySummary.effectiveVoiceHours30d))) {
+    activityLines.push(`Voice raw/effective 30д: ${formatHours(rawVoiceHours30d)} ч / ${formatHours(activitySummary.effectiveVoiceHours30d)} ч`);
+  }
+  if (Number.isFinite(Number(activitySummary.effectiveActiveVoiceSignalHours30d)) || Number.isFinite(Number(activitySummary.effectiveVoiceDays30d))) {
+    activityLines.push(`Voice signal 30д: ${formatHours(activitySummary.effectiveActiveVoiceSignalHours30d)} ч • effective дни: ${formatHours(activitySummary.effectiveVoiceDays30d)}`);
+  }
+  if (Number.isFinite(Number(activitySummary.voiceEngagementRatio30d))
+    || Number.isFinite(Number(activitySummary.voiceEngagementMultiplier))
+    || Number.isFinite(Number(activitySummary.voicePart))
+    || Number.isFinite(Number(activitySummary.activeVoicePart))) {
+    activityLines.push(
+      `Voice engagement: ${formatPercent(Number(activitySummary.voiceEngagementRatio30d) * 100)} • credit x${formatHours(activitySummary.voiceEngagementMultiplier, 2)} • вклад ${formatHours(activitySummary.voicePart)} + ${formatHours(activitySummary.activeVoicePart)}`
+    );
   }
   if (Number.isFinite(Number(activitySummary.daysSinceGuildJoin))) {
     activityLines.push(`На сервере: ${formatNumber(Math.round(Number(activitySummary.daysSinceGuildJoin)))} дн.`);

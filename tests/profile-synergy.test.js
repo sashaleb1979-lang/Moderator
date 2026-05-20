@@ -585,6 +585,14 @@ test("buildProfileSynergyState derives friend overlap from server friend ids and
 test("buildProfileSynergyState exposes voice summary from canonical mirror", () => {
   const state = buildProfileSynergyState({
     now: "2026-05-16T12:00:00.000Z",
+    activitySummary: {
+      effectiveVoiceHours30d: 2.1,
+      effectiveActiveVoiceSignalHours30d: 1.7,
+      voiceEngagementRatio30d: 0.81,
+      voiceEngagementMultiplier: 0.91,
+      voicePart: 6.1,
+      activeVoicePart: 4.4,
+    },
     voiceSummary: {
       lifetimeSessionCount: 2,
       sessionCount7d: 1,
@@ -607,6 +615,8 @@ test("buildProfileSynergyState exposes voice summary from canonical mirror", () 
 
   assert.equal(state.blocks.voiceSummary.title, "Voice-срез");
   assert.match(state.blocks.voiceSummary.lines.join("\n"), /Voice 7д\/30д: 1,5 ч \/ 2,5 ч .* сессии 7д\/30д: 1 \/ 2 .* lifetime сессии: 2 .* неполных 30д: 1/);
+  assert.match(state.blocks.voiceSummary.lines.join("\n"), /В score: effective 30д 2,1 ч .* active signal 1,7 ч .* engagement 81,0% .* x0,91/);
+  assert.match(state.blocks.voiceSummary.lines.join("\n"), /Voice credit: 6,1 \+ 4,4 очков/);
   assert.match(state.blocks.voiceSummary.lines.join("\n"), /Сейчас в voice: <#voice-lounge> .* 16\.05\.2026/);
   assert.match(state.blocks.voiceSummary.lines.join("\n"), /Топ voice-каналы: <#voice-main> \(2\), <#voice-lounge> \(1\), <#voice-side> \(1\)/);
   assert.match(state.blocks.voiceSummary.lines.join("\n"), /Voice-срез обновлялся ~1,5 ч назад/);

@@ -11,7 +11,7 @@ const {
   rebuildActivityUserSnapshot,
   resumeActivityRuntime,
 } = require("../src/activity/runtime");
-const { upsertWatchedChannel } = require("../src/activity/state");
+const { updateActivityConfig, upsertWatchedChannel } = require("../src/activity/state");
 
 function approxEqual(actual, expected, epsilon = 0.000001) {
   assert.equal(Math.abs(Number(actual) - Number(expected)) <= epsilon, true, `${actual} ~= ${expected}`);
@@ -225,6 +225,91 @@ test("recordActivityVoiceState does not count server-muted time as active voice"
   });
 
   assert.equal(leaveResult.action, "leave");
+  assert.equal(leaveResult.session.durationSeconds, 600);
+  assert.equal(leaveResult.session.activeVoiceDurationSeconds, 0);
+  assert.equal(db.sot.activity.userVoiceDailyStats[0].voiceDurationSeconds, 600);
+  assert.equal(db.sot.activity.userVoiceDailyStats[0].activeVoiceDurationSeconds, 0);
+});
+
+test("recordActivityVoiceState ignores short unmuted segments below the meaningful threshold", () => {
+  const db = {};
+  updateActivityConfig(db, {
+    voiceScoring: {
+      minMeaningfulActiveSegmentSeconds: 90,
+      toggleDebounceSeconds: 5,
+    },
+  });
+
+  recordActivityVoiceState({
+    db,
+    oldState: { guildId: "guild-1", userId: "user-1", channelId: null },
+    newState: { guildId: "guild-1", userId: "user-1", channelId: "voice-main", selfMute: true },
+    now: "2026-05-09T12:00:00.000Z",
+  });
+  recordActivityVoiceState({
+    db,
+    oldState: { guildId: "guild-1", userId: "user-1", channelId: "voice-main", selfMute: true },
+    newState: { guildId: "guild-1", userId: "user-1", channelId: "voice-main", selfMute: false },
+    now: "2026-05-09T12:10:00.000Z",
+  });
+  recordActivityVoiceState({
+    db,
+    oldState: { guildId: "guild-1", userId: "user-1", channelId: "voice-main", selfMute: false },
+    newState: { guildId: "guild-1", userId: "user-1", channelId: "voice-main", selfMute: true },
+    now: "2026-05-09T12:10:30.000Z",
+  });
+  const leaveResult = recordActivityVoiceState({
+    db,
+    oldState: { guildId: "guild-1", userId: "user-1", channelId: "voice-main", selfMute: true },
+    newState: { guildId: "guild-1", userId: "user-1", channelId: null },
+    now: "2026-05-09T12:15:00.000Z",
+  });
+
+  assert.equal(leaveResult.action, "leave");
+  assert.equal(leaveResult.session.durationSeconds, 900);
+  assert.equal(leaveResult.session.activeVoiceDurationSeconds, 0);
+  assert.equal(db.sot.activity.userVoiceDailyStats[0].voiceDurationSeconds, 900);
+  assert.equal(db.sot.activity.userVoiceDailyStats[0].activeVoiceDurationSeconds, 0);
+});
+
+test("recordActivityVoiceState debounces rapid flag flips before they create fake active voice", () => {
+  const db = {};
+  updateActivityConfig(db, {
+    voiceScoring: {
+      minMeaningfulActiveSegmentSeconds: 90,
+      toggleDebounceSeconds: 5,
+    },
+  });
+
+  recordActivityVoiceState({
+    db,
+    oldState: { guildId: "guild-1", userId: "user-1", channelId: null },
+    newState: { guildId: "guild-1", userId: "user-1", channelId: "voice-main", selfMute: true },
+    now: "2026-05-09T12:00:00.000Z",
+  });
+  const unmuteResult = recordActivityVoiceState({
+    db,
+    oldState: { guildId: "guild-1", userId: "user-1", channelId: "voice-main", selfMute: true },
+    newState: { guildId: "guild-1", userId: "user-1", channelId: "voice-main", selfMute: false },
+    now: "2026-05-09T12:00:03.000Z",
+  });
+  const muteResult = recordActivityVoiceState({
+    db,
+    oldState: { guildId: "guild-1", userId: "user-1", channelId: "voice-main", selfMute: false },
+    newState: { guildId: "guild-1", userId: "user-1", channelId: "voice-main", selfMute: true },
+    now: "2026-05-09T12:00:06.000Z",
+  });
+  const leaveResult = recordActivityVoiceState({
+    db,
+    oldState: { guildId: "guild-1", userId: "user-1", channelId: "voice-main", selfMute: true },
+    newState: { guildId: "guild-1", userId: "user-1", channelId: null },
+    now: "2026-05-09T12:10:06.000Z",
+  });
+
+  assert.equal(unmuteResult.action, "state_update_debounced");
+  assert.equal(unmuteResult.session.selfMute, false);
+  assert.equal(muteResult.action, "state_update_debounced");
+  assert.equal(muteResult.session.selfMute, true);
   assert.equal(leaveResult.session.durationSeconds, 600);
   assert.equal(leaveResult.session.activeVoiceDurationSeconds, 0);
   assert.equal(db.sot.activity.userVoiceDailyStats[0].voiceDurationSeconds, 600);
