@@ -618,7 +618,7 @@ function createAntiteamOperator(options = {}) {
     if (!draft) throw new Error("Черновик антитима истёк. Начни заново.");
     if (!cleanString(draft.description, 900)) {
       throw new Error(draft.kind === "clan"
-        ? "Для клан-аларма нужно описание врагов и ситуации."
+        ? "Для ФАЙТ С КЛАНОМ нужно описание врагов и ситуации."
         : "Описание обязательно: укажи, кто тимится, кого бить, ники/kills или ситуацию любым понятным способом.");
     }
     if (draft.photoWanted && !draft.photo && !skipPhoto) {
@@ -842,7 +842,7 @@ function createAntiteamOperator(options = {}) {
     const friendRequestsUrl = getConfig().roblox.friendRequestsUrl;
     return [
       `<@${targetUserId}>`,
-      `<@${helper.userId}> отправил тебе friend request в Roblox, чтобы подключиться к ${ticket.kind === "clan" ? "клан-аларму" : "антитиму"}.`,
+      `<@${helper.userId}> отправил тебе friend request в Roblox, чтобы подключиться к ${ticket.kind === "clan" ? "ФАЙТ С КЛАНОМ" : "антитиму"}.`,
       helper.robloxUsername
         ? `Roblox helper-а: **${helper.robloxUsername}**${helper.robloxUserId ? ` (${helper.robloxUserId})` : ""}.`
         : "Roblox helper-а в базе не найден, ориентируйся по Discord упоминанию.",
@@ -1079,7 +1079,7 @@ function createAntiteamOperator(options = {}) {
       const storedRoblox = getStoredRobloxSnapshot(anchorUser.id);
       if (!storedRoblox) {
         await interaction.reply({
-          content: `У <@${anchorUser.id}> нет проверенного Roblox в профиле. Сначала привяжите ему Roblox, потом вызывай клан-аларм.`,
+          content: `У <@${anchorUser.id}> нет проверенного Roblox в профиле. Сначала привяжите ему Roblox, потом вызывай ФАЙТ С КЛАНОМ.`,
           flags: MessageFlags.Ephemeral,
         });
         return true;

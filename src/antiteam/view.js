@@ -32,6 +32,8 @@ const {
 } = require("./support-progress");
 
 const ANTITEAM_COMMAND_NAME = "антитим";
+const CLAN_WAR_LABEL = "ФАЙТ С КЛАНОМ";
+const CLAN_WAR_ACCENT_COLOR = 0x8E24AA;
 
 const ANTITEAM_CUSTOM_IDS = Object.freeze({
   open: "at:open",
@@ -430,7 +432,7 @@ function buildModeratorPanelPayload(state = {}, statusText = "") {
       `Доп. роли базового пинга: ${formatRoleMentionList(config.battalionPingRoleIds)}`,
       `Тихая роль: ${formatRoleMention(config.extraPingRoleId)}`,
       `Глава батальона: ${formatRoleMention(config.battalionLeadRoleId)}`,
-      `Уполномоченные на клан-аларм: ${formatRoleMention(config.clanCallerRoleId)}`,
+      `Уполномоченные на клан-вар: ${formatRoleMention(config.clanCallerRoleId)}`,
     ]))
     .addActionRowComponents(
       new ActionRowBuilder().addComponents(
@@ -695,7 +697,7 @@ function buildConfigModal(config = createDefaultAntiteamConfig()) {
       new ActionRowBuilder().addComponents(
         new TextInputBuilder()
           .setCustomId("clan_caller_role_id")
-          .setLabel("Роль вызова клан-аларма")
+          .setLabel("Роль вызова клан-вара")
           .setPlaceholder("@роль или id")
           .setStyle(TextInputStyle.Short)
           .setRequired(false)
@@ -815,7 +817,7 @@ function buildAdvancedConfigModal(config = createDefaultAntiteamConfig()) {
 function buildDescriptionModal(draft = {}, customId = "at:desc:modal") {
   return new ModalBuilder()
     .setCustomId(customId)
-    .setTitle(draft.kind === "clan" ? "Описание клан-аларма" : "Описание антитима")
+    .setTitle(draft.kind === "clan" ? `Описание: ${CLAN_WAR_LABEL}` : "Описание антитима")
     .addComponents(
       new ActionRowBuilder().addComponents(
         new TextInputBuilder()
@@ -945,14 +947,14 @@ function buildTicketSetupPayload(draft = {}, config = createDefaultAntiteamConfi
   const level = getLevelMeta(draft.level);
   const count = getCountMeta(draft.count);
   const container = new ContainerBuilder()
-    .setAccentColor(isClan ? 0xB71C1C : level.accentColor)
+    .setAccentColor(isClan ? CLAN_WAR_ACCENT_COLOR : level.accentColor)
     .addTextDisplayComponents(
-      new TextDisplayBuilder().setContent(isClan ? "# Клан-аларм" : "# Заявка антитима"),
+      new TextDisplayBuilder().setContent(isClan ? `# 🟣 ${CLAN_WAR_LABEL}` : "# Заявка антитима"),
       new TextDisplayBuilder().setContent([
         isClan && draft.anchorUserId
           ? `Якорь: <@${draft.anchorUserId}> • ${getDraftRobloxLine(draft, statusText)}`
           : getDraftRobloxLine(draft, statusText),
-        isClan ? "Якорь не должен выходить с сервера. По нему будут подключаться помощники." : `${level.emoji} **${level.label}** • ${count.label} тимеров`,
+        isClan ? `${CLAN_WAR_LABEL}: якорь не должен выходить с сервера. По нему будут подключаться помощники.` : `${level.emoji} **${level.label}** • ${count.label} тимеров`,
         statusText && !/roblox (взят|подтвержд|найден|готов)/i.test(cleanString(statusText, 240)) ? statusText : "",
       ].filter(Boolean).join("\n"))
     );
@@ -999,13 +1001,13 @@ function buildPhotoRequestPayload(draft = {}, statusText = "") {
 
 function buildTicketTitle(ticket = {}) {
   const isClosed = ticket.status === "closed";
-  if (ticket.kind === "clan") return `${isClosed ? "⚫" : "⚔️"} Клан-аларм`;
+  if (ticket.kind === "clan") return `${isClosed ? "⚫" : "🟣"} ${CLAN_WAR_LABEL}`;
   return `${isClosed ? "⚫ Завершено" : `${getLevelMeta(ticket.level).emoji} Нужна помощь`} • ${formatCountHeadline(ticket.count)}`;
 }
 
 function buildThreadName(ticket = {}) {
   const isClosed = ticket.status === "closed";
-  if (ticket.kind === "clan") return `${isClosed ? "⚫" : "⚔️"} Война с кланом`;
+  if (ticket.kind === "clan") return `${isClosed ? "⚫" : "🟣"} ${CLAN_WAR_LABEL}`;
   return `${isClosed ? "⚫" : getLevelMeta(ticket.level).emoji} ${formatCountHeadline(ticket.count)} • ${formatRequesterName(ticket)}`;
 }
 
@@ -1082,12 +1084,12 @@ function buildTicketPublicPayload(ticket = {}, config = createDefaultAntiteamCon
     ? `Попросил 👤 <@${ticket.createdBy}> • Якорь <@${ticket.anchorUserId}> • ${formatPublicRobloxLink(ticket)}`
     : `Попросил 👤 <@${ticket.createdBy}> • ${formatPublicRobloxLink(ticket)}`;
   const dangerText = isClan
-    ? "Клан-аларм: якорь должен оставаться в игре до завершения тревоги."
+    ? `🟣 **${CLAN_WAR_LABEL}**: якорь должен оставаться в игре до завершения тревоги.`
     : formatPublicDifficulty(ticket);
   const statusEmoji = isClosed ? "⚫" : "🟢";
   const directEmoji = ticket.directJoinEnabled ? "🔓" : "🔒";
   const container = new ContainerBuilder()
-    .setAccentColor(isClosed ? 0x607D8B : isClan ? 0xB71C1C : level.accentColor)
+    .setAccentColor(isClosed ? 0x607D8B : isClan ? CLAN_WAR_ACCENT_COLOR : level.accentColor)
     .addTextDisplayComponents(
       new TextDisplayBuilder().setContent(`# ${buildTicketTitle(ticket)}`),
       new TextDisplayBuilder().setContent(joinContentLines([
