@@ -1070,28 +1070,102 @@ function buildRobloxPanelFields(snapshot = {}, viewMode = ROBLOX_PANEL_DEFAULT_V
   ];
 }
 
+function buildRobloxPanelControlRows(snapshot = {}, viewMode = ROBLOX_PANEL_DEFAULT_VIEW) {
+  const normalizedViewMode = normalizeRobloxPanelViewMode(viewMode);
+  const metadataRefreshEnabled = snapshot.config?.metadataRefreshEnabled !== false;
+  const playtimeTrackingEnabled = snapshot.config?.playtimeTrackingEnabled !== false;
+  const runtimeFlushEnabled = snapshot.config?.runtimeFlushEnabled !== false;
+  const playtimePollMinutes = getPlaytimePollMinutes({ roblox: { playtimePollMinutes: snapshot.config?.playtimePollMinutes } });
+
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(buildRobloxPanelScopedCustomId("roblox_stats_view_overview", "overview"))
+        .setLabel(ROBLOX_PANEL_VIEW_LABELS.overview)
+        .setStyle(getRobloxPanelViewButtonStyle(normalizedViewMode, "overview")),
+      new ButtonBuilder()
+        .setCustomId(buildRobloxPanelScopedCustomId("roblox_stats_view_coverage", "coverage"))
+        .setLabel(ROBLOX_PANEL_VIEW_LABELS.coverage)
+        .setStyle(getRobloxPanelViewButtonStyle(normalizedViewMode, "coverage")),
+      new ButtonBuilder()
+        .setCustomId(buildRobloxPanelScopedCustomId("roblox_stats_view_activity", "activity"))
+        .setLabel(ROBLOX_PANEL_VIEW_LABELS.activity)
+        .setStyle(getRobloxPanelViewButtonStyle(normalizedViewMode, "activity")),
+      new ButtonBuilder()
+        .setCustomId(buildRobloxPanelScopedCustomId("roblox_stats_view_errors", "errors"))
+        .setLabel(ROBLOX_PANEL_VIEW_LABELS.errors)
+        .setStyle(getRobloxPanelViewButtonStyle(normalizedViewMode, "errors"))
+    ),
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(buildRobloxPanelScopedCustomId("roblox_stats_run_profile_refresh", normalizedViewMode))
+        .setLabel("Профили")
+        .setStyle(ButtonStyle.Primary),
+      new ButtonBuilder()
+        .setCustomId(buildRobloxPanelScopedCustomId("roblox_stats_run_playtime_sync", normalizedViewMode))
+        .setLabel("Playtime")
+        .setStyle(ButtonStyle.Primary),
+      new ButtonBuilder()
+        .setCustomId(buildRobloxPanelScopedCustomId("roblox_stats_run_flush", normalizedViewMode))
+        .setLabel("Flush")
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId(buildRobloxPanelScopedCustomId("roblox_stats_clear_refresh_errors", normalizedViewMode))
+        .setLabel("Сбросить ошибки")
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId(buildRobloxPanelScopedCustomId("roblox_stats_refresh", normalizedViewMode))
+        .setLabel("Обновить")
+        .setStyle(ButtonStyle.Secondary)
+    ),
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(buildRobloxPanelScopedCustomId("roblox_stats_toggle_metadata", normalizedViewMode))
+        .setLabel(buildToggleLabel("Профили", metadataRefreshEnabled))
+        .setStyle(getToggleButtonStyle(metadataRefreshEnabled)),
+      new ButtonBuilder()
+        .setCustomId(buildRobloxPanelScopedCustomId("roblox_stats_toggle_playtime", normalizedViewMode))
+        .setLabel(buildToggleLabel("JJS", playtimeTrackingEnabled))
+        .setStyle(getToggleButtonStyle(playtimeTrackingEnabled)),
+      new ButtonBuilder()
+        .setCustomId(buildRobloxPanelScopedCustomId("roblox_stats_toggle_flush", normalizedViewMode))
+        .setLabel(buildToggleLabel("Flush", runtimeFlushEnabled))
+        .setStyle(getToggleButtonStyle(runtimeFlushEnabled))
+    ),
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(buildRobloxPanelScopedCustomId("roblox_stats_set_poll_1", normalizedViewMode))
+        .setLabel("1 мин")
+        .setStyle(getPollButtonStyle(playtimePollMinutes, 1)),
+      new ButtonBuilder()
+        .setCustomId(buildRobloxPanelScopedCustomId("roblox_stats_set_poll_3", normalizedViewMode))
+        .setLabel("3 мин")
+        .setStyle(getPollButtonStyle(playtimePollMinutes, 3)),
+      new ButtonBuilder()
+        .setCustomId(buildRobloxPanelScopedCustomId("roblox_stats_set_poll_5", normalizedViewMode))
+        .setLabel("5 мин")
+        .setStyle(getPollButtonStyle(playtimePollMinutes, 5)),
+      new ButtonBuilder()
+        .setCustomId(buildRobloxPanelScopedCustomId("roblox_stats_set_poll_10", normalizedViewMode))
+        .setLabel("10 мин")
+        .setStyle(getPollButtonStyle(playtimePollMinutes, 10))
+    ),
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(buildRobloxPanelScopedCustomId("roblox_stats_back", normalizedViewMode))
+        .setLabel("Назад")
+        .setStyle(ButtonStyle.Secondary)
+    ),
+  ];
+}
+
 function buildRobloxStatsPanelPayload({ db = {}, runtimeState = {}, telemetry = null, appConfig = {}, statusText = "", viewMode = ROBLOX_PANEL_DEFAULT_VIEW } = {}) {
   const snapshot = getRobloxStatsPanelSnapshot({ db, runtimeState, telemetry, appConfig });
+  const normalizedViewMode = normalizeRobloxPanelViewMode(viewMode);
   const embed = new EmbedBuilder()
-    .setTitle("Roblox")
+    .setTitle(`Roblox • ${getRobloxPanelViewLabel(normalizedViewMode)}`)
     .setDescription(buildRobloxSimplePanelDescription(snapshot))
-    .addFields(
-      {
-        name: "Покрытие",
-        value: buildRobloxCoverageFieldValue(snapshot),
-        inline: false,
-      },
-      {
-        name: "JJS и runtime",
-        value: buildRobloxRuntimeFieldValue(snapshot),
-        inline: false,
-      },
-      {
-        name: "Проблемы",
-        value: buildRobloxErrorsSummaryFieldValue(snapshot),
-        inline: false,
-      }
-    );
+    .addFields(...buildRobloxPanelFields(snapshot, normalizedViewMode));
 
   if (statusText) {
     embed.addFields({
@@ -1103,13 +1177,42 @@ function buildRobloxStatsPanelPayload({ db = {}, runtimeState = {}, telemetry = 
 
   return {
     embeds: [embed],
-    components: [
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId("roblox_stats_refresh").setLabel("Обновить").setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId("roblox_stats_back").setLabel("Назад").setStyle(ButtonStyle.Secondary)
-      ),
-    ],
+    components: buildRobloxPanelControlRows(snapshot, normalizedViewMode),
   };
+}
+
+async function updateRobloxPanelInteraction(interaction, payload, { defer = false } = {}) {
+  if (defer && typeof interaction?.deferUpdate === "function" && typeof interaction?.editReply === "function") {
+    await interaction.deferUpdate();
+    await interaction.editReply(payload);
+    return;
+  }
+
+  await interaction.update(payload);
+}
+
+async function runRobloxPanelDeferredTask(interaction, task, buildPayload) {
+  const supportsDeferred = typeof interaction?.deferUpdate === "function" && typeof interaction?.editReply === "function";
+
+  if (supportsDeferred) {
+    await interaction.deferUpdate();
+  }
+
+  const commitPayload = async (payload) => {
+    if (supportsDeferred) {
+      await interaction.editReply(payload);
+      return;
+    }
+
+    await interaction.update(payload);
+  };
+
+  try {
+    const result = await task();
+    await commitPayload(buildPayload({ result, error: null }));
+  } catch (error) {
+    await commitPayload(buildPayload({ result: null, error }));
+  }
 }
 
 async function handleRobloxStatsPanelButtonInteraction({
@@ -1131,7 +1234,7 @@ async function handleRobloxStatsPanelButtonInteraction({
   runRuntimeFlush,
 } = {}) {
   const customId = String(interaction?.customId || "").trim();
-  const { baseCustomId } = parseRobloxPanelCustomId(customId);
+  const { baseCustomId, viewMode } = parseRobloxPanelCustomId(customId);
   if (![
     "panel_open_roblox_stats",
     "roblox_stats_view_overview",
@@ -1179,6 +1282,11 @@ async function handleRobloxStatsPanelButtonInteraction({
       appConfig: readAppConfig(),
       statusText,
     });
+  const currentViewMode = resolveRobloxPanelNavigationViewMode(baseCustomId, viewMode);
+  const renderCurrentPanel = ({ statusText = "" } = {}) => renderPanel({
+    statusText,
+    viewMode: currentViewMode,
+  });
 
   if (!isModerator(interaction?.member)) {
     await replyNoPermission(interaction);
@@ -1186,12 +1294,17 @@ async function handleRobloxStatsPanelButtonInteraction({
   }
 
   if (baseCustomId === "panel_open_roblox_stats") {
-    await interaction.update(renderPanel({ statusText: "" }));
+    await updateRobloxPanelInteraction(interaction, renderPanel({ statusText: "", viewMode: currentViewMode }));
+    return true;
+  }
+
+  if (baseCustomId.startsWith("roblox_stats_view_")) {
+    await updateRobloxPanelInteraction(interaction, renderCurrentPanel({ statusText: "" }));
     return true;
   }
 
   if (baseCustomId === "roblox_stats_refresh") {
-    await interaction.update(renderPanel({ statusText: "Панель Roblox обновлена." }));
+    await updateRobloxPanelInteraction(interaction, renderCurrentPanel({ statusText: "Панель Roblox обновлена." }));
     return true;
   }
 
@@ -1200,8 +1313,109 @@ async function handleRobloxStatsPanelButtonInteraction({
     return true;
   }
 
-  await interaction.update(renderPanel({
-    statusText: "Панель упрощена. Используй Обновить или Назад.",
+  if (baseCustomId === "roblox_stats_toggle_playtime") {
+    const nextEnabled = !isPlaytimeTrackingEnabled(readAppConfig());
+    await updateRobloxSettings({ playtimeTrackingEnabled: nextEnabled });
+    await updateRobloxPanelInteraction(interaction, renderCurrentPanel({ statusText: `Учёт JJS: ${nextEnabled ? "включён" : "выключен"}.` }));
+    return true;
+  }
+
+  if (baseCustomId === "roblox_stats_toggle_metadata") {
+    const nextEnabled = !isMetadataRefreshEnabled(readAppConfig());
+    await updateRobloxSettings({ metadataRefreshEnabled: nextEnabled });
+    await updateRobloxPanelInteraction(interaction, renderCurrentPanel({ statusText: `Обновление профилей: ${nextEnabled ? "включено" : "выключено"}.` }));
+    return true;
+  }
+
+  if (baseCustomId === "roblox_stats_toggle_flush") {
+    const nextEnabled = !isRuntimeFlushEnabled(readAppConfig());
+    await updateRobloxSettings({ runtimeFlushEnabled: nextEnabled });
+    await updateRobloxPanelInteraction(interaction, renderCurrentPanel({ statusText: `Сохранение runtime: ${nextEnabled ? "включено" : "выключено"}.` }));
+    return true;
+  }
+
+  if ([
+    "roblox_stats_set_poll_1",
+    "roblox_stats_set_poll_3",
+    "roblox_stats_set_poll_5",
+    "roblox_stats_set_poll_10",
+  ].includes(baseCustomId)) {
+    const nextMinutes = Number(baseCustomId.split("_").at(-1)) || getPlaytimePollMinutes(readAppConfig());
+    await updateRobloxSettings({ playtimePollMinutes: nextMinutes });
+    await updateRobloxPanelInteraction(interaction, renderCurrentPanel({ statusText: `Интервал опроса playtime: ${nextMinutes} мин.` }));
+    return true;
+  }
+
+  if (baseCustomId === "roblox_stats_clear_refresh_errors") {
+    await runRobloxPanelDeferredTask(interaction, () => clearRefreshDiagnostics(), ({ result, error }) => {
+      if (error) {
+        return renderCurrentPanel({
+          statusText: `Не удалось очистить refresh-ошибки: ${truncateText(error?.message || error, 220) || "неизвестная ошибка"}.`,
+        });
+      }
+
+      const clearedCount = normalizeNonNegativeInteger(result?.clearedCount, 0);
+      return renderCurrentPanel({
+        statusText: clearedCount > 0
+          ? `Ошибки обновления очищены у ${clearedCount} профилей.`
+          : "Ошибки обновления уже были очищены.",
+      });
+    });
+    return true;
+  }
+
+  if (baseCustomId === "roblox_stats_run_profile_refresh") {
+    await runRobloxPanelDeferredTask(interaction, () => runProfileRefreshJob(), ({ result, error }) => {
+      if (error) {
+        return renderCurrentPanel({
+          statusText: `Обновление профилей упало: ${truncateText(error?.message || error, 220) || "неизвестная ошибка"}.`,
+        });
+      }
+
+      const refreshedCount = normalizeNonNegativeInteger(result?.refreshedCount, 0);
+      const failedCount = normalizeNonNegativeInteger(result?.failedCount, 0);
+      return renderCurrentPanel({
+        statusText: `Обновление профилей завершено. Обновлено: ${refreshedCount}, ошибок: ${failedCount}.`,
+      });
+    });
+    return true;
+  }
+
+  if (baseCustomId === "roblox_stats_run_playtime_sync") {
+    await runRobloxPanelDeferredTask(interaction, () => runPlaytimeSyncJob(), ({ result, error }) => {
+      if (error) {
+        return renderCurrentPanel({
+          statusText: `Синк playtime упал: ${truncateText(error?.message || error, 220) || "неизвестная ошибка"}.`,
+        });
+      }
+
+      return renderCurrentPanel({
+        statusText: buildPlaytimeSyncStatusText(result),
+      });
+    });
+    return true;
+  }
+
+  if (baseCustomId === "roblox_stats_run_flush") {
+    await runRobloxPanelDeferredTask(interaction, () => runRuntimeFlush(), ({ result, error }) => {
+      if (error) {
+        return renderCurrentPanel({
+          statusText: `Runtime flush упал: ${truncateText(error?.message || error, 220) || "неизвестная ошибка"}.`,
+        });
+      }
+
+      const dirtyUserCount = normalizeNonNegativeInteger(result?.dirtyUserCount, 0);
+      return renderCurrentPanel({
+        statusText: result?.saved === true
+          ? `Runtime сохранён. Несохранённых профилей было: ${dirtyUserCount}.`
+          : `Runtime flush завершён без записи. Несохранённых профилей: ${dirtyUserCount}.`,
+      });
+    });
+    return true;
+  }
+
+  await updateRobloxPanelInteraction(interaction, renderCurrentPanel({
+    statusText: "Действие Roblox panel не распознано.",
   }));
   return true;
 }

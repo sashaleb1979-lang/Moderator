@@ -19,6 +19,8 @@ function createInteraction(customId, overrides = {}) {
   const calls = {
     replies: [],
     updates: [],
+    deferred: 0,
+    edits: [],
   };
 
   return {
@@ -31,6 +33,12 @@ function createInteraction(customId, overrides = {}) {
       },
       async update(payload) {
         calls.updates.push(payload);
+      },
+      async deferUpdate() {
+        calls.deferred += 1;
+      },
+      async editReply(payload) {
+        calls.edits.push(payload);
       },
     },
     calls,
@@ -240,13 +248,26 @@ test("buildRobloxStatsPanelPayload renders one simple authenticated list with se
     statusText: "manual refresh completed",
   });
 
-  assert.equal(payload.components.length, 1);
-  assert.equal(payload.components[0].components.length, 2);
-  assert.equal(payload.components[0].components[0].data.custom_id, "roblox_stats_refresh");
-  assert.equal(payload.components[0].components[1].data.custom_id, "roblox_stats_back");
+  assert.equal(payload.components.length, 5);
+  assert.deepEqual(payload.components[0].components.map((component) => component.data.custom_id), [
+    "roblox_stats_view_overview:overview",
+    "roblox_stats_view_coverage:coverage",
+    "roblox_stats_view_activity:activity",
+    "roblox_stats_view_errors:errors",
+  ]);
+  assert.deepEqual(payload.components[1].components.map((component) => component.data.custom_id), [
+    "roblox_stats_run_profile_refresh:overview",
+    "roblox_stats_run_playtime_sync:overview",
+    "roblox_stats_run_flush:overview",
+    "roblox_stats_clear_refresh_errors:overview",
+    "roblox_stats_refresh:overview",
+  ]);
+  assert.deepEqual(payload.components[4].components.map((component) => component.data.custom_id), [
+    "roblox_stats_back:overview",
+  ]);
 
   const embed = payload.embeds[0].data;
-  assert.equal(embed.title, "Roblox");
+  assert.equal(embed.title, "Roblox • Обзор");
   assert.match(embed.description, /Список подтверждённых Roblox-профилей/i);
   assert.match(embed.description, /Подтверждено: \*\*3\*\*/i);
   assert.match(embed.description, /С галочкой: \*\*1\*\*/i);
@@ -254,22 +275,26 @@ test("buildRobloxStatsPanelPayload renders one simple authenticated list with se
   assert.match(embed.description, /✓ Gojo -> GojoRb/);
   assert.match(embed.description, /— Manual User/);
   assert.match(embed.description, /— Repairable User -> RepairableRb/);
-  assert.equal(embed.fields.length, 4);
-  assert.equal(embed.fields[0].name, "Покрытие");
-  assert.match(embed.fields[0].value, /Проверено: \*\*3\*\*/);
-  assert.match(embed.fields[0].value, /Trackable для playtime: \*\*1\*\*/);
-  assert.match(embed.fields[0].value, /Починится по username: \*\*1\*\*/);
-  assert.match(embed.fields[0].value, /Нужен manual rebind: \*\*1\*\*/);
-  assert.equal(embed.fields[1].name, "JJS и runtime");
-  assert.match(embed.fields[1].value, /Сейчас в JJS: \*\*0\*\*/);
-  assert.match(embed.fields[1].value, /Несохранённых runtime-профилей: \*\*0\*\*/);
-  assert.equal(embed.fields[2].name, "Проблемы");
-  assert.equal(embed.fields[2].value, "Критичных блокеров сейчас не видно.");
-  assert.equal(embed.fields[3].name, "Последнее действие");
-  assert.equal(embed.fields[3].value, "manual refresh completed");
+  assert.equal(embed.fields.length, 7);
+  assert.equal(embed.fields[0].name, "Режим");
+  assert.match(embed.fields[0].value, /Учёт JJS: \*\*включён\*\*/);
+  assert.equal(embed.fields[1].name, "Покрытие");
+  assert.match(embed.fields[1].value, /Проверено: \*\*3\*\*/);
+  assert.match(embed.fields[1].value, /Trackable для playtime: \*\*1\*\*/);
+  assert.match(embed.fields[1].value, /Починится по username: \*\*1\*\*/);
+  assert.match(embed.fields[1].value, /Нужен manual rebind: \*\*1\*\*/);
+  assert.equal(embed.fields[2].name, "JJS и runtime");
+  assert.match(embed.fields[2].value, /Сейчас в JJS: \*\*0\*\*/);
+  assert.match(embed.fields[2].value, /Несохранённых runtime-профилей: \*\*0\*\*/);
+  assert.equal(embed.fields[3].name, "Фоновые задачи");
+  assert.equal(embed.fields[4].name, "Кого чинить");
+  assert.equal(embed.fields[5].name, "Ошибки и блокеры");
+  assert.equal(embed.fields[5].value, "Критичных блокеров сейчас не видно.");
+  assert.equal(embed.fields[6].name, "Последнее действие");
+  assert.equal(embed.fields[6].value, "manual refresh completed");
 });
 
-test("buildRobloxStatsPanelPayload surfaces compact operator diagnostics without restoring old views", () => {
+test("buildRobloxStatsPanelPayload supports dedicated coverage and errors views with restored controls", () => {
   const payload = buildRobloxStatsPanelPayload({
     db: {
       profiles: {
@@ -291,16 +316,46 @@ test("buildRobloxStatsPanelPayload surfaces compact operator diagnostics without
         repairable_user: ["binding_sanitized", "binding_repaired"],
       },
     },
+    viewMode: "coverage",
   });
 
   const embed = payload.embeds[0].data;
-  assert.equal(embed.fields[0].name, "Покрытие");
-  assert.match(embed.fields[0].value, /Починится по username: \*\*1\*\*/);
-  assert.equal(embed.fields[1].name, "JJS и runtime");
-  assert.match(embed.fields[1].value, /Несохранённых runtime-профилей: \*\*1\*\*/);
-  assert.match(embed.fields[1].value, /Причины pending flush: .*сбитый userId: \*\*1\*\*.*починка привязки: \*\*1\*\*/i);
-  assert.equal(embed.fields[2].name, "Проблемы");
-  assert.match(embed.fields[2].value, /JJS IDs не настроены/i);
+  assert.equal(embed.title, "Roblox • Покрытие");
+  assert.equal(embed.fields[0].name, "Режим");
+  assert.equal(embed.fields[1].name, "Покрытие");
+  assert.match(embed.fields[1].value, /Починится по username: \*\*1\*\*/);
+  assert.equal(embed.fields[2].name, "Кого чинить");
+  assert.match(embed.fields[2].value, /Автопочинка по username: \*\*1\*\*/);
+
+  const errorsPayload = buildRobloxStatsPanelPayload({
+    db: {
+      profiles: {
+        repairable_user: {
+          userId: "repairable_user",
+          displayName: "Repairable User",
+          domains: {
+            roblox: {
+              username: "RepairableRb",
+              verificationStatus: "verified",
+            },
+          },
+        },
+      },
+    },
+    runtimeState: {
+      dirtyDiscordUserIds: new Set(["repairable_user"]),
+      dirtyReasonsByDiscordUserId: {
+        repairable_user: ["binding_sanitized", "binding_repaired"],
+      },
+    },
+    viewMode: "errors",
+  });
+
+  const errorsEmbed = errorsPayload.embeds[0].data;
+  assert.equal(errorsEmbed.title, "Roblox • Ошибки");
+  assert.equal(errorsEmbed.fields[0].name, "Ошибки и блокеры");
+  assert.match(errorsEmbed.fields[0].value, /JJS IDs не настроены/i);
+  assert.equal(errorsEmbed.fields[3].name, "Нужен manual rebind");
 });
 
 test("buildRobloxStatsPanelPayload keeps passive verified users in the list even without runtime visibility", () => {
@@ -334,7 +389,7 @@ test("buildRobloxStatsPanelPayload keeps passive verified users in the list even
   assert.match(payload.embeds[0].data.description, /— Manual User/);
 });
 
-test("handleRobloxStatsPanelButtonInteraction gates permissions and rerenders simple panel for refresh and legacy buttons", async () => {
+test("handleRobloxStatsPanelButtonInteraction gates permissions and restores view, settings and job actions", async () => {
   const denied = createInteraction("panel_open_roblox_stats", {
     member: { roles: { cache: new Set() } },
   });
@@ -352,6 +407,7 @@ test("handleRobloxStatsPanelButtonInteraction gates permissions and rerenders si
 
   assert.equal(deniedHandled, true);
   assert.equal(denied.calls.replies.length, 1);
+  assert.equal(denied.calls.deferred, 0);
 
   const refresh = createInteraction("roblox_stats_refresh:coverage");
   const refreshHandled = await handleRobloxStatsPanelButtonInteraction({
@@ -363,11 +419,12 @@ test("handleRobloxStatsPanelButtonInteraction gates permissions and rerenders si
     isModerator: () => true,
     replyNoPermission: () => refresh.interaction.reply({ content: "Нет прав." }),
     buildModeratorPanelPayload: async () => ({ content: "main" }),
-    buildRobloxPanelPayload: ({ statusText = "" } = {}) => ({ content: statusText }),
+    buildRobloxPanelPayload: ({ statusText = "", viewMode = "overview" } = {}) => ({ content: `${viewMode}|${statusText}` }),
   });
 
   assert.equal(refreshHandled, true);
-  assert.equal(refresh.calls.updates[0].content, "Панель Roblox обновлена.");
+  assert.equal(refresh.calls.updates[0].content, "coverage|Панель Roblox обновлена.");
+  assert.equal(refresh.calls.deferred, 0);
 
   const legacyView = createInteraction("roblox_stats_view_activity");
   await handleRobloxStatsPanelButtonInteraction({
@@ -379,10 +436,71 @@ test("handleRobloxStatsPanelButtonInteraction gates permissions and rerenders si
     isModerator: () => true,
     replyNoPermission: () => legacyView.interaction.reply({ content: "Нет прав." }),
     buildModeratorPanelPayload: async () => ({ content: "main" }),
-    buildRobloxPanelPayload: ({ statusText = "" } = {}) => ({ content: statusText }),
+    buildRobloxPanelPayload: ({ statusText = "", viewMode = "overview" } = {}) => ({ content: `${viewMode}|${statusText}` }),
   });
 
-  assert.equal(legacyView.calls.updates[0].content, "Панель упрощена. Используй Обновить или Назад.");
+  assert.equal(legacyView.calls.updates[0].content, "activity|");
+
+  const togglePlaytime = createInteraction("roblox_stats_toggle_playtime:errors");
+  const settingsPatches = [];
+  await handleRobloxStatsPanelButtonInteraction({
+    interaction: togglePlaytime.interaction,
+    client: {},
+    db: {},
+    runtimeState: {},
+    appConfig: { roblox: { playtimeTrackingEnabled: true } },
+    isModerator: () => true,
+    replyNoPermission: () => togglePlaytime.interaction.reply({ content: "Нет прав." }),
+    buildModeratorPanelPayload: async () => ({ content: "main" }),
+    buildRobloxPanelPayload: ({ statusText = "", viewMode = "overview" } = {}) => ({ content: `${viewMode}|${statusText}` }),
+    updateRobloxSettings: async (patch) => {
+      settingsPatches.push(patch);
+      return { mutated: true };
+    },
+  });
+
+  assert.deepEqual(settingsPatches, [{ playtimeTrackingEnabled: false }]);
+  assert.equal(togglePlaytime.calls.updates[0].content, "errors|Учёт JJS: выключен.");
+  assert.equal(togglePlaytime.calls.deferred, 0);
+
+  const runPlaytime = createInteraction("roblox_stats_run_playtime_sync:coverage");
+  await handleRobloxStatsPanelButtonInteraction({
+    interaction: runPlaytime.interaction,
+    client: {},
+    db: {},
+    runtimeState: {},
+    appConfig: {},
+    isModerator: () => true,
+    replyNoPermission: () => runPlaytime.interaction.reply({ content: "Нет прав." }),
+    buildModeratorPanelPayload: async () => ({ content: "main" }),
+    buildRobloxPanelPayload: ({ statusText = "", viewMode = "overview" } = {}) => ({ content: `${viewMode}|${statusText}` }),
+    runPlaytimeSyncJob: async () => ({
+      totalCandidates: 2,
+      activeJjsUsers: 1,
+      touchedUserCount: 1,
+      failedUserIds: 0,
+    }),
+  });
+
+  assert.equal(runPlaytime.calls.deferred, 1);
+  assert.match(runPlaytime.calls.edits[0].content, /^coverage\|Синк playtime завершён\./);
+
+  const clearErrors = createInteraction("roblox_stats_clear_refresh_errors:overview");
+  await handleRobloxStatsPanelButtonInteraction({
+    interaction: clearErrors.interaction,
+    client: {},
+    db: {},
+    runtimeState: {},
+    appConfig: {},
+    isModerator: () => true,
+    replyNoPermission: () => clearErrors.interaction.reply({ content: "Нет прав." }),
+    buildModeratorPanelPayload: async () => ({ content: "main" }),
+    buildRobloxPanelPayload: ({ statusText = "", viewMode = "overview" } = {}) => ({ content: `${viewMode}|${statusText}` }),
+    clearRefreshDiagnostics: async () => ({ mutated: true, clearedCount: 3 }),
+  });
+
+  assert.equal(clearErrors.calls.deferred, 1);
+  assert.equal(clearErrors.calls.edits[0].content, "overview|Ошибки обновления очищены у 3 профилей.");
 
   const openPanel = createInteraction("panel_open_roblox_stats");
   await handleRobloxStatsPanelButtonInteraction({
@@ -394,10 +512,10 @@ test("handleRobloxStatsPanelButtonInteraction gates permissions and rerenders si
     isModerator: () => true,
     replyNoPermission: () => openPanel.interaction.reply({ content: "Нет прав." }),
     buildModeratorPanelPayload: async () => ({ content: "main" }),
-    buildRobloxPanelPayload: ({ statusText = "" } = {}) => ({ content: statusText || "opened" }),
+    buildRobloxPanelPayload: ({ statusText = "", viewMode = "overview" } = {}) => ({ content: statusText || `opened:${viewMode}` }),
   });
 
-  assert.equal(openPanel.calls.updates[0].content, "opened");
+  assert.equal(openPanel.calls.updates[0].content, "opened:overview");
 
   const back = createInteraction("roblox_stats_back:overview");
   await handleRobloxStatsPanelButtonInteraction({

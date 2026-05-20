@@ -30,19 +30,19 @@ test("canManageWelcomeRobloxIdentity allows adding a missing Roblox identity", (
   }), null);
 });
 
-test("canManageWelcomeRobloxIdentity blocks regular users from changing a confirmed identity", () => {
+test("canManageWelcomeRobloxIdentity allows regular users to change a confirmed identity", () => {
   assert.equal(canManageWelcomeRobloxIdentity({
     session: { robloxUsername: "KolhozU", robloxUserId: "9843941555" },
     pending: null,
-  }), false);
-  assert.match(getWelcomeRobloxIdentityLockText({
+  }), true);
+  assert.equal(getWelcomeRobloxIdentityLockText({
     session: { robloxUsername: "KolhozU", robloxUserId: "9843941555" },
     pending: null,
-  }), /может только админ/i);
+  }), null);
   assert.equal(canManageWelcomeRobloxIdentity({
     session: null,
     pending: { robloxUsername: "KolhozU", robloxUserId: "9843941555" },
-  }), false);
+  }), true);
 });
 
 test("canManageWelcomeRobloxIdentity allows admin override for confirmed identity", () => {
@@ -168,4 +168,10 @@ test("welcome-bot bootstraps resumable Roblox submit sessions through the shared
   );
 
   assert.ok(match, "expected resumable submit bootstrap to reuse buildProfileRobloxIdentitySession");
+});
+
+test("welcome-bot no longer blocks regular users from reopening the Roblox username modal", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "welcome-bot.js"), "utf8");
+
+  assert.doesNotMatch(source, /robloxIdentityLockText\) \{[\s\S]*?может только админ/i);
 });

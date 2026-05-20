@@ -717,11 +717,11 @@
 ### 11.4. Рекомендуемый Порядок Закрытия
 
 #### Phase 11. Canonical Surface Unification
-1. Ввести единый `displayMode` contract: `self`, `viewer`, `compact-card`. Базовый canonical contract уже live в `src/profile/model.js` + `src/profile/view.js` + `src/profile/operator.js`; следующий шаг — перевести на него legacy `my-card` и preview-like entrypoints.
-2. Перевести legacy `my-card` и все preview-like surfaces на тот же `src/profile/model.js` + `src/profile/view.js` stack.
+1. Ввести единый `displayMode` contract: `self`, `viewer`, `compact-card`. Базовый canonical contract уже live в `src/profile/model.js` + `src/profile/view.js` + `src/profile/operator.js`; live self-card entrypoint `elo_submit_card` теперь тоже идёт через этот stack в `compact-card` mode.
+2. Перевод live legacy `my-card` surface начат и уже закрывает `elo_submit_card`; следующий шаг — добрать оставшиеся preview-like surfaces и compat entrypoints на тот же `src/profile/model.js` + `src/profile/view.js` stack.
 3. Оставить в compat слое только mapping старых entrypoints и payload expectations.
-4. После перевода удалить старые inline payload builders и разрозненные access/target branches.
-5. Уже начатый local slice этой фазы: `profile_bind_roblox` button + modal submit больше не должны жить inline в `welcome-bot.js`; canonical runtime owner для этого path — `src/profile/operator.js`, а self-action rows/nav должны быть state-aware и loading-safe через `src/profile/model.js` + `src/profile/view.js`.
+4. После перевода удалить старые inline payload builders и разрозненные access/target branches. Уже выполнено для legacy self-card path: inline builder и `elo_submit_card` branch убраны из `welcome-bot.js`.
+5. Локальный slice этой фазы уже закрыт для двух путей: `profile_bind_roblox` button + modal submit больше не живут inline в `welcome-bot.js`, и live self-card button `elo_submit_card` теперь канонически owned `src/profile/operator.js`; self-action rows/nav остаются state-aware и loading-safe через `src/profile/model.js` + `src/profile/view.js`.
 
 Критерий готовности:
 1. все profile/my-card entrypoints идут через `src/profile/operator.js`;

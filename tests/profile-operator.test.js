@@ -428,6 +428,38 @@ test("profile operator opens Roblox bind modal from the self action button", asy
   assert.equal(calls[0].initialValue, "GojoMain");
 });
 
+test("profile operator routes elo self-card button into canonical compact-card payload", async () => {
+  const operator = createTestOperator();
+  const calls = [];
+
+  const handled = await operator.handleProfileButtonInteraction({
+    interaction: {
+      customId: "elo_submit_card",
+      user: { id: "user-1", username: "Sasha" },
+      member: makeMember({
+        userId: "user-1",
+        username: "Sasha",
+        displayName: "Sasha",
+        primaryGuild: makePrimaryGuild("TAG"),
+      }),
+      reply: async (payload) => calls.push({ step: "reply", payload }),
+      deferReply: async (payload) => calls.push({ step: "deferReply", payload }),
+      editReply: async (payload) => calls.push({ step: "editReply", payload }),
+    },
+    checkActorGuard: async () => false,
+  });
+
+  assert.equal(handled, true);
+  assert.deepEqual(calls.map((entry) => entry.step), ["deferReply", "editReply"]);
+  assert.equal(calls[0].payload.flags, MessageFlags.Ephemeral);
+  assert.equal(calls[1].payload.flags, MessageFlags.IsComponentsV2);
+
+  const payloadJson = JSON.stringify(calls[1].payload.components[0].toJSON());
+  assert.match(payloadJson, /# Моя карточка/);
+  assert.doesNotMatch(payloadJson, /profile_nav:/);
+  assert.doesNotMatch(payloadJson, /profile_bind_roblox/);
+});
+
 test("profile operator resolves and saves Roblox binding through modal submit", async () => {
   const calls = [];
   const operator = createTestOperator({

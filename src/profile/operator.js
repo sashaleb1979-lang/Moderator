@@ -351,6 +351,34 @@ function createProfileOperator(options = {}) {
     checkActorGuard = null,
     deleteSourceMessage = true,
   } = {}) {
+    if (interaction?.customId === "elo_submit_card") {
+      if (typeof checkActorGuard === "function" && await checkActorGuard(interaction)) {
+        return true;
+      }
+
+      const access = await resolveProfileAccessForRequester({
+        requesterUserId: interaction.user.id,
+        requesterUser: interaction.user,
+        requesterMember: interaction.member,
+        targetUserId: interaction.user.id,
+      });
+
+      if (!access.allowed) {
+        await interaction.reply(buildProfileAccessDeniedPayload(access));
+        return true;
+      }
+
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      await interaction.editReply(await buildPrivateProfilePayload({
+        targetUserId: interaction.user.id,
+        targetUser: interaction.user,
+        isSelf: access.isSelf,
+        requesterUserId: interaction.user.id,
+        displayMode: "compact-card",
+      }));
+      return true;
+    }
+
     if (interaction?.customId === "profile_bind_roblox") {
       if (typeof checkActorGuard === "function" && await checkActorGuard(interaction)) {
         return true;
