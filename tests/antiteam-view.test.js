@@ -11,6 +11,7 @@ const {
   buildHelpReplyPayload,
   buildModeratorPanelPayload,
   buildPanelTextModal,
+  buildPingConfigModal,
   buildPhotoRequestPayload,
   buildRobloxConfirmPayload,
   buildRobloxMissingPayload,
@@ -48,7 +49,7 @@ test("start panel is Components V2 and exposes submit button", () => {
   assert.deepEqual(payload.allowedMentions, { parse: [] });
   assert.match(payloadJson(payload), /Вызов батальона/);
   assert.match(payloadJson(payload), /Создать антитим/);
-  assert.match(payloadJson(payload), /На помощь пингуется роль/);
+  assert.match(payloadJson(payload), /Система пинга/);
   assert.doesNotMatch(payloadJson(payload), /Батальён:/);
   assert.ok(payloadJson(payload).indexOf(ANTITEAM_CUSTOM_IDS.progress) < payloadJson(payload).indexOf(ANTITEAM_CUSTOM_IDS.guide));
   assert.match(payloadJson(payload), /Мой прогресс/);
@@ -90,6 +91,9 @@ test("start guide and panel text modal expose polished setup copy", () => {
   assert.equal(buildStartGuidePayload(config).flags, MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral);
   assert.match(payloadJson(buildStartGuidePayload(config)), /Как работает антитим/);
   assert.match(payloadJson(buildStartGuidePayload(config)), /уже привязан/);
+  assert.match(payloadJson(buildStartGuidePayload(config)), /Ранги помощи/);
+  assert.match(payloadJson(buildStartGuidePayload(config)), /Саппорт Ⅴ ур\./);
+  assert.match(payloadJson(buildStartGuidePayload(config)), /Мой прогресс/);
   assert.equal(buildPanelTextModal(config).data.custom_id, "at:panel_text:modal");
 });
 
@@ -482,6 +486,7 @@ test("moderator panel renders setup controls", () => {
   assert.match(json, /Antiteam Control/);
   assert.match(json, /Опубликовать панель/);
   assert.match(json, /Редактировать старт/);
+  assert.match(json, /Пинг-система/);
   assert.match(json, /Roblox\/тайминги/);
   assert.match(json, /Автозакрытие миссии/);
   assert.match(json, /Статистика помощи/);
@@ -520,6 +525,17 @@ test("helper reply exposes friend-request action only after help path needs it",
   assert.match(unknownHelper, /Roblox у тебя не привязан/);
   assert.match(unknownHelper, /Автор уже получил уведомление/);
   assert.match(unknownHelper, /"disabled":true/);
+});
+
+test("ping config modal exposes the three ping systems", () => {
+  const modal = buildPingConfigModal({
+    pingMode: "custom_role",
+    extraPingRoleId: "role-2",
+  });
+  const json = JSON.stringify(modal.toJSON());
+
+  assert.match(json, /battalion \/ role \/ everyone/);
+  assert.match(json, /role-2/);
 });
 
 test("helper stats payload supports per-helper delete and full clear confirmation", () => {

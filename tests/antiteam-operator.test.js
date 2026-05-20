@@ -1254,6 +1254,57 @@ test("close modal rejects moderator role without admin permissions", async () =>
   assert.equal(interaction.calls[0][1].content, "Нет прав.");
 });
 
+test("arrival toggle updates the close review before serialized persistence finishes", async () => {
+  const db = {};
+  const draft = setAntiteamDraft(db, "author-1", {
+    userTag: "Author",
+    roblox: { userId: "101", username: "Anchor" },
+    level: "medium",
+    count: "2-4",
+    description: "Нужна помощь.",
+  }, { now: "2026-05-16T10:00:00.000Z" });
+  createAntiteamTicketFromDraft(db, draft, {
+    id: "ticket-1",
+    now: "2026-05-16T10:01:00.000Z",
+  });
+  db.sot.antiteam.tickets["ticket-1"].helpers = {
+    "helper-1": {
+      userId: "helper-1",
+      discordTag: "Helper",
+      respondedAt: "2026-05-16T10:02:00.000Z",
+      arrived: false,
+    },
+  };
+
+  let releasePersist = null;
+  let resolvePersistEntered = null;
+  const persistEntered = new Promise((resolve) => {
+    resolvePersistEntered = resolve;
+  });
+  const interaction = createButtonInteraction(ticketButtonId("arrived", "ticket-1", "helper-1:0"), { id: "author-1", username: "Author" });
+  const operator = createAntiteamOperator({
+    db,
+    now: () => "2026-05-16T10:03:00.000Z",
+    saveDb() {},
+    runSerializedMutation: async ({ mutate }) => {
+      resolvePersistEntered(interaction.calls.map((call) => call[0]));
+      await new Promise((resolve) => {
+        releasePersist = resolve;
+      });
+      return mutate();
+    },
+  });
+
+  const pending = operator.handleButtonInteraction(interaction);
+  const callsBeforePersist = await persistEntered;
+
+  assert.deepEqual(callsBeforePersist, ["update"]);
+  assert.match(JSON.stringify(interaction.calls[0][1].components[0].toJSON()), /Пришёл • Helper/);
+  releasePersist();
+  assert.equal(await pending, true);
+  assert.equal(db.sot.antiteam.tickets["ticket-1"].helpers["helper-1"].arrived, true);
+});
+
 test("draft submit asks for photo when photo toggle is enabled", async () => {
   const db = {};
   ensureAntiteamState(db).state.config.channelId = "channel-1";
@@ -1273,6 +1324,79 @@ test("draft submit asks for photo when photo toggle is enabled", async () => {
   assert.equal(await operator.handleButtonInteraction(interaction), true);
   assert.equal(db.sot.antiteam.photoRequests["user-1"].channelId, "channel-1");
   assert.match(JSON.stringify(interaction.calls.at(-1)[1].components[0].toJSON()), /Фото к заявке/);
+});
+
+test("standard draft submit sends battalion ping and transient configured role ping", async () => {
+  const db = {};
+  const state = ensureAntiteamState(db).state;
+  state.config.channelId = "channel-1";
+  state.config.battalionRoleId = "battalion-role";
+  state.config.pingMode = "custom_role";
+  state.config.extraPingRoleId = "extra-role";
+  setAntiteamDraft(db, "user-1", {
+    userTag: "User",
+    roblox: { userId: "101", username: "Anchor" },
+    description: "Два ника около 4k.",
+  }, { now: "2026-05-16T10:00:00.000Z" });
+
+  const sentToChannel = [];
+  const sentToThread = [];
+  const deletedMessages = [];
+  const scheduledDelays = [];
+  const thread = {
+    id: "thread-1",
+    isTextBased: () => true,
+    messages: { fetch: async () => null },
+    send: async (payload) => {
+      sentToThread.push(payload);
+      const id = `thread-message-${sentToThread.length}`;
+      return {
+        id,
+        delete: async () => {
+          deletedMessages.push(id);
+        },
+      };
+    },
+  };
+  const channel = {
+    id: "channel-1",
+    guildId: "guild-1",
+    isTextBased: () => true,
+    messages: { fetch: async () => null },
+    send: async (payload) => {
+      sentToChannel.push(payload);
+      return {
+        id: `message-${sentToChannel.length}`,
+        guildId: "guild-1",
+        edit: async () => {},
+        startThread: async () => thread,
+      };
+    },
+  };
+  const operator = createAntiteamOperator({
+    db,
+    now: () => "2026-05-16T10:01:00.000Z",
+    saveDb() {},
+    fetchChannel: async (channelId) => channelId === "channel-1" ? channel : thread,
+    setTimeout: (callback, delay) => {
+      scheduledDelays.push(delay);
+      callback();
+      return { unref() {} };
+    },
+  });
+  const interaction = createButtonInteraction(ANTITEAM_CUSTOM_IDS.submitDraft, { id: "user-1", username: "User" });
+
+  assert.equal(await operator.handleButtonInteraction(interaction), true);
+
+  const ticket = Object.values(db.sot.antiteam.tickets)[0];
+  assert.equal(ticket.message.pingMessageId, "thread-message-1");
+  assert.equal(sentToThread.length, 3);
+  assert.equal(sentToThread[0].content, "<@&battalion-role>");
+  assert.deepEqual(sentToThread[0].allowedMentions, { roles: ["battalion-role"] });
+  assert.equal(sentToThread[1].content, "<@&extra-role>");
+  assert.deepEqual(sentToThread[1].allowedMentions, { roles: ["extra-role"] });
+  assert.deepEqual(scheduledDelays, [500]);
+  assert.deepEqual(deletedMessages, ["thread-message-2"]);
 });
 
 test("draft cancel clears a live draft and confirms cancellation", async () => {
@@ -1665,7 +1789,7 @@ test("closing ticket edits messages and renames thread with gray marker", async 
   assert.match(JSON.stringify(threadPanelEdit.components[0].toJSON()), /✅ Закрыто/);
 });
 
-test("closing ticket removes ping message, locks thread, archives it, and removes non-admin members", async () => {
+test("closing ticket removes ping message, locks thread, archives it, and leaves members in place", async () => {
   const db = {};
   const draft = setAntiteamDraft(db, "author-1", {
     userTag: "Author",
@@ -1747,7 +1871,7 @@ test("closing ticket removes ping message, locks thread, archives it, and remove
   assert.equal(pingDeleted, true);
   assert.equal(archived, true);
   assert.equal(locked, true);
-  assert.deepEqual(removedMembers, ["helper-1"]);
+  assert.deepEqual(removedMembers, []);
 });
 
 test("closing ticket writes helper result markers into the public message", async () => {
@@ -1832,7 +1956,7 @@ test("closing ticket writes helper result markers into the public message", asyn
   ]);
 });
 
-test("auto-close reuses thread cleanup and archives the mission", async () => {
+test("auto-close reuses thread cleanup, archives the mission, and leaves members in place", async () => {
   const db = {};
   const state = ensureAntiteamState(db).state;
   state.config.missionAutoCloseMinutes = 120;
@@ -1910,7 +2034,7 @@ test("auto-close reuses thread cleanup and archives the mission", async () => {
   assert.equal(pingDeleted, true);
   assert.equal(locked, true);
   assert.equal(archived, true);
-  assert.deepEqual(removedMembers, ["helper-1"]);
+  assert.deepEqual(removedMembers, []);
 });
 
 test("advanced config modal updates timing and Roblox link settings", async () => {
@@ -1942,6 +2066,34 @@ test("advanced config modal updates timing and Roblox link settings", async () =
   assert.equal(config.roblox.directJoinUrlTemplate, "https://example.test/start?placeId={placeId}&gameId={gameId}");
   assert.equal(config.roblox.friendRequestsUrl, "https://example.test/friends");
   assert.match(JSON.stringify(interaction.calls.at(-1)[1].components[0].toJSON()), /Roblox-ссылки/);
+});
+
+test("ping config controls are available in moderator panel and save mode", async () => {
+  const db = {};
+  ensureAntiteamState(db);
+  const operator = createAntiteamOperator({
+    db,
+    saveDb() {},
+  });
+  const member = { permissions: { has: () => true }, roles: { cache: new Map() } };
+  const open = createButtonInteraction(ANTITEAM_CUSTOM_IDS.pingConfig, { id: "mod-1", username: "Mod" });
+  open.member = member;
+
+  assert.equal(await operator.handleButtonInteraction(open), true);
+  assert.equal(open.calls[0][0], "showModal");
+  assert.match(JSON.stringify(open.calls[0][1].toJSON()), /battalion \/ role \/ everyone/);
+
+  const modal = createModalInteraction(
+    "at:ping:config_modal",
+    { ping_mode: "everyone", extra_ping_role_id: "<@&55555>" },
+    { id: "mod-1", username: "Mod" },
+    member
+  );
+
+  assert.equal(await operator.handleModalSubmitInteraction(modal), true);
+  assert.equal(db.sot.antiteam.config.pingMode, "everyone");
+  assert.equal(db.sot.antiteam.config.extraPingRoleId, "55555");
+  assert.match(JSON.stringify(modal.calls.at(-1)[1].components[0].toJSON()), /Пинг-система сохранена/);
 });
 
 test("panel text modal updates and edits the published start panel", async () => {

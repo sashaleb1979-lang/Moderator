@@ -20,6 +20,7 @@ const {
   markRobloxConfirmed,
   matchRobloxFriendsToDiscordProfiles,
   normalizeAntiteamDraft,
+  normalizeAntiteamPingMode,
   recordAntiteamHelper,
   setAntiteamDraft,
   setTicketHelperArrival,
@@ -39,6 +40,7 @@ const {
   buildHelpReplyPayload,
   buildModeratorPanelPayload,
   buildPanelTextModal,
+  buildPingConfigModal,
   buildPhotoRequestPayload,
   buildReportModal,
   buildRobloxConfirmPayload,
@@ -60,6 +62,8 @@ const {
 } = require("./support-progress");
 
 function noop() {}
+
+const ANTITEAM_TRANSIENT_PING_DELETE_MS = 500;
 
 function normalizeUsernameInput(value) {
   const username = cleanString(value, 40);
@@ -129,6 +133,14 @@ function parsePositiveIntegerInput(value, fallback) {
   return Number.isSafeInteger(number) && number > 0 ? number : fallback;
 }
 
+function parsePingModeInput(value, fallback = "battalion") {
+  const normalized = cleanString(value, 40).toLowerCase().replace(/[\s-]+/g, "_");
+  if (["1", "bat", "battalion", "батальон", "батальён"].includes(normalized)) return "battalion";
+  if (["2", "role", "custom", "custom_role", "роль", "кастом", "кастомная_роль"].includes(normalized)) return "custom_role";
+  if (["3", "everyone", "@everyone", "all", "everyone_ping", "эвериван", "эвриван"].includes(normalized)) return "everyone";
+  return normalizeAntiteamPingMode(normalized, fallback);
+}
+
 function parseColorInput(value, fallback = 0xE53935) {
   const text = cleanString(value, 20).replace(/^#/, "");
   if (/^[0-9a-f]{6}$/i.test(text)) return Number.parseInt(text, 16);
@@ -187,6 +199,7 @@ function createAntiteamOperator(options = {}) {
 
   const nowIso = typeof options.now === "function" ? options.now : () => new Date().toISOString();
   const logError = typeof options.logError === "function" ? options.logError : noop;
+  const scheduleTimeout = typeof options.setTimeout === "function" ? options.setTimeout : setTimeout;
 
   function getState() {
     return ensureAntiteamState(db).state;
@@ -235,15 +248,51 @@ function createAntiteamOperator(options = {}) {
     return cleanString(interaction?.user?.id, 80) === ticket.createdBy || hasAdmin(interaction?.member);
   }
 
-  async function resolveThreadParticipantMember(thread, participant = {}, userId = "") {
-    const embeddedMember = participant?.member || participant?.guildMember;
-    if (embeddedMember) return embeddedMember;
-    const guildMember = thread?.guild?.members?.cache?.get?.(userId);
-    if (guildMember) return guildMember;
-    if (typeof thread?.guild?.members?.fetch === "function") {
-      return thread.guild.members.fetch(userId).catch(() => participant);
+  function buildExtraPingPayload(ticket = {}, config = createDefaultAntiteamConfig()) {
+    if (ticket.kind === "clan") return null;
+    const mode = normalizeAntiteamPingMode(config.pingMode, "battalion");
+    if (mode === "custom_role") {
+      const roleId = cleanString(config.extraPingRoleId, 80);
+      return roleId
+        ? { content: `<@&${roleId}>`, allowedMentions: { roles: [roleId] } }
+        : null;
     }
-    return participant;
+    if (mode === "everyone") {
+      return { content: "@everyone", allowedMentions: { parse: ["everyone"] } };
+    }
+    return null;
+  }
+
+  function scheduleTransientPingDelete(message = null) {
+    if (typeof message?.delete !== "function") return;
+    const timer = scheduleTimeout(() => {
+      Promise.resolve(message.delete()).catch((error) => {
+        logError("Antiteam transient ping cleanup failed:", error?.message || error);
+      });
+    }, ANTITEAM_TRANSIENT_PING_DELETE_MS);
+    if (timer && typeof timer.unref === "function") timer.unref();
+  }
+
+  async function sendTicketPingMessages(thread, ticket = {}, config = createDefaultAntiteamConfig()) {
+    const pingRoleIds = getTicketPingRoleIds(ticket, config);
+    let pingMessage = null;
+    if (thread && pingRoleIds.length) {
+      pingMessage = await thread.send({
+        content: pingRoleIds.map((roleId) => `<@&${roleId}>`).join(" "),
+        allowedMentions: { roles: pingRoleIds },
+      }).catch(() => null);
+    }
+
+    const extraPayload = buildExtraPingPayload(ticket, config);
+    if (thread && extraPayload) {
+      const extraMessage = await thread.send(extraPayload).catch((error) => {
+        logError("Antiteam extra ping failed:", error?.message || error);
+        return null;
+      });
+      scheduleTransientPingDelete(extraMessage);
+    }
+
+    return pingMessage;
   }
 
   async function cleanupClosedTicketResources(ticket = {}) {
@@ -258,26 +307,6 @@ function createAntiteamOperator(options = {}) {
       if (pingMessage?.delete) {
         await pingMessage.delete().catch((error) => {
           logError("Antiteam ping cleanup failed:", error?.message || error);
-        });
-      }
-    }
-
-    if (thread.members?.fetch && thread.members?.remove) {
-      const participants = await thread.members.fetch().catch(() => null);
-      const entries = participants?.values
-        ? [...participants.values()]
-        : Array.isArray(participants)
-          ? participants
-          : Object.values(participants || {});
-
-      for (const participant of entries) {
-        const userId = cleanString(participant?.id || participant?.user?.id || participant?.userId, 80);
-        if (!userId || userId === ticket.createdBy) continue;
-        const member = await resolveThreadParticipantMember(thread, participant, userId);
-        const isBot = participant?.user?.bot === true || member?.user?.bot === true;
-        if (isBot || hasAdmin(member)) continue;
-        await thread.members.remove(userId).catch((error) => {
-          logError(`Antiteam thread member cleanup failed [${userId}]:`, error?.message || error);
         });
       }
     }
@@ -594,14 +623,7 @@ function createAntiteamOperator(options = {}) {
           autoArchiveDuration: Math.max(60, Math.min(10080, Number(config.missionAutoArchiveMinutes) || 60)),
         })
         : null;
-      const pingRoleIds = getTicketPingRoleIds(ticket, config);
-      let pingMessage = null;
-      if (thread && pingRoleIds.length) {
-        pingMessage = await thread.send({
-          content: pingRoleIds.map((roleId) => `<@&${roleId}>`).join(" "),
-          allowedMentions: { roles: pingRoleIds },
-        }).catch(() => null);
-      }
+      const pingMessage = thread ? await sendTicketPingMessages(thread, ticket, config) : null;
       const threadPanel = thread
         ? await thread.send(buildThreadPanelPayload(ticket, config)).catch(() => null)
         : null;
@@ -1102,6 +1124,15 @@ function createAntiteamOperator(options = {}) {
       return true;
     }
 
+    if (id === ANTITEAM_CUSTOM_IDS.pingConfig) {
+      if (!isModerator(interaction.member)) {
+        await replyNoPermission(interaction);
+        return true;
+      }
+      await interaction.showModal(buildPingConfigModal(getConfig()));
+      return true;
+    }
+
     if (id === ANTITEAM_CUSTOM_IDS.panelText) {
       if (!isModerator(interaction.member)) {
         await replyNoPermission(interaction);
@@ -1428,9 +1459,21 @@ function createAntiteamOperator(options = {}) {
         await interaction.reply({ content: "Helper не найден в этой миссии.", flags: MessageFlags.Ephemeral });
         return true;
       }
-      await interaction.deferUpdate();
-      const updated = await persist("antiteam-arrival-toggle", () => setTicketHelperArrival(db, ticket.id, helperId, !current.arrived, { now: nowIso() }));
-      await interaction.editReply(buildCloseReviewPayload(updated, Number.parseInt(pageRaw, 10) || 0));
+      const page = Number.parseInt(pageRaw, 10) || 0;
+      const arrived = !current.arrived;
+      const optimisticTicket = {
+        ...ticket,
+        helpers: {
+          ...(ticket.helpers || {}),
+          [helperId]: {
+            ...current,
+            arrived,
+            arrivedSetAt: arrived ? nowIso() : current.arrivedSetAt,
+          },
+        },
+      };
+      await interaction.update(buildCloseReviewPayload(optimisticTicket, page));
+      await persist("antiteam-arrival-toggle", () => setTicketHelperArrival(db, ticket.id, helperId, arrived, { now: nowIso() }));
       return true;
     }
 
@@ -1558,6 +1601,32 @@ function createAntiteamOperator(options = {}) {
         return { mutated: true };
       });
       await interaction.reply(buildModeratorPanelPayload(getState(), "Настройки антитима сохранены."));
+      return true;
+    }
+
+    if (id === "at:ping:config_modal") {
+      if (!isModerator(interaction.member)) {
+        await replyNoPermission(interaction);
+        return true;
+      }
+      const previous = getConfig();
+      const nextConfig = createDefaultAntiteamConfig({
+        ...previous,
+        pingMode: parsePingModeInput(interaction.fields.getTextInputValue("ping_mode"), previous.pingMode),
+        extraPingRoleId: parseEntityId(interaction.fields.getTextInputValue("extra_ping_role_id")),
+      });
+      await persist("antiteam-ping-config", () => {
+        const state = getState();
+        state.config = nextConfig;
+        return { mutated: true };
+      });
+      const editResult = await editPublishedStartPanel().catch(() => ({ edited: false }));
+      await interaction.reply(buildModeratorPanelPayload(
+        getState(),
+        editResult.edited
+          ? "Пинг-система сохранена и обновлена в стартовой панели."
+          : "Пинг-система сохранена."
+      ));
       return true;
     }
 
