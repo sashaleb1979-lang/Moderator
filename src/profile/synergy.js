@@ -20,6 +20,11 @@ function normalizeFiniteNumber(value, fallback = null) {
   return Number.isFinite(amount) ? amount : fallback;
 }
 
+function normalizeNullableFiniteNumber(value, fallback = null) {
+  if (value === null || value === undefined || value === "") return fallback;
+  return normalizeFiniteNumber(value, fallback);
+}
+
 function formatNumber(value) {
   const amount = Number(value);
   return Number.isFinite(amount) ? new Intl.NumberFormat("ru-RU").format(amount) : "—";
@@ -294,7 +299,7 @@ function hasReliableProofWindowPair(previousProofWindow = null, latestProofWindo
 }
 
 function getNextKillTierTarget(approvedKills = null) {
-  const amount = normalizeFiniteNumber(approvedKills);
+  const amount = normalizeNullableFiniteNumber(approvedKills);
   if (!Number.isFinite(amount)) return null;
   const target = KILL_TIER_THRESHOLDS.find((entry) => amount < entry.kills) || null;
   if (!target) return null;
@@ -306,7 +311,7 @@ function getNextKillTierTarget(approvedKills = null) {
 }
 
 function getNextKillMilestoneTarget(approvedKills = null) {
-  const amount = normalizeFiniteNumber(approvedKills);
+  const amount = normalizeNullableFiniteNumber(approvedKills);
   if (!Number.isFinite(amount)) return null;
   const targetKills = KILL_MILESTONES.find((entry) => amount < entry) || null;
   if (!targetKills) return null;
@@ -813,8 +818,8 @@ function buildPopulationAxisSamples({ populationProfiles = [], approvedEntries =
     const onboardingSummary = summary.onboarding && typeof summary.onboarding === "object" ? summary.onboarding : {};
     const activitySummary = summary.activity && typeof summary.activity === "object" ? summary.activity : {};
     const robloxSummary = summary.roblox && typeof summary.roblox === "object" ? summary.roblox : {};
-    const approvedKills = normalizeFiniteNumber(profile?.approvedKills ?? onboardingSummary.approvedKills);
-    const killTier = normalizeFiniteNumber(profile?.killTier ?? onboardingSummary.killTier);
+    const approvedKills = normalizeNullableFiniteNumber(profile?.approvedKills ?? onboardingSummary.approvedKills);
+    const killTier = normalizeNullableFiniteNumber(profile?.killTier ?? onboardingSummary.killTier);
     const standing = buildPopulationKillStanding(approvedEntries, entry.userId);
     const progressState = buildProgressSynergyState({
       profile,
@@ -2035,8 +2040,8 @@ function buildSelfProgressBlock({
   if (!isSelf) return null;
 
   const lines = [];
-  const normalizedApprovedKills = normalizeFiniteNumber(approvedKills);
-  const normalizedKillTier = normalizeFiniteNumber(killTier);
+  const normalizedApprovedKills = normalizeNullableFiniteNumber(approvedKills);
+  const normalizedKillTier = normalizeNullableFiniteNumber(killTier);
   const latestGrowthWindow = progressState?.latestGrowthWindow || null;
   const nextTierTarget = getNextKillTierTarget(normalizedApprovedKills);
   const nextMilestoneTarget = getNextKillMilestoneTarget(normalizedApprovedKills);

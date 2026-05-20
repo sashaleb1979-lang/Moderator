@@ -1,6 +1,7 @@
 "use strict";
 
 const { splitIntoBatches } = require("../integrations/roblox-service");
+const { applyRobloxBindingRepairPass } = require("../integrations/roblox-binding-repair");
 const {
   applyRobloxAccountSnapshot,
   ensureSharedProfile,
@@ -225,122 +226,27 @@ function buildRobloxRepairableCandidates(db = {}) {
 }
 
 async function repairRobloxVerifiedBindings(options = {}) {
-  const db = options.db && typeof options.db === "object" ? options.db : null;
-  const profiles = db && typeof db.profiles === "object" && !Array.isArray(db.profiles)
-    ? db.profiles
-    : null;
-  const fetchUsersByUsernames = options.fetchUsersByUsernames;
-  const logError = typeof options.logError === "function" ? options.logError : () => {};
-  const runtimeState = options.runtimeState || null;
-
-  if (!profiles) {
-    return {
-      repairedCount: 0,
-      failedCount: 0,
-      failedBatchCount: 0,
-      unresolvedCount: 0,
-      sanitizedCount: 0,
-    };
-  }
-
-  const { candidates, sanitizedDiscordUserIds } = buildRobloxRepairableCandidates(db);
-  const sanitizedCount = sanitizedDiscordUserIds.length;
-  if (runtimeState?.dirtyDiscordUserIds instanceof Set) {
-    for (const discordUserId of sanitizedDiscordUserIds) {
-      markRobloxRuntimeDirty(runtimeState, discordUserId, "binding_sanitized");
-    }
-  }
-
-  if (typeof fetchUsersByUsernames !== "function") {
-    return {
-      repairedCount: 0,
-      failedCount: 0,
-      failedBatchCount: 0,
-      unresolvedCount: 0,
-      sanitizedCount,
-    };
-  }
-
-  if (!candidates.length) {
-    return {
-      repairedCount: 0,
-      failedCount: 0,
-      failedBatchCount: 0,
-      unresolvedCount: 0,
-      sanitizedCount,
-    };
-  }
-
-  const candidatesByUsername = new Map();
-  for (const candidate of candidates) {
-    if (candidate.hadSanitizedUserId && runtimeState?.dirtyDiscordUserIds instanceof Set) {
-      markRobloxRuntimeDirty(runtimeState, candidate.discordUserId, "binding_sanitized");
-    }
-
-    const key = candidate.username.toLowerCase();
-    if (!candidatesByUsername.has(key)) {
-      candidatesByUsername.set(key, []);
-    }
-    candidatesByUsername.get(key).push(candidate);
-  }
-
-  let repairedCount = 0;
-  let failedCount = 0;
-  let failedBatchCount = 0;
-  let unresolvedCount = 0;
-  for (const batchUsernames of splitIntoBatches([...candidatesByUsername.keys()], 100)) {
-    try {
-      const matches = await fetchUsersByUsernames(batchUsernames, {
-        excludeBannedUsers: false,
-      });
-      const matchByUsername = new Map(
-        (Array.isArray(matches) ? matches : [])
-          .filter((entry) => entry?.userId && entry?.username)
-          .map((entry) => [String(entry.username || "").trim().toLowerCase(), entry])
-      );
-
-      for (const usernameKey of batchUsernames) {
-        const usernameCandidates = candidatesByUsername.get(usernameKey) || [];
-        const match = matchByUsername.get(usernameKey) || null;
-        if (!match?.userId) {
-          unresolvedCount += usernameCandidates.length;
-          continue;
-        }
-
-        for (const candidate of usernameCandidates) {
-          applyRobloxAccountSnapshot(candidate.profile, match, {
-            verificationStatus: candidate.roblox.verificationStatus,
-            verifiedAt: candidate.roblox.verifiedAt,
-            updatedAt: resolveNowIso(options),
-            lastSubmissionId: candidate.roblox.lastSubmissionId,
-            lastReviewedAt: candidate.roblox.lastReviewedAt,
-            reviewedBy: candidate.roblox.reviewedBy,
-            source: candidate.roblox.source,
-            lastRefreshAt: candidate.roblox.lastRefreshAt,
-            refreshStatus: candidate.roblox.refreshStatus,
-            refreshError: candidate.roblox.refreshError,
-          });
-          profiles[candidate.discordUserId] = ensureSharedProfile(candidate.profile, candidate.discordUserId).profile;
-
-          if (runtimeState?.dirtyDiscordUserIds instanceof Set) {
-            markRobloxRuntimeDirty(runtimeState, candidate.discordUserId, "binding_repaired");
-          }
-          repairedCount += 1;
-        }
+  const result = await applyRobloxBindingRepairPass({
+    db: options.db,
+    dryRun: false,
+    persistTrail: false,
+    source: "playtime_sync",
+    fetchUsersByUsernames: options.fetchUsersByUsernames,
+    logError: options.logError,
+    now: options.now,
+    markDirty(discordUserId, reason) {
+      if (options.runtimeState?.dirtyDiscordUserIds instanceof Set) {
+        markRobloxRuntimeDirty(options.runtimeState, discordUserId, reason);
       }
-    } catch (error) {
-      failedBatchCount += 1;
-      failedCount += batchUsernames.length;
-      logError(`Roblox verified binding repair batch failed [${batchUsernames.join(",")}]:`, formatErrorText(error));
-    }
-  }
+    },
+  });
 
   return {
-    repairedCount,
-    failedCount,
-    failedBatchCount,
-    unresolvedCount,
-    sanitizedCount,
+    repairedCount: result.repairedCount,
+    failedCount: 0,
+    failedBatchCount: result.failedRepairBatchCount,
+    unresolvedCount: result.unresolvedCount,
+    sanitizedCount: result.sanitizedCount,
   };
 }
 

@@ -24,7 +24,7 @@ const BOT_HELPER_PANEL_EDITOR_CUSTOM_IDS = Object.freeze({
 
 const BOT_HELPER_PANEL_ACTION_IDS = Object.freeze({
   kills: "onboard_begin",
-  roblox: "profile_bind_roblox",
+  roblox: "bot_helper_bind_roblox",
   elo: "elo_submit_open",
   mains: "onboard_change_mains",
 });
@@ -128,6 +128,7 @@ function buildBotHelperSettingsPayload(options = {}) {
   const messageText = String(options.messageText || "—").trim() || "—";
   const lastSentText = String(options.lastSentText || "—").trim() || "—";
   const activityText = String(options.activityText || "—").trim() || "—";
+  const checkCadenceText = String(options.checkCadenceText || "—").trim() || "—";
   const autoResendText = String(options.autoResendText || `${BOT_HELPER_PANEL_AUTO_RESEND_INTERVAL_HOURS} ч`).trim() || `${BOT_HELPER_PANEL_AUTO_RESEND_INTERVAL_HOURS} ч`;
   const statusText = String(options.statusText || "").trim();
 
@@ -140,6 +141,7 @@ function buildBotHelperSettingsPayload(options = {}) {
     .addFields(
       { name: "Канал", value: channelText, inline: true },
       { name: "Сообщение", value: messageText, inline: true },
+      { name: "Проверка", value: checkCadenceText, inline: true },
       { name: "Авто-переотправка", value: autoResendText, inline: true },
       { name: "Последняя отправка", value: lastSentText, inline: true },
       { name: "Активность под панелью", value: activityText, inline: true }

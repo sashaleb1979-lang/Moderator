@@ -97,6 +97,30 @@ test("getResolvedIntegrationSourcePathFromState prefers persisted SoT sourcePath
   assert.equal(getResolvedIntegrationSourcePathFromState(db, "tierlist"), "");
 });
 
+test("getResolvedIntegrationSourcePathFromState falls back to compat path when persisted SoT path is missing on disk", () => {
+  const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moderator-integration-source-"));
+  fs.mkdirSync(path.join(dataRoot, "compat"), { recursive: true });
+  fs.writeFileSync(path.join(dataRoot, "compat", "elo-live.json"), "{}", "utf8");
+
+  const db = {
+    config: {
+      integrations: {
+        elo: { sourcePath: "compat/elo-live.json" },
+      },
+    },
+    sot: {
+      integrations: {
+        elo: { sourcePath: "sot/elo-missing.json" },
+      },
+    },
+  };
+
+  assert.equal(
+    getResolvedIntegrationSourcePathFromState(db, "elo", { baseDir: dataRoot }),
+    "compat/elo-live.json"
+  );
+});
+
 test("createDefaultDbState seeds expected onboarding defaults", () => {
   const state = createDefaultDbState({
     appConfig: {

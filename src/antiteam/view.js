@@ -333,15 +333,16 @@ function buildStartGuidePayload(config = createDefaultAntiteamConfig()) {
   return buildPayload(container, { ephemeral: true });
 }
 
-function buildRobloxMissingPayload() {
+function buildRobloxMissingPayload({ reasonText = "" } = {}) {
   const container = new ContainerBuilder()
     .setAccentColor(0x1565C0)
     .addTextDisplayComponents(
       new TextDisplayBuilder().setContent("# Roblox ник"),
       new TextDisplayBuilder().setContent([
         "В профиле пока нет Roblox аккаунта для антитима.",
+        cleanString(reasonText, 400),
         "Внеси ник: бот проверит его через Roblox API и сразу откроет заявку.",
-      ].join("\n"))
+      ].filter(Boolean).join("\n"))
     )
     .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
     .addActionRowComponents(

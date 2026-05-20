@@ -591,6 +591,49 @@ test("profile read-model shows a soft self reminder after enough reliable JJS ho
   assert.match(readModel.sections.progress[0].lines.join("\n"), /CTA: После последнего рега уже 13 ч JJS .* пора обновить kills/);
 });
 
+test("profile read-model keeps unapproved onboarding state null even when proof history remains", () => {
+  const readModel = buildProfileReadModel({
+    now: "2026-05-16T12:00:00.000Z",
+    guildId: "guild-1",
+    userId: "user-1",
+    isSelf: true,
+    profile: {
+      approvedKills: null,
+      killTier: null,
+      summary: {
+        preferredDisplayName: "Sasha",
+        onboarding: { approvedKills: null, killTier: null },
+        roblox: {
+          hasVerifiedAccount: true,
+          totalJjsMinutes: 900,
+        },
+      },
+      domains: {
+        progress: {
+          proofWindows: [
+            {
+              approvedKills: 120,
+              killTier: 4,
+              reviewedAt: "2026-05-15T00:00:00.000Z",
+              playtimeTracked: true,
+              totalJjsMinutes: 120,
+            },
+          ],
+        },
+      },
+    },
+  });
+
+  const progressText = readModel.sections.progress[0].lines.join("\n");
+
+  assert.match(readModel.sections.overview[0].lines.join("\n"), /Подтверждённые kills: —/);
+  assert.equal(readModel.selfActionState.killsLabel, "Добавить kills");
+  assert.match(progressText, /Зарегистрированные kills пока не подтверждены\./);
+  assert.match(progressText, /С последнего рега: 36 ч по времени .* 13 ч JJS/);
+  assert.doesNotMatch(progressText, /Зарегистрировано: 0 kills/);
+  assert.doesNotMatch(progressText, /До следующего tier|До milestone/);
+});
+
 test("profile read-model prepends the self-progress block before generic progress sections", () => {
   const readModel = buildProfileReadModel({
     now: "2026-05-16T12:00:00.000Z",

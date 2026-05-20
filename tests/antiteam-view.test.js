@@ -145,7 +145,9 @@ test("draft setup renders level, count and toggles compactly", () => {
 });
 
 test("roblox identity panels gate missing and first-time confirmed profiles", () => {
-  const missing = buildRobloxMissingPayload();
+  const missing = buildRobloxMissingPayload({
+    reasonText: "Старая Roblox-связка повреждена: в профиле нет валидного Roblox userId, поэтому бот не возьмёт её автоматически.",
+  });
   const confirm = buildRobloxConfirmPayload({
     username: "Krutoikira",
     userId: "1265862594",
@@ -156,6 +158,7 @@ test("roblox identity panels gate missing and first-time confirmed profiles", ()
 
   assert.equal(missing.flags, MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral);
   assert.match(missingJson, /Roblox ник/);
+  assert.match(missingJson, /нет валидного Roblox userId/);
   assert.match(missingJson, /Внести ник/);
   assert.match(missingJson, new RegExp(ANTITEAM_CUSTOM_IDS.requestRobloxNick.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   assert.match(confirmJson, /Подтверди Roblox/);

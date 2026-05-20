@@ -11,6 +11,7 @@ const {
   getWelcomeRobloxIdentityLockText,
   hasConfirmedRobloxIdentity,
   parseRobloxIdentityInput,
+  WELCOME_ROBLOX_IDENTITY_LOCK_TEXT,
 } = require("../src/onboard/roblox-identity");
 
 test("hasConfirmedRobloxIdentity requires both username and user id", () => {
@@ -30,19 +31,19 @@ test("canManageWelcomeRobloxIdentity allows adding a missing Roblox identity", (
   }), null);
 });
 
-test("canManageWelcomeRobloxIdentity allows regular users to change a confirmed identity", () => {
+test("canManageWelcomeRobloxIdentity blocks regular users from changing a confirmed identity", () => {
   assert.equal(canManageWelcomeRobloxIdentity({
     session: { robloxUsername: "KolhozU", robloxUserId: "9843941555" },
     pending: null,
-  }), true);
+  }), false);
   assert.equal(getWelcomeRobloxIdentityLockText({
     session: { robloxUsername: "KolhozU", robloxUserId: "9843941555" },
     pending: null,
-  }), null);
+  }), WELCOME_ROBLOX_IDENTITY_LOCK_TEXT);
   assert.equal(canManageWelcomeRobloxIdentity({
     session: null,
     pending: { robloxUsername: "KolhozU", robloxUserId: "9843941555" },
-  }), true);
+  }), false);
 });
 
 test("canManageWelcomeRobloxIdentity allows admin override for confirmed identity", () => {

@@ -922,9 +922,9 @@
         "dirtyUsers": [],
         "lastFlushAt": null,
         "lastFlushStats": null,
-        "lastResumeAt": "2026-05-20T06:08:27.321Z",
-        "lastFullRecalcAt": "2026-05-20T06:08:27.342Z",
-        "lastRebuildAndRoleSyncAt": "2026-05-20T06:08:27.342Z",
+        "lastResumeAt": "2026-05-20T14:46:28.310Z",
+        "lastFullRecalcAt": "2026-05-20T14:46:28.331Z",
+        "lastRebuildAndRoleSyncAt": "2026-05-20T14:46:28.331Z",
         "lastRebuildAndRoleSyncStats": {
           "targetUserCount": 0,
           "managedRoleHolderCount": 0,
@@ -939,7 +939,7 @@
           "skipReasonCounts": {},
           "syncMode": "rebuild_and_sync"
         },
-        "lastDailyRoleSyncAt": "2026-05-20T06:08:27.342Z",
+        "lastDailyRoleSyncAt": "2026-05-20T14:46:28.331Z",
         "lastDailyRoleSyncStats": {
           "targetUserCount": 0,
           "managedRoleHolderCount": 0,
@@ -965,8 +965,11 @@
         "channelId": "",
         "panelMessageId": "",
         "battalionRoleId": "",
+        "battalionPingRoleIds": [],
         "battalionLeadRoleId": "",
         "clanCallerRoleId": "",
+        "pingMode": "battalion",
+        "extraPingRoleId": "",
         "missionAutoArchiveMinutes": 60,
         "missionAutoCloseMinutes": 120,
         "panel": {

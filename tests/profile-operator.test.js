@@ -502,3 +502,70 @@ test("profile operator resolves and saves Roblox binding through modal submit", 
   assert.deepEqual(calls.map((entry) => entry.step), ["resolve", "write", "log"]);
   assert.equal(calls[0].value, "https://www.roblox.com/users/42/profile");
 });
+
+test("profile operator logs resolve failures during Roblox bind modal submit", async () => {
+  const warnings = [];
+  const replies = [];
+  const operator = createTestOperator({
+    resolveRobloxUserInput: async () => {
+      throw new Error("roblox api down");
+    },
+    logWarning: (message) => warnings.push(message),
+  });
+
+  const handled = await operator.handleProfileModalSubmitInteraction({
+    interaction: {
+      customId: "profile_bind_roblox_modal",
+      user: { id: "user-1", username: "Sasha" },
+      member: makeMember({ userId: "user-1", username: "Sasha", displayName: "Sasha" }),
+      fields: {
+        getTextInputValue() {
+          return "Builderman";
+        },
+      },
+      deferReply: async (payload) => replies.push({ step: "deferReply", payload }),
+      editReply: async (payload) => replies.push({ step: "editReply", payload }),
+    },
+  });
+
+  assert.equal(handled, true);
+  assert.deepEqual(replies[0], { step: "deferReply", payload: { flags: MessageFlags.Ephemeral } });
+  assert.equal(replies[1].payload, "roblox api down");
+  assert.deepEqual(warnings, ["profile_bind_roblox resolve failed (user-1): roblox api down"]);
+});
+
+test("profile operator logs write failures during Roblox bind modal submit", async () => {
+  const warnings = [];
+  const replies = [];
+  const operator = createTestOperator({
+    resolveRobloxUserInput: async () => ({
+      id: "42",
+      name: "Builderman",
+      displayName: "Builderman",
+    }),
+    writeProfileRobloxBinding: async () => {
+      throw new Error("db write failed");
+    },
+    logWarning: (message) => warnings.push(message),
+  });
+
+  const handled = await operator.handleProfileModalSubmitInteraction({
+    interaction: {
+      customId: "profile_bind_roblox_modal",
+      user: { id: "user-1", username: "Sasha" },
+      member: makeMember({ userId: "user-1", username: "Sasha", displayName: "Sasha" }),
+      fields: {
+        getTextInputValue() {
+          return "Builderman";
+        },
+      },
+      deferReply: async (payload) => replies.push({ step: "deferReply", payload }),
+      editReply: async (payload) => replies.push({ step: "editReply", payload }),
+    },
+  });
+
+  assert.equal(handled, true);
+  assert.deepEqual(replies[0], { step: "deferReply", payload: { flags: MessageFlags.Ephemeral } });
+  assert.equal(replies[1].payload, "db write failed");
+  assert.deepEqual(warnings, ["profile_bind_roblox write failed (user-1): db write failed"]);
+});

@@ -40,14 +40,38 @@ function saveJsonFile(filePath, value) {
   }
 }
 
-function getResolvedIntegrationSourcePathFromState(db = {}, slot = "") {
+function hasExistingIntegrationSourcePath(sourcePath = "", options = {}) {
+  const normalizedSourcePath = String(sourcePath || "").trim();
+  if (!normalizedSourcePath) return false;
+
+  const baseDir = String(options.baseDir || "").trim();
+  if (!baseDir) return true;
+
+  const resolvedPath = path.isAbsolute(normalizedSourcePath)
+    ? normalizedSourcePath
+    : path.join(baseDir, normalizedSourcePath);
+  return fs.existsSync(resolvedPath);
+}
+
+function getResolvedIntegrationSourcePathFromState(db = {}, slot = "", options = {}) {
   const normalizedSlot = String(slot || "").trim();
   if (!normalizedSlot) return "";
 
+  const baseDir = String(options.baseDir || "").trim();
   const persistedValue = String(db?.sot?.integrations?.[normalizedSlot]?.sourcePath || "").trim();
-  if (persistedValue) return persistedValue;
+  const compatValue = String(db?.config?.integrations?.[normalizedSlot]?.sourcePath || "").trim();
 
-  return String(db?.config?.integrations?.[normalizedSlot]?.sourcePath || "").trim();
+  if (persistedValue) {
+    if (hasExistingIntegrationSourcePath(persistedValue, { baseDir })) {
+      return persistedValue;
+    }
+    if (compatValue && hasExistingIntegrationSourcePath(compatValue, { baseDir })) {
+      return compatValue;
+    }
+    return persistedValue;
+  }
+
+  return compatValue;
 }
 
 function createDefaultDbState({
@@ -177,7 +201,7 @@ function createDbStore({
     }
     db.config.characters = normalizedStoredCharacters;
     const dormantEloImport = importDormantEloSyncFromFile(db, {
-      sourcePath: getResolvedIntegrationSourcePathFromState(db, "elo"),
+      sourcePath: getResolvedIntegrationSourcePathFromState(db, "elo", { baseDir: dataRoot }),
       baseDir: dataRoot,
       syncedAt: new Date().toISOString(),
     });
@@ -185,7 +209,7 @@ function createDbStore({
       console.warn(`dormant ELO import skipped: ${dormantEloImport.error}`);
     }
     const dormantTierlistImport = importDormantTierlistSyncFromFile(db, {
-      sourcePath: getResolvedIntegrationSourcePathFromState(db, "tierlist"),
+      sourcePath: getResolvedIntegrationSourcePathFromState(db, "tierlist", { baseDir: dataRoot }),
       baseDir: dataRoot,
       syncedAt: new Date().toISOString(),
       characterCatalog: (runtimeCharacters.length ? runtimeCharacters : normalizedStoredCharacters)

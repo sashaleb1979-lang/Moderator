@@ -6,9 +6,42 @@ const assert = require("node:assert/strict");
 const {
   buildDiscordOAuthAuthorizeUrl,
   createVerificationCallbackHandler,
+  createVerificationCallbackServer,
   evaluateVerificationRisk,
   normalizeVerificationRuntimeConfig,
 } = require("../src/verification/runtime");
+
+function createMockCallbackServer() {
+  const handlers = new Map();
+  return {
+    listening: false,
+    once(event, handler) {
+      handlers.set(event, handler);
+    },
+    off(event, handler) {
+      if (handlers.get(event) === handler) {
+        handlers.delete(event);
+      }
+    },
+    emit(event, value) {
+      const handler = handlers.get(event);
+      if (event === "error") {
+        handlers.delete(event);
+      }
+      if (typeof handler === "function") {
+        handler(value);
+      }
+    },
+    listen(_port, _host, callback) {
+      this.listening = true;
+      callback();
+    },
+    close(callback) {
+      this.listening = false;
+      callback(null);
+    },
+  };
+}
 
 function createResponseRecorder() {
   return {
@@ -272,4 +305,67 @@ test("createVerificationCallbackHandler reports missing state through onFailure"
   assert.equal(failures[0].state, "");
   assert.match(String(failures[0].error?.message || failures[0].error), /OAuth state отсутствует/);
   assert.match(response.body, /OAuth state отсутствует/);
+});
+
+test("createVerificationCallbackServer starts once, reports already-listening state, and stops cleanly", async () => {
+  let createdServer = null;
+  const runtime = createVerificationCallbackServer({
+    config: {
+      integration: {
+        enabled: true,
+        callbackBaseUrl: "https://verify.example.com/oauth/discord/callback",
+      },
+      env: {
+        VERIFICATION_PORT: "3015",
+      },
+    },
+    createServer: () => {
+      createdServer = createMockCallbackServer();
+      return createdServer;
+    },
+    requestHandler: async () => true,
+  });
+
+  const firstStart = await runtime.start();
+  const secondStart = await runtime.start();
+  const stopResult = await runtime.stop();
+  const secondStop = await runtime.stop();
+
+  assert.equal(firstStart.started, true);
+  assert.equal(runtime.isListening(), false);
+  assert.equal(secondStart.started, false);
+  assert.equal(secondStart.alreadyListening, true);
+  assert.equal(stopResult.stopped, true);
+  assert.equal(secondStop.stopped, false);
+  assert.equal(createdServer.listening, false);
+});
+
+test("createVerificationCallbackServer clears failed start state so stop stays harmless", async () => {
+  const runtime = createVerificationCallbackServer({
+    config: {
+      integration: {
+        enabled: true,
+        callbackBaseUrl: "https://verify.example.com/oauth/discord/callback",
+      },
+      env: {
+        VERIFICATION_PORT: "3016",
+      },
+    },
+    createServer: () => {
+      const server = createMockCallbackServer();
+      server.listen = function listen() {
+        this.emit("error", new Error("bind failed"));
+      };
+      server.close = function close(callback) {
+        callback(new Error("close should not run after failed start"));
+      };
+      return server;
+    },
+    requestHandler: async () => true,
+  });
+
+  await assert.rejects(runtime.start(), /bind failed/);
+  assert.equal(runtime.isListening(), false);
+  await assert.doesNotReject(runtime.stop());
+  assert.deepEqual(await runtime.stop(), { stopped: false });
 });

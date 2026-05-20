@@ -57,7 +57,7 @@
 ### Текущее Техническое Состояние
 1. `node --check welcome-bot.js` — ok.
 2. Focused profile/runtime tests — зелёные, включая Phase 9 story layers поверх season archive.
-3. Полный active test tree по `tests/*.test.js` даёт 665 pass / 0 fail.
+3. Полный active test tree по `tests/*.test.js` даёт 709 pass / 0 fail.
 4. Для этого repo bare `node --test` не является честной проверкой active tree, потому что подтягивает backup/quarantine surfaces; для рабочей валидации нужно явно перечислять `tests/*.test.js`.
 
 ## Главные Приоритеты Пользователя

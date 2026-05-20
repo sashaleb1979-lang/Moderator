@@ -155,6 +155,11 @@ const {
   resumeActivityRuntime,
 } = require("./src/activity/runtime");
 const { ensureActivityState } = require("./src/activity/state");
+const { recordVoiceStateTransition } = require("./src/news/voice");
+const {
+  recordGuildBanEvent,
+  recordMemberRemovalEvent,
+} = require("./src/news/moderation");
 const {
   addAutonomyGuardIsolatedUserId,
   classifyAutonomyGuardDeletedMessage,
@@ -215,6 +220,7 @@ const {
   getWelcomeRobloxIdentityLockText,
   parseRobloxIdentityInput,
 } = require("./src/onboard/roblox-identity");
+const { getRobloxBindingRecoveryText } = require("./src/integrations/roblox-binding-status");
 const { resolveNonJjsCaptchaMode } = require("./src/onboard/non-jjs-mode");
 const {
   DISCORD_EMOJI_MAX_BYTES,
@@ -262,10 +268,22 @@ const {
   normalizeIntegrationState,
   syncSharedProfiles,
 } = require("./src/integrations/shared-profile");
+const {
+  buildGlobalEloRoleSyncPlan,
+} = require("./src/integrations/elo-role-sync");
 const { createProfileOperator } = require("./src/profile/operator");
+const { appendProofWindowSnapshot } = require("./src/profile/synergy-snapshots");
 const { createAntiteamOperator } = require("./src/antiteam/operator");
 const { ANTITEAM_COMMAND_NAME } = require("./src/antiteam/view");
 const { buildComboCommands } = require("./src/combo-guide/commands");
+const {
+  addCharacterToGuide,
+  deleteFullGuide,
+  downloadUrl,
+  publishGuideOrdered,
+  refreshNavigation,
+  removeCharacterFromGuide,
+} = require("./src/combo-guide/publisher");
 const {
   createRobloxApiClient,
 } = require("./src/integrations/roblox-service");
@@ -287,6 +305,8 @@ const {
   createSerializedTaskRunner,
 } = require("./src/runtime/serialized-task-runner");
 const {
+  isInteractionPayloadTimeoutError,
+  resolveInteractionPayloadWithTimeout,
   safeDeferComponentUpdate,
   safeDeferEphemeralReply,
 } = require("./src/runtime/interaction-ack");
@@ -311,6 +331,11 @@ const {
   clearDormantEloSync,
   importDormantEloSyncFromFile,
 } = require("./src/integrations/elo-dormant");
+const {
+  buildLegacyEloSubmitStepPayload,
+  getLegacyEloSubmitMessageError,
+  resolveLegacyEloSubmitTargetChannelId,
+} = require("./src/integrations/elo-submit-flow");
 const {
   clearDormantTierlistSync,
   importDormantTierlistSyncFromFile,
@@ -3110,16 +3135,27 @@ async function replyWithAsyncInteractionPayload(interaction, options = {}) {
 
   const loadingText = String(options.loadingText || "Обрабатываю...").trim() || "Обрабатываю...";
   const errorText = String(options.errorText || "Не удалось выполнить действие.").trim() || "Не удалось выполнить действие.";
+  const timeoutErrorText = String(options.timeoutErrorText || "Подготовка ответа заняла слишком много времени. Попробуй ещё раз.").trim() || "Подготовка ответа заняла слишком много времени. Попробуй ещё раз.";
   const logLabel = String(options.logLabel || "Async interaction reply failed").trim() || "Async interaction reply failed";
+  const logWarning = typeof options.logWarning === "function"
+    ? options.logWarning
+    : (message) => console.warn(message);
 
   await interaction.reply(ephemeralPayload({ content: loadingText }));
 
   try {
-    const payload = await buildPayload();
+    const payload = await resolveInteractionPayloadWithTimeout(buildPayload, {
+      timeoutMs: options.timeoutMs,
+      label: logLabel,
+      logWarning,
+    });
     await interaction.editReply(normalizeInteractionEditPayload(payload));
   } catch (error) {
     console.error(`${logLabel}:`, error);
-    await interaction.editReply(buildPlainInteractionPayload(`${errorText}: ${formatInteractionErrorText(error)}`)).catch(() => {});
+    const failureMessage = isInteractionPayloadTimeoutError(error)
+      ? timeoutErrorText
+      : `${errorText}: ${formatInteractionErrorText(error)}`;
+    await interaction.editReply(buildPlainInteractionPayload(failureMessage)).catch(() => {});
   }
 }
 
@@ -3132,6 +3168,7 @@ async function deferComponentInteractionWithAsyncPayload(interaction, options = 
   }
 
   const errorText = String(options.errorText || "Не удалось обновить сообщение.").trim() || "Не удалось обновить сообщение.";
+  const timeoutErrorText = String(options.timeoutErrorText || "Обновление сообщения заняло слишком много времени. Попробуй ещё раз.").trim() || "Обновление сообщения заняло слишком много времени. Попробуй ещё раз.";
   const logLabel = String(options.logLabel || "Async interaction update failed").trim() || "Async interaction update failed";
   const logWarning = typeof options.logWarning === "function"
     ? options.logWarning
@@ -3146,11 +3183,18 @@ async function deferComponentInteractionWithAsyncPayload(interaction, options = 
   }
 
   try {
-    const payload = await buildPayload();
+    const payload = await resolveInteractionPayloadWithTimeout(buildPayload, {
+      timeoutMs: options.timeoutMs,
+      label: logLabel,
+      logWarning,
+    });
     await interaction.editReply(normalizeInteractionEditPayload(payload));
   } catch (error) {
     console.error(`${logLabel}:`, error);
-    await interaction.editReply(buildPlainInteractionPayload(`${errorText}: ${formatInteractionErrorText(error)}`)).catch(() => {});
+    const failureMessage = isInteractionPayloadTimeoutError(error)
+      ? timeoutErrorText
+      : `${errorText}: ${formatInteractionErrorText(error)}`;
+    await interaction.editReply(buildPlainInteractionPayload(failureMessage)).catch(() => {});
   }
 
   return true;
@@ -5520,6 +5564,7 @@ function getProfileOperator() {
     getRequesterProfile: (userId) => db.profiles?.[userId] ? getProfile(userId) : null,
     getTargetProfile: (userId) => db.profiles?.[userId] ? getProfile(userId) : null,
     getTargetDisplayName: (userId, profile) => profile ? getProfileDisplayName(userId, profile) : "",
+    fetchAccessUser: (userId) => client.users.fetch(userId),
     fetchMember: (userId) => fetchMember(client, userId),
     fetchUser: (userId) => client.users.fetch(userId),
     getPendingSubmissionForUser,
@@ -5629,11 +5674,10 @@ async function handleAntiteamInteractionSafely(interaction, methodName) {
     return await operator[methodName](interaction);
   } catch (error) {
     console.error(`Antiteam interaction failed (${interaction?.customId || interaction?.commandName || methodName}):`, error?.message || error);
-    if (!interaction?.deferred && !interaction?.replied && typeof interaction?.reply === "function") {
-      await interaction.reply(ephemeralPayload({
-        content: "Не удалось обработать антитим-действие. Попробуй ещё раз или попроси модератора обновить панель.",
-      })).catch(() => {});
-    }
+    await replyWithInteractionFailureFallback(
+      interaction,
+      "Не удалось обработать антитим-действие. Попробуй ещё раз или попроси модератора обновить панель."
+    );
     return true;
   }
 }
@@ -6345,6 +6389,9 @@ async function reconcileVerificationAssignmentForMember(client, userId, member =
   }
 
   const resolvedMember = member || await fetchMember(client, userId);
+  if (!resolvedMember) {
+    return { userId, active: true, stopped: false, status, unresolved: true };
+  }
   if (resolvedMember?.roles?.cache?.has(verifyRoleId)) {
     return { userId, active: true, stopped: false, status };
   }
@@ -6793,21 +6840,86 @@ function createVerificationAuditAttachment(userId, profile = {}, statusNote = ""
   });
 }
 
+function buildVerificationDegradedReportPayload(options = {}) {
+  const profile = options.profile && typeof options.profile === "object" && !Array.isArray(options.profile)
+    ? options.profile
+    : {};
+  const verification = profile.domains?.verification && typeof profile.domains.verification === "object"
+    ? profile.domains.verification
+    : {};
+  const summary = profile.summary?.verification && typeof profile.summary.verification === "object"
+    ? profile.summary.verification
+    : {};
+  const userId = cleanVerificationText(options.userId || profile.userId, 80);
+  const statusNote = cleanVerificationText(options.statusNote, 500);
+  const fallbackError = cleanVerificationText(options.fallbackError, 200);
+  const richPayload = buildVerificationReportPayload({
+    userId,
+    profile,
+    statusNote,
+    disableActions: options.disableActions === true,
+  });
+  const lines = [
+    "Ручная проверка доступа",
+    userId ? `Участник: <@${userId}>` : "Участник: —",
+    `OAuth-аккаунт: ${cleanVerificationText(summary.oauthUsername || verification.oauthUsername, 120) || "—"}`,
+    `Статус: ${cleanVerificationText(summary.status || verification.status, 80) || "—"}`,
+    `Решение: ${cleanVerificationText(summary.decision || verification.decision, 80) || "—"}`,
+    `Дедлайн отчёта: ${cleanVerificationText(summary.reportDueAt || verification.reportDueAt, 80) || "—"}`,
+    `Замечено серверов: ${Math.max(0, Number(summary.observedGuildCount) || 0)}`,
+    `Совпадения: серверы ${Math.max(0, Number(summary.matchedEnemyGuildCount) || 0)}, пользователи ${Math.max(0, Number(summary.matchedEnemyUserCount) || 0)}, invite ${Math.max(0, Number(summary.matchedEnemyInviteCount) || 0)}, inviter ${Math.max(0, Number(summary.matchedEnemyInviterCount) || 0)}, теги ${Math.max(0, Number(summary.manualTagCount) || 0)}`,
+    "Rich payload не отправился, поэтому отчёт ушёл в сокращённом виде.",
+  ];
+
+  if (statusNote) {
+    lines.push(`Комментарий модератора: ${statusNote}`);
+  }
+  if (fallbackError) {
+    lines.push(`Причина деградации: ${fallbackError}`);
+  }
+
+  const content = lines.join("\n");
+  return {
+    content: content.length > 2000 ? `${content.slice(0, 1997)}...` : content,
+    components: Array.isArray(richPayload.components) ? richPayload.components : [],
+  };
+}
+
 async function postVerificationManualReport(client, userId, statusNote = "", options = {}) {
   let channel = null;
   try {
     channel = await resolveVerificationReportChannel(client);
     const profile = finalizeStoredProfile(userId);
     const auditAttachment = createVerificationAuditAttachment(userId, profile, statusNote);
-    const message = await channel.send(buildVerificationReportPayload({
-      userId,
-      profile,
-      statusNote,
-      disableActions: options.disableActions === true,
-      files: [auditAttachment],
-    }));
-    await logVerificationRuntimeEvent(client, `VERIFICATION_REPORT_SENT: <@${userId}> channel=${channel.id} message=${message.id}`);
-    return { channel, message, profile };
+    let degraded = false;
+    let message = null;
+
+    try {
+      message = await channel.send(buildVerificationReportPayload({
+        userId,
+        profile,
+        statusNote,
+        disableActions: options.disableActions === true,
+        files: [auditAttachment],
+      }));
+    } catch (error) {
+      degraded = true;
+      message = await channel.send(buildVerificationDegradedReportPayload({
+        userId,
+        profile,
+        statusNote,
+        disableActions: options.disableActions === true,
+        fallbackError: error?.message || error,
+      }));
+      await logVerificationRuntimeEvent(
+        client,
+        `VERIFICATION_REPORT_DEGRADED: <@${userId}> channel=${cleanVerificationText(channel?.id, 80) || "unknown"} error=${cleanVerificationText(error?.message || error, 200) || "unknown"}`,
+        "warn"
+      );
+    }
+
+    await logVerificationRuntimeEvent(client, `VERIFICATION_REPORT_SENT: <@${userId}> channel=${channel.id} message=${message.id}${degraded ? " degraded=true" : ""}`);
+    return { channel, message, profile, degraded };
   } catch (error) {
     await logVerificationRuntimeEvent(
       client,
@@ -7046,10 +7158,12 @@ async function handleVerificationManualReviewCallback(client, payload = {}) {
     matchedEnemyInviteCodes: Array.isArray(risk.matchedEnemyInviteCodes) ? risk.matchedEnemyInviteCodes : [],
     matchedEnemyInviterUserIds: Array.isArray(risk.matchedEnemyInviterUserIds) ? risk.matchedEnemyInviterUserIds : [],
     decisionReason,
-    reportSentAt: nowIso(),
     lastError: "",
   });
   await postVerificationManualReport(client, userId, statusNote);
+  updateVerificationProfile(userId, {
+    reportSentAt: nowIso(),
+  });
   await logVerificationRuntimeEvent(
     client,
     `${risk.requiresManualReview ? "VERIFICATION_MANUAL_REVIEW" : "VERIFICATION_READY_FOR_REVIEW"}: <@${userId}> oauth=${buildVerificationOauthUsername(payload.oauthUser) || "unknown"}`
@@ -7970,6 +8084,7 @@ function buildSubmitStepPayload(userId, options = {}) {
 function buildRobloxUsernameStepPayload(userId, options = {}) {
   const session = getSubmitSession(userId);
   const pending = getPendingSubmissionForUser(userId);
+  const profile = db.profiles?.[userId];
   const mainCharacterIds = Array.isArray(options.mainCharacterIds) && options.mainCharacterIds.length
     ? options.mainCharacterIds
     : Array.isArray(session?.mainCharacterIds) && session.mainCharacterIds.length
@@ -8002,6 +8117,10 @@ function buildRobloxUsernameStepPayload(userId, options = {}) {
   }
   if (kills !== null) {
     lines.push(`Kills: **${kills}**.`);
+  }
+  const robloxRecoveryText = getRobloxBindingRecoveryText(profile, { audience: "onboarding" });
+  if (robloxRecoveryText) {
+    lines.push(robloxRecoveryText);
   }
   lines.push(
     required
@@ -8379,6 +8498,7 @@ async function buildBotHelperSettingsReply(client, statusText = "", includeFlags
     messageText: snapshot.state?.messageId
       ? `${snapshot.state.messageId}${snapshot.message ? "" : " (не найдено)"}`
       : "—",
+    checkCadenceText: `Каждые ${Math.round(ROLE_PANEL_AUTO_RESEND_TICK_MS / 60000)} минут`,
     lastSentText: snapshot.state?.lastSentAt ? formatDateTime(snapshot.state.lastSentAt) : "—",
     activityText: describeBotHelperPanelActivity(snapshot),
     autoResendText: `Каждые ${BOT_HELPER_PANEL_AUTO_RESEND_INTERVAL_HOURS} часов, только если под панелью были новые сообщения`,
@@ -9395,6 +9515,13 @@ async function approveSubmission(client, submission, moderatorTag) {
       source: "onboarding",
     });
   }
+  appendProofWindowSnapshot(profile, {
+    approvedKills: profile.approvedKills,
+    killTier: profile.killTier,
+    reviewedAt: submission.reviewedAt,
+    reviewedBy: submission.reviewedBy,
+    roblox: profile?.domains?.roblox || profile,
+  });
 
   try {
     saveDb();
@@ -13405,12 +13532,11 @@ async function performLegacyEloManualModset(client, liveState, targetUserId, raw
     moderatorTag
   );
 
-  await syncLegacyEloTierRoles(client, liveState.rawDb, {
+  const persisted = await persistLegacyEloGraphicMutation(client, liveState, { refreshBoard: true });
+  await syncGlobalEloTierRoles(client, {
     targetUserId,
     reason: "legacy elo modset",
   });
-
-  const persisted = await persistLegacyEloGraphicMutation(client, liveState, { refreshBoard: true });
   const boardUpdated = persisted.boardUpdated;
   const syncResult = persisted.syncResult;
 
@@ -13536,7 +13662,7 @@ function buildLegacyEloSubmitHubEmbed() {
     .setTitle("ELO заявка")
     .setDescription([
       "**Обнови рейтинг так же быстро, как kill tier.**",
-      "Нажми кнопку, впиши число ELO, затем отправь скрин следующим сообщением в этот канал.",
+      "Нажми кнопку, затем отправь одним сообщением число ELO и скрин в этот канал.",
     ].join("\n"))
     .addFields(
       {
@@ -13577,42 +13703,8 @@ function buildLegacyEloSubmitHubComponents() {
 }
 
 function buildLegacyEloSubmitAwaitPayload(channelId, rawText = "") {
-  const elo = parseLegacyElo(rawText);
-  const tier = tierForLegacyElo(elo);
   const channelText = formatChannelMention(channelId) || "этот канал";
-  const lines = [
-    elo ? `ELO: **${formatNumber(elo)}**.` : null,
-    tier ? `Tier по ELO: **${tier}**.` : null,
-    `Теперь отправь **одним следующим сообщением** скрин в ${channelText}.`,
-    "Подойдёт обычное вложение или вставка картинки через Ctrl+V.",
-  ].filter(Boolean);
-
-  return ephemeralPayload({
-    embeds: [
-      new EmbedBuilder()
-        .setColor(0x57F287)
-        .setTitle("Готово. Кидай ELO-скрин")
-        .setDescription(lines.join("\n"))
-        .addFields({
-          name: "На скрине",
-          value: [
-            "актуальное значение ELO",
-            "твой ник или профиль, чтобы модеры сверили заявку",
-          ].join("\n"),
-          inline: false,
-        })
-        .setFooter({ text: "После скрина заявка уйдёт модерам на проверку." }),
-    ],
-    components: [
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId("elo_submit_cancel")
-          .setLabel("Отменить шаг")
-          .setEmoji("✖️")
-          .setStyle(ButtonStyle.Secondary)
-      ),
-    ],
-  });
+  return ephemeralPayload(buildLegacyEloSubmitStepPayload({ channelText, rawText }));
 }
 
 async function ensureLegacyEloSubmitHubMessage(client, liveState, forcedChannelId = null) {
@@ -13938,7 +14030,7 @@ async function revokeAllLegacyEloTierRoles(client, options = {}) {
   return { processed, removed, errors };
 }
 
-async function syncLegacyEloTierRoles(client, rawDb, options = {}) {
+async function syncGlobalEloTierRoles(client, options = {}) {
   if (!isLegacyEloRoleGrantEnabled()) {
     return { processed: 0, assigned: 0, cleared: 0, skipped: "elo_role_grant_disabled" };
   }
@@ -13948,42 +14040,34 @@ async function syncLegacyEloTierRoles(client, rawDb, options = {}) {
     return { processed: 0, assigned: 0, cleared: 0, skipped: "legacy_elo_role_ids_not_configured" };
   }
 
-  const targetUserId = String(options.targetUserId || "").trim();
   const reason = String(options.reason || "legacy elo tier role sync").trim() || "legacy elo tier role sync";
-  const explicitClearUserIds = Array.isArray(options.clearUserIds)
-    ? options.clearUserIds.map((value) => String(value || "").trim()).filter(Boolean)
-    : [];
-  const clearUserIds = new Set(explicitClearUserIds);
-  const targetUserIds = targetUserId
-    ? [targetUserId]
-    : Object.keys(rawDb?.ratings || {}).map((value) => String(value || "").trim()).filter(Boolean);
+  const syncPlan = buildGlobalEloRoleSyncPlan(db.profiles || {}, {
+    targetUserId: options.targetUserId,
+    clearUserIds: options.clearUserIds,
+  });
 
   let processed = 0;
   let assigned = 0;
   let cleared = 0;
 
-  for (const userId of targetUserIds) {
+  for (const { userId, tier } of syncPlan.assign) {
     processed += 1;
-    const tier = getLegacyEloTierRoleTarget(rawDb, userId);
-    if (tier) {
-      await ensureSingleRoleInPool(client, userId, getLegacyEloTierRoleId(tier), allTierRoleIds, reason);
-      assigned += 1;
-      clearUserIds.delete(userId);
-      continue;
-    }
-
-    const didClear = await clearRolePool(client, userId, allTierRoleIds, reason);
-    if (didClear) cleared += 1;
-    clearUserIds.delete(userId);
+    await ensureSingleRoleInPool(client, userId, getLegacyEloTierRoleId(tier), allTierRoleIds, reason);
+    assigned += 1;
   }
 
-  for (const userId of clearUserIds) {
+  for (const userId of syncPlan.clear) {
     processed += 1;
     const didClear = await clearRolePool(client, userId, allTierRoleIds, reason);
     if (didClear) cleared += 1;
   }
 
   return { processed, assigned, cleared };
+}
+
+async function syncLegacyEloTierRoles(client, rawDb, options = {}) {
+  void rawDb;
+  return syncGlobalEloTierRoles(client, options);
 }
 
 async function syncApprovedTierRoles(client, targetUserId = null) {
@@ -14361,7 +14445,7 @@ client.once("clientReady", async () => {
     }
 
     try {
-      const roleSync = await syncLegacyEloTierRoles(client, legacyEloState.rawDb, { reason: "legacy elo startup sync" });
+      const roleSync = await syncGlobalEloTierRoles(client, { reason: "legacy elo startup sync" });
       if (roleSync.processed > 0) {
         console.log(`[legacy-elo][roles] startup sync: assigned ${roleSync.assigned}, cleared ${roleSync.cleared}`);
       }
@@ -14915,9 +14999,13 @@ client.on("messageCreate", async (message) => {
     return;
   }
 
-  if (legacyEloSubmitChannelId && message.channelId === legacyEloSubmitChannelId) {
-    const session = getLegacyEloSubmitSession(message.author.id);
-    if (!session) return;
+  const legacyEloSubmitSession = getLegacyEloSubmitSession(message.author.id);
+  const activeLegacyEloSubmitChannelId = resolveLegacyEloSubmitTargetChannelId({
+    sessionChannelId: legacyEloSubmitSession?.channelId,
+    panelChannelId: legacyEloSubmitChannelId,
+  });
+  if (legacyEloSubmitSession && message.channelId === activeLegacyEloSubmitChannelId) {
+    const session = legacyEloSubmitSession;
 
     const pending = getPendingLegacyEloSubmissionForUser(legacyEloState.rawDb, message.author.id);
     if (pending) {
@@ -14928,8 +15016,20 @@ client.on("messageCreate", async (message) => {
     }
 
     const attachment = [...message.attachments.values()].find((item) => isImageAttachment(item));
-    if (!attachment) {
-      await replyAndDelete(message, "Сейчас нужен один следующий месседж именно с картинкой. Текст уже сохранён, просто приложи скрин или вставь его через Ctrl+V.");
+    const rawText = String(message.content || session.rawText || "").trim();
+    const messageError = getLegacyEloSubmitMessageError({
+      rawText,
+      hasImageAttachment: Boolean(attachment),
+    });
+    if (messageError) {
+      await replyAndDelete(message, messageError);
+      await message.delete().catch(() => {});
+      return;
+    }
+
+    const blockReason = getLegacyEloSubmitEligibilityError(legacyEloState.rawDb, message.author.id, rawText);
+    if (blockReason) {
+      await replyAndDelete(message, blockReason, 16000);
       await message.delete().catch(() => {});
       return;
     }
@@ -14938,16 +15038,15 @@ client.on("messageCreate", async (message) => {
       await createPendingLegacyEloSubmissionFromUrl(client, legacyEloState, {
         user: message.author,
         member: message.member,
-        rawText: session.rawText,
+        rawText,
         screenshotUrl: attachment.url,
         messageUrl: message.url,
       });
 
       clearLegacyEloSubmitSession(message.author.id);
-      await replyAndDelete(message, "ELO заявка отправлена на проверку модерам.");
-      await logLine(client, `ELO SUBMIT: <@${message.author.id}> raw=${session.rawText}`);
+      await replyAndDelete(message, "ELO заявка отправлена на проверку модерам. ELO-роль обновится после review.");
+      await logLine(client, `ELO SUBMIT: <@${message.author.id}> raw=${rawText}`);
     } catch (error) {
-      clearLegacyEloSubmitSession(message.author.id);
       await replyAndDelete(message, String(error?.message || error || "Не удалось отправить ELO заявку."), 16000);
     }
 
@@ -15271,10 +15370,22 @@ client.on("interactionCreate", async (interaction) => {
         const comboAttachment = interaction.options.getAttachment("combo_file");
         const techsAttachment = interaction.options.getAttachment("techs_file");
         const targetChannel = interaction.options.getChannel("channel");
+        const existingGuideState = db.comboGuide
+          && String(db.comboGuide.channelId || "").trim() === String(targetChannel?.id || "").trim()
+          ? db.comboGuide
+          : null;
 
         await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
         try {
+          if (existingGuideState) {
+            await interaction.editReply({ content: "Удаление старого гайда…" }).catch(() => {});
+            await deleteFullGuide({
+              channel: targetChannel,
+              guideState: existingGuideState,
+            });
+          }
+
           const [comboBuffer, techsBuffer] = await Promise.all([
             downloadUrl(comboAttachment.url),
             downloadUrl(techsAttachment.url),
@@ -18687,7 +18798,7 @@ client.on("interactionCreate", async (interaction) => {
       let statusText = getDormantEloImportStatusText(result);
       const liveState = getLiveLegacyEloState();
       if (liveState.ok) {
-        const roleSync = await syncLegacyEloTierRoles(client, liveState.rawDb, { reason: "legacy elo import sync" });
+        const roleSync = await syncGlobalEloTierRoles(client, { reason: "legacy elo import sync" });
         if (roleSync.processed > 0) {
           statusText += ` Роли: assigned ${roleSync.assigned}, cleared ${roleSync.cleared}.`;
         }
@@ -18783,7 +18894,6 @@ client.on("interactionCreate", async (interaction) => {
       await interaction.deferUpdate();
       try {
         const rebuilt = rebuildLegacyEloRatings(liveState.rawDb, { rebuiltAt: nowIso() });
-        const roleSync = await syncLegacyEloTierRoles(client, liveState.rawDb, { reason: "legacy elo rebuild" });
 
         let boardUpdated = false;
         let syncResult = null;
@@ -18794,6 +18904,7 @@ client.on("interactionCreate", async (interaction) => {
         } else {
           syncResult = saveLiveLegacyEloStateAndResync(liveState);
         }
+        const roleSync = await syncGlobalEloTierRoles(client, { reason: "legacy elo rebuild" });
 
         await logLine(
           client,
@@ -18902,7 +19013,7 @@ client.on("interactionCreate", async (interaction) => {
         const liveState = getLiveLegacyEloState();
         if (liveState.ok) {
           try {
-            const result = await syncLegacyEloTierRoles(client, liveState.rawDb, { reason: "elo role grant toggle on" });
+            const result = await syncGlobalEloTierRoles(client, { reason: "elo role grant toggle on" });
             if (result.skipped) {
               statusText += ` Sync пропущен: ${result.skipped}.`;
             } else {
@@ -18968,11 +19079,13 @@ client.on("interactionCreate", async (interaction) => {
 
       const session = getLegacyEloSubmitSession(interaction.user.id);
       const submitPanel = getLegacyEloSubmitPanelState(liveState.rawDb);
+      const targetChannelId = resolveLegacyEloSubmitTargetChannelId({
+        sessionChannelId: session?.channelId,
+        panelChannelId: submitPanel.channelId,
+        fallbackChannelId: interaction.channelId,
+      });
       if (session) {
-        await interaction.reply(buildLegacyEloSubmitAwaitPayload(
-          session.channelId || submitPanel.channelId || interaction.channelId,
-          session.rawText
-        ));
+        await interaction.reply(buildLegacyEloSubmitAwaitPayload(targetChannelId, session.rawText));
         return;
       }
 
@@ -18982,17 +19095,10 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
-      const modal = new ModalBuilder().setCustomId("elo_submit_modal").setTitle("ELO заявка");
-      const textInput = new TextInputBuilder()
-        .setCustomId("elo_submit_text")
-        .setLabel("Текст с числом ELO")
-        .setStyle(TextInputStyle.Paragraph)
-        .setRequired(true)
-        .setMaxLength(1000)
-        .setPlaceholder("Например 73 или мой elo 73");
-
-      modal.addComponents(new ActionRowBuilder().addComponents(textInput));
-      await interaction.showModal(modal);
+      setLegacyEloSubmitSession(interaction.user.id, {
+        channelId: targetChannelId,
+      });
+      await interaction.reply(buildLegacyEloSubmitAwaitPayload(targetChannelId));
       return;
     }
 
@@ -19117,11 +19223,11 @@ client.on("interactionCreate", async (interaction) => {
             username: profileData.username,
             avatarUrl: profileData.avatarUrl,
           });
-          await syncLegacyEloTierRoles(client, liveState.rawDb, {
+          const persisted = await persistLegacyEloGraphicMutation(client, liveState, { refreshBoard: true });
+          await syncGlobalEloTierRoles(client, {
             targetUserId: submission.userId,
             reason: "legacy elo approve",
           });
-          const persisted = await persistLegacyEloGraphicMutation(client, liveState, { refreshBoard: true });
           const syncWarning = `${getLegacyEloSyncStatusSuffix(persisted.syncResult)}${persisted.warning}`;
           await dmUser(
             client,
@@ -19462,6 +19568,14 @@ client.on("interactionCreate", async (interaction) => {
     }
 
     if (interaction.customId === "onboard_change_mains") {
+      const pending = getPendingSubmissionForUser(interaction.user.id);
+      if (pending) {
+        await interaction.reply(ephemeralPayload({
+          content: `У тебя уже есть pending-заявка с kills ${pending.kills}. Дождись решения модератора.`,
+        }));
+        return;
+      }
+
       await openCharacterPicker(interaction, "full", "update");
       return;
     }
@@ -19797,6 +19911,15 @@ client.on("interactionCreate", async (interaction) => {
 
   // ── Combo guide buttons ──
   if (interaction.isButton()) {
+    const isComboPanelButton = interaction.customId === "combo_panel_refresh_nav"
+      || interaction.customId === "combo_panel_republish"
+      || interaction.customId === "combo_panel_pick_editor_role"
+      || interaction.customId === "combo_panel_clear_editor_roles"
+      || interaction.customId.startsWith("combo_panel_remove_char:");
+    if (isComboPanelButton && await replyIfAutonomyGuardBlockedActor(interaction)) {
+      return;
+    }
+
     if (interaction.customId === "combo_panel_refresh_nav") {
       if (!isModerator(interaction.member)) {
         await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
@@ -19895,6 +20018,12 @@ client.on("interactionCreate", async (interaction) => {
 
   if (interaction.isStringSelectMenu()) {
     if (await handleAntiteamInteractionSafely(interaction, "handleSelectMenuInteraction")) {
+      return;
+    }
+
+    const isComboGuideSelectMenu = interaction.customId === "combo_select_character"
+      || interaction.customId === "combo_select_message";
+    if (isComboGuideSelectMenu && await replyIfAutonomyGuardBlockedActor(interaction)) {
       return;
     }
 
@@ -20553,6 +20682,10 @@ client.on("interactionCreate", async (interaction) => {
 
     // ── Combo guide edit modal ──
     if (interaction.customId?.startsWith("combo_edit_message:")) {
+      if (await replyIfAutonomyGuardBlockedActor(interaction)) {
+        return;
+      }
+
       if (!hasComboGuidePanelAccess(interaction.member)) {
         await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
         return;
@@ -21140,6 +21273,13 @@ client.on("interactionCreate", async (interaction) => {
         const cleared = clearDormantEloSync(db, { syncedAt: nowIso(), sourcePath: "" });
         saveDb();
         statusText = `ELO sourcePath очищен. Снято проекций: ${cleared.clearedProfiles}.`;
+        const roleSync = await syncGlobalEloTierRoles(client, {
+          clearUserIds: Object.keys(db.profiles || {}),
+          reason: "legacy elo source cleared",
+        });
+        if (roleSync.processed > 0) {
+          statusText += ` Роли: assigned ${roleSync.assigned}, cleared ${roleSync.cleared}.`;
+        }
       } else {
         writeNativeIntegrationSourcePath(db, { slot: "elo", sourcePath });
         saveDb();
@@ -21147,7 +21287,7 @@ client.on("interactionCreate", async (interaction) => {
         statusText = getDormantEloImportStatusText(result);
         const liveState = getLiveLegacyEloState();
         if (liveState.ok) {
-          const roleSync = await syncLegacyEloTierRoles(client, liveState.rawDb, { reason: "legacy elo source sync" });
+          const roleSync = await syncGlobalEloTierRoles(client, { reason: "legacy elo source sync" });
           if (roleSync.processed > 0) {
             statusText += ` Роли: assigned ${roleSync.assigned}, cleared ${roleSync.cleared}.`;
           }
@@ -21530,7 +21670,7 @@ client.on("interactionCreate", async (interaction) => {
 
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       try {
-        const created = await createManualApprovedLegacyEloRecord(
+        const modsetResult = await performLegacyEloManualModset(
           client,
           liveState,
           targetUserId,
@@ -21538,46 +21678,15 @@ client.on("interactionCreate", async (interaction) => {
           screenshotUrl,
           interaction.user.tag
         );
-        await syncLegacyEloTierRoles(client, liveState.rawDb, {
-          targetUserId,
-          reason: "legacy elo modset",
-        });
-
-        let boardUpdated = false;
-        let syncResult = null;
-        const refreshResult = await refreshLegacyEloGraphicBoard(client, { liveState });
-        if (refreshResult?.ok) {
-          boardUpdated = true;
-          syncResult = refreshResult.syncResult;
-        } else {
-          syncResult = saveLiveLegacyEloStateAndResync(liveState);
-        }
-
-        const latestRating = liveState.rawDb?.ratings?.[targetUserId] || created.rating;
-        const eloValue = latestRating?.elo ?? created.rating?.elo ?? "—";
-        const tierValue = latestRating?.tier ?? created.rating?.tier ?? "—";
-        const proofUrl = latestRating?.proofUrl || screenshotUrl;
-
-        await dmUser(
-          client,
-          targetUserId,
-          [
-            "Модератор обновил твой ELO рейтинг.",
-            `ELO: ${eloValue}`,
-            `Тир: ${tierValue}`,
-            `Пруф: ${proofUrl}`,
-          ].join("\n")
-        );
-        await logLine(client, `ELO MODSET: <@${targetUserId}> ELO ${eloValue} -> Tier ${tierValue} by ${interaction.user.tag}`);
 
         await interaction.editReply(buildDormantEloPanelPayload(
           [
             `Legacy ELO modset выполнен для <@${targetUserId}>.`,
-            `ELO: ${eloValue}.`,
-            `Tier: ${tierValue}.`,
-            `Review ID: ${created.submissionId}.`,
-            `PNG: ${boardUpdated ? "обновлён" : "не настроен или пропущен"}.`,
-          ].join(" ") + getLegacyEloSyncStatusSuffix(syncResult),
+            `ELO: ${modsetResult.eloValue}.`,
+            `Tier: ${modsetResult.tierValue}.`,
+            `Review ID: ${modsetResult.created.submissionId}.`,
+            `PNG: ${modsetResult.boardUpdated ? "обновлён" : "не настроен или пропущен"}.`,
+          ].join(" ") + getLegacyEloSyncStatusSuffix(modsetResult.syncResult) + (modsetResult.warning || ""),
           false
         ));
       } catch (error) {
@@ -21935,12 +22044,12 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
-      await syncLegacyEloTierRoles(client, liveState.rawDb, {
+      clearGraphicAvatarCacheForUser(userId);
+      const persisted = await persistLegacyEloGraphicMutation(client, liveState, { refreshBoard: true });
+      await syncGlobalEloTierRoles(client, {
         targetUserId: userId,
         reason: "legacy elo remove",
       });
-      clearGraphicAvatarCacheForUser(userId);
-      const persisted = await persistLegacyEloGraphicMutation(client, liveState, { refreshBoard: true });
       const syncWarning = `${getLegacyEloSyncStatusSuffix(persisted.syncResult)}${persisted.warning}`;
       await logLine(client, `ELO REMOVE: <@${userId}> removed from legacy rating by ${interaction.user.tag}`);
       await interaction.reply(buildDormantEloPanelPayload(
@@ -21973,12 +22082,12 @@ client.on("interactionCreate", async (interaction) => {
       }
 
       const wiped = wipeLegacyEloRatings(liveState.rawDb, { mode });
-      await syncLegacyEloTierRoles(client, liveState.rawDb, {
+      clearGraphicAvatarCache();
+      const persisted = await persistLegacyEloGraphicMutation(client, liveState, { refreshBoard: true });
+      await syncGlobalEloTierRoles(client, {
         clearUserIds: wiped.removedUserIds,
         reason: `legacy elo wipe ${mode}`,
       });
-      clearGraphicAvatarCache();
-      const persisted = await persistLegacyEloGraphicMutation(client, liveState, { refreshBoard: true });
       const syncWarning = `${getLegacyEloSyncStatusSuffix(persisted.syncResult)}${persisted.warning}`;
       await logLine(client, `ELO WIPE_RATINGS (${mode}) by ${interaction.user.tag}`);
       await interaction.reply(buildDormantEloPanelPayload(
@@ -22116,8 +22225,8 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    const [kind, submissionId] = interaction.customId.split(":");
-    const submission = db.submissions[submissionId];
+    const [kind, submissionActionId] = interaction.customId.split(":");
+    const submission = db.submissions[submissionActionId];
 
     if (!submission) {
       await interaction.reply(ephemeralPayload({ content: "Заявка не найдена." }));
@@ -22187,6 +22296,56 @@ client.on("voiceStateUpdate", async (oldState, newState) => {
     .catch((error) => {
       console.error("Activity runtime voice ingest failed:", error?.message || error);
     });
+
+  runSerializedDbTask(() => recordVoiceStateTransition({
+    db,
+    oldState,
+    newState,
+    now: eventRecordedAt,
+  }), "daily-news-voice-capture").catch((error) => {
+    console.error("Daily news voice ingest failed:", error?.message || error);
+  });
+});
+
+client.on("guildMemberRemove", async (member) => {
+  const guildId = String(member?.guild?.id || "").trim();
+  if (guildId !== GUILD_ID) return;
+
+  runSerializedDbTask(() => recordMemberRemovalEvent({
+    db,
+    member,
+    now: nowIso(),
+  }), "daily-news-member-remove-capture").catch((error) => {
+    console.error("Daily news member-remove ingest failed:", error?.message || error);
+  });
+});
+
+client.on("guildBanAdd", async (ban) => {
+  const guildId = String(ban?.guild?.id || "").trim();
+  if (guildId !== GUILD_ID) return;
+
+  runSerializedDbTask(() => recordGuildBanEvent({
+    db,
+    ban,
+    eventType: "ban_add",
+    now: nowIso(),
+  }), "daily-news-ban-add-capture").catch((error) => {
+    console.error("Daily news ban-add ingest failed:", error?.message || error);
+  });
+});
+
+client.on("guildBanRemove", async (ban) => {
+  const guildId = String(ban?.guild?.id || "").trim();
+  if (guildId !== GUILD_ID) return;
+
+  runSerializedDbTask(() => recordGuildBanEvent({
+    db,
+    ban,
+    eventType: "ban_remove",
+    now: nowIso(),
+  }), "daily-news-ban-remove-capture").catch((error) => {
+    console.error("Daily news ban-remove ingest failed:", error?.message || error);
+  });
 });
 
 client.login(DISCORD_TOKEN);

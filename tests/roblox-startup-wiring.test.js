@@ -37,3 +37,17 @@ test("welcome-bot serializes Roblox runtime flush through the shared db task run
     "expected serialized runtime flush wiring to preserve the existing saveDb persist path inside the queued task"
   );
 });
+
+test("welcome-bot wires fetchAccessUser into the profile operator for fresh server-tag reads", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "welcome-bot.js"), "utf8");
+  const match = source.match(
+    /function getProfileOperator\([\s\S]*?profileOperator = createProfileOperator\(\{([\s\S]*?)\}\);/
+  );
+
+  assert.ok(match, "expected to find profile operator wiring block in welcome-bot.js");
+  assert.match(
+    match[1],
+    /fetchAccessUser:\s*\(userId\)\s*=>\s*client\.users\.fetch\(userId\)/,
+    "expected profile operator wiring to refresh requester user identity separately from general profile fetches"
+  );
+});

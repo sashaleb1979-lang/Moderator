@@ -257,6 +257,41 @@ test("buildProfileSynergyState builds a self-progress block with growth window a
   assert.match(state.blocks.selfProgress.lines.join("\n"), /CTA: После последнего рега уже 13 ч JJS .* темп выше прошлого окна .* пора обновить kills/);
 });
 
+test("buildProfileSynergyState does not fabricate zero kills when only proof history remains", () => {
+  const state = buildProfileSynergyState({
+    now: "2026-05-16T12:00:00.000Z",
+    isSelf: true,
+    approvedKills: null,
+    killTier: null,
+    profile: {
+      domains: {
+        progress: {
+          proofWindows: [
+            {
+              approvedKills: 120,
+              killTier: 4,
+              reviewedAt: "2026-05-15T00:00:00.000Z",
+              playtimeTracked: true,
+              totalJjsMinutes: 120,
+            },
+          ],
+        },
+      },
+    },
+    robloxSummary: {
+      hasVerifiedAccount: true,
+      totalJjsMinutes: 900,
+    },
+  });
+
+  const progressText = state.blocks.selfProgress.lines.join("\n");
+
+  assert.match(progressText, /Зарегистрированные kills пока не подтверждены\./);
+  assert.match(progressText, /С последнего рега: 36 ч по времени .* 13 ч JJS/);
+  assert.doesNotMatch(progressText, /Зарегистрировано: 0 kills/);
+  assert.doesNotMatch(progressText, /До следующего tier|До milestone/);
+});
+
 test("buildProfileSynergyState builds a viewer-first hero block and Main Core summary", () => {
   const state = buildProfileSynergyState({
     now: "2026-05-16T12:00:00.000Z",

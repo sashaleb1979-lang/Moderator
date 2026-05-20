@@ -355,6 +355,16 @@ function createVerificationCallbackServer(options = {}) {
   const createServerFn = typeof source.createServer === "function" ? source.createServer : http.createServer;
   let server = null;
 
+  function buildServerRequestListener() {
+    return (request, response) => {
+      Promise.resolve(requestHandler(request, response)).catch((error) => {
+        response.statusCode = 500;
+        response.setHeader("Content-Type", "text/plain; charset=utf-8");
+        response.end(cleanString(error?.message || error || "Verification callback failed.", 2000));
+      });
+    };
+  }
+
   return {
     config,
     isListening() {
@@ -362,20 +372,38 @@ function createVerificationCallbackServer(options = {}) {
     },
     async start() {
       if (server?.listening) return { started: false, alreadyListening: true, config };
-      server = createServerFn((request, response) => {
-        Promise.resolve(requestHandler(request, response)).catch((error) => {
-          response.statusCode = 500;
-          response.setHeader("Content-Type", "text/plain; charset=utf-8");
-          response.end(cleanString(error?.message || error || "Verification callback failed.", 2000));
-        });
-      });
+      const candidate = createServerFn(buildServerRequestListener());
+      server = candidate;
 
       await new Promise((resolve, reject) => {
-        server.once("error", reject);
-        server.listen(config.listenPort, config.listenHost, () => {
-          server.off("error", reject);
+        let settled = false;
+        const handleError = (error) => {
+          if (settled) return;
+          settled = true;
+          if (typeof candidate.off === "function") {
+            candidate.off("error", handleError);
+          }
+          if (server === candidate) {
+            server = null;
+          }
+          reject(error);
+        };
+
+        const handleListening = () => {
+          if (settled) return;
+          settled = true;
+          if (typeof candidate.off === "function") {
+            candidate.off("error", handleError);
+          }
           resolve();
-        });
+        };
+
+        candidate.once("error", handleError);
+        try {
+          candidate.listen(config.listenPort, config.listenHost, handleListening);
+        } catch (error) {
+          handleError(error);
+        }
       });
 
       return { started: true, config };
@@ -384,6 +412,9 @@ function createVerificationCallbackServer(options = {}) {
       if (!server) return { stopped: false };
       const current = server;
       server = null;
+      if (!current.listening) {
+        return { stopped: false };
+      }
       await new Promise((resolve, reject) => {
         current.close((error) => error ? reject(error) : resolve());
       });

@@ -77,6 +77,11 @@ function createProfileOperator(options = {}) {
     };
   }
 
+  function logProfileWarning(message = "") {
+    if (typeof options.logWarning !== "function") return;
+    options.logWarning(cleanString(message, 400));
+  }
+
   async function resolveRequesterUserForAccess({ requesterUserId = "", requesterUser = null, requesterMember = null } = {}) {
     const candidateUsers = [requesterUser, requesterMember?.user].filter((user) => user && typeof user === "object");
     const seededUser = candidateUsers.find((user) => hasProfileViewerServerTag(user)) || candidateUsers[0] || null;
@@ -500,6 +505,7 @@ function createProfileOperator(options = {}) {
     try {
       robloxUser = await options.resolveRobloxUserInput(robloxIdentityInput);
     } catch (error) {
+      logProfileWarning(`profile_bind_roblox resolve failed (${interaction?.user?.id || "unknown"}): ${error?.message || error || "unknown error"}`);
       await interaction.editReply(String(error?.message || error || "Не удалось проверить Roblox аккаунт."));
       return true;
     }
@@ -517,6 +523,7 @@ function createProfileOperator(options = {}) {
         source: "profile_button",
       });
     } catch (error) {
+      logProfileWarning(`profile_bind_roblox write failed (${interaction?.user?.id || "unknown"}): ${error?.message || error || "unknown error"}`);
       await interaction.editReply(String(error?.message || error || "Не удалось сохранить Roblox аккаунт."));
       return true;
     }

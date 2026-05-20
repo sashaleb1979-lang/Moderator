@@ -66,7 +66,7 @@ Standard antiteam Roblox modal после успешного Roblox API lookup �
 - Focused Roblox/profile/antiteam suite: 90 pass / 0 fail.
 - `node --check welcome-bot.js`: ok.
 - VS Code diagnostics on touched files: no errors.
-- Full `npm test`: 665 pass / 0 fail.
+- Full `npm test`: 709 pass / 0 fail.
 
 ## Bottom Line
 

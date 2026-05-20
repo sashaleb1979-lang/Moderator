@@ -1,6 +1,10 @@
 "use strict";
 
 const { buildProfileSynergyState } = require("./synergy");
+const {
+  formatRobloxBindingStatusLine,
+  formatRobloxReadinessLabel,
+} = require("../integrations/roblox-binding-status");
 
 function cleanString(value, limit = 2000) {
   return String(value || "").trim().slice(0, Math.max(0, Number(limit) || 0));
@@ -17,6 +21,11 @@ function normalizeProfileDisplayMode(value, { isSelf = false } = {}) {
 function normalizeFiniteNumber(value, fallback = null) {
   const amount = Number(value);
   return Number.isFinite(amount) ? amount : fallback;
+}
+
+function normalizeNullableFiniteNumber(value, fallback = null) {
+  if (value === null || value === undefined || value === "") return fallback;
+  return normalizeFiniteNumber(value, fallback);
 }
 
 function formatNumber(value) {
@@ -435,18 +444,7 @@ function buildOverviewStatusLines({
 
   lines.push(`Верификация: ${cleanString(verificationSummary.status, 80) || "не начата"}`);
 
-  const robloxUsability = resolveRobloxSummaryUsability(robloxSummary);
-  if (robloxUsability.usable) {
-    lines.push("Roblox-связка: подтверждена.");
-  } else if (robloxUsability.state === "repairable") {
-    lines.push("Roblox-связка: нужна перепривязка, нет валидного Roblox userId.");
-  } else if (robloxUsability.state === "manual_only") {
-    lines.push("Roblox-связка: нужна перепривязка, нет полного Roblox аккаунта.");
-  } else if (robloxSummary.verificationStatus) {
-    lines.push(`Roblox-связка: ${cleanString(robloxSummary.verificationStatus, 80)}`);
-  } else {
-    lines.push("Roblox-связка: не подтверждена.");
-  }
+  lines.push(formatRobloxBindingStatusLine(profile || robloxSummary));
 
   return lines;
 }
@@ -469,10 +467,7 @@ function resolveRobloxSummaryUsability(robloxSummary = {}) {
 }
 
 function formatRobloxReadiness(robloxSummary = {}) {
-  const usability = resolveRobloxSummaryUsability(robloxSummary);
-  if (usability.usable) return "Roblox связан";
-  if (usability.state === "repairable" || usability.state === "manual_only") return "Roblox требует перепривязки";
-  return "Roblox не подтверждён";
+  return formatRobloxReadinessLabel(robloxSummary);
 }
 
 function buildHeroLines({
@@ -579,8 +574,8 @@ function buildProfileReadModel(options = {}) {
     200
   ) || `User ${userId}`;
   const standing = computeKillStanding(approvedEntries, userId);
-  const approvedKills = normalizeFiniteNumber(profile?.approvedKills ?? onboardingSummary.approvedKills);
-  const killTier = normalizeFiniteNumber(profile?.killTier ?? onboardingSummary.killTier);
+  const approvedKills = normalizeNullableFiniteNumber(profile?.approvedKills ?? onboardingSummary.approvedKills);
+  const killTier = normalizeNullableFiniteNumber(profile?.killTier ?? onboardingSummary.killTier);
   const comboGuideLinks = buildComboThreadLinks({
     guideState: options.comboGuideState,
     mainCharacterIds,

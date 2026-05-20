@@ -53,7 +53,7 @@ test("bot helper panel exports stable slot and config ids", () => {
   assert.equal(BOT_HELPER_PANEL_AUTO_RESEND_INTERVAL_HOURS, 12);
   assert.deepEqual(getBotHelperPanelRequiredCustomIds(), [
     "onboard_begin",
-    "profile_bind_roblox",
+    "bot_helper_bind_roblox",
     "elo_submit_open",
     "onboard_change_mains",
   ]);
@@ -63,6 +63,7 @@ test("bot helper settings payload exposes channel, resend, refresh and disable c
   const payload = buildBotHelperSettingsPayload({
     channelText: "<#channel>",
     messageText: "message-1",
+    checkCadenceText: "каждые 5 минут",
     lastSentText: "сейчас",
     activityText: "есть активность ниже",
     autoResendText: "12 часов",
@@ -71,6 +72,7 @@ test("bot helper settings payload exposes channel, resend, refresh and disable c
 
   assert.equal(payload.embeds.length, 1);
   assert.match(payload.embeds[0].data.title, /bot helper settings/i);
+  assert.match(JSON.stringify(payload.embeds[0].data.fields), /5 минут/i);
   assert.equal(payload.components.length, 2);
   assert.deepEqual(
     payload.components.flatMap((row) => row.toJSON().components.map((component) => component.custom_id)),

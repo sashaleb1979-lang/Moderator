@@ -663,7 +663,7 @@
 ### Phase 10. Burn-In И Sync Docs
 1. Focused tests. Выполнено для `tests/profile-synergy.test.js`, `tests/profile-model.test.js` и `tests/profile-view.test.js`.
 
-2. Full active-tree `node --test`. Выполнено по `tests/*.test.js`: 665 pass / 0 fail.
+2. Full active-tree `node --test`. Выполнено по `tests/*.test.js`: 709 pass / 0 fail.
 3. Discord smoke. Всё ещё pending.
 4. Sync `PROFILE_VISION_PLAN.md`, `PROFILE_SYNERGY_SYSTEM_PLAN.md` и `PROFILE_SYNERGY_CALCULATION_SPEC.md`. Обновлено под текущий Phase 9 state.
 

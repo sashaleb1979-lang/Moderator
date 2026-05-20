@@ -4,7 +4,10 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const {
+  DEFAULT_INTERACTION_PAYLOAD_TIMEOUT_MS,
+  isInteractionPayloadTimeoutError,
   isUnknownInteractionError,
+  resolveInteractionPayloadWithTimeout,
   safeDeferComponentUpdate,
   safeDeferEphemeralReply,
 } = require("../src/runtime/interaction-ack");
@@ -13,6 +16,48 @@ test("isUnknownInteractionError matches Discord 10062 responses", () => {
   assert.equal(isUnknownInteractionError({ code: 10062, message: "Unknown interaction" }), true);
   assert.equal(isUnknownInteractionError({ message: "Unknown interaction" }), true);
   assert.equal(isUnknownInteractionError({ code: 50013, message: "Missing permissions" }), false);
+});
+
+test("resolveInteractionPayloadWithTimeout returns payload before timeout", async () => {
+  const payload = await resolveInteractionPayloadWithTimeout(async () => ({ content: "ok" }), {
+    label: "bot helper refresh",
+    timeoutMs: 50,
+  });
+
+  assert.deepEqual(payload, { content: "ok" });
+});
+
+test("resolveInteractionPayloadWithTimeout rethrows payload builder errors", async () => {
+  await assert.rejects(
+    resolveInteractionPayloadWithTimeout(async () => {
+      throw new Error("builder failed");
+    }, {
+      label: "bot helper refresh",
+      timeoutMs: 50,
+    }),
+    /builder failed/
+  );
+});
+
+test("resolveInteractionPayloadWithTimeout fails with a typed timeout error and warning", async () => {
+  const warnings = [];
+
+  await assert.rejects(
+    resolveInteractionPayloadWithTimeout(() => new Promise((resolve) => {
+      setTimeout(() => resolve({ content: "late" }), DEFAULT_INTERACTION_PAYLOAD_TIMEOUT_MS);
+    }), {
+      label: "bot helper refresh",
+      timeoutMs: 10,
+      logWarning: (message) => warnings.push(message),
+    }),
+    (error) => {
+      assert.equal(isInteractionPayloadTimeoutError(error), true);
+      assert.equal(error.timeoutMs, 10);
+      return true;
+    }
+  );
+
+  assert.deepEqual(warnings, ["bot helper refresh: interaction payload build timed out after 10ms."]);
 });
 
 test("safeDeferEphemeralReply acknowledges once when interaction is still valid", async () => {

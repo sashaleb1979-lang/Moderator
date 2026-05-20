@@ -324,6 +324,7 @@ test("start panel ignores legacy verified Roblox records with invalid Roblox use
 
   assert.equal(interaction.calls[0][0], "reply");
   assert.match(JSON.stringify(interaction.calls[0][1].components[0].toJSON()), /Roblox ник/);
+  assert.match(JSON.stringify(interaction.calls[0][1].components[0].toJSON()), /нет валидного Roblox userId/);
 });
 
 test("start panel rejects failed Roblox records even with stale verified markers", async () => {
@@ -1815,7 +1816,7 @@ test("closing ticket edits messages and renames thread with gray marker", async 
   assert.match(JSON.stringify(threadPanelEdit.components[0].toJSON()), /✅ Закрыто/);
 });
 
-test("closing ticket removes ping message, locks thread, archives it, and leaves members in place", async () => {
+test("closing ticket removes ping message, evicts non-owner thread members, locks thread, and archives it", async () => {
   const db = {};
   const draft = setAntiteamDraft(db, "author-1", {
     userTag: "Author",
@@ -1897,7 +1898,7 @@ test("closing ticket removes ping message, locks thread, archives it, and leaves
   assert.equal(pingDeleted, true);
   assert.equal(archived, true);
   assert.equal(locked, true);
-  assert.deepEqual(removedMembers, []);
+  assert.deepEqual(removedMembers, ["helper-1"]);
 });
 
 test("closing ticket writes helper result markers into the public message", async () => {
@@ -1982,7 +1983,7 @@ test("closing ticket writes helper result markers into the public message", asyn
   ]);
 });
 
-test("auto-close reuses thread cleanup, archives the mission, and leaves members in place", async () => {
+test("auto-close reuses thread cleanup, evicts non-owner thread members, and archives the mission", async () => {
   const db = {};
   const state = ensureAntiteamState(db).state;
   state.config.missionAutoCloseMinutes = 120;
@@ -2060,7 +2061,7 @@ test("auto-close reuses thread cleanup, archives the mission, and leaves members
   assert.equal(pingDeleted, true);
   assert.equal(locked, true);
   assert.equal(archived, true);
-  assert.deepEqual(removedMembers, []);
+  assert.deepEqual(removedMembers, ["helper-1"]);
 });
 
 test("advanced config modal updates timing and Roblox link settings", async () => {

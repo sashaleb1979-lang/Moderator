@@ -1,6 +1,7 @@
 "use strict";
 
 const { AttachmentBuilder, ChannelType, MessageFlags, PermissionsBitField } = require("discord.js");
+const { getRobloxBindingRecoveryText } = require("../integrations/roblox-binding-status");
 const { resolveUsableVerifiedRobloxIdentity } = require("../integrations/shared-profile");
 const {
   ANTITEAM_HELPER_REWARD_THRESHOLDS,
@@ -327,6 +328,22 @@ function createAntiteamOperator(options = {}) {
         await pingMessage.delete().catch((error) => {
           logError("Antiteam ping cleanup failed:", error?.message || error);
         });
+      }
+    }
+
+    if (thread.members?.fetch && thread.members?.remove) {
+      const threadMembers = await thread.members.fetch().catch(() => null);
+      if (threadMembers?.values) {
+        for (const member of threadMembers.values()) {
+          const memberId = cleanString(member?.id || member?.user?.id, 80);
+          if (!memberId || memberId === cleanString(ticket.createdBy, 80) || member?.user?.bot === true || hasAdmin(member)) {
+            continue;
+          }
+
+          await thread.members.remove(memberId, "antiteam mission closed").catch((error) => {
+            logError("Antiteam thread member cleanup failed:", error?.message || error);
+          });
+        }
       }
     }
 
@@ -924,7 +941,10 @@ function createAntiteamOperator(options = {}) {
         statusText: `Roblox взят из твоего профиля: ${storedRoblox.username}.`,
       });
     }
-    await interaction.reply(buildRobloxMissingPayload());
+    const rawProfile = typeof options.getProfile === "function" ? options.getProfile(interaction.user.id) : db.profiles?.[interaction.user.id];
+    await interaction.reply(buildRobloxMissingPayload({
+      reasonText: getRobloxBindingRecoveryText(rawProfile, { audience: "antiteam" }),
+    }));
     return true;
   }
 

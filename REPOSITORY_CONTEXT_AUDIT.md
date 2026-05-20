@@ -1238,3 +1238,148 @@ Activity уже не “пара счётчиков сообщений”, а п
 1. следующий update этого ledger должен быть посвящён Wave A и Wave B, а не общему обзору;
 2. в первую очередь нужно пройти startup/ready-path и SoT load/save/dual-write seams с фиксацией уже не только risk surfaces, но и конкретных bugs, imperfections и coverage gaps;
 3. новые доменные findings нужно складывать сюда, а не распылять по новым root-файлам без острой необходимости.
+
+### 16.8. Verification Runtime И Lifecycle Follow-Up
+
+#### 16.8.1. Owner Seams И Локальная Гипотеза
+
+1. `src/verification/runtime.js` остаётся owner seam для OAuth callback server lifecycle;
+2. `welcome-bot.js` остаётся owner seam для role-driven verification lifecycle и startup reconcile active verification profiles;
+3. локальная гипотеза для первого fix была простой: failed `createVerificationCallbackServer.start()` оставляет грязный server state, из-за чего `stop()` больше не является безопасным cleanup path;
+4. локальная гипотеза для второго fix была такой же узкой: `reconcileVerificationAssignmentForMember()` трактует любой `fetchMember() -> null` как manual verify-role removal, хотя `fetchMember()` проглатывает transient Discord API failures и тем самым может тихо сбросить active verification state.
+
+#### 16.8.2. Confirmed Findings
+
+1. Подтверждён runtime lifecycle defect: verification callback server до fix не очищал внутренний `server` после failed start и `stop()` мог падать на уже неслушающем экземпляре вместо harmless cleanup;
+2. Подтверждён role-driven reconcile defect: startup verification reconcile до fix мог переводить `pending`/`manual_review`/`failed` обратно в `not_started`, если `fetchMember()` возвращал `null` из-за transient fetch failure, а не из-за реального manual role removal;
+3. Это не cosmetic behavior: первый defect делает restart/reconfigure paths хрупкими, а второй стирает live verification countdown и moderator context без доказанного role mutation.
+
+#### 16.8.3. Implemented Fixes
+
+1. В `src/verification/runtime.js` `createVerificationCallbackServer.start()` теперь очищает pending server state на listen error и не оставляет битый экземпляр в closure;
+2. В `src/verification/runtime.js` `stop()` теперь безопасно возвращает `stopped: false` для non-listening/cleared server state вместо выброса cleanup error после failed start;
+3. В `welcome-bot.js` `reconcileVerificationAssignmentForMember()` теперь не останавливает active verification lifecycle, если member fetch не разрешился и роль нельзя проверить достоверно;
+4. В `welcome-bot.js` explicit resolved member without verify-role по-прежнему считается доказанным manual removal и останавливает lifecycle как раньше.
+
+#### 16.8.4. Verification Evidence
+
+1. Focused runtime validation: `node --test tests/verification-runtime.test.js` — зелёный после lifecycle fix;
+2. Focused role-lifecycle validation: `node --test tests/verification-runtime.test.js tests/verification-role-lifecycle-wiring.test.js` — зелёный после reconcile guard;
+3. Canonical repo suite: `npm test` — зелёный (`688/688`);
+4. Direct `node --test` по-прежнему не является canonical signal для этого repo, потому что затягивает архивные tests из `backups/` и может давать ложные failures вне active tree.
+
+#### 16.8.5. Residual Open Questions
+
+1. Startup reconcile теперь честно пропускает unresolved member fetch, но это оставляет открытым policy question для ушедших с сервера users: нужен ли отдельный explicit cleanup path, который отличает `unknown member` от transient Discord API failure;
+2. Verification operator/report domain всё ещё требует отдельного прохода по resend/deadline sweep semantics и degraded moderator-report fallback;
+3. `welcome-bot.js` verification helpers всё ещё остаются большими owner slices без нормальной exported unit seam, поэтому дальше выгодно либо добавить ещё точечные behavior tests через extracted-source pattern, либо вынести decision-only logic в smaller seam без переписывания hot path.
+
+#### 16.8.6. Next Slice
+
+1. Следующий verification slice после этих fixes: resend-report/deadline sweep и degraded fallback moderator report path;
+2. После этого можно возвращаться к residual profile/onboarding semantics, не reopening уже закрытый proof-window append и null-vs-zero slice.
+
+### 16.9. Antiteam Close Cleanup Follow-Up
+
+#### 16.9.1. Owner Seam И Cheap Check
+
+1. `src/antiteam/operator.js` остаётся canonical owner для closed-ticket cleanup через `cleanupClosedTicketResources()` и `finalizeClosedTicket()`;
+2. cheap discriminating check здесь был простой: если cleanup действительно отвечает за orphan thread cleanup, то внутри `cleanupClosedTicketResources()` должна существовать явная ветка `thread.members.fetch/remove`, а focused tests не должны закреплять `removedMembers = []` как правильное поведение.
+
+#### 16.9.2. Confirmed Finding
+
+1. Подтверждён cleanup gap: current main удалял ping message и архивировал/lock-ал thread, но не вычищал non-owner/non-admin thread members, хотя этот behavior уже считался частью intended close seam;
+2. Из-за этого manual close и auto-close оставляли orphan helper membership в закрытом public thread и расходились с ожидаемой cleanup semantics.
+
+#### 16.9.3. Implemented Fix И Evidence
+
+1. В `src/antiteam/operator.js` `cleanupClosedTicketResources()` теперь fetch-ит thread members и best-effort удаляет всех non-owner, non-admin, non-bot участников до lock/archive;
+2. Focused regression coverage обновлена в `tests/antiteam-operator.test.js`: manual close и auto-close теперь подтверждают eviction helper members вместо прежнего `removedMembers = []`;
+3. Focused validation: `node --test tests/antiteam-operator.test.js` — зелёный после cleanup fix.
+
+#### 16.9.4. Next Slice
+
+1. Следующий operator-domain slice по плану: news voice/moderation capture owner seams;
+2. Antiteam после этого fix-а остаётся low-risk относительно close cleanup, но ещё может потребовать отдельный проход по direct-join/runtime exactness, если появится новый contradicting signal.
+
+### 16.10. News Capture Wiring Follow-Up
+
+#### 16.10.1. Owner Seams И Cheap Check
+
+1. `src/news/voice.js`, `src/news/moderation.js` и `src/news/state.js` уже были нормальными isolated owner modules с focused tests;
+2. cheap discriminating check для live integration был таким: если news capture реально включён в runtime, то `welcome-bot.js` должен импортировать `recordVoiceStateTransition`, `recordMemberRemovalEvent`, `recordGuildBanEvent` и wire-ить их в `voiceStateUpdate`, `guildMemberRemove`, `guildBanAdd`, `guildBanRemove`.
+
+#### 16.10.2. Confirmed Finding
+
+1. Подтверждён live wiring gap: current main до fix не вызывал news capture owners вообще, поэтому `db.sot.news.voice` и `db.sot.news.moderation` не пополнялись живыми Discord event-ами, несмотря на наличие owner modules и focused unit coverage;
+2. Это был integration defect, а не unit defect: isolated tests news domain проходили зелёно, но production runtime их never called.
+
+#### 16.10.3. Implemented Fix И Evidence
+
+1. В `welcome-bot.js` добавлен live wiring для `recordVoiceStateTransition` через `voiceStateUpdate` и serialized label `daily-news-voice-capture`;
+2. В `welcome-bot.js` добавлен live wiring для `recordMemberRemovalEvent`, `recordGuildBanEvent(eventType: "ban_add")` и `recordGuildBanEvent(eventType: "ban_remove")` через соответствующие Discord events;
+3. Focused validation: `node --test tests/news-voice.test.js tests/news-moderation.test.js tests/news-state.test.js tests/news-startup-wiring.test.js` — зелёный после wiring fix.
+
+#### 16.10.4. Next Slice
+
+1. Следующий planned slice: combo-guide editor/publisher seam или autonomy guard runtime enforcement;
+2. News domain после wiring fix-а больше не выглядит orphan module, но ещё может потребовать отдельного compile/publish audit, если later ledger wave дойдёт до digest assembly.
+
+### 16.11. Combo Guide Publisher Wiring Follow-Up
+
+#### 16.11.1. Owner Seam И Cheap Check
+
+1. `src/combo-guide/publisher.js` уже был canonical owner для publish/add/remove/refresh/delete combo guide state;
+2. cheap check для runtime seam был простым: live `/combo publish` path в `welcome-bot.js` обязан импортировать publisher owner functions и использовать `deleteFullGuide` при republish в тот же канал, иначе slash path либо падает `ReferenceError`, либо оставляет orphan сообщения.
+
+#### 16.11.2. Confirmed Finding
+
+1. Подтверждён двойной runtime defect: current main использовал `publishGuideOrdered`, `addCharacterToGuide`, `refreshNavigation`, `removeCharacterFromGuide`, `downloadUrl`, но import из `src/combo-guide/publisher.js` отсутствовал;
+2. `/combo publish` также не вызывал `deleteFullGuide`, хотя UI already обещал автоматическую зачистку старого гайда при republish в тот же канал.
+
+#### 16.11.3. Implemented Fix И Evidence
+
+1. В `welcome-bot.js` восстановлен import publisher owner functions, включая `deleteFullGuide` и `downloadUrl`;
+2. `/combo publish` теперь detect-ит existing guide в том же канале и удаляет старые сообщения перед новым publish;
+3. Focused validation: `node --test tests/combo-guide-editor.test.js tests/combo-guide-publisher.test.js tests/combo-guide-startup-wiring.test.js` — зелёный после fix-а.
+
+### 16.12. Autonomy Guard Combo Follow-Up
+
+#### 16.12.1. Owner Seam И Cheap Check
+
+1. `src/moderation/autonomy-guard.js` already owns state/mutators, а `welcome-bot.js` owns live routing enforcement;
+2. cheap check для interaction follow-ups: если combo slash entrypoint block-ится для isolated actor, то combo button/select/modal continuation routes в `welcome-bot.js` тоже должны вызывать `replyIfAutonomyGuardBlockedActor`.
+
+#### 16.12.2. Confirmed Finding
+
+1. Подтверждён routing gap: `/combo` slash path был guarded, но `combo_panel_*`, `combo_select_*` и `combo_edit_message:*` follow-up interactions не были guarded вообще;
+2. Это позволяло already-open combo panel оставаться write-capable для isolated actor.
+
+#### 16.12.3. Implemented Fix И Evidence
+
+1. В `welcome-bot.js` добавлен autonomy guard для combo button routes, combo select menus и combo edit modal submit path;
+2. Focused validation: `node --test tests/autonomy-guard.test.js tests/combo-guide-editor.test.js tests/combo-guide-publisher.test.js tests/combo-guide-startup-wiring.test.js tests/autonomy-guard-combo-wiring.test.js` — зелёный.
+
+### 16.13. Verification Report Delivery Follow-Up
+
+#### 16.13.1. Owner Seam И Cheap Check
+
+1. `src/verification/operator.js` owns rich moderator report payloads, а `welcome-bot.js` owns live report delivery and countdown-side stamping;
+2. cheap discriminating check для residual defect был таким: `handleVerificationManualReviewCallback` не должен ставить `reportSentAt` до успешной отправки, а `postVerificationManualReport` должен иметь degraded send path, иначе payload-limit incident ломает moderation flow и suppress-ит resend logic.
+
+#### 16.13.2. Confirmed Finding
+
+1. Подтверждено, что `handleVerificationManualReviewCallback` stamp-ил `reportSentAt` заранее, до `postVerificationManualReport`;
+2. `postVerificationManualReport` пытался отправить только rich embed+attachment payload и при Discord reject просто падал `VERIFICATION_REPORT_FAILED` без degraded fallback, оставляя moderation buttons недоставленными.
+
+#### 16.13.3. Implemented Fix И Evidence
+
+1. В `welcome-bot.js` добавлен `buildVerificationDegradedReportPayload`, который сохраняет action buttons, но шлёт plain-text moderator report без embed/file payload;
+2. `postVerificationManualReport` теперь пробует rich payload first, потом degraded fallback, логирует `VERIFICATION_REPORT_DEGRADED`, и считает отчёт доставленным только после успешного send;
+3. `handleVerificationManualReviewCallback` теперь обновляет verification state без `reportSentAt`, отправляет report, и stamp-ит `reportSentAt` отдельным patch только после successful delivery;
+4. Focused validation: `node --test tests/verification-operator.test.js tests/verification-runtime.test.js tests/verification-role-lifecycle-wiring.test.js tests/verification-report-runtime.test.js` — зелёный.
+
+#### 16.13.4. Next Slice
+
+1. Конкретные planned implementation slices из текущей волны закрыты: news wiring, combo-guide publisher seam, autonomy guard combo follow-up, verification report delivery residuals;
+2. Следующий шаг уже не owner-fix, а отдельный stale-assumption sweep по runtime copy, plan docs и recovery notes, если нужен ещё один проход.
