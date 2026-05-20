@@ -39,6 +39,7 @@ const ANTITEAM_COUNTS = Object.freeze({
 
 const ANTITEAM_TICKET_KINDS = Object.freeze(["standard", "clan"]);
 const ANTITEAM_TICKET_STATUSES = Object.freeze(["draft", "photo_pending", "open", "closed", "cancelled"]);
+const ANTITEAM_PING_MODES = Object.freeze(["battalion", "custom_role", "everyone"]);
 const DISCORD_THREAD_AUTO_ARCHIVE_MINUTES = Object.freeze([60, 1440, 4320, 10080]);
 const ANTITEAM_HELPER_REWARD_THRESHOLDS = Object.freeze([1, 5, 10, 20, 50]);
 
@@ -120,6 +121,13 @@ function normalizeTicketStatus(value, fallback = "open") {
   return ANTITEAM_TICKET_STATUSES.includes(normalized) ? normalized : fallback;
 }
 
+function normalizeAntiteamPingMode(value, fallback = "battalion") {
+  const normalizedFallback = ANTITEAM_PING_MODES.includes(fallback) ? fallback : "battalion";
+  const normalized = cleanString(value, 40).toLowerCase().replace(/[\s-]+/g, "_");
+  if (normalized === "role" || normalized === "custom" || normalized === "custom_ping") return "custom_role";
+  return ANTITEAM_PING_MODES.includes(normalized) ? normalized : normalizedFallback;
+}
+
 function createTicketId(nowIso = new Date().toISOString(), randomBytes = crypto.randomBytes) {
   const day = cleanString(nowIso, 20).slice(0, 10).replace(/-/g, "") || "ticket";
   const suffix = randomBytes(4).toString("hex");
@@ -187,8 +195,15 @@ function createDefaultAntiteamConfig(value = {}) {
     channelId: cleanString(source.channelId, 80),
     panelMessageId: cleanString(source.panelMessageId, 80),
     battalionRoleId: cleanString(source.battalionRoleId, 80),
+    battalionPingRoleIds: normalizeUniqueStringArray(
+      source.battalionPingRoleIds ?? source.basePingRoleIds ?? source.extraBattalionPingRoleIds,
+      25,
+      80
+    ),
     battalionLeadRoleId: cleanString(source.battalionLeadRoleId, 80),
     clanCallerRoleId: cleanString(source.clanCallerRoleId, 80),
+    pingMode: normalizeAntiteamPingMode(source.pingMode, "battalion"),
+    extraPingRoleId: cleanString(source.extraPingRoleId ?? source.customPingRoleId, 80),
     missionAutoArchiveMinutes: normalizeThreadAutoArchiveMinutes(source.missionAutoArchiveMinutes, 60),
     missionAutoCloseMinutes: normalizePositiveInteger(source.missionAutoCloseMinutes, 120),
     panel: normalizeStartPanelConfig(source.panel),
@@ -726,6 +741,7 @@ module.exports = {
   ANTITEAM_COUNTS,
   ANTITEAM_HELPER_REWARD_THRESHOLDS,
   ANTITEAM_LEVELS,
+  ANTITEAM_PING_MODES,
   ANTITEAM_TICKET_KINDS,
   ANTITEAM_TICKET_STATUSES,
   ANTITEAM_VERSION,
@@ -749,6 +765,7 @@ module.exports = {
   normalizeAntiteamCount,
   normalizeAntiteamDraft,
   normalizeAntiteamLevel,
+  normalizeAntiteamPingMode,
   normalizeAntiteamState,
   normalizeAntiteamTicket,
   normalizeClanPingRoles,

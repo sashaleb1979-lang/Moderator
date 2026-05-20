@@ -24,6 +24,7 @@ const {
   createDefaultAntiteamConfig,
   normalizeAntiteamCount,
   normalizeAntiteamLevel,
+  normalizeAntiteamPingMode,
 } = require("./state");
 const {
   SUPPORT_PROGRESS_LEVELS,
@@ -39,8 +40,10 @@ const ANTITEAM_CUSTOM_IDS = Object.freeze({
   requestRobloxNick: "at:roblox:request",
   confirmRoblox: "at:roblox:confirm",
   changeRoblox: "at:roblox:change",
+  joinBattalion: "at:battalion:join",
   config: "at:config",
   configAdvanced: "at:config:advanced",
+  pingConfig: "at:ping:config",
   panelText: "at:panel:text",
   publishPanel: "at:panel:publish",
   refreshPanel: "at:panel:refresh",
@@ -87,6 +90,34 @@ function formatRoleMention(roleId) {
 function formatChannelMention(channelId) {
   const id = cleanString(channelId, 80);
   return id ? `<#${id}>` : "не настроен";
+}
+
+function getBattalionPingRoleIds(config = createDefaultAntiteamConfig()) {
+  const normalized = createDefaultAntiteamConfig(config);
+  return [
+    normalized.battalionRoleId,
+    ...(Array.isArray(normalized.battalionPingRoleIds) ? normalized.battalionPingRoleIds : []),
+  ]
+    .map((roleId) => cleanString(roleId, 80))
+    .filter(Boolean)
+    .filter((roleId, index, roleIds) => roleIds.indexOf(roleId) === index);
+}
+
+function formatRoleMentionList(roleIds = [], fallback = "не настроены") {
+  const mentions = (Array.isArray(roleIds) ? roleIds : [])
+    .map((roleId) => cleanString(roleId, 80))
+    .filter(Boolean)
+    .map(formatRoleMention);
+  return mentions.length ? mentions.join(", ") : fallback;
+}
+
+function formatAntiteamPingMode(config = createDefaultAntiteamConfig()) {
+  const normalized = createDefaultAntiteamConfig(config);
+  const mode = normalizeAntiteamPingMode(normalized.pingMode, "battalion");
+  const basePing = formatRoleMentionList(getBattalionPingRoleIds(normalized), "батальён не настроен");
+  if (mode === "everyone") return `${basePing} + автоудаляемый @everyone`;
+  if (mode === "custom_role") return `${basePing} + автоудаляемая роль ${formatRoleMention(normalized.extraPingRoleId)}`;
+  return basePing;
 }
 
 function getPhotoAttachmentName(photo = {}) {
@@ -196,14 +227,15 @@ function buildPayload(container, { ephemeral = false, extraComponents = [] } = {
 }
 
 function buildStartPanelPayload(config = createDefaultAntiteamConfig()) {
-  const panel = createDefaultAntiteamConfig(config).panel;
+  const normalized = createDefaultAntiteamConfig(config);
+  const panel = normalized.panel;
   const container = new ContainerBuilder()
     .setAccentColor(panel.accentColor)
     .addTextDisplayComponents(
       new TextDisplayBuilder().setContent(`# ${panel.title}`),
       new TextDisplayBuilder().setContent(panel.description),
       new TextDisplayBuilder().setContent([
-        `На помощь пингуется роль: ${formatRoleMention(config.battalionRoleId)}`,
+        `Система пинга: ${formatAntiteamPingMode(normalized)}`,
         panel.details,
       ].filter(Boolean).join("\n"))
     )
@@ -214,6 +246,10 @@ function buildStartPanelPayload(config = createDefaultAntiteamConfig()) {
           .setCustomId(ANTITEAM_CUSTOM_IDS.open)
           .setLabel(panel.buttonLabel)
           .setStyle(ButtonStyle.Danger),
+        new ButtonBuilder()
+          .setCustomId(ANTITEAM_CUSTOM_IDS.joinBattalion)
+          .setLabel("Вступить в батальён")
+          .setStyle(ButtonStyle.Success),
         new ButtonBuilder()
           .setCustomId(ANTITEAM_CUSTOM_IDS.progress)
           .setLabel("🛡️ Мой прогресс")
@@ -258,7 +294,24 @@ function buildSupportProgressPayload(modelInput = {}, { attachmentName = "antite
   return buildPayload(container, { ephemeral: true });
 }
 
+function formatHelpThreshold(value) {
+  const number = Math.max(0, Number.parseInt(value, 10) || 0);
+  const lastTwo = number % 100;
+  const last = number % 10;
+  const word = lastTwo >= 11 && lastTwo <= 14
+    ? "помощей"
+    : last === 1
+      ? "помощь"
+      : last >= 2 && last <= 4
+        ? "помощи"
+        : "помощей";
+  return `${number}+ ${word}`;
+}
+
 function buildStartGuidePayload(config = createDefaultAntiteamConfig()) {
+  const rankLines = SUPPORT_PROGRESS_LEVELS
+    .map((level) => `• **${level.label}** — ${formatHelpThreshold(level.threshold)}`)
+    .join("\n");
   const container = new ContainerBuilder()
     .setAccentColor(config.panel?.accentColor || 0xE53935)
     .addTextDisplayComponents(
@@ -269,6 +322,12 @@ function buildStartGuidePayload(config = createDefaultAntiteamConfig()) {
         "3. Выбери опасность, число тимеров и по возможности добавь ники/киллы целей.",
         "4. После отправки появится заявка и thread, где батальён сможет быстро подключиться.",
         "5. Если включён прямой вход или helper уже есть в друзьях Roblox, бот даст быстрый join/profile путь.",
+      ].join("\n")),
+      new TextDisplayBuilder().setContent([
+        "### Ранги помощи",
+        "Очко засчитывается после закрытия миссии, если тебя отметили как пришедшего helper-а.",
+        rankLines,
+        "Личный щит и прогресс открываются кнопкой **Мой прогресс**.",
       ].join("\n"))
     );
   return buildPayload(container, { ephemeral: true });
@@ -349,6 +408,7 @@ function buildModeratorPanelPayload(state = {}, statusText = "") {
         `Помощников в статистике: **${helperCount}**`,
         `Автоархив thread: **${config.missionAutoArchiveMinutes} мин**`,
         `Автозакрытие миссии: **${config.missionAutoCloseMinutes} мин**`,
+        `Пинг-система: **${formatAntiteamPingMode(config)}**`,
         `Roblox place id: ${config.roblox?.jjsPlaceId ? `\`${config.roblox.jjsPlaceId}\`` : "из общего конфига"}`,
       ].join("\n"))
     );
@@ -361,6 +421,8 @@ function buildModeratorPanelPayload(state = {}, statusText = "") {
     .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
     .addTextDisplayComponents(buildText("Роли", [
       `Батальён: ${formatRoleMention(config.battalionRoleId)}`,
+      `Доп. роли базового пинга: ${formatRoleMentionList(config.battalionPingRoleIds)}`,
+      `Тихая роль: ${formatRoleMention(config.extraPingRoleId)}`,
       `Глава батальона: ${formatRoleMention(config.battalionLeadRoleId)}`,
       `Уполномоченные на клан-аларм: ${formatRoleMention(config.clanCallerRoleId)}`,
     ]))
@@ -373,6 +435,7 @@ function buildModeratorPanelPayload(state = {}, statusText = "") {
         new ButtonBuilder().setCustomId(ANTITEAM_CUSTOM_IDS.refreshPanel).setLabel("Обновить").setStyle(ButtonStyle.Secondary)
       ),
       new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(ANTITEAM_CUSTOM_IDS.pingConfig).setLabel("Пинг-система").setStyle(ButtonStyle.Secondary),
         new ButtonBuilder().setCustomId(ANTITEAM_CUSTOM_IDS.stats).setLabel("📊 Статистика помощи").setStyle(ButtonStyle.Secondary)
       )
     );
@@ -641,6 +704,46 @@ function buildConfigModal(config = createDefaultAntiteamConfig()) {
           .setRequired(false)
           .setMaxLength(1000)
           .setValue(clanRolesText)
+      )
+    );
+}
+
+function buildPingConfigModal(config = createDefaultAntiteamConfig()) {
+  const normalized = createDefaultAntiteamConfig(config);
+  const modeValue = normalized.pingMode === "custom_role" ? "role" : normalized.pingMode;
+  return new ModalBuilder()
+    .setCustomId("at:ping:config_modal")
+    .setTitle("Пинг антитима")
+    .addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId("ping_mode")
+          .setLabel("Режим: battalion / role / everyone")
+          .setPlaceholder("battalion, role или everyone")
+          .setStyle(TextInputStyle.Short)
+          .setRequired(false)
+          .setMaxLength(40)
+          .setValue(modeValue)
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId("extra_ping_role_id")
+          .setLabel("Тихая роль для режима role")
+          .setPlaceholder("@role или id; пусто = без доп. роли")
+          .setStyle(TextInputStyle.Short)
+          .setRequired(false)
+          .setMaxLength(80)
+          .setValue(cleanString(normalized.extraPingRoleId, 80))
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId("battalion_ping_role_ids")
+          .setLabel("Доп. роли базового пинга")
+          .setPlaceholder("по одной роли/id на строку; основную роль сюда не нужно")
+          .setStyle(TextInputStyle.Paragraph)
+          .setRequired(false)
+          .setMaxLength(1000)
+          .setValue((normalized.battalionPingRoleIds || []).join("\n").slice(0, 1000))
       )
     );
 }
@@ -1253,6 +1356,7 @@ module.exports = {
   buildHelpReplyPayload,
   buildModeratorPanelPayload,
   buildPanelTextModal,
+  buildPingConfigModal,
   buildPhotoRequestPayload,
   buildReportModal,
   buildRobloxConfirmPayload,
