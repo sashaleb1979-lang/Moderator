@@ -13532,32 +13532,84 @@ function getLegacyEloSubmitEligibilityError(rawDb, userId, rawText = null) {
 
 function buildLegacyEloSubmitHubEmbed() {
   return new EmbedBuilder()
-    .setTitle("ELO заявки")
+    .setColor(0x57F287)
+    .setTitle("ELO заявка")
     .setDescription([
-      "Жми кнопку отправки и сразу вводи текст с числом ELO.",
-      "После этого просто отправь следующим сообщением скрин с подтверждением в этот канал.",
-      "Подходит обычное вложение или вставка картинки через Ctrl+V.",
-    ].join("\n"));
+      "**Обнови рейтинг так же быстро, как kill tier.**",
+      "Нажми кнопку, впиши число ELO, затем отправь скрин следующим сообщением в этот канал.",
+    ].join("\n"))
+    .addFields(
+      {
+        name: "Что нужно",
+        value: [
+          "`ELO` — число рейтинга от 10",
+          "`Скрин` — подтверждение текущего рейтинга",
+        ].join("\n"),
+        inline: true,
+      },
+      {
+        name: "На скрине",
+        value: [
+          "актуальный ELO",
+          "твой ник или профиль для сверки",
+        ].join("\n"),
+        inline: true,
+      }
+    )
+    .setFooter({ text: "Один ELO, один скрин — модеры проверят и обновят тир." });
 }
 
 function buildLegacyEloSubmitHubComponents() {
   return [
     new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId("elo_submit_open").setLabel("Отправить заявку ELO").setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId("elo_submit_card").setLabel("Моя карточка").setStyle(ButtonStyle.Secondary)
+      new ButtonBuilder()
+        .setCustomId("elo_submit_open")
+        .setLabel("Отправить ELO")
+        .setEmoji("🏆")
+        .setStyle(ButtonStyle.Primary),
+      new ButtonBuilder()
+        .setCustomId("elo_submit_card")
+        .setLabel("Моя карточка")
+        .setEmoji("🎴")
+        .setStyle(ButtonStyle.Secondary)
     ),
   ];
 }
 
-function buildLegacyEloSubmitAwaitPayload(channelId) {
+function buildLegacyEloSubmitAwaitPayload(channelId, rawText = "") {
+  const elo = parseLegacyElo(rawText);
+  const tier = tierForLegacyElo(elo);
+  const channelText = formatChannelMention(channelId) || "этот канал";
+  const lines = [
+    elo ? `ELO: **${formatNumber(elo)}**.` : null,
+    tier ? `Tier по ELO: **${tier}**.` : null,
+    `Теперь отправь **одним следующим сообщением** скрин в ${channelText}.`,
+    "Подойдёт обычное вложение или вставка картинки через Ctrl+V.",
+  ].filter(Boolean);
+
   return ephemeralPayload({
-    content: [
-      `Текст принят. Теперь отправь одним следующим сообщением скрин в ${formatChannelMention(channelId) || "этот канал"}.`,
-      "Можно обычным вложением или вставить картинку из буфера через Ctrl+V.",
-    ].join("\n"),
+    embeds: [
+      new EmbedBuilder()
+        .setColor(0x57F287)
+        .setTitle("Готово. Кидай ELO-скрин")
+        .setDescription(lines.join("\n"))
+        .addFields({
+          name: "На скрине",
+          value: [
+            "актуальное значение ELO",
+            "твой ник или профиль, чтобы модеры сверили заявку",
+          ].join("\n"),
+          inline: false,
+        })
+        .setFooter({ text: "После скрина заявка уйдёт модерам на проверку." }),
+    ],
     components: [
       new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId("elo_submit_cancel").setLabel("Отменить шаг").setStyle(ButtonStyle.Secondary)
+        new ButtonBuilder()
+          .setCustomId("elo_submit_cancel")
+          .setLabel("Отменить шаг")
+          .setEmoji("✖️")
+          .setStyle(ButtonStyle.Secondary)
       ),
     ],
   });
@@ -13609,7 +13661,10 @@ async function buildLegacyEloMyCardPayload(client, userId) {
   }
 
   if (session) {
-    return buildLegacyEloSubmitAwaitPayload(session.channelId || getResolvedEloSubmitPanelSnapshot().channelId || getLegacyEloSubmitPanelState(liveState.rawDb).channelId || "");
+    return buildLegacyEloSubmitAwaitPayload(
+      session.channelId || getResolvedEloSubmitPanelSnapshot().channelId || getLegacyEloSubmitPanelState(liveState.rawDb).channelId || "",
+      session.rawText
+    );
   }
 
   return ephemeralPayload({ content: "Тебя пока нет в ELO тир-листе и активной заявки тоже нет." });
@@ -18968,7 +19023,10 @@ client.on("interactionCreate", async (interaction) => {
       const session = getLegacyEloSubmitSession(interaction.user.id);
       const submitPanel = getLegacyEloSubmitPanelState(liveState.rawDb);
       if (session) {
-        await interaction.reply(buildLegacyEloSubmitAwaitPayload(session.channelId || submitPanel.channelId || interaction.channelId));
+        await interaction.reply(buildLegacyEloSubmitAwaitPayload(
+          session.channelId || submitPanel.channelId || interaction.channelId,
+          session.rawText
+        ));
         return;
       }
 
@@ -21709,7 +21767,7 @@ client.on("interactionCreate", async (interaction) => {
         rawText,
         channelId: targetChannelId,
       });
-      await interaction.reply(buildLegacyEloSubmitAwaitPayload(targetChannelId));
+      await interaction.reply(buildLegacyEloSubmitAwaitPayload(targetChannelId, rawText));
       return;
     }
 

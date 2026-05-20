@@ -396,6 +396,36 @@ test("start panel asks to confirm verified Roblox once, then reuses it", async (
   assert.match(JSON.stringify(secondOpen.calls[1][1].components[0].toJSON()), /взят из профиля/);
 });
 
+test("support progress button renders personal PNG from helper stats", async () => {
+  const db = {};
+  const state = ensureAntiteamState(db).state;
+  state.stats.helpers["helper-1"] = {
+    responded: 8,
+    linkGranted: 8,
+    confirmedArrived: 7,
+    lastHelpedAt: "2026-05-16T10:00:00.000Z",
+  };
+  const rendered = [];
+  const operator = createAntiteamOperator({
+    db,
+    saveDb() {},
+    renderSupportProgressCard: async (options) => {
+      rendered.push(options);
+      return Buffer.from("fake-png");
+    },
+  });
+  const interaction = createButtonInteraction(ANTITEAM_CUSTOM_IDS.progress, { id: "helper-1", username: "Helper" });
+
+  assert.equal(await operator.handleButtonInteraction(interaction), true);
+
+  assert.equal(interaction.calls[0][0], "deferReply");
+  assert.equal(rendered[0].model.title, "Саппорт Ⅱ ур.");
+  assert.equal(rendered[0].model.remaining, 3);
+  assert.equal(interaction.calls.at(-1)[0], "editReply");
+  assert.match(JSON.stringify(interaction.calls.at(-1)[1].components[0].toJSON()), /Саппорт Ⅱ ур\./);
+  assert.equal(interaction.calls.at(-1)[1].files[0].name, "antiteam-support-progress.png");
+});
+
 test("start panel submit resets a stale clan draft back to the caller Roblox profile", async () => {
   const db = {};
   setAntiteamDraft(db, "user-1", {

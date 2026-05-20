@@ -23,7 +23,13 @@ test("bot helper panel payload renders the four MVP actions", () => {
 
   assert.equal(payload.embeds.length, 1);
   assert.match(payload.embeds[0].data.title, /bot chat helper/i);
-  assert.equal(payload.components.length, 2);
+  assert.equal(payload.embeds[0].data.color, 0x5865F2);
+  assert.doesNotMatch(payload.embeds[0].data.description, /12|час/i);
+  assert.deepEqual(
+    payload.embeds[0].data.fields.map((field) => field.name),
+    ["Заявки", "Профиль"]
+  );
+  assert.equal(payload.components.length, 1);
   assert.deepEqual(
     payload.components.flatMap((row) => row.toJSON().components.map((component) => component.custom_id)),
     [
@@ -32,6 +38,10 @@ test("bot helper panel payload renders the four MVP actions", () => {
       BOT_HELPER_PANEL_ACTION_IDS.elo,
       BOT_HELPER_PANEL_ACTION_IDS.mains,
     ]
+  );
+  assert.deepEqual(
+    payload.components.flatMap((row) => row.toJSON().components.map((component) => component.label)),
+    ["Kills", "Roblox", "ELO", "Персонажи"]
   );
 });
 

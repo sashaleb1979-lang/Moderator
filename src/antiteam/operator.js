@@ -1,6 +1,6 @@
 "use strict";
 
-const { ChannelType, MessageFlags, PermissionsBitField } = require("discord.js");
+const { AttachmentBuilder, ChannelType, MessageFlags, PermissionsBitField } = require("discord.js");
 const { resolveUsableVerifiedRobloxIdentity } = require("../integrations/shared-profile");
 const {
   ANTITEAM_HELPER_REWARD_THRESHOLDS,
@@ -46,6 +46,7 @@ const {
   buildRobloxUsernameModal,
   buildStartPanelPayload,
   buildStartGuidePayload,
+  buildSupportProgressPayload,
   buildThreadName,
   buildThreadPanelPayload,
   buildTicketPublicPayload,
@@ -53,6 +54,10 @@ const {
   formatRoleMention,
   ticketButtonId,
 } = require("./view");
+const {
+  getSupportProgressModel,
+  renderSupportProgressCard,
+} = require("./support-progress");
 
 function noop() {}
 
@@ -1035,6 +1040,33 @@ function createAntiteamOperator(options = {}) {
 
     if (id === ANTITEAM_CUSTOM_IDS.open) {
       return await handleStartPanelOpenInteraction(interaction);
+    }
+
+    if (id === ANTITEAM_CUSTOM_IDS.progress) {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      try {
+        const helperStats = getState().stats?.helpers?.[interaction.user.id] || {};
+        const points = Number(helperStats.confirmedArrived) || 0;
+        const model = getSupportProgressModel(points);
+        const renderCard = typeof options.renderSupportProgressCard === "function"
+          ? options.renderSupportProgressCard
+          : renderSupportProgressCard;
+        const image = await renderCard({
+          model,
+          points,
+          stats: helperStats,
+          displayName: getUserTag(interaction.user),
+        });
+        const attachmentName = "antiteam-support-progress.png";
+        await interaction.editReply({
+          ...buildSupportProgressPayload(model, { attachmentName }),
+          files: [new AttachmentBuilder(image, { name: attachmentName })],
+        });
+      } catch (error) {
+        logError("Antiteam support progress render failed:", error?.message || error);
+        await interaction.editReply({ content: "Не удалось собрать PNG прогресса. Попробуй ещё раз чуть позже.", components: [] });
+      }
+      return true;
     }
 
     if (id === ANTITEAM_CUSTOM_IDS.guide) {
