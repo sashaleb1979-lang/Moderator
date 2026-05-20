@@ -760,6 +760,15 @@ test("runRobloxPlaytimeSyncJob clears stale persisted session markers after rest
     sanitizedBindingCount: 0,
   });
   assert.equal(db.profiles.user_a.domains.roblox.playtime.currentSessionStartedAt, null);
+  assert.deepEqual(db.profiles.user_a.domains.roblox.playtime.sessionHistory, [
+    {
+      startedAt: "2026-05-09T12:00:00.000Z",
+      endedAt: "2026-05-09T12:02:00.000Z",
+      durationMinutes: 2,
+      gameId: null,
+      source: "roblox.playtime",
+    },
+  ]);
   assert.equal(runtimeState.dirtyDiscordUserIds.has("user_a"), true);
 });
 

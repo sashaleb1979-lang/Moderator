@@ -377,6 +377,97 @@ test("syncSharedProfiles mirrors news voice summary into profile domains and sum
   assert.equal(db.profiles["200"].domains.voice.summary.lifetimeSessionCount, 0);
 });
 
+test("syncSharedProfiles derives voice contacts and persisted social graph ties", () => {
+  const db = {
+    profiles: {
+      "100": {
+        userId: "100",
+        displayName: "Yuji",
+        domains: {
+          roblox: {
+            userId: "1000",
+            username: "YujiRb",
+            verificationStatus: "verified",
+            serverFriends: { userIds: ["2000", "3000"], computedAt: "2026-05-10T12:00:00.000Z" },
+            coPlay: {
+              computedAt: "2026-05-10T12:00:00.000Z",
+              peers: [
+                { peerUserId: "200", minutesTogether: 90, sessionsTogether: 2, sharedJjsSessionCount: 2, lastSeenTogetherAt: "2026-05-10T11:50:00.000Z", isRobloxFriend: true },
+              ],
+            },
+          },
+        },
+      },
+      "200": {
+        userId: "200",
+        displayName: "Megumi",
+        domains: {
+          roblox: {
+            userId: "2000",
+            username: "MegumiRb",
+            verificationStatus: "verified",
+            serverFriends: { userIds: ["1000", "3000"], computedAt: "2026-05-10T12:00:00.000Z" },
+          },
+        },
+      },
+      "300": {
+        userId: "300",
+        displayName: "Nobara",
+        domains: {
+          roblox: {
+            userId: "3000",
+            username: "NobaraRb",
+            verificationStatus: "verified",
+          },
+        },
+      },
+    },
+    sot: {
+      news: {
+        voice: {
+          finalizedSessions: [
+            {
+              userId: "100",
+              displayName: "Yuji",
+              joinedAt: "2026-05-10T10:00:00.000Z",
+              endedAt: "2026-05-10T11:00:00.000Z",
+              durationSeconds: 3600,
+              enteredChannelIds: ["voice-main"],
+              finalChannelId: "voice-main",
+            },
+            {
+              userId: "200",
+              displayName: "Megumi",
+              joinedAt: "2026-05-10T10:30:00.000Z",
+              endedAt: "2026-05-10T11:30:00.000Z",
+              durationSeconds: 3600,
+              enteredChannelIds: ["voice-main"],
+              finalChannelId: "voice-main",
+            },
+          ],
+        },
+        runtime: {
+          lastVoiceCaptureAt: "2026-05-10T12:00:00.000Z",
+        },
+      },
+    },
+  };
+
+  syncSharedProfiles(db);
+
+  assert.equal(db.profiles["100"].domains.voice.contacts.length, 1);
+  assert.equal(db.profiles["100"].domains.voice.contacts[0].peerUserId, "200");
+  assert.equal(db.profiles["100"].domains.voice.contacts[0].voiceSecondsTogether, 1800);
+  assert.equal(db.profiles["100"].summary.voice.contacts[0].peerDisplayName, "Megumi");
+
+  const tie = db.profiles["100"].domains.social.graph.ties.find((entry) => entry.peerUserId === "200");
+  assert.ok(tie);
+  assert.equal(tie.strength, "strong");
+  assert.ok(tie.labels.includes("Roblox-friend"));
+  assert.ok(tie.labels.includes("voice-contact"));
+  assert.deepEqual(tie.mutualFriendUserIds, ["300"]);
+});
+
 test("syncSharedProfiles builds social suggestions cache only from frequent non-friend co-play peers", () => {
   const db = {
     profiles: {
@@ -460,6 +551,53 @@ test("syncSharedProfiles builds social suggestions cache only from frequent non-
   assert.equal(db.profiles.main.summary.social.suggestionCount, 2);
   assert.deepEqual(db.profiles.main.summary.social.suggestions.map((entry) => entry.peerUserId), ["peer-1", "peer-4"]);
   assert.equal(db.profiles["peer-1"].domains.social.suggestions.length, 0);
+});
+
+test("syncSharedProfiles mirrors antiteam helper stats into support domain and summary", () => {
+  const db = {
+    profiles: {
+      helper: {
+        userId: "helper",
+        username: "todo",
+      },
+      quiet: {
+        userId: "quiet",
+        username: "quiet",
+      },
+    },
+    sot: {
+      antiteam: {
+        stats: {
+          helpers: {
+            helper: {
+              responded: 4,
+              linkGranted: 2,
+              confirmedArrived: 3,
+              lastTicketId: "at_20260520_aaaa",
+              lastHelpedAt: "2026-05-20T10:00:00.000Z",
+            },
+          },
+        },
+      },
+    },
+  };
+
+  const result = syncSharedProfiles(db);
+
+  assert.equal(result.mutated, true);
+  assert.deepEqual(db.profiles.helper.domains.support.antiteam, {
+    sourceAvailable: true,
+    responded: 4,
+    linkGranted: 2,
+    confirmedArrived: 3,
+    lastTicketId: "at_20260520_aaaa",
+    lastHelpedAt: "2026-05-20T10:00:00.000Z",
+    source: "sot.antiteam.stats.helpers",
+  });
+  assert.equal(db.profiles.helper.summary.support.antiteam.confirmedArrived, 3);
+  assert.equal(db.profiles.quiet.domains.support.antiteam.sourceAvailable, true);
+  assert.equal(db.profiles.quiet.domains.support.antiteam.confirmedArrived, 0);
+  assert.equal(db.profiles.quiet.summary.support.antiteam.responded, 0);
 });
 
 test("clearAllRobloxRefreshDiagnostics clears persisted Roblox refresh errors without dropping account state", () => {
@@ -1207,6 +1345,36 @@ test("normalizeSeasonArchiveDomainState dedupes by day and keeps the latest vali
         approvedKills: 9999,
       },
     ],
+    weeklyRollups: [
+      {
+        weekKey: "2026-W21",
+        startDayKey: "2026-05-18",
+        endDayKey: "2026-05-24",
+        capturedAt: "2026-05-24T12:00:00.000Z",
+        coverage: {
+          expectedDays: 7,
+          coveredDays: 6,
+          missingDays: 1,
+          coveragePercent: 85.7,
+          completePercent: 85.7,
+          fragmentedPercent: 14.3,
+        },
+        totals: {
+          jjsMinutes: 900,
+          messages: 140,
+          sessions: 12,
+          voiceSeconds: 7200,
+          antiteamPointsDelta: 2,
+          approvedKillsDelta: 300,
+        },
+        composite: {
+          score: 77,
+          grade: "A-",
+          confidenceState: "partial",
+          influenceDebuffPercent: 15,
+        },
+      },
+    ],
   });
 
   assert.equal(normalized.snapshots.length, 2);
@@ -1216,6 +1384,11 @@ test("normalizeSeasonArchiveDomainState dedupes by day and keeps the latest vali
   assert.equal(normalized.snapshots[1].dayKey, "2026-05-19");
   assert.equal(normalized.snapshots[1].approvedKills, 4320);
   assert.deepEqual(normalized.snapshots[1].socialSuggestionPeerUserIds, ["peer-4", "peer-5"]);
+  assert.equal(normalized.weeklyRollups.length, 1);
+  assert.equal(normalized.weeklyRollups[0].weekKey, "2026-W21");
+  assert.equal(normalized.weeklyRollups[0].coverage.coveredDays, 6);
+  assert.equal(normalized.weeklyRollups[0].totals.antiteamPointsDelta, 2);
+  assert.equal(normalized.weeklyRollups[0].composite.grade, "A-");
 });
 
 test("resolveUsableVerifiedRobloxIdentity rejects invalid Roblox user ids even for verified legacy records", () => {

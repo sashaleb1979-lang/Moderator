@@ -126,6 +126,7 @@ function buildClientReadyPeriodicJobs(options = {}) {
     flushActivityRuntime,
     runDailyActivityRoleSync,
     runProfileSeasonArchiveSnapshot,
+    runProfilePopulationSnapshot,
     flushRobloxRuntime,
     syncRobloxPlaytime,
     getResolvedIntegrationSourcePath = null,
@@ -135,6 +136,7 @@ function buildClientReadyPeriodicJobs(options = {}) {
     activityFlushIntervalMs = 0,
     activityRoleSyncHours = 0,
     profileSeasonArchiveHours = 0,
+    profilePopulationSnapshotHours = 0,
     now = null,
     roblox = {},
     verification = {},
@@ -156,6 +158,9 @@ function buildClientReadyPeriodicJobs(options = {}) {
   }
   if (runProfileSeasonArchiveSnapshot != null) {
     assertFunction(runProfileSeasonArchiveSnapshot, "runProfileSeasonArchiveSnapshot");
+  }
+  if (runProfilePopulationSnapshot != null) {
+    assertFunction(runProfilePopulationSnapshot, "runProfilePopulationSnapshot");
   }
   if (syncRobloxPlaytime != null) {
     assertFunction(syncRobloxPlaytime, "syncRobloxPlaytime");
@@ -217,6 +222,15 @@ function buildClientReadyPeriodicJobs(options = {}) {
       intervalMs: Math.max(1, Number(profileSeasonArchiveHours) || 24) * 60 * 60 * 1000,
       initialDelayMs: 0,
       errorLabel: "Profile season archive snapshot failed",
+    });
+  }
+
+  if (typeof runProfilePopulationSnapshot === "function") {
+    periodicJobs.push({
+      run: runProfilePopulationSnapshot,
+      intervalMs: Math.max(1, Number(profilePopulationSnapshotHours) || 24) * 60 * 60 * 1000,
+      initialDelayMs: 0,
+      errorLabel: "Profile population snapshot failed",
     });
   }
 

@@ -45,6 +45,7 @@ const ROBLOX_RUNTIME_DIRTY_REASONS = new Set([
   "playtime_updated",
   "coplay_updated",
 ]);
+const ROBLOX_SESSION_HISTORY_LIMIT = 120;
 
 function normalizeRuntimeDiscordUserId(value = "") {
   return String(value || "").trim().slice(0, 80);
@@ -306,6 +307,36 @@ function appendHourlyMinutes(hourlyBucketsMsk = {}, nowIso, minutes, limit = 40 
       .sort((left, right) => left[0].localeCompare(right[0]))
       .slice(-Math.max(1, limit))
   );
+}
+
+function appendRobloxSessionHistory(sessionHistory = [], session = {}, limit = ROBLOX_SESSION_HISTORY_LIMIT) {
+  const startedAt = String(session?.startedAt || "").trim();
+  const endedAt = String(session?.endedAt || "").trim();
+  const durationMinutes = normalizePositiveInteger(session?.durationMinutes, 0);
+  if (!startedAt || !endedAt || durationMinutes <= 0) {
+    return Array.isArray(sessionHistory) ? sessionHistory.slice() : [];
+  }
+
+  const next = [
+    ...(Array.isArray(sessionHistory) ? sessionHistory : []),
+    {
+      startedAt,
+      endedAt,
+      durationMinutes,
+      gameId: String(session?.gameId || "").trim() || null,
+      source: "roblox.playtime",
+    },
+  ];
+  const seen = new Set();
+  return next
+    .filter((entry) => {
+      const key = `${entry.startedAt}:${entry.endedAt}:${entry.gameId || ""}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .sort((left, right) => String(left.endedAt || "").localeCompare(String(right.endedAt || "")))
+    .slice(-Math.max(1, normalizePositiveInteger(limit, ROBLOX_SESSION_HISTORY_LIMIT)));
 }
 
 function sumRecentDailyMinutes(dailyBuckets = {}, nowIso, days) {
@@ -780,6 +811,17 @@ async function runRobloxPlaytimeSyncJob(options = {}) {
 
     if (activeSession || hasPersistedSessionMarker) {
       delete runtimeState.activeSessionsByDiscordUserId[candidate.discordUserId];
+      const sessionStartedAt = activeSession?.startedAt || playtime.currentSessionStartedAt;
+      const sessionEndedAt = activeSession?.lastSeenAt || nowIso;
+      const durationMinutes = calculateTrackedMinutes(sessionStartedAt, sessionEndedAt);
+      if (durationMinutes > 0) {
+        playtime.sessionHistory = appendRobloxSessionHistory(playtime.sessionHistory, {
+          startedAt: sessionStartedAt,
+          endedAt: sessionEndedAt,
+          durationMinutes,
+          gameId: activeSession?.gameId,
+        });
+      }
       playtime.currentSessionStartedAt = null;
       recalculatePlaytimeWindows(playtime, nowIso);
       touchedDiscordUserIds.add(candidate.discordUserId);

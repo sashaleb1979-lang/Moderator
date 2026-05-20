@@ -220,6 +220,22 @@ test("buildClientReadyPeriodicJobs adds a daily profile season archive snapshot 
   });
 });
 
+test("buildClientReadyPeriodicJobs adds a daily profile population snapshot job by default", () => {
+  const periodicJobs = buildClientReadyPeriodicJobs({
+    runAutoResendTick() {},
+    async refreshLegacyTierlistSummaryMessage() {},
+    runProfilePopulationSnapshot() {},
+  });
+
+  const populationJob = periodicJobs.find((job) => job.errorLabel === "Profile population snapshot failed");
+  assert.deepEqual(populationJob, {
+    run: populationJob.run,
+    intervalMs: 86400000,
+    initialDelayMs: 0,
+    errorLabel: "Profile population snapshot failed",
+  });
+});
+
 test("buildClientReadyPeriodicJobs preserves daily activity sync cadence across restart using the last successful run time", () => {
   const periodicJobs = buildClientReadyPeriodicJobs({
     runAutoResendTick() {},

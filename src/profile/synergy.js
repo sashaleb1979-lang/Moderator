@@ -10,6 +10,14 @@ const KILL_TIER_THRESHOLDS = Object.freeze([
 const KILL_MILESTONES = Object.freeze([20000, 30000]);
 const MIN_POPULATION_BASELINE = 5;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
+const VIEWER_TIERLIST_AXES = Object.freeze([
+  ["form", "Форма"],
+  ["chat", "Чат"],
+  ["kills", "Килы"],
+  ["stability", "Стабильность"],
+  ["growth", "Развитие"],
+  ["social", "Соц"],
+]);
 
 function cleanString(value, limit = 2000) {
   return String(value || "").trim().slice(0, Math.max(0, Number(limit) || 0));
@@ -139,11 +147,68 @@ function buildPercentileScore(score = null, populationScores = []) {
   return clampScore(((averageRank - 1) / (samples.length - 1)) * 100);
 }
 
-function buildPopulationCalibratedAxisState(rawScore = null, populationScores = []) {
+function buildAxisPlace(rawScore = null, populationScores = [], options = {}) {
+  const normalizedRawScore = normalizeFiniteNumber(rawScore);
+  const direction = cleanString(options.direction || "desc", 10) === "asc" ? "asc" : "desc";
+  const samples = (Array.isArray(populationScores) ? populationScores : [])
+    .map((entry) => normalizeFiniteNumber(entry))
+    .filter((entry) => Number.isFinite(entry));
+
+  if (!Number.isFinite(normalizedRawScore) || samples.length < MIN_POPULATION_BASELINE) {
+    return {
+      rank: null,
+      total: samples.length,
+      tieCount: 0,
+      direction,
+      basis: samples.length >= MIN_POPULATION_BASELINE ? "population" : "insufficient_population",
+    };
+  }
+
+  let betterCount = 0;
+  let equalCount = 0;
+  for (const sample of samples) {
+    if (sample === normalizedRawScore) {
+      equalCount += 1;
+      continue;
+    }
+    if (direction === "desc" ? sample > normalizedRawScore : sample < normalizedRawScore) {
+      betterCount += 1;
+    }
+  }
+
+  return {
+    rank: betterCount + 1,
+    total: samples.length,
+    tieCount: equalCount,
+    direction,
+    basis: "population",
+  };
+}
+
+function normalizeInfluenceDebuffPercent(value, fallback = 0) {
+  const amount = normalizeFiniteNumber(value, fallback);
+  return clampScore(amount, 0, 100);
+}
+
+function applyAxisTrustState(axisState = {}, trustOptions = {}) {
+  const trustDebuff = normalizeInfluenceDebuffPercent(trustOptions.influenceDebuffPercent, 0);
+  const baseDebuff = normalizeInfluenceDebuffPercent(axisState.influenceDebuffPercent, 0);
+  const freshnessState = cleanString(trustOptions.freshnessState, 40) || axisState.freshnessState || "fresh";
+
+  return {
+    ...axisState,
+    freshnessState,
+    influenceDebuffPercent: Math.max(baseDebuff, trustDebuff),
+    trustSource: cleanString(trustOptions.trustSource, 80) || axisState.trustSource || null,
+  };
+}
+
+function buildPopulationCalibratedAxisState(rawScore = null, populationScores = [], options = {}) {
   const normalizedRawScore = normalizeFiniteNumber(rawScore);
   const samples = (Array.isArray(populationScores) ? populationScores : [])
     .map((entry) => normalizeFiniteNumber(entry))
     .filter((entry) => Number.isFinite(entry));
+  const place = buildAxisPlace(normalizedRawScore, samples);
 
   if (!Number.isFinite(normalizedRawScore)) {
     return buildAxisState(null, {
@@ -152,31 +217,43 @@ function buildPopulationCalibratedAxisState(rawScore = null, populationScores = 
       source: "unavailable",
       populationSize: samples.length,
       percentileScore: null,
+      place,
+      confidenceState: "unavailable",
+      freshnessState: "unavailable",
+      influenceDebuffPercent: 100,
     });
   }
 
   const rawState = buildAxisState(normalizedRawScore);
   if (samples.length < MIN_POPULATION_BASELINE) {
-    return {
+    return applyAxisTrustState({
       ...rawState,
       rawScore: rawState.score,
       rawGrade: rawState.grade,
       source: "local_fallback",
       populationSize: samples.length,
       percentileScore: null,
-    };
+      place,
+      confidenceState: "partial",
+      freshnessState: "partial",
+      influenceDebuffPercent: 15,
+    }, options);
   }
 
   const percentileScore = buildPercentileScore(normalizedRawScore, samples);
   const calibratedState = buildAxisState(percentileScore);
-  return {
+  return applyAxisTrustState({
     ...calibratedState,
     rawScore: rawState.score,
     rawGrade: rawState.grade,
     source: "population",
     populationSize: samples.length,
     percentileScore: calibratedState.score,
-  };
+    place,
+    confidenceState: "reliable",
+    freshnessState: "fresh",
+    influenceDebuffPercent: 0,
+  }, options);
 }
 
 function resolveTimestamp(value) {
@@ -241,6 +318,13 @@ function getSeasonArchiveSnapshots(profile = {}) {
     .sort((left, right) => cleanString(left?.dayKey, 20).localeCompare(cleanString(right?.dayKey, 20)));
 }
 
+function getSeasonArchiveWeeklyRollups(profile = {}) {
+  return (Array.isArray(profile?.domains?.seasonArchive?.weeklyRollups) ? profile.domains.seasonArchive.weeklyRollups : [])
+    .filter((entry) => cleanString(entry?.weekKey, 20))
+    .slice()
+    .sort((left, right) => cleanString(left?.weekKey, 20).localeCompare(cleanString(right?.weekKey, 20)));
+}
+
 function getLatestProofWindow(profile = {}) {
   const proofWindows = getProofWindows(profile);
   return proofWindows.length ? proofWindows.at(-1) : null;
@@ -256,6 +340,92 @@ function computeElapsedHours(fromValue, now) {
   const nowTimestamp = resolveNowTimestamp(now);
   if (!Number.isFinite(fromTimestamp) || !Number.isFinite(nowTimestamp) || nowTimestamp < fromTimestamp) return null;
   return (nowTimestamp - fromTimestamp) / (60 * 60 * 1000);
+}
+
+function computeProofGapInfluenceDebuff({ proofAgeHours = null, jjsGapHours = null, hasReliableJjsGap = false } = {}) {
+  const normalizedProofAgeHours = normalizeFiniteNumber(proofAgeHours);
+  const normalizedJjsGapHours = normalizeFiniteNumber(jjsGapHours);
+  const ageDebuff = Number.isFinite(normalizedProofAgeHours)
+    ? (normalizedProofAgeHours <= 72
+      ? 0
+      : ((Math.min(normalizedProofAgeHours, 30 * 24) - 72) / ((30 * 24) - 72)) * 60)
+    : 90;
+  let activityDebuff = 0;
+
+  if (hasReliableJjsGap && Number.isFinite(normalizedJjsGapHours)) {
+    activityDebuff = normalizedJjsGapHours <= 10
+      ? 0
+      : ((Math.min(normalizedJjsGapHours, 60) - 10) / 50) * 90;
+  } else if (!hasReliableJjsGap) {
+    activityDebuff = Number.isFinite(normalizedProofAgeHours) && normalizedProofAgeHours <= 7 * 24 ? 15 : 45;
+  }
+
+  return Math.round(clampScore(Math.max(ageDebuff, activityDebuff), 0, 90));
+}
+
+function resolveProofGapFreshnessState(debuffPercent = 0) {
+  const debuff = normalizeInfluenceDebuffPercent(debuffPercent, 0);
+  if (debuff <= 0) return "fresh";
+  if (debuff <= 30) return "partial";
+  if (debuff < 90) return "stale";
+  return "outdated";
+}
+
+function buildProofGapState({
+  latestProofWindow = null,
+  approvedKills = null,
+  hoursSinceLastApprovedKillsUpdate = null,
+  jjsHoursSinceLastApprovedKillsUpdate = null,
+  hasReliableJjsSinceLastApproved = false,
+} = {}) {
+  const normalizedApprovedKills = normalizeNullableFiniteNumber(approvedKills);
+  if (!latestProofWindow) {
+    return {
+      hasProof: false,
+      latestApprovedKills: null,
+      currentApprovedKills: normalizedApprovedKills,
+      hoursSinceLastApprovedKillsUpdate: null,
+      jjsHoursSinceLastApprovedKillsUpdate: null,
+      hasReliableJjsSinceLastApproved: false,
+      freshnessState: "unavailable",
+      confidenceState: "unavailable",
+      influenceDebuffPercent: 90,
+      source: "proof_windows",
+    };
+  }
+
+  const proofAgeHours = normalizeFiniteNumber(hoursSinceLastApprovedKillsUpdate);
+  const jjsGapHours = normalizeFiniteNumber(jjsHoursSinceLastApprovedKillsUpdate);
+  const influenceDebuffPercent = computeProofGapInfluenceDebuff({
+    proofAgeHours,
+    jjsGapHours,
+    hasReliableJjsGap: hasReliableJjsSinceLastApproved,
+  });
+  const freshnessState = resolveProofGapFreshnessState(influenceDebuffPercent);
+
+  return {
+    hasProof: true,
+    latestApprovedKills: normalizeNullableFiniteNumber(latestProofWindow?.approvedKills),
+    currentApprovedKills: normalizedApprovedKills,
+    reviewedAt: cleanString(latestProofWindow?.reviewedAt, 80) || null,
+    hoursSinceLastApprovedKillsUpdate: proofAgeHours,
+    jjsHoursSinceLastApprovedKillsUpdate: jjsGapHours,
+    jjsMinutesSinceLastApprovedKillsUpdate: Number.isFinite(jjsGapHours) ? jjsGapHours * 60 : null,
+    hasReliableJjsSinceLastApproved,
+    freshnessState,
+    confidenceState: hasReliableJjsSinceLastApproved ? "measured" : "heuristic",
+    influenceDebuffPercent,
+    source: hasReliableJjsSinceLastApproved ? "proof_windows+roblox.totalJjsMinutes" : "proof_windows",
+  };
+}
+
+function buildProofBackedAxisTrustOptions(proofGapState = null) {
+  if (!proofGapState || typeof proofGapState !== "object") return {};
+  return {
+    freshnessState: proofGapState.freshnessState,
+    influenceDebuffPercent: proofGapState.influenceDebuffPercent,
+    trustSource: "proof_gap",
+  };
 }
 
 function hasUsableRobloxSummary(robloxSummary = {}) {
@@ -880,13 +1050,14 @@ function buildViewerTierlistState({
     approvedEntries,
     now,
   });
+  const proofBackedTrust = buildProofBackedAxisTrustOptions(progressState?.proofGap);
 
   return {
     form: buildPopulationCalibratedAxisState(rawScores.form, populationSamples.form),
     chat: buildPopulationCalibratedAxisState(rawScores.chat, populationSamples.chat),
-    kills: buildPopulationCalibratedAxisState(rawScores.kills, populationSamples.kills),
-    stability: buildPopulationCalibratedAxisState(rawScores.stability, populationSamples.stability),
-    growth: buildPopulationCalibratedAxisState(rawScores.growth, populationSamples.growth),
+    kills: buildPopulationCalibratedAxisState(rawScores.kills, populationSamples.kills, proofBackedTrust),
+    stability: buildPopulationCalibratedAxisState(rawScores.stability, populationSamples.stability, proofBackedTrust),
+    growth: buildPopulationCalibratedAxisState(rawScores.growth, populationSamples.growth, proofBackedTrust),
     social: buildPopulationCalibratedAxisState(rawScores.social, populationSamples.social),
   };
 }
@@ -1316,6 +1487,502 @@ function buildFriendsAlreadyHereBlock({ robloxSummary = {}, populationProfiles =
   };
 }
 
+function getTopCoPlayPeers(robloxSummary = {}) {
+  return (Array.isArray(robloxSummary?.topCoPlayPeers) ? robloxSummary.topCoPlayPeers : [])
+    .filter((entry) => cleanString(entry?.peerUserId, 80));
+}
+
+function getSharedJjsSessionCount(peer = {}) {
+  return Math.max(
+    normalizeFiniteNumber(peer?.sharedJjsSessionCount, 0),
+    normalizeFiniteNumber(peer?.sessionsTogether, 0)
+  );
+}
+
+function hasCoPlaySignal(peer = {}) {
+  return (Number.isFinite(Number(peer?.minutesTogether)) && Number(peer.minutesTogether) > 0)
+    || getSharedJjsSessionCount(peer) > 0
+    || (Number.isFinite(Number(peer?.daysTogether)) && Number(peer.daysTogether) > 0);
+}
+
+function buildCoPlayPeerMap(robloxSummary = {}) {
+  const map = new Map();
+  for (const peer of getTopCoPlayPeers(robloxSummary)) {
+    const peerUserId = cleanString(peer?.peerUserId, 80);
+    if (!peerUserId || map.has(peerUserId)) continue;
+    map.set(peerUserId, peer);
+  }
+  return map;
+}
+
+function buildSocialFreshnessConfidence(timestamps = [], now) {
+  const latestTimestamp = (Array.isArray(timestamps) ? timestamps : [])
+    .map((entry) => cleanString(entry, 80))
+    .filter(Boolean)
+    .sort()
+    .at(-1);
+  if (!latestTimestamp) return "heuristic";
+
+  const hoursSinceCaptured = computeElapsedHours(latestTimestamp, now);
+  if (!Number.isFinite(hoursSinceCaptured)) return "heuristic";
+  if (hoursSinceCaptured <= 24) return "reliable";
+  if (hoursSinceCaptured <= 168) return "partial";
+  return "outdated";
+}
+
+function buildSocialTieFromOverlap(overlap = {}, peer = null, labels = []) {
+  const userId = cleanString(overlap?.userId, 80);
+  if (!userId) return null;
+
+  const minutesTogether = normalizeFiniteNumber(peer?.minutesTogether);
+  const sessionsTogether = getSharedJjsSessionCount(peer || {});
+  return {
+    userId,
+    displayName: cleanString(overlap?.displayName, 120),
+    robloxUsername: cleanString(overlap?.robloxUsername, 120),
+    labels: [...labels],
+    minutesTogether,
+    sessionsTogether,
+    jjsMinutes7d: normalizeFiniteNumber(overlap?.jjsMinutes7d),
+    lastSeenTogetherAt: cleanString(peer?.lastSeenTogetherAt, 80),
+  };
+}
+
+function buildSocialTieFromPeer(peer = {}, labels = []) {
+  const userId = cleanString(peer?.peerUserId, 80);
+  if (!userId) return null;
+
+  return {
+    userId,
+    displayName: cleanString(peer?.peerDisplayName, 120),
+    robloxUsername: cleanString(peer?.peerRobloxUsername, 120),
+    labels: [...labels],
+    minutesTogether: normalizeFiniteNumber(peer?.minutesTogether),
+    sessionsTogether: getSharedJjsSessionCount(peer),
+    jjsMinutes7d: null,
+    lastSeenTogetherAt: cleanString(peer?.lastSeenTogetherAt, 80),
+  };
+}
+
+function buildSocialTieFromSuggestion(entry = {}, labels = []) {
+  const userId = cleanString(entry?.peerUserId, 80);
+  if (!userId) return null;
+
+  return {
+    userId,
+    displayName: cleanString(entry?.peerDisplayName, 120),
+    robloxUsername: cleanString(entry?.peerRobloxUsername, 120),
+    labels: [...labels],
+    minutesTogether: normalizeFiniteNumber(entry?.minutesTogether),
+    sessionsTogether: normalizeFiniteNumber(entry?.sharedJjsSessionCount, normalizeFiniteNumber(entry?.sessionsTogether)),
+    jjsMinutes7d: null,
+    lastSeenTogetherAt: cleanString(entry?.lastSeenTogetherAt, 80),
+  };
+}
+
+function getSocialGraphTies(profile = null) {
+  const domainTies = Array.isArray(profile?.domains?.social?.graph?.ties) ? profile.domains.social.graph.ties : [];
+  const summaryTies = Array.isArray(profile?.summary?.social?.graph?.ties) ? profile.summary.social.graph.ties : [];
+  return (domainTies.length ? domainTies : summaryTies)
+    .map((entry) => {
+      const userId = cleanString(entry?.peerUserId ?? entry?.userId, 80);
+      if (!userId) return null;
+      return {
+        userId,
+        displayName: cleanString(entry?.peerDisplayName ?? entry?.displayName, 120),
+        robloxUsername: cleanString(entry?.peerRobloxUsername, 120),
+        labels: Array.isArray(entry?.labels) ? entry.labels.map((label) => cleanString(label, 80)).filter(Boolean) : [],
+        strength: cleanString(entry?.strength, 40) || "inferred",
+        mutualFriendUserIds: Array.isArray(entry?.mutualFriendUserIds)
+          ? entry.mutualFriendUserIds.map((item) => cleanString(item, 80)).filter(Boolean)
+          : [],
+        minutesTogether: normalizeFiniteNumber(entry?.minutesTogether),
+        sessionsTogether: normalizeFiniteNumber(entry?.sessionsTogether),
+        voiceSecondsTogether: normalizeFiniteNumber(entry?.voiceSecondsTogether),
+        voiceSessionsTogether: normalizeFiniteNumber(entry?.voiceSessionsTogether),
+        lastSeenTogetherAt: cleanString(entry?.lastSeenTogetherAt, 80),
+        sourceComputedAt: cleanString(entry?.sourceComputedAt, 80),
+      };
+    })
+    .filter(Boolean);
+}
+
+function buildSocialTieFromGraph(entry = {}, labels = []) {
+  const userId = cleanString(entry?.userId ?? entry?.peerUserId, 80);
+  if (!userId) return null;
+  return {
+    userId,
+    displayName: cleanString(entry?.displayName ?? entry?.peerDisplayName, 120),
+    robloxUsername: cleanString(entry?.robloxUsername ?? entry?.peerRobloxUsername, 120),
+    labels: [...(Array.isArray(entry?.labels) ? entry.labels : []), ...labels],
+    minutesTogether: normalizeFiniteNumber(entry?.minutesTogether),
+    sessionsTogether: normalizeFiniteNumber(entry?.sessionsTogether),
+    jjsMinutes7d: null,
+    voiceSecondsTogether: normalizeFiniteNumber(entry?.voiceSecondsTogether),
+    voiceSessionsTogether: normalizeFiniteNumber(entry?.voiceSessionsTogether),
+    mutualFriendUserIds: Array.isArray(entry?.mutualFriendUserIds) ? entry.mutualFriendUserIds : [],
+    lastSeenTogetherAt: cleanString(entry?.lastSeenTogetherAt, 80),
+  };
+}
+
+function enrichSocialTieWithGraph(tie = null, graphTie = null) {
+  if (!tie || !graphTie) return tie;
+  return {
+    ...tie,
+    displayName: cleanString(tie.displayName, 120) || cleanString(graphTie.displayName, 120),
+    robloxUsername: cleanString(tie.robloxUsername, 120) || cleanString(graphTie.robloxUsername, 120),
+    labels: [...new Set([
+      ...(Array.isArray(tie.labels) ? tie.labels : []),
+      ...(Array.isArray(graphTie.labels) ? graphTie.labels : []),
+    ].map((entry) => cleanString(entry, 80)).filter(Boolean))],
+    minutesTogether: Number.isFinite(Number(tie.minutesTogether)) ? tie.minutesTogether : graphTie.minutesTogether,
+    sessionsTogether: Number.isFinite(Number(tie.sessionsTogether)) ? tie.sessionsTogether : graphTie.sessionsTogether,
+    voiceSecondsTogether: normalizeFiniteNumber(tie.voiceSecondsTogether, graphTie.voiceSecondsTogether),
+    voiceSessionsTogether: normalizeFiniteNumber(tie.voiceSessionsTogether, graphTie.voiceSessionsTogether),
+    mutualFriendUserIds: [...new Set([
+      ...(Array.isArray(tie.mutualFriendUserIds) ? tie.mutualFriendUserIds : []),
+      ...(Array.isArray(graphTie.mutualFriendUserIds) ? graphTie.mutualFriendUserIds : []),
+    ].map((entry) => cleanString(entry, 80)).filter(Boolean))],
+    lastSeenTogetherAt: cleanString(tie.lastSeenTogetherAt, 80) || cleanString(graphTie.lastSeenTogetherAt, 80),
+  };
+}
+
+function pushUniqueSocialTie(target = [], seen = new Set(), tie = null) {
+  if (!tie?.userId || seen.has(tie.userId)) return;
+  seen.add(tie.userId);
+  target.push(tie);
+}
+
+function sortSocialTies(left = {}, right = {}) {
+  const leftScore = (Number(left.minutesTogether) || 0)
+    + (Number(left.sessionsTogether) || 0) * 20
+    + (Number(left.jjsMinutes7d) || 0) * 0.5
+    + (Number(left.voiceSecondsTogether) || 0) / 60
+    + (Array.isArray(left.mutualFriendUserIds) ? left.mutualFriendUserIds.length : 0) * 30;
+  const rightScore = (Number(right.minutesTogether) || 0)
+    + (Number(right.sessionsTogether) || 0) * 20
+    + (Number(right.jjsMinutes7d) || 0) * 0.5
+    + (Number(right.voiceSecondsTogether) || 0) / 60
+    + (Array.isArray(right.mutualFriendUserIds) ? right.mutualFriendUserIds.length : 0) * 30;
+  if (rightScore !== leftScore) return rightScore - leftScore;
+  return cleanString(left.displayName || left.userId, 120).localeCompare(cleanString(right.displayName || right.userId, 120), "ru");
+}
+
+function formatSocialTie(tie = {}) {
+  const parts = [`<@${cleanString(tie?.userId, 80) || "unknown"}>`];
+  const displayName = cleanString(tie?.displayName, 120);
+  const robloxUsername = cleanString(tie?.robloxUsername, 120);
+  if (displayName && displayName !== cleanString(tie?.userId, 80)) {
+    parts.push(displayName);
+  }
+  if (robloxUsername) {
+    parts.push(`Roblox ${robloxUsername}`);
+  }
+  for (const label of Array.isArray(tie?.labels) ? tie.labels : []) {
+    const normalized = cleanString(label, 80);
+    if (normalized) parts.push(normalized);
+  }
+  if (Number.isFinite(Number(tie?.minutesTogether)) && Number(tie.minutesTogether) > 0) {
+    parts.push(`${formatNumber(tie.minutesTogether)} мин вместе`);
+  }
+  if (Number.isFinite(Number(tie?.sessionsTogether)) && Number(tie.sessionsTogether) > 0) {
+    parts.push(`${formatNumber(tie.sessionsTogether)} общ. сесс.`);
+  }
+  if (Number.isFinite(Number(tie?.voiceSecondsTogether)) && Number(tie.voiceSecondsTogether) > 0) {
+    parts.push(`voice ${formatHours(Number(tie.voiceSecondsTogether) / 3600)} h`);
+  }
+  if (Number.isFinite(Number(tie?.voiceSessionsTogether)) && Number(tie.voiceSessionsTogether) > 0) {
+    parts.push(`${formatNumber(tie.voiceSessionsTogether)} voice sess.`);
+  }
+  const mutualCount = Array.isArray(tie?.mutualFriendUserIds) ? tie.mutualFriendUserIds.length : 0;
+  if (mutualCount > 0) {
+    parts.push(`mutual friends ${formatNumber(mutualCount)}`);
+  }
+  if (Number.isFinite(Number(tie?.jjsMinutes7d)) && Number(tie.jjsMinutes7d) > 0) {
+    parts.push(`JJS 7д ${formatNumber(tie.jjsMinutes7d)} мин`);
+  }
+  return parts.join(" • ");
+}
+
+function buildSocialTieListLine(label = "", ties = [], emptyText = "нет явных связей") {
+  const items = (Array.isArray(ties) ? ties : []).slice(0, 3);
+  if (!items.length) return `${label}: ${emptyText}`;
+  return `${label}: ${items.map((entry) => formatSocialTie(entry)).join("; ")}`;
+}
+
+function buildVerifiedCircleBlock({ robloxSummary = {}, populationProfiles = [], now } = {}) {
+  const state = buildFriendOverlapState({ robloxSummary, populationProfiles });
+  if (!Number.isFinite(state.totalServerFriends) || state.totalServerFriends <= 0) {
+    return null;
+  }
+
+  const coPlayByUserId = buildCoPlayPeerMap(robloxSummary);
+  const verifiedCircle = state.overlaps
+    .filter((entry) => entry?.hasVerifiedRoblox === true)
+    .filter((entry) => entry?.playedJjs7d === true || hasCoPlaySignal(coPlayByUserId.get(entry.userId)))
+    .map((entry) => buildSocialTieFromOverlap(entry, coPlayByUserId.get(entry.userId), ["verified Roblox", "Roblox-друг"]))
+    .filter(Boolean)
+    .sort(sortSocialTies);
+
+  const lines = [
+    [
+      `Проверенный круг: verified+friend+JJS ${formatNumber(verifiedCircle.length)}`,
+      `verified friends ${formatNumber(state.verifiedCount)}`,
+      `active 7д ${formatNumber(state.active7dCount)}`,
+      `JJS 7д ${formatNumber(state.jjs7dCount)}`,
+    ].join(" • "),
+  ];
+
+  if (verifiedCircle.length) {
+    lines.push(buildSocialTieListLine("Топ verified ties", verifiedCircle));
+  } else if (state.verifiedCount > 0) {
+    lines.push("Verified-друзья есть, но связка verified+friend+JJS пока не подтверждена.");
+  } else {
+    lines.push("Verified-друзья среди видимых профилей пока не найдены.");
+  }
+
+  const freshnessLine = buildFriendOverlapFreshnessLine(state, now);
+  if (freshnessLine) lines.push(freshnessLine);
+  lines.push(`Trust: ${buildSocialFreshnessConfidence([state.computedAt], now)} • sources verified Roblox + server friends + JJS overlap • no exact party claim.`);
+
+  return {
+    title: "Проверенный круг",
+    lines,
+  };
+}
+
+function getSocialSuggestions(profile = null) {
+  const domainSuggestions = Array.isArray(profile?.domains?.social?.suggestions) ? profile.domains.social.suggestions : [];
+  const summarySuggestions = Array.isArray(profile?.summary?.social?.suggestions) ? profile.summary.social.suggestions : [];
+  return (domainSuggestions.length ? domainSuggestions : summarySuggestions).slice(0, 5);
+}
+
+function buildSocialMapBlock({ profile = null, robloxSummary = {}, populationProfiles = [], now } = {}) {
+  const friendState = buildFriendOverlapState({ robloxSummary, populationProfiles });
+  const coPlayPeers = getTopCoPlayPeers(robloxSummary);
+  const coPlayByUserId = buildCoPlayPeerMap(robloxSummary);
+  const suggestions = getSocialSuggestions(profile);
+  const graphTies = getSocialGraphTies(profile);
+  const graphByUserId = new Map(graphTies.map((entry) => [entry.userId, entry]));
+  if (!friendState.overlaps.length && !coPlayPeers.length && !suggestions.length && !graphTies.length) {
+    return null;
+  }
+
+  const strong = [];
+  const medium = [];
+  const inferred = [];
+  const seenStrong = new Set();
+  const seenMedium = new Set();
+  const seenInferred = new Set();
+
+  for (const overlap of friendState.overlaps) {
+    const peer = coPlayByUserId.get(overlap.userId);
+    if (overlap?.playedJjs7d === true || hasCoPlaySignal(peer)) {
+      const labels = ["Roblox-друг"];
+      if (overlap?.hasVerifiedRoblox === true) labels.unshift("verified Roblox");
+      pushUniqueSocialTie(strong, seenStrong, enrichSocialTieWithGraph(
+        buildSocialTieFromOverlap(overlap, peer, labels),
+        graphByUserId.get(overlap.userId)
+      ));
+      continue;
+    }
+    if (overlap?.isActive7d === true) {
+      const labels = ["Roblox-друг", "active"];
+      if (overlap?.hasVerifiedRoblox === true) labels.unshift("verified Roblox");
+      pushUniqueSocialTie(medium, seenMedium, enrichSocialTieWithGraph(
+        buildSocialTieFromOverlap(overlap, peer, labels),
+        graphByUserId.get(overlap.userId)
+      ));
+    }
+  }
+
+  for (const peer of coPlayPeers) {
+    if (seenStrong.has(cleanString(peer?.peerUserId, 80))) continue;
+    if (peer?.isRobloxFriend === true && hasCoPlaySignal(peer)) {
+      pushUniqueSocialTie(strong, seenStrong, enrichSocialTieWithGraph(
+        buildSocialTieFromPeer(peer, ["Roblox-друг"]),
+        graphByUserId.get(cleanString(peer?.peerUserId, 80))
+      ));
+      continue;
+    }
+    if (peer?.isFrequentNonFriend === true || hasCoPlaySignal(peer)) {
+      pushUniqueSocialTie(medium, seenMedium, enrichSocialTieWithGraph(
+        buildSocialTieFromPeer(peer, [peer?.isFrequentNonFriend === true ? "частый non-friend" : "JJS peer"]),
+        graphByUserId.get(cleanString(peer?.peerUserId, 80))
+      ));
+    }
+  }
+
+  for (const suggestion of suggestions) {
+    const peerUserId = cleanString(suggestion?.peerUserId, 80);
+    if (!peerUserId || seenStrong.has(peerUserId) || seenMedium.has(peerUserId)) continue;
+    pushUniqueSocialTie(inferred, seenInferred, enrichSocialTieWithGraph(
+      buildSocialTieFromSuggestion(suggestion, ["inferred"]),
+      graphByUserId.get(peerUserId)
+    ));
+  }
+
+  for (const graphTie of graphTies) {
+    const peerUserId = cleanString(graphTie?.userId, 80);
+    if (!peerUserId || seenStrong.has(peerUserId) || seenMedium.has(peerUserId) || seenInferred.has(peerUserId)) continue;
+    const tie = buildSocialTieFromGraph(graphTie, ["persisted graph"]);
+    if (graphTie.strength === "strong") {
+      pushUniqueSocialTie(strong, seenStrong, tie);
+    } else if (graphTie.strength === "medium") {
+      pushUniqueSocialTie(medium, seenMedium, tie);
+    } else {
+      pushUniqueSocialTie(inferred, seenInferred, tie);
+    }
+  }
+
+  strong.sort(sortSocialTies);
+  medium.sort(sortSocialTies);
+  inferred.sort(sortSocialTies);
+
+  const socialComputedAtValues = [
+    friendState.computedAt,
+    profile?.domains?.social?.graph?.computedAt,
+    ...suggestions.map((entry) => entry?.sourceComputedAt),
+    ...coPlayPeers.map((entry) => entry?.lastSeenTogetherAt),
+    ...graphTies.map((entry) => entry?.sourceComputedAt || entry?.lastSeenTogetherAt),
+  ];
+  const mutualTieCount = graphTies.filter((entry) => Array.isArray(entry?.mutualFriendUserIds) && entry.mutualFriendUserIds.length > 0).length;
+  const lines = [
+    [
+      `Социальная карта: strong ${formatNumber(strong.length)}`,
+      `medium ${formatNumber(medium.length)}`,
+      `friends here ${formatNumber(friendState.overlaps.length)}`,
+      `inferred ${formatNumber(inferred.length)}`,
+      `mutual ${formatNumber(mutualTieCount)}`,
+    ].join(" • "),
+    buildSocialTieListLine("Strong ties", strong),
+    buildSocialTieListLine("Medium ties", medium),
+    buildSocialTieListLine("Inferred ties", inferred, "нет inferred ties"),
+    `Trust: ${buildSocialFreshnessConfidence(socialComputedAtValues, now)} • sources Roblox friends/co-play/social suggestions + persisted graph • no exact party claim.`,
+  ];
+
+  return {
+    title: "Социальная карта",
+    lines,
+  };
+}
+
+function normalizeVoiceContactEntries(profile = null) {
+  const rawContacts = Array.isArray(profile?.domains?.voice?.contacts)
+    ? profile.domains.voice.contacts
+    : (Array.isArray(profile?.summary?.voice?.contacts) ? profile.summary.voice.contacts : []);
+
+  return rawContacts
+    .map((entry) => {
+      const peerUserId = cleanString(entry?.peerUserId ?? entry?.userId, 80);
+      if (!peerUserId) return null;
+      return {
+        peerUserId,
+        displayName: cleanString(entry?.peerDisplayName ?? entry?.displayName, 120),
+        voiceSecondsTogether: normalizeFiniteNumber(entry?.voiceSecondsTogether ?? entry?.durationSecondsTogether ?? entry?.durationSeconds ?? entry?.secondsTogether, 0),
+        voiceSessionsTogether: normalizeFiniteNumber(entry?.voiceSessionsTogether ?? entry?.sessionCount ?? entry?.sessionsTogether, 0),
+        lastSeenTogetherAt: cleanString(entry?.lastSeenTogetherAt ?? entry?.lastVoiceSeenAt, 80),
+        sourceComputedAt: cleanString(entry?.sourceComputedAt ?? entry?.computedAt, 80),
+      };
+    })
+    .filter(Boolean);
+}
+
+function hasVoiceSummarySignal(voiceSummary = {}, activitySummary = {}) {
+  return voiceSummary?.isInVoiceNow === true
+    || Boolean(cleanString(voiceSummary?.lastVoiceSeenAt, 80))
+    || Boolean(cleanString(voiceSummary?.lastCapturedAt, 80))
+    || (Number.isFinite(Number(voiceSummary?.voiceDurationSeconds30d)) && Number(voiceSummary.voiceDurationSeconds30d) > 0)
+    || (Number.isFinite(Number(voiceSummary?.sessionCount30d)) && Number(voiceSummary.sessionCount30d) > 0)
+    || (Number.isFinite(Number(activitySummary?.effectiveVoiceHours30d)) && Number(activitySummary.effectiveVoiceHours30d) > 0);
+}
+
+function formatVoiceGameOverlapEntry(entry = {}) {
+  const parts = [`<@${cleanString(entry?.peerUserId, 80) || "unknown"}>`];
+  const displayName = cleanString(entry?.displayName, 120);
+  if (displayName && displayName !== cleanString(entry?.peerUserId, 80)) {
+    parts.push(displayName);
+  }
+  if (Number.isFinite(Number(entry?.voiceSecondsTogether)) && Number(entry.voiceSecondsTogether) > 0) {
+    parts.push(`voice ${formatHours(Number(entry.voiceSecondsTogether) / 3600)} ч`);
+  }
+  if (Number.isFinite(Number(entry?.voiceSessionsTogether)) && Number(entry.voiceSessionsTogether) > 0) {
+    parts.push(`${formatNumber(entry.voiceSessionsTogether)} voice сесс.`);
+  }
+  if (Number.isFinite(Number(entry?.minutesTogether)) && Number(entry.minutesTogether) > 0) {
+    parts.push(`JJS ${formatNumber(entry.minutesTogether)} мин`);
+  }
+  if (Number.isFinite(Number(entry?.sessionsTogether)) && Number(entry.sessionsTogether) > 0) {
+    parts.push(`${formatNumber(entry.sessionsTogether)} JJS сесс.`);
+  }
+  return parts.join(" • ");
+}
+
+function buildVoiceGameOverlapBlock({ profile = null, robloxSummary = {}, voiceSummary = {}, activitySummary = {}, now } = {}) {
+  const voiceContacts = normalizeVoiceContactEntries(profile);
+  const coPlayByUserId = buildCoPlayPeerMap(robloxSummary);
+  const coPlayPeers = getTopCoPlayPeers(robloxSummary);
+  const hasVoiceSignal = hasVoiceSummarySignal(voiceSummary, activitySummary);
+  const hasJjsOverlap = coPlayPeers.some((entry) => hasCoPlaySignal(entry));
+
+  if (!voiceContacts.length) {
+    if (!hasVoiceSignal && !hasJjsOverlap) return null;
+    return {
+      title: "Voice + game overlap",
+      lines: [
+        [
+          "Voice + JJS overlap: ждёт voice contact source",
+          `JJS overlap ${hasJjsOverlap ? "есть" : "нет"}`,
+          `voice summary ${hasVoiceSignal ? "есть" : "нет"}`,
+        ].join(" • "),
+        "Trust: unavailable • source gap: profile.domains.voice.contacts[] • person-level voice ties пока не заявляем.",
+      ],
+    };
+  }
+
+  const overlaps = voiceContacts
+    .map((contact) => {
+      const peer = coPlayByUserId.get(contact.peerUserId);
+      if (!peer || !hasCoPlaySignal(peer)) return null;
+      return {
+        ...contact,
+        minutesTogether: normalizeFiniteNumber(peer?.minutesTogether, 0),
+        sessionsTogether: getSharedJjsSessionCount(peer),
+        lastSeenTogetherAt: cleanString(peer?.lastSeenTogetherAt, 80) || contact.lastSeenTogetherAt,
+      };
+    })
+    .filter(Boolean)
+    .sort((left, right) => {
+      const rightScore = (Number(right.voiceSecondsTogether) || 0) + (Number(right.minutesTogether) || 0) * 60;
+      const leftScore = (Number(left.voiceSecondsTogether) || 0) + (Number(left.minutesTogether) || 0) * 60;
+      if (rightScore !== leftScore) return rightScore - leftScore;
+      return cleanString(left.peerUserId, 80).localeCompare(cleanString(right.peerUserId, 80), "ru");
+    });
+
+  const confidence = buildSocialFreshnessConfidence([
+    ...voiceContacts.map((entry) => entry?.sourceComputedAt || entry?.lastSeenTogetherAt),
+    ...coPlayPeers.map((entry) => entry?.lastSeenTogetherAt),
+  ], now);
+  const lines = [
+    [
+      `Voice + JJS overlap: ${formatNumber(overlaps.length)} совпадений`,
+      `voice contacts ${formatNumber(voiceContacts.length)}`,
+      `JJS peers ${formatNumber(coPlayPeers.length)}`,
+    ].join(" • "),
+  ];
+  if (overlaps.length) {
+    lines.push(`Overlap ties: ${overlaps.slice(0, 3).map((entry) => formatVoiceGameOverlapEntry(entry)).join("; ")}`);
+  } else {
+    lines.push("Voice contacts есть, но с JJS co-play peers они пока не пересеклись.");
+  }
+  lines.push(`Trust: ${confidence} • sources profile.domains.voice.contacts[] + Roblox co-play • no exact party claim.`);
+
+  return {
+    title: "Voice + game overlap",
+    lines,
+  };
+}
+
 function buildSocialEvolutionRangeLine(snapshots = []) {
   const items = Array.isArray(snapshots) ? snapshots : [];
   if (!items.length) return null;
@@ -1558,6 +2225,277 @@ function buildVoiceSummaryBlock({ voiceSummary = {}, activitySummary = {}, now }
   };
 }
 
+function buildActivityMixState({ activitySummary = {}, robloxSummary = {}, voiceSummary = {} } = {}) {
+  const messages30d = normalizeNullableFiniteNumber(activitySummary?.messages30d);
+  const jjsMinutes30d = normalizeNullableFiniteNumber(robloxSummary?.jjsMinutes30d);
+  const voiceSeconds30d = normalizeNullableFiniteNumber(
+    voiceSummary?.voiceDurationSeconds30d
+      ?? activitySummary?.voiceDurationSeconds30d
+      ?? (Number.isFinite(Number(activitySummary?.effectiveVoiceHours30d)) ? Number(activitySummary.effectiveVoiceHours30d) * 3600 : null)
+  );
+  const chatScore = Number.isFinite(messages30d) ? Math.min(1.5, Math.max(0, messages30d) / 300) : null;
+  const jjsScore = Number.isFinite(jjsMinutes30d) ? Math.min(1.5, Math.max(0, jjsMinutes30d) / 1200) : null;
+  const voiceScore = Number.isFinite(voiceSeconds30d) ? Math.min(1.5, Math.max(0, voiceSeconds30d) / (20 * 3600)) : null;
+  const availableScores = [chatScore, jjsScore, voiceScore].filter((entry) => Number.isFinite(entry));
+  const totalScore = availableScores.reduce((sum, entry) => sum + entry, 0);
+  if (!availableScores.length || totalScore <= 0) return null;
+
+  const chatShare = Number.isFinite(chatScore) ? (chatScore / totalScore) * 100 : null;
+  const jjsShare = Number.isFinite(jjsScore) ? (jjsScore / totalScore) * 100 : null;
+  const voiceShare = Number.isFinite(voiceScore) ? (voiceScore / totalScore) * 100 : null;
+  const discordShare = (Number(chatShare) || 0) + (Number(voiceShare) || 0);
+  let balanceLabel = "смешанный режим";
+  if (Number.isFinite(jjsShare) && jjsShare >= 55 && jjsShare - discordShare >= 15) {
+    balanceLabel = "больше JJS";
+  } else if (discordShare >= 60 && discordShare - (Number(jjsShare) || 0) >= 15) {
+    balanceLabel = Number(voiceShare) > Number(chatShare) * 1.15 ? "больше Discord voice" : "больше Discord chat";
+  } else if (Number.isFinite(jjsShare) && Math.abs(discordShare - jjsShare) <= 15) {
+    balanceLabel = "ровно Discord + JJS";
+  }
+
+  const sourceCount = availableScores.length;
+  return {
+    messages30d,
+    jjsMinutes30d,
+    voiceSeconds30d,
+    chatShare,
+    jjsShare,
+    voiceShare,
+    discordShare,
+    balanceLabel,
+    confidenceState: sourceCount >= 3 ? "reliable" : sourceCount === 2 ? "partial" : "heuristic",
+    sourceCount,
+  };
+}
+
+function buildActivityMixBlock({ activitySummary = {}, robloxSummary = {}, voiceSummary = {} } = {}) {
+  const state = buildActivityMixState({ activitySummary, robloxSummary, voiceSummary });
+  if (!state) return null;
+
+  const rawBits = [];
+  if (Number.isFinite(state.jjsMinutes30d)) rawBits.push(`JJS ${formatHours(state.jjsMinutes30d / 60)} ч 30д`);
+  if (Number.isFinite(state.messages30d)) rawBits.push(`chat ${formatNumber(state.messages30d)} msg 30д`);
+  if (Number.isFinite(state.voiceSeconds30d)) rawBits.push(`voice ${formatHours(state.voiceSeconds30d / 3600)} ч 30д`);
+
+  const shareBits = [];
+  if (Number.isFinite(state.chatShare)) shareBits.push(`chat ${formatPercent(state.chatShare, 0)}`);
+  if (Number.isFinite(state.jjsShare)) shareBits.push(`JJS ${formatPercent(state.jjsShare, 0)}`);
+  if (Number.isFinite(state.voiceShare)) shareBits.push(`voice ${formatPercent(state.voiceShare, 0)}`);
+
+  return {
+    title: "Activity mix",
+    lines: [
+      `Discord vs Roblox: ${state.balanceLabel}`,
+      rawBits.join(" • "),
+      `Mix: ${shareBits.join(" • ")} • confidence ${state.confidenceState}`,
+    ].filter(Boolean),
+  };
+}
+
+function listDailyJjsBuckets(profile = null) {
+  return Object.entries(profile?.domains?.roblox?.playtime?.dailyBuckets || {})
+    .filter(([dayKey, minutes]) => /^\d{4}-\d{2}-\d{2}$/.test(dayKey) && Number(minutes) > 0)
+    .map(([dayKey, minutes]) => ({
+      dayKey,
+      minutes: Number(minutes) || 0,
+    }))
+    .sort((left, right) => left.dayKey.localeCompare(right.dayKey));
+}
+
+function sumNumbers(values = []) {
+  return (Array.isArray(values) ? values : []).reduce((sum, value) => {
+    const amount = normalizeFiniteNumber(value, 0);
+    return Number.isFinite(amount) ? sum + amount : sum;
+  }, 0);
+}
+
+function listJjsSessionHistory(profile = null) {
+  return (Array.isArray(profile?.domains?.roblox?.playtime?.sessionHistory) ? profile.domains.roblox.playtime.sessionHistory : [])
+    .map((entry) => {
+      const durationMinutes = normalizeFiniteNumber(entry?.durationMinutes);
+      if (!Number.isFinite(durationMinutes) || durationMinutes <= 0) return null;
+      return {
+        startedAt: cleanString(entry?.startedAt, 80),
+        endedAt: cleanString(entry?.endedAt, 80),
+        durationMinutes,
+        gameId: cleanString(entry?.gameId, 120),
+      };
+    })
+    .filter(Boolean)
+    .sort((left, right) => cleanString(left.endedAt, 80).localeCompare(cleanString(right.endedAt, 80)));
+}
+
+function medianNumber(values = []) {
+  const items = (Array.isArray(values) ? values : [])
+    .map((entry) => normalizeFiniteNumber(entry))
+    .filter((entry) => Number.isFinite(entry))
+    .sort((left, right) => left - right);
+  if (!items.length) return null;
+  const middle = Math.floor(items.length / 2);
+  return items.length % 2 ? items[middle] : (items[middle - 1] + items[middle]) / 2;
+}
+
+function buildFarmProfileState({ profile = null, robloxSummary = {} } = {}) {
+  const dailyBuckets = listDailyJjsBuckets(profile);
+  const hourlyBuckets = listHourlyMskBuckets(profile);
+  const sessionHistory = listJjsSessionHistory(profile);
+  const sessionDurations = sessionHistory.map((entry) => entry.durationMinutes);
+  const dailyMinutes = dailyBuckets.map((entry) => entry.minutes).filter((entry) => Number.isFinite(entry) && entry > 0);
+  const hourlyMinutes = hourlyBuckets.map((entry) => entry.minutes).filter((entry) => Number.isFinite(entry) && entry > 0);
+  const totalDailyMinutes = sumNumbers(dailyMinutes);
+  const totalHourlyMinutes = sumNumbers(hourlyMinutes);
+  const totalSessionHistoryMinutes = sumNumbers(sessionDurations);
+  const summaryJjsMinutes30d = normalizeNullableFiniteNumber(robloxSummary?.jjsMinutes30d);
+  const totalJjsMinutes = normalizeNullableFiniteNumber(robloxSummary?.totalJjsMinutes);
+  const sessionCount = normalizeNullableFiniteNumber(robloxSummary?.sessionCount);
+  const observedMinutes = totalDailyMinutes > 0
+    ? totalDailyMinutes
+    : (totalHourlyMinutes > 0 ? totalHourlyMinutes : (Number.isFinite(summaryJjsMinutes30d) ? summaryJjsMinutes30d : totalJjsMinutes));
+
+  if (!Number.isFinite(observedMinutes) || observedMinutes <= 0) return null;
+
+  const activeDays = dailyMinutes.length;
+  const activeHours = hourlyMinutes.length;
+  const daySpan = activeDays > 0 ? computeDaySpan(dailyBuckets[0]?.dayKey, dailyBuckets.at(-1)?.dayKey) : null;
+  const dailyCoveragePercent = Number.isFinite(daySpan) && daySpan > 0 ? (activeDays / daySpan) * 100 : null;
+  const averageActiveDayMinutes = activeDays > 0 ? totalDailyMinutes / activeDays : null;
+  const averageActiveHourMinutes = activeHours > 0 ? totalHourlyMinutes / activeHours : null;
+  const sortedDailyMinutes = dailyMinutes.slice().sort((left, right) => right - left);
+  const topDayShare = totalDailyMinutes > 0 && sortedDailyMinutes[0] > 0 ? (sortedDailyMinutes[0] / totalDailyMinutes) * 100 : null;
+  const top3Share = totalDailyMinutes > 0 ? (sumNumbers(sortedDailyMinutes.slice(0, 3)) / totalDailyMinutes) * 100 : null;
+  const hasSessionHistogram = sessionDurations.length > 0;
+  const averageSessionHistoryMinutes = hasSessionHistogram ? totalSessionHistoryMinutes / sessionDurations.length : null;
+  const medianSessionMinutes = hasSessionHistogram ? medianNumber(sessionDurations) : null;
+  const longSessionShare = hasSessionHistogram
+    ? (sessionDurations.filter((entry) => entry >= 60).length / sessionDurations.length) * 100
+    : null;
+  const shortSessionShare = hasSessionHistogram
+    ? (sessionDurations.filter((entry) => entry <= 25).length / sessionDurations.length) * 100
+    : null;
+  const averageSessionMinutes = hasSessionHistogram
+    ? averageSessionHistoryMinutes
+    : Number.isFinite(totalJjsMinutes) && totalJjsMinutes > 0 && Number.isFinite(sessionCount) && sessionCount > 0
+      ? totalJjsMinutes / sessionCount
+      : null;
+
+  let cadenceLabel = "смешанный темп";
+  if (activeDays >= 8 && Number.isFinite(top3Share) && top3Share <= 50) {
+    cadenceLabel = "стабильный гриндер";
+  } else if (activeDays > 0 && activeDays <= 4 && Number.isFinite(top3Share) && top3Share >= 70) {
+    cadenceLabel = "вспышками";
+  } else if (Number.isFinite(topDayShare) && topDayShare >= 45) {
+    cadenceLabel = "одна сильная вспышка";
+  }
+
+  let sessionShapeLabel = "session shape пока неясен";
+  if (Number.isFinite(averageSessionMinutes)) {
+    if (averageSessionMinutes >= 60) {
+      sessionShapeLabel = "длинные сессии (proxy)";
+    } else if (averageSessionMinutes <= 25) {
+      sessionShapeLabel = "короткие рывки (proxy)";
+    } else {
+      sessionShapeLabel = "средние сессии (proxy)";
+    }
+  } else if (Number.isFinite(averageActiveHourMinutes)) {
+    if (averageActiveHourMinutes >= 45) {
+      sessionShapeLabel = "длинные hourly-окна";
+    } else if (averageActiveHourMinutes <= 20) {
+      sessionShapeLabel = "короткие hourly-рывки";
+    } else {
+      sessionShapeLabel = "средние hourly-окна";
+    }
+  }
+
+  if (hasSessionHistogram) {
+    sessionShapeLabel = sessionShapeLabel.replace(" (proxy)", "");
+  }
+
+  const sourceCount = [
+    activeDays > 0,
+    activeHours > 0,
+    Number.isFinite(averageSessionMinutes),
+    hasSessionHistogram,
+  ].filter(Boolean).length;
+  const confidenceState = hasSessionHistogram && sessionDurations.length >= 5 && activeDays > 0
+    ? "reliable"
+    : hasSessionHistogram
+      ? "partial"
+      : sourceCount >= 3 ? "partial" : sourceCount === 2 ? "heuristic" : "sparse";
+
+  return {
+    cadenceLabel,
+    sessionShapeLabel,
+    confidenceState,
+    observedMinutes,
+    activeDays,
+    daySpan,
+    dailyCoveragePercent,
+    averageActiveDayMinutes,
+    activeHours,
+    averageActiveHourMinutes,
+    topDayShare,
+    top3Share,
+    averageSessionMinutes,
+    medianSessionMinutes,
+    longSessionShare,
+    shortSessionShare,
+    sessionCount,
+    sessionHistoryCount: sessionDurations.length,
+    hasSessionHistogram,
+    hasDailyBuckets: activeDays > 0,
+    hasHourlyBuckets: activeHours > 0,
+    hasSessionProxy: Number.isFinite(averageSessionMinutes),
+  };
+}
+
+function buildFarmProfileBlock({ profile = null, robloxSummary = {} } = {}) {
+  const state = buildFarmProfileState({ profile, robloxSummary });
+  if (!state) return null;
+
+  const dailyBits = [];
+  if (state.hasDailyBuckets) {
+    dailyBits.push(`active days ${formatNumber(state.activeDays)}`);
+    if (Number.isFinite(state.daySpan)) dailyBits.push(`span ${formatNumber(state.daySpan)}д`);
+    if (Number.isFinite(state.averageActiveDayMinutes)) dailyBits.push(`avg active day ${formatHours(state.averageActiveDayMinutes / 60)} ч`);
+    if (Number.isFinite(state.topDayShare)) dailyBits.push(`top day ${formatPercent(state.topDayShare, 0)}`);
+    if (Number.isFinite(state.top3Share)) dailyBits.push(`top3 ${formatPercent(state.top3Share, 0)}`);
+  } else {
+    dailyBits.push("daily buckets missing");
+  }
+
+  const sessionBits = [];
+  const sessionLineTitle = state.hasSessionHistogram ? "Session histogram" : "Session proxy";
+  if (Number.isFinite(state.averageSessionMinutes)) {
+    sessionBits.push(`avg ${formatHours(state.averageSessionMinutes)} мин/session`);
+    if (state.hasSessionHistogram) {
+      if (Number.isFinite(state.medianSessionMinutes)) sessionBits.push(`median ${formatHours(state.medianSessionMinutes)} min`);
+      if (Number.isFinite(state.longSessionShare)) sessionBits.push(`long>=60 ${formatPercent(state.longSessionShare, 0)}`);
+      if (Number.isFinite(state.shortSessionShare)) sessionBits.push(`short<=25 ${formatPercent(state.shortSessionShare, 0)}`);
+      sessionBits.push(`sessions ${formatNumber(state.sessionHistoryCount)}`);
+    } else {
+      sessionBits.push(`sessions ${formatNumber(state.sessionCount)}`);
+      sessionBits.push("lifetime proxy");
+    }
+  } else {
+    sessionBits.push("per-session histogram missing");
+  }
+  if (Number.isFinite(state.averageActiveHourMinutes)) {
+    sessionBits.push(`avg active hour ${formatNumber(state.averageActiveHourMinutes)} мин`);
+  }
+
+  return {
+    title: "Farm profile",
+    lines: [
+      `Farm profile: ${state.cadenceLabel} • ${state.sessionShapeLabel} • confidence ${state.confidenceState}`,
+      `Daily rhythm: ${dailyBits.join(" • ")}`,
+      `${sessionLineTitle}: ${sessionBits.join(" • ")}`,
+      state.hasSessionHistogram
+        ? "Trust: session-history • sources playtime.sessionHistory/dailyBuckets/hourlyBuckets • strong farm claim bounded by captured sessions."
+        : "Trust: proxy • sources dailyBuckets/hourlyBuckets/summary.roblox.sessionCount • no strong farm claim without session histograms.",
+    ],
+  };
+}
+
 function listHourlyMskBuckets(profile = null) {
   return Object.entries(profile?.domains?.roblox?.playtime?.hourlyBucketsMsk || {})
     .filter(([bucketKey, minutes]) => /^\d{4}-\d{2}-\d{2}T\d{2}$/.test(bucketKey) && Number(minutes) > 0)
@@ -1682,6 +2620,140 @@ function buildPrimeTimeBlock({ profile = null, now } = {}) {
   };
 }
 
+function getIsoWeekKeyFromDayKey(dayKey) {
+  const timestamp = parseIsoDayKey(dayKey);
+  if (!Number.isFinite(timestamp)) return null;
+  const date = new Date(timestamp);
+  const isoDay = date.getUTCDay() || 7;
+  const thursdayTimestamp = timestamp + (4 - isoDay) * MS_PER_DAY;
+  const thursday = new Date(thursdayTimestamp);
+  const year = thursday.getUTCFullYear();
+  const yearStart = Date.UTC(year, 0, 1, 12, 0, 0, 0);
+  const week = Math.ceil((((thursdayTimestamp - yearStart) / MS_PER_DAY) + 1) / 7);
+  return `${year}-W${String(week).padStart(2, "0")}`;
+}
+
+function buildPrimeTimeWindowSummaryFromBuckets(buckets = []) {
+  const items = Array.isArray(buckets) ? buckets : [];
+  const totalsByHour = Array.from({ length: 24 }, () => 0);
+  let totalMinutes = 0;
+  for (const entry of items) {
+    const hour = normalizeFiniteNumber(entry?.hour);
+    const minutes = normalizeFiniteNumber(entry?.minutes, 0);
+    if (!Number.isFinite(hour) || hour < 0 || hour > 23 || !Number.isFinite(minutes) || minutes <= 0) continue;
+    totalsByHour[hour] += minutes;
+    totalMinutes += minutes;
+  }
+
+  const activeHourCount = totalsByHour.filter((entry) => entry > 0).length;
+  const peakHour = totalsByHour.reduce((bestIndex, value, index, source) => {
+    if (!Number.isFinite(source[bestIndex]) || value > source[bestIndex]) return index;
+    return bestIndex;
+  }, 0);
+
+  let bestWindow = null;
+  for (let startHour = 0; startHour < 24; startHour += 1) {
+    let minutes = 0;
+    for (let offset = 0; offset < 4; offset += 1) {
+      minutes += totalsByHour[(startHour + offset) % 24] || 0;
+    }
+    if (!bestWindow || minutes > bestWindow.minutes) {
+      bestWindow = {
+        startHour,
+        endHourExclusive: (startHour + 4) % 24,
+        minutes,
+      };
+    }
+  }
+
+  return {
+    totalMinutes,
+    activeHourCount,
+    peakHour,
+    bestWindow,
+    insufficient: items.length < 3 || totalMinutes < 90,
+  };
+}
+
+function buildWindowHourSet(window = {}) {
+  const startHour = normalizeFiniteNumber(window?.startHour);
+  if (!Number.isFinite(startHour)) return new Set();
+  return new Set(Array.from({ length: 4 }, (_entry, offset) => ((startHour + offset) % 24 + 24) % 24));
+}
+
+function computePrimeWindowOverlapHours(left = {}, right = {}) {
+  const leftHours = buildWindowHourSet(left);
+  const rightHours = buildWindowHourSet(right);
+  let overlap = 0;
+  for (const hour of leftHours) {
+    if (rightHours.has(hour)) overlap += 1;
+  }
+  return overlap;
+}
+
+function buildPrimeTimeWeeklyStates(profile = null) {
+  const grouped = new Map();
+  for (const bucket of listHourlyMskBuckets(profile)) {
+    const dayKey = cleanString(bucket?.bucketKey, 20).slice(0, 10);
+    const weekKey = getIsoWeekKeyFromDayKey(dayKey);
+    if (!weekKey) continue;
+    if (!grouped.has(weekKey)) grouped.set(weekKey, []);
+    grouped.get(weekKey).push(bucket);
+  }
+
+  return [...grouped.entries()]
+    .map(([weekKey, buckets]) => ({
+      weekKey,
+      bucketCount: buckets.length,
+      ...buildPrimeTimeWindowSummaryFromBuckets(buckets),
+    }))
+    .sort((left, right) => cleanString(left.weekKey, 20).localeCompare(cleanString(right.weekKey, 20)));
+}
+
+function buildPrimeTimeConfidenceBlock({ profile = null } = {}) {
+  const state = buildPrimeTimeState({ profile });
+  if (!state.buckets.length || !state.bestWindow) return null;
+
+  const weeklyStates = buildPrimeTimeWeeklyStates(profile);
+  const validWeeks = weeklyStates.filter((entry) => entry.bestWindow && !entry.insufficient && entry.bestWindow.minutes > 0);
+  if (validWeeks.length < 2) {
+    return {
+      title: "Prime time confidence",
+      lines: [
+        [
+          "Prime confidence: короткая история",
+          `недель с данными ${formatNumber(validWeeks.length)}/2`,
+          `hourly buckets ${formatNumber(state.buckets.length)}`,
+          `tracked ${formatNumber(state.totalMinutes)} мин`,
+        ].join(" • "),
+        "Trust: partial • нужно минимум 2 недельных среза; текущее окно не считаем устойчивым.",
+      ],
+    };
+  }
+
+  const matchingWeeks = validWeeks.filter((entry) => computePrimeWindowOverlapHours(entry.bestWindow, state.bestWindow) >= 3);
+  const matchRatio = matchingWeeks.length / validWeeks.length;
+  const label = matchRatio >= 0.67 ? "stable" : matchRatio >= 0.4 ? "mixed" : "volatile";
+  const confidenceState = validWeeks.length >= 3 && matchRatio >= 0.67 ? "reliable" : "partial";
+  const weeklyWindowLine = validWeeks
+    .slice(-4)
+    .map((entry) => `${entry.weekKey} ${formatHourLabel(entry.bestWindow.startHour)}-${formatHourLabel(entry.bestWindow.endHourExclusive)} (${formatNumber(entry.bestWindow.minutes)} мин)`)
+    .join("; ");
+
+  return {
+    title: "Prime time confidence",
+    lines: [
+      [
+        `Prime confidence: ${label}`,
+        `${formatNumber(matchingWeeks.length)}/${formatNumber(validWeeks.length)} weeks near ${formatHourLabel(state.bestWindow.startHour)}-${formatHourLabel(state.bestWindow.endHourExclusive)} МСК`,
+        `global window ${formatNumber(state.bestWindow.minutes)} мин`,
+      ].join(" • "),
+      weeklyWindowLine ? `Weekly windows: ${weeklyWindowLine}` : null,
+      `Trust: ${confidenceState} • active hourly weeks ${formatNumber(validWeeks.length)} • no claim when hourly buckets are stale.`,
+    ].filter(Boolean),
+  };
+}
+
 function selectBestSeasonArchiveSnapshot(snapshots = [], metricField = "jjsMinutes7d") {
   let best = null;
 
@@ -1801,12 +2873,24 @@ function buildSeasonArchiveCoverageLine(snapshots = []) {
   const firstDayKey = cleanString(items[0]?.dayKey, 20);
   const lastDayKey = cleanString(items.at(-1)?.dayKey, 20);
   const spanDays = computeDaySpan(firstDayKey, lastDayKey);
+  const coveredDayKeys = new Set(items.map((entry) => cleanString(entry?.dayKey, 20)).filter(Boolean));
+  const expectedDays = Number.isFinite(spanDays) && spanDays > 0 ? spanDays : coveredDayKeys.size;
+  const coveredDays = coveredDayKeys.size;
+  const missingDays = Math.max(0, expectedDays - coveredDays);
+  const coveragePercent = expectedDays > 0 ? (coveredDays / expectedDays) * 100 : null;
+  const fragmentedPercent = Number.isFinite(coveragePercent) ? Math.max(0, 100 - coveragePercent) : null;
   const bits = [
     `Архив сезона: ${formatNumber(items.length)} дневных срезов`,
     formatDayRangeLabel(firstDayKey, lastDayKey),
   ];
-  if (Number.isFinite(spanDays) && spanDays > items.length) {
-    bits.push("история с пробелами");
+  if (Number.isFinite(coveragePercent)) {
+    bits.push(`coverage ${formatPercent(coveragePercent, 0)} (${formatNumber(coveredDays)}/${formatNumber(expectedDays)} дн)`);
+    bits.push(`complete ${formatPercent(coveragePercent, 0)} • fragmented ${formatPercent(fragmentedPercent, 0)}`);
+  }
+  if (missingDays > 0) {
+    bits.push(`дыр ${formatNumber(missingDays)}`);
+  } else if (expectedDays > 0) {
+    bits.push("без дыр");
   }
   return bits.join(" • ");
 }
@@ -1940,6 +3024,398 @@ function buildSeasonStoryBlock({ profile = null } = {}) {
   };
 }
 
+function selectStrongestWeeklyRollup(rollups = []) {
+  return (Array.isArray(rollups) ? rollups : [])
+    .slice()
+    .sort((left, right) => {
+      const scoreDiff = normalizeFiniteNumber(right?.composite?.score, -1) - normalizeFiniteNumber(left?.composite?.score, -1);
+      if (scoreDiff) return scoreDiff;
+      const coverageDiff = normalizeFiniteNumber(right?.coverage?.coveragePercent, -1) - normalizeFiniteNumber(left?.coverage?.coveragePercent, -1);
+      if (coverageDiff) return coverageDiff;
+      return cleanString(right?.weekKey, 20).localeCompare(cleanString(left?.weekKey, 20));
+    })[0] || null;
+}
+
+function buildWeeklyRollupsBlock({ profile = null } = {}) {
+  const rollups = getSeasonArchiveWeeklyRollups(profile);
+  if (!rollups.length) return null;
+  const strongest = selectStrongestWeeklyRollup(rollups);
+  if (!strongest) return null;
+
+  const coverage = strongest.coverage && typeof strongest.coverage === "object" ? strongest.coverage : {};
+  const totals = strongest.totals && typeof strongest.totals === "object" ? strongest.totals : {};
+  const composite = strongest.composite && typeof strongest.composite === "object" ? strongest.composite : {};
+  const expectedDays = normalizeFiniteNumber(coverage.expectedDays, 7);
+  const coveredDays = normalizeFiniteNumber(coverage.coveredDays, 0);
+  const missingDays = normalizeFiniteNumber(coverage.missingDays, Math.max(0, expectedDays - coveredDays));
+  const coveragePercent = normalizeFiniteNumber(coverage.coveragePercent);
+  const debuff = normalizeFiniteNumber(composite.influenceDebuffPercent, 0);
+  const signalBits = [
+    `JJS ${formatHours((normalizeFiniteNumber(totals.jjsMinutes, 0)) / 60)} ч`,
+    `msg ${formatNumber(totals.messages)}`,
+    `sessions ${formatNumber(totals.sessions)}`,
+    `voice ${formatHours((normalizeFiniteNumber(totals.voiceSeconds, 0)) / 3600)} ч`,
+  ];
+  if (Number.isFinite(normalizeFiniteNumber(totals.approvedKillsDelta))) {
+    signalBits.push(`kills ${formatSignedNumber(totals.approvedKillsDelta)}`);
+  }
+  if (Number.isFinite(normalizeFiniteNumber(totals.antiteamPointsDelta))) {
+    signalBits.push(`antiteam ${formatSignedNumber(totals.antiteamPointsDelta)}`);
+  }
+
+  return {
+    title: "Strongest week",
+    lines: [
+      `Strongest week: ${cleanString(strongest.weekKey, 20)} • ${cleanString(composite.grade, 10) || "N/A"} (${formatNumber(composite.score)}) • coverage ${formatNumber(coveredDays)}/${formatNumber(expectedDays)}д${Number.isFinite(coveragePercent) ? ` (${formatPercent(coveragePercent, 0)})` : ""}`,
+      `Signals: ${signalBits.join(" • ")}`,
+      `Window: ${formatDayRangeLabel(strongest.startDayKey, strongest.endDayKey)} • confidence ${cleanString(composite.confidenceState, 40) || "partial"} • debuff ${formatNumber(debuff)}%${missingDays > 0 ? ` • дыр ${formatNumber(missingDays)}` : ""}`,
+    ],
+  };
+}
+
+function normalizeComebackWeeklyWindow(rollup = {}) {
+  const totals = rollup?.totals && typeof rollup.totals === "object" ? rollup.totals : {};
+  const coverage = rollup?.coverage && typeof rollup.coverage === "object" ? rollup.coverage : {};
+  const composite = rollup?.composite && typeof rollup.composite === "object" ? rollup.composite : {};
+  const score = normalizeFiniteNumber(composite?.score);
+  if (!cleanString(rollup?.weekKey, 20) || !Number.isFinite(score)) return null;
+
+  const coveragePercent = normalizeFiniteNumber(coverage?.coveragePercent);
+  const jjsMinutes = normalizeFiniteNumber(totals?.jjsMinutes, 0);
+  const messages = normalizeFiniteNumber(totals?.messages, 0);
+  const sessions = normalizeFiniteNumber(totals?.sessions, 0);
+  const voiceSeconds = normalizeFiniteNumber(totals?.voiceSeconds, 0);
+  const approvedKillsDelta = normalizeFiniteNumber(totals?.approvedKillsDelta, 0);
+  const antiteamPointsDelta = normalizeFiniteNumber(totals?.antiteamPointsDelta, 0);
+  const activitySignal = Math.max(0, jjsMinutes) + Math.max(0, messages) * 2 + Math.max(0, sessions) * 12 + (Math.max(0, voiceSeconds) / 60);
+
+  return {
+    weekKey: cleanString(rollup.weekKey, 20),
+    startDayKey: cleanString(rollup?.startDayKey, 20),
+    endDayKey: cleanString(rollup?.endDayKey, 20),
+    score,
+    grade: cleanString(composite?.grade, 10) || buildLetterGrade(score),
+    confidenceState: cleanString(composite?.confidenceState, 40) || (Number(coveragePercent) >= 85 ? "reliable" : "partial"),
+    coveragePercent,
+    jjsMinutes,
+    messages,
+    sessions,
+    voiceSeconds,
+    approvedKillsDelta,
+    antiteamPointsDelta,
+    activitySignal,
+    isActive: score >= 55 && (!Number.isFinite(coveragePercent) || coveragePercent >= 50),
+    isLow: score <= 35 || activitySignal <= 120,
+    isPauseLike: score <= 25 || (jjsMinutes < 60 && messages < 15 && sessions < 2 && voiceSeconds < 900),
+  };
+}
+
+function getComparableComebackWindows(profile = null) {
+  return getSeasonArchiveWeeklyRollups(profile)
+    .map((entry) => normalizeComebackWeeklyWindow(entry))
+    .filter(Boolean)
+    .sort((left, right) => left.weekKey.localeCompare(right.weekKey));
+}
+
+function countTrailingActiveWindows(windows = []) {
+  let count = 0;
+  for (let index = (Array.isArray(windows) ? windows.length : 0) - 1; index >= 0; index -= 1) {
+    if (!windows[index]?.isActive) break;
+    count += 1;
+  }
+  return count;
+}
+
+function hasRecentLowToActiveTransition(windows = [], { pauseOnly = false } = {}) {
+  const items = Array.isArray(windows) ? windows : [];
+  if (items.length < 2) return false;
+  const recent = items.slice(-4);
+  for (let index = 1; index < recent.length; index += 1) {
+    const previous = recent[index - 1];
+    const current = recent[index];
+    const lowEnough = pauseOnly ? previous?.isPauseLike === true : previous?.isLow === true;
+    if (lowEnough && current?.isActive === true && current.score - previous.score >= 18) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function hasThreeWindowSlowdown(windows = []) {
+  const lastThree = (Array.isArray(windows) ? windows : []).slice(-3);
+  if (lastThree.length < 3) return false;
+  const [first, second, third] = lastThree;
+  return first.score - second.score >= 5
+    && second.score - third.score >= 5
+    && first.score - third.score >= 12;
+}
+
+function hasCoolingOff(windows = []) {
+  const lastThree = (Array.isArray(windows) ? windows : []).slice(-3);
+  if (lastThree.length < 3) return false;
+  const [first, second, third] = lastThree;
+  return third?.isActive === true
+    && first.score > second.score
+    && second.score > third.score
+    && first.score - third.score >= 8;
+}
+
+function buildComebackTrendLabel(flags = {}) {
+  const labels = [];
+  if (flags.recoveredAfterPause) labels.push("восстановился после паузы");
+  if (flags.returnedAfterDrop) labels.push("вернулся после просадки");
+  if (flags.activeStreak) labels.push("держит серию активных окон");
+  if (flags.slowingDown) labels.push("замедляется 3 окна подряд");
+  if (flags.coolingOff) labels.push("остывает второе окно");
+  if (!labels.length) labels.push("без явного comeback-сигнала");
+  return labels.join(" • ");
+}
+
+function formatComebackWindowLine(windows = []) {
+  const items = (Array.isArray(windows) ? windows : []).slice(-4);
+  if (!items.length) return null;
+  return `Windows: ${items.map((entry) => `${entry.weekKey} ${entry.grade} (${formatNumber(entry.score)})`).join(" -> ")}`;
+}
+
+function formatComebackLatestSignals(window = null) {
+  if (!window) return null;
+  const bits = [
+    `Latest signals: JJS ${formatHours(window.jjsMinutes / 60)} ч`,
+    `msg ${formatNumber(window.messages)}`,
+    `sessions ${formatNumber(window.sessions)}`,
+    `voice ${formatHours(window.voiceSeconds / 3600)} ч`,
+  ];
+  if (Number.isFinite(window.approvedKillsDelta)) {
+    bits.push(`kills ${formatSignedNumber(window.approvedKillsDelta)}`);
+  }
+  if (Number.isFinite(window.antiteamPointsDelta)) {
+    bits.push(`antiteam ${formatSignedNumber(window.antiteamPointsDelta)}`);
+  }
+  return bits.join(" • ");
+}
+
+function buildComebackMetricsBlock({ profile = null } = {}) {
+  const windows = getComparableComebackWindows(profile);
+  if (!windows.length) return null;
+
+  if (windows.length < 3) {
+    return {
+      title: "Comeback metrics",
+      lines: [
+        [
+          "Comeback metrics: история короткая",
+          `windows ${formatNumber(windows.length)}/3`,
+          "no comeback claim",
+        ].join(" • "),
+        formatComebackWindowLine(windows),
+      ].filter(Boolean),
+    };
+  }
+
+  const latest = windows.at(-1);
+  const activeStreakCount = countTrailingActiveWindows(windows);
+  const minCoverage = windows.reduce((min, entry) => {
+    const coverage = normalizeFiniteNumber(entry?.coveragePercent);
+    return Number.isFinite(coverage) ? Math.min(min, coverage) : min;
+  }, 100);
+  const flags = {
+    returnedAfterDrop: hasRecentLowToActiveTransition(windows),
+    recoveredAfterPause: hasRecentLowToActiveTransition(windows, { pauseOnly: true }),
+    activeStreak: activeStreakCount >= 3,
+    slowingDown: hasThreeWindowSlowdown(windows),
+    coolingOff: hasCoolingOff(windows),
+  };
+  const trust = minCoverage >= 85 ? "reliable" : minCoverage >= 50 ? "partial" : "sparse";
+
+  return {
+    title: "Comeback metrics",
+    lines: [
+      [
+        `Comeback metrics: ${buildComebackTrendLabel(flags)}`,
+        `active streak ${formatNumber(activeStreakCount)}w`,
+        `latest ${latest.weekKey} ${latest.grade} (${formatNumber(latest.score)})`,
+      ].join(" • "),
+      formatComebackWindowLine(windows),
+      formatComebackLatestSignals(latest),
+      [
+        `Trust: ${trust}`,
+        `windows ${formatNumber(windows.length)}`,
+        `min coverage ${formatPercent(minCoverage, 0)}`,
+        "claims require 3+ comparable weekly windows",
+      ].join(" • "),
+    ].filter(Boolean),
+  };
+}
+
+function buildSeasonArchiveCoverageState(snapshots = []) {
+  const items = Array.isArray(snapshots) ? snapshots : [];
+  const firstDayKey = cleanString(items[0]?.dayKey, 20);
+  const lastDayKey = cleanString(items.at(-1)?.dayKey, 20);
+  const spanDays = computeDaySpan(firstDayKey, lastDayKey);
+  const coveredDayKeys = new Set(items.map((entry) => cleanString(entry?.dayKey, 20)).filter(Boolean));
+  const expectedDays = Number.isFinite(spanDays) && spanDays > 0 ? spanDays : coveredDayKeys.size;
+  const coveredDays = coveredDayKeys.size;
+  const missingDays = Math.max(0, expectedDays - coveredDays);
+  const coveragePercent = expectedDays > 0 ? (coveredDays / expectedDays) * 100 : null;
+  return {
+    firstDayKey,
+    lastDayKey,
+    expectedDays,
+    coveredDays,
+    missingDays,
+    coveragePercent,
+  };
+}
+
+function buildSeasonSnapshotComposite(snapshot = {}) {
+  const deltas = snapshot?.dayDeltas && typeof snapshot.dayDeltas === "object" ? snapshot.dayDeltas : {};
+  const usesExactDayDeltas = deltas.hasPreviousSnapshot === true;
+  const messages7d = normalizeFiniteNumber(snapshot?.messages7d, 0);
+  const sessions7d = usesExactDayDeltas && Number.isFinite(normalizeFiniteNumber(deltas.sessionCount))
+    ? normalizeFiniteNumber(deltas.sessionCount, 0)
+    : normalizeFiniteNumber(snapshot?.sessions7d, 0);
+  const jjsMinutes7d = usesExactDayDeltas && Number.isFinite(normalizeFiniteNumber(deltas.jjsMinutes))
+    ? normalizeFiniteNumber(deltas.jjsMinutes, 0)
+    : normalizeFiniteNumber(snapshot?.jjsMinutes7d, 0);
+  const voiceSeconds7d = usesExactDayDeltas && Number.isFinite(normalizeFiniteNumber(deltas.voiceSeconds))
+    ? normalizeFiniteNumber(deltas.voiceSeconds, 0)
+    : normalizeFiniteNumber(snapshot?.voiceDurationSeconds7d, 0);
+  const activityScore = normalizeFiniteNumber(snapshot?.activityScore);
+  const peerCount = Array.isArray(snapshot?.topCoPlayPeerUserIds) ? snapshot.topCoPlayPeerUserIds.length : 0;
+  const serverFriendsCount = normalizeFiniteNumber(snapshot?.serverFriendsCount, 0);
+  const socialSuggestionCount = normalizeFiniteNumber(snapshot?.socialSuggestionCount, 0);
+  const antiteamSupportPoints = usesExactDayDeltas && Number.isFinite(normalizeFiniteNumber(deltas.antiteamSupportPoints))
+    ? normalizeFiniteNumber(deltas.antiteamSupportPoints, 0)
+    : normalizeFiniteNumber(snapshot?.antiteamSupportPoints, 0);
+  const approvedKillsDelta = usesExactDayDeltas && Number.isFinite(normalizeFiniteNumber(deltas.approvedKills))
+    ? normalizeFiniteNumber(deltas.approvedKills, 0)
+    : 0;
+
+  const score = clampScore(
+    Math.min(18, Math.max(0, messages7d) / 160 * 18)
+    + Math.min(10, Math.max(0, sessions7d) / 14 * 10)
+    + Math.min(24, Math.max(0, jjsMinutes7d) / 720 * 24)
+    + Math.min(14, Math.max(0, voiceSeconds7d) / (4 * 3600) * 14)
+    + (Number.isFinite(activityScore) ? Math.min(18, Math.max(0, activityScore) / 100 * 18) : 0)
+    + Math.min(12, Math.max(0, peerCount) * 3 + Math.max(0, serverFriendsCount) + Math.max(0, socialSuggestionCount) * 1.5)
+    + Math.min(6, Math.max(0, approvedKillsDelta) / 120 * 6)
+    + Math.min(4, Math.max(0, antiteamSupportPoints) * 2)
+  );
+
+  return {
+    snapshot,
+    score,
+    grade: buildLetterGrade(score),
+    messages7d,
+    sessions7d,
+    jjsMinutes7d,
+    voiceSeconds7d,
+    activityScore,
+    peerCount,
+    serverFriendsCount,
+    socialSuggestionCount,
+    antiteamSupportPoints,
+    approvedKillsDelta,
+    usesExactDayDeltas,
+  };
+}
+
+function selectSeasonCompositeExtreme(composites = [], direction = "best") {
+  const sorted = (Array.isArray(composites) ? composites : []).slice().sort((left, right) => {
+    const scoreDiff = direction === "worst" ? left.score - right.score : right.score - left.score;
+    if (scoreDiff) return scoreDiff;
+    const leftDayKey = cleanString(left?.snapshot?.dayKey, 20);
+    const rightDayKey = cleanString(right?.snapshot?.dayKey, 20);
+    return direction === "worst" ? leftDayKey.localeCompare(rightDayKey) : rightDayKey.localeCompare(leftDayKey);
+  });
+  return sorted[0] || null;
+}
+
+function formatSeasonCompositeSnapshotLine(label = "", composite = null) {
+  if (!composite?.snapshot) return null;
+  const bits = [
+    `${label}: ${formatDayLabel(composite.snapshot.dayKey)}`,
+    `${composite.grade} (${formatNumber(composite.score)})`,
+    `JJS ${formatHours(composite.jjsMinutes7d / 60)} ч ${composite.usesExactDayDeltas ? "exact day" : "rolling 7д"}`,
+  ];
+  if (Number.isFinite(composite.activityScore)) {
+    bits.push(`activity ${formatNumber(composite.activityScore)}`);
+  }
+  if (Number.isFinite(composite.messages7d) && composite.messages7d > 0) {
+    bits.push(`msg ${formatNumber(composite.messages7d)}`);
+  }
+  if (Number.isFinite(composite.voiceSeconds7d) && composite.voiceSeconds7d > 0) {
+    bits.push(`voice ${formatHours(composite.voiceSeconds7d / 3600)} ч`);
+  }
+  if (Number.isFinite(composite.peerCount) && composite.peerCount > 0) {
+    bits.push(`social ${formatNumber(composite.peerCount)} peers`);
+  }
+  if (Number.isFinite(composite.antiteamSupportPoints) && composite.antiteamSupportPoints > 0) {
+    bits.push(`antiteam ${formatNumber(composite.antiteamSupportPoints)}`);
+  }
+  if (Number.isFinite(composite.approvedKillsDelta) && composite.approvedKillsDelta > 0) {
+    bits.push(`kills +${formatNumber(composite.approvedKillsDelta)}`);
+  }
+  return bits.join(" • ");
+}
+
+function buildSeasonConsistencyBlock({ profile = null } = {}) {
+  const snapshots = getSeasonArchiveSnapshots(profile);
+  if (!snapshots.length) return null;
+
+  const coverage = buildSeasonArchiveCoverageState(snapshots);
+  if (snapshots.length < 7) {
+    return {
+      title: "Season consistency",
+      lines: [
+        [
+          "Season consistency: история короткая",
+          `${formatNumber(snapshots.length)}/7 дневных срезов`,
+          Number.isFinite(coverage.coveragePercent) ? `coverage ${formatPercent(coverage.coveragePercent, 0)}` : null,
+        ].filter(Boolean).join(" • "),
+        "Trust: partial • нужен хотя бы недельный baseline; rolling snapshots, not exact single-day deltas.",
+      ],
+    };
+  }
+
+  const composites = snapshots.map((entry) => buildSeasonSnapshotComposite(entry));
+  const hasExactDayDeltas = composites.some((entry) => entry.usesExactDayDeltas === true);
+  const best = selectSeasonCompositeExtreme(composites, "best");
+  const worst = selectSeasonCompositeExtreme(composites, "worst");
+  const totalScore = composites.reduce((sum, entry) => sum + entry.score, 0);
+  const averageScore = composites.length ? totalScore / composites.length : 0;
+  const variance = composites.length
+    ? composites.reduce((sum, entry) => sum + (entry.score - averageScore) ** 2, 0) / composites.length
+    : 0;
+  const deviation = Math.sqrt(Math.max(0, variance));
+  const spread = Number(best?.score) - Number(worst?.score);
+  const consistencyLabel = spread <= 15 && deviation <= 7
+    ? "ровный сезон"
+    : (spread <= 28 && deviation <= 12 ? "умеренно ровный" : "вспышками");
+  const trust = Number(coverage.coveragePercent) >= 90 ? "reliable" : "partial";
+
+  return {
+    title: "Season consistency",
+    lines: [
+      [
+        `Season consistency: ${consistencyLabel}`,
+        `average day ${buildLetterGrade(averageScore)} (${formatNumber(averageScore)})`,
+        `spread ${formatNumber(spread)}`,
+        `std ${formatHours(deviation)}`,
+        `snapshots ${formatNumber(snapshots.length)}`,
+      ].join(" • "),
+      formatSeasonCompositeSnapshotLine("Best snapshot day", best),
+      formatSeasonCompositeSnapshotLine("Weakest snapshot day", worst),
+      [
+        `Trust: ${trust}`,
+        Number.isFinite(coverage.coveragePercent) ? `coverage ${formatPercent(coverage.coveragePercent, 0)} (${formatNumber(coverage.coveredDays)}/${formatNumber(coverage.expectedDays)} дн)` : null,
+        coverage.missingDays > 0 ? `дыр ${formatNumber(coverage.missingDays)}` : "без дыр",
+        hasExactDayDeltas ? "exact day deltas available where cumulative counters exist" : "rolling snapshots, not exact single-day deltas",
+      ].filter(Boolean).join(" • "),
+    ].filter(Boolean),
+  };
+}
+
 function buildElapsedRecencyLabel(hours) {
   const normalizedHours = normalizeFiniteNumber(hours);
   if (!Number.isFinite(normalizedHours)) return null;
@@ -2059,6 +3535,468 @@ function buildViewerHeroBlock({
   };
 }
 
+function formatAxisPlaceSegment(axis = {}, label = "Ось") {
+  const grade = cleanString(axis?.grade, 10) || "N/A";
+  const place = axis?.place && typeof axis.place === "object" ? axis.place : {};
+  const rank = normalizeNullableFiniteNumber(place.rank);
+  const total = normalizeNullableFiniteNumber(place.total);
+  const populationSize = normalizeNullableFiniteNumber(axis?.populationSize, total);
+
+  if (Number.isFinite(rank) && Number.isFinite(total) && total > 0) {
+    return `${label} ${grade} (#${formatNumber(rank)}/${formatNumber(total)})`;
+  }
+
+  if (Number.isFinite(populationSize) && populationSize > 0) {
+    return `${label} ${grade} (baseline ${formatNumber(populationSize)}/${formatNumber(MIN_POPULATION_BASELINE)})`;
+  }
+
+  return `${label} ${grade} (место N/A)`;
+}
+
+function buildAxisConfidenceSummaryLine(tierlist = {}) {
+  const axes = VIEWER_TIERLIST_AXES
+    .map(([axisName]) => tierlist?.[axisName])
+    .filter((axis) => axis && typeof axis === "object");
+  if (!axes.length) return null;
+
+  const validAxes = axes.filter((axis) => cleanString(axis?.grade, 10) && axis.grade !== "N/A");
+  const reliableCount = axes.filter((axis) => cleanString(axis?.confidenceState, 40) === "reliable").length;
+  const partialCount = axes.filter((axis) => cleanString(axis?.confidenceState, 40) === "partial").length;
+  const unavailableCount = axes.filter((axis) => cleanString(axis?.confidenceState, 40) === "unavailable").length;
+  const maxDebuff = axes.reduce((max, axis) => {
+    const debuff = normalizeFiniteNumber(axis?.influenceDebuffPercent, 0);
+    return Number.isFinite(debuff) ? Math.max(max, debuff) : max;
+  }, 0);
+  const populationSizes = axes
+    .map((axis) => normalizeNullableFiniteNumber(axis?.populationSize))
+    .filter((entry) => Number.isFinite(entry) && entry > 0);
+  const minPopulationSize = populationSizes.length ? Math.min(...populationSizes) : null;
+
+  const parts = [`Надёжность букв: reliable ${formatNumber(reliableCount)}/${formatNumber(axes.length)}`];
+  if (partialCount > 0) parts.push(`partial ${formatNumber(partialCount)}`);
+  if (unavailableCount > 0) parts.push(`N/A ${formatNumber(unavailableCount)}`);
+  if (Number.isFinite(minPopulationSize)) parts.push(`baseline min ${formatNumber(minPopulationSize)}`);
+  parts.push(`max debuff ${formatNumber(maxDebuff)}%`);
+  if (validAxes.length < axes.length) {
+    parts.push("часть осей ждёт данных");
+  }
+
+  return parts.join(" • ");
+}
+
+function buildViewerLetterPlacesBlock({ isSelf = false, tierlist = null } = {}) {
+  if (isSelf || !tierlist) return null;
+
+  const segments = VIEWER_TIERLIST_AXES.map(([axisName, label]) => (
+    formatAxisPlaceSegment(tierlist?.[axisName], label)
+  ));
+  const confidenceLine = buildAxisConfidenceSummaryLine(tierlist);
+
+  return {
+    title: "Буквы и места",
+    lines: [
+      segments.slice(0, 3).join(" • "),
+      segments.slice(3).join(" • "),
+      confidenceLine,
+    ].filter(Boolean),
+  };
+}
+
+function resolveAntiteamSupportSummary(supportSummary = {}) {
+  const antiteam = supportSummary?.antiteam && typeof supportSummary.antiteam === "object"
+    ? supportSummary.antiteam
+    : {};
+  if (antiteam.sourceAvailable !== true) return null;
+
+  return {
+    sourceAvailable: true,
+    responded: normalizeFiniteNumber(antiteam.responded, 0),
+    linkGranted: normalizeFiniteNumber(antiteam.linkGranted, 0),
+    confirmedArrived: normalizeFiniteNumber(antiteam.confirmedArrived, 0),
+    lastHelpedAt: cleanString(antiteam.lastHelpedAt, 80) || null,
+    source: cleanString(antiteam.source, 120) || "sot.antiteam.stats.helpers",
+  };
+}
+
+function resolveProfileAntiteamSupportSummary(profile = {}) {
+  const summarySupport = profile?.summary?.support && typeof profile.summary.support === "object"
+    ? profile.summary.support
+    : null;
+  const domainSupport = profile?.domains?.support && typeof profile.domains.support === "object"
+    ? profile.domains.support
+    : null;
+  return resolveAntiteamSupportSummary(summarySupport || domainSupport || {});
+}
+
+function buildAntiteamSupportPopulationSamples(populationProfiles = []) {
+  const samples = [];
+  for (const entry of normalizePopulationProfileEntries(populationProfiles)) {
+    const support = resolveProfileAntiteamSupportSummary(entry.profile);
+    if (!support) continue;
+    if (Number.isFinite(support.confirmedArrived)) {
+      samples.push(support.confirmedArrived);
+    }
+  }
+  return samples;
+}
+
+function buildAntiteamSupportState({ supportSummary = {}, populationProfiles = [] } = {}) {
+  const support = resolveAntiteamSupportSummary(supportSummary);
+  if (!support) {
+    return {
+      available: false,
+      points: null,
+      place: buildAxisPlace(null, []),
+      populationSize: 0,
+      confidenceState: "unavailable",
+      influenceDebuffPercent: 100,
+    };
+  }
+
+  const populationSamples = buildAntiteamSupportPopulationSamples(populationProfiles);
+  const place = buildAxisPlace(support.confirmedArrived, populationSamples);
+  const hasPopulationPlace = Number.isFinite(place.rank) && Number.isFinite(place.total) && place.total >= MIN_POPULATION_BASELINE;
+
+  return {
+    available: true,
+    ...support,
+    points: support.confirmedArrived,
+    place,
+    populationSize: populationSamples.length,
+    confidenceState: hasPopulationPlace ? "reliable" : "partial",
+    influenceDebuffPercent: hasPopulationPlace ? 0 : 15,
+  };
+}
+
+function buildAntiteamSupportPlaceLine(state = {}) {
+  const rank = normalizeNullableFiniteNumber(state?.place?.rank);
+  const total = normalizeNullableFiniteNumber(state?.place?.total);
+  if (Number.isFinite(rank) && Number.isFinite(total) && total > 0) {
+    return `Место по antiteam support: #${formatNumber(rank)}/${formatNumber(total)}`;
+  }
+  return `Место по antiteam support: baseline ${formatNumber(state.populationSize)}/${formatNumber(MIN_POPULATION_BASELINE)}`;
+}
+
+function buildAntiteamSupportBlock({ supportSummary = {}, populationProfiles = [] } = {}) {
+  const state = buildAntiteamSupportState({ supportSummary, populationProfiles });
+  if (!state.available) return null;
+
+  const totals = [
+    `confirmed arrivals ${formatNumber(state.confirmedArrived)}`,
+    `responded ${formatNumber(state.responded)}`,
+    `link grants ${formatNumber(state.linkGranted)}`,
+  ];
+  const reliability = [
+    `confidence ${state.confidenceState}`,
+    `debuff ${formatNumber(state.influenceDebuffPercent)}%`,
+    `source ${state.source}`,
+  ];
+
+  if (state.lastHelpedAt) {
+    reliability.push(`last help ${formatDateTime(state.lastHelpedAt)}`);
+  }
+
+  return {
+    title: "Antiteam support",
+    lines: [
+      `Support points: ${totals.join(" • ")}`,
+      buildAntiteamSupportPlaceLine(state),
+      reliability.join(" • "),
+    ],
+  };
+}
+
+function buildActiveVoiceShare(activitySummary = {}, voiceSummary = {}) {
+  const effectiveVoiceHours = normalizeNullableFiniteNumber(activitySummary?.effectiveVoiceHours30d);
+  const effectiveActiveVoiceHours = normalizeNullableFiniteNumber(activitySummary?.effectiveActiveVoiceSignalHours30d);
+  if (Number.isFinite(effectiveVoiceHours) && effectiveVoiceHours > 0 && Number.isFinite(effectiveActiveVoiceHours)) {
+    return clampScore((effectiveActiveVoiceHours / effectiveVoiceHours) * 100);
+  }
+
+  const activeVoiceSeconds = normalizeNullableFiniteNumber(activitySummary?.activeVoiceDurationSeconds30d);
+  const voiceSeconds = normalizeNullableFiniteNumber(voiceSummary?.voiceDurationSeconds30d ?? activitySummary?.voiceDurationSeconds30d);
+  if (Number.isFinite(voiceSeconds) && voiceSeconds > 0 && Number.isFinite(activeVoiceSeconds)) {
+    return clampScore((activeVoiceSeconds / voiceSeconds) * 100);
+  }
+
+  return null;
+}
+
+function buildKillsPerCoveredDay(progressState = {}) {
+  const latestWindow = progressState?.latestGrowthWindow && typeof progressState.latestGrowthWindow === "object"
+    ? progressState.latestGrowthWindow
+    : null;
+  const deltaKills = normalizeNullableFiniteNumber(latestWindow?.deltaKills);
+  const wallClockDays = normalizeNullableFiniteNumber(latestWindow?.wallClockDays);
+  if (!Number.isFinite(deltaKills) || !Number.isFinite(wallClockDays) || wallClockDays <= 0) return null;
+  return deltaKills / wallClockDays;
+}
+
+function secondsToHours(value) {
+  const seconds = normalizeNullableFiniteNumber(value);
+  return Number.isFinite(seconds) ? seconds / 3600 : null;
+}
+
+function minutesToHours(value) {
+  const minutes = normalizeNullableFiniteNumber(value);
+  return Number.isFinite(minutes) ? minutes / 60 : null;
+}
+
+function buildRelativeComponentRawValues({
+  activitySummary = {},
+  robloxSummary = {},
+  voiceSummary = {},
+  progressState = {},
+  supportSummary = {},
+} = {}) {
+  const antiteamSupport = resolveAntiteamSupportSummary(supportSummary);
+  return {
+    voiceHours30d: secondsToHours(voiceSummary?.voiceDurationSeconds30d),
+    activeVoiceShare30d: buildActiveVoiceShare(activitySummary, voiceSummary),
+    voiceSessions30d: normalizeNullableFiniteNumber(voiceSummary?.sessionCount30d ?? activitySummary?.voiceSessions30d),
+    discordSessions30d: normalizeNullableFiniteNumber(activitySummary?.sessions30d),
+    discordMessages30d: normalizeNullableFiniteNumber(activitySummary?.messages30d),
+    jjsHours30d: minutesToHours(robloxSummary?.jjsMinutes30d),
+    jjsSessionCount: normalizeNullableFiniteNumber(robloxSummary?.sessionCount),
+    killsPerCoveredDay: buildKillsPerCoveredDay(progressState),
+    antiteamSupportPoints: antiteamSupport ? normalizeNullableFiniteNumber(antiteamSupport.confirmedArrived) : null,
+  };
+}
+
+function normalizeRelativeComponentValue(value) {
+  return Number.isFinite(value) ? value : null;
+}
+
+const RELATIVE_COMPONENT_DEFINITIONS = Object.freeze([
+  {
+    key: "voiceHours30d",
+    snapshotAxisKey: "voice_hours_30d",
+    label: "voice hours",
+    source: "profile.summary.voice.voiceDurationSeconds30d",
+    format: (value) => `${formatHours(value)} ч`,
+  },
+  {
+    key: "activeVoiceShare30d",
+    snapshotAxisKey: "active_voice_share_30d",
+    label: "active voice",
+    source: "profile.summary.activity.effectiveActiveVoiceSignalHours30d",
+    format: (value) => formatPercent(value, 0),
+  },
+  {
+    key: "voiceSessions30d",
+    snapshotAxisKey: "voice_sessions_30d",
+    label: "voice sessions",
+    source: "profile.summary.voice.sessionCount30d",
+    format: (value) => formatNumber(value),
+  },
+  {
+    key: "discordSessions30d",
+    snapshotAxisKey: "discord_sessions_30d",
+    label: "Discord sessions",
+    source: "profile.summary.activity.sessions30d",
+    format: (value) => formatNumber(value),
+  },
+  {
+    key: "discordMessages30d",
+    snapshotAxisKey: "discord_messages_30d",
+    label: "messages",
+    source: "profile.summary.activity.messages30d",
+    format: (value) => formatNumber(value),
+  },
+  {
+    key: "jjsHours30d",
+    snapshotAxisKey: "jjs_time_30d",
+    label: "JJS time",
+    source: "profile.summary.roblox.jjsMinutes30d",
+    format: (value) => `${formatHours(value)} ч`,
+  },
+  {
+    key: "jjsSessionCount",
+    snapshotAxisKey: "jjs_session_count",
+    label: "JJS sessions",
+    source: "profile.summary.roblox.sessionCount",
+    format: (value) => formatNumber(value),
+  },
+  {
+    key: "killsPerCoveredDay",
+    snapshotAxisKey: "kills_per_covered_day",
+    label: "kills/day",
+    source: "profile.domains.progress.proofWindows",
+    proofBacked: true,
+    format: (value) => formatHours(value, 1),
+  },
+  {
+    key: "antiteamSupportPoints",
+    snapshotAxisKey: "antiteam_support_points",
+    label: "antiteam",
+    source: "profile.summary.support.antiteam.confirmedArrived",
+    format: (value) => formatNumber(value),
+  },
+]);
+
+function resolveProfileSummaryDomain(profile = {}, key = "") {
+  const summary = profile?.summary && typeof profile.summary === "object" ? profile.summary : {};
+  const domains = profile?.domains && typeof profile.domains === "object" ? profile.domains : {};
+  return summary[key] && typeof summary[key] === "object"
+    ? summary[key]
+    : (domains[key] && typeof domains[key] === "object" ? domains[key] : {});
+}
+
+function resolvePopulationSnapshotAxisValues(populationSnapshot = null, axisKey = "") {
+  const axis = populationSnapshot?.axes?.[axisKey];
+  const values = axis && typeof axis === "object" && Array.isArray(axis.values) ? axis.values : [];
+  return values
+    .map((entry) => normalizeFiniteNumber(entry))
+    .filter((entry) => Number.isFinite(entry));
+}
+
+function buildRelativeComponentPopulationSamples({ populationProfiles = [], populationSnapshot = null, approvedEntries = [], now } = {}) {
+  const samples = Object.fromEntries(RELATIVE_COMPONENT_DEFINITIONS.map((definition) => [definition.key, []]));
+  let hasPersistedAxis = false;
+  for (const definition of RELATIVE_COMPONENT_DEFINITIONS) {
+    const persistedValues = resolvePopulationSnapshotAxisValues(populationSnapshot, definition.snapshotAxisKey);
+    if (!persistedValues.length) continue;
+    samples[definition.key] = persistedValues;
+    hasPersistedAxis = true;
+  }
+  if (hasPersistedAxis) return samples;
+
+  for (const entry of normalizePopulationProfileEntries(populationProfiles)) {
+    const profile = entry.profile;
+    const summary = profile?.summary && typeof profile.summary === "object" ? profile.summary : {};
+    const onboardingSummary = summary.onboarding && typeof summary.onboarding === "object" ? summary.onboarding : {};
+    const activitySummary = resolveProfileSummaryDomain(profile, "activity");
+    const robloxSummary = resolveProfileSummaryDomain(profile, "roblox");
+    const voiceSummary = resolveProfileSummaryDomain(profile, "voice");
+    const supportSummary = resolveProfileSummaryDomain(profile, "support");
+    const progressState = buildProgressSynergyState({
+      profile,
+      robloxSummary,
+      approvedKills: normalizeNullableFiniteNumber(profile?.approvedKills ?? onboardingSummary.approvedKills),
+      now,
+    });
+    const rawValues = buildRelativeComponentRawValues({
+      activitySummary,
+      robloxSummary,
+      voiceSummary,
+      progressState,
+      supportSummary,
+    });
+
+    for (const definition of RELATIVE_COMPONENT_DEFINITIONS) {
+      const value = normalizeRelativeComponentValue(rawValues[definition.key]);
+      if (Number.isFinite(value)) samples[definition.key].push(value);
+    }
+  }
+
+  return samples;
+}
+
+function buildRelativeComponentsState({
+  activitySummary = {},
+  robloxSummary = {},
+  voiceSummary = {},
+  progressState = {},
+  supportSummary = {},
+  populationProfiles = [],
+  populationSnapshot = null,
+  approvedEntries = [],
+  now,
+} = {}) {
+  const rawValues = buildRelativeComponentRawValues({
+    activitySummary,
+    robloxSummary,
+    voiceSummary,
+    progressState,
+    supportSummary,
+  });
+  const populationSamples = buildRelativeComponentPopulationSamples({
+    populationProfiles,
+    populationSnapshot,
+    approvedEntries,
+    now,
+  });
+  const proofTrust = buildProofBackedAxisTrustOptions(progressState?.proofGap);
+
+  return RELATIVE_COMPONENT_DEFINITIONS.map((definition) => {
+    const rawValue = normalizeRelativeComponentValue(rawValues[definition.key]);
+    const samples = populationSamples[definition.key] || [];
+    const place = buildAxisPlace(rawValue, samples);
+    if (!Number.isFinite(rawValue)) {
+      return {
+        ...definition,
+        rawValue: null,
+        place,
+        populationSize: samples.length,
+        confidenceState: "unavailable",
+        freshnessState: "unavailable",
+        influenceDebuffPercent: 100,
+      };
+    }
+
+    const hasPopulationPlace = Number.isFinite(place.rank) && Number.isFinite(place.total) && place.total >= MIN_POPULATION_BASELINE;
+    const baseDebuff = hasPopulationPlace ? 0 : 15;
+    const trustDebuff = definition.proofBacked ? normalizeInfluenceDebuffPercent(proofTrust.influenceDebuffPercent, 0) : 0;
+    const freshnessState = definition.proofBacked && proofTrust.freshnessState
+      ? proofTrust.freshnessState
+      : (hasPopulationPlace ? "fresh" : "partial");
+
+    return {
+      ...definition,
+      rawValue,
+      displayValue: definition.format(rawValue),
+      place,
+      populationSize: samples.length,
+      confidenceState: hasPopulationPlace ? "reliable" : "partial",
+      freshnessState,
+      influenceDebuffPercent: Math.max(baseDebuff, trustDebuff),
+    };
+  });
+}
+
+function formatRelativeComponentSegment(component = {}) {
+  if (!Number.isFinite(component?.rawValue)) {
+    return `${component.label} N/A`;
+  }
+
+  const rank = normalizeNullableFiniteNumber(component?.place?.rank);
+  const total = normalizeNullableFiniteNumber(component?.place?.total);
+  const placeText = Number.isFinite(rank) && Number.isFinite(total) && total > 0
+    ? `#${formatNumber(rank)}/${formatNumber(total)}`
+    : `baseline ${formatNumber(component.populationSize)}/${formatNumber(MIN_POPULATION_BASELINE)}`;
+  const debuff = normalizeInfluenceDebuffPercent(component.influenceDebuffPercent, 0);
+  const debuffText = debuff > 0 ? `, debuff ${formatNumber(debuff)}%` : "";
+  return `${component.label} ${component.displayValue} (${placeText}, ${component.confidenceState}${debuffText})`;
+}
+
+function buildRelativeComponentsBlock(options = {}) {
+  const components = buildRelativeComponentsState(options);
+  const available = components.filter((component) => Number.isFinite(component.rawValue));
+  if (!available.length) return null;
+
+  const byKey = Object.fromEntries(components.map((component) => [component.key, component]));
+  return {
+    title: "Места по метрикам",
+    lines: [
+      [
+        formatRelativeComponentSegment(byKey.voiceHours30d),
+        formatRelativeComponentSegment(byKey.activeVoiceShare30d),
+        formatRelativeComponentSegment(byKey.voiceSessions30d),
+      ].join(" • "),
+      [
+        formatRelativeComponentSegment(byKey.discordMessages30d),
+        formatRelativeComponentSegment(byKey.discordSessions30d),
+        formatRelativeComponentSegment(byKey.jjsHours30d),
+        formatRelativeComponentSegment(byKey.jjsSessionCount),
+      ].join(" • "),
+      [
+        formatRelativeComponentSegment(byKey.killsPerCoveredDay),
+        formatRelativeComponentSegment(byKey.antiteamSupportPoints),
+      ].join(" • "),
+    ].filter(Boolean),
+  };
+}
+
 function buildEstimatedTargetLine(label, target = null, paceKillsPerJjsHour = null) {
   if (!target) return null;
   if (Number.isFinite(paceKillsPerJjsHour) && paceKillsPerJjsHour > 0) {
@@ -2164,21 +4102,88 @@ function buildSelfProgressBlock({
   };
 }
 
-function buildProgressSynergyState({ profile = null, robloxSummary = {}, recentKillChanges = [], now } = {}) {
+function buildProofGapVerdict(state = {}) {
+  switch (cleanString(state?.freshnessState, 40)) {
+    case "fresh":
+      return "разрыв маленький";
+    case "partial":
+      return "разрыв уже заметный";
+    case "stale":
+      return "разрыв большой";
+    case "outdated":
+      return "proof сильно отстал от игры";
+    default:
+      return "доверие к proof неясно";
+  }
+}
+
+function buildProofGapBlock({ progressState = {} } = {}) {
+  const state = progressState?.proofGap && typeof progressState.proofGap === "object"
+    ? progressState.proofGap
+    : null;
+  if (!state) return null;
+
+  if (!state.hasProof) {
+    if (!Number.isFinite(state.currentApprovedKills)) return null;
+    return {
+      title: "Proof gap",
+      lines: [
+        `Proof gap: approved proof-window не найден • текущие approved kills ${formatNumber(state.currentApprovedKills)}`,
+        `Trust: ${state.freshnessState} • kill-backed debuff ${formatNumber(state.influenceDebuffPercent)}% • source ${state.source}`,
+      ],
+    };
+  }
+
+  const currentApprovedKills = normalizeNullableFiniteNumber(state.currentApprovedKills);
+  const latestApprovedKills = normalizeNullableFiniteNumber(state.latestApprovedKills);
+  const proofBits = [
+    `last proof ${state.reviewedAt ? formatDateTime(state.reviewedAt) : "—"}`,
+    Number.isFinite(state.hoursSinceLastApprovedKillsUpdate)
+      ? `${formatHours(state.hoursSinceLastApprovedKillsUpdate)} ч назад`
+      : "age N/A",
+  ];
+  if (Number.isFinite(latestApprovedKills)) {
+    proofBits.push(`approved ${formatNumber(latestApprovedKills)} kills`);
+  }
+  if (Number.isFinite(currentApprovedKills) && Number.isFinite(latestApprovedKills) && currentApprovedKills !== latestApprovedKills) {
+    proofBits.push(`current ${formatNumber(currentApprovedKills)} (${formatSignedNumber(currentApprovedKills - latestApprovedKills)})`);
+  }
+
+  const jjsLine = state.hasReliableJjsSinceLastApproved && Number.isFinite(state.jjsHoursSinceLastApprovedKillsUpdate)
+    ? `JJS после proof: ${formatHours(state.jjsHoursSinceLastApprovedKillsUpdate)} ч • ${buildProofGapVerdict(state)}`
+    : `JJS после proof: Roblox baseline ненадёжен • ${buildProofGapVerdict(state)}`;
+
+  return {
+    title: "Proof gap",
+    lines: [
+      `Proof gap: ${proofBits.join(" • ")}`,
+      jjsLine,
+      `Trust: ${state.freshnessState} • confidence ${state.confidenceState} • kill-backed debuff ${formatNumber(state.influenceDebuffPercent)}% • source ${state.source}`,
+    ],
+  };
+}
+
+function buildProgressSynergyState({ profile = null, robloxSummary = {}, recentKillChanges = [], approvedKills: optionApprovedKills = null, now } = {}) {
   const latestProofWindow = getLatestProofWindow(profile);
   const hoursSinceLastApprovedKillsUpdate = computeElapsedHours(latestProofWindow?.reviewedAt, now);
   const growthWindows = buildGrowthWindows({ profile, recentKillChanges });
   const latestGrowthWindow = growthWindows[0] || null;
   const windowComparison = buildWindowComparisonState(growthWindows);
   const lifetimePace = buildLifetimePaceState(growthWindows);
+  const approvedKills = normalizeNullableFiniteNumber(profile?.approvedKills ?? profile?.summary?.onboarding?.approvedKills ?? optionApprovedKills);
 
   if (!latestProofWindow) {
+    const proofGap = buildProofGapState({
+      latestProofWindow: null,
+      approvedKills,
+    });
     return {
       latestProofWindow: null,
       latestGrowthWindow,
       growthWindows,
       windowComparison,
       lifetimePace,
+      proofGap,
       hoursSinceLastApprovedKillsUpdate: null,
       jjsHoursSinceLastApprovedKillsUpdate: null,
       jjsMinutesSinceLastApprovedKillsUpdate: null,
@@ -2196,6 +4201,13 @@ function buildProgressSynergyState({ profile = null, robloxSummary = {}, recentK
   const jjsHoursSinceLastApprovedKillsUpdate = hasReliableJjsSinceLastApproved
     ? jjsMinutesSinceLastApprovedKillsUpdate / 60
     : null;
+  const proofGap = buildProofGapState({
+    latestProofWindow,
+    approvedKills,
+    hoursSinceLastApprovedKillsUpdate,
+    jjsHoursSinceLastApprovedKillsUpdate,
+    hasReliableJjsSinceLastApproved,
+  });
 
   return {
     latestProofWindow,
@@ -2203,6 +4215,7 @@ function buildProgressSynergyState({ profile = null, robloxSummary = {}, recentK
     growthWindows,
     windowComparison,
     lifetimePace,
+    proofGap,
     hoursSinceLastApprovedKillsUpdate,
     jjsHoursSinceLastApprovedKillsUpdate,
     jjsMinutesSinceLastApprovedKillsUpdate,
@@ -2227,10 +4240,22 @@ function buildProfileSynergyState(options = {}) {
         ...options,
         progressState: progress,
       }),
+      proofGap: buildProofGapBlock({
+        progressState: progress,
+      }),
       friendOverlap: buildFriendOverlapBlock({
         ...options,
       }),
       friendsAlreadyHere: buildFriendsAlreadyHereBlock({
+        ...options,
+      }),
+      verifiedCircle: buildVerifiedCircleBlock({
+        ...options,
+      }),
+      socialMap: buildSocialMapBlock({
+        ...options,
+      }),
+      voiceGameOverlap: buildVoiceGameOverlapBlock({
         ...options,
       }),
       socialEvolution: buildSocialEvolutionBlock({
@@ -2239,13 +4264,35 @@ function buildProfileSynergyState(options = {}) {
       voiceSummary: buildVoiceSummaryBlock({
         ...options,
       }),
+      activityMix: buildActivityMixBlock({
+        ...options,
+      }),
+      farmProfile: buildFarmProfileBlock({
+        ...options,
+      }),
+      relativeComponents: buildRelativeComponentsBlock({
+        ...options,
+        progressState: progress,
+      }),
       primeTime: buildPrimeTimeBlock({
+        ...options,
+      }),
+      primeTimeConfidence: buildPrimeTimeConfidenceBlock({
         ...options,
       }),
       bestPeriods: buildBestPeriodsBlock({
         ...options,
       }),
       seasonStory: buildSeasonStoryBlock({
+        ...options,
+      }),
+      weeklyRollups: buildWeeklyRollupsBlock({
+        ...options,
+      }),
+      seasonConsistency: buildSeasonConsistencyBlock({
+        ...options,
+      }),
+      comebackMetrics: buildComebackMetricsBlock({
         ...options,
       }),
       personalWarReadiness: buildPersonalWarReadinessBlock({
@@ -2259,6 +4306,13 @@ function buildProfileSynergyState(options = {}) {
         ...options,
         progressState: progress,
         tierlist: viewerTierlist,
+      }),
+      viewerLetterPlaces: buildViewerLetterPlacesBlock({
+        ...options,
+        tierlist: viewerTierlist,
+      }),
+      antiteamSupport: buildAntiteamSupportBlock({
+        ...options,
       }),
       viewerHero: buildViewerHeroBlock({
         ...options,

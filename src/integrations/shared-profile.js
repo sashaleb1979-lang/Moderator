@@ -16,11 +16,15 @@ const ROBLOX_FREQUENT_NON_FRIEND_MINUTES = 60;
 const ROBLOX_FREQUENT_NON_FRIEND_SESSIONS = 2;
 const ROBLOX_PLAYTIME_BUCKET_LIMIT = 40;
 const ROBLOX_PLAYTIME_HOURLY_BUCKET_LIMIT = ROBLOX_PLAYTIME_BUCKET_LIMIT * 24;
+const ROBLOX_SESSION_HISTORY_LIMIT = 120;
 const PROFILE_PROOF_WINDOW_LIMIT = 10;
 const PROFILE_SEASON_ARCHIVE_LIMIT = 120;
 const PROFILE_SEASON_ARCHIVE_PEER_LIMIT = 10;
 const PROFILE_VOICE_TOP_CHANNEL_LIMIT = 10;
+const PROFILE_VOICE_CONTACT_LIMIT = 20;
 const PROFILE_SOCIAL_SUGGESTION_LIMIT = 10;
+const PROFILE_SOCIAL_GRAPH_TIE_LIMIT = 40;
+const PROFILE_SOCIAL_MUTUAL_FRIEND_LIMIT = 8;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 const sharedProfileRuntimeConfig = {
@@ -375,8 +379,54 @@ function normalizeRobloxPlaytimeHourlyBuckets(value = {}) {
   );
 }
 
+function normalizeRobloxSessionHistoryEntry(value = {}) {
+  const source = value && typeof value === "object" ? value : {};
+  const startedAt = normalizeNullableString(source.startedAt, 80);
+  const endedAt = normalizeNullableString(source.endedAt, 80);
+  const durationMinutes = normalizeNullableNumber(source.durationMinutes, { min: 0 })
+    ?? (() => {
+      const startMs = Date.parse(startedAt || "");
+      const endMs = Date.parse(endedAt || "");
+      if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) return null;
+      return Math.round((endMs - startMs) / 60000);
+    })();
+
+  if (!startedAt || !endedAt || !Number.isFinite(durationMinutes) || durationMinutes <= 0) return null;
+
+  return {
+    startedAt,
+    endedAt,
+    durationMinutes: Math.max(0, Math.round(durationMinutes)),
+    gameId: normalizeNullableString(source.gameId, 120),
+    source: normalizeNullableString(source.source, 80) || "roblox.playtime",
+  };
+}
+
+function normalizeRobloxSessionHistory(value = [], limit = ROBLOX_SESSION_HISTORY_LIMIT) {
+  const normalized = [];
+  const seen = new Set();
+
+  for (const entry of Array.isArray(value) ? value : []) {
+    const session = normalizeRobloxSessionHistoryEntry(entry);
+    if (!session) continue;
+    const key = `${session.startedAt}:${session.endedAt}:${session.gameId || ""}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    normalized.push(session);
+  }
+
+  return normalized
+    .sort((left, right) => {
+      const endedDiff = String(left.endedAt || "").localeCompare(String(right.endedAt || ""));
+      if (endedDiff) return endedDiff;
+      return String(left.startedAt || "").localeCompare(String(right.startedAt || ""));
+    })
+    .slice(-Math.max(1, normalizeNonNegativeInteger(limit, ROBLOX_SESSION_HISTORY_LIMIT) || ROBLOX_SESSION_HISTORY_LIMIT));
+}
+
 function normalizeRobloxPlaytimeState(value = {}) {
   const source = value && typeof value === "object" ? value : {};
+  const sessionHistory = normalizeRobloxSessionHistory(source.sessionHistory);
   return {
     totalJjsMinutes: normalizeNonNegativeInteger(source.totalJjsMinutes, 0),
     jjsMinutes7d: normalizeNonNegativeInteger(source.jjsMinutes7d, 0),
@@ -386,6 +436,7 @@ function normalizeRobloxPlaytimeState(value = {}) {
     lastSeenInJjsAt: normalizeNullableString(source.lastSeenInJjsAt, 80),
     dailyBuckets: normalizeRobloxPlaytimeDailyBuckets(source.dailyBuckets),
     hourlyBucketsMsk: normalizeRobloxPlaytimeHourlyBuckets(source.hourlyBucketsMsk),
+    ...(sessionHistory.length ? { sessionHistory } : {}),
   };
 }
 
@@ -469,6 +520,21 @@ function normalizeProgressDomainState(value = {}) {
   };
 }
 
+function normalizeSeasonArchiveDayDeltas(value = {}) {
+  const source = value && typeof value === "object" ? value : {};
+  return {
+    hasPreviousSnapshot: source.hasPreviousSnapshot === true,
+    jjsMinutes: normalizeNullableInteger(source.jjsMinutes, { min: 0 }),
+    totalJjsMinutes: normalizeNullableInteger(source.totalJjsMinutes, { min: 0 }),
+    sessionCount: normalizeNullableInteger(source.sessionCount, { min: 0 }),
+    approvedKills: normalizeNullableInteger(source.approvedKills, { min: 0 }),
+    antiteamSupportPoints: normalizeNullableInteger(source.antiteamSupportPoints, { min: 0 }),
+    voiceSeconds: normalizeNullableInteger(source.voiceSeconds, { min: 0 }),
+    voiceSessionCount: normalizeNullableInteger(source.voiceSessionCount, { min: 0 }),
+    confidenceState: normalizeNullableString(source.confidenceState, 40) || (source.hasPreviousSnapshot === true ? "partial" : "heuristic"),
+  };
+}
+
 function normalizeSeasonArchiveSnapshot(value = {}) {
   const source = value && typeof value === "object" ? value : {};
   const dayKey = normalizeIsoDayKey(source.dayKey) || deriveIsoDayKey(source.capturedAt);
@@ -512,15 +578,60 @@ function normalizeSeasonArchiveSnapshot(value = {}) {
     voiceDurationSeconds7d: normalizeNonNegativeInteger(source.voiceDurationSeconds7d, 0),
     voiceSessionCount30d: normalizeNonNegativeInteger(source.voiceSessionCount30d, 0),
     voiceDurationSeconds30d: normalizeNonNegativeInteger(source.voiceDurationSeconds30d, 0),
+    lifetimeVoiceSessionCount: normalizeNonNegativeInteger(source.lifetimeVoiceSessionCount, 0),
+    lifetimeVoiceDurationSeconds: normalizeNonNegativeInteger(source.lifetimeVoiceDurationSeconds, 0),
     lastVoiceSeenAt: normalizeNullableString(source.lastVoiceSeenAt, 80),
     socialSuggestionCount: normalizeNonNegativeInteger(source.socialSuggestionCount, 0),
     socialSuggestionPeerUserIds: normalizeStringArray(source.socialSuggestionPeerUserIds, PROFILE_SEASON_ARCHIVE_PEER_LIMIT, 80),
+    antiteamSupportPoints: normalizeNullableInteger(source.antiteamSupportPoints, { min: 0 }),
+    dayDeltas: normalizeSeasonArchiveDayDeltas(source.dayDeltas),
+  };
+}
+
+function normalizeSeasonArchiveWeeklyRollup(value = {}) {
+  const source = value && typeof value === "object" ? value : {};
+  const weekKey = normalizeNullableString(source.weekKey, 20);
+  const startDayKey = normalizeIsoDayKey(source.startDayKey);
+  const endDayKey = normalizeIsoDayKey(source.endDayKey);
+  if (!weekKey || !startDayKey || !endDayKey) return null;
+  const coverageSource = source.coverage && typeof source.coverage === "object" ? source.coverage : {};
+  const totalsSource = source.totals && typeof source.totals === "object" ? source.totals : {};
+  const compositeSource = source.composite && typeof source.composite === "object" ? source.composite : {};
+
+  return {
+    weekKey,
+    startDayKey,
+    endDayKey,
+    capturedAt: normalizeNullableString(source.capturedAt, 80),
+    coverage: {
+      expectedDays: normalizeNonNegativeInteger(coverageSource.expectedDays, 7),
+      coveredDays: normalizeNonNegativeInteger(coverageSource.coveredDays, 0),
+      missingDays: normalizeNonNegativeInteger(coverageSource.missingDays, 0),
+      coveragePercent: normalizeNullableNumber(coverageSource.coveragePercent, { min: 0, max: 100 }),
+      completePercent: normalizeNullableNumber(coverageSource.completePercent, { min: 0, max: 100 }),
+      fragmentedPercent: normalizeNullableNumber(coverageSource.fragmentedPercent, { min: 0, max: 100 }),
+    },
+    totals: {
+      jjsMinutes: normalizeNonNegativeInteger(totalsSource.jjsMinutes, 0),
+      messages: normalizeNonNegativeInteger(totalsSource.messages, 0),
+      sessions: normalizeNonNegativeInteger(totalsSource.sessions, 0),
+      voiceSeconds: normalizeNonNegativeInteger(totalsSource.voiceSeconds, 0),
+      antiteamPointsDelta: normalizeNullableInteger(totalsSource.antiteamPointsDelta, { min: 0 }),
+      approvedKillsDelta: normalizeNullableInteger(totalsSource.approvedKillsDelta, { min: 0 }),
+    },
+    composite: {
+      score: normalizeNullableInteger(compositeSource.score, { min: 0, max: 100 }),
+      grade: normalizeNullableString(compositeSource.grade, 10),
+      confidenceState: normalizeNullableString(compositeSource.confidenceState, 40),
+      influenceDebuffPercent: normalizeNullableInteger(compositeSource.influenceDebuffPercent, { min: 0, max: 100 }),
+    },
   };
 }
 
 function normalizeSeasonArchiveDomainState(value = {}) {
   const source = value && typeof value === "object" ? value : {};
   const snapshotsByDayKey = new Map();
+  const rollupsByWeekKey = new Map();
 
   for (const entry of Array.isArray(source.snapshots) ? source.snapshots : []) {
     const normalized = normalizeSeasonArchiveSnapshot(entry);
@@ -531,9 +642,21 @@ function normalizeSeasonArchiveDomainState(value = {}) {
     }
   }
 
+  for (const entry of Array.isArray(source.weeklyRollups) ? source.weeklyRollups : []) {
+    const normalized = normalizeSeasonArchiveWeeklyRollup(entry);
+    if (!normalized) continue;
+    const current = rollupsByWeekKey.get(normalized.weekKey);
+    if (!current || String(current.capturedAt || "") <= String(normalized.capturedAt || "")) {
+      rollupsByWeekKey.set(normalized.weekKey, normalized);
+    }
+  }
+
   return {
     snapshots: [...snapshotsByDayKey.values()]
       .sort((left, right) => left.dayKey.localeCompare(right.dayKey))
+      .slice(-PROFILE_SEASON_ARCHIVE_LIMIT),
+    weeklyRollups: [...rollupsByWeekKey.values()]
+      .sort((left, right) => left.weekKey.localeCompare(right.weekKey))
       .slice(-PROFILE_SEASON_ARCHIVE_LIMIT),
   };
 }
@@ -591,6 +714,71 @@ function normalizeVoiceSummaryState(value = {}) {
   };
 }
 
+function normalizeVoiceContactEntry(value = {}) {
+  const source = value && typeof value === "object" ? value : {};
+  const peerUserId = normalizeNullableString(source.peerUserId ?? source.userId, 80);
+  if (!peerUserId) return null;
+
+  return {
+    peerUserId,
+    peerDisplayName: normalizeNullableString(source.peerDisplayName ?? source.displayName, 120),
+    voiceSecondsTogether: normalizeNonNegativeInteger(
+      source.voiceSecondsTogether ?? source.durationSecondsTogether ?? source.durationSeconds ?? source.secondsTogether,
+      0
+    ),
+    voiceSessionsTogether: normalizeNonNegativeInteger(
+      source.voiceSessionsTogether ?? source.sessionCount ?? source.sessionsTogether,
+      0
+    ),
+    sharedChannelIds: normalizeStringArray(source.sharedChannelIds, PROFILE_VOICE_TOP_CHANNEL_LIMIT, 80),
+    lastSeenTogetherAt: normalizeNullableString(source.lastSeenTogetherAt ?? source.lastVoiceSeenAt, 80),
+    sourceComputedAt: normalizeNullableString(source.sourceComputedAt ?? source.computedAt, 80),
+    confidenceState: normalizeNullableString(source.confidenceState, 40) || "heuristic",
+    source: normalizeNullableString(source.source, 120) || "news.voice.sessions",
+  };
+}
+
+function normalizeVoiceContactEntries(value = [], limit = PROFILE_VOICE_CONTACT_LIMIT) {
+  const contactsByPeer = new Map();
+
+  for (const entry of Array.isArray(value) ? value : []) {
+    const normalized = normalizeVoiceContactEntry(entry);
+    if (!normalized) continue;
+    const existing = contactsByPeer.get(normalized.peerUserId);
+    if (!existing) {
+      contactsByPeer.set(normalized.peerUserId, normalized);
+      continue;
+    }
+
+    contactsByPeer.set(normalized.peerUserId, {
+      ...existing,
+      peerDisplayName: existing.peerDisplayName || normalized.peerDisplayName,
+      voiceSecondsTogether: existing.voiceSecondsTogether + normalized.voiceSecondsTogether,
+      voiceSessionsTogether: existing.voiceSessionsTogether + normalized.voiceSessionsTogether,
+      sharedChannelIds: normalizeStringArray([
+        ...existing.sharedChannelIds,
+        ...normalized.sharedChannelIds,
+      ], PROFILE_VOICE_TOP_CHANNEL_LIMIT, 80),
+      lastSeenTogetherAt: getLatestTimestamp([existing.lastSeenTogetherAt, normalized.lastSeenTogetherAt]),
+      sourceComputedAt: getLatestTimestamp([existing.sourceComputedAt, normalized.sourceComputedAt]),
+      confidenceState: existing.confidenceState === "partial" || normalized.confidenceState === "partial" ? "partial" : "heuristic",
+      source: existing.source,
+    });
+  }
+
+  return [...contactsByPeer.values()]
+    .sort((left, right) => {
+      const secondsDiff = right.voiceSecondsTogether - left.voiceSecondsTogether;
+      if (secondsDiff) return secondsDiff;
+      const sessionDiff = right.voiceSessionsTogether - left.voiceSessionsTogether;
+      if (sessionDiff) return sessionDiff;
+      const seenDiff = String(right.lastSeenTogetherAt || "").localeCompare(String(left.lastSeenTogetherAt || ""));
+      if (seenDiff) return seenDiff;
+      return left.peerUserId.localeCompare(right.peerUserId);
+    })
+    .slice(0, Math.max(1, normalizeNonNegativeInteger(limit, PROFILE_VOICE_CONTACT_LIMIT) || PROFILE_VOICE_CONTACT_LIMIT));
+}
+
 function normalizeVoiceDomainState(value = {}) {
   const source = value && typeof value === "object" ? value : {};
   const summarySource = source.summary && typeof source.summary === "object" && !Array.isArray(source.summary)
@@ -599,6 +787,7 @@ function normalizeVoiceDomainState(value = {}) {
 
   return {
     summary: normalizeVoiceSummaryState(summarySource),
+    contacts: normalizeVoiceContactEntries(source.contacts),
   };
 }
 
@@ -619,6 +808,92 @@ function normalizeSocialSuggestionEntry(value = {}) {
     sharedJjsSessionCount: normalizeNonNegativeInteger(source.sharedJjsSessionCount, 0),
     lastSeenTogetherAt: normalizeNullableString(source.lastSeenTogetherAt, 80),
     sourceComputedAt: normalizeNullableString(source.sourceComputedAt, 80),
+  };
+}
+
+function normalizeSocialGraphTieEntry(value = {}) {
+  const source = value && typeof value === "object" ? value : {};
+  const peerUserId = normalizeNullableString(source.peerUserId ?? source.userId, 80);
+  if (!peerUserId) return null;
+  const rawStrength = cleanString(source.strength, 40).toLowerCase();
+  const strength = ["strong", "medium", "inferred"].includes(rawStrength) ? rawStrength : "inferred";
+
+  return {
+    peerUserId,
+    peerDisplayName: normalizeNullableString(source.peerDisplayName ?? source.displayName, 120),
+    peerRobloxUserId: normalizeNullableString(source.peerRobloxUserId, 40),
+    peerRobloxUsername: normalizeNullableString(source.peerRobloxUsername, 120),
+    strength,
+    labels: normalizeStringArray(source.labels, 10, 80),
+    mutualFriendUserIds: normalizeStringArray(source.mutualFriendUserIds, PROFILE_SOCIAL_MUTUAL_FRIEND_LIMIT, 80),
+    minutesTogether: normalizeNonNegativeInteger(source.minutesTogether, 0),
+    sessionsTogether: normalizeNonNegativeInteger(source.sessionsTogether, 0),
+    voiceSecondsTogether: normalizeNonNegativeInteger(source.voiceSecondsTogether, 0),
+    voiceSessionsTogether: normalizeNonNegativeInteger(source.voiceSessionsTogether, 0),
+    lastSeenTogetherAt: normalizeNullableString(source.lastSeenTogetherAt, 80),
+    sourceComputedAt: normalizeNullableString(source.sourceComputedAt ?? source.computedAt, 80),
+    confidenceState: normalizeNullableString(source.confidenceState, 40) || "heuristic",
+    source: normalizeNullableString(source.source, 120) || "shared-profile.social-graph",
+  };
+}
+
+function normalizeSocialGraphState(value = {}) {
+  const source = value && typeof value === "object" ? value : {};
+  const tiesByPeer = new Map();
+
+  for (const entry of Array.isArray(source.ties) ? source.ties : []) {
+    const normalized = normalizeSocialGraphTieEntry(entry);
+    if (!normalized) continue;
+    const existing = tiesByPeer.get(normalized.peerUserId);
+    if (!existing) {
+      tiesByPeer.set(normalized.peerUserId, normalized);
+      continue;
+    }
+
+    const strengthOrder = { strong: 3, medium: 2, inferred: 1 };
+    const stronger = strengthOrder[normalized.strength] > strengthOrder[existing.strength] ? normalized : existing;
+    tiesByPeer.set(normalized.peerUserId, {
+      ...existing,
+      ...stronger,
+      labels: normalizeStringArray([...existing.labels, ...normalized.labels], 10, 80),
+      mutualFriendUserIds: normalizeStringArray(
+        [...existing.mutualFriendUserIds, ...normalized.mutualFriendUserIds],
+        PROFILE_SOCIAL_MUTUAL_FRIEND_LIMIT,
+        80
+      ),
+      minutesTogether: Math.max(existing.minutesTogether, normalized.minutesTogether),
+      sessionsTogether: Math.max(existing.sessionsTogether, normalized.sessionsTogether),
+      voiceSecondsTogether: Math.max(existing.voiceSecondsTogether, normalized.voiceSecondsTogether),
+      voiceSessionsTogether: Math.max(existing.voiceSessionsTogether, normalized.voiceSessionsTogether),
+      lastSeenTogetherAt: getLatestTimestamp([existing.lastSeenTogetherAt, normalized.lastSeenTogetherAt]),
+      sourceComputedAt: getLatestTimestamp([existing.sourceComputedAt, normalized.sourceComputedAt]),
+    });
+  }
+
+  const ties = [...tiesByPeer.values()]
+    .sort((left, right) => {
+      const strengthOrder = { strong: 3, medium: 2, inferred: 1 };
+      const strengthDiff = (strengthOrder[right.strength] || 0) - (strengthOrder[left.strength] || 0);
+      if (strengthDiff) return strengthDiff;
+      const scoreDiff = (
+        right.minutesTogether
+        + right.sessionsTogether * 20
+        + right.voiceSecondsTogether / 60
+        + right.mutualFriendUserIds.length * 30
+      ) - (
+        left.minutesTogether
+        + left.sessionsTogether * 20
+        + left.voiceSecondsTogether / 60
+        + left.mutualFriendUserIds.length * 30
+      );
+      if (scoreDiff) return scoreDiff;
+      return left.peerUserId.localeCompare(right.peerUserId);
+    })
+    .slice(0, PROFILE_SOCIAL_GRAPH_TIE_LIMIT);
+
+  return {
+    computedAt: normalizeNullableString(source.computedAt, 80),
+    ties,
   };
 }
 
@@ -649,6 +924,36 @@ function normalizeSocialDomainState(value = {}) {
 
   return {
     suggestions: suggestions.slice(0, PROFILE_SOCIAL_SUGGESTION_LIMIT),
+    graph: normalizeSocialGraphState(source.graph),
+  };
+}
+
+function normalizeAntiteamSupportState(value = {}) {
+  const source = value && typeof value === "object" ? value : {};
+  const hasNumericSource = ["responded", "linkGranted", "confirmedArrived"].some((key) => (
+    source[key] !== null && source[key] !== undefined && source[key] !== ""
+  ));
+  const sourceAvailable = source.sourceAvailable === true
+    || hasNumericSource
+    || Boolean(cleanString(source.source, 120));
+
+  return {
+    sourceAvailable,
+    responded: sourceAvailable ? normalizeNonNegativeInteger(source.responded, 0) : null,
+    linkGranted: sourceAvailable ? normalizeNonNegativeInteger(source.linkGranted, 0) : null,
+    confirmedArrived: sourceAvailable ? normalizeNonNegativeInteger(source.confirmedArrived, 0) : null,
+    lastTicketId: normalizeNullableString(source.lastTicketId, 80),
+    lastHelpedAt: normalizeNullableString(source.lastHelpedAt, 80),
+    source: sourceAvailable
+      ? cleanString(source.source, 120) || "sot.antiteam.stats.helpers"
+      : null,
+  };
+}
+
+function normalizeSupportDomainState(value = {}) {
+  const source = value && typeof value === "object" ? value : {};
+  return {
+    antiteam: normalizeAntiteamSupportState(source.antiteam),
   };
 }
 
@@ -840,9 +1145,130 @@ function collectVoiceMirrorSummary(aggregate = {}) {
   };
 }
 
+function normalizeVoiceMirrorSession(value = {}, options = {}) {
+  const source = value && typeof value === "object" ? value : {};
+  const userId = normalizeNullableString(source.userId, 80);
+  const joinedAt = normalizeNullableString(source.joinedAt, 80);
+  const endedAt = normalizeNullableString(source.endedAt ?? options.endedAt, 80);
+  const startMs = normalizeTimestampMs(joinedAt);
+  const endMs = normalizeTimestampMs(endedAt);
+  if (!userId || !Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) return null;
+
+  return {
+    userId,
+    displayName: normalizeNullableString(source.displayName, 120),
+    joinedAt,
+    endedAt,
+    startMs,
+    endMs,
+    channelIds: listUniqueVoiceChannelIds(source),
+    incomplete: source.incomplete === true,
+  };
+}
+
+function intersectStringArrays(left = [], right = []) {
+  const rightSet = new Set((Array.isArray(right) ? right : []).map((entry) => cleanString(entry, 80)).filter(Boolean));
+  return [...new Set((Array.isArray(left) ? left : []).map((entry) => cleanString(entry, 80)).filter(Boolean))]
+    .filter((entry) => rightSet.has(entry));
+}
+
+function ensureVoiceContactAggregate(map = new Map(), userId = "", peerUserId = "") {
+  const normalizedUserId = normalizeNullableString(userId, 80);
+  const normalizedPeerUserId = normalizeNullableString(peerUserId, 80);
+  if (!normalizedUserId || !normalizedPeerUserId || normalizedUserId === normalizedPeerUserId) return null;
+  if (!map.has(normalizedUserId)) map.set(normalizedUserId, new Map());
+  const userMap = map.get(normalizedUserId);
+  if (!userMap.has(normalizedPeerUserId)) {
+    userMap.set(normalizedPeerUserId, {
+      peerUserId: normalizedPeerUserId,
+      peerDisplayName: null,
+      voiceSecondsTogether: 0,
+      voiceSessionsTogether: 0,
+      sharedChannelIds: [],
+      lastSeenTogetherAt: null,
+      sourceComputedAt: null,
+      confidenceState: "heuristic",
+      source: "news.voice.sessions",
+    });
+  }
+  return userMap.get(normalizedPeerUserId);
+}
+
+function updateVoiceContactAggregate(aggregate = {}, peerSession = {}, overlapSeconds = 0, sharedChannelIds = [], sourceComputedAt = null) {
+  aggregate.peerDisplayName ||= normalizeNullableString(peerSession?.displayName, 120);
+  aggregate.voiceSecondsTogether += Math.max(0, Math.floor(Number(overlapSeconds) || 0));
+  aggregate.voiceSessionsTogether += 1;
+  aggregate.sharedChannelIds = normalizeStringArray([
+    ...aggregate.sharedChannelIds,
+    ...sharedChannelIds,
+  ], PROFILE_VOICE_TOP_CHANNEL_LIMIT, 80);
+  aggregate.lastSeenTogetherAt = getLatestTimestamp([aggregate.lastSeenTogetherAt, peerSession?.endedAt]);
+  aggregate.sourceComputedAt = getLatestTimestamp([aggregate.sourceComputedAt, sourceComputedAt]);
+  if (aggregate.voiceSessionsTogether >= 2 || aggregate.voiceSecondsTogether >= 60 * 60) {
+    aggregate.confidenceState = "partial";
+  }
+}
+
+function buildVoiceContactMirrorIndex(value = {}) {
+  const newsState = normalizeNewsState(value);
+  const lastCapturedAt = normalizeNullableString(newsState?.runtime?.lastVoiceCaptureAt, 80);
+  const referenceAt = getLatestTimestamp([
+    lastCapturedAt,
+    ...(Array.isArray(newsState?.voice?.finalizedSessions)
+      ? newsState.voice.finalizedSessions.map((session) => normalizeNullableString(session?.endedAt, 80))
+      : []),
+  ]);
+  const referenceMs = normalizeTimestampMs(referenceAt);
+  const sessions = [];
+
+  for (const session of Array.isArray(newsState?.voice?.finalizedSessions) ? newsState.voice.finalizedSessions : []) {
+    const normalized = normalizeVoiceMirrorSession(session);
+    if (!normalized) continue;
+    if (Number.isFinite(referenceMs) && normalized.endMs < referenceMs - (30 * MS_PER_DAY)) continue;
+    sessions.push(normalized);
+  }
+
+  for (const session of Object.values(newsState?.voice?.openSessions && typeof newsState.voice.openSessions === "object" ? newsState.voice.openSessions : {})) {
+    const normalized = normalizeVoiceMirrorSession(session, {
+      endedAt: referenceAt || lastCapturedAt || new Date().toISOString(),
+    });
+    if (normalized) sessions.push(normalized);
+  }
+
+  const contactsByUserId = new Map();
+  for (let index = 0; index < sessions.length; index += 1) {
+    for (let peerIndex = index + 1; peerIndex < sessions.length; peerIndex += 1) {
+      const left = sessions[index];
+      const right = sessions[peerIndex];
+      if (left.userId === right.userId) continue;
+      const sharedChannelIds = intersectStringArrays(left.channelIds, right.channelIds);
+      if (!sharedChannelIds.length) continue;
+
+      const overlapMs = Math.min(left.endMs, right.endMs) - Math.max(left.startMs, right.startMs);
+      if (!Number.isFinite(overlapMs) || overlapMs <= 0) continue;
+      const overlapSeconds = Math.floor(overlapMs / 1000);
+      if (overlapSeconds <= 0) continue;
+      const seenAt = getLatestTimestamp([left.endedAt, right.endedAt, referenceAt]);
+
+      const leftAggregate = ensureVoiceContactAggregate(contactsByUserId, left.userId, right.userId);
+      const rightAggregate = ensureVoiceContactAggregate(contactsByUserId, right.userId, left.userId);
+      if (leftAggregate) updateVoiceContactAggregate(leftAggregate, right, overlapSeconds, sharedChannelIds, seenAt);
+      if (rightAggregate) updateVoiceContactAggregate(rightAggregate, left, overlapSeconds, sharedChannelIds, seenAt);
+    }
+  }
+
+  return Object.fromEntries(
+    [...contactsByUserId.entries()].map(([userId, contactMap]) => [
+      userId,
+      normalizeVoiceContactEntries([...contactMap.values()]),
+    ])
+  );
+}
+
 function buildVoiceMirrorIndex(value = {}) {
   const newsState = normalizeNewsState(value);
   const aggregates = new Map();
+  const contactsByUserId = buildVoiceContactMirrorIndex(newsState);
   const lastCapturedAt = normalizeNullableString(newsState?.runtime?.lastVoiceCaptureAt, 80);
   const referenceAt = getLatestTimestamp([
     lastCapturedAt,
@@ -898,9 +1324,15 @@ function buildVoiceMirrorIndex(value = {}) {
   }
 
   return Object.fromEntries(
-    [...aggregates.entries()].map(([userId, aggregate]) => [
+    [...new Set([
+      ...aggregates.keys(),
+      ...Object.keys(contactsByUserId),
+    ])].map((userId) => [
       userId,
-      normalizeVoiceDomainState({ summary: collectVoiceMirrorSummary(aggregate) }),
+      normalizeVoiceDomainState({
+        summary: aggregates.has(userId) ? collectVoiceMirrorSummary(aggregates.get(userId)) : {},
+        contacts: contactsByUserId[userId] || [],
+      }),
     ])
   );
 }
@@ -945,6 +1377,230 @@ function buildSocialSuggestionCache(profiles = {}) {
   }
 
   return suggestionsByUserId;
+}
+
+function buildProfileRobloxUserIdIndex(profiles = {}) {
+  const index = new Map();
+  for (const [userId, profile] of Object.entries(profiles || {})) {
+    const roblox = normalizeRobloxDomainState(profile?.domains?.roblox || buildLegacyRobloxSource(profile));
+    if (roblox.userId) index.set(roblox.userId, userId);
+  }
+  return index;
+}
+
+function getProfileDisplayName(profile = {}, userId = "") {
+  return cleanString(
+    profile?.summary?.preferredDisplayName
+      || profile?.displayName
+      || profile?.username
+      || userId,
+    120
+  ) || null;
+}
+
+function ensureSocialGraphTie(map = new Map(), peerUserId = "") {
+  const normalizedPeerUserId = normalizeNullableString(peerUserId, 80);
+  if (!normalizedPeerUserId) return null;
+  if (!map.has(normalizedPeerUserId)) {
+    map.set(normalizedPeerUserId, {
+      peerUserId: normalizedPeerUserId,
+      peerDisplayName: null,
+      peerRobloxUserId: null,
+      peerRobloxUsername: null,
+      strength: "inferred",
+      labels: [],
+      mutualFriendUserIds: [],
+      minutesTogether: 0,
+      sessionsTogether: 0,
+      voiceSecondsTogether: 0,
+      voiceSessionsTogether: 0,
+      lastSeenTogetherAt: null,
+      sourceComputedAt: null,
+      confidenceState: "heuristic",
+      source: "shared-profile.social-graph",
+    });
+  }
+  return map.get(normalizedPeerUserId);
+}
+
+function promoteSocialGraphStrength(current = "inferred", next = "inferred") {
+  const order = { inferred: 1, medium: 2, strong: 3 };
+  return (order[next] || 0) > (order[current] || 0) ? next : current;
+}
+
+function mergeSocialGraphTie(ties = new Map(), peerUserId = "", patch = {}) {
+  const tie = ensureSocialGraphTie(ties, peerUserId);
+  if (!tie) return null;
+  tie.peerDisplayName ||= normalizeNullableString(patch.peerDisplayName, 120);
+  tie.peerRobloxUserId ||= normalizeNullableString(patch.peerRobloxUserId, 40);
+  tie.peerRobloxUsername ||= normalizeNullableString(patch.peerRobloxUsername, 120);
+  tie.strength = promoteSocialGraphStrength(tie.strength, cleanString(patch.strength, 40) || "inferred");
+  tie.labels = normalizeStringArray([...(tie.labels || []), ...(Array.isArray(patch.labels) ? patch.labels : [])], 10, 80);
+  tie.mutualFriendUserIds = normalizeStringArray(
+    [...(tie.mutualFriendUserIds || []), ...(Array.isArray(patch.mutualFriendUserIds) ? patch.mutualFriendUserIds : [])],
+    PROFILE_SOCIAL_MUTUAL_FRIEND_LIMIT,
+    80
+  );
+  tie.minutesTogether = Math.max(tie.minutesTogether, normalizeNonNegativeInteger(patch.minutesTogether, 0));
+  tie.sessionsTogether = Math.max(tie.sessionsTogether, normalizeNonNegativeInteger(patch.sessionsTogether, 0));
+  tie.voiceSecondsTogether = Math.max(tie.voiceSecondsTogether, normalizeNonNegativeInteger(patch.voiceSecondsTogether, 0));
+  tie.voiceSessionsTogether = Math.max(tie.voiceSessionsTogether, normalizeNonNegativeInteger(patch.voiceSessionsTogether, 0));
+  tie.lastSeenTogetherAt = getLatestTimestamp([tie.lastSeenTogetherAt, patch.lastSeenTogetherAt]);
+  tie.sourceComputedAt = getLatestTimestamp([tie.sourceComputedAt, patch.sourceComputedAt]);
+  tie.confidenceState = tie.confidenceState === "partial" || patch.confidenceState === "partial" ? "partial" : tie.confidenceState;
+  return tie;
+}
+
+function collectMutualServerFriendUserIds(sourceRoblox = {}, peerRoblox = {}, robloxUserIdToDiscordUserId = new Map(), excludedUserIds = []) {
+  const sourceFriendIds = new Set(Array.isArray(sourceRoblox?.serverFriends?.userIds) ? sourceRoblox.serverFriends.userIds : []);
+  const peerFriendIds = Array.isArray(peerRoblox?.serverFriends?.userIds) ? peerRoblox.serverFriends.userIds : [];
+  const excluded = new Set((Array.isArray(excludedUserIds) ? excludedUserIds : []).map((entry) => cleanString(entry, 80)).filter(Boolean));
+  const mutual = [];
+
+  for (const robloxUserId of peerFriendIds) {
+    const normalizedRobloxUserId = cleanString(robloxUserId, 80);
+    if (!normalizedRobloxUserId || !sourceFriendIds.has(normalizedRobloxUserId)) continue;
+    const discordUserId = robloxUserIdToDiscordUserId.get(normalizedRobloxUserId);
+    if (!discordUserId || excluded.has(discordUserId) || mutual.includes(discordUserId)) continue;
+    mutual.push(discordUserId);
+    if (mutual.length >= PROFILE_SOCIAL_MUTUAL_FRIEND_LIMIT) break;
+  }
+
+  return mutual;
+}
+
+function buildSocialGraphCache(profiles = {}) {
+  const robloxUserIdToDiscordUserId = buildProfileRobloxUserIdIndex(profiles);
+  const graphByUserId = {};
+
+  for (const [userId, profile] of Object.entries(profiles || {})) {
+    const sourceRoblox = normalizeRobloxDomainState(profile?.domains?.roblox || buildLegacyRobloxSource(profile));
+    const sourceSocial = normalizeSocialDomainState(profile?.domains?.social);
+    const sourceVoice = normalizeVoiceDomainState(profile?.domains?.voice);
+    const ties = new Map();
+    const friendDiscordUserIds = new Set(
+      (Array.isArray(sourceRoblox.serverFriends.userIds) ? sourceRoblox.serverFriends.userIds : [])
+        .map((robloxUserId) => robloxUserIdToDiscordUserId.get(cleanString(robloxUserId, 80)))
+        .filter((entry) => entry && entry !== userId)
+    );
+
+    for (const peerUserId of friendDiscordUserIds) {
+      const peerProfile = profiles?.[peerUserId] || {};
+      const peerRoblox = normalizeRobloxDomainState(peerProfile?.domains?.roblox || buildLegacyRobloxSource(peerProfile));
+      mergeSocialGraphTie(ties, peerUserId, {
+        peerDisplayName: getProfileDisplayName(peerProfile, peerUserId),
+        peerRobloxUserId: peerRoblox.userId,
+        peerRobloxUsername: peerRoblox.username,
+        strength: "medium",
+        labels: ["Roblox-friend"],
+        mutualFriendUserIds: collectMutualServerFriendUserIds(sourceRoblox, peerRoblox, robloxUserIdToDiscordUserId, [userId, peerUserId]),
+        sourceComputedAt: sourceRoblox.serverFriends.computedAt,
+        confidenceState: sourceRoblox.serverFriends.computedAt ? "partial" : "heuristic",
+      });
+    }
+
+    for (const peer of Array.isArray(sourceRoblox.coPlay.peers) ? sourceRoblox.coPlay.peers : []) {
+      const peerUserId = normalizeNullableString(peer?.peerUserId, 80);
+      if (!peerUserId || peerUserId === userId) continue;
+      const peerProfile = profiles?.[peerUserId] || {};
+      const peerRoblox = normalizeRobloxDomainState(peerProfile?.domains?.roblox || buildLegacyRobloxSource(peerProfile));
+      const sessionsTogether = getRobloxSharedSessionCount(peer);
+      const minutesTogether = normalizeNonNegativeInteger(peer?.minutesTogether, 0);
+      const strong = peer?.isRobloxFriend === true || sessionsTogether >= 3 || minutesTogether >= 180;
+      mergeSocialGraphTie(ties, peerUserId, {
+        peerDisplayName: getProfileDisplayName(peerProfile, peerUserId) || peer?.peerDisplayName,
+        peerRobloxUserId: peerRoblox.userId,
+        peerRobloxUsername: peerRoblox.username || peer?.peerRobloxUsername,
+        strength: strong ? "strong" : "medium",
+        labels: [peer?.isRobloxFriend === true ? "Roblox-friend" : "JJS-overlap"],
+        mutualFriendUserIds: collectMutualServerFriendUserIds(sourceRoblox, peerRoblox, robloxUserIdToDiscordUserId, [userId, peerUserId]),
+        minutesTogether,
+        sessionsTogether,
+        lastSeenTogetherAt: peer?.lastSeenTogetherAt,
+        sourceComputedAt: sourceRoblox.coPlay.computedAt || peer?.lastSeenTogetherAt,
+        confidenceState: sourceRoblox.coPlay.computedAt || peer?.lastSeenTogetherAt ? "partial" : "heuristic",
+      });
+    }
+
+    for (const contact of sourceVoice.contacts) {
+      const peerUserId = normalizeNullableString(contact?.peerUserId, 80);
+      if (!peerUserId || peerUserId === userId) continue;
+      const peerProfile = profiles?.[peerUserId] || {};
+      const peerRoblox = normalizeRobloxDomainState(peerProfile?.domains?.roblox || buildLegacyRobloxSource(peerProfile));
+      mergeSocialGraphTie(ties, peerUserId, {
+        peerDisplayName: getProfileDisplayName(peerProfile, peerUserId) || contact.peerDisplayName,
+        peerRobloxUserId: peerRoblox.userId,
+        peerRobloxUsername: peerRoblox.username,
+        strength: contact.voiceSessionsTogether >= 2 || contact.voiceSecondsTogether >= 3600 ? "medium" : "inferred",
+        labels: ["voice-contact"],
+        mutualFriendUserIds: collectMutualServerFriendUserIds(sourceRoblox, peerRoblox, robloxUserIdToDiscordUserId, [userId, peerUserId]),
+        voiceSecondsTogether: contact.voiceSecondsTogether,
+        voiceSessionsTogether: contact.voiceSessionsTogether,
+        lastSeenTogetherAt: contact.lastSeenTogetherAt,
+        sourceComputedAt: contact.sourceComputedAt,
+        confidenceState: contact.confidenceState,
+      });
+    }
+
+    for (const suggestion of sourceSocial.suggestions) {
+      const peerUserId = normalizeNullableString(suggestion?.peerUserId, 80);
+      if (!peerUserId || peerUserId === userId) continue;
+      const peerProfile = profiles?.[peerUserId] || {};
+      const peerRoblox = normalizeRobloxDomainState(peerProfile?.domains?.roblox || buildLegacyRobloxSource(peerProfile));
+      mergeSocialGraphTie(ties, peerUserId, {
+        peerDisplayName: getProfileDisplayName(peerProfile, peerUserId) || suggestion.peerDisplayName,
+        peerRobloxUserId: peerRoblox.userId || suggestion.peerRobloxUserId,
+        peerRobloxUsername: peerRoblox.username || suggestion.peerRobloxUsername,
+        strength: "inferred",
+        labels: ["inferred"],
+        mutualFriendUserIds: collectMutualServerFriendUserIds(sourceRoblox, peerRoblox, robloxUserIdToDiscordUserId, [userId, peerUserId]),
+        minutesTogether: suggestion.minutesTogether,
+        sessionsTogether: suggestion.sharedJjsSessionCount || suggestion.sessionsTogether,
+        lastSeenTogetherAt: suggestion.lastSeenTogetherAt,
+        sourceComputedAt: suggestion.sourceComputedAt,
+        confidenceState: "heuristic",
+      });
+    }
+
+    graphByUserId[userId] = normalizeSocialGraphState({
+      computedAt: getLatestTimestamp([
+        sourceRoblox.serverFriends.computedAt,
+        sourceRoblox.coPlay.computedAt,
+        ...sourceVoice.contacts.map((entry) => entry.sourceComputedAt || entry.lastSeenTogetherAt),
+        ...sourceSocial.suggestions.map((entry) => entry.sourceComputedAt || entry.lastSeenTogetherAt),
+      ]),
+      ties: [...ties.values()],
+    });
+  }
+
+  return graphByUserId;
+}
+
+function buildSupportMirrorIndex(profiles = {}, antiteamState = {}) {
+  const helpers = antiteamState?.stats?.helpers && typeof antiteamState.stats.helpers === "object" && !Array.isArray(antiteamState.stats.helpers)
+    ? antiteamState.stats.helpers
+    : null;
+  if (!helpers) return {};
+
+  const supportByUserId = {};
+  for (const userId of Object.keys(profiles || {})) {
+    const stats = helpers[userId] && typeof helpers[userId] === "object" && !Array.isArray(helpers[userId])
+      ? helpers[userId]
+      : {};
+    supportByUserId[userId] = normalizeSupportDomainState({
+      antiteam: {
+        sourceAvailable: true,
+        responded: stats.responded,
+        linkGranted: stats.linkGranted,
+        confirmedArrived: stats.confirmedArrived,
+        lastTicketId: stats.lastTicketId,
+        lastHelpedAt: stats.lastHelpedAt,
+        source: "sot.antiteam.stats.helpers",
+      },
+    });
+  }
+
+  return supportByUserId;
 }
 
 function getRobloxSharedSessionCount(peer = {}) {
@@ -1205,6 +1861,7 @@ function buildSharedProfileSummary(profile = {}, domains = {}) {
   const seasonArchive = domains.seasonArchive || normalizeSeasonArchiveDomainState(profile?.domains?.seasonArchive);
   const voice = domains.voice || normalizeVoiceDomainState(profile?.domains?.voice);
   const social = domains.social || normalizeSocialDomainState(profile?.domains?.social);
+  const support = domains.support || normalizeSupportDomainState(profile?.domains?.support);
   const previousUsername = getRobloxPreviousName(roblox.username, roblox.usernameHistory);
   const previousDisplayName = getRobloxPreviousName(roblox.displayName, roblox.displayNameHistory);
   const serverFriendsCount = roblox.serverFriends.userIds.length;
@@ -1335,6 +1992,9 @@ function buildSharedProfileSummary(profile = {}, domains = {}) {
       sessionCount: roblox.playtime.sessionCount,
       currentSessionStartedAt: roblox.playtime.currentSessionStartedAt,
       lastSeenInJjsAt: roblox.playtime.lastSeenInJjsAt,
+      ...(Array.isArray(roblox.playtime.sessionHistory) && roblox.playtime.sessionHistory.length
+        ? { sessionHistory: roblox.playtime.sessionHistory }
+        : {}),
       lastRefreshAt: roblox.lastRefreshAt,
       refreshStatus: roblox.refreshStatus,
       refreshError: roblox.refreshError,
@@ -1385,10 +2045,24 @@ function buildSharedProfileSummary(profile = {}, domains = {}) {
       currentChannelId: voice.summary.currentChannelId,
       currentSessionStartedAt: voice.summary.currentSessionStartedAt,
       topChannels: voice.summary.topChannels,
+      contacts: voice.contacts,
     },
     social: {
       suggestionCount: social.suggestions.length,
       suggestions: social.suggestions,
+      graphTieCount: social.graph.ties.length,
+      graph: social.graph,
+    },
+    support: {
+      antiteam: {
+        sourceAvailable: support.antiteam.sourceAvailable,
+        responded: support.antiteam.responded,
+        linkGranted: support.antiteam.linkGranted,
+        confirmedArrived: support.antiteam.confirmedArrived,
+        lastTicketId: support.antiteam.lastTicketId,
+        lastHelpedAt: support.antiteam.lastHelpedAt,
+        source: support.antiteam.source,
+      },
     },
   };
 }
@@ -1409,6 +2083,9 @@ function ensureSharedProfile(profile = {}, userId = "", options = {}) {
   const social = hasOwn(options, "social")
     ? normalizeSocialDomainState(options.social)
     : normalizeSocialDomainState(source?.domains?.social);
+  const support = hasOwn(options, "support")
+    ? normalizeSupportDomainState(options.support)
+    : normalizeSupportDomainState(source?.domains?.support);
 
   const next = {
     ...source,
@@ -1439,6 +2116,7 @@ function ensureSharedProfile(profile = {}, userId = "", options = {}) {
       seasonArchive,
       voice,
       social,
+      support,
     },
   };
   next.summary = buildSharedProfileSummary(next, next.domains);
@@ -1464,9 +2142,29 @@ function syncSharedProfiles(db = {}) {
   }
 
   const socialCaches = buildSocialSuggestionCache(nextProfiles);
+  const supportMirrors = buildSupportMirrorIndex(nextProfiles, db?.sot?.antiteam);
   for (const [userId, profile] of Object.entries(nextProfiles)) {
     const ensured = ensureSharedProfile(profile, userId, {
-      social: hasOwn(socialCaches, userId) ? socialCaches[userId] : {},
+      social: hasOwn(socialCaches, userId)
+        ? {
+          ...(profile?.domains?.social || {}),
+          suggestions: socialCaches[userId].suggestions,
+        }
+        : profile?.domains?.social || {},
+      support: hasOwn(supportMirrors, userId) ? supportMirrors[userId] : profile?.domains?.support || {},
+    });
+    nextProfiles[userId] = ensured.profile;
+    mutated ||= ensured.mutated || ensured.profile.userId !== userId;
+  }
+
+  const socialGraphs = buildSocialGraphCache(nextProfiles);
+  for (const [userId, profile] of Object.entries(nextProfiles)) {
+    const ensured = ensureSharedProfile(profile, userId, {
+      social: {
+        ...(profile?.domains?.social || {}),
+        graph: hasOwn(socialGraphs, userId) ? socialGraphs[userId] : profile?.domains?.social?.graph || {},
+      },
+      support: profile?.domains?.support || {},
     });
     nextProfiles[userId] = ensured.profile;
     mutated ||= ensured.mutated || ensured.profile.userId !== userId;
@@ -1709,6 +2407,7 @@ module.exports = {
   normalizeRobloxDomainState,
   normalizeSeasonArchiveDomainState,
   normalizeSocialDomainState,
+  normalizeSupportDomainState,
   normalizeVoiceDomainState,
   syncSharedProfiles,
 };

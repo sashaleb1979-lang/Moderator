@@ -555,6 +555,7 @@ function buildProfileReadModel(options = {}) {
   const verificationSummary = summary.verification && typeof summary.verification === "object" ? summary.verification : {};
   const progressSummary = summary.progress && typeof summary.progress === "object" ? summary.progress : {};
   const voiceSummary = summary.voice && typeof summary.voice === "object" ? summary.voice : {};
+  const supportSummary = summary.support && typeof summary.support === "object" ? summary.support : {};
   const pendingSubmission = options.pendingSubmission && typeof options.pendingSubmission === "object" ? options.pendingSubmission : null;
   const latestSubmission = options.latestSubmission && typeof options.latestSubmission === "object" ? options.latestSubmission : null;
   const approvedEntries = Array.isArray(options.approvedEntries) ? options.approvedEntries : [];
@@ -693,6 +694,7 @@ function buildProfileReadModel(options = {}) {
     robloxSummary,
     voiceSummary,
     progressSummary,
+    supportSummary,
     activitySummary,
     eloSummary,
     tierlistSummary,
@@ -1006,6 +1008,8 @@ function buildProfileReadModel(options = {}) {
       overview: [
         { title: "Обзор", lines: overviewLines },
         ...(synergy?.blocks?.viewerMainCore ? [synergy.blocks.viewerMainCore] : []),
+        ...(synergy?.blocks?.viewerLetterPlaces ? [synergy.blocks.viewerLetterPlaces] : []),
+        ...(synergy?.blocks?.antiteamSupport ? [synergy.blocks.antiteamSupport] : []),
         {
           title: "Готовность",
           lines: overviewStatusLines,
@@ -1018,6 +1022,7 @@ function buildProfileReadModel(options = {}) {
         ...(synergy?.blocks?.primeTime ? [synergy.blocks.primeTime] : []),
         ...(synergy?.blocks?.bestPeriods ? [synergy.blocks.bestPeriods] : []),
         ...(synergy?.blocks?.seasonStory ? [synergy.blocks.seasonStory] : []),
+        ...(synergy?.blocks?.weeklyRollups ? [synergy.blocks.weeklyRollups] : []),
         {
           title: "Детали activity",
           lines: [
@@ -1029,6 +1034,12 @@ function buildProfileReadModel(options = {}) {
             activitySummary.roleEligibilityStatus ? `Статус eligibility: ${cleanString(activitySummary.roleEligibilityStatus, 80)}` : "",
           ],
         },
+        ...(synergy?.blocks?.activityMix ? [synergy.blocks.activityMix] : []),
+        ...(synergy?.blocks?.farmProfile ? [synergy.blocks.farmProfile] : []),
+        ...(synergy?.blocks?.relativeComponents ? [synergy.blocks.relativeComponents] : []),
+        ...(synergy?.blocks?.primeTimeConfidence ? [synergy.blocks.primeTimeConfidence] : []),
+        ...(synergy?.blocks?.seasonConsistency ? [synergy.blocks.seasonConsistency] : []),
+        ...(synergy?.blocks?.comebackMetrics ? [synergy.blocks.comebackMetrics] : []),
       ],
       progress: [
         ...(synergy?.blocks?.selfProgress ? [synergy.blocks.selfProgress] : []),
@@ -1037,6 +1048,7 @@ function buildProfileReadModel(options = {}) {
         { title: "История approved ростов", lines: progressTimelineLines },
         { title: "Заявки и проверки", lines: submissionLines },
         { title: "ELO и Tierlist", lines: rankingLines },
+        ...(synergy?.blocks?.proofGap ? [synergy.blocks.proofGap] : []),
       ],
       social: [
         { title: "Roblox и соц", lines: robloxLines },
@@ -1046,6 +1058,9 @@ function buildProfileReadModel(options = {}) {
         { title: "С кем чаще всего играет", lines: socialPeerLines },
         ...(synergy?.blocks?.socialSuggestions ? [synergy.blocks.socialSuggestions] : []),
         { title: "Мейны и гайды", lines: mainAndGuideLines },
+        ...(synergy?.blocks?.verifiedCircle ? [synergy.blocks.verifiedCircle] : []),
+        ...(synergy?.blocks?.socialMap ? [synergy.blocks.socialMap] : []),
+        ...(synergy?.blocks?.voiceGameOverlap ? [synergy.blocks.voiceGameOverlap] : []),
       ],
       compact: compactSections,
     },

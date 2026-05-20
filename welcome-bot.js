@@ -272,7 +272,11 @@ const {
   buildGlobalEloRoleSyncPlan,
 } = require("./src/integrations/elo-role-sync");
 const { createProfileOperator } = require("./src/profile/operator");
-const { appendProofWindowSnapshot } = require("./src/profile/synergy-snapshots");
+const {
+  appendProofWindowSnapshot,
+  captureProfilePopulationSnapshot,
+  captureSeasonArchiveSnapshots,
+} = require("./src/profile/synergy-snapshots");
 const { createAntiteamOperator } = require("./src/antiteam/operator");
 const { ANTITEAM_COMMAND_NAME } = require("./src/antiteam/view");
 const { buildComboCommands } = require("./src/combo-guide/commands");
@@ -1031,6 +1035,34 @@ const flushRobloxRuntime = robloxPanelTelemetry.wrapJob("runtime_flush", robloxJ
   now: nowIso,
   saveDb,
 }), "roblox-runtime-flush")));
+
+function runScheduledProfileSeasonArchiveSnapshot() {
+  return runSerializedDbTask(() => {
+    const syncResult = syncSharedProfiles(db);
+    const snapshotResult = captureSeasonArchiveSnapshots(db, {
+      now: nowIso,
+    });
+    if (syncResult.mutated || snapshotResult.mutated) {
+      saveDb();
+    }
+    console.log(`[profile][season-archive] snapshot ${snapshotResult.dayKey || "unknown"} updated=${snapshotResult.updatedCount}/${snapshotResult.totalProfiles}`);
+    return snapshotResult;
+  }, "profile-season-archive-snapshot");
+}
+
+function runScheduledProfilePopulationSnapshot() {
+  return runSerializedDbTask(() => {
+    const syncResult = syncSharedProfiles(db);
+    const snapshotResult = captureProfilePopulationSnapshot(db, {
+      now: nowIso,
+    });
+    if (syncResult.mutated || snapshotResult.mutated) {
+      saveDb();
+    }
+    console.log(`[profile][population] snapshot ${snapshotResult.dayKey || "unknown"} eligible=${snapshotResult.eligibleProfileCount}/${snapshotResult.profileCount}`);
+    return snapshotResult;
+  }, "profile-population-snapshot");
+}
 
 function cloneJsonValue(value) {
   return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
@@ -14582,6 +14614,8 @@ client.once("clientReady", async () => {
     runRobloxProfileRefreshJob: runScheduledRobloxProfileRefreshJob,
     syncRobloxPlaytime,
     flushRobloxRuntime,
+    runProfileSeasonArchiveSnapshot: runScheduledProfileSeasonArchiveSnapshot,
+    runProfilePopulationSnapshot: runScheduledProfilePopulationSnapshot,
     runVerificationDeadlineSweep: (currentClient) => runVerificationDeadlineSweep(currentClient),
     getResolvedIntegrationSourcePath,
     roblox: getEffectiveRobloxConfig(),
