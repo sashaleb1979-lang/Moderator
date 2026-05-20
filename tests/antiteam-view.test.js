@@ -49,7 +49,9 @@ test("start panel is Components V2 and exposes submit button", () => {
   assert.deepEqual(payload.allowedMentions, { parse: [] });
   assert.match(payloadJson(payload), /Вызов батальона/);
   assert.match(payloadJson(payload), /Создать антитим/);
-  assert.match(payloadJson(payload), /Система пинга/);
+  assert.match(payloadJson(payload), /Пингуются те, кто в <@&role-1>/);
+  assert.doesNotMatch(payloadJson(payload), /Система пинга/);
+  assert.doesNotMatch(payloadJson(payload), /автоудаляемая роль/);
   assert.doesNotMatch(payloadJson(payload), /Батальён:/);
   assert.match(payloadJson(payload), /Вступить в батальён/);
   assert.match(payloadJson(payload), new RegExp(ANTITEAM_CUSTOM_IDS.joinBattalion.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));

@@ -1421,7 +1421,7 @@ test("standard draft submit sends battalion ping and transient configured role p
   assert.deepEqual(sentToThread[0].allowedMentions, { roles: ["battalion-role", "extra-base-role"] });
   assert.equal(sentToThread[1].content, "<@&extra-role>");
   assert.deepEqual(sentToThread[1].allowedMentions, { roles: ["extra-role"] });
-  assert.deepEqual(scheduledDelays, [500]);
+  assert.deepEqual(scheduledDelays, [250]);
   assert.deepEqual(deletedMessages, ["thread-message-2"]);
 });
 

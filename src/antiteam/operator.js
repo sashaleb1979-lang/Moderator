@@ -63,7 +63,7 @@ const {
 
 function noop() {}
 
-const ANTITEAM_TRANSIENT_PING_DELETE_MS = 500;
+const ANTITEAM_TRANSIENT_PING_DELETE_MS = 250;
 
 function normalizeUsernameInput(value) {
   const username = cleanString(value, 40);
