@@ -2,12 +2,15 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
 
 const {
   buildProfileRobloxIdentitySession,
   canManageWelcomeRobloxIdentity,
   getWelcomeRobloxIdentityLockText,
   hasConfirmedRobloxIdentity,
+  parseRobloxIdentityInput,
 } = require("../src/onboard/roblox-identity");
 
 test("hasConfirmedRobloxIdentity requires both username and user id", () => {
@@ -73,9 +76,9 @@ test("buildProfileRobloxIdentitySession keeps user id only for verified profile 
     userId: "9843941555",
     verificationStatus: "unverified",
   }), {
-    robloxUsername: "KolhozU",
+    robloxUsername: "",
     robloxUserId: "",
-    robloxDisplayName: "Kolhoz",
+    robloxDisplayName: "",
   });
 
   assert.deepEqual(buildProfileRobloxIdentitySession({
@@ -96,9 +99,9 @@ test("buildProfileRobloxIdentitySession keeps user id only for verified profile 
     hasVerifiedAccount: true,
     verificationStatus: "failed",
   }), {
-    robloxUsername: "KolhozU",
+    robloxUsername: "",
     robloxUserId: "",
-    robloxDisplayName: "Kolhoz",
+    robloxDisplayName: "",
   });
 
   assert.deepEqual(buildProfileRobloxIdentitySession({
@@ -107,8 +110,62 @@ test("buildProfileRobloxIdentitySession keeps user id only for verified profile 
     userId: "not-a-number",
     verificationStatus: "verified",
   }), {
-    robloxUsername: "KolhozU",
+    robloxUsername: "",
     robloxUserId: "",
-    robloxDisplayName: "Kolhoz",
+    robloxDisplayName: "",
   });
+
+  assert.deepEqual(buildProfileRobloxIdentitySession({
+    userId: "12345",
+    username: "DiscordLikeName",
+    displayName: "Discord Display",
+    verifiedAt: "2026-05-19T10:00:00.000Z",
+  }), {
+    robloxUsername: "",
+    robloxUserId: "",
+    robloxDisplayName: "",
+  });
+});
+
+test("parseRobloxIdentityInput accepts username, user id and Roblox profile URL", () => {
+  assert.deepEqual(parseRobloxIdentityInput("Builderman"), {
+    ok: true,
+    kind: "username",
+    username: "Builderman",
+    fallbackUserId: "",
+    source: "username",
+    rawInput: "Builderman",
+  });
+
+  assert.deepEqual(parseRobloxIdentityInput("123456789"), {
+    ok: true,
+    kind: "username",
+    username: "123456789",
+    fallbackUserId: "123456789",
+    source: "username_or_userId",
+    rawInput: "123456789",
+  });
+
+  assert.deepEqual(parseRobloxIdentityInput("https://www.roblox.com/users/42/profile"), {
+    ok: true,
+    kind: "userId",
+    userId: "42",
+    source: "profile_url",
+    rawInput: "https://www.roblox.com/users/42/profile",
+  });
+});
+
+test("parseRobloxIdentityInput rejects unsupported text", () => {
+  assert.equal(parseRobloxIdentityInput("").ok, false);
+  assert.match(parseRobloxIdentityInput("not a valid roblox handle!").error, /username|userId|ссылку/i);
+  assert.match(parseRobloxIdentityInput("https://example.com/users/42/profile").error, /username|userId|ссылку/i);
+});
+
+test("welcome-bot bootstraps resumable Roblox submit sessions through the shared identity helper", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "welcome-bot.js"), "utf8");
+  const match = source.match(
+    /function buildSubmitSessionBootstrap\([\s\S]*?const robloxIdentity = buildProfileRobloxIdentitySession\([\s\S]*?robloxUsername:\s*robloxIdentity\.robloxUsername \|\| ""[\s\S]*?robloxUserId:\s*robloxIdentity\.robloxUserId \|\| ""/
+  );
+
+  assert.ok(match, "expected resumable submit bootstrap to reuse buildProfileRobloxIdentitySession");
 });

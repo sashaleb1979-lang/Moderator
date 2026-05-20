@@ -805,35 +805,43 @@ function createAntiteamOperator(options = {}) {
 
   function getHelperRobloxSnapshot(userId) {
     const profile = typeof options.getProfile === "function" ? options.getProfile(userId) : db.profiles?.[userId];
-    const roblox = profile?.domains?.roblox || profile?.summary?.roblox || {};
-    return {
-      username: cleanString(roblox.username || roblox.currentUsername, 120),
-      userId: cleanString(roblox.userId, 40),
-    };
+    const identity = resolveProfileRobloxIdentity(profile);
+    return identity
+      ? { username: identity.username, userId: identity.userId }
+      : { username: "", userId: "" };
   }
 
-  function getStoredRobloxSnapshot(userId) {
-    const profile = typeof options.getProfile === "function" ? options.getProfile(userId) : db.profiles?.[userId];
-    const legacyProfileRoblox = profile ? {
-      userId: profile.robloxUserId,
-      username: profile.robloxUsername,
-      displayName: profile.robloxDisplayName,
-      avatarUrl: profile.robloxAvatarUrl,
-      profileUrl: profile.robloxProfileUrl,
-      verificationStatus: profile.verificationStatus,
-      verifiedAt: profile.robloxVerifiedAt,
-      hasVerifiedAccount: profile.hasVerifiedAccount,
-    } : null;
+  function resolveProfileRobloxIdentity(profile = null) {
+    const source = profile && typeof profile === "object" ? profile : null;
+    if (!source) return null;
+    const legacyProfileRoblox = {
+      userId: source.robloxUserId,
+      username: source.robloxUsername,
+      displayName: source.robloxDisplayName,
+      avatarUrl: source.robloxAvatarUrl,
+      profileUrl: source.robloxProfileUrl,
+      verificationStatus: source.verificationStatus,
+      verifiedAt: source.robloxVerifiedAt,
+      hasVerifiedAccount: source.hasVerifiedAccount,
+    };
     const candidates = [
-      profile?.domains?.roblox,
-      profile?.summary?.roblox,
-      profile?.roblox,
+      source.domains?.roblox,
+      source.summary?.roblox,
+      source.roblox,
       legacyProfileRoblox,
     ].filter(Boolean);
 
     for (const roblox of candidates) {
       const identity = resolveUsableVerifiedRobloxIdentity(roblox);
-      if (!identity) continue;
+      if (identity) return identity;
+    }
+    return null;
+  }
+
+  function getStoredRobloxSnapshot(userId) {
+    const profile = typeof options.getProfile === "function" ? options.getProfile(userId) : db.profiles?.[userId];
+    const identity = resolveProfileRobloxIdentity(profile);
+    if (identity) {
       return {
         id: identity.userId,
         userId: identity.userId,
@@ -1443,11 +1451,30 @@ function createAntiteamOperator(options = {}) {
       await interaction.editReply("Такой Roblox ник не найден через Roblox API.");
       return true;
     }
+
+    let statusText = kind === "clan"
+      ? `Якорь подтверждён: ${cleanString(robloxUser.username || robloxUser.name, 120)}. Это не привязка к твоему профилю.`
+      : `Roblox найден через API: ${cleanString(robloxUser.username || robloxUser.name, 120)}.`;
+
+    if (kind === "standard") {
+      try {
+        await writeRobloxBinding(interaction.user.id, robloxUser, "antiteam_modal");
+        await persist("antiteam-roblox-confirm", () => markRobloxConfirmed(
+          db,
+          interaction.user.id,
+          robloxUser.userId || robloxUser.id,
+          { now: nowIso() }
+        ));
+        statusText = `${statusText} Профиль обновлён, подтверждение для антитима сохранено.`;
+      } catch (error) {
+        logError("Antiteam Roblox profile sync failed:", error?.message || error);
+        statusText = `${statusText} Черновик открыт, но профиль не удалось обновить автоматически.`;
+      }
+    }
+
     return await openTicketDraftWithRoblox(interaction, robloxUser, kind, {
       response: "editReply",
-      statusText: kind === "clan"
-        ? `Якорь подтверждён: ${cleanString(robloxUser.username || robloxUser.name, 120)}. Это не привязка к твоему профилю.`
-        : `Roblox найден через API: ${cleanString(robloxUser.username || robloxUser.name, 120)}. Для общего профиля привязка не менялась.`,
+      statusText,
     });
   }
 

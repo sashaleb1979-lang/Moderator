@@ -94,6 +94,9 @@ test("profile read-model composes derived sections, links, and verification fact
           currentElo: 145,
           currentTier: 2,
           lastSubmissionStatus: "approved",
+          lastSubmissionId: "elo-approved-1",
+          lastSubmissionCreatedAt: "2026-05-01T12:00:00.000Z",
+          proofUrl: "https://proof/approved",
         },
         tierlist: {
           hasSubmission: true,
@@ -191,6 +194,9 @@ test("profile read-model composes derived sections, links, and verification fact
       currentElo: 145,
       currentTier: 2,
       lastSubmissionStatus: "approved",
+      lastSubmissionId: "elo-approved-1",
+      lastSubmissionCreatedAt: "2026-05-01T12:00:00.000Z",
+      proofUrl: "https://proof/approved",
     },
     tierlistProfile: {
       mainName: "Gojo",
@@ -309,6 +315,9 @@ test("profile read-model composes derived sections, links, and verification fact
   assert.match(readModel.sections.progress[2].lines.join("\n"), /2\. 80 -> 100/);
   assert.match(readModel.sections.progress[3].lines.join("\n"), /Последняя проверка:/);
   assert.match(readModel.sections.progress[4].lines.join("\n"), /Текущий рейтинг: ELO 145 \/ tier 2/);
+  assert.match(readModel.sections.progress[4].lines.join("\n"), /ID ELO заявки: elo-approved-1/);
+  assert.match(readModel.sections.progress[4].lines.join("\n"), /Последний ELO submit:/);
+  assert.match(readModel.sections.progress[4].lines.join("\n"), /Скрин ELO: https:\/\/proof\/approved/);
   assert.match(readModel.sections.progress[4].lines.join("\n"), /Tierlist-заявка: есть/);
   assert.equal(readModel.sections.activity[1].title, "Voice-срез");
   assert.match(readModel.sections.activity[1].lines.join("\n"), /Voice 7д\/30д: 1,5 ч \/ 2,5 ч .* сессии 7д\/30д: 1 \/ 2 .* lifetime сессии: 2 .* неполных 30д: 1/);
@@ -356,6 +365,56 @@ test("profile read-model composes derived sections, links, and verification fact
   assert.equal(readModel.robloxProfileUrl, "https://www.roblox.com/users/123/profile");
   assert.ok(readModel.verificationLines.some((line) => /verified/.test(line)));
   assert.equal(readModel.emptyStateNote, null);
+});
+
+test("profile read-model exposes compact-card composition through the canonical stack", () => {
+  const readModel = buildProfileReadModel({
+    guildId: "guild-1",
+    userId: "user-1",
+    targetDisplayName: "Sasha",
+    isSelf: true,
+    displayMode: "compact-card",
+    profile: {
+      approvedKills: 120,
+      killTier: 4,
+      mainCharacterLabels: ["Gojo"],
+      summary: {
+        preferredDisplayName: "Sasha",
+        onboarding: { approvedKills: 120, killTier: 4 },
+        verification: { status: "verified" },
+        roblox: {
+          hasVerifiedAccount: true,
+          isTrackable: true,
+          trackingState: "trackable",
+          userId: "123",
+          currentUsername: "GojoMain",
+          profileUrl: "https://www.roblox.com/users/123/profile",
+        },
+        elo: {
+          currentElo: 145,
+          currentTier: 2,
+          lastSubmissionStatus: "approved",
+          lastSubmissionId: "elo-compact-1",
+          lastSubmissionCreatedAt: "2026-05-01T12:00:00.000Z",
+          proofUrl: "https://proof/compact",
+        },
+        tierlist: {
+          hasSubmission: true,
+          mainName: "Gojo",
+        },
+      },
+    },
+  });
+
+  assert.equal(readModel.displayMode, "compact-card");
+  assert.equal(readModel.sections.compact[0].title, "Моя карточка");
+  assert.match(readModel.sections.compact[0].lines.join("\n"), /Игрок: <@user-1>/);
+  assert.match(readModel.sections.compact[0].lines.join("\n"), /Roblox: GojoMain/);
+  assert.match(readModel.sections.compact[0].lines.join("\n"), /ELO: 145 \/ tier 2/);
+  assert.equal(readModel.sections.compact[1].title, "Готовность");
+  assert.equal(readModel.sections.compact[2].title, "ELO и Tierlist");
+  assert.match(readModel.sections.compact[2].lines.join("\n"), /ID ELO заявки: elo-compact-1/);
+  assert.match(readModel.sections.compact[2].lines.join("\n"), /Скрин ELO: https:\/\/proof\/compact/);
 });
 
 test("profile read-model marks empty profiles without fabricating data sections", () => {
@@ -414,6 +473,43 @@ test("profile read-model hides unverified Roblox identity details from the profi
   assert.match(readModel.sections.overview[0].lines.join("\n"), /Roblox: не привязан/);
   assert.match(readModel.sections.social[0].lines.join("\n"), /Связка Roblox: unverified/);
   assert.doesNotMatch(readModel.sections.social[0].lines.join("\n"), /RandomNick|Профиль Roblox/);
+  assert.equal(readModel.primaryAvatarUrl, null);
+  assert.equal(readModel.robloxProfileUrl, null);
+});
+
+test("profile read-model does not present repairable Roblox data as a linked account", () => {
+  const readModel = buildProfileReadModel({
+    now: "2026-05-16T12:00:00.000Z",
+    guildId: "guild-1",
+    userId: "user-1",
+    targetDisplayName: "Sasha",
+    isSelf: true,
+    profile: {
+      summary: {
+        preferredDisplayName: "Sasha",
+        roblox: {
+          hasVerifiedAccount: true,
+          isTrackable: false,
+          trackingState: "repairable",
+          trackingBlocker: "invalid_user_id",
+          verificationStatus: "verified",
+          currentUsername: "DiscordLikeName",
+          currentDisplayName: "Discord Display",
+          profileUrl: "https://www.roblox.com/users/123/profile",
+          avatarUrl: "https://tr.rbxcdn.com/wrong-avatar.png",
+        },
+      },
+    },
+  });
+
+  assert.doesNotMatch(readModel.heroLines.join("\n"), /DiscordLikeName/);
+  assert.match(readModel.heroLines.join("\n"), /Roblox требует перепривязки/);
+  assert.match(readModel.sections.overview[0].lines.join("\n"), /Roblox: не привязан/);
+  assert.match(readModel.sections.overview[1].lines.join("\n"), /нужна перепривязка/i);
+  assert.match(readModel.sections.social[0].lines.join("\n"), /требует перепривязки/i);
+  assert.doesNotMatch(readModel.sections.social[0].lines.join("\n"), /DiscordLikeName|Профиль Roblox/);
+  assert.equal(readModel.selfActionState.hasVerifiedRoblox, false);
+  assert.equal(readModel.selfActionState.robloxLabel, "Перепривязать Roblox");
   assert.equal(readModel.primaryAvatarUrl, null);
   assert.equal(readModel.robloxProfileUrl, null);
 });

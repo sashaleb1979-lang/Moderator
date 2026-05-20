@@ -27,6 +27,12 @@ const PROFILE_VIEW_LABELS = Object.freeze({
   social: "Соц",
 });
 
+function normalizeProfileDisplayMode(value, isSelf = false) {
+  const normalized = cleanString(value, 40).toLowerCase();
+  if (["self", "viewer", "compact-card"].includes(normalized)) return normalized;
+  return isSelf ? "self" : "viewer";
+}
+
 function cleanString(value, limit = 2000) {
   return String(value || "").trim().slice(0, Math.max(0, Number(limit) || 0));
 }
@@ -161,29 +167,33 @@ function buildProfileNavRow({ requesterUserId = "", targetUserId = "", currentVi
     PROFILE_VIEWS.map((view) => new ButtonBuilder()
       .setCustomId(buildProfileNavCustomId(requesterUserId, targetUserId, view))
       .setLabel(PROFILE_VIEW_LABELS[view])
-      .setStyle(view === activeView ? ButtonStyle.Primary : ButtonStyle.Secondary))
+      .setStyle(view === activeView ? ButtonStyle.Primary : ButtonStyle.Secondary)
+      .setDisabled(view === activeView))
   );
 }
 
-function buildProfileActionRows({ isSelf = false } = {}) {
+function buildProfileActionRows({ isSelf = false, selfActionState = {} } = {}) {
   if (!isSelf) return [];
+
+  const hasMains = selfActionState.hasMains === true;
+  const hasVerifiedRoblox = selfActionState.hasVerifiedRoblox === true;
 
   return buildButtonRows([
     new ButtonBuilder()
       .setCustomId("onboard_begin")
-      .setLabel("Добавить kills")
+      .setLabel(cleanString(selfActionState.killsLabel, 80) || "Добавить kills")
       .setStyle(ButtonStyle.Primary),
     new ButtonBuilder()
       .setCustomId("onboard_change_mains")
-      .setLabel("Сменить мейнов")
-      .setStyle(ButtonStyle.Secondary),
+      .setLabel(cleanString(selfActionState.mainsLabel, 80) || "Сменить мейнов")
+      .setStyle(hasMains ? ButtonStyle.Secondary : ButtonStyle.Primary),
     new ButtonBuilder()
       .setCustomId("profile_bind_roblox")
-      .setLabel("Привязать Roblox")
-      .setStyle(ButtonStyle.Secondary),
+      .setLabel(cleanString(selfActionState.robloxLabel, 80) || "Привязать Roblox")
+      .setStyle(hasVerifiedRoblox ? ButtonStyle.Secondary : ButtonStyle.Primary),
     new ButtonBuilder()
       .setCustomId("elo_submit_open")
-      .setLabel("ELO: текст + скрин")
+      .setLabel(cleanString(selfActionState.eloLabel, 80) || "ELO: текст + скрин")
       .setStyle(ButtonStyle.Primary),
     new ButtonBuilder()
       .setCustomId("rate_new_characters")
@@ -215,6 +225,7 @@ function buildProfilePayload(options = {}) {
     : buildProfileReadModel(options);
   const userId = cleanString(readModel.userId, 80);
   const displayName = cleanString(readModel.displayName, 200) || `Пользователь ${userId}`;
+  const displayMode = normalizeProfileDisplayMode(readModel.displayMode, readModel.isSelf);
   const currentView = normalizeProfileView(options.view);
   const heroSection = buildHeroSection({
     heroTitle: readModel.heroTitle,
@@ -227,11 +238,21 @@ function buildProfilePayload(options = {}) {
   const container = new ContainerBuilder()
     .setAccentColor(0x1565C0)
     .addTextDisplayComponents(
-      new TextDisplayBuilder().setContent(readModel.isSelf ? "# Твой профиль" : `# Профиль • ${displayName}`),
       new TextDisplayBuilder().setContent(
-        readModel.isSelf ? `Приватный профиль ${displayName}.` : `Приватный просмотр профиля <@${userId}>.`
+        displayMode === "compact-card"
+          ? (readModel.isSelf ? "# Моя карточка" : `# Карточка • ${displayName}`)
+          : (readModel.isSelf ? "# Твой профиль" : `# Профиль • ${displayName}`)
       ),
-      new TextDisplayBuilder().setContent(`**Секция:** ${PROFILE_VIEW_LABELS[currentView]}`)
+      new TextDisplayBuilder().setContent(
+        displayMode === "compact-card"
+          ? (readModel.isSelf ? `Компактная карточка ${displayName}.` : `Компактный просмотр профиля <@${userId}>.`)
+          : (readModel.isSelf ? `Приватный профиль ${displayName}.` : `Приватный просмотр профиля <@${userId}>.`)
+      ),
+      new TextDisplayBuilder().setContent(
+        displayMode === "compact-card"
+          ? "**Секция:** Карточка"
+          : `**Секция:** ${PROFILE_VIEW_LABELS[currentView]}`
+      )
     );
 
   if (heroSection) {
@@ -243,22 +264,27 @@ function buildProfilePayload(options = {}) {
     }
   }
 
-  container.addActionRowComponents(
-      buildProfileNavRow({
-        requesterUserId: options.requesterUserId,
-        targetUserId: userId,
-        currentView,
-      })
-    );
-
-  const actionRows = buildProfileActionRows({
-    isSelf: readModel.isSelf,
-  });
-  if (actionRows.length) {
-    container.addActionRowComponents(...actionRows);
+  if (displayMode !== "compact-card") {
+    container.addActionRowComponents(
+        buildProfileNavRow({
+          requesterUserId: options.requesterUserId,
+          targetUserId: userId,
+          currentView,
+        })
+      );
   }
 
-  if (readModel.isSelf && currentView === "overview") {
+  if (displayMode !== "compact-card") {
+    const actionRows = buildProfileActionRows({
+      isSelf: readModel.isSelf,
+      selfActionState: readModel.selfActionState,
+    });
+    if (actionRows.length) {
+      container.addActionRowComponents(...actionRows);
+    }
+  }
+
+  if (displayMode !== "compact-card" && readModel.isSelf && currentView === "overview") {
     container.addTextDisplayComponents(
       buildTextDisplay("ELO", [
         "Кнопка ниже открывает ELO submit.",
@@ -271,7 +297,8 @@ function buildProfilePayload(options = {}) {
   container
     .addSeparatorComponents(new SeparatorBuilder().setDivider(true));
 
-  const sectionBlocks = Array.isArray(readModel.sections?.[currentView]) ? readModel.sections[currentView] : [];
+  const sectionKey = displayMode === "compact-card" ? "compact" : currentView;
+  const sectionBlocks = Array.isArray(readModel.sections?.[sectionKey]) ? readModel.sections[sectionKey] : [];
   if (sectionBlocks.length) {
     container.addTextDisplayComponents(
       ...sectionBlocks.map((block) => buildTextDisplay(block?.title, block?.lines))
@@ -290,20 +317,22 @@ function buildProfilePayload(options = {}) {
     );
   }
 
-  if (mediaGallery && (currentView === "overview" || currentView === "social")) {
+  if (displayMode !== "compact-card" && mediaGallery && (currentView === "overview" || currentView === "social")) {
     container
       .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
       .addMediaGalleryComponents(mediaGallery);
   }
 
-  const linkRows = buildLinkButtons({
-    comboLinks: readModel.comboLinks,
-    robloxProfileUrl: readModel.robloxProfileUrl,
-  });
-  if (linkRows.length) {
-    container
-      .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
-      .addActionRowComponents(...linkRows);
+  if (displayMode !== "compact-card") {
+    const linkRows = buildLinkButtons({
+      comboLinks: readModel.comboLinks,
+      robloxProfileUrl: readModel.robloxProfileUrl,
+    });
+    if (linkRows.length) {
+      container
+        .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
+        .addActionRowComponents(...linkRows);
+    }
   }
 
   return {

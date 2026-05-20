@@ -244,6 +244,16 @@ function computeElapsedHours(fromValue, now) {
   return (nowTimestamp - fromTimestamp) / (60 * 60 * 1000);
 }
 
+function hasUsableRobloxSummary(robloxSummary = {}) {
+  const trackingState = cleanString(robloxSummary?.trackingState, 40);
+  return robloxSummary?.isTrackable === true
+    || trackingState === "trackable"
+    || (!trackingState
+      && robloxSummary?.hasVerifiedAccount === true
+      && Boolean(cleanString(robloxSummary?.userId, 80))
+      && Boolean(cleanString(robloxSummary?.currentUsername || robloxSummary?.username, 120)));
+}
+
 function hasReliableTrackedJjsDelta(latestProofWindow = null, robloxSummary = {}) {
   const currentTotalJjsMinutes = normalizeFiniteNumber(robloxSummary?.totalJjsMinutes);
   const snapshotTotalJjsMinutes = normalizeFiniteNumber(latestProofWindow?.totalJjsMinutes);
@@ -937,7 +947,7 @@ function buildViewerAnchorLine({
   if (Number.isFinite(Number(eloSummary?.currentElo)) || Number.isFinite(Number(eloSummary?.currentTier))) {
     parts.push(`ELO ${formatNumber(eloSummary.currentElo)} / tier ${formatNumber(eloSummary.currentTier)}`);
   }
-  if (robloxSummary?.hasVerifiedAccount === true && cleanString(robloxSummary?.currentUsername, 120)) {
+  if (hasUsableRobloxSummary(robloxSummary) && cleanString(robloxSummary?.currentUsername, 120)) {
     parts.push(`Roblox ${cleanString(robloxSummary.currentUsername, 120)}`);
   }
   if (cleanString(activitySummary?.appliedActivityRoleKey || activitySummary?.desiredActivityRoleKey, 80)) {

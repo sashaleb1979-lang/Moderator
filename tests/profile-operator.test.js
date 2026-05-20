@@ -154,6 +154,16 @@ function createTestOperator(overrides = {}) {
         wikiUrl: "https://jujutsu-shenanigans.fandom.com/wiki/Gojo",
       },
     ]),
+    buildProfileRobloxBindModal: ({ initialValue = "" } = {}) => ({
+      customId: "profile_bind_roblox_modal",
+      initialValue,
+    }),
+    resolveRobloxUserInput: async (value) => ({
+      id: "123",
+      name: String(value || "").trim() || "Builderman",
+      displayName: "Builderman",
+    }),
+    writeProfileRobloxBinding: async () => {},
     ...overrides,
   });
 }
@@ -377,7 +387,8 @@ test("profile operator handles open and nav buttons through one runtime seam", a
       primaryGuild: makePrimaryGuild("TAG"),
     }),
     reply: async (payload) => navCalls.push({ step: "reply", payload }),
-    update: async (payload) => navCalls.push({ step: "update", payload }),
+    deferUpdate: async () => navCalls.push({ step: "deferUpdate" }),
+    editReply: async (payload) => navCalls.push({ step: "editReply", payload }),
   };
 
   const navHandled = await operator.handleProfileButtonInteraction({
@@ -385,6 +396,77 @@ test("profile operator handles open and nav buttons through one runtime seam", a
   });
 
   assert.equal(navHandled, true);
-  assert.deepEqual(navCalls.map((entry) => entry.step), ["update"]);
-  assert.equal(navCalls[0].payload.flags, MessageFlags.IsComponentsV2);
+  assert.deepEqual(navCalls.map((entry) => entry.step), ["deferUpdate", "editReply"]);
+  assert.equal(navCalls[1].payload.flags, MessageFlags.IsComponentsV2);
+});
+
+test("profile operator opens Roblox bind modal from the self action button", async () => {
+  const operator = createTestOperator({
+    getTargetProfile: () => ({
+      summary: {
+        roblox: {
+          currentUsername: "GojoMain",
+          verificationStatus: "verified",
+          userId: "123",
+        },
+      },
+    }),
+  });
+  const calls = [];
+
+  const handled = await operator.handleProfileButtonInteraction({
+    interaction: {
+      customId: "profile_bind_roblox",
+      user: { id: "user-1", username: "Sasha" },
+      showModal: async (payload) => calls.push(payload),
+    },
+  });
+
+  assert.equal(handled, true);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].customId, "profile_bind_roblox_modal");
+  assert.equal(calls[0].initialValue, "GojoMain");
+});
+
+test("profile operator resolves and saves Roblox binding through modal submit", async () => {
+  const calls = [];
+  const operator = createTestOperator({
+    resolveRobloxUserInput: async (value) => {
+      calls.push({ step: "resolve", value });
+      return {
+        id: "42",
+        name: "Builderman",
+        displayName: "Builderman",
+      };
+    },
+    writeProfileRobloxBinding: async (userId, robloxUser, context) => {
+      calls.push({ step: "write", userId, robloxUser, source: context.source });
+    },
+    logProfileRobloxBinding: async ({ userId, robloxUser }) => {
+      calls.push({ step: "log", userId, robloxUser });
+    },
+  });
+  const replies = [];
+
+  const handled = await operator.handleProfileModalSubmitInteraction({
+    interaction: {
+      customId: "profile_bind_roblox_modal",
+      user: { id: "user-1", username: "Sasha" },
+      member: makeMember({ userId: "user-1", username: "Sasha", displayName: "Sasha" }),
+      fields: {
+        getTextInputValue(name) {
+          assert.equal(name, "roblox_username");
+          return "https://www.roblox.com/users/42/profile";
+        },
+      },
+      deferReply: async (payload) => replies.push({ step: "deferReply", payload }),
+      editReply: async (payload) => replies.push({ step: "editReply", payload }),
+    },
+  });
+
+  assert.equal(handled, true);
+  assert.deepEqual(replies[0], { step: "deferReply", payload: { flags: MessageFlags.Ephemeral } });
+  assert.match(replies[1].payload, /Roblox аккаунт подтверждён: \*\*Builderman\*\* \(ID 42\)/);
+  assert.deepEqual(calls.map((entry) => entry.step), ["resolve", "write", "log"]);
+  assert.equal(calls[0].value, "https://www.roblox.com/users/42/profile");
 });

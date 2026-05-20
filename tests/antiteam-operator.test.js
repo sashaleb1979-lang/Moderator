@@ -124,7 +124,7 @@ function createSlashInteraction(subcommand, {
   };
 }
 
-test("roblox modal uses API lookup only for the current draft, grants battalion role and does not rewrite profile binding", async () => {
+test("roblox modal promotes resolved Roblox into profile binding and antiteam confirmation", async () => {
   const db = {};
   ensureAntiteamState(db).state.config.battalionRoleId = "battalion-role";
   let binding = null;
@@ -150,7 +150,17 @@ test("roblox modal uses API lookup only for the current draft, grants battalion 
 
   assert.equal(await operator.handleModalSubmitInteraction(interaction), true);
 
-  assert.equal(binding, null);
+  assert.deepEqual(binding, {
+    userId: "user-1",
+    robloxUser: {
+      id: "101",
+      name: "Anchor",
+      displayName: "Anchor Display",
+      avatarUrl: "https://tr.rbxcdn.com/anchor-headshot.png",
+    },
+    source: "antiteam_modal",
+  });
+  assert.equal(db.sot.antiteam.robloxConfirmations["user-1"].robloxUserId, "101");
   assert.deepEqual(granted, [{ userId: "user-1", roleId: "battalion-role" }]);
   assert.equal(db.sot.antiteam.drafts["user-1"].roblox.username, "Anchor");
   assert.equal(db.sot.antiteam.drafts["user-1"].roblox.avatarUrl, "https://tr.rbxcdn.com/anchor-headshot.png");
@@ -496,6 +506,53 @@ test("help button records friend-request path and notifies author only after hel
 
   assert.equal(await operator.handleButtonInteraction(createButtonInteraction(ticketButtonId("friend_request_sent", "ticket-1"))), true);
   assert.equal(threadNotices.length, 1);
+});
+
+test("help button does not persist repairable helper Roblox username as a usable helper identity", async () => {
+  const db = {};
+  const state = ensureAntiteamState(db).state;
+  state.config.channelId = "channel-1";
+  const draft = setAntiteamDraft(db, "author-1", {
+    userTag: "Author",
+    roblox: { userId: "101", username: "Anchor", profileUrl: "https://www.roblox.com/users/101/profile" },
+    level: "medium",
+    count: "2-4",
+  }, { now: "2026-05-16T10:00:00.000Z" });
+  createAntiteamTicketFromDraft(db, draft, {
+    id: "ticket-1",
+    now: "2026-05-16T10:01:00.000Z",
+  });
+
+  const operator = createAntiteamOperator({
+    db,
+    now: () => "2026-05-16T10:02:00.000Z",
+    saveDb() {},
+    getProfile: () => ({
+      domains: {
+        roblox: {
+          username: "DiscordLikeName",
+          verificationStatus: "verified",
+        },
+      },
+      summary: {
+        roblox: {
+          hasVerifiedAccount: true,
+          isTrackable: false,
+          trackingState: "repairable",
+          currentUsername: "DiscordLikeName",
+          verificationStatus: "verified",
+        },
+      },
+    }),
+  });
+
+  const interaction = createButtonInteraction("at:help:ticket-1");
+  assert.equal(await operator.handleButtonInteraction(interaction), true);
+
+  const helper = db.sot.antiteam.tickets["ticket-1"].helpers["helper-1"];
+  assert.equal(helper.robloxUsername, "");
+  assert.equal(helper.robloxUserId, "");
+  assert.match(JSON.stringify(interaction.calls.at(-1)[1].components[0].toJSON()), /уведомить автора/);
 });
 
 test("friend-request help always includes a direct Roblox user join link", async () => {

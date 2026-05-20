@@ -136,6 +136,9 @@ test("profile payload renders overview, activity, rankings, roblox, and link but
         },
         roblox: {
           hasVerifiedAccount: true,
+          isTrackable: true,
+          trackingState: "trackable",
+          userId: "123",
           currentUsername: "GojoMain",
           profileUrl: "https://www.roblox.com/users/123/profile",
           avatarUrl: "https://tr.rbxcdn.com/gojo-avatar.png",
@@ -241,6 +244,7 @@ test("profile payload renders overview, activity, rankings, roblox, and link but
     progress: "Прогресс",
     social: "Соц",
   })[view]));
+  assert.equal(navButtons[0].disabled, true);
   const buttons = actionRows[1].components;
   assert.ok(buttons.some((button) => button.label === "Гайд: Gojo"));
   assert.ok(buttons.some((button) => button.label === "JJS Wiki: Gojo"));
@@ -359,6 +363,9 @@ test("profile payload renders enriched progress and social sections", () => {
         },
         roblox: {
           hasVerifiedAccount: true,
+          isTrackable: true,
+          trackingState: "trackable",
+          userId: "123",
           currentUsername: "GojoMain",
           profileUrl: "https://www.roblox.com/users/123/profile",
         },
@@ -457,11 +464,21 @@ test("profile payload renders enriched progress and social sections", () => {
     profile: {
       approvedKills: 4300,
       killTier: 3,
+      mainCharacterIds: ["gojo"],
+      mainCharacterLabels: ["Gojo"],
       summary: {
         preferredDisplayName: "Sasha",
         onboarding: { approvedKills: 4300, killTier: 3 },
+        elo: {
+          currentElo: 145,
+          currentTier: 2,
+        },
         roblox: {
           hasVerifiedAccount: true,
+          isTrackable: true,
+          trackingState: "trackable",
+          userId: "123",
+          currentUsername: "GojoMain",
           totalJjsMinutes: 1560,
         },
       },
@@ -495,8 +512,16 @@ test("profile payload renders enriched progress and social sections", () => {
     },
   });
 
-  const selfProgressDisplays = getProfileContainer(selfProgressPayload).textDisplays;
+  const selfProgressContainer = getProfileContainer(selfProgressPayload);
+  const selfProgressDisplays = selfProgressContainer.textDisplays;
   assert.ok(selfProgressDisplays.some((component) => /### Практический прогресс/.test(component.content) && /С последнего рега: 36 ч по времени .* 6 ч JJS/.test(component.content) && /Сравнение окон: последний ап 60 kills\/ч/.test(component.content) && /Динамика: темп ускорился относительно прошлого окна/.test(component.content) && /Средний темп за отслеженный период: 53,3 kills\/ч JJS/.test(component.content) && /До следующего tier: 2.?700 kills/.test(component.content) && /Фокус: темп выше прошлого окна/.test(component.content)));
+  assert.deepEqual(selfProgressContainer.actionRows[1].components.map((button) => button.label), [
+    "Обновить kills",
+    "Сменить мейнов",
+    "Обновить Roblox",
+    "Обновить ELO",
+    "Оценить персонажей",
+  ]);
 
   const socialPayload = buildProfilePayload({
     now: "2026-05-16T12:00:00.000Z",
@@ -639,7 +664,7 @@ test("profile payload handles empty profiles gracefully", () => {
   assert.ok(textDisplays.some((component) => /После онбординга профиль заполнится автоматически/i.test(component.content)));
   assert.deepEqual(actionRows[1].components.map((button) => button.label), [
     "Добавить kills",
-    "Сменить мейнов",
+    "Выбрать мейнов",
     "Привязать Roblox",
     "ELO: текст + скрин",
     "Оценить персонажей",
@@ -678,4 +703,46 @@ test("profile payload splits many link buttons into multiple rows", () => {
   assert.equal(actionRows.length, 3);
   assert.deepEqual(actionRows[1].components.map((button) => button.label), ["Кнопка 1", "Кнопка 2", "Кнопка 3", "Кнопка 4", "Кнопка 5"]);
   assert.deepEqual(actionRows[2].components.map((button) => button.label), ["Кнопка 6", "Roblox профиль"]);
+});
+
+test("profile payload supports canonical compact-card mode without nav and self actions", () => {
+  const payload = buildProfilePayload({
+    requesterUserId: "user-1",
+    userId: "user-1",
+    readModel: {
+      userId: "user-1",
+      displayName: "Sasha",
+      isSelf: true,
+      displayMode: "compact-card",
+      comboLinks: [
+        { label: "Gojo", buttonLabel: "Гайд: Gojo", url: "https://example.com/gojo" },
+      ],
+      heroTitle: "Кто ты сейчас",
+      heroLines: ["Текст-тирлист: Форма B+"],
+      primaryAvatarUrl: null,
+      primaryAvatarDescription: null,
+      mediaGalleryItems: [],
+      robloxProfileUrl: "https://www.roblox.com/users/123/profile",
+      sections: {
+        compact: [
+          { title: "Моя карточка", lines: ["Игрок: <@user-1>", "ELO: 145 / tier 2"] },
+          { title: "Готовность", lines: ["JJS доступ: открыт"] },
+        ],
+      },
+      verificationLines: ["Статус: verified"],
+      emptyStateNote: null,
+      selfActionState: {
+        killsLabel: "Обновить kills",
+      },
+    },
+  });
+
+  const { textDisplays, actionRows, container } = getProfileContainer(payload);
+  assert.ok(textDisplays.some((component) => /# Моя карточка/.test(component.content)));
+  assert.ok(textDisplays.some((component) => /\*\*Секция:\*\* Карточка/.test(component.content)));
+  assert.ok(textDisplays.some((component) => /### Моя карточка/.test(component.content) && /ELO: 145 \/ tier 2/.test(component.content)));
+  assert.ok(textDisplays.some((component) => /### Готовность/.test(component.content) && /JJS доступ: открыт/.test(component.content)));
+  assert.equal(actionRows.length, 0);
+  assert.doesNotMatch(JSON.stringify(container), /Roblox профиль/);
+  assert.doesNotMatch(JSON.stringify(container), /Гайд: Gojo/);
 });

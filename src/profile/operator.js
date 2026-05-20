@@ -1,6 +1,8 @@
 "use strict";
 
 const { MessageFlags } = require("discord.js");
+const { buildProfileRobloxIdentitySession } = require("../onboard/roblox-identity");
+const { safeDeferComponentUpdate } = require("../runtime/interaction-ack");
 const {
   PROFILE_ACCESS_DENY_REASONS,
   hasProfileViewerServerTag,
@@ -128,6 +130,7 @@ function createProfileOperator(options = {}) {
     isSelf = false,
     requesterUserId = "",
     view = "overview",
+    displayMode = "",
   } = {}) {
     const normalizedTargetUserId = cleanString(targetUserId, 80);
     const [resolvedTargetMember, fetchedTargetUser] = await Promise.all([
@@ -189,12 +192,14 @@ function createProfileOperator(options = {}) {
         ? options.getCharacterCatalog()
         : [],
       isSelf,
+      displayMode,
     });
 
     return buildProfilePayload({
       readModel,
       requesterUserId,
       view,
+      displayMode,
     });
   }
 
@@ -346,6 +351,27 @@ function createProfileOperator(options = {}) {
     checkActorGuard = null,
     deleteSourceMessage = true,
   } = {}) {
+    if (interaction?.customId === "profile_bind_roblox") {
+      if (typeof checkActorGuard === "function" && await checkActorGuard(interaction)) {
+        return true;
+      }
+
+      if (typeof options.buildProfileRobloxBindModal !== "function") {
+        throw new TypeError("buildProfileRobloxBindModal must be a function");
+      }
+
+      const profile = typeof options.getTargetProfile === "function"
+        ? options.getTargetProfile(interaction?.user?.id)
+        : null;
+      const identity = buildProfileRobloxIdentitySession(
+        profile?.summary?.roblox || profile?.domains?.roblox || {}
+      );
+      await interaction.showModal(await options.buildProfileRobloxBindModal({
+        initialValue: identity.robloxUsername || "",
+      }));
+      return true;
+    }
+
     const profileButtonRequest = parseProfileOpenCustomId(interaction?.customId);
     if (profileButtonRequest) {
       if (typeof checkActorGuard === "function" && await checkActorGuard(interaction)) {
@@ -403,12 +429,79 @@ function createProfileOperator(options = {}) {
       return true;
     }
 
-    await interaction.update(await buildPrivateProfilePayload({
+    const acked = await safeDeferComponentUpdate(interaction, {
+      label: "profile nav",
+      logWarning: typeof options.logWarning === "function" ? options.logWarning : () => {},
+    });
+    if (!acked) {
+      return true;
+    }
+
+    await interaction.editReply(await buildPrivateProfilePayload({
       targetUserId: profileNavRequest.targetUserId,
       isSelf: access.isSelf,
       requesterUserId: interaction.user.id,
       view: profileNavRequest.view,
     }));
+    return true;
+  }
+
+  async function handleProfileModalSubmitInteraction({
+    interaction,
+    checkActorGuard = null,
+  } = {}) {
+    if (interaction?.customId !== "profile_bind_roblox_modal") {
+      return false;
+    }
+
+    if (typeof checkActorGuard === "function" && await checkActorGuard(interaction)) {
+      return true;
+    }
+
+    if (typeof options.resolveRobloxUserInput !== "function") {
+      throw new TypeError("resolveRobloxUserInput must be a function");
+    }
+    if (typeof options.writeProfileRobloxBinding !== "function") {
+      throw new TypeError("writeProfileRobloxBinding must be a function");
+    }
+
+    const robloxIdentityInput = interaction.fields.getTextInputValue("roblox_username");
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+    let robloxUser = null;
+    try {
+      robloxUser = await options.resolveRobloxUserInput(robloxIdentityInput);
+    } catch (error) {
+      await interaction.editReply(String(error?.message || error || "Не удалось проверить Roblox аккаунт."));
+      return true;
+    }
+
+    if (!robloxUser) {
+      await interaction.editReply("Такой Roblox аккаунт не найден через Roblox API. Проверь username, userId или ссылку и попробуй ещё раз.");
+      return true;
+    }
+
+    try {
+      await options.writeProfileRobloxBinding(interaction.user.id, robloxUser, {
+        interaction,
+        user: interaction.user,
+        member: interaction.member,
+        source: "profile_button",
+      });
+    } catch (error) {
+      await interaction.editReply(String(error?.message || error || "Не удалось сохранить Roblox аккаунт."));
+      return true;
+    }
+
+    if (typeof options.logProfileRobloxBinding === "function") {
+      await Promise.resolve(options.logProfileRobloxBinding({
+        userId: interaction.user.id,
+        robloxUser,
+        interaction,
+      })).catch(() => {});
+    }
+
+    await interaction.editReply(`Roblox аккаунт подтверждён: **${robloxUser.name}** (ID ${robloxUser.id}). Профиль обновлён.`);
     return true;
   }
 
@@ -418,6 +511,7 @@ function createProfileOperator(options = {}) {
     buildPrivateProfilePayload,
     getProfileAccessDeniedText,
     handleProfileButtonInteraction,
+    handleProfileModalSubmitInteraction,
     handleProfileMessage,
     handleProfileSlashCommand,
     resolveProfileAccessForRequester,

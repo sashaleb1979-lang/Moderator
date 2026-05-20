@@ -210,8 +210,10 @@ const {
   getBotHelperPanelRequiredCustomIds,
 } = require("./src/onboard/bot-helper-panel");
 const {
+  buildProfileRobloxIdentitySession,
   canManageWelcomeRobloxIdentity,
   getWelcomeRobloxIdentityLockText,
+  parseRobloxIdentityInput,
 } = require("./src/onboard/roblox-identity");
 const { resolveNonJjsCaptchaMode } = require("./src/onboard/non-jjs-mode");
 const {
@@ -2570,6 +2572,7 @@ async function buildGraphicTierlistBoardPayload(client) {
   const components = [
     new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId("graphic_refresh").setLabel("Обновить PNG").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("graphic_refresh_names").setLabel("Обновить имена").setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId("graphic_panel").setLabel("PNG панель").setStyle(ButtonStyle.Primary)
     ),
   ];
@@ -2670,7 +2673,7 @@ function buildGraphicPanelPayload(statusText = "", includeFlags = true) {
     new ButtonBuilder().setCustomId("graphic_panel_nonfake").setLabel("Нефейк-кластер").setStyle(ButtonStyle.Primary),
     new ButtonBuilder().setCustomId("graphic_panel_clear_cache").setLabel("Сбросить кэш ав").setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId("panel_resend_text").setLabel("Переотправить текст").setStyle(ButtonStyle.Danger),
-    new ButtonBuilder().setCustomId("graphic_panel_close").setLabel("Закрыть").setStyle(ButtonStyle.Danger)
+    new ButtonBuilder().setCustomId("graphic_panel_refresh_names").setLabel("Сбросить неймы").setStyle(ButtonStyle.Secondary)
   );
 
   const payload = { embeds: [embed], components: [row1, row2, row3, row4, row5] };
@@ -4001,67 +4004,102 @@ function buildSubmitSessionBootstrap(userId, member) {
   const ensuredProfile = existingProfile && typeof existingProfile === "object"
     ? ensureSharedProfile(existingProfile, userId).profile
     : null;
-  const robloxSnapshot = buildCanonicalRobloxBindingSnapshot(ensuredProfile?.domains?.roblox || ensuredProfile || {});
+  const robloxIdentity = buildProfileRobloxIdentitySession(
+    ensuredProfile?.summary?.roblox || ensuredProfile?.domains?.roblox || {}
+  );
 
   return {
     mainCharacterIds,
-    robloxUsername: robloxSnapshot.username || "",
-    robloxUserId: robloxSnapshot.userId || "",
-    robloxDisplayName: robloxSnapshot.displayName || "",
+    robloxUsername: robloxIdentity.robloxUsername || "",
+    robloxUserId: robloxIdentity.robloxUserId || "",
+    robloxDisplayName: robloxIdentity.robloxDisplayName || "",
   };
 }
 
-function normalizeRobloxUsernameInput(value) {
-  const username = String(value || "").trim();
-  return /^[A-Za-z0-9_]{3,20}$/.test(username) ? username : "";
-}
-
-async function resolveRobloxUserByUsername(username) {
-  const normalizedUsername = normalizeRobloxUsernameInput(username);
-  if (!normalizedUsername) {
-    throw new Error("Roblox username должен содержать от 3 до 20 символов: буквы, цифры или _.");
-  }
-
-  const matches = await robloxApiClient.fetchUsersByUsernames([normalizedUsername], {
-    excludeBannedUsers: false,
-  });
-  const match = Array.isArray(matches) ? matches[0] : null;
-  if (!match?.userId) return null;
-
-  const [profile, avatars] = await Promise.all([
-    robloxApiClient.fetchUserProfile(match.userId),
-    robloxApiClient.fetchUserAvatarHeadshots([match.userId]).catch(() => []),
-  ]);
-  const avatar = Array.isArray(avatars) ? avatars[0] : null;
-  const resolvedProfile = profile || match;
+function buildResolvedRobloxUserRecord(resolvedProfile = {}, fallback = {}) {
+  const profile = resolvedProfile && typeof resolvedProfile === "object" ? resolvedProfile : {};
+  const fallbackState = fallback && typeof fallback === "object" ? fallback : {};
+  const resolvedId = String(profile.userId || fallbackState.userId || "").trim();
+  const resolvedName = String(profile.username || fallbackState.username || fallbackState.input || "").trim();
+  const resolvedDisplayName = String(
+    profile.displayName || profile.username || fallbackState.displayName || fallbackState.username || fallbackState.input || ""
+  ).trim();
 
   return {
-    id: String(resolvedProfile.userId || match.userId),
-    name: String(resolvedProfile.username || match.username || normalizedUsername).trim(),
-    displayName: String(resolvedProfile.displayName || resolvedProfile.username || match.displayName || match.username || normalizedUsername).trim(),
-    avatarUrl: avatar?.imageUrl || null,
-    profileUrl: resolvedProfile.profileUrl || null,
-    createdAt: resolvedProfile.createdAt || null,
-    description: resolvedProfile.description || null,
-    hasVerifiedBadge: resolvedProfile.hasVerifiedBadge,
-    accountStatus: resolvedProfile.isBanned === true
+    id: resolvedId,
+    name: resolvedName,
+    displayName: resolvedDisplayName,
+    avatarUrl: fallbackState.avatarUrl || null,
+    profileUrl: profile.profileUrl || fallbackState.profileUrl || null,
+    createdAt: profile.createdAt || null,
+    description: profile.description || null,
+    hasVerifiedBadge: profile.hasVerifiedBadge,
+    accountStatus: profile.isBanned === true
       ? "banned-or-unavailable"
-      : resolvedProfile.isBanned === false
+      : profile.isBanned === false
         ? "active"
         : null,
   };
 }
 
+async function resolveRobloxUserByIdentityInput(value) {
+  const lookup = parseRobloxIdentityInput(value);
+  if (!lookup.ok) {
+    throw new Error(lookup.error);
+  }
+
+  async function resolveByUserId(userId, fallback = {}) {
+    const [profile, avatars] = await Promise.all([
+      robloxApiClient.fetchUserProfile(userId),
+      robloxApiClient.fetchUserAvatarHeadshots([userId]).catch(() => []),
+    ]);
+    if (!profile?.userId) return null;
+    const avatar = Array.isArray(avatars) ? avatars[0] : null;
+    return buildResolvedRobloxUserRecord(profile, {
+      ...fallback,
+      userId,
+      avatarUrl: avatar?.imageUrl || null,
+    });
+  }
+
+  if (lookup.kind === "userId") {
+    return resolveByUserId(lookup.userId, { input: lookup.rawInput });
+  }
+
+  const matches = await robloxApiClient.fetchUsersByUsernames([lookup.username], {
+    excludeBannedUsers: false,
+  });
+  const match = Array.isArray(matches) ? matches[0] : null;
+  if (!match?.userId) {
+    if (lookup.fallbackUserId) {
+      return resolveByUserId(lookup.fallbackUserId, { input: lookup.username });
+    }
+    return null;
+  }
+
+  return resolveByUserId(match.userId, {
+    input: lookup.username,
+    username: match.username,
+    displayName: match.displayName,
+    profileUrl: match.profileUrl,
+  });
+}
+
+async function resolveRobloxUserByUsername(value) {
+  return resolveRobloxUserByIdentityInput(value);
+}
+
 function buildRobloxUsernameModal(customId, initialValue = "") {
-  const modal = new ModalBuilder().setCustomId(customId).setTitle("Roblox username");
+  const modal = new ModalBuilder().setCustomId(customId).setTitle("Roblox аккаунт");
   const input = new TextInputBuilder()
     .setCustomId("roblox_username")
-    .setLabel("Уникальный Roblox username")
+    .setLabel("Username, userId или ссылка на профиль")
     .setStyle(TextInputStyle.Short)
     .setRequired(true)
-    .setMaxLength(20)
-    .setPlaceholder("Например Ryomen_One")
-    .setValue(String(initialValue || "").trim().slice(0, 20));
+    .setMinLength(1)
+    .setMaxLength(200)
+    .setPlaceholder("Например Ryomen_One или https://www.roblox.com/users/1/profile")
+    .setValue(String(initialValue || "").trim().slice(0, 200));
 
   modal.addComponents(new ActionRowBuilder().addComponents(input));
   return modal;
@@ -5502,6 +5540,33 @@ function getProfileOperator() {
     getTierlistProfile: (userId) => getDormantTierlistProfileSnapshot(db, userId),
     getComboGuideState: () => db.comboGuide,
     getCharacterCatalog: () => getCharacterCatalog(),
+    buildProfileRobloxBindModal: ({ initialValue = "" } = {}) => buildRobloxUsernameModal("profile_bind_roblox_modal", initialValue),
+    resolveRobloxUserInput: (value) => resolveRobloxUserByIdentityInput(value),
+    writeProfileRobloxBinding: (userId, robloxUser, context = {}) => {
+      db.profiles ||= {};
+      const previousProfile = cloneJsonValue(db.profiles?.[userId]);
+      const hadProfile = Boolean(db.profiles?.[userId]);
+      const updatedAt = nowIso();
+
+      try {
+        const profile = getProfile(userId);
+        profile.displayName ||= context.member?.displayName || context.user?.globalName || context.user?.username;
+        profile.username ||= context.user?.username || "";
+
+        writeCanonicalRobloxBinding(userId, profile, robloxUser, {
+          verificationStatus: "verified",
+          verifiedAt: updatedAt,
+          updatedAt,
+          source: context.source || "profile_button",
+        });
+        saveDb();
+      } catch (error) {
+        restoreRecordValue(db.profiles, userId, previousProfile, hadProfile);
+        throw error;
+      }
+    },
+    logProfileRobloxBinding: ({ userId, robloxUser }) => logLine(client, `ROBLOX BIND: <@${userId}> -> ${robloxUser.name} (${robloxUser.id}) via helper/profile`),
+    logWarning: (message) => console.warn(message),
   });
 
   return profileOperator;
@@ -15670,14 +15735,14 @@ client.on("interactionCreate", async (interaction) => {
 
       let robloxUser = null;
       try {
-        robloxUser = await resolveRobloxUserByUsername(robloxUsernameInput);
+        robloxUser = await resolveRobloxUserByIdentityInput(robloxUsernameInput);
       } catch (error) {
-        await interaction.editReply(String(error?.message || error || "Не удалось проверить Roblox username."));
+        await interaction.editReply(String(error?.message || error || "Не удалось проверить Roblox аккаунт."));
         return;
       }
 
       if (!robloxUser) {
-        await interaction.editReply("Такой Roblox username не найден через Roblox API.");
+        await interaction.editReply("Такой Roblox аккаунт не найден через Roblox API. Проверь username, userId или ссылку и попробуй ещё раз.");
         return;
       }
 
@@ -16501,6 +16566,22 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
+    if (interaction.customId === "graphic_refresh_names") {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      try {
+        const refreshedProfileNames = await syncProfileNamesFromDiscord(client);
+        const refreshed = await refreshAllTierlists(client);
+        await interaction.editReply(`Неймы синхронизированы из Discord: ${formatNumber(refreshedProfileNames)} профилей обновлено. ${buildTierlistRefreshReply(refreshed)}`);
+      } catch (error) {
+        await interaction.editReply(`Не удалось обновить неймы tier-листа: ${String(error?.message || error || "неизвестная ошибка").slice(0, 260)}`);
+      }
+      return;
+    }
+
     if (interaction.customId === "graphic_panel") {
       if (!isModerator(interaction.member)) {
         await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
@@ -16863,6 +16944,24 @@ client.on("interactionCreate", async (interaction) => {
         clearGraphicAvatarCache();
         await refreshGraphicTierlistBoard(client);
         await interaction.reply(ephemeralPayload({ content: "Кэш аватарок очищен и PNG пересобран." }));
+        return;
+      }
+
+      if (interaction.customId === "graphic_panel_refresh_names") {
+        await interaction.deferUpdate();
+        try {
+          const refreshedProfileNames = await syncProfileNamesFromDiscord(client);
+          const refreshed = await refreshAllTierlists(client);
+          await interaction.editReply(buildGraphicPanelPayload(
+            `Неймы синхронизированы из Discord: ${formatNumber(refreshedProfileNames)} профилей обновлено. ${buildTierlistRefreshReply(refreshed)}`,
+            false
+          ));
+        } catch (error) {
+          await interaction.editReply(buildGraphicPanelPayload(
+            `Не удалось обновить неймы tier-листа: ${String(error?.message || error || "неизвестная ошибка").slice(0, 260)}`,
+            false
+          ));
+        }
         return;
       }
 
@@ -19387,16 +19486,18 @@ client.on("interactionCreate", async (interaction) => {
           return;
         }
 
-        const profileSnapshot = buildCanonicalRobloxBindingSnapshot(db.profiles?.[interaction.user.id]?.domains?.roblox || db.profiles?.[interaction.user.id] || {});
+        const profile = db.profiles?.[interaction.user.id] || null;
+        const profileIdentity = buildProfileRobloxIdentitySession(profile?.summary?.roblox || profile?.domains?.roblox || {});
         await interaction.showModal(buildRobloxUsernameModal(
           "onboard_roblox_username_modal",
-          session?.robloxUsername || pending?.robloxUsername || profileSnapshot.username || ""
+          session?.robloxUsername || pending?.robloxUsername || profileIdentity.robloxUsername || ""
         ));
         return;
       }
 
-      const profileSnapshot = buildCanonicalRobloxBindingSnapshot(db.profiles?.[interaction.user.id]?.domains?.roblox || db.profiles?.[interaction.user.id] || {});
-      await interaction.showModal(buildRobloxUsernameModal("profile_bind_roblox_modal", profileSnapshot.username || ""));
+      const profile = db.profiles?.[interaction.user.id] || null;
+      const profileIdentity = buildProfileRobloxIdentitySession(profile?.summary?.roblox || profile?.domains?.roblox || {});
+      await interaction.showModal(buildRobloxUsernameModal("profile_bind_roblox_modal", profileIdentity.robloxUsername || ""));
       return;
     }
 
@@ -20259,14 +20360,14 @@ client.on("interactionCreate", async (interaction) => {
 
       let robloxUser = null;
       try {
-        robloxUser = await resolveRobloxUserByUsername(robloxUsernameInput);
+        robloxUser = await resolveRobloxUserByIdentityInput(robloxUsernameInput);
       } catch (error) {
-        await interaction.editReply(String(error?.message || error || "Не удалось проверить Roblox username."));
+        await interaction.editReply(String(error?.message || error || "Не удалось проверить Roblox аккаунт."));
         return;
       }
 
       if (!robloxUser) {
-        await interaction.editReply("Такой Roblox username не найден через Roblox API. Проверь написание и попробуй ещё раз.");
+        await interaction.editReply("Такой Roblox аккаунт не найден через Roblox API. Проверь username, userId или ссылку и попробуй ещё раз.");
         return;
       }
 
@@ -20384,50 +20485,10 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    if (interaction.customId === "profile_bind_roblox_modal") {
-      const robloxUsernameInput = interaction.fields.getTextInputValue("roblox_username");
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-
-      let robloxUser = null;
-      try {
-        robloxUser = await resolveRobloxUserByUsername(robloxUsernameInput);
-      } catch (error) {
-        await interaction.editReply(String(error?.message || error || "Не удалось проверить Roblox username."));
-        return;
-      }
-
-      if (!robloxUser) {
-        await interaction.editReply("Такой Roblox username не найден через Roblox API. Проверь написание и попробуй ещё раз.");
-        return;
-      }
-
-      db.profiles ||= {};
-      const previousProfile = cloneJsonValue(db.profiles?.[interaction.user.id]);
-      const hadProfile = Boolean(db.profiles?.[interaction.user.id]);
-      const updatedAt = nowIso();
-
-      try {
-        const profile = getProfile(interaction.user.id);
-        profile.displayName ||= interaction.member?.displayName || interaction.user.globalName || interaction.user.username;
-        profile.username ||= interaction.user.username;
-
-        writeCanonicalRobloxBinding(interaction.user.id, profile, robloxUser, {
-          verificationStatus: "verified",
-          verifiedAt: updatedAt,
-          updatedAt,
-          source: "profile_button",
-        });
-        saveDb();
-      } catch (error) {
-        restoreRecordValue(db.profiles, interaction.user.id, previousProfile, hadProfile);
-        await interaction.editReply(String(error?.message || error || "Не удалось сохранить Roblox username."));
-        return;
-      }
-
-      await logLine(client, `ROBLOX BIND: <@${interaction.user.id}> -> ${robloxUser.name} (${robloxUser.id}) via helper/profile`).catch((error) => {
-        console.warn(`Roblox bind log failed for ${interaction.user.id}: ${formatRuntimeError(error)}`);
-      });
-      await interaction.editReply(`Roblox username подтверждён: **${robloxUser.name}** (ID ${robloxUser.id}). Профиль обновлён.`);
+    if (await getProfileOperator().handleProfileModalSubmitInteraction({
+      interaction,
+      checkActorGuard: replyIfAutonomyGuardBlockedActor,
+    })) {
       return;
     }
 

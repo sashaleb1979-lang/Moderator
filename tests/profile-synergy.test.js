@@ -332,6 +332,9 @@ test("buildProfileSynergyState builds a viewer-first hero block and Main Core su
     ],
     robloxSummary: {
       hasVerifiedAccount: true,
+      isTrackable: true,
+      trackingState: "trackable",
+      userId: "123",
       currentUsername: "GojoMain",
       serverFriendsCount: 3,
       jjsMinutes7d: 180,

@@ -662,7 +662,8 @@
 
 ### Phase 10. Burn-In И Sync Docs
 1. Focused tests. Выполнено для `tests/profile-synergy.test.js`, `tests/profile-model.test.js` и `tests/profile-view.test.js`.
-2. Full active-tree `node --test`. Выполнено по `tests/*.test.js`: 637 pass / 0 fail.
+
+2. Full active-tree `node --test`. Выполнено по `tests/*.test.js`: 665 pass / 0 fail.
 3. Discord smoke. Всё ещё pending.
 4. Sync `PROFILE_VISION_PLAN.md`, `PROFILE_SYNERGY_SYSTEM_PLAN.md` и `PROFILE_SYNERGY_CALCULATION_SPEC.md`. Обновлено под текущий Phase 9 state.
 
@@ -716,10 +717,11 @@
 ### 11.4. Рекомендуемый Порядок Закрытия
 
 #### Phase 11. Canonical Surface Unification
-1. Ввести единый `displayMode` contract: `self`, `viewer`, `compact-card`.
+1. Ввести единый `displayMode` contract: `self`, `viewer`, `compact-card`. Базовый canonical contract уже live в `src/profile/model.js` + `src/profile/view.js` + `src/profile/operator.js`; следующий шаг — перевести на него legacy `my-card` и preview-like entrypoints.
 2. Перевести legacy `my-card` и все preview-like surfaces на тот же `src/profile/model.js` + `src/profile/view.js` stack.
 3. Оставить в compat слое только mapping старых entrypoints и payload expectations.
 4. После перевода удалить старые inline payload builders и разрозненные access/target branches.
+5. Уже начатый local slice этой фазы: `profile_bind_roblox` button + modal submit больше не должны жить inline в `welcome-bot.js`; canonical runtime owner для этого path — `src/profile/operator.js`, а self-action rows/nav должны быть state-aware и loading-safe через `src/profile/model.js` + `src/profile/view.js`.
 
 Критерий готовности:
 1. все profile/my-card entrypoints идут через `src/profile/operator.js`;

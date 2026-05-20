@@ -6,6 +6,14 @@ function cleanString(value, limit = 2000) {
   return String(value || "").trim().slice(0, Math.max(0, Number(limit) || 0));
 }
 
+const PROFILE_DISPLAY_MODES = Object.freeze(["viewer", "self", "compact-card"]);
+
+function normalizeProfileDisplayMode(value, { isSelf = false } = {}) {
+  const normalized = cleanString(value, 40).toLowerCase();
+  if (PROFILE_DISPLAY_MODES.includes(normalized)) return normalized;
+  return isSelf ? "self" : "viewer";
+}
+
 function normalizeFiniteNumber(value, fallback = null) {
   const amount = Number(value);
   return Number.isFinite(amount) ? amount : fallback;
@@ -427,8 +435,13 @@ function buildOverviewStatusLines({
 
   lines.push(`Верификация: ${cleanString(verificationSummary.status, 80) || "не начата"}`);
 
-  if (robloxSummary.hasVerifiedAccount === true) {
+  const robloxUsability = resolveRobloxSummaryUsability(robloxSummary);
+  if (robloxUsability.usable) {
     lines.push("Roblox-связка: подтверждена.");
+  } else if (robloxUsability.state === "repairable") {
+    lines.push("Roblox-связка: нужна перепривязка, нет валидного Roblox userId.");
+  } else if (robloxUsability.state === "manual_only") {
+    lines.push("Roblox-связка: нужна перепривязка, нет полного Roblox аккаунта.");
   } else if (robloxSummary.verificationStatus) {
     lines.push(`Roblox-связка: ${cleanString(robloxSummary.verificationStatus, 80)}`);
   } else {
@@ -436,6 +449,30 @@ function buildOverviewStatusLines({
   }
 
   return lines;
+}
+
+function resolveRobloxSummaryUsability(robloxSummary = {}) {
+  const summary = robloxSummary && typeof robloxSummary === "object" ? robloxSummary : {};
+  const trackingState = cleanString(summary.trackingState, 40);
+  const username = cleanString(summary.currentUsername || summary.username, 120);
+  const userId = cleanString(summary.userId, 80);
+  const usable = summary.isTrackable === true
+    || trackingState === "trackable"
+    || (!trackingState && summary.hasVerifiedAccount === true && Boolean(username) && Boolean(userId));
+
+  return {
+    usable,
+    state: trackingState || (usable ? "trackable" : cleanString(summary.verificationStatus, 40)),
+    username,
+    userId,
+  };
+}
+
+function formatRobloxReadiness(robloxSummary = {}) {
+  const usability = resolveRobloxSummaryUsability(robloxSummary);
+  if (usability.usable) return "Roblox связан";
+  if (usability.state === "repairable" || usability.state === "manual_only") return "Roblox требует перепривязки";
+  return "Roblox не подтверждён";
 }
 
 function buildHeroLines({
@@ -475,8 +512,9 @@ function buildHeroLines({
   if (mainLabel.length) {
     focusBits.push(`мейны ${mainLabel.join(", ")}`);
   }
-  if (robloxSummary.hasVerifiedAccount === true && robloxSummary.currentUsername) {
-    focusBits.push(`Roblox ${cleanString(robloxSummary.currentUsername, 120)}`);
+  const robloxUsability = resolveRobloxSummaryUsability(robloxSummary);
+  if (robloxUsability.usable && robloxUsability.username) {
+    focusBits.push(`Roblox ${robloxUsability.username}`);
   }
   if (activitySummary.appliedActivityRoleKey || activitySummary.desiredActivityRoleKey) {
     focusBits.push(`активность ${cleanString(activitySummary.appliedActivityRoleKey || activitySummary.desiredActivityRoleKey, 80)}`);
@@ -494,7 +532,7 @@ function buildHeroLines({
         : "JJS доступ не выдан"
   );
   readinessBits.push(`верификация ${cleanString(verificationSummary.status, 80) || "не начата"}`);
-  readinessBits.push(`Roblox ${robloxSummary.hasVerifiedAccount ? "связан" : "не подтверждён"}`);
+  readinessBits.push(formatRobloxReadiness(robloxSummary));
   if (tierlistSummary.hasSubmission === true || tierlistSummary.hasSubmission === false) {
     readinessBits.push(`tierlist ${tierlistSummary.hasSubmission ? "есть" : "пуст"}`);
   }
@@ -530,6 +568,7 @@ function buildProfileReadModel(options = {}) {
   const recentKillChange = options.recentKillChange && typeof options.recentKillChange === "object" ? options.recentKillChange : null;
   const recentKillChanges = normalizeRecentKillChanges(options.recentKillChanges, recentKillChange, 3);
   const roleMentions = Array.isArray(options.roleMentions) ? options.roleMentions.filter(Boolean) : [];
+  const displayMode = normalizeProfileDisplayMode(options.displayMode, { isSelf: options.isSelf });
   const mainCharacterIds = Array.isArray(profile?.mainCharacterIds) ? profile.mainCharacterIds : [];
   const mainCharacterLabels = Array.isArray(profile?.mainCharacterLabels) ? profile.mainCharacterLabels : [];
   const displayName = cleanString(
@@ -555,15 +594,38 @@ function buildProfileReadModel(options = {}) {
   });
   const comboLinks = mergeProfileLinks(comboGuideLinks, characterWikiLinks);
   const targetAvatarUrl = normalizeMediaUrl(options.targetAvatarUrl, 2000);
-  const hasVerifiedRoblox = robloxSummary.hasVerifiedAccount === true;
+  const robloxUsability = resolveRobloxSummaryUsability(robloxSummary);
+  const hasVerifiedRoblox = robloxUsability.usable;
+  const needsRobloxRebind = robloxUsability.state === "repairable" || robloxUsability.state === "manual_only";
   const verifiedRobloxLabel = hasVerifiedRoblox
-    ? cleanString(robloxSummary.currentUsername || robloxSummary.userId, 120)
+    ? cleanString(robloxUsability.username || robloxUsability.userId, 120)
     : "";
   const robloxAvatarUrl = hasVerifiedRoblox ? normalizeMediaUrl(robloxSummary.avatarUrl, 2000) : null;
   const verificationAvatarUrl = normalizeMediaUrl(verificationSummary.oauthAvatarUrl, 2000);
   const currentElo = options.eloProfile?.currentElo ?? eloSummary.currentElo;
   const currentEloTier = options.eloProfile?.currentTier ?? eloSummary.currentTier;
   const eloSubmissionStatus = options.eloProfile?.lastSubmissionStatus || eloSummary.lastSubmissionStatus;
+  const eloSubmissionId = cleanString(options.eloProfile?.lastSubmissionId || eloSummary.lastSubmissionId, 80);
+  const eloSubmissionCreatedAt = options.eloProfile?.lastSubmissionCreatedAt || eloSummary.lastSubmissionCreatedAt || null;
+  const eloProofUrl = cleanString(options.eloProfile?.proofUrl || eloSummary.proofUrl, 1000);
+  const robloxIdentityHint = cleanString(
+    robloxSummary.currentUsername
+      || profile?.domains?.roblox?.username
+      || profile?.robloxUsername,
+    120
+  );
+  const selfActionState = {
+    hasApprovedKills: Number.isFinite(approvedKills),
+    hasMains: mainCharacterLabels.length > 0,
+    hasVerifiedRoblox,
+    hasElo: Number.isFinite(Number(currentElo)),
+    killsLabel: Number.isFinite(approvedKills) ? "Обновить kills" : "Добавить kills",
+    mainsLabel: mainCharacterLabels.length ? "Сменить мейнов" : "Выбрать мейнов",
+    robloxLabel: hasVerifiedRoblox
+      ? "Обновить Roblox"
+      : (needsRobloxRebind ? "Перепривязать Roblox" : (robloxIdentityHint ? "Проверить Roblox" : "Привязать Roblox")),
+    eloLabel: Number.isFinite(Number(currentElo)) ? "Обновить ELO" : "ELO: текст + скрин",
+  };
   const primaryAvatar = [
     {
       url: targetAvatarUrl,
@@ -775,6 +837,15 @@ function buildProfileReadModel(options = {}) {
   if (eloSubmissionStatus) {
     rankingLines.push(`Статус ELO submit: ${cleanString(eloSubmissionStatus, 80)}`);
   }
+  if (eloSubmissionId) {
+    rankingLines.push(`ID ELO заявки: ${eloSubmissionId}`);
+  }
+  if (eloSubmissionCreatedAt) {
+    rankingLines.push(`Последний ELO submit: ${formatDateTime(eloSubmissionCreatedAt)}`);
+  }
+  if (eloProofUrl) {
+    rankingLines.push(`Скрин ELO: ${eloProofUrl}`);
+  }
   if (tierlistMainName) {
     rankingLines.push(`Основной tierlist-пик: ${cleanString(tierlistMainName, 120)}`);
   }
@@ -795,6 +866,10 @@ function buildProfileReadModel(options = {}) {
   if (hasVerifiedRoblox) {
     robloxLines.push("Связка Roblox: подтверждена");
     robloxLines.push(`Аккаунт: ${cleanString(robloxSummary.currentUsername, 120) || cleanString(robloxSummary.userId, 80) || "verified"}`);
+  } else if (robloxUsability.state === "repairable") {
+    robloxLines.push("Связка Roblox требует перепривязки: нет валидного Roblox userId.");
+  } else if (robloxUsability.state === "manual_only") {
+    robloxLines.push("Связка Roblox требует перепривязки: нет полного Roblox аккаунта.");
   } else if (robloxSummary.verificationStatus) {
     robloxLines.push(`Связка Roblox: ${cleanString(robloxSummary.verificationStatus, 80)}`);
   } else {
@@ -876,11 +951,37 @@ function buildProfileReadModel(options = {}) {
   });
 
   const socialPeerLines = buildTopCoPlayPeerLines(robloxSummary.topCoPlayPeers, 3);
+  const compactCardLines = [
+    `Игрок: <@${userId}>`,
+    `Roblox: ${verifiedRobloxLabel || "не привязан"}`,
+    `Kills: ${Number.isFinite(approvedKills) ? formatNumber(approvedKills) : "—"}`,
+    Number.isFinite(Number(currentElo)) || Number.isFinite(Number(currentEloTier))
+      ? `ELO: ${[Number.isFinite(Number(currentElo)) ? formatNumber(currentElo) : "", Number.isFinite(Number(currentEloTier)) ? `tier ${formatNumber(currentEloTier)}` : ""].filter(Boolean).join(" / ")}`
+      : (eloSubmissionStatus ? `ELO: статус ${cleanString(eloSubmissionStatus, 80)}` : "ELO: —"),
+    `Мейны: ${mainCharacterLabels.length ? mainCharacterLabels.join(", ") : "—"}`,
+  ];
+
+  const compactSections = [
+    { title: displayMode === "compact-card" && Boolean(options.isSelf) ? "Моя карточка" : "Карточка", lines: compactCardLines },
+    { title: "Готовность", lines: overviewStatusLines },
+  ];
+
+  if (Number.isFinite(Number(currentElo)) || Number.isFinite(Number(currentEloTier)) || eloSubmissionStatus || tierlistSummary.hasSubmission === true || tierlistSummary.hasSubmission === false) {
+    compactSections.push({ title: "ELO и Tierlist", lines: rankingLines });
+  }
+
+  if (hasVerifiedRoblox || robloxSummary.verificationStatus) {
+    compactSections.push({
+      title: "Roblox и соц",
+      lines: robloxLines.slice(0, 6),
+    });
+  }
 
   return {
     userId,
     displayName,
     isSelf: Boolean(options.isSelf),
+    displayMode,
     comboLinks,
     heroTitle,
     heroLines,
@@ -888,6 +989,7 @@ function buildProfileReadModel(options = {}) {
     primaryAvatarDescription: primaryAvatar?.description || null,
     mediaGalleryItems,
     robloxProfileUrl: hasVerifiedRoblox ? cleanString(robloxSummary.profileUrl, 1000) || null : null,
+    selfActionState,
     sections: {
       overview: [
         { title: "Обзор", lines: overviewLines },
@@ -933,6 +1035,7 @@ function buildProfileReadModel(options = {}) {
         ...(synergy?.blocks?.socialSuggestions ? [synergy.blocks.socialSuggestions] : []),
         { title: "Мейны и гайды", lines: mainAndGuideLines },
       ],
+      compact: compactSections,
     },
     verificationLines: verificationSummary.status && verificationSummary.status !== "not_started"
       ? [
