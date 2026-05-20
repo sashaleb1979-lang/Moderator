@@ -139,14 +139,14 @@ function buildCommands() {
       .addUserOption((option) => option.setName("target").setDescription("Чей профиль открыть")),
     new SlashCommandBuilder()
       .setName(ANTITEAM_COMMAND_NAME)
-      .setDescription("Антитим и клан-алармы")
+      .setDescription("Антитим и клан-вары")
       .addSubcommand((subcommand) =>
         subcommand.setName("panel").setDescription("Открыть панель настройки антитима")
       )
       .addSubcommand((subcommand) =>
         subcommand
           .setName("clan")
-          .setDescription("Создать клан-аларм для батальона")
+          .setDescription("Создать ФАЙТ С КЛАНОМ для батальона")
           .addUserOption((option) => option
             .setName("target")
             .setDescription("Игрок-якорь, который уже сидит на сервере и не должен выходить")

@@ -107,7 +107,7 @@ test("roblox username modal does not send an empty value below min length", () =
   const filledInput = buildRobloxUsernameModal({ customId: "at:roblox", initialValue: "Builderman" }).toJSON().components[0].components[0];
   const clanInput = buildRobloxUsernameModal({
     customId: "at:clan_roblox",
-    title: "Клан-аларм: Roblox якорь",
+    title: "ФАЙТ С КЛАНОМ: Roblox якорь",
     label: "Roblox ник игрока-якоря",
     placeholder: "Ник игрока, который уже сидит на сервере",
   }).toJSON().components[0].components[0];
@@ -265,9 +265,20 @@ test("clan draft and public ticket show selected Discord anchor", () => {
     roblox: { username: "AnchorRb", userId: "202" },
     description: "Клан держит сервер.",
   });
+  const draftJson = payloadJson(draftPayload);
+  const ticketJson = payloadJson(ticketPayload);
 
-  assert.match(payloadJson(draftPayload), /Якорь: <@anchor-1>/);
-  assert.match(payloadJson(ticketPayload), /Попросил 👤 <@caller-1> • Якорь <@anchor-1>/);
+  assert.equal(draftPayload.components[0].toJSON().accent_color, 0x8E24AA);
+  assert.equal(ticketPayload.components[0].toJSON().accent_color, 0x8E24AA);
+  assert.equal(buildTicketTitle({ kind: "clan", status: "open" }), "🟣 ФАЙТ С КЛАНОМ");
+  assert.equal(buildThreadName({ kind: "clan", status: "open" }), "🟣 ФАЙТ С КЛАНОМ");
+  assert.match(draftJson, /# 🟣 ФАЙТ С КЛАНОМ/);
+  assert.match(draftJson, /Якорь: <@anchor-1>/);
+  assert.match(draftJson, /ФАЙТ С КЛАНОМ: якорь не должен выходить/);
+  assert.match(ticketJson, /# 🟣 ФАЙТ С КЛАНОМ/);
+  assert.match(ticketJson, /Попросил 👤 <@caller-1> • Якорь <@anchor-1>/);
+  assert.match(ticketJson, /🟣 \*\*ФАЙТ С КЛАНОМ\*\*: якорь должен оставаться/);
+  assert.doesNotMatch(ticketJson, /Клан-аларм/);
 });
 
 test("public ticket and thread panel disable actions after close", () => {
@@ -400,7 +411,7 @@ test("clan public ticket without photo does not touch photo attachment name", ()
   const json = payloadJson(payload);
 
   assert.equal(payload.files, undefined);
-  assert.match(json, /Клан-аларм/);
+  assert.match(json, /ФАЙТ С КЛАНОМ/);
   assert.match(json, /ФАЙТ С ХН/);
 });
 

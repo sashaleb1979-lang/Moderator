@@ -1013,7 +1013,7 @@ test("clan friend-request notice pings the selected anchor in the thread", async
 
   assert.equal(threadNotices.length, 1);
   assert.match(threadNotices[0].content, /<@anchor-1>/);
-  assert.match(threadNotices[0].content, /клан-аларму/);
+  assert.match(threadNotices[0].content, /ФАЙТ С КЛАНОМ/);
   assert.deepEqual(threadNotices[0].allowedMentions.users, ["anchor-1", "helper-1"]);
 });
 
