@@ -53,6 +53,68 @@
 13. `S+ равняется по высшему балу, низший — по низшим показателям` — да, но только через динамическую нормализацию по живой популяции, а не по жёстко прибитым порогам.
     Иначе система быстро станет лживой при изменении общего уровня сервера.
 
+## 1.1. Что Нужно Чётко Закрепить В Этом Же Плане
+
+Это не второй план.
+Это жёсткие фиксации внутри этого же плана.
+Ниже по документу они считаются обязательными и не отменяются общими формулировками roadmap.
+
+### 1.1.1. Чётко Закрепить И Реализовать
+
+1. Antiteam-очки как отдельную обязательную synergy-метрику.
+2. Места игрока по каждой буквенной оси относительно других.
+3. Relative-grade слой по voice, active voice, Discord sessions, messages, JJS time, kills/day и antiteam points.
+4. Debuff kill-related букв и их вклада в composite при stale proof.
+5. Discord vs Roblox balance как отдельную честную метрику.
+6. `Проверенный круг` как отдельный блок.
+7. Voice + game overlap как отдельный блок.
+8. Полноценную social map `кого ты знаешь на сервере`.
+9. Proof gap detector в сильной форме.
+10. Полноценную историю ростов, а не только последнее окно.
+11. Persisted population snapshots.
+12. Weekly season rollups.
+13. `Лучший день сезона` и `strongest week` по полному letter-composite, а не только по kills/time.
+14. Trust/debuff metric по свежести и coverage.
+15. Coverage metrics как отдельный обязательный слой.
+16. Comeback metrics.
+17. Activity mix.
+
+### 1.1.2. Это Дополнение
+
+1. Профиль фарма `ровные длинные сессии / короткие рывки`.
+2. Prime time confidence.
+3. Season consistency.
+
+### 1.1.3. Это Отменено
+
+1. Growth by time-of-day.
+2. Richer stability taxonomy.
+
+### 1.1.4. Как Это Чётко Трактовать
+
+1. `Antiteam-очки` на текущем этапе = support/help points из antiteam helper stats, где базовый счётчик = `confirmedArrived`.
+2. `Место по букве` = server-relative place внутри валидной выборки этой оси, а не глобальное место по всему профилю.
+3. Каждая буквенная ось обязана возвращать минимум: букву, raw/relative score, место `#N`, размер выборки, confidence-state и influence debuff.
+4. `Relative-grade слой` должен отдельно считать и сравнивать относительно других:
+   - voice time,
+   - active voice share c бустом,
+   - количество Discord sessions,
+   - количество сообщений,
+   - время в JJS,
+   - средние approved kills в день,
+   - antiteam support points.
+5. `Debuff до -90%` означает ослабление вклада stale proof-backed kill-сигналов в общий composite, а не скрытие самой метрики.
+6. `Discord vs Roblox balance` = отдельная честная метрика со статусами `живёт больше в JJS / живёт больше в Discord / держится ровно в обоих`.
+7. `Проверенный круг` = только `verified + часто пересекаетесь в JJS + уже Roblox-друзья`.
+8. `Voice + game overlap` = только при отдельном per-contact voice mirror; до него запрещены выдуманные person-level overlap claims.
+9. `Полноценная social map` = strong ties, medium ties, общие друзья и inferred ties, но без притворства точным party/clan truth.
+10. `Proof gap detector` должен объяснять не только факт разрыва, но и его размер, freshness-state и debuff к kill-related буквам.
+11. `История ростов` = полноценная лента growth windows, а не только последнее окно и comparison line.
+12. `Лучший день сезона` и `strongest week` позже считаются по полному letter-composite: Discord, JJS, voice, antiteam и связанным relative-сигналам.
+13. `Trust/debuff metric` = явная пометка, насколько сигнал свежий, частичный, устаревший или ослабленный.
+14. `Coverage metrics` = сколько дней покрыто реально, сколько потеряно, какой процент истории полный и какой собран кусками.
+15. `Comeback metrics` = вернулся после просадки, держит серию активных окон, замедляется уже несколько окон подряд, восстановился после паузы.
+
 ## 2. Что Уже Реально Собирается Сейчас
 
 ### 2.1. Kills И Approved History
@@ -118,6 +180,17 @@
    - moveCount
    - lastVoiceCaptureAt
 3. Но voice пока живёт в news-domain, а не в profile domain.
+
+### 2.7. Antiteam / Support
+1. В canonical antiteam state уже есть helper stats.
+2. Базовый путь: `db.sot.antiteam.stats.helpers[userId]`.
+3. Уже хранятся:
+   - `responded`
+   - `linkGranted`
+   - `confirmedArrived`
+   - `lastHelpedAt`
+4. Для synergy-слоя `confirmedArrived` закрепляется как базовые antiteam support points.
+5. Эти points нужно тянуть в relative-grade и seasonal-comparison слой, а не оставлять только в antiteam panel.
 
 ## 3. Чего Сейчас Не Хватает Для Чёткой Синергии
 
@@ -349,6 +422,29 @@
    - verified ties,
    - later voice overlap.
 
+### 5.4. Жёсткий Контракт Следующей Ревизии Букв
+1. Каждая ось должна возвращать не только `букву`, но и:
+   - место игрока по этой оси,
+   - размер выборки,
+   - confidence state,
+   - influence debuff.
+
+2. В letter-composite отдельно закрепляются relative-компоненты:
+   - voice hours,
+   - active voice share,
+   - Discord sessions,
+   - messages,
+   - JJS time,
+   - average approved kills per covered day,
+   - antiteam support points.
+
+3. `Discord vs Roblox balance` закрепляется как отдельная честная метрика рядом с буквами, а не как скрытая часть одной оси.
+
+4. Kill/day и другие proof-backed сигналы обязаны терять влияние при stale proof.
+   Если proof сильно устарел, debuff может снижать вклад kill-related слоя в общую сводку до `-90%`.
+
+5. `Лучший день сезона` и `strongest week` должны позже считаться не только по kills или JJS-часам, а по полному relative-composite: Discord, JJS, voice, antiteam и связанным буквенным осям.
+
 ## 6. Базовые Телеметрические Апгрейды До Больших Фич
 
 1. Persist proof-window snapshots при каждом approved update kills.
@@ -465,7 +561,7 @@
     Как text tierlist feed, но с Roblox часами рядом у каждого окна.
 
 20. Proof gap detector.
-    Если часов в JJS много, а proof давно не обновлялся, система не просто ругается, а объясняет разрыв.
+   Если часов в JJS много, а proof давно не обновлялся, система не просто ругается, а объясняет размер разрыва, freshness-state и debuff к kill-related буквам.
 
 ### P1. Нужны Умеренные Телеметрические Апгрейды, Но Польза Очень Высокая
 
@@ -493,8 +589,8 @@
     Показывать людей, с кем игрок и часто сидит в voice, и часто пересекается в JJS.
 
 25. Growth by time-of-day.
-    Если появятся hourly buckets и proof snapshots, можно писать:
-    `лучше всего фармишь вечером` или `основной рост приходит ночью`.
+   Отменено до появления точного инструмента.
+   Текущий repo не должен обещать выводы вида `лучше всего фармишь вечером`.
 
 26. Season Story.
     Итог сезона:
@@ -547,10 +643,10 @@
     Нужен profile voice mirror и overlap aggregation.
 
 37. `Лучший день сезона` по JJS + Discord + growth.
-    Нужны hourly/day story snapshots.
+   Нужен composite по буквенным осям: JJS, Discord, voice, antiteam и связанным relative-сигналам, а не только kills/time.
 
 38. `Самая сильная неделя`.
-    Нужны weekly rollups с retention.
+   Нужны weekly rollups с retention и сравнением полной letter-сводки относительно других.
 
 39. `Переходный статус игрока`.
     Например: был тихим, стал боевым активным; был соло, стал social-core.
@@ -629,7 +725,8 @@
 4. Countdown до next tier/milestone. Реализовано в base form по каноническим thresholds и последнему надёжному kills/JJS pace.
 5. Сравнение двух последних окон и lifetime pace. Реализовано в base form внутри того же owner через growth-window series без возврата формул в `model.js`.
 6. Richer CTA copy и формулировки стабильности/ускорения. Базовая версия реализована внутри self-progress owner.
-7. Следующий шаг фазы: richer stability taxonomy и более человекочитаемые CTA поверх уже собранных growth metrics.
+7. Следующий шаг фазы: stronger proof gap detector, полноценная лента growth windows и freshness/debuff слой поверх уже собранных growth metrics.
+8. Richer stability taxonomy здесь не планируется до появления новых надёжных инструментов.
 
 ### Phase 5. Viewer-First Narrative Block
 1. Текст-тирлист формы. Viewer hero block реализован через `src/profile/synergy.js` и теперь калибрует буквы от runtime population snapshot с честным fallback при малом baseline.
@@ -643,6 +740,7 @@
 3. Скрытый круг. Базовый read-side block реализован на existing social suggestions cache через `src/profile/synergy.js`.
 4. Top co-play peers. Уже показываются в profile social section; friend-overlap и hidden-circle blocks теперь дополняют этот слой, а не заменяют его.
 5. Strong ties layer закрыт в v1: server-friend overlap, кто из друзей уже здесь, top co-play peers и hidden-circle suggestions уже live. Medium inferred ties всё ещё future work; текущий shipped слой не притворяется broader social graph truth.
+6. Следующий обязательный social layer: отдельный `Проверенный круг`, voice+game overlap и полная social map с strong/medium/inferred ties.
 
 ### Phase 7. Voice, Prime Time И Personal Readiness
 1. Voice summary. Базовый read-side block `Voice-срез` реализован в `src/profile/synergy.js` и вставляется в activity section через `src/profile/model.js` поверх `profile.summary.voice`.
@@ -732,7 +830,8 @@
 1. Добавить persisted population snapshots как отдельный baseline для grade/archetype stability.
 2. Добавить weekly season rollups поверх daily archive, чтобы story blocks могли честно говорить не только про daily peaks.
 3. Расширить stability/archetype taxonomy в `src/profile/synergy.js` только поверх baseline-backed rules.
-4. Не выпускать richer story copy, пока не существует baseline/snapshot owner для её опоры.
+4. Richer stability taxonomy не планировать до появления нового trustworthy telemetry layer; пока допустим только proof gap, comeback и coverage-based read-side.
+5. Не выпускать richer story copy, пока не существует baseline/snapshot owner для её опоры.
 
 Критерий готовности:
 1. viewer hero и stability/status block больше не зависят только от on-demand population snapshot;

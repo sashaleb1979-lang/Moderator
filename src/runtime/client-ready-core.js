@@ -10,6 +10,13 @@ function formatErrorText(error) {
   return error?.message || error;
 }
 
+function recordStartupDegraded(degraded, step, error) {
+  const normalizedStep = String(step || "unknown").trim() || "unknown";
+  const message = String(formatErrorText(error) || "unknown error").trim() || "unknown error";
+  degraded.push({ step: normalizedStep, message });
+  return message;
+}
+
 class ClientReadyCoreError extends Error {
   constructor(step, cause) {
     super(`Client ready step failed: ${step}: ${formatErrorText(cause)}`);
@@ -282,42 +289,51 @@ async function runClientReadyCore(client, options = {}) {
     assertFunction(resumeActivityRuntime, "resumeActivityRuntime");
   }
 
+  const degraded = [];
+
   await Promise.resolve(registerGuildCommands(client)).catch((error) => {
     throw new ClientReadyCoreError("registerGuildCommands", error);
   });
 
   const generated = await Promise.resolve(ensureManagedRoles(client)).catch((error) => {
-    logError("Managed role ensure failed:", formatErrorText(error));
+    const message = recordStartupDegraded(degraded, "ensureManagedRoles", error);
+    logError("Managed role ensure failed:", message);
     return createEmptyGeneratedSummary();
   });
 
   await Promise.resolve(runSotStartupAlerts(client)).catch((error) => {
-    logError("SoT startup alerts failed:", formatErrorText(error));
+    const message = recordStartupDegraded(degraded, "runSotStartupAlerts", error);
+    logError("SoT startup alerts failed:", message);
   });
 
   await Promise.resolve(syncApprovedTierRoles(client)).catch((error) => {
-    logError("Tier role sync failed:", formatErrorText(error));
+    const message = recordStartupDegraded(degraded, "syncApprovedTierRoles", error);
+    logError("Tier role sync failed:", message);
     return 0;
   });
   if (typeof syncAccessCompanionRoles === "function") {
     await Promise.resolve(syncAccessCompanionRoles(client)).catch((error) => {
-      logError("Access companion role sync failed:", formatErrorText(error));
+      const message = recordStartupDegraded(degraded, "syncAccessCompanionRoles", error);
+      logError("Access companion role sync failed:", message);
       return null;
     });
   }
   await Promise.resolve(refreshWelcomePanel(client)).catch((error) => {
-    logError("Welcome panel refresh failed:", formatErrorText(error));
+    const message = recordStartupDegraded(degraded, "refreshWelcomePanel", error);
+    logError("Welcome panel refresh failed:", message);
   });
   await Promise.resolve(refreshAllTierlists(client)).catch((error) => {
-    logError("Tierlist refresh failed:", formatErrorText(error));
+    const message = recordStartupDegraded(degraded, "refreshAllTierlists", error);
+    logError("Tierlist refresh failed:", message);
     return null;
   });
   if (typeof resumeActivityRuntime === "function") {
     await Promise.resolve(resumeActivityRuntime(client)).catch((error) => {
-      logError("Activity runtime resume failed:", formatErrorText(error));
+      const message = recordStartupDegraded(degraded, "resumeActivityRuntime", error);
+      logError("Activity runtime resume failed:", message);
     });
   }
-  return { generated };
+  return { generated, degraded };
 }
 
 function scheduleClientReadyIntervals(client, options = {}) {

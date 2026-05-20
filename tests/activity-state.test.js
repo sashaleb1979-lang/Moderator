@@ -28,6 +28,10 @@ test("createEmptyActivityState seeds config and empty activity collections", () 
   assert.equal(state.config.autoRoleSyncHours, 24);
   assert.equal(state.config.activityRoleIds.newcomer, null);
   assert.equal(state.config.channelWeightPresets.main_chat, 1);
+  assert.equal(state.config.voiceScoring.mode, "smart");
+  assert.equal(state.config.voiceScoring.totalDailyCapHours, 6);
+  assert.equal(state.config.voiceScoring.activeDailyCapHours, 4);
+  assert.equal(state.config.voiceScoring.recencyHalfLifeDays, 10);
   assert.deepEqual(state.watchedChannels, []);
   assert.deepEqual(state.globalUserSessions, []);
   assert.deepEqual(state.globalVoiceSessions, []);
@@ -50,6 +54,19 @@ test("normalizeActivityState deduplicates watched channels and normalizes config
       roleBoostMaxMultiplier: "1.2",
       newcomerRoleMaxMemberDays: "9",
       moderatorRoleIds: ["mod-1", "", "mod-1", "mod-2"],
+      voiceScoring: {
+        mode: "smart",
+        totalDailyCapHours: "8",
+        activeDailyCapHours: "5",
+        recencyHalfLifeDays: "14",
+        streamingWeight: "0.6",
+        videoWeight: "bad",
+        minMeaningfulActiveSegmentSeconds: "120",
+        toggleDebounceSeconds: "7",
+        minEngagementRatio: "1.4",
+        lowEngagementMultiplier: "-2",
+        maxStreamingToActiveRatio: "0.75",
+      },
     },
     watchedChannels: [
       {
@@ -79,6 +96,17 @@ test("normalizeActivityState deduplicates watched channels and normalizes config
   assert.equal(state.config.roleBoostMaxMultiplier, 1.2);
   assert.equal(state.config.newcomerRoleMaxMemberDays, 9);
   assert.deepEqual(state.config.moderatorRoleIds, ["mod-1", "mod-2"]);
+  assert.equal(state.config.voiceScoring.mode, "smart");
+  assert.equal(state.config.voiceScoring.totalDailyCapHours, 8);
+  assert.equal(state.config.voiceScoring.activeDailyCapHours, 5);
+  assert.equal(state.config.voiceScoring.recencyHalfLifeDays, 14);
+  assert.equal(state.config.voiceScoring.streamingWeight, 0.6);
+  assert.equal(state.config.voiceScoring.videoWeight, 0.15);
+  assert.equal(state.config.voiceScoring.minMeaningfulActiveSegmentSeconds, 120);
+  assert.equal(state.config.voiceScoring.toggleDebounceSeconds, 7);
+  assert.equal(state.config.voiceScoring.minEngagementRatio, 1);
+  assert.equal(state.config.voiceScoring.lowEngagementMultiplier, 0);
+  assert.equal(state.config.voiceScoring.maxStreamingToActiveRatio, 0.75);
   assert.equal(state.watchedChannels.length, 2);
   assert.deepEqual(state.watchedChannels[0], {
     guildId: null,
@@ -171,6 +199,11 @@ test("updateActivityConfig merges partial overrides and keeps defaults available
       core: 90,
       weak: 20,
     },
+    voiceScoring: {
+      mode: "smart",
+      totalDailyCapHours: 8,
+      minEngagementRatio: 0.33,
+    },
   });
 
   assert.equal(result.mutated, true);
@@ -181,7 +214,22 @@ test("updateActivityConfig merges partial overrides and keeps defaults available
   assert.equal(result.config.activityRoleThresholds.core, 90);
   assert.equal(result.config.activityRoleThresholds.weak, 20);
   assert.equal(result.config.activityRoleThresholds.stable, 77);
+  assert.equal(result.config.voiceScoring.mode, "smart");
+  assert.equal(result.config.voiceScoring.totalDailyCapHours, 8);
+  assert.equal(result.config.voiceScoring.activeDailyCapHours, 4);
+  assert.equal(result.config.voiceScoring.minEngagementRatio, 0.33);
   assert.equal(getActivityConfig(db).channelWeightPresets.flood, ACTIVITY_CHANNEL_WEIGHT_PRESETS.flood);
+
+  const second = updateActivityConfig(db, {
+    voiceScoring: {
+      activeDailyCapHours: 5,
+    },
+  });
+
+  assert.equal(second.config.voiceScoring.mode, "smart");
+  assert.equal(second.config.voiceScoring.totalDailyCapHours, 8);
+  assert.equal(second.config.voiceScoring.activeDailyCapHours, 5);
+  assert.equal(second.config.voiceScoring.minEngagementRatio, 0.33);
 
   const ensured = ensureActivityState(db);
   assert.equal(ensured.config.sessionGapMinutes, 50);

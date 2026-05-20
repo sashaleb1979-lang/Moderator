@@ -333,6 +333,7 @@ const {
 } = require("./src/integrations/elo-dormant");
 const {
   buildLegacyEloSubmitStepPayload,
+  getLegacyEloSubmitChannelGuideText,
   getLegacyEloSubmitMessageError,
   resolveLegacyEloSubmitTargetChannelId,
 } = require("./src/integrations/elo-submit-flow");
@@ -7074,11 +7075,12 @@ async function banVerificationUser(client, userId, reviewedBy, reason = "verific
 
 async function runVerificationDeadlineSweep(client) {
   if (!isVerificationEnabled()) {
-    return { scanned: 0, reported: 0 };
+    return { scanned: 0, reported: 0, failed: 0 };
   }
 
   let scanned = 0;
   let reported = 0;
+  let failed = 0;
   for (const userId of Object.keys(db.profiles || {})) {
     const profile = finalizeStoredProfile(userId);
     const verification = profile.summary?.verification && typeof profile.summary.verification === "object"
@@ -7102,17 +7104,26 @@ async function runVerificationDeadlineSweep(client) {
     if (!Number.isFinite(dueAt) || dueAt > Date.now()) continue;
 
     scanned += 1;
-    await postVerificationManualReport(client, userId, "Срок verification истёк. Участник всё ещё находится в verify-карантине и не завершил кейс до дедлайна.");
-    updateVerificationProfile(userId, {
-      status: "manual_review",
-      decision: "manual_review",
-      decisionReason: "pending_timeout",
-      reportSentAt: nowIso(),
-    });
-    reported += 1;
+    try {
+      await postVerificationManualReport(client, userId, "Срок verification истёк. Участник всё ещё находится в verify-карантине и не завершил кейс до дедлайна.");
+      updateVerificationProfile(userId, {
+        status: "manual_review",
+        decision: "manual_review",
+        decisionReason: "pending_timeout",
+        reportSentAt: nowIso(),
+      });
+      reported += 1;
+    } catch (error) {
+      failed += 1;
+      await logVerificationRuntimeEvent(
+        client,
+        `VERIFICATION_DEADLINE_SWEEP_REPORT_FAILED: <@${userId}> error=${cleanVerificationText(error?.message || error, 200) || "unknown"}`,
+        "error"
+      ).catch(() => {});
+    }
   }
 
-  return { scanned, reported };
+  return { scanned, reported, failed };
 }
 
 async function handleVerificationApprovedCallback(client, payload = {}) {
@@ -15054,6 +15065,17 @@ client.on("messageCreate", async (message) => {
     return;
   }
 
+  if (legacyEloSubmitChannelId && message.channelId === legacyEloSubmitChannelId) {
+    await replyAndDelete(message, getLegacyEloSubmitChannelGuideText({
+      channelText: formatChannelMention(legacyEloSubmitChannelId) || "этот канал",
+      activeChannelText: legacyEloSubmitSession && activeLegacyEloSubmitChannelId && activeLegacyEloSubmitChannelId !== legacyEloSubmitChannelId
+        ? formatChannelMention(activeLegacyEloSubmitChannelId) || "другой канал"
+        : "",
+    }));
+    await message.delete().catch(() => {});
+    return;
+  }
+
   const hasActiveWelcomeSubmitSession = message.channelId === getResolvedChannelId("welcome") && Boolean(getSubmitSession(message.author.id));
   if (!hasActiveWelcomeSubmitSession && await getProfileOperator().handleProfileMessage({
     message,
@@ -16082,7 +16104,7 @@ client.on("interactionCreate", async (interaction) => {
           }
           if (action === VERIFY_PANEL_RUN_SWEEP_ID) {
             const result = await runVerificationDeadlineSweep(client);
-            return `Verification sweep завершён. Проверено: ${result.scanned}, отправлено report: ${result.reported}.`;
+            return `Verification sweep завершён. Проверено: ${result.scanned}, отправлено report: ${result.reported}, ошибок: ${result.failed || 0}.`;
           }
           return "Verification action завершён.";
         } catch (error) {
@@ -19576,7 +19598,7 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
-      await openCharacterPicker(interaction, "full", "update");
+      await openCharacterPicker(interaction, "full", "reply");
       return;
     }
 

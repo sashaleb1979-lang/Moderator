@@ -5,6 +5,7 @@ const assert = require("node:assert/strict");
 
 const {
   buildLegacyEloSubmitStepPayload,
+  getLegacyEloSubmitChannelGuideText,
   getLegacyEloSubmitMessageError,
   resolveLegacyEloSubmitTargetChannelId,
 } = require("../src/integrations/elo-submit-flow");
@@ -66,4 +67,25 @@ test("legacy ELO submit target channel prefers session, then panel, then fallbac
     panelChannelId: "",
     fallbackChannelId: "fallback-channel",
   }), "fallback-channel");
+});
+
+test("legacy ELO submit channel guide points user to the active session channel", () => {
+  const text = getLegacyEloSubmitChannelGuideText({
+    channelText: "<#submit-hub>",
+    activeChannelText: "<#review-room>",
+  });
+
+  assert.match(text, /уже открыт в <#review-room>/i);
+  assert.match(text, /одним следующим сообщением/i);
+  assert.doesNotMatch(text, /после кнопки «Отправить ELO»/i);
+});
+
+test("legacy ELO submit channel guide requires the button before idle channel messages", () => {
+  const text = getLegacyEloSubmitChannelGuideText({
+    channelText: "<#submit-hub>",
+  });
+
+  assert.match(text, /после кнопки «Отправить ELO»/i);
+  assert.match(text, /одно сообщение с числом ELO и скрином/i);
+  assert.match(text, /удаляются/i);
 });

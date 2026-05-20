@@ -65,6 +65,21 @@ const DEFAULT_ACTIVITY_SCORE_WINDOWS = Object.freeze({
   activeVoiceHours: 12,
 });
 
+const DEFAULT_ACTIVITY_VOICE_SCORING = Object.freeze({
+  mode: "smart",
+  totalDailyCapHours: 6,
+  activeDailyCapHours: 4,
+  recencyHalfLifeDays: 10,
+  streamingWeight: 0.35,
+  videoWeight: 0.15,
+  minMeaningfulActiveSegmentSeconds: 90,
+  toggleDebounceSeconds: 5,
+  minEngagementRatio: 0.2,
+  lowEngagementMultiplier: 0.55,
+  maxStreamingToActiveRatio: 0.5,
+  maxVideoToActiveRatio: 0.35,
+});
+
 const DEFAULT_ACTIVITY_DIVERSITY_BONUSES = Object.freeze({
   2: 2,
   3: 4,
@@ -157,9 +172,21 @@ function normalizePositiveNumber(value, fallback) {
   return Number.isFinite(amount) && amount > 0 ? amount : fallback;
 }
 
+function normalizeRangeNumber(value, fallback, min, max) {
+  if (value === null || value === undefined || value === "") return fallback;
+  const amount = Number(value);
+  if (!Number.isFinite(amount)) return fallback;
+  return Math.min(max, Math.max(min, amount));
+}
+
 function normalizeActivityChannelType(value, fallback = "normal_chat") {
   const channelType = cleanString(value, 40).toLowerCase();
   return ACTIVITY_CHANNEL_TYPES.has(channelType) ? channelType : fallback;
+}
+
+function normalizeActivityVoiceScoringMode(value, fallback = "smart") {
+  const mode = cleanString(value, 40).toLowerCase();
+  return mode === "smart" || mode === "legacy" ? mode : fallback;
 }
 
 function normalizeActivityChannelWeight(value, fallback, channelType = "normal_chat") {
@@ -189,6 +216,7 @@ function createDefaultActivityConfig() {
     sessionBaseValues: clone(DEFAULT_ACTIVITY_SESSION_BASE_VALUES),
     activityScoreWeights: clone(DEFAULT_ACTIVITY_SCORE_WEIGHTS),
     activityScoreWindows: clone(DEFAULT_ACTIVITY_SCORE_WINDOWS),
+    voiceScoring: clone(DEFAULT_ACTIVITY_VOICE_SCORING),
     diversityBonuses: clone(DEFAULT_ACTIVITY_DIVERSITY_BONUSES),
     freshnessBuckets: DEFAULT_ACTIVITY_FRESHNESS_BUCKETS.map((entry) => ({ ...entry })),
     antiSpamCaps: clone(DEFAULT_ACTIVITY_ANTI_SPAM_CAPS),
@@ -245,6 +273,65 @@ function normalizeActivityConfig(value = {}) {
       defaults.activityScoreWindows[windowKey]
     );
   }
+
+  const voiceScoring = {
+    mode: normalizeActivityVoiceScoringMode(
+      source.voiceScoring?.mode,
+      defaults.voiceScoring.mode
+    ),
+    totalDailyCapHours: normalizePositiveNumber(
+      source.voiceScoring?.totalDailyCapHours,
+      defaults.voiceScoring.totalDailyCapHours
+    ),
+    activeDailyCapHours: normalizePositiveNumber(
+      source.voiceScoring?.activeDailyCapHours,
+      defaults.voiceScoring.activeDailyCapHours
+    ),
+    recencyHalfLifeDays: normalizePositiveNumber(
+      source.voiceScoring?.recencyHalfLifeDays,
+      defaults.voiceScoring.recencyHalfLifeDays
+    ),
+    streamingWeight: normalizeRangeNumber(
+      source.voiceScoring?.streamingWeight,
+      defaults.voiceScoring.streamingWeight,
+      0,
+      1
+    ),
+    videoWeight: normalizeRangeNumber(
+      source.voiceScoring?.videoWeight,
+      defaults.voiceScoring.videoWeight,
+      0,
+      1
+    ),
+    minMeaningfulActiveSegmentSeconds: normalizePositiveInteger(
+      source.voiceScoring?.minMeaningfulActiveSegmentSeconds,
+      defaults.voiceScoring.minMeaningfulActiveSegmentSeconds
+    ),
+    toggleDebounceSeconds: normalizeNonNegativeInteger(
+      source.voiceScoring?.toggleDebounceSeconds,
+      defaults.voiceScoring.toggleDebounceSeconds
+    ),
+    minEngagementRatio: normalizeRangeNumber(
+      source.voiceScoring?.minEngagementRatio,
+      defaults.voiceScoring.minEngagementRatio,
+      0,
+      1
+    ),
+    lowEngagementMultiplier: normalizeRangeNumber(
+      source.voiceScoring?.lowEngagementMultiplier,
+      defaults.voiceScoring.lowEngagementMultiplier,
+      0,
+      1
+    ),
+    maxStreamingToActiveRatio: normalizeNonNegativeNumber(
+      source.voiceScoring?.maxStreamingToActiveRatio,
+      defaults.voiceScoring.maxStreamingToActiveRatio
+    ),
+    maxVideoToActiveRatio: normalizeNonNegativeNumber(
+      source.voiceScoring?.maxVideoToActiveRatio,
+      defaults.voiceScoring.maxVideoToActiveRatio
+    ),
+  };
 
   const diversityBonuses = { ...defaults.diversityBonuses };
   for (const diversityKey of Object.keys(diversityBonuses)) {
@@ -318,6 +405,7 @@ function normalizeActivityConfig(value = {}) {
     sessionBaseValues,
     activityScoreWeights,
     activityScoreWindows,
+    voiceScoring,
     diversityBonuses,
     freshnessBuckets,
     antiSpamCaps,
@@ -527,6 +615,12 @@ function updateActivityConfig(db = {}, patch = {}) {
         ? clone(sourcePatch.activityRoleThresholds)
         : {}),
     },
+    voiceScoring: {
+      ...state.config.voiceScoring,
+      ...(sourcePatch.voiceScoring && typeof sourcePatch.voiceScoring === "object" && !Array.isArray(sourcePatch.voiceScoring)
+        ? clone(sourcePatch.voiceScoring)
+        : {}),
+    },
   });
 
   state.config = nextConfig;
@@ -609,6 +703,7 @@ module.exports = {
   DEFAULT_ACTIVITY_SESSION_BASE_VALUES,
   DEFAULT_ACTIVITY_SCORE_WEIGHTS,
   DEFAULT_ACTIVITY_SCORE_WINDOWS,
+  DEFAULT_ACTIVITY_VOICE_SCORING,
   DEFAULT_ACTIVITY_DIVERSITY_BONUSES,
   DEFAULT_ACTIVITY_FRESHNESS_BUCKETS,
   DEFAULT_ACTIVITY_ANTI_SPAM_CAPS,

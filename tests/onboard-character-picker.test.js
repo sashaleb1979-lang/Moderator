@@ -225,3 +225,12 @@ test("presentation normalization preserves character emoji config", () => {
   assert.equal(dbConfig.presentation.welcome.characterEmojis.honored_one.name, "jjs_honored_one");
   assert.equal(resolved.welcome.characterEmojis.honored_one.id, "123456789012345678");
 });
+
+test("change mains route reopens picker with reply instead of rewriting the source panel", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "welcome-bot.js"), "utf8");
+  const changeMainsBranch = /if \(interaction\.customId === "onboard_change_mains"\) \{[\s\S]*?await openCharacterPicker\(interaction, "full", "reply"\);/;
+  const legacyUpdateBranch = /if \(interaction\.customId === "onboard_change_mains"\) \{[\s\S]*?await openCharacterPicker\(interaction, "full", "update"\);/;
+
+  assert.match(source, changeMainsBranch);
+  assert.doesNotMatch(source, legacyUpdateBranch);
+});

@@ -50,6 +50,30 @@ function loadHandleVerificationManualReviewCallback() {
   );
 }
 
+function loadRunVerificationDeadlineSweep() {
+  const source = fs.readFileSync(path.join(__dirname, "..", "welcome-bot.js"), "utf8");
+  const startToken = "async function runVerificationDeadlineSweep(client) {";
+  const endToken = "\nasync function handleVerificationApprovedCallback(client, payload = {}) {";
+  const startIndex = source.indexOf(startToken);
+  const endIndex = source.indexOf(endToken, startIndex);
+
+  assert.ok(startIndex >= 0 && endIndex > startIndex, "expected to find runVerificationDeadlineSweep in welcome-bot.js");
+  const functionSource = source.slice(startIndex, endIndex).trimEnd();
+
+  return new Function(
+    "isVerificationEnabled",
+    "db",
+    "finalizeStoredProfile",
+    "reconcileVerificationAssignmentForMember",
+    "cleanVerificationText",
+    "postVerificationManualReport",
+    "updateVerificationProfile",
+    "nowIso",
+    "logVerificationRuntimeEvent",
+    `return (${functionSource});`
+  );
+}
+
 test("postVerificationManualReport falls back to degraded payload when rich report send fails", async () => {
   const calls = [];
   let sendAttempt = 0;
@@ -170,4 +194,91 @@ test("handleVerificationManualReviewCallback leaves reportSentAt empty when repo
   assert.equal(calls.length, 1);
   assert.equal(calls[0][0], "update");
   assert.equal(Object.prototype.hasOwnProperty.call(calls[0][2], "reportSentAt"), false);
+});
+
+test("runVerificationDeadlineSweep continues after one overdue report fails", async () => {
+  const originalDateNow = Date.now;
+  Date.now = () => Date.parse("2026-05-10T00:00:00.000Z");
+
+  try {
+    const calls = [];
+    const db = {
+      profiles: {
+        "user-fail": {
+          summary: {
+            verification: {
+              status: "pending",
+              reportDueAt: "2026-05-09T00:00:00.000Z",
+              reportSentAt: "",
+            },
+          },
+        },
+        "user-ok": {
+          summary: {
+            verification: {
+              status: "failed",
+              reportDueAt: "2026-05-09T00:00:00.000Z",
+              reportSentAt: "",
+            },
+          },
+        },
+        "user-future": {
+          summary: {
+            verification: {
+              status: "pending",
+              reportDueAt: "2026-05-11T00:00:00.000Z",
+              reportSentAt: "",
+            },
+          },
+        },
+        "user-sent": {
+          summary: {
+            verification: {
+              status: "pending",
+              reportDueAt: "2026-05-09T00:00:00.000Z",
+              reportSentAt: "2026-05-09T01:00:00.000Z",
+            },
+          },
+        },
+      },
+    };
+    const buildFunction = loadRunVerificationDeadlineSweep();
+    const runVerificationDeadlineSweep = buildFunction(
+      () => true,
+      db,
+      (userId) => db.profiles[userId],
+      async () => ({ active: true, stopped: false }),
+      (value, max) => String(value || "").trim().slice(0, max || 400),
+      async (_client, userId, statusNote) => {
+        calls.push(["post", userId, statusNote]);
+        if (userId === "user-fail") {
+          throw new Error("report channel unavailable");
+        }
+        return { message: { id: `report-${userId}` } };
+      },
+      (userId, patch) => {
+        calls.push(["update", userId, patch]);
+        return { userId, domains: { verification: patch } };
+      },
+      () => "2026-05-10T00:00:00.000Z",
+      async (_client, message, level = "info") => {
+        calls.push(["log", level, message]);
+      }
+    );
+
+    const result = await runVerificationDeadlineSweep({});
+
+    assert.deepEqual(result, { scanned: 2, reported: 1, failed: 1 });
+    assert.deepEqual(calls.filter((entry) => entry[0] === "post").map((entry) => entry[1]), ["user-fail", "user-ok"]);
+    assert.deepEqual(calls.filter((entry) => entry[0] === "update").map((entry) => entry[1]), ["user-ok"]);
+    assert.deepEqual(calls.find((entry) => entry[0] === "update")?.[2], {
+      status: "manual_review",
+      decision: "manual_review",
+      decisionReason: "pending_timeout",
+      reportSentAt: "2026-05-10T00:00:00.000Z",
+    });
+    assert.equal(calls.some((entry) => entry[0] === "log" && entry[1] === "error" && /user-fail/.test(entry[2])), true);
+  } finally {
+    Date.now = originalDateNow;
+  }
 });

@@ -26,6 +26,24 @@
 ### `unavailable`
 Для метрики сейчас нет достаточного источника или накопленного объёма данных.
 
+### `debuffed`
+Метрика всё ещё видна пользователю, но её вклад в composite-оценку ослаблен из-за устаревания, дыр в coverage или слабой базы.
+
+### Обязательный Контракт Для Relative-Метрик
+1. Каждая server-relative метрика должна иметь не только raw value, но и confidence-state.
+2. Для composite-сводок нужно хранить ещё и `influenceDebuff`, чтобы было видно, насколько сигнал ослаблен.
+3. Если stale/partial сигнал показывается в буквах или seasonal-comparison блоках, UI обязан объяснять не только состояние, но и debuff к влиянию.
+4. Для proof-backed kill-сигналов допустим debuff до `-90%`, если coverage плохой или approved proof сильно устарел.
+
+### Coverage Contract
+1. Для метрик, которые зависят от истории, нужно считать не только значение, но и покрытие.
+2. Минимальный набор coverage-полей:
+  - сколько дней покрыто реальными данными,
+  - сколько дней потеряно,
+  - какой процент истории полный,
+  - какой процент истории собран кусками.
+3. Coverage обязан влиять и на copy, и на relative debuff.
+
 ---
 
 ## 2. Hourly Roblox Buckets По Москве
@@ -39,9 +57,8 @@ Rolling hour-level buckets по JJS playtime, собранные в москов
 ### Зачем Нужны
 Это foundation-слой для:
 1. future prime time lines;
-2. growth by time-of-day;
-3. personal readiness по времени суток;
-4. Season Story и best-period summaries.
+2. personal readiness по времени суток;
+3. Season Story и best-period summaries.
 
 ### Owner
 1. Raw collection owner: [src/runtime/roblox-jobs.js](src/runtime/roblox-jobs.js)
@@ -448,6 +465,11 @@ Profile activity section теперь может показывать отдел
 Если voice summary stale или incomplete, блок обязан маркироваться как неполный.
 В shipped v1 неполнота сейчас маркируется через `неполных 30д: N` и stale-copy по `lastCapturedAt`; per-contact overlap claims пока запрещены.
 
+Следующий закреплённый шаг:
+1. mirrored per-contact voice ties;
+2. отдельный block voice + JJS overlap;
+3. без такого mirror profile surface не должен выдумывать person-level overlap по voice.
+
 ---
 
 ## 10. Personal War Readiness Basic
@@ -745,12 +767,47 @@ Population calibration layer:
 6. После percentile normalization буква снова строится общей grade ladder `S+ ... D-`.
 7. `Кто ты сейчас` и `Main Core` читают уже этот calibrated axis state, а не пересчитывают формулы отдельно.
 
+### Закреплённый Контракт Следующей Ревизии
+1. Каждая буквенная ось должна возвращать:
+  - `grade`,
+  - `rawScore`,
+  - `percentileScore`,
+  - `place`,
+  - `populationSize`,
+  - `confidenceState`,
+  - `influenceDebuffPercent`.
+
+2. Relative-grade слой должен отдельно учитывать относительно других:
+  - JJS time,
+  - Discord messages,
+  - Discord sessions,
+  - voice hours,
+  - active voice share,
+  - average approved kills per covered day,
+  - antiteam support points по `db.sot.antiteam.stats.helpers[userId].confirmedArrived`.
+
+3. `Discord vs Roblox balance` закрепляется как отдельная honest metric рядом с буквами.
+  Контракт статусов на сейчас:
+  - живёт больше в JJS,
+  - живёт больше в Discord,
+  - держится ровно в обоих.
+
+4. Kill-backed сигналы обязаны не только смотреть на абсолютные kills, но и на average approved kills per covered day.
+  Если approved proof stale, kill-layer должен получать явный debuff вплоть до `-90%` влияния на composite.
+
+5. `Лучший день сезона` и `strongest week` должны позже считаться по полному relative-composite, а не только по kills или JJS time.
+  В composite нужно включать Discord, JJS, voice и antiteam-backed сигналы.
+
+6. Growth by time-of-day и richer stability taxonomy сейчас закреплённо отменены.
+  Причина: в текущем repo нет достаточного trustworthy telemetry layer, чтобы честно это обещать.
+
 ### Главная Ненадёжность
 1. relative grading зависит от live population snapshot и axis-specific sample size;
 2. текущий baseline считается on-demand из канонических profiles в runtime, а не из отдельного persisted history snapshot;
 3. если по оси меньше `5` signal profiles, эта ось падает в local fallback и остаётся only best-effort;
 4. при недостатке данных отдельные axes обязаны становиться `N/A`, а не слабой буквой;
-5. viewer hero и Main Core не должны притворяться абсолютным leaderboard truth: это compact observational read относительно текущей живой популяции.
+5. viewer hero и Main Core не должны притворяться абсолютным leaderboard truth: это compact observational read относительно текущей живой популяции;
+6. без coverage/debuff layer relative place может выглядеть точнее, чем он есть на самом деле, поэтому следующий revision обязан показывать и место, и confidence, и debuff рядом.
 
 ### UI Copy Правило
 Не выдавать narrative как hard truth психотипа. Это должен быть мягкий observational summary.

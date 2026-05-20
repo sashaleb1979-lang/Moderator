@@ -9,9 +9,12 @@ const { spawnSync } = require("node:child_process");
 
 test("welcome-bot startup smoke completes clientReady without missing import regressions", () => {
   const repoRoot = path.join(__dirname, "..");
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "welcome-bot-startup-smoke-"));
   const script = String.raw`
     process.env.DISCORD_TOKEN = "smoke-token";
     process.env.GUILD_ID = "123";
+    process.env.BOT_DATA_DIR = ${JSON.stringify(tempDir)};
+    process.env.DB_PATH = "welcome-db.json";
 
     const discord = require("discord.js");
     const originalEmit = discord.Client.prototype.emit;
@@ -72,6 +75,12 @@ test("welcome-bot startup smoke completes clientReady without missing import reg
     encoding: "utf8",
     timeout: 15000,
   });
+
+  try {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  } catch {
+    // Best effort cleanup for Windows temp files held briefly by the child process.
+  }
 
   if (result.error) {
     throw result.error;

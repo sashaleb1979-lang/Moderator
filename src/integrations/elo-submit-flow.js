@@ -88,8 +88,20 @@ function getLegacyEloSubmitMessageError(options = {}) {
   return "";
 }
 
+function getLegacyEloSubmitChannelGuideText(options = {}) {
+  const channelText = cleanString(options.channelText, 200) || "этот канал";
+  const activeChannelText = cleanString(options.activeChannelText, 200);
+
+  if (activeChannelText && activeChannelText !== channelText) {
+    return `Шаг отправки ELO уже открыт в ${activeChannelText}. Пришли туда одним следующим сообщением текст с числом ELO и скрин. Остальные сообщения здесь удаляются.`;
+  }
+
+  return `В ${channelText} принимается только ELO заявка после кнопки «Отправить ELO»: одно сообщение с числом ELO и скрином. Остальные сообщения здесь удаляются.`;
+}
+
 module.exports = {
   buildLegacyEloSubmitStepPayload,
+  getLegacyEloSubmitChannelGuideText,
   getLegacyEloSubmitMessageError,
   resolveLegacyEloSubmitTargetChannelId,
 };

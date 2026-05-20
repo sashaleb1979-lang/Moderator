@@ -38,6 +38,62 @@ function seedWatchedChannels(db) {
   });
 }
 
+function buildVoiceDailyRows({
+  userId,
+  now = "2026-05-30T12:00:00.000Z",
+  days = 1,
+  voiceHours = 0,
+  activeVoiceHours = 0,
+  streamingHours = 0,
+  videoHours = 0,
+  guildId = "guild-1",
+} = {}) {
+  const currentDate = new Date(now);
+  currentDate.setUTCHours(0, 0, 0, 0);
+
+  return Array.from({ length: days }, (_, index) => {
+    const dayDate = new Date(currentDate.getTime() - (index * 24 * 60 * 60 * 1000));
+    const dateKey = dayDate.toISOString().slice(0, 10);
+    return {
+      guildId,
+      userId,
+      date: dateKey,
+      voiceDurationSeconds: voiceHours * 3600,
+      activeVoiceDurationSeconds: activeVoiceHours * 3600,
+      streamingDurationSeconds: streamingHours * 3600,
+      videoDurationSeconds: videoHours * 3600,
+      sessionsCount: 1,
+      firstJoinedAt: `${dateKey}T12:00:00.000Z`,
+      lastLeftAt: `${dateKey}T20:00:00.000Z`,
+    };
+  });
+}
+
+function createVoiceOnlyActivityDb({ config = {}, userVoiceDailyStats = [] } = {}) {
+  return {
+    profiles: {},
+    sot: {
+      activity: {
+        config,
+        watchedChannels: [],
+        globalUserSessions: [],
+        globalVoiceSessions: [],
+        channelDailyStats: [],
+        userChannelDailyStats: [],
+        userVoiceDailyStats,
+        userSnapshots: {},
+        calibrationRuns: [],
+        ops: { moderationAuditLog: [] },
+        runtime: {
+          openSessions: {},
+          openVoiceSessions: {},
+          dirtyUsers: [],
+        },
+      },
+    },
+  };
+}
+
 test("recordActivityMessage groups watched channels into one global session and rotates after the gap", () => {
   const db = {};
   seedWatchedChannels(db);
@@ -242,6 +298,118 @@ test("rebuildActivityUserSnapshot projects open voice sessions into current metr
   assert.equal(snapshot.activeDays30d, 1);
   assert.equal(snapshot.lastSeenAt, "2026-05-09T12:30:00.000Z");
   assert.equal(snapshot.baseActivityScore > 0, true);
+});
+
+test("rebuildActivityUserSnapshot smart voice scoring distinguishes heavy voice from legacy saturation", () => {
+  const currentTime = "2026-05-30T12:00:00.000Z";
+  const moderateRows = buildVoiceDailyRows({
+    userId: "moderate",
+    now: currentTime,
+    days: 4,
+    voiceHours: 5,
+    activeVoiceHours: 4,
+  });
+  const heavyRows = buildVoiceDailyRows({
+    userId: "heavy",
+    now: currentTime,
+    days: 10,
+    voiceHours: 8,
+    activeVoiceHours: 6,
+    streamingHours: 1,
+  });
+
+  const legacyDb = createVoiceOnlyActivityDb({
+    config: {
+      voiceScoring: { mode: "legacy" },
+    },
+    userVoiceDailyStats: [...moderateRows, ...heavyRows],
+  });
+  const smartDb = createVoiceOnlyActivityDb({
+    config: {
+      voiceScoring: { mode: "smart" },
+    },
+    userVoiceDailyStats: [...moderateRows, ...heavyRows],
+  });
+
+  const legacyModerate = rebuildActivityUserSnapshot({
+    db: legacyDb,
+    userId: "moderate",
+    now: currentTime,
+    memberActivityMeta: { joinedAt: "2026-05-01T12:00:00.000Z" },
+  });
+  const legacyHeavy = rebuildActivityUserSnapshot({
+    db: legacyDb,
+    userId: "heavy",
+    now: currentTime,
+    memberActivityMeta: { joinedAt: "2026-05-01T12:00:00.000Z" },
+  });
+  const smartModerate = rebuildActivityUserSnapshot({
+    db: smartDb,
+    userId: "moderate",
+    now: currentTime,
+    memberActivityMeta: { joinedAt: "2026-05-01T12:00:00.000Z" },
+  });
+  const smartHeavy = rebuildActivityUserSnapshot({
+    db: smartDb,
+    userId: "heavy",
+    now: currentTime,
+    memberActivityMeta: { joinedAt: "2026-05-01T12:00:00.000Z" },
+  });
+
+  approxEqual(legacyModerate.voicePart, legacyHeavy.voicePart);
+  approxEqual(legacyModerate.activeVoicePart, legacyHeavy.activeVoicePart);
+  assert.equal(smartModerate.voiceScoringMode, "smart");
+  assert.equal(smartHeavy.voiceScoringMode, "smart");
+  assert.equal(smartHeavy.voicePart > smartModerate.voicePart, true);
+  assert.equal(smartHeavy.activeVoicePart > smartModerate.activeVoicePart, true);
+  assert.equal(smartHeavy.baseActivityScore > smartModerate.baseActivityScore, true);
+  assert.equal(smartHeavy.effectiveVoiceHours30d > smartModerate.effectiveVoiceHours30d, true);
+});
+
+test("rebuildActivityUserSnapshot smart voice scoring downweights low-engagement voice", () => {
+  const currentTime = "2026-05-30T12:00:00.000Z";
+  const engagedRows = buildVoiceDailyRows({
+    userId: "engaged",
+    now: currentTime,
+    days: 7,
+    voiceHours: 8,
+    activeVoiceHours: 5,
+    streamingHours: 1,
+  });
+  const idleRows = buildVoiceDailyRows({
+    userId: "idle",
+    now: currentTime,
+    days: 7,
+    voiceHours: 8,
+    activeVoiceHours: 0.25,
+  });
+
+  const db = createVoiceOnlyActivityDb({
+    config: {
+      voiceScoring: { mode: "smart" },
+    },
+    userVoiceDailyStats: [...engagedRows, ...idleRows],
+  });
+
+  const engagedSnapshot = rebuildActivityUserSnapshot({
+    db,
+    userId: "engaged",
+    now: currentTime,
+    memberActivityMeta: { joinedAt: "2026-05-01T12:00:00.000Z" },
+  });
+  const idleSnapshot = rebuildActivityUserSnapshot({
+    db,
+    userId: "idle",
+    now: currentTime,
+    memberActivityMeta: { joinedAt: "2026-05-01T12:00:00.000Z" },
+  });
+
+  approxEqual(engagedSnapshot.effectiveVoiceHours30d, idleSnapshot.effectiveVoiceHours30d, 0.0001);
+  assert.equal(engagedSnapshot.voiceEngagementMultiplier, 1);
+  assert.equal(idleSnapshot.voiceEngagementMultiplier < engagedSnapshot.voiceEngagementMultiplier, true);
+  assert.equal(engagedSnapshot.voicePart > idleSnapshot.voicePart, true);
+  assert.equal(engagedSnapshot.activeVoicePart > idleSnapshot.activeVoicePart, true);
+  assert.equal(engagedSnapshot.baseActivityScore > idleSnapshot.baseActivityScore, true);
 });
 
 test("rebuildActivityUserSnapshot computes 7/30/90 metrics and a desired role from persisted facts", () => {
@@ -577,6 +745,37 @@ test("rebuildActivitySnapshots preserves rebuilt snapshot index on db.sot.activi
   assert.equal(result.rebuiltUserCount, 1);
   assert.equal(db.sot.activity.userSnapshots["user-1"].desiredActivityRoleKey, "weak");
   assert.equal(db.sot.activity.userSnapshots["user-1"].roleEligibilityStatus, "boosted_new_member");
+});
+
+test("activity runtime mutation entrypoints keep their serialized owner labels", async () => {
+  const labels = [];
+  const runSerialized = async (callback, label) => {
+    labels.push(label);
+    return callback();
+  };
+
+  await rebuildActivitySnapshots({
+    db: { profiles: { "user-1": { userId: "user-1" } } },
+    userIds: ["user-1"],
+    now: "2026-05-09T12:00:00.000Z",
+    runSerialized,
+  });
+  await flushActivityRuntime({
+    db: {},
+    now: "2026-05-09T12:00:00.000Z",
+    runSerialized,
+  });
+  await resumeActivityRuntime({
+    db: {},
+    now: "2026-05-09T12:00:00.000Z",
+    runSerialized,
+  });
+
+  assert.deepEqual(labels, [
+    "activity-snapshot-rebuild",
+    "activity-runtime-flush",
+    "activity-runtime-resume",
+  ]);
 });
 
 test("rebuildActivitySnapshots records member metadata lookup failures on activity runtime state", async () => {

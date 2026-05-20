@@ -407,6 +407,33 @@ test("createDbStore.save preserves runtime state when disk write fails", () => {
   assert.equal(Boolean(db.sot?.channels?.review), false);
 });
 
+test("createDbStore.save keeps runtime state isolated when SoT dual-write fails", () => {
+  const deps = createDeps({
+    dualWriteSotState: (db) => {
+      db.sot = {
+        ...(db.sot || {}),
+        channels: {
+          review: { value: "partial-review-channel", source: "manual", verifiedAt: null },
+        },
+      };
+      throw new Error("dual write failed");
+    },
+  });
+  const store = createDbStore(deps);
+  const db = createDefaultDbState({
+    appConfig: deps.appConfig,
+    createDefaultIntegrationState: deps.createDefaultIntegrationState,
+    createOnboardModeState: deps.createOnboardModeState,
+    normalizeCharacterCatalog: deps.normalizeCharacterCatalog,
+  });
+  db.config.integrations.elo.sourcePath = "runtime-elo.json";
+
+  assert.throws(() => store.save(db), /dual write failed/);
+  assert.equal(db.config.integrations.elo.sourcePath, "runtime-elo.json");
+  assert.equal(Boolean(db.sot?.channels?.review), false);
+  assert.equal(fs.existsSync(deps.dbPath), false);
+});
+
 test("createDbStore.save preserves verification shadow and manual verify role across SoT refresh", () => {
   const appConfig = {
     channels: {

@@ -859,6 +859,155 @@ function getDiversityBonus(activeChannelCount, config = {}) {
   return 0;
 }
 
+function roundActivityMetric(value, decimals = 4) {
+  if (!Number.isFinite(Number(value))) return 0;
+  return Number(Number(value).toFixed(decimals));
+}
+
+function calculateVoiceScoreProgress(value, baselineHours) {
+  const normalizedValue = Math.max(0, Number(value) || 0);
+  const normalizedBaseline = Math.max(0.000001, Number(baselineHours) || 1);
+  const saturationTarget = Math.max(normalizedBaseline, normalizedBaseline * 3);
+  if (normalizedValue <= 0) return 0;
+  return Math.min(1, Math.log1p(normalizedValue) / Math.log1p(saturationTarget));
+}
+
+function getVoiceEngagementMultiplier(ratio, voiceScoring = {}) {
+  const minEngagementRatio = Math.max(0, Math.min(1, Number(voiceScoring.minEngagementRatio) || 0.2));
+  const lowEngagementMultiplier = Math.max(0, Math.min(1, Number(voiceScoring.lowEngagementMultiplier) || 0.55));
+  const normalizedRatio = Math.max(0, Math.min(1, Number(ratio) || 0));
+  if (minEngagementRatio <= 0 || normalizedRatio >= minEngagementRatio) {
+    return 1;
+  }
+  return lowEngagementMultiplier
+    + ((1 - lowEngagementMultiplier) * (normalizedRatio / minEngagementRatio));
+}
+
+function buildLegacyVoiceScoreMetrics({
+  voiceHours30d,
+  activeVoiceSignalHours30d,
+  voiceActiveDays30d,
+  config = {},
+} = {}) {
+  const voicePart = Math.min(voiceHours30d / (Number(config.activityScoreWindows?.voiceHours) || 20), 1)
+    * (Number(config.activityScoreWeights?.voice) || 8);
+  const activeVoicePart = Math.min(activeVoiceSignalHours30d / (Number(config.activityScoreWindows?.activeVoiceHours) || 12), 1)
+    * (Number(config.activityScoreWeights?.activeVoice) || 6);
+  const voiceEngagementRatio30d = voiceHours30d > 0
+    ? Math.max(0, Math.min(1, activeVoiceSignalHours30d / voiceHours30d))
+    : 0;
+
+  return {
+    voiceScoringMode: "legacy",
+    effectiveVoiceHours30d: roundActivityMetric(voiceHours30d),
+    effectiveActiveVoiceSignalHours30d: roundActivityMetric(activeVoiceSignalHours30d),
+    effectiveVoiceDays30d: roundActivityMetric(voiceActiveDays30d),
+    voiceEngagementRatio30d: roundActivityMetric(voiceEngagementRatio30d),
+    voiceEngagementMultiplier: 1,
+    voicePart,
+    activeVoicePart,
+  };
+}
+
+function buildSmartVoiceScoreMetrics({
+  voiceDailyRows = [],
+  currentTime,
+  config = {},
+} = {}) {
+  const voiceScoring = config.voiceScoring || {};
+  const totalDailyCapHours = Math.max(0.000001, Number(voiceScoring.totalDailyCapHours) || 6);
+  const activeDailyCapHours = Math.max(0.000001, Number(voiceScoring.activeDailyCapHours) || 4);
+  const recencyHalfLifeDays = Math.max(0.000001, Number(voiceScoring.recencyHalfLifeDays) || 10);
+  const streamingWeight = Math.max(0, Math.min(1, Number(voiceScoring.streamingWeight) || 0.35));
+  const videoWeight = Math.max(0, Math.min(1, Number(voiceScoring.videoWeight) || 0.15));
+  const maxStreamingToActiveRatio = Math.max(0, Number(voiceScoring.maxStreamingToActiveRatio) || 0.5);
+  const maxVideoToActiveRatio = Math.max(0, Number(voiceScoring.maxVideoToActiveRatio) || 0.35);
+  const currentDate = new Date(currentTime);
+  currentDate.setUTCHours(0, 0, 0, 0);
+  const cutoff = buildSnapshotCutoff(currentTime, 30);
+
+  let effectiveVoiceHours30d = 0;
+  let effectiveActiveVoiceSignalHours30d = 0;
+  let effectiveVoiceDays30d = 0;
+
+  for (const entry of Array.isArray(voiceDailyRows) ? voiceDailyRows : []) {
+    const timestamp = new Date(entry.lastLeftAt || entry.firstJoinedAt || `${entry.date}T00:00:00.000Z`).getTime();
+    if (!Number.isFinite(timestamp) || timestamp < cutoff) continue;
+
+    const dateKey = cleanString(entry.date, 20) || getDateKey(entry.lastLeftAt || entry.firstJoinedAt);
+    const rowDate = new Date(`${dateKey || "1970-01-01"}T00:00:00.000Z`);
+    const rowDateMs = Number.isFinite(rowDate.getTime()) ? rowDate.getTime() : timestamp;
+    const daysAgo = Math.max(0, Math.round((currentDate.getTime() - rowDateMs) / DAY_MS));
+    const decayFactor = Math.pow(0.5, daysAgo / recencyHalfLifeDays);
+    const voiceHours = Math.max(0, Number(entry.voiceDurationSeconds || 0) / 3600);
+    const activeVoiceHours = Math.max(0, Number(entry.activeVoiceDurationSeconds || 0) / 3600);
+    const streamingSignalHours = Math.min(
+      Math.max(0, Number(entry.streamingDurationSeconds || 0) / 3600) * streamingWeight,
+      activeVoiceHours * maxStreamingToActiveRatio
+    );
+    const videoSignalHours = Math.min(
+      Math.max(0, Number(entry.videoDurationSeconds || 0) / 3600) * videoWeight,
+      activeVoiceHours * maxVideoToActiveRatio
+    );
+    const activeVoiceSignalHours = activeVoiceHours + streamingSignalHours + videoSignalHours;
+
+    if (voiceHours > 0 || activeVoiceSignalHours > 0) {
+      effectiveVoiceDays30d += decayFactor;
+    }
+
+    effectiveVoiceHours30d += Math.min(totalDailyCapHours, voiceHours) * decayFactor;
+    effectiveActiveVoiceSignalHours30d += Math.min(activeDailyCapHours, activeVoiceSignalHours) * decayFactor;
+  }
+
+  const voiceEngagementRatio30d = effectiveVoiceHours30d > 0
+    ? Math.max(0, Math.min(1, effectiveActiveVoiceSignalHours30d / effectiveVoiceHours30d))
+    : 0;
+  const voiceEngagementMultiplier = getVoiceEngagementMultiplier(voiceEngagementRatio30d, voiceScoring);
+  const voicePart = calculateVoiceScoreProgress(
+    effectiveVoiceHours30d,
+    Number(config.activityScoreWindows?.voiceHours) || 20
+  ) * (Number(config.activityScoreWeights?.voice) || 8) * voiceEngagementMultiplier;
+  const activeVoicePart = calculateVoiceScoreProgress(
+    effectiveActiveVoiceSignalHours30d,
+    Number(config.activityScoreWindows?.activeVoiceHours) || 12
+  ) * (Number(config.activityScoreWeights?.activeVoice) || 6) * voiceEngagementMultiplier;
+
+  return {
+    voiceScoringMode: "smart",
+    effectiveVoiceHours30d: roundActivityMetric(effectiveVoiceHours30d),
+    effectiveActiveVoiceSignalHours30d: roundActivityMetric(effectiveActiveVoiceSignalHours30d),
+    effectiveVoiceDays30d: roundActivityMetric(effectiveVoiceDays30d),
+    voiceEngagementRatio30d: roundActivityMetric(voiceEngagementRatio30d),
+    voiceEngagementMultiplier: roundActivityMetric(voiceEngagementMultiplier),
+    voicePart,
+    activeVoicePart,
+  };
+}
+
+function buildVoiceScoreMetrics({
+  voiceHours30d,
+  activeVoiceSignalHours30d,
+  voiceActiveDays30d,
+  voiceDailyRows,
+  currentTime,
+  config = {},
+} = {}) {
+  const mode = cleanString(config.voiceScoring?.mode, 40).toLowerCase();
+  if (mode === "smart") {
+    return buildSmartVoiceScoreMetrics({
+      voiceDailyRows,
+      currentTime,
+      config,
+    });
+  }
+  return buildLegacyVoiceScoreMetrics({
+    voiceHours30d,
+    activeVoiceSignalHours30d,
+    voiceActiveDays30d,
+    config,
+  });
+}
+
 function getActivityScoreCap(effectiveActiveDays, config = {}) {
   const caps = Array.isArray(config.antiSpamCaps) ? config.antiSpamCaps : [];
   for (const cap of caps) {
@@ -993,6 +1142,14 @@ function rebuildActivityUserSnapshot({ db = {}, userId = "", now, memberActivity
   const activeVoiceSignalHours30d = (activeVoiceDurationWindowSums.get(30) / 3600)
     + ((streamingDurationSeconds30d / 3600) * 0.5)
     + ((videoDurationSeconds30d / 3600) * 0.25);
+  const voiceScoreMetrics = buildVoiceScoreMetrics({
+    voiceHours30d,
+    activeVoiceSignalHours30d,
+    voiceActiveDays30d: voiceActiveDaySets.get(30).size,
+    voiceDailyRows,
+    currentTime,
+    config,
+  });
   const daysAbsent = lastSeenAt
     ? (() => {
       const currentDate = new Date(currentTime);
@@ -1009,10 +1166,8 @@ function rebuildActivityUserSnapshot({ db = {}, userId = "", now, memberActivity
   const freshnessPart = getFreshnessScore(daysAbsent ?? Number.POSITIVE_INFINITY, config);
   const messagesPart = Math.min(weightedMessages30d / (Number(config.activityScoreWindows?.messages) || 250), 1)
     * (Number(config.activityScoreWeights?.messages) || 10);
-  const voicePart = Math.min(voiceHours30d / (Number(config.activityScoreWindows?.voiceHours) || 20), 1)
-    * (Number(config.activityScoreWeights?.voice) || 8);
-  const activeVoicePart = Math.min(activeVoiceSignalHours30d / (Number(config.activityScoreWindows?.activeVoiceHours) || 12), 1)
-    * (Number(config.activityScoreWeights?.activeVoice) || 6);
+  const voicePart = voiceScoreMetrics.voicePart;
+  const activeVoicePart = voiceScoreMetrics.activeVoicePart;
   const diversityPart = getDiversityBonus(activeWatchedChannels30d, config);
   const uncappedScore = sessionsPart + daysPart + freshnessPart + messagesPart + voicePart + activeVoicePart + diversityPart;
   const baseActivityScore = Math.round(
@@ -1056,8 +1211,17 @@ function rebuildActivityUserSnapshot({ db = {}, userId = "", now, memberActivity
     activeVoiceDurationSeconds7d: activeVoiceDurationWindowSums.get(7),
     activeVoiceDurationSeconds30d: activeVoiceDurationWindowSums.get(30),
     activeVoiceDurationSeconds90d: activeVoiceDurationWindowSums.get(90),
+    activeVoiceSignalHours30d: roundActivityMetric(activeVoiceSignalHours30d),
     streamingDurationSeconds30d,
     videoDurationSeconds30d,
+    voiceScoringMode: voiceScoreMetrics.voiceScoringMode,
+    effectiveVoiceHours30d: voiceScoreMetrics.effectiveVoiceHours30d,
+    effectiveActiveVoiceSignalHours30d: voiceScoreMetrics.effectiveActiveVoiceSignalHours30d,
+    effectiveVoiceDays30d: voiceScoreMetrics.effectiveVoiceDays30d,
+    voiceEngagementRatio30d: voiceScoreMetrics.voiceEngagementRatio30d,
+    voiceEngagementMultiplier: voiceScoreMetrics.voiceEngagementMultiplier,
+    voicePart: roundActivityMetric(voicePart),
+    activeVoicePart: roundActivityMetric(activeVoicePart),
     globalEffectiveSessions30d,
     effectiveActiveDays30d,
     daysAbsent,

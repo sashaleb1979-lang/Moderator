@@ -1202,6 +1202,8 @@ Activity уже не “пара счётчиков сообщений”, а п
 1. Severity: Boot blocker.
    Hypothesis:
    локальный syntax-check welcome-bot.js через vm.Script уже однажды упал при зелёном npm test, и это нужно либо воспроизвести, либо снять как ложный след терминального контекста.
+   Status 20.05.2026:
+   снято как текущий boot-blocker: direct `vm.Script(fs.readFileSync("welcome-bot.js"))` вернул `ok`, а startup smoke проходит в полном suite.
    Что нужно для проверки:
    1. повторить parse-check с захватом stderr;
    2. сопоставить результат с tests/welcome-bot-startup-smoke.test.js;
@@ -1210,6 +1212,8 @@ Activity уже не “пара счётчиков сообщений”, а п
 2. Severity: Coverage gap.
    Hypothesis:
    в проекте всё ещё есть заметные интеграционные дыры между startup, SoT, activity, Roblox, verification и shared-profile, которые не прикрыты ни одним сквозным тестом.
+   Status 20.05.2026:
+   частично снято и разложено: startup/import hot path закрыт startup+modal smoke, SoT save boundary закрыт db-store regression, activity mutating owner labels закрыты runtime regression, Roblox coordinator/degradation закрыт focused suite, verification report/sweep закрыт runtime regressions. Оставшаяся часть — не unit defect, а live-runtime verification requirement: после деплоя нужны Railway/Discord logs и ручной smoke operator flows.
    Что нужно для проверки:
    1. собрать matrix test-to-owner coverage;
    2. отдельно отметить cross-domain mutations, которые проверяются только косвенно;
@@ -1218,6 +1222,8 @@ Activity уже не “пара счётчиков сообщений”, а п
 3. Severity: Doc drift.
    Hypothesis:
    часть root-docs уже полезна как историческая память, но не даёт актуального phase-state на 20.05.2026 без сверки с кодом.
+   Status 20.05.2026:
+   подтверждено как doc-governance fact, не как runtime blocker: freshest phase-state сейчас живёт в этом ledger, а старые root docs остаются domain/history maps. Их нельзя использовать как SoT без сверки с current code и section 16 updates.
    Что нужно для проверки:
    1. после каждой wave отмечать, какой документ остаётся freshest source для домена;
    2. отдельным проходом сопоставить status формулировки из старых audit docs с текущими owner paths в коде.
@@ -1383,3 +1389,70 @@ Activity уже не “пара счётчиков сообщений”, а п
 
 1. Конкретные planned implementation slices из текущей волны закрыты: news wiring, combo-guide publisher seam, autonomy guard combo follow-up, verification report delivery residuals;
 2. Следующий шаг уже не owner-fix, а отдельный stale-assumption sweep по runtime copy, plan docs и recovery notes, если нужен ещё один проход.
+
+### 16.14. Severity-Ordered Destruction Pass
+
+#### 16.14.1. Boot Blocker: Ready-Core Degraded Contract
+
+1. Highest severity open defect из стартового среза уничтожен: `runClientReadyCore()` теперь возвращает `{ generated, degraded }`, где `degraded` содержит `{ step, message }` для каждого soft-fail startup шага;
+2. Покрыты все soft-fail owners: `ensureManagedRoles`, `runSotStartupAlerts`, `syncApprovedTierRoles`, `syncAccessCompanionRoles`, `refreshWelcomePanel`, `refreshAllTierlists`, `resumeActivityRuntime`;
+3. `welcome-bot.js` уже умел читать этот contract через `startupDegraded`, поэтому fix восстановил существующий consumer path без расширения hot path;
+4. Focused evidence: `node --test tests/client-ready-core.test.js tests/activity-operator-panel.test.js` — зелёный;
+5. Startup hot-path evidence: `node --test tests/client-ready-core.test.js tests/welcome-bot-startup-smoke.test.js` — зелёный.
+
+#### 16.14.2. Boot Blocker: Startup Smoke Guard
+
+1. Проверено, что `scripts/run-tests.js` собирает все `tests/**/*.test.js`, включая `tests/welcome-bot-startup-smoke.test.js`;
+2. Startup smoke после изменения ready-core contract проходит и подтверждает отсутствие missing import / ReferenceError regressions на clientReady hot path;
+3. Старый локальный `vm.Script(welcome-bot.js)` failure снят текущим direct parse-check: `ok`.
+
+#### 16.14.3. Data Drift: DB Store Transaction Boundary
+
+1. Для `src/db/store.js` не найден новый текущий partial-write defect: `save()` уже работает через cloned `workingDb` и заменяет live object только после успешной записи;
+2. Уничтожен coverage gap вокруг pre-disk pipeline failure: добавлен regression, что падение `dualWriteSotState()` после мутации clone не протекает ни в live `db`, ни на диск;
+3. Focused evidence: `node --test tests/db-store.test.js` — зелёный.
+
+#### 16.14.4. Runtime Degradation: Activity Serialization Guard
+
+1. Для `src/activity/runtime.js` не найден новый behavior defect в flush/resume path, но подтверждён high-risk owner seam: rebuild/flush/resume mutating flows должны оставаться за serialized runner;
+2. Уничтожен coverage gap: добавлен regression, что `rebuildActivitySnapshots`, `flushActivityRuntime` и `resumeActivityRuntime` вызывают `runSerialized` с owner-labels `activity-snapshot-rebuild`, `activity-runtime-flush`, `activity-runtime-resume`;
+3. Focused evidence: `node --test tests/activity-runtime.test.js` — зелёный.
+
+#### 16.14.5. Runtime Degradation: Roblox Checkpoint
+
+1. Roblox runtime пункт из стартового среза сейчас выглядит guarded, а не broken: coordinator serialization/dedupe, batch failure continuation, repair-before-tracking и opaque presence behavior уже покрыты focused tests;
+2. Нового patch в этом checkpoint не потребовалось;
+3. Focused evidence: `node --test tests/roblox-jobs.test.js` — зелёный.
+
+#### 16.14.6. Coverage/Data Drift: Startup Smoke Isolation
+
+1. Найден реальный side-effect defect в тестовом защитном контуре: `welcome-bot startup smoke` запускался без temp `BOT_DATA_DIR`, поэтому мог трогать настоящий `welcome-db.json`;
+2. Symptom был подтверждён после полного suite: в рабочем дереве появились только runtime timestamps `lastResumeAt`, `lastFullRecalcAt`, `lastRebuildAndRoleSyncAt`, `lastDailyRoleSyncAt`;
+3. Fix: startup smoke теперь использует временную data-dir и `DB_PATH=welcome-db.json`, затем делает best-effort cleanup как modal smoke;
+4. Evidence: `node --test tests/welcome-bot-startup-smoke.test.js` — зелёный, а `git status --short welcome-db.json tests/welcome-bot-startup-smoke.test.js` показывает изменение только smoke-test файла.
+
+### 16.15. Remaining Problems Follow-Up
+
+#### 16.15.1. Runtime Degradation: Verification Deadline Sweep Partial Failure
+
+1. Подтверждён оставшийся runtime defect: `runVerificationDeadlineSweep()` до fix-а делал один общий sequential loop без per-user isolation;
+2. Если `postVerificationManualReport()` падал на первом overdue user, sweep выбрасывал ошибку целиком и не доходил до следующих просроченных участников;
+3. Fix: overdue report delivery теперь wrapped per user, failure логируется как `VERIFICATION_DEADLINE_SWEEP_REPORT_FAILED`, увеличивает `failed`, но не ставит `reportSentAt` и не блокирует следующих overdue users;
+4. Operator feedback теперь показывает `ошибок: N`, чтобы manual run sweep не выглядел полностью успешным при частичных сбоях;
+5. Evidence: `node --test tests/verification-report-runtime.test.js tests/verification-operator.test.js tests/verification-runtime.test.js tests/verification-role-lifecycle-wiring.test.js` — зелёный.
+
+#### 16.15.2. Coverage Matrix Snapshot
+
+1. Startup/import hot path: `tests/welcome-bot-startup-smoke.test.js` covers clientReady missing-import class and modal wiring smoke;
+2. SoT/load-save/data drift: `tests/db-store.test.js` covers disk-write failure and dual-write failure isolation;
+3. Activity runtime mutation ownership: `tests/activity-runtime.test.js` covers rebuild/flush/resume serialized labels and existing flush/resume state mirrors;
+4. Roblox runtime degradation: `tests/roblox-jobs.test.js` covers coordinator serialization/dedupe, batch continuation, repair-before-tracking, opaque presence, and dirty flush;
+5. Verification lifecycle/reporting: `tests/verification-runtime.test.js`, `tests/verification-role-lifecycle-wiring.test.js`, `tests/verification-report-runtime.test.js`, `tests/verification-operator.test.js` cover callback lifecycle, unresolved member fetch, degraded report fallback, reportSentAt stamping, and deadline sweep partial failure;
+6. Profile proof-history null semantics: `tests/profile-model.test.js` already covers unapproved onboarding state staying null even when proof history remains;
+7. Residual after this pass is operational, not a confirmed local bug: live Discord/Railway smoke is still required for runtime-only guarantees after deploy.
+
+#### 16.15.3. Stale Candidate Review
+
+1. Activity mirror throw isolation was reviewed but not patched: current mirror path is internal, generated snapshots are JSON-safe, and `ensureActivityState(db)` keeps `db.sot.activity` live during mutations; no confirmed local defect was found;
+2. Profile approval-removal semantics were reviewed against current tests: the read-model already prevents proof-window history from fabricating current approved kills when onboarding state is null;
+3. Doc drift is now classified as governance state: this ledger is the freshest phase-state, while older root docs remain historical/domain maps.

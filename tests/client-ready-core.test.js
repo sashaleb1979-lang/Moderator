@@ -331,7 +331,7 @@ test("runClientReadyCore preserves startup order for the core prelude", async ()
     ["refreshWelcomePanel", client],
     ["refreshAllTierlists", client],
   ]);
-  assert.deepEqual(result, { generated: { resolvedCharacters: 3 } });
+  assert.deepEqual(result, { generated: { resolvedCharacters: 3 }, degraded: [] });
 });
 
 test("runClientReadyCore throws a critical error when guild command registration fails", async () => {
@@ -402,7 +402,56 @@ test("runClientReadyCore logs ensureManagedRoles failures and still registers st
       unresolvedCharacters: 0,
       tierRoles: 0,
     },
+    degraded: [{ step: "ensureManagedRoles", message: "role create failed" }],
   });
+});
+
+test("runClientReadyCore returns degraded summaries for every soft startup failure", async () => {
+  const errors = [];
+
+  const result = await runClientReadyCore({ id: "client" }, {
+    async registerGuildCommands() {},
+    async ensureManagedRoles() {
+      return { resolvedCharacters: 4 };
+    },
+    async runSotStartupAlerts() {
+      throw new Error("sot alerts failed");
+    },
+    async syncApprovedTierRoles() {
+      throw new Error("tier sync failed");
+    },
+    async syncAccessCompanionRoles() {
+      throw new Error("companion sync failed");
+    },
+    async refreshWelcomePanel() {
+      throw new Error("welcome refresh failed");
+    },
+    async refreshAllTierlists() {
+      throw new Error("tierlist refresh failed");
+    },
+    async resumeActivityRuntime() {
+      throw new Error("activity snapshots require rebuild");
+    },
+    logError: (...args) => errors.push(args.join(" ")),
+  });
+
+  assert.deepEqual(result.generated, { resolvedCharacters: 4 });
+  assert.deepEqual(result.degraded, [
+    { step: "runSotStartupAlerts", message: "sot alerts failed" },
+    { step: "syncApprovedTierRoles", message: "tier sync failed" },
+    { step: "syncAccessCompanionRoles", message: "companion sync failed" },
+    { step: "refreshWelcomePanel", message: "welcome refresh failed" },
+    { step: "refreshAllTierlists", message: "tierlist refresh failed" },
+    { step: "resumeActivityRuntime", message: "activity snapshots require rebuild" },
+  ]);
+  assert.deepEqual(errors, [
+    "SoT startup alerts failed: sot alerts failed",
+    "Tier role sync failed: tier sync failed",
+    "Access companion role sync failed: companion sync failed",
+    "Welcome panel refresh failed: welcome refresh failed",
+    "Tierlist refresh failed: tierlist refresh failed",
+    "Activity runtime resume failed: activity snapshots require rebuild",
+  ]);
 });
 
 test("runClientReadyCore logs syncApprovedTierRoles failures and continues", async () => {
