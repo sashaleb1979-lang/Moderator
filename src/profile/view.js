@@ -26,6 +26,31 @@ const PROFILE_VIEW_LABELS = Object.freeze({
   progress: "Прогресс",
   social: "Соц",
 });
+const PROFILE_BLOCK_TITLE_LABELS = Object.freeze({
+  "Main Core": "🧩 Ядро профиля",
+  "War Readiness": "🛡️ Готовность к вару",
+  "Voice-срез": "🎙️ Voice-срез",
+  "Prime time МСК": "🕒 Prime time МСК",
+  "Лучшие периоды": "🏆 Лучшие периоды",
+  "История сезона": "📜 История сезона",
+  "Weekly rollups": "🗓️ Weekly baseline",
+  "Activity mix": "🧭 Где живёт игрок",
+  "Farm profile": "🌾 Профиль фарма",
+  "Relative component places": "📍 Места по метрикам",
+  "Prime time confidence": "🕒 Уверенность prime time",
+  "Season consistency": "📏 Ровность сезона",
+  "Comeback metrics": "🔁 Комбек-метрики",
+  "Практический прогресс": "💪 Практический прогресс",
+  "Proof gap": "🧾 Разрыв proof",
+  "Antiteam support": "🛟 Антитим-помощь",
+  "Roblox-друзья на сервере": "🤝 Roblox-друзья на сервере",
+  "Кто из друзей уже здесь": "🫂 Кто из друзей уже здесь",
+  "Социальная эволюция": "📈 Социальная эволюция",
+  "Скрытый круг": "🕵️ Скрытый круг",
+  "Проверенный круг": "✅ Проверенный круг",
+  "Социальная карта": "🗺️ Социальная карта",
+  "Voice + game overlap": "🎙️ Voice + JJS",
+});
 
 function normalizeProfileDisplayMode(value, isSelf = false) {
   const normalized = cleanString(value, 40).toLowerCase();
@@ -62,7 +87,8 @@ function buildFieldValue(lines, fallback = "—", limit = 1024) {
 }
 
 function buildTextDisplay(title, lines, fallback = "—", limit = 4000) {
-  const heading = cleanString(title, 120) || "Блок";
+  const normalizedTitle = cleanString(title, 120) || "Блок";
+  const heading = PROFILE_BLOCK_TITLE_LABELS[normalizedTitle] || normalizedTitle;
   const body = buildFieldValue(lines, fallback, Math.max(64, limit - heading.length - 5));
   return new TextDisplayBuilder().setContent(`### ${heading}\n${body}`);
 }

@@ -21,6 +21,14 @@ const PROFILE_LEVEL_CONFIDENCE_MULTIPLIERS = Object.freeze({
   outdated: 0.35,
   unavailable: 0,
 });
+const PROFILE_LEVEL_AXIS_LABELS = Object.freeze({
+  form: { emoji: "🏃", label: "Форма" },
+  chat: { emoji: "💬", label: "Чат" },
+  kills: { emoji: "⚔️", label: "Килы" },
+  stability: { emoji: "🛡️", label: "Стабильность" },
+  growth: { emoji: "📈", label: "Развитие" },
+  social: { emoji: "🤝", label: "Соц" },
+});
 
 function normalizeProfileDisplayMode(value, { isSelf = false } = {}) {
   const normalized = cleanString(value, 40).toLowerCase();
@@ -213,6 +221,10 @@ function buildXpBar(percent = 0, size = 8) {
   return `${"▰".repeat(filled)}${"▱".repeat(normalizedSize - filled)}`;
 }
 
+function buildScoreBar(score = 0, size = 5) {
+  return buildXpBar(Math.max(0, Math.min(100, Number(score) || 0)), size);
+}
+
 function formatProfileLevelLine(levelState = {}) {
   return [
     `🧬 Ур. ${formatNumber(levelState.level)}`,
@@ -223,6 +235,67 @@ function formatProfileLevelLine(levelState = {}) {
 
 function formatProfileLevelSourceLine(levelState = {}) {
   return `📚 XP: буквы ${formatNumber(levelState.letterXp)} • недели ${formatNumber(levelState.weeklyXp)} • всего ${formatNumber(levelState.totalXp)}`;
+}
+
+function buildProfileLevelAxisEntries(tierlist = null) {
+  return PROFILE_LEVEL_AXES.map((axisName) => {
+    const axis = tierlist?.[axisName];
+    const score = normalizeFiniteNumber(axis?.score);
+    if (!Number.isFinite(score)) return null;
+    const meta = PROFILE_LEVEL_AXIS_LABELS[axisName] || { emoji: "▫️", label: axisName };
+    const confidenceState = cleanString(axis?.confidenceState, 40) || "heuristic";
+    const debuffPercent = Math.max(0, Math.min(100, normalizeFiniteNumber(axis?.influenceDebuffPercent, 0)));
+    const adjustedXp = Math.round(score * getAxisConfidenceMultiplier(axis) * getAxisInfluenceMultiplier(axis) * 100);
+    return {
+      axisName,
+      ...meta,
+      grade: cleanString(axis?.grade, 10) || "N/A",
+      score,
+      confidenceState,
+      debuffPercent,
+      adjustedXp,
+    };
+  }).filter(Boolean);
+}
+
+function formatLevelAxis(entry = {}) {
+  return `${entry.emoji} ${entry.label} ${entry.grade} ${buildScoreBar(entry.score)} ${formatNumber(entry.score)}`;
+}
+
+function buildProfileLevelLines({ levelState = {}, tierlist = null } = {}) {
+  const lines = [
+    formatProfileLevelLine(levelState),
+    formatProfileLevelSourceLine(levelState),
+  ];
+  const axes = buildProfileLevelAxisEntries(tierlist);
+  if (!axes.length) {
+    lines.push("Буквы пока не набрали достаточно сигналов для XP-разбора.");
+    return lines;
+  }
+
+  const strongest = axes.slice().sort((left, right) => right.adjustedXp - left.adjustedXp)[0];
+  const weakest = axes.slice().sort((left, right) => left.score - right.score)[0];
+  const counts = axes.reduce((acc, entry) => {
+    acc[entry.confidenceState] = (acc[entry.confidenceState] || 0) + 1;
+    return acc;
+  }, {});
+  const maxDebuff = axes.reduce((max, entry) => Math.max(max, entry.debuffPercent), 0);
+
+  lines.push(`Сильнее всего даёт XP: ${formatLevelAxis(strongest)} • +${formatNumber(strongest.adjustedXp)} XP`);
+  lines.push(`Где тоньше: ${formatLevelAxis(weakest)} • score ${formatNumber(weakest.score)}`);
+  lines.push(`Буквы: ${axes.map((entry) => formatLevelAxis(entry)).join(" • ")}`);
+  lines.push(
+    [
+      "Доверие",
+      `fresh ${formatNumber(counts.reliable || 0)}`,
+      `partial ${formatNumber(counts.partial || 0)}`,
+      `heuristic ${formatNumber(counts.heuristic || 0)}`,
+      `outdated ${formatNumber(counts.outdated || 0)}`,
+      `max debuff ${formatNumber(maxDebuff)}%`,
+      `weekly окон ${formatNumber(levelState.weeklyWindowCount)}`,
+    ].join(" • ")
+  );
+  return lines;
 }
 
 function buildMetricPlace(value = null, samples = []) {
@@ -969,6 +1042,10 @@ function buildProfileReadModel(options = {}) {
     tierlist: synergy?.viewerTierlist,
     profile,
   });
+  const profileLevelLines = buildProfileLevelLines({
+    levelState: profileLevelState,
+    tierlist: synergy?.viewerTierlist,
+  });
   const roleShowcaseLines = buildRoleShowcaseLines({
     mainCharacterIds,
     mainCharacterLabels,
@@ -1275,6 +1352,7 @@ function buildProfileReadModel(options = {}) {
     heroLines,
     identityMediaItems,
     profileLevelState,
+    profileLevelLines,
     roleShowcaseLines,
     mandatoryLinks,
     primaryAvatarUrl: primaryAvatar?.url || null,
@@ -1285,6 +1363,7 @@ function buildProfileReadModel(options = {}) {
     sections: {
       overview: [
         { title: "✨ Обзор", lines: overviewLines },
+        { title: "🧬 Уровень профиля", lines: profileLevelLines },
         { title: "🎭 Роли и места", lines: roleShowcaseLines },
         ...(synergy?.blocks?.viewerMainCore ? [synergy.blocks.viewerMainCore] : []),
         ...(synergy?.blocks?.viewerLetterPlaces ? [synergy.blocks.viewerLetterPlaces] : []),
