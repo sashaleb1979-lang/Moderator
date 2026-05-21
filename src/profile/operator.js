@@ -16,6 +16,7 @@ const {
   resolveProfileMessageTarget,
 } = require("./entry");
 const {
+  buildProfileFallbackPayload,
   buildProfileHelperMessagePayload,
   buildProfilePayload,
 } = require("./view");
@@ -25,12 +26,20 @@ function cleanString(value, limit = 2000) {
   return String(value || "").trim().slice(0, Math.max(0, Number(limit) || 0));
 }
 
-function listMemberRoleMentions(member, limit = 6) {
+function normalizeHiddenRoleIds(values = []) {
+  return new Set((Array.isArray(values) ? values : [])
+    .map((entry) => cleanString(entry, 80))
+    .filter(Boolean));
+}
+
+function listMemberRoleMentions(member, limit = 6, hiddenRoleIds = []) {
   const roles = member?.roles?.cache;
   if (!roles?.values) return [];
+  const hiddenIds = normalizeHiddenRoleIds(hiddenRoleIds);
 
   return [...roles.values()]
     .filter((role) => role && role.id !== member?.guild?.id)
+    .filter((role) => !hiddenIds.has(cleanString(role.id, 80)))
     .sort((left, right) => (Number(right?.position) || 0) - (Number(left?.position) || 0))
     .slice(0, Math.max(1, Number(limit) || 1))
     .map((role) => `<@&${role.id}>`);
@@ -154,6 +163,25 @@ function createProfileOperator(options = {}) {
     const targetProfile = typeof options.getTargetProfile === "function"
       ? options.getTargetProfile(normalizedTargetUserId)
       : null;
+    const [characterStatsContext, tierlistStatsUrl] = await Promise.all([
+      Promise.resolve(typeof options.getCharacterStatsContext === "function"
+        ? options.getCharacterStatsContext({ userId: normalizedTargetUserId })
+        : null)
+        .catch((error) => {
+          logProfileWarning(`profile character stats context failed: ${error?.message || error}`);
+          return null;
+        }),
+      Promise.resolve(typeof options.getTierlistStatsUrl === "function"
+        ? options.getTierlistStatsUrl({ userId: normalizedTargetUserId })
+        : "")
+        .catch((error) => {
+          logProfileWarning(`profile tierlist stats url failed: ${error?.message || error}`);
+          return "";
+        }),
+    ]);
+    const characterStats = Array.isArray(characterStatsContext?.characterStats)
+      ? characterStatsContext.characterStats
+      : (Array.isArray(characterStatsContext) ? characterStatsContext : []);
 
     const readModel = buildProfileReadModel({
       guildId: cleanString(options.guildId, 80),
@@ -164,7 +192,10 @@ function createProfileOperator(options = {}) {
         || resolvedTargetUser?.globalName
         || resolvedTargetUser?.username,
       targetAvatarUrl: resolveUserAvatarUrl(resolvedTargetUser),
-      roleMentions: listMemberRoleMentions(resolvedTargetMember),
+      roleMentions: listMemberRoleMentions(resolvedTargetMember, 6, options.hiddenProfileRoleIds),
+      hiddenProfileRoleIds: options.hiddenProfileRoleIds,
+      tierlistStatsUrl,
+      characterStats,
       profile: targetProfile,
       pendingSubmission: typeof options.getPendingSubmissionForUser === "function"
         ? options.getPendingSubmissionForUser(normalizedTargetUserId)
@@ -397,7 +428,7 @@ function createProfileOperator(options = {}) {
         ? options.getTargetProfile(interaction?.user?.id)
         : null;
       const identity = buildProfileRobloxIdentitySession(
-        profile?.summary?.roblox || profile?.domains?.roblox || {}
+        profile?.domains?.roblox || profile?.summary?.roblox || {}
       );
       await interaction.showModal(await options.buildProfileRobloxBindModal({
         initialValue: identity.robloxUsername || "",
@@ -470,12 +501,22 @@ function createProfileOperator(options = {}) {
       return true;
     }
 
-    await interaction.editReply(await buildPrivateProfilePayload({
-      targetUserId: profileNavRequest.targetUserId,
-      isSelf: access.isSelf,
-      requesterUserId: interaction.user.id,
-      view: profileNavRequest.view,
-    }));
+    try {
+      await interaction.editReply(await buildPrivateProfilePayload({
+        targetUserId: profileNavRequest.targetUserId,
+        isSelf: access.isSelf,
+        requesterUserId: interaction.user.id,
+        view: profileNavRequest.view,
+      }));
+    } catch (error) {
+      if (typeof options.logWarning === "function") {
+        options.logWarning(`profile nav payload failed (${profileNavRequest.view}/${profileNavRequest.targetUserId}): ${error?.message || error}`);
+      }
+      await interaction.editReply(buildProfileFallbackPayload({
+        view: profileNavRequest.view,
+        message: "Профильная кнопка сработала, но этот раздел временно не собрался. Ошибка записана в лог.",
+      }));
+    }
     return true;
   }
 

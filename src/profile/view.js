@@ -26,6 +26,31 @@ const PROFILE_VIEW_LABELS = Object.freeze({
   progress: "Прогресс",
   social: "Соц",
 });
+const PROFILE_BLOCK_TITLE_LABELS = Object.freeze({
+  "Main Core": "🧩 Ядро профиля",
+  "War Readiness": "🛡️ Готовность к вару",
+  "Voice-срез": "🎙️ Voice-срез",
+  "Prime time МСК": "🕒 Prime time МСК",
+  "Лучшие периоды": "🏆 Лучшие периоды",
+  "История сезона": "📜 История сезона",
+  "Weekly rollups": "🗓️ Weekly baseline",
+  "Activity mix": "🧭 Где живёт игрок",
+  "Farm profile": "🌾 Профиль фарма",
+  "Relative component places": "📍 Места по метрикам",
+  "Prime time confidence": "🕒 Уверенность prime time",
+  "Season consistency": "📏 Ровность сезона",
+  "Comeback metrics": "🔁 Комбек-метрики",
+  "Практический прогресс": "💪 Практический прогресс",
+  "Proof gap": "🧾 Разрыв proof",
+  "Antiteam support": "🛟 Антитим-помощь",
+  "Roblox-друзья на сервере": "🤝 Roblox-друзья на сервере",
+  "Кто из друзей уже здесь": "🫂 Кто из друзей уже здесь",
+  "Социальная эволюция": "📈 Социальная эволюция",
+  "Скрытый круг": "🕵️ Скрытый круг",
+  "Проверенный круг": "✅ Проверенный круг",
+  "Социальная карта": "🗺️ Социальная карта",
+  "Voice + game overlap": "🎙️ Voice + JJS",
+});
 
 function normalizeProfileDisplayMode(value, isSelf = false) {
   const normalized = cleanString(value, 40).toLowerCase();
@@ -61,16 +86,100 @@ function buildFieldValue(lines, fallback = "—", limit = 1024) {
   return value || fallback;
 }
 
+function simplifyProfileLine(value = "") {
+  return cleanString(value, 1000)
+    .replace(/\bmax debuff\b/gi, "макс. снижение веса")
+    .replace(/\bkill-backed debuff\b/gi, "снижение веса proof")
+    .replace(/\bbaseline min\b/gi, "база сравнения")
+    .replace(/\bbaseline\b/gi, "база сравнения")
+    .replace(/^Trust:/i, "Надёжность:")
+    .replace(/\bconfidence\b/gi, "оценка")
+    .replace(/\bsources\b/gi, "по данным")
+    .replace(/\bsource\b/gi, "по данным")
+    .replace(/\bdebuff\b/gi, "снижение веса")
+    .replace(/\breliable\b/gi, "точный расчёт")
+    .replace(/\bfresh\b/gi, "точный расчёт")
+    .replace(/\bpartial\b/gi, "частично")
+    .replace(/\boutdated\b/gi, "старые данные")
+    .replace(/\bstale\b/gi, "старые данные")
+    .replace(/\bheuristic\b/gi, "примерно")
+    .replace(/\binferred\b/gi, "примерно")
+    .replace(/\bproxy\b/gi, "примерно")
+    .replace(/\bsparse\b/gi, "мало базы")
+    .replace(/\bunavailable\b/gi, "нет базы")
+    .replace(/\blocal_fallback\b/gi, "локальная оценка")
+    .replace(/\bN\/A\b/g, "нет базы")
+    .replace(/\bDiscord last seen\b/gi, "Discord")
+    .replace(/\bproof freshness\b/gi, "proof")
+    .replace(/\bapproved history\b/gi, "approved-истории")
+    .replace(/\bno exact party claim\b/gi, "без заявления про точное пати")
+    .replace(/\bno strong farm claim without session histograms\b/gi, "без сильного вывода без истории сессий")
+    .replace(/\bstrong farm claim bounded by captured sessions\b/gi, "вывод ограничен пойманными сессиями")
+    .replace(/\brolling snapshots, not exact single-day deltas\b/gi, "это rolling-срезы, не точные дневные дельты")
+    .replace(/\bclaims require 3\+ comparable weekly windows\b/gi, "выводы требуют 3+ сравнимых weekly окон")
+    .replace(/\bno comeback claim\b/gi, "без вывода про comeback");
+}
+
 function buildTextDisplay(title, lines, fallback = "—", limit = 4000) {
-  const heading = cleanString(title, 120) || "Блок";
-  const body = buildFieldValue(lines, fallback, Math.max(64, limit - heading.length - 5));
+  const normalizedTitle = cleanString(title, 120) || "Блок";
+  const heading = PROFILE_BLOCK_TITLE_LABELS[normalizedTitle] || normalizedTitle;
+  const displayLines = Array.isArray(lines) ? lines.map((line) => simplifyProfileLine(line)) : lines;
+  const body = buildFieldValue(displayLines, fallback, Math.max(64, limit - heading.length - 5));
   return new TextDisplayBuilder().setContent(`### ${heading}\n${body}`);
+}
+
+function buildSectionMarkdown(block = {}) {
+  const normalizedTitle = cleanString(block?.title, 120) || "Блок";
+  const heading = PROFILE_BLOCK_TITLE_LABELS[normalizedTitle] || normalizedTitle;
+  const lines = Array.isArray(block?.lines)
+    ? block.lines.map((line) => simplifyProfileLine(line)).filter(Boolean)
+    : [];
+  return `### ${heading}\n${buildFieldValue(lines, "—", 1600)}`;
+}
+
+function buildSectionGroupMarkdown(group = {}, blockLimit = 1350) {
+  const title = normalizeNullableString(group?.title, 120);
+  const blocks = Array.isArray(group?.blocks) ? group.blocks : [];
+  const parts = [];
+  if (title) parts.push(`## ${title}`);
+  for (const block of blocks) {
+    parts.push(buildSectionMarkdown(block).replace(/\n([\s\S]*)$/, (match, body) => `\n${buildFieldValue(body.split("\n"), "—", blockLimit)}`));
+  }
+  return parts.join("\n");
+}
+
+function buildSectionTextDisplays(blocks = [], limit = 3900, options = {}) {
+  const displays = [];
+  let current = "";
+  const max = Math.max(1000, Number(limit) || 3900);
+  const maxDisplays = Math.max(1, Number(options.maxDisplays) || 6);
+  const blockLimit = Math.max(500, Number(options.blockLimit) || 1350);
+  const entries = Array.isArray(options.groups) && options.groups.length
+    ? options.groups.map((group) => buildSectionGroupMarkdown(group, blockLimit))
+    : (Array.isArray(blocks) ? blocks : []).map((block) => buildSectionMarkdown(block));
+
+  for (const nextBlock of entries) {
+    const next = current ? `${current}\n\n${nextBlock}` : nextBlock;
+    if (current && next.length > max) {
+      displays.push(new TextDisplayBuilder().setContent(current));
+      if (displays.length >= maxDisplays) return displays;
+      current = nextBlock;
+    } else {
+      current = next;
+    }
+  }
+
+  if (current) {
+    displays.push(new TextDisplayBuilder().setContent(current));
+  }
+
+  return displays.slice(0, maxDisplays);
 }
 
 function buildHeroSection({ heroTitle = "Быстрый статус", heroLines = [], primaryAvatarUrl = null, primaryAvatarDescription = null } = {}) {
   const url = normalizeNullableString(primaryAvatarUrl, 1000);
   const lines = Array.isArray(heroLines)
-    ? heroLines.map((entry) => cleanString(entry, 300)).filter(Boolean)
+    ? heroLines.map((entry) => simplifyProfileLine(entry)).map((entry) => cleanString(entry, 300)).filter(Boolean)
     : [];
   if (!url || !lines.length) return null;
 
@@ -94,7 +203,7 @@ function buildHeroSection({ heroTitle = "Быстрый статус", heroLines
 
 function buildHeroTextDisplay(heroLines = [], heroTitle = "Быстрый статус") {
   const lines = Array.isArray(heroLines)
-    ? heroLines.map((entry) => cleanString(entry, 300)).filter(Boolean)
+    ? heroLines.map((entry) => simplifyProfileLine(entry)).map((entry) => cleanString(entry, 300)).filter(Boolean)
     : [];
   if (!lines.length) return null;
   return buildTextDisplay(cleanString(heroTitle, 120) || "Быстрый статус", lines, "После онбординга здесь появится быстрая сводка.", 1500);
@@ -128,32 +237,43 @@ function buildButtonRows(buttons = [], maxPerRow = 5) {
   return rows;
 }
 
-function buildLinkButtons({ comboLinks = [], robloxProfileUrl = null } = {}) {
+function buildLinkButton(link = {}) {
+  const url = normalizeNullableString(link?.url, 1000);
+  if (!url) return null;
+  return new ButtonBuilder()
+    .setStyle(ButtonStyle.Link)
+    .setLabel(cleanString(link?.buttonLabel || link?.label, 80) || "Ссылка")
+    .setURL(url);
+}
+
+function buildLinkButtons({ mandatoryLinks = [], robloxProfileUrl = null } = {}) {
   const buttons = [];
+  const seenUrls = new Set();
 
-  for (const link of Array.isArray(comboLinks) ? comboLinks : []) {
-    const url = normalizeNullableString(link?.url, 500);
-    if (!url) continue;
-    buttons.push(
-      new ButtonBuilder()
-        .setStyle(ButtonStyle.Link)
-        .setLabel(cleanString(link?.buttonLabel || link?.label, 80) || "Ссылка")
-        .setURL(url)
-    );
-    if (buttons.length >= 8) break;
+  function pushButton(link) {
+    const url = normalizeNullableString(link?.url, 1000);
+    if (!url || seenUrls.has(url)) return;
+    const button = buildLinkButton(link);
+    if (!button) return;
+    seenUrls.add(url);
+    buttons.push(button);
   }
 
-  const normalizedRobloxProfileUrl = normalizeNullableString(robloxProfileUrl, 1000);
-  if (normalizedRobloxProfileUrl && buttons.length < 10) {
-    buttons.push(
-      new ButtonBuilder()
-        .setStyle(ButtonStyle.Link)
-        .setLabel("Roblox профиль")
-        .setURL(normalizedRobloxProfileUrl)
-    );
+  const mandatory = Array.isArray(mandatoryLinks) ? mandatoryLinks : [];
+  if (mandatory.length) {
+    for (const link of mandatory) pushButton(link);
+  } else {
+    const normalizedRobloxProfileUrl = normalizeNullableString(robloxProfileUrl, 1000);
+    if (normalizedRobloxProfileUrl) {
+      pushButton({
+        label: "Roblox профиль",
+        buttonLabel: "Roblox профиль",
+        url: normalizedRobloxProfileUrl,
+      });
+    }
   }
 
-  return buttons.length ? buildButtonRows(buttons, 5) : [];
+  return buttons.length ? buildButtonRows(buttons.slice(0, 2), 5) : [];
 }
 
 function normalizeProfileView(value) {
@@ -177,27 +297,31 @@ function buildProfileActionRows({ isSelf = false, selfActionState = {} } = {}) {
 
   const hasMains = selfActionState.hasMains === true;
   const hasVerifiedRoblox = selfActionState.hasVerifiedRoblox === true;
+  const prefixLabel = (emoji, label, fallback) => {
+    const text = cleanString(label, 80) || fallback;
+    return text.startsWith(emoji) ? text : `${emoji} ${text}`;
+  };
 
   return buildButtonRows([
     new ButtonBuilder()
       .setCustomId("onboard_begin")
-      .setLabel(cleanString(selfActionState.killsLabel, 80) || "Добавить kills")
+      .setLabel(prefixLabel("⚔️", selfActionState.killsLabel, "Добавить kills"))
       .setStyle(ButtonStyle.Primary),
     new ButtonBuilder()
       .setCustomId("onboard_change_mains")
-      .setLabel(cleanString(selfActionState.mainsLabel, 80) || "Сменить мейнов")
+      .setLabel(prefixLabel("🎭", selfActionState.mainsLabel, "Сменить мейнов"))
       .setStyle(hasMains ? ButtonStyle.Secondary : ButtonStyle.Primary),
     new ButtonBuilder()
       .setCustomId("profile_bind_roblox")
-      .setLabel(cleanString(selfActionState.robloxLabel, 80) || "Привязать Roblox")
+      .setLabel(prefixLabel("🔗", selfActionState.robloxLabel, "Привязать Roblox"))
       .setStyle(hasVerifiedRoblox ? ButtonStyle.Secondary : ButtonStyle.Primary),
     new ButtonBuilder()
       .setCustomId("elo_submit_open")
-      .setLabel(cleanString(selfActionState.eloLabel, 80) || "ELO: текст + скрин")
+      .setLabel(prefixLabel("📈", selfActionState.eloLabel, "ELO: текст + скрин"))
       .setStyle(ButtonStyle.Primary),
     new ButtonBuilder()
       .setCustomId("rate_new_characters")
-      .setLabel("Оценить персонажей")
+      .setLabel("🏆 Оценить персонажей по скилу")
       .setStyle(ButtonStyle.Secondary),
   ], 5);
 }
@@ -227,12 +351,19 @@ function buildProfilePayload(options = {}) {
   const displayName = cleanString(readModel.displayName, 200) || `Пользователь ${userId}`;
   const displayMode = normalizeProfileDisplayMode(readModel.displayMode, readModel.isSelf);
   const currentView = normalizeProfileView(options.view);
+  const componentBudget = readModel.componentBudget && typeof readModel.componentBudget === "object"
+    ? readModel.componentBudget
+    : {};
+  const heroSummary = readModel.heroSummary && typeof readModel.heroSummary === "object"
+    ? readModel.heroSummary
+    : null;
   const heroSection = buildHeroSection({
-    heroTitle: readModel.heroTitle,
-    heroLines: readModel.heroLines,
+    heroTitle: heroSummary?.title || readModel.heroTitle,
+    heroLines: heroSummary?.lines || readModel.heroLines,
     primaryAvatarUrl: readModel.primaryAvatarUrl,
     primaryAvatarDescription: readModel.primaryAvatarDescription,
   });
+  const identityMediaGallery = buildProfileMediaGallery(readModel.identityMediaItems);
   const mediaGallery = buildProfileMediaGallery(readModel.mediaGalleryItems);
 
   const container = new ContainerBuilder()
@@ -240,25 +371,19 @@ function buildProfilePayload(options = {}) {
     .addTextDisplayComponents(
       new TextDisplayBuilder().setContent(
         displayMode === "compact-card"
-          ? (readModel.isSelf ? "# Моя карточка" : `# Карточка • ${displayName}`)
-          : (readModel.isSelf ? "# Твой профиль" : `# Профиль • ${displayName}`)
-      ),
-      new TextDisplayBuilder().setContent(
-        displayMode === "compact-card"
-          ? (readModel.isSelf ? `Компактная карточка ${displayName}.` : `Компактный просмотр профиля <@${userId}>.`)
-          : (readModel.isSelf ? `Приватный профиль ${displayName}.` : `Приватный просмотр профиля <@${userId}>.`)
-      ),
-      new TextDisplayBuilder().setContent(
-        displayMode === "compact-card"
-          ? "**Секция:** Карточка"
-          : `**Секция:** ${PROFILE_VIEW_LABELS[currentView]}`
+          ? `${readModel.isSelf ? "# Моя карточка" : `# Карточка • ${displayName}`}`
+          : `${readModel.isSelf ? "# Твой профиль" : `# Профиль • ${displayName}`}\n**${PROFILE_VIEW_LABELS[currentView]}**`
       )
     );
+
+  if (displayMode !== "compact-card" && identityMediaGallery) {
+    container.addMediaGalleryComponents(identityMediaGallery);
+  }
 
   if (heroSection) {
     container.addSectionComponents(heroSection);
   } else {
-    const heroTextDisplay = buildHeroTextDisplay(readModel.heroLines, readModel.heroTitle);
+    const heroTextDisplay = buildHeroTextDisplay(heroSummary?.lines || readModel.heroLines, heroSummary?.title || readModel.heroTitle);
     if (heroTextDisplay) {
       container.addTextDisplayComponents(heroTextDisplay);
     }
@@ -274,35 +399,22 @@ function buildProfilePayload(options = {}) {
       );
   }
 
-  if (displayMode !== "compact-card") {
-    const actionRows = buildProfileActionRows({
-      isSelf: readModel.isSelf,
-      selfActionState: readModel.selfActionState,
-    });
-    if (actionRows.length) {
-      container.addActionRowComponents(...actionRows);
-    }
-  }
-
-  if (displayMode !== "compact-card" && readModel.isSelf && currentView === "overview") {
-    container.addTextDisplayComponents(
-      buildTextDisplay("ELO", [
-        "Кнопка ниже открывает ELO submit.",
-        "1. Сначала отправь текст с числом ELO.",
-        "2. Потом следующим сообщением кинь скрин.",
-      ], "—", 1200)
-    );
-  }
-
   container
     .addSeparatorComponents(new SeparatorBuilder().setDivider(true));
 
   const sectionKey = displayMode === "compact-card" ? "compact" : currentView;
   const sectionBlocks = Array.isArray(readModel.sections?.[sectionKey]) ? readModel.sections[sectionKey] : [];
+  const sectionGroups = Array.isArray(readModel.sectionGroups?.[sectionKey]) ? readModel.sectionGroups[sectionKey] : [];
   if (sectionBlocks.length) {
-    container.addTextDisplayComponents(
-      ...sectionBlocks.map((block) => buildTextDisplay(block?.title, block?.lines))
-    );
+    container.addTextDisplayComponents(...buildSectionTextDisplays(
+      sectionBlocks,
+      componentBudget.sectionTextLimit,
+      {
+        groups: sectionGroups,
+        maxDisplays: displayMode === "compact-card" ? 3 : componentBudget.maxSectionTextDisplays,
+        blockLimit: componentBudget.blockTextLimit,
+      }
+    ));
   }
 
   if (Array.isArray(readModel.verificationLines) && readModel.verificationLines.length) {
@@ -324,8 +436,20 @@ function buildProfilePayload(options = {}) {
   }
 
   if (displayMode !== "compact-card") {
+    const actionRows = buildProfileActionRows({
+      isSelf: readModel.isSelf,
+      selfActionState: readModel.selfActionState,
+    });
+    if (actionRows.length) {
+      container
+        .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
+        .addActionRowComponents(...actionRows);
+    }
+  }
+
+  if (displayMode !== "compact-card") {
     const linkRows = buildLinkButtons({
-      comboLinks: readModel.comboLinks,
+      mandatoryLinks: readModel.mandatoryLinks,
       robloxProfileUrl: readModel.robloxProfileUrl,
     });
     if (linkRows.length) {
@@ -341,8 +465,26 @@ function buildProfilePayload(options = {}) {
   };
 }
 
+function buildProfileFallbackPayload({ view = "overview", message = "" } = {}) {
+  const label = PROFILE_VIEW_LABELS[normalizeProfileView(view)] || "раздел";
+  const text = cleanString(message, 500)
+    || `Раздел «${label}» сейчас не собрался. Я оставил профиль живым, чтобы кнопка не зависала.`;
+  const container = new ContainerBuilder()
+    .setAccentColor(0xC62828)
+    .addTextDisplayComponents(
+      new TextDisplayBuilder().setContent(`# Профиль\n**${label}**`),
+      new TextDisplayBuilder().setContent(`### Раздел временно недоступен\n${text}`)
+    );
+
+  return {
+    flags: MessageFlags.IsComponentsV2,
+    components: [container],
+  };
+}
+
 module.exports = {
   PROFILE_VIEWS,
+  buildProfileFallbackPayload,
   buildProfileHelperMessagePayload,
   buildProfilePayload,
 };

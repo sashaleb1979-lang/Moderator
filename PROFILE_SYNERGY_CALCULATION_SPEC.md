@@ -443,6 +443,7 @@ Friend-overlap blocks используют уже существующие `serv
 ### Статус
 Raw capture уже существует. Base profile-facing mirror implemented for Phase 2.
 Base read-side block `Voice-срез` is now live via `src/profile/synergy.js` and consumes `profile.summary.voice` without нового runtime collection layer.
+V2 contact mirror is live: `src/integrations/shared-profile.js` derives inferred same-channel/time contacts and the read-side can intersect them with JJS co-play for `Voice + game overlap`.
 
 ### Owner
 1. Raw owner: [src/news/voice.js](src/news/voice.js)
@@ -464,11 +465,16 @@ Base read-side block `Voice-срез` is now live via `src/profile/synergy.js` a
 12. `profile.domains.voice.summary.currentChannelId`
 13. `profile.domains.voice.summary.currentSessionStartedAt`
 14. `profile.domains.voice.summary.topChannels`
+15. `profile.domains.voice.contacts[].peerUserId`
+16. `profile.domains.voice.contacts[].voiceSecondsTogether`
+17. `profile.domains.voice.contacts[].sessionCount`
+18. `profile.domains.voice.contacts[].confidenceState`
+19. `profile.domains.voice.contacts[].source`
 
-### Что Пока Не Реализовано В Mirror
-1. frequent voice contacts;
-2. voice overlap с другими игроками;
-3. совместные voice+JJS ties.
+### Что Пока Ограничено В Mirror
+1. voice contacts are inferred from same-channel/time overlap, not exact party membership;
+2. contact freshness depends on voice session capture coverage;
+3. совместные voice+JJS ties are honest intersections of voice contacts and co-play, not exact squad proof.
 
 ### Текущая V1-Подача
 Profile activity section теперь может показывать отдельный block `Voice-срез`:
@@ -481,7 +487,7 @@ Profile activity section теперь может показывать отдел
 1. бот был оффлайн во время voice activity;
 2. остались incomplete/recovered sessions;
 3. `topChannels` пока считаются по появлениям channelId в tracked sessions, а не по точным секундам на канал;
-4. контакты по людям пока не зеркалированы в profile domain.
+4. контакты по людям являются inferred/partial, если нет более сильного canonical voice-contact source.
 
 ### UI Copy Правило
 Если voice summary stale или incomplete, блок обязан маркироваться как неполный.
@@ -768,6 +774,7 @@ Season consistency read-side block is live.
 7. `profile.domains.seasonArchive.snapshots[].serverFriendsCount`
 8. `profile.domains.seasonArchive.snapshots[].socialSuggestionCount`
 9. `profile.domains.seasonArchive.snapshots[].antiteamSupportPoints`
+10. `profile.domains.seasonArchive.snapshots[].dayDeltas`
 
 ### Формула
 1. Каждый daily snapshot получает composite score из chat, sessions, JJS, voice, activity, social и antiteam signals.
@@ -776,17 +783,17 @@ Season consistency read-side block is live.
   - `ровный сезон`, если spread <= 15 и std <= 7;
   - `умеренно ровный`, если spread <= 28 и std <= 12;
   - `вспышками` иначе.
-4. `Best snapshot day` и `Weakest snapshot day` выбираются по composite score; это rolling snapshot, не точный single-day delta.
+4. `Best snapshot day` и `Weakest snapshot day` выбираются по composite score; when `dayDeltas` exist, cumulative counters are exact daily deltas, otherwise the block uses rolling snapshot fallback.
 5. Block честно включается только после `>= 7` daily snapshots; до этого показывает short-history copy.
 
 ### Ненадёжно Когда
-1. snapshot fields являются rolling 7d summary, а не per-day ledger;
+1. fields without `dayDeltas` являются rolling 7d summary, а не per-day ledger;
 2. season archive sparse или содержит long downtime gaps;
 3. antiteam/social/voice могли быть unavailable в части дней.
 
 ### UI Copy Правило
-1. Всегда писать `rolling snapshots, not exact single-day deltas`.
-2. Использовать `Best snapshot day`, а не `лучший день`, пока нет true per-day delta layer.
+1. Писать `exact day deltas` only when `dayDeltas.hasPreviousSnapshot === true`.
+2. Писать `rolling snapshots, not exact single-day deltas` for fallback snapshots.
 3. Показывать coverage рядом с trust.
 
 ---
@@ -853,29 +860,32 @@ Farm profile read-side proxy block is live.
 5. `profile.summary.roblox.sessionCount`
 
 ### Формула
-1. `dailyBuckets` дают active days, span, average active day, top day share и top3 share.
-2. `hourlyBucketsMsk` дают average active hour как дополнительный shape signal.
-3. `totalJjsMinutes / sessionCount` даёт только lifetime session proxy, не true session histogram.
-4. Cadence label:
+1. `playtime.sessionHistory[]`, если есть, даёт true captured session histogram: average, median, long/short share and session count.
+2. `dailyBuckets` дают active days, span, average active day, top day share и top3 share.
+3. `hourlyBucketsMsk` дают average active hour как дополнительный shape signal.
+4. `totalJjsMinutes / sessionCount` даёт только lifetime session proxy, если `sessionHistory[]` отсутствует.
+5. Cadence label:
   - `стабильный гриндер`, если active days >= 8 и top3 share <= 50%;
   - `вспышками`, если active days <= 4 и top3 share >= 70%;
   - `одна сильная вспышка`, если top day share >= 45%;
   - иначе `смешанный темп`.
-5. Session shape label:
-  - `длинные сессии (proxy)` при average session >= 60 min;
-  - `короткие рывки (proxy)` при average session <= 25 min;
-  - иначе `средние сессии (proxy)`;
+6. Session shape label:
+  - `длинные сессии` при captured/session-history average session >= 60 min;
+  - `короткие рывки` при captured/session-history average session <= 25 min;
+  - иначе `средние сессии`;
+  - suffix `(proxy)` добавляется только для fallback without `sessionHistory[]`;
   - если session proxy отсутствует, fallback идёт по average active hour.
 
 ### Ненадёжно Когда
 1. Нет per-session JJS duration histogram.
-2. `sessionCount` сейчас lifetime counter, а не strict 30d counter.
+2. `sessionCount` without `sessionHistory[]` is lifetime counter, not strict 30d counter.
 3. Hourly buckets являются polling-derived, а не session boundary source.
 
 ### UI Copy Правило
-1. Всегда писать `proxy`.
-2. Всегда писать `no strong farm claim without session histograms`.
-3. Не утверждать точную длину сессий; говорить `session proxy` или `hourly-окна`.
+1. Писать `proxy` only when `sessionHistory[]` is absent.
+2. Писать `no strong farm claim without session histograms` only when `sessionHistory[]` is absent.
+3. With session history, write `Session histogram` and a session-history trust line.
+4. Не утверждать точную длину сессий from fallback proxy; говорить `session proxy` или `hourly-окна`.
 
 ---
 
@@ -886,8 +896,8 @@ Phase 5 viewer-first hero, separate Main Core block и population-calibrated gra
 V2 first slice is live: каждая текущая буквенная ось теперь возвращает `place`, `confidenceState`, `freshnessState` и `influenceDebuffPercent`, а overview показывает отдельный block `Буквы и места`.
 V2 second slice is live: `Antiteam support`, `Proof gap`, season archive coverage line и `Activity mix` добавлены в read-model без новых collectors.
 V2 third slice is live: separate relative components, persisted population snapshots and weekly rollups are implemented in the canonical profile seams.
-V2 fourth slice is live: verified social map, gated voice+game overlap, prime-time confidence, season consistency, comeback metrics and farm profile proxy are read-side blocks.
-Future work: richer Main Core enrichment поверх voice/social layers.
+V2 fourth slice is live: verified social map, persisted voice+game overlap, prime-time confidence, season consistency, comeback metrics and farm profile proxy/session-history upgrade are read-side blocks.
+Future work: richer Main Core enrichment поверх voice/social layers; voice contact mirror is live as inferred overlap.
 
 ### Owner
 1. Derived owner: [src/profile/synergy.js](src/profile/synergy.js)
@@ -1014,13 +1024,13 @@ Persisted population snapshot formula:
 2. Snapshot dedupes by `dayKey` and caps retention to `120`.
 3. Axes: `jjs_time_30d`, `jjs_session_count`, `discord_messages_30d`, `discord_sessions_30d`, `voice_hours_30d`, `voice_sessions_30d`, `active_voice_share_30d`, `kills_per_covered_day`, `antiteam_support_points`.
 4. Empty normalized profiles do not contribute zeroes unless there is a real source signal.
-5. `client-ready-core` has optional `runProfilePopulationSnapshot` job descriptor; welcome-bot runtime wiring remains a narrow follow-up.
+5. `client-ready-core` has optional `runProfilePopulationSnapshot` job descriptor; `welcome-bot.js` wires it through `runScheduledProfilePopulationSnapshot()` and syncs shared profiles before capture.
 
 Weekly rollup formula:
 1. `buildSeasonArchiveWeeklyRollups()` groups daily archive snapshots by ISO week.
 2. Coverage is fixed at `expectedDays = 7`, `coveredDays = unique dayKey count`.
-3. JJS uses summed `dayJjsMinutes`; messages/sessions/voice use the latest rolling 7d snapshot in that week.
-4. Kills and antiteam use monotonic week delta from first to latest snapshot.
+3. JJS uses summed `dayJjsMinutes`; sessions/voice/kills/antiteam use summed `dayDeltas` when available.
+4. Without day deltas, messages/sessions/voice use the latest rolling 7d snapshot and kills/antiteam use monotonic week delta from first to latest snapshot.
 5. Composite includes JJS, Discord messages/sessions, voice, kills, antiteam and coverage, then maps to the shared grade ladder.
 
 ### Закреплённый Контракт Следующих Ревизий
@@ -1058,7 +1068,7 @@ Weekly rollup formula:
   Если approved proof stale, kill-layer должен получать явный debuff вплоть до `-90%` влияния на composite.
 
 5. `Strongest week` live на persisted weekly rollups и считает composite по Discord, JJS, voice, kills, antiteam и coverage.
-  `Лучший день сезона` по full composite остаётся следующей ревизией.
+  `Лучший день сезона` live в season consistency: it uses exact `dayDeltas` where cumulative counters exist and labels rolling fallback honestly.
 
 6. Growth by time-of-day и richer stability taxonomy сейчас закреплённо отменены.
   Причина: в текущем repo нет достаточного trustworthy telemetry layer, чтобы честно это обещать.

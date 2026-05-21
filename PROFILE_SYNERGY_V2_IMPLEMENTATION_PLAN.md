@@ -881,7 +881,7 @@ Tests:
 
 ### Phase G. Persisted Population Snapshots
 
-Status: storage + capture helper + read-side preference live; welcome-bot runtime wiring remains a separate narrow step.
+Status: storage + capture helper + read-side preference + welcome-bot runtime wiring live.
 
 Deliverables:
 1. new analytics state normalization;
@@ -901,11 +901,12 @@ Implemented:
 2. retained baseline is capped and deduped by `dayKey`;
 3. axes include JJS time, JJS sessions, Discord messages/sessions, voice hours/sessions, active voice share, kills/day and antiteam points;
 4. relative components prefer `populationSnapshot` and fall back to runtime `populationProfiles`;
-5. `client-ready-core` has an optional `runProfilePopulationSnapshot` periodic job descriptor.
+5. `client-ready-core` has an optional `runProfilePopulationSnapshot` periodic job descriptor;
+6. `welcome-bot.js` wires `runScheduledProfilePopulationSnapshot()` through the periodic job owner and syncs shared profiles before capture.
 
 ### Phase H. Weekly Rollups
 
-Status: storage builder + normalization + read-side strongest week block live.
+Status: storage builder + normalization + day-delta enrichment + read-side strongest week block live.
 
 Deliverables:
 1. weekly rollup builder from daily archive;
@@ -924,11 +925,12 @@ Implemented:
 1. `buildSeasonArchiveWeeklyRollups()` groups daily archive snapshots by ISO week;
 2. `appendSeasonArchiveSnapshot()` rebuilds weekly rollups after daily append;
 3. shared-profile normalization preserves `seasonArchive.weeklyRollups`;
-4. profile read-side shows `Strongest week` from persisted weekly rollups.
+4. profile read-side shows `Strongest week` from persisted weekly rollups;
+5. daily archive snapshots are enriched with `dayDeltas`, so sessions, voice, kills and antiteam use exact cumulative deltas when the previous snapshot exists.
 
 ### Phase I. Season V2, Comeback, Consistency
 
-Status: season consistency and comeback read-side slices live.
+Status: season consistency, exact day-delta preference and comeback read-side slices live.
 
 Deliverables:
 1. best snapshot day by full composite;
@@ -938,10 +940,10 @@ Deliverables:
 5. copy gates.
 
 Implemented:
-1. `src/profile/synergy.js` builds `Season consistency` from daily archive rolling snapshots;
+1. `src/profile/synergy.js` builds `Season consistency` from daily archive snapshots;
 2. composite includes chat, sessions, JJS, voice, activity, social and antiteam support;
 3. block shows average day, spread, best snapshot day, weakest snapshot day and coverage trust;
-4. copy explicitly says `rolling snapshots, not exact single-day deltas`;
+4. when `dayDeltas` exist, the block labels exact-day composite; otherwise it falls back to rolling snapshots and says so;
 5. `src/profile/synergy.js` builds `Comeback metrics` from persisted weekly rollups;
 6. comeback states include recovered after pause, returned after drop, active streak, slowing down and cooling off;
 7. block refuses comeback claims with fewer than 3 comparable weekly windows.
@@ -954,20 +956,22 @@ Tests:
 
 ### Phase J. Verified Circle And Social Map
 
-Status: first read-side slice live.
+Status: verified circle, social map and persisted graph/mutual friend slice live.
 
 Deliverables:
 1. verified circle block;
 2. social map edge scoring;
 3. strong/medium/inferred blocks;
 4. no exact party claims;
-5. future mutual friend source placeholder.
+5. persisted mutual friend support.
 
 Implemented:
 1. `src/profile/synergy.js` builds `Проверенный круг` from verified Roblox friend overlap plus JJS/co-play signal;
 2. `src/profile/synergy.js` builds `Социальная карта` with strong, medium and inferred ties;
 3. `src/profile/model.js` appends both blocks to the social section without moving the legacy Roblox/social blocks;
-4. trust copy explicitly says `no exact party claim`.
+4. trust copy explicitly says `no exact party claim`;
+5. `src/integrations/shared-profile.js` persists social graph ties with Roblox-friend, co-play, voice-contact and mutual-friend labels;
+6. social map read-side merges persisted graph ties with live co-play suggestions.
 
 Tests:
 1. verified friend + frequent co-play = strong;
@@ -999,22 +1003,24 @@ Tests:
 
 ### Phase L. Activity Mix, Farm Profile, Prime Confidence
 
-Status: Discord vs Roblox / activity mix, farm profile proxy and prime-time confidence blocks live.
+Status: Discord vs Roblox / activity mix, farm profile proxy/session-history upgrade and prime-time confidence blocks live.
 
 Deliverables:
 1. Discord vs Roblox balance block;
 2. activity mix block;
 3. prime time confidence;
-4. farm profile proxy now, stronger farm profile after session-duration telemetry exists;
-5. no strong farm claim without session histograms.
+4. farm profile proxy fallback;
+5. stronger farm profile when session-duration telemetry exists;
+6. no strong farm claim without session histograms when telemetry is absent.
 
 Implemented:
 1. `src/profile/synergy.js` derives `Activity mix` from messages 30d, JJS minutes 30d and voice 30d;
 2. block labels `больше JJS`, `больше Discord chat`, `больше Discord voice`, `ровно Discord + JJS` or `смешанный режим`;
 3. block exposes source confidence as `reliable/partial/heuristic`;
 4. `src/profile/synergy.js` derives `Prime time confidence` by comparing best 4-hour MSK windows week to week;
-5. `src/profile/synergy.js` derives `Farm profile` from daily buckets, hourly buckets and summary Roblox session proxy;
-6. farm copy explicitly says `no strong farm claim without session histograms`.
+5. `src/runtime/roblox-jobs.js` persists bounded `playtime.sessionHistory[]` on session close;
+6. `src/profile/synergy.js` derives `Farm profile` from session history when present, with daily/hourly proxy fallback;
+7. farm copy explicitly says `no strong farm claim without session histograms` only when session history is absent.
 
 Tests:
 1. JJS-heavy;
@@ -1078,9 +1084,9 @@ V2 is considered usable when:
 6. Discord vs Roblox balance appears as a separate metric;
 7. verified circle is separate from generic overlap;
 8. social map separates strong/medium/inferred ties;
-9. voice+game overlap does not appear until voice contact source exists;
+9. voice+game overlap uses voice contact source when present and reports the source gap when absent;
 10. weekly rollups and persisted population snapshots are stored, capped, idempotent and tested;
-11. best day/strongest week use full composite and do not pretend rolling snapshots are exact single-day truth;
+11. best day/strongest week use full composite, prefer exact day deltas where cumulative counters exist, and label rolling fallback honestly;
 12. all new work has focused tests and full `npm test` before calling it safe.
 
 ---
@@ -1116,5 +1122,5 @@ V2 is considered usable when:
 - [x] Phase K: gated voice/game overlap read-side block.
 - [x] Phase L: activity mix first slice.
 - [x] Phase L: prime-time confidence.
-- [x] Phase L: farm profile proxy.
+- [x] Phase L: farm profile proxy/session-history upgrade.
 - [x] Phase M: burn-in and docs sync.

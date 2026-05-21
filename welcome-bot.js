@@ -1534,39 +1534,6 @@ function setSubmitCooldown(userId) {
   db.cooldowns[userId] = Date.now();
 }
 
-function buildMyCardEmbed(userId) {
-  const profile = db.profiles?.[userId] ? getProfile(userId) : null;
-  const pending = getPendingSubmissionForUser(userId);
-  const displayName = getProfileDisplayName(userId);
-
-  if (!profile && !pending) {
-    return new EmbedBuilder()
-      .setTitle("Моя карточка")
-      .setDescription("У тебя ещё нет профиля. Нажми **Получить роль** чтобы начать.");
-  }
-
-  const lines = [`**Игрок:** ${displayName}`];
-  if (profile?.mainCharacterLabels?.length) {
-    lines.push(`**Мейны:** ${profile.mainCharacterLabels.join(", ")}`);
-  }
-  if (Number.isFinite(profile?.approvedKills)) {
-    lines.push(`**Kills:** ${formatNumber(profile.approvedKills)}`);
-    lines.push(`**Тир:** ${profile.killTier} (${formatTierLabel(profile.killTier)})`);
-  }
-  if (profile?.lastSubmissionStatus) {
-    lines.push(`**Статус последней заявки:** ${profile.lastSubmissionStatus}`);
-  }
-  if (profile?.nonGgsAccessGrantedAt) {
-    lines.push(`**Отдельный доступ без JJS:** ${formatDateTime(profile.nonGgsAccessGrantedAt)}`);
-  }
-  if (pending) {
-    lines.push("");
-    lines.push(`⏳ **Pending-заявка:** kills ${pending.kills}, ${formatTierLabel(pending.derivedTier)} — ожидает проверки.`);
-  }
-
-  return new EmbedBuilder().setTitle("Моя карточка").setDescription(lines.join("\n"));
-}
-
 function getApprovedTierlistEntries(options = {}) {
   const liveMainsByUserId = options?.liveMainsByUserId;
   const allowedUserIds = options?.allowedUserIds instanceof Set ? options.allowedUserIds : null;
@@ -4916,6 +4883,36 @@ function getRoleGrantMessageUrl(record) {
   return `https://discord.com/channels/${GUILD_ID}/${record.channelId}/${record.messageId}`;
 }
 
+function buildDiscordPanelUrl(channelId = "", messageId = "") {
+  const normalizedChannelId = String(channelId || "").trim();
+  const normalizedMessageId = String(messageId || "").trim();
+  if (!GUILD_ID || !normalizedChannelId) return "";
+  return normalizedMessageId
+    ? `https://discord.com/channels/${GUILD_ID}/${normalizedChannelId}/${normalizedMessageId}`
+    : `https://discord.com/channels/${GUILD_ID}/${normalizedChannelId}`;
+}
+
+function getProfileTierlistStatsUrl() {
+  const snapshots = [
+    getResolvedLegacyTierlistSummarySnapshot(),
+    getResolvedLegacyTierlistDashboardSnapshot(),
+    getResolvedTextTierlistBoardSnapshot(),
+  ];
+
+  for (const snapshot of snapshots) {
+    const messageId = String(
+      snapshot?.messageId
+      || snapshot?.messageIdSummary
+      || snapshot?.messageIdPages
+      || ""
+    ).trim();
+    const url = buildDiscordPanelUrl(snapshot?.channelId, messageId);
+    if (url) return url;
+  }
+
+  return buildDiscordPanelUrl(getResolvedChannelId("tierlistText") || appConfig.channels.tierlistChannelId, "");
+}
+
 function getSelectedRoleGrantRecord(userId) {
   const records = listRoleGrantRecords({ activeOnly: false });
   if (!records.length) return null;
@@ -5593,6 +5590,7 @@ function getProfileOperator() {
   profileOperator = createProfileOperator({
     commandName: "профиль",
     guildId: GUILD_ID,
+    hiddenProfileRoleIds: ["1146511958305144883"],
 
     hasStaffBypass: (member) => isModerator(member),
     getRequesterProfile: (userId) => db.profiles?.[userId] ? getProfile(userId) : null,
@@ -5617,6 +5615,8 @@ function getProfileOperator() {
       .find((entry) => entry.userId === String(userId || "").trim()) || null,
     getEloProfile: (userId) => getDormantEloProfileSnapshot(db, userId),
     getTierlistProfile: (userId) => getDormantTierlistProfileSnapshot(db, userId),
+    getTierlistStatsUrl: () => getProfileTierlistStatsUrl(),
+    getCharacterStatsContext: () => liveCharacterStatsContextCache.value || null,
     getComboGuideState: () => db.comboGuide,
     getCharacterCatalog: () => getCharacterCatalog(),
     buildProfileRobloxBindModal: ({ initialValue = "" } = {}) => buildRobloxUsernameModal("profile_bind_roblox_modal", initialValue),
@@ -9791,53 +9791,6 @@ async function createManualApprovedRecord(client, targetUser, screenshotAttachme
     throw error;
   }
   return submission;
-}
-
-function buildProfilePayload(userId) {
-  const profile = getProfile(userId);
-  const pending = getPendingSubmissionForUser(userId);
-  const latest = getLatestSubmissionForUser(userId);
-  const tierlistEntries = getApprovedTierlistEntries();
-  const rank = tierlistEntries.findIndex((entry) => entry.userId === userId);
-
-  const lines = [];
-  lines.push(`Имя: **${getProfileDisplayName(userId, profile)}**`);
-  lines.push(`Мейны: **${profile.mainCharacterLabels?.length ? profile.mainCharacterLabels.join(", ") : "не выбраны"}**`);
-
-  if (profile.approvedKills !== null && profile.killTier !== null) {
-    lines.push(`Статус: **approved**`);
-    lines.push(`Kills: **${profile.approvedKills}**`);
-    lines.push(`Tier: **${profile.killTier}** (${formatTierLabel(profile.killTier)})`);
-    if (rank >= 0) lines.push(`Позиция в тир-листе: **#${rank + 1} из ${tierlistEntries.length}**`);
-    lines.push(`Последняя проверка: **${formatDateTime(profile.lastReviewedAt)}**`);
-  } else if (pending) {
-    lines.push(`Статус: **pending**`);
-    lines.push(`Kills в заявке: **${pending.kills}**`);
-    lines.push(`Tier по заявке: **${pending.derivedTier}** (${formatTierLabel(pending.derivedTier)})`);
-    lines.push(`Создано: **${formatDateTime(pending.createdAt)}**`);
-  } else if (latest?.status === "rejected") {
-    lines.push(`Статус: **rejected**`);
-    lines.push(`Последняя причина: **${latest.rejectReason || "не указана"}**`);
-    lines.push(`Проверено: **${formatDateTime(latest.reviewedAt)}**`);
-  } else {
-    lines.push("Статус: **ещё не подтверждён**");
-  }
-
-  if (profile.accessGrantedAt) {
-    lines.push(`Стартовая роль выдана: **${formatDateTime(profile.accessGrantedAt)}**`);
-  }
-  if (profile.nonGgsAccessGrantedAt) {
-    lines.push(`Отдельная роль без JJS выдана: **${formatDateTime(profile.nonGgsAccessGrantedAt)}**`);
-  }
-
-  return {
-    embeds: [
-      new EmbedBuilder()
-        .setTitle("Профиль участника")
-        .setDescription(lines.join("\n")),
-    ],
-    flags: MessageFlags.Ephemeral,
-  };
 }
 
 function getRolePanelDraftErrorText(errors) {

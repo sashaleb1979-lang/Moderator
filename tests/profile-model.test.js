@@ -99,7 +99,11 @@ test("profile read-model composes derived sections, links, and verification fact
     userId: "user-1",
     targetDisplayName: "Sasha",
     isSelf: false,
-    roleMentions: ["<@&role-1>", "<@&role-2>"],
+    roleMentions: ["<@&role-1>", "<@&1146511958305144883>", "<@&role-2>"],
+    tierlistStatsUrl: "https://discord.com/channels/guild-1/tierlist/summary",
+    characterStats: [
+      { id: "gojo", main: "Gojo", roleId: "role-gojo" },
+    ],
     profile: {
       approvedKills: 120,
       killTier: 4,
@@ -175,7 +179,7 @@ test("profile read-model composes derived sections, links, and verification fact
           hasVerifiedAccount: true,
           currentUsername: "GojoMain",
           currentDisplayName: "Gojo The Strongest",
-          userId: "rbx-main",
+          userId: "123",
           previousUsername: "OldGojo",
           renameCount: 2,
           profileUrl: "https://www.roblox.com/users/123/profile",
@@ -352,33 +356,58 @@ test("profile read-model composes derived sections, links, and verification fact
   assert.equal(readModel.isSelf, false);
   assert.equal(readModel.heroTitle, "Кто ты сейчас");
   assert.match(readModel.heroLines.join("\n"), /Текст-тирлист: Форма B\+ .* Чат B .* Килы A .* Стабильность C- .* Развитие C- .* Соц B-/);
-  assert.match(readModel.heroLines.join("\n"), /Сейчас это живой core-игрок .* Gojo-main .* рост ещё только собирается .* держит заметный игровой круг/);
-  assert.match(readModel.heroLines.join("\n"), /Опора профиля: #2 по kills .* tier 4 .* ELO 145 \/ tier 2 .* Roblox GojoMain .* активность active/);
+  assert.match(readModel.heroLines.join("\n"), /🎭 Main: Gojo .* Roblox GojoMain/);
+  assert.match(readModel.heroLines.join("\n"), /🏆 120 kills .* #2\/2 по kills .* активность active/);
+  assert.match(readModel.heroLines.join("\n"), /🧬 Ур\. \d+ .* XP до/);
+  assert.match(readModel.heroLines.join("\n"), /📚 XP: буквы .* недели .* всего/);
+  assert.ok(readModel.heroSummary);
+  assert.match(readModel.heroSummary.lines.join("\n"), /🏷️ Буквы: .*Форма B\+.*Килы A/);
+  assert.doesNotMatch(readModel.heroSummary.lines.join("\n"), /🧪 Данные:/);
+  assert.ok(Array.isArray(readModel.trustBadges));
+  assert.ok(readModel.trustBadges.some((badge) => badge.key === "roblox" && badge.text === "привязан"));
+  assert.equal(readModel.surfaceState, "partial");
+  assert.ok(readModel.componentBudget.maxSectionTextDisplays > 0);
+  assert.ok(Array.isArray(readModel.sectionGroups.overview));
+  assert.ok(readModel.sectionGroups.overview.some((group) => group.title === "⚡ Главное"));
+  assert.ok(readModel.profileLevelState.totalXp > 0);
   assert.equal(readModel.primaryAvatarUrl, "https://cdn.discordapp.com/avatars/user-1/profile.png");
+  assert.deepEqual(readModel.identityMediaItems.map((entry) => entry.url), [
+    "https://cdn.discordapp.com/avatars/user-1/profile.png",
+    "https://tr.rbxcdn.com/gojo-avatar.png",
+  ]);
   assert.deepEqual(readModel.mediaGalleryItems.map((entry) => entry.url), [
     "https://tr.rbxcdn.com/gojo-avatar.png",
     "https://cdn.discordapp.com/oauth-avatar.png",
   ]);
+  assert.deepEqual(readModel.mandatoryLinks.map((entry) => entry.label), [
+    "Roblox профиль",
+    "JJS Wiki: персонажи",
+  ]);
   assert.match(readModel.sections.overview[0].lines.join("\n"), /Игрок: <@user-1>/);
   assert.match(readModel.sections.overview[0].lines.join("\n"), /Роли: <@&role-1>, <@&role-2>/);
+  assert.doesNotMatch(readModel.sections.overview[0].lines.join("\n"), /1146511958305144883/);
   assert.match(readModel.sections.overview[0].lines.join("\n"), /Roblox: GojoMain/);
   assert.match(readModel.sections.overview[0].lines.join("\n"), /Подтверждённые kills: 120/);
   assert.match(readModel.sections.overview[0].lines.join("\n"), /ELO: 145 \/ tier 2/);
-  assert.equal(readModel.sections.overview[1].title, "Main Core");
-  assert.match(readModel.sections.overview[1].lines.join("\n"), /Ядро пиков: Gojo-main/);
-  assert.match(readModel.sections.overview[1].lines.join("\n"), /Серверный контур: форма B\+ .* #2 по kills .* ELO 145 \/ tier 2/);
-  assert.match(readModel.sections.overview[1].lines.join("\n"), /Игровая связка: чаще всего с <@peer-1> .* Roblox-друг/);
-  assert.match(readModel.sections.overview[1].lines.join("\n"), /Гайд-контур: гайды 1\/1 по мейнам .* wiki 1\/1 по мейнам .* общие техи доступны/);
-  assert.equal(readModel.sections.overview[2].title, "Буквы и места");
-  assert.match(readModel.sections.overview[2].lines.join("\n"), /Форма B\+ \(baseline 2\/5\).* Чат B \(baseline 2\/5\).* Килы A \(место N\/A\)/);
-  assert.match(readModel.sections.overview[2].lines.join("\n"), /Надёжность букв: reliable 0\/6 .* partial 6 .* max debuff 90%/);
-  assert.match(readModel.sections.overview[3].lines.join("\n"), /JJS доступ: открыт с/);
-  assert.match(readModel.sections.overview[3].lines.join("\n"), /Верификация: verified/);
-  assert.match(readModel.sections.overview[3].lines.join("\n"), /Roblox-связка: подтверждена/);
-  assert.equal(readModel.sections.overview[4].title, "War Readiness");
-  assert.match(readModel.sections.overview[4].lines.join("\n"), /Готовность к вару: высокая/);
-  assert.match(readModel.sections.overview[4].lines.join("\n"), /Roblox 7д: 3 ч .* Discord last seen: ~6 д .* proof freshness: ~36 ч назад/);
-  assert.match(readModel.sections.overview[4].lines.join("\n"), /Prime time: 19:00-23:00 МСК/);
+  assert.equal(readModel.sections.overview[1].title, "🧬 Уровень профиля");
+  assert.match(readModel.sections.overview[1].lines.join("\n"), /Сильнее всего даёт XP:/);
+  assert.match(readModel.sections.overview[1].lines.join("\n"), /Буквы: .*Форма B\+.*Чат B.*Килы A/);
+  assert.match(readModel.sections.overview[1].lines.join("\n"), /▰+▱+/);
+  assert.match(readModel.sections.overview[1].lines.join("\n"), /Вес букв .* текущий расчёт .* макс\. вес -/);
+  assert.equal(readModel.sections.overview[2].title, "🎭 Роли и места");
+  assert.match(readModel.sections.overview[2].lines.join("\n"), /Gojo: <@&role-gojo> .* место #1\/1 по мейнам/);
+  assert.match(readModel.sections.overview[2].lines.join("\n"), /Активность: active .* место/);
+  assert.match(readModel.sections.overview[2].lines.join("\n"), /Kill-role: tier 4 .* место #2\/2 по kills/);
+  assert.equal(readModel.sections.overview[3].title, "Буквы и места");
+  assert.match(readModel.sections.overview[3].lines.join("\n"), /Форма B\+ .* текущий расчёт .* Чат B .* Килы A/);
+  assert.match(readModel.sections.overview[3].lines.join("\n"), /Буквы: текущий расчёт .* самый сильный штраф веса -90%/);
+  assert.equal(readModel.sections.overview[4].title, "Main Core");
+  assert.match(readModel.sections.overview[4].lines.join("\n"), /Ядро пиков: Gojo-main/);
+  assert.match(readModel.sections.overview[4].lines.join("\n"), /Серверный контур: форма B\+ .* #2 по kills .* ELO 145 \/ tier 2/);
+  assert.match(readModel.sections.overview[4].lines.join("\n"), /Игровая связка: чаще всего с <@peer-1> .* Roblox-друг/);
+  assert.match(readModel.sections.overview[4].lines.join("\n"), /Гайд-контур: гайды 1\/1 по мейнам .* wiki 1\/1 по мейнам .* общие техи доступны/);
+  assert.equal(readModel.sections.overview[5].title, "📚 Мейны");
+  assert.match(readModel.sections.overview[5].lines.join("\n"), /Основные персонажи: Gojo/);
   assert.match(readModel.sections.progress[0].lines.join("\n"), /Место по kills: #2/);
   assert.match(readModel.sections.progress[1].lines.join("\n"), /Прирост: \+20 kills/);
   assert.match(readModel.sections.progress[2].lines.join("\n"), /1\. 100 -> 120/);
@@ -393,31 +422,30 @@ test("profile read-model composes derived sections, links, and verification fact
   assert.match(readModel.sections.progress[5].lines.join("\n"), /Proof gap: last proof .* approved 120 kills/);
   assert.match(readModel.sections.progress[5].lines.join("\n"), /JJS после proof: 80,3 ч .* proof сильно отстал от игры/);
   assert.match(readModel.sections.progress[5].lines.join("\n"), /Trust: outdated .* kill-backed debuff 90%/);
-  assert.equal(readModel.sections.activity[1].title, "Voice-срез");
-  assert.match(readModel.sections.activity[1].lines.join("\n"), /Voice 7д\/30д: 1,5 ч \/ 2,5 ч .* сессии 7д\/30д: 1 \/ 2 .* lifetime сессии: 2 .* неполных 30д: 1/);
-  assert.match(readModel.sections.activity[1].lines.join("\n"), /Сейчас в voice: <#voice-lounge> .* 16\.05\.2026/);
-  assert.match(readModel.sections.activity[1].lines.join("\n"), /Топ voice-каналы: <#voice-main> \(2\), <#voice-lounge> \(1\), <#voice-side> \(1\)/);
-  assert.equal(readModel.sections.activity[2].title, "Prime time МСК");
-  assert.match(readModel.sections.activity[2].lines.join("\n"), /Чаще всего играет с 19:00 до 23:00 МСК .* окно 305 мин/);
-  assert.match(readModel.sections.activity[2].lines.join("\n"), /Пиковый час: 20:00 .* активных часов: 5 .* tracked минут в bucket-слое: 315/);
-  assert.equal(readModel.sections.activity[3].title, "Лучшие периоды");
-  assert.match(readModel.sections.activity[3].lines.join("\n"), /Архив сезона: 12 дневных срезов .* 01\.05\.2026-12\.05\.2026/);
-  assert.match(readModel.sections.activity[3].lines.join("\n"), /Пик 7д: 06\.05\.2026-12\.05\.2026 .* 15 ч JJS .* activity 61 .* voice 1,5 ч/);
-  assert.match(readModel.sections.activity[3].lines.join("\n"), /Пик 30д: данные сезона ещё копятся \(12\/30 дневных срезов\)\./);
-  assert.equal(readModel.sections.activity[4].title, "История сезона");
-  assert.match(readModel.sections.activity[4].lines.join("\n"), /Траектория: 3.?200 -> 3.?750 kills \(\+550\) .* activity 50 -> 61 \(\+11\) .* 1 -> 3 частых напарн\./);
-  assert.match(readModel.sections.activity[4].lines.join("\n"), /Нарратив: сезон разогнался: kills, activity и игровой круг выросли вместе\./);
-  assert.match(readModel.sections.activity[4].lines.join("\n"), /Фокус сезона: Gojo удержался главным опорным персонажем\./);
-  assert.match(readModel.sections.activity[5].lines.join("\n"), /Сообщения 90д: 400/);
-  assert.match(readModel.sections.activity[0].lines.join("\n"), /Voice raw\/effective 30д: 2,5 ч \/ 2,1 ч/);
-  assert.match(readModel.sections.activity[0].lines.join("\n"), /Voice signal 30д: 1,7 ч .* effective дни: 1,6/);
-  assert.match(readModel.sections.activity[0].lines.join("\n"), /Voice engagement: 81\.0% .* credit x0,91 .* вклад 6,1 \+ 4,4/);
-  assert.match(readModel.sections.activity[1].lines.join("\n"), /В score: effective 30д 2,1 ч .* active signal 1,7 ч .* engagement 81,0% .* x0,91/);
-  assert.match(readModel.sections.activity[1].lines.join("\n"), /Voice credit: 6,1 \+ 4,4 очков/);
+  assert.equal(readModel.sections.activity[0].title, "📊 Итог активности");
+  assert.match(readModel.sections.activity[0].lines.join("\n"), /Roblox\/JJS: трекается/);
+  assert.match(readModel.sections.activity[0].lines.join("\n"), /Роль активности: active/);
+  assert.match(readModel.sections.activity[0].lines.join("\n"), /JJS: 3 ч за 7д .* 7 ч за 30д/);
+  assert.match(readModel.sections.activity[0].lines.join("\n"), /Чат: 35 msg за 7д .* 210 за 30д/);
+  const voiceBlock = readModel.sections.activity.find((section) => section.title === "Voice-срез");
+  assert.ok(voiceBlock);
+  assert.match(voiceBlock.lines.join("\n"), /Voice 7д\/30д: 1,5 ч \/ 2,5 ч .* сессии 7д\/30д: 1 \/ 2 .* lifetime сессии: 2 .* неполных 30д: 1/);
+  assert.match(voiceBlock.lines.join("\n"), /Сейчас в voice: <#voice-lounge> .* 16\.05\.2026/);
+  assert.match(voiceBlock.lines.join("\n"), /Топ voice-каналы: <#voice-main> \(2\), <#voice-lounge> \(1\), <#voice-side> \(1\)/);
+  const primeBlock = readModel.sections.activity.find((section) => section.title === "Prime time МСК");
+  assert.ok(primeBlock);
+  assert.match(primeBlock.lines.join("\n"), /Чаще всего играет с 19:00 до 23:00 МСК .* окно 5 ч/);
+  assert.match(primeBlock.lines.join("\n"), /Пиковый час: 20:00 .* активных часов: 5 .* tracked 5,2 ч в bucket-слое/);
+  const bestPeriodsBlock = readModel.sections.activity.find((section) => section.title === "Лучшие периоды");
+  assert.ok(bestPeriodsBlock);
+  assert.match(bestPeriodsBlock.lines.join("\n"), /Архив сезона: 12 дневных срезов .* 01\.05\.2026-12\.05\.2026/);
+  assert.match(bestPeriodsBlock.lines.join("\n"), /Пик 7д: 06\.05\.2026-12\.05\.2026 .* 15 ч JJS .* activity 61 .* voice 1,5 ч/);
+  assert.match(bestPeriodsBlock.lines.join("\n"), /Пик 30д: данные сезона ещё копятся \(12\/30 дневных срезов\)\./);
+  assert.ok(!readModel.sections.activity.some((section) => /Детали activity/.test(section.title)));
   const activityMixBlock = readModel.sections.activity.find((section) => section.title === "Activity mix");
   assert.ok(activityMixBlock);
   assert.match(activityMixBlock.lines.join("\n"), /Discord vs Roblox: больше Discord chat/);
-  assert.match(activityMixBlock.lines.join("\n"), /Mix: chat 60% .* JJS 30% .* voice 11% .* confidence reliable/);
+  assert.match(activityMixBlock.lines.join("\n"), /Шкала: chat .* 60% .* JJS .* 30% .* voice .* 11% .* доверие reliable/);
   const farmProfileBlock = readModel.sections.activity.find((section) => section.title === "Farm profile");
   assert.ok(farmProfileBlock);
   assert.match(farmProfileBlock.lines.join("\n"), /Farm profile: .* confidence heuristic/);
@@ -430,28 +458,28 @@ test("profile read-model composes derived sections, links, and verification fact
   assert.ok(seasonConsistencyBlock);
   assert.match(seasonConsistencyBlock.lines.join("\n"), /Season consistency: .* average day .* snapshots 12/);
   assert.match(seasonConsistencyBlock.lines.join("\n"), /rolling snapshots, not exact single-day deltas/);
-  assert.match(readModel.sections.social[0].lines.join("\n"), /Связка Roblox: подтверждена/);
+  assert.match(readModel.sections.social[0].lines.join("\n"), /Roblox-связка: подтверждена/);
   assert.match(readModel.sections.social[0].lines.join("\n"), /Аккаунт: GojoMain/);
   assert.match(readModel.sections.social[0].lines.join("\n"), /Display в Roblox: Gojo The Strongest/);
   assert.match(readModel.sections.social[0].lines.join("\n"), /Смен username Roblox: 2/);
-  assert.match(readModel.sections.social[0].lines.join("\n"), /JJS минут 7д: 180/);
+  assert.match(readModel.sections.social[0].lines.join("\n"), /JJS 7д: 3 ч/);
   assert.match(readModel.sections.social[0].lines.join("\n"), /JJS сессий всего: 9/);
   assert.equal(readModel.sections.social[1].title, "Roblox-друзья на сервере");
   assert.match(readModel.sections.social[1].lines.join("\n"), /Roblox-друзей на сервере: 3 .* видимых профилей: 2 .* verified: 2 .* активны 7д: 2 .* играли в JJS 7д: 1/);
   assert.equal(readModel.sections.social[2].title, "Кто из друзей уже здесь");
-  assert.match(readModel.sections.social[2].lines.join("\n"), /1\. <@friend-1> .* Friend One .* Roblox FriendOneRb .* verified Roblox .* JJS 7д 160 мин .* activity active/);
+  assert.match(readModel.sections.social[2].lines.join("\n"), /1\. <@friend-1> .* Friend One .* Roblox FriendOneRb .* verified Roblox .* JJS 7д 2,6 ч .* activity active/);
   assert.match(readModel.sections.social[2].lines.join("\n"), /2\. <@friend-2> .* Friend Two .* Roblox FriendTwoRb .* verified Roblox .* 4 msg 7д/);
   assert.equal(readModel.sections.social[3].title, "Социальная эволюция");
   assert.match(readModel.sections.social[3].lines.join("\n"), /Соц-архив: 12 дневных срезов .* 01\.05\.2026-12\.05\.2026/);
   assert.match(readModel.sections.social[3].lines.join("\n"), /Игровой круг: 1 -> 3 частых напарн\. \(\+2\) .* Roblox-друзей: 2 -> 2 \(0\) .* скрытый круг: 0 -> 3 \(\+3\)/);
   assert.match(readModel.sections.social[3].lines.join("\n"), /Смена ядра: удержались 1 .* новых 2 .* выпало 0 .* top peer archive/);
-  assert.match(readModel.sections.social[4].lines.join("\n"), /<@peer-1> • 210 мин вместе • 5 сесс\. • Roblox-друг/);
-  assert.match(readModel.sections.social[4].lines.join("\n"), /<@peer-2> • 140 мин вместе • 3 сесс\. • частый non-friend/);
+  assert.match(readModel.sections.social[4].lines.join("\n"), /<@peer-1> • 3,5 ч вместе • 5 сесс\. • Roblox-друг/);
+  assert.match(readModel.sections.social[4].lines.join("\n"), /<@peer-2> • 2,3 ч вместе • 3 сесс\. • частый non-friend/);
   assert.equal(readModel.sections.social[5].title, "Скрытый круг");
   assert.match(readModel.sections.social[5].lines.join("\n"), /явных frequent non-friend пересечений пока не видно, хотя Roblox-друзья на сервере уже есть \(3\)/);
   assert.match(readModel.sections.social[6].lines.join("\n"), /Гайды по мейнам: 1\/1/);
   assert.match(readModel.sections.social[6].lines.join("\n"), /JJS wiki по мейнам: 1\/1/);
-  assert.match(readModel.sections.social[6].lines.join("\n"), /1\. Gojo — гайд доступен по кнопке .* JJS wiki доступна по кнопке/);
+  assert.match(readModel.sections.social[6].lines.join("\n"), /1\. Gojo — гайд доступен по кнопке .* JJS wiki доступна по кнопке .* роль <@&role-gojo> .* место #1\/1 по мейнам/);
   assert.match(readModel.sections.social[6].lines.join("\n"), /Основной tierlist-пик: Gojo • входит в список мейнов/);
   assert.match(readModel.sections.social[6].lines.join("\n"), /Общие техи: доступны по кнопке\./);
   const verifiedCircleBlock = readModel.sections.social.find((section) => section.title === "Проверенный круг");
@@ -497,7 +525,7 @@ test("profile read-model appends comeback metrics from weekly rollups", () => {
   assert.match(comebackBlock.lines.join("\n"), /Windows: 2026-W20 D \(25\) -> 2026-W21 B- \(62\) -> 2026-W22 B\+ \(70\)/);
 });
 
-test("profile read-model places antiteam support as its own overview block", () => {
+test("profile read-model places antiteam support as its own progress block", () => {
   const readModel = buildProfileReadModel({
     now: "2026-05-16T12:00:00.000Z",
     guildId: "guild-1",
@@ -526,7 +554,7 @@ test("profile read-model places antiteam support as its own overview block", () 
     ],
   });
 
-  const supportBlock = readModel.sections.overview.find((section) => section.title === "Antiteam support");
+  const supportBlock = readModel.sections.progress.find((section) => section.title === "Antiteam support");
   assert.ok(supportBlock);
   assert.match(supportBlock.lines.join("\n"), /Support points: confirmed arrivals 3 .* responded 4 .* link grants 2/);
   assert.match(supportBlock.lines.join("\n"), /Место по antiteam support: #2\/5/);
@@ -601,9 +629,7 @@ test("profile read-model marks empty profiles without fabricating data sections"
   assert.match(readModel.sections.overview[0].lines.join("\n"), /Roblox: не привязан/i);
   assert.match(readModel.sections.overview[0].lines.join("\n"), /Подтверждённые kills: —/);
   assert.match(readModel.sections.overview[0].lines.join("\n"), /ELO: —/);
-  assert.match(readModel.sections.overview[1].lines.join("\n"), /JJS доступ: пока не выдан/i);
-  assert.match(readModel.sections.overview[1].lines.join("\n"), /Верификация: не начата/i);
-  assert.match(readModel.sections.overview[1].lines.join("\n"), /Roblox-связка: не подтверждена/i);
+  assert.ok(!readModel.sections.overview.some((section) => /Готовность|War Readiness/.test(section.title)));
   assert.equal(readModel.verificationLines, null);
   assert.match(readModel.emptyStateNote, /После онбординга профиль заполнится автоматически/i);
   assert.deepEqual(readModel.comboLinks, []);
@@ -643,7 +669,55 @@ test("profile read-model hides unverified Roblox identity details from the profi
   assert.equal(readModel.robloxProfileUrl, null);
 });
 
-test("profile read-model does not present repairable Roblox data as a linked account", () => {
+test("profile read-model uses domains.roblox as the canonical Roblox display state", () => {
+  const readModel = buildProfileReadModel({
+    now: "2026-05-16T12:00:00.000Z",
+    guildId: "guild-1",
+    userId: "user-1",
+    targetDisplayName: "Sasha",
+    isSelf: true,
+    profile: {
+      summary: {
+        preferredDisplayName: "Sasha",
+        roblox: {
+          hasVerifiedAccount: false,
+          verificationStatus: "unverified",
+          currentUsername: "WrongSummaryName",
+          avatarUrl: "https://tr.rbxcdn.com/wrong-summary.png",
+        },
+      },
+      domains: {
+        roblox: {
+          verificationStatus: "verified",
+          userId: "123",
+          username: "CanonicalRb",
+          displayName: "Canonical Display",
+          avatarUrl: "https://tr.rbxcdn.com/canonical.png",
+          profileUrl: "https://www.roblox.com/users/123/profile",
+          playtime: {
+            jjsMinutes7d: 160,
+            jjsMinutes30d: 600,
+            totalJjsMinutes: 900,
+          },
+        },
+      },
+    },
+  });
+
+  assert.equal(readModel.robloxDisplayState.isLinked, true);
+  assert.equal(readModel.robloxDisplayState.isTrackable, true);
+  assert.equal(readModel.selfActionState.hasVerifiedRoblox, true);
+  assert.equal(readModel.selfActionState.robloxLabel, "Обновить Roblox");
+  assert.match(readModel.sections.overview[0].lines.join("\n"), /Roblox: CanonicalRb/);
+  assert.doesNotMatch(readModel.sections.overview[0].lines.join("\n"), /WrongSummaryName/);
+  assert.equal(readModel.robloxProfileUrl, "https://www.roblox.com/users/123/profile");
+  assert.deepEqual(readModel.identityMediaItems.map((entry) => entry.url), [
+    "https://tr.rbxcdn.com/canonical.png",
+  ]);
+  assert.match(readModel.sections.activity[0].lines.join("\n"), /JJS: 2,6 ч за 7д .* 10 ч за 30д/);
+});
+
+test("profile read-model presents repairable Roblox as linked but not JJS-trackable", () => {
   const readModel = buildProfileReadModel({
     now: "2026-05-16T12:00:00.000Z",
     guildId: "guild-1",
@@ -669,12 +743,11 @@ test("profile read-model does not present repairable Roblox data as a linked acc
   });
 
   assert.doesNotMatch(readModel.heroLines.join("\n"), /DiscordLikeName/);
-  assert.match(readModel.heroLines.join("\n"), /Roblox требует перепривязки/);
-  assert.match(readModel.sections.overview[0].lines.join("\n"), /Roblox: не привязан/);
-  assert.match(readModel.sections.overview[1].lines.join("\n"), /нужна перепривязка/i);
-  assert.match(readModel.sections.social[0].lines.join("\n"), /требует перепривязки/i);
+  assert.match(readModel.heroLines.join("\n"), /Roblox привязан, трекер ждёт обновления/);
+  assert.match(readModel.sections.overview[0].lines.join("\n"), /Roblox: привязан, нужно обновить .* JJS-трекер ждёт обновления/);
+  assert.match(readModel.sections.social[0].lines.join("\n"), /Roblox привязан, JJS-активность не обновляется/i);
   assert.doesNotMatch(readModel.sections.social[0].lines.join("\n"), /DiscordLikeName|Профиль Roblox/);
-  assert.equal(readModel.selfActionState.hasVerifiedRoblox, false);
+  assert.equal(readModel.selfActionState.hasVerifiedRoblox, true);
   assert.equal(readModel.selfActionState.robloxLabel, "Перепривязать Roblox");
   assert.equal(readModel.primaryAvatarUrl, null);
   assert.equal(readModel.robloxProfileUrl, null);
@@ -733,6 +806,10 @@ test("profile read-model shows a soft self reminder after enough reliable JJS ho
         onboarding: { approvedKills: 120, killTier: 4 },
         roblox: {
           hasVerifiedAccount: true,
+          isTrackable: true,
+          trackingState: "trackable",
+          userId: "123",
+          currentUsername: "SashaRb",
           totalJjsMinutes: 900,
         },
       },
@@ -771,6 +848,10 @@ test("profile read-model keeps unapproved onboarding state null even when proof 
         onboarding: { approvedKills: null, killTier: null },
         roblox: {
           hasVerifiedAccount: true,
+          isTrackable: true,
+          trackingState: "trackable",
+          userId: "123",
+          currentUsername: "SashaRb",
           totalJjsMinutes: 900,
         },
       },
@@ -848,7 +929,7 @@ test("profile read-model prepends the self-progress block before generic progres
   });
 
   assert.equal(readModel.sections.progress[0].title, "Практический прогресс");
-  assert.equal(readModel.sections.progress[1].title, "Вклад");
+  assert.equal(readModel.sections.progress[1].title, "🏅 Вклад");
   assert.match(readModel.sections.progress[0].lines.join("\n"), /Сравнение окон: последний ап 60 kills\/ч .* прошлый 50 kills\/ч/);
   assert.match(readModel.sections.progress[0].lines.join("\n"), /Средний темп за отслеженный период: 53,3 kills\/ч JJS/);
   assert.match(readModel.sections.progress[0].lines.join("\n"), /До следующего tier: 2.?700 kills/);

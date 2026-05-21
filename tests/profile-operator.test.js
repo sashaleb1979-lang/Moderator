@@ -41,6 +41,7 @@ function createTestOperator(overrides = {}) {
   return createProfileOperator({
     commandName: "профиль",
     guildId: "guild-1",
+    hiddenProfileRoleIds: ["1146511958305144883"],
     hasStaffBypass: () => false,
     getRequesterProfile: () => ({ domains: { activity: { desiredActivityRoleKey: "active" } } }),
     getTargetProfile: () => ({
@@ -92,7 +93,7 @@ function createTestOperator(overrides = {}) {
     }),
     getTargetDisplayName: () => "Sasha",
     fetchAccessUser: async (_userId, seedUser) => seedUser || null,
-    fetchMember: async (userId) => makeMember({ roleIds: ["role-1", "role-2"], userId, username: "Sasha", displayName: "Sasha Display" }),
+    fetchMember: async (userId) => makeMember({ roleIds: ["role-1", "1146511958305144883", "role-2"], userId, username: "Sasha", displayName: "Sasha Display" }),
     fetchUser: async (userId) => ({
       id: userId,
       username: "Sasha",
@@ -143,6 +144,12 @@ function createTestOperator(overrides = {}) {
     }),
     getEloProfile: () => ({ currentElo: 145, currentTier: 2, lastSubmissionStatus: "approved" }),
     getTierlistProfile: () => ({ mainName: "Gojo", influenceMultiplier: 1.2 }),
+    getTierlistStatsUrl: () => "https://discord.com/channels/guild-1/tierlist/summary",
+    getCharacterStatsContext: () => ({
+      characterStats: [
+        { id: "gojo", main: "Gojo", roleId: "role-gojo" },
+      ],
+    }),
     getComboGuideState: () => ({
       generalTechsThreadId: "general-thread",
       characters: [{ id: "gojo", name: "Gojo", threadId: "thread-1" }],
@@ -195,10 +202,30 @@ test("profile operator builds private payload from injected runtime readers", as
   assert.equal(container.type, 17);
   assert.ok(container.components.some((component) => component.type === 10 && /# Профиль/.test(component.content)));
   assert.ok(container.components.some((component) => component.type === 1 && component.components.some((button) => button.custom_id === buildProfileNavCustomId("requester", "user-1", "progress"))));
-  assert.ok(container.components.some((component) => component.type === 10 && /### Вклад/.test(component.content)));
-  assert.ok(container.components.some((component) => component.type === 10 && /### История approved ростов/.test(component.content)));
-  assert.ok(container.components.some((component) => component.type === 1 && component.components.some((button) => button.label === "JJS Wiki: Gojo")));
+  assert.ok(container.components.some((component) => component.type === 10 && /### 🏅 Вклад/.test(component.content)));
+  assert.ok(container.components.some((component) => component.type === 10 && /### 🧾 История approved ростов/.test(component.content)));
+  assert.ok(container.components.some((component) => component.type === 1 && component.components.some((button) => button.label === "JJS Wiki: персонажи")));
+  assert.ok(!container.components.some((component) => component.type === 1 && component.components.some((button) => button.label === "JJS Wiki: Gojo")));
   assert.match(JSON.stringify(container), /https:\/\/cdn\.discordapp\.com\/avatars\/user-1\/profile\.png/);
+});
+
+test("profile operator injects UX-only role and character stats context without noisy links", async () => {
+  const operator = createTestOperator();
+
+  const payload = await operator.buildPrivateProfilePayload({
+    targetUserId: "user-1",
+    requesterUserId: "requester",
+    isSelf: false,
+    view: "overview",
+  });
+
+  const container = payload.components[0].toJSON();
+  const serialized = JSON.stringify(container);
+  assert.match(serialized, /### 🎭 Роли и места/);
+  assert.match(serialized, /Gojo: <@&role-gojo>/);
+  assert.match(serialized, /JJS Wiki: персонажи/);
+  assert.doesNotMatch(serialized, /Текст-тирлист и статистика|JJS Wiki: Gojo|Гайд: Gojo/);
+  assert.doesNotMatch(serialized, /1146511958305144883/);
 });
 
 test("profile operator exposes deny payload text through the runtime seam", () => {
@@ -400,6 +427,39 @@ test("profile operator handles open and nav buttons through one runtime seam", a
   assert.equal(navCalls[1].payload.flags, MessageFlags.IsComponentsV2);
 });
 
+test("profile operator returns a safe fallback when profile nav payload build fails", async () => {
+  const warnings = [];
+  const operator = createTestOperator({
+    getTargetProfile: () => {
+      throw new Error("broken profile build");
+    },
+    logWarning: (message) => warnings.push(message),
+  });
+  const calls = [];
+
+  const handled = await operator.handleProfileButtonInteraction({
+    interaction: {
+      customId: buildProfileNavCustomId("requester", "user-1", "activity"),
+      user: { id: "requester", username: "Requester" },
+      member: makeMember({
+        userId: "requester",
+        username: "Requester",
+        displayName: "Requester",
+        primaryGuild: makePrimaryGuild("TAG"),
+      }),
+      reply: async (payload) => calls.push({ step: "reply", payload }),
+      deferUpdate: async () => calls.push({ step: "deferUpdate" }),
+      editReply: async (payload) => calls.push({ step: "editReply", payload }),
+    },
+  });
+
+  assert.equal(handled, true);
+  assert.deepEqual(calls.map((entry) => entry.step), ["deferUpdate", "editReply"]);
+  assert.equal(calls[1].payload.flags, MessageFlags.IsComponentsV2);
+  assert.match(JSON.stringify(calls[1].payload.components[0].toJSON()), /Раздел временно недоступен/);
+  assert.ok(warnings.some((message) => /profile nav payload failed \(activity\/user-1\): broken profile build/.test(message)));
+});
+
 test("profile operator opens Roblox bind modal from the self action button", async () => {
   const operator = createTestOperator({
     getTargetProfile: () => ({
@@ -426,6 +486,39 @@ test("profile operator opens Roblox bind modal from the self action button", asy
   assert.equal(calls.length, 1);
   assert.equal(calls[0].customId, "profile_bind_roblox_modal");
   assert.equal(calls[0].initialValue, "GojoMain");
+});
+
+test("profile operator pre-fills Roblox bind modal from canonical domains state", async () => {
+  const operator = createTestOperator({
+    getTargetProfile: () => ({
+      summary: {
+        roblox: {
+          currentUsername: "WrongSummaryName",
+          verificationStatus: "unverified",
+        },
+      },
+      domains: {
+        roblox: {
+          username: "CanonicalRb",
+          verificationStatus: "verified",
+          userId: "123",
+        },
+      },
+    }),
+  });
+  const calls = [];
+
+  const handled = await operator.handleProfileButtonInteraction({
+    interaction: {
+      customId: "profile_bind_roblox",
+      user: { id: "user-1", username: "Sasha" },
+      showModal: async (payload) => calls.push(payload),
+    },
+  });
+
+  assert.equal(handled, true);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].initialValue, "CanonicalRb");
 });
 
 test("profile operator routes elo self-card button into canonical compact-card payload", async () => {
