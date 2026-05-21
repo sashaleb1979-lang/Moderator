@@ -820,6 +820,7 @@
 3. Оставить в compat слое только mapping старых entrypoints и payload expectations.
 4. После перевода удалить старые inline payload builders и разрозненные access/target branches. Уже выполнено для legacy self-card path: inline builder и `elo_submit_card` branch убраны из `welcome-bot.js`.
 5. Локальный slice этой фазы уже закрыт для двух путей: `profile_bind_roblox` button + modal submit больше не живут inline в `welcome-bot.js`, и live self-card button `elo_submit_card` теперь канонически owned `src/profile/operator.js`; self-action rows/nav остаются state-aware и loading-safe через `src/profile/model.js` + `src/profile/view.js`.
+6. Текущий hardening slice закрыт: мёртвые inline builders `buildMyCardEmbed()` и `buildProfilePayload()` удалены из `welcome-bot.js`; live profile/self-card/profile-bind routes остаются за `src/profile/operator.js`.
 
 Критерий готовности:
 1. все profile/my-card entrypoints идут через `src/profile/operator.js`;
@@ -832,6 +833,7 @@
 3. Расширить stability/archetype taxonomy в `src/profile/synergy.js` только поверх baseline-backed rules.
 4. Richer stability taxonomy не планировать до появления нового trustworthy telemetry layer; пока допустим только proof gap, comeback и coverage-based read-side.
 5. Не выпускать richer story copy, пока не существует baseline/snapshot owner для её опоры.
+6. Текущий depth slice закрыт: viewer hero archetype получает short weekly baseline hint из persisted weekly rollups через уже существующую comeback/window логику; при отсутствии 3 comparable weekly windows copy остаётся на honest fallback.
 
 Критерий готовности:
 1. viewer hero и stability/status block больше не зависят только от on-demand population snapshot;

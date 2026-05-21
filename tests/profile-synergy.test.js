@@ -452,6 +452,14 @@ test("buildProfileSynergyState builds a viewer-first hero block and Main Core su
             },
           ],
         },
+        seasonArchive: {
+          weeklyRollups: [
+            makeWeeklyRollup("2026-W19", { startDayKey: "2026-05-04", score: 18, grade: "D", jjsMinutes: 0, messages: 5, sessions: 1 }),
+            makeWeeklyRollup("2026-W20", { startDayKey: "2026-05-11", score: 64, grade: "B-", jjsMinutes: 600, messages: 120, sessions: 10, voiceSeconds: 3600 }),
+            makeWeeklyRollup("2026-W21", { startDayKey: "2026-05-18", score: 72, grade: "B+", jjsMinutes: 720, messages: 150, sessions: 14, voiceSeconds: 5400 }),
+            makeWeeklyRollup("2026-W22", { startDayKey: "2026-05-25", score: 78, grade: "A-", jjsMinutes: 780, messages: 180, sessions: 18, voiceSeconds: 7200 }),
+          ],
+        },
       },
     },
     recentKillChanges: [
@@ -526,7 +534,7 @@ test("buildProfileSynergyState builds a viewer-first hero block and Main Core su
 
   assert.equal(state.blocks.viewerHero.title, "Кто ты сейчас");
   assert.match(state.blocks.viewerHero.lines.join("\n"), /Текст-тирлист: Форма B\+ .* Чат B .* Килы A .* Стабильность C- .* Развитие C- .* Соц B-/);
-  assert.match(state.blocks.viewerHero.lines.join("\n"), /Сейчас это живой core-игрок .* Gojo-main .* рост ещё только собирается .* держит заметный игровой круг/);
+  assert.match(state.blocks.viewerHero.lines.join("\n"), /Сейчас это живой core-игрок .* Gojo-main .* рост ещё только собирается .* weekly baseline: восстановился после паузы, держит 3w серию \(2026-W22 A-, reliable\) .* держит заметный игровой круг/);
   assert.match(state.blocks.viewerHero.lines.join("\n"), /Опора профиля: #2 по kills .* tier 4 .* ELO 145 \/ tier 2 .* Roblox GojoMain .* активность active/);
   assert.equal(state.blocks.viewerMainCore.title, "Main Core");
   assert.match(state.blocks.viewerMainCore.lines.join("\n"), /Ядро пиков: Gojo-main/);

@@ -1062,6 +1062,41 @@ function buildViewerTierlistState({
   };
 }
 
+function buildWeeklyArchetypeHint(profile = null) {
+  const windows = getComparableComebackWindows(profile);
+  if (windows.length < 3) return null;
+
+  const latest = windows.at(-1);
+  const activeStreakCount = countTrailingActiveWindows(windows);
+  const minCoverage = windows.reduce((min, entry) => {
+    const coverage = normalizeFiniteNumber(entry?.coveragePercent);
+    return Number.isFinite(coverage) ? Math.min(min, coverage) : min;
+  }, 100);
+  if (minCoverage < 50) {
+    return `weekly baseline sparse (${formatNumber(windows.length)}w, min coverage ${formatPercent(minCoverage, 0)})`;
+  }
+
+  const flags = {
+    returnedAfterDrop: hasRecentLowToActiveTransition(windows),
+    recoveredAfterPause: hasRecentLowToActiveTransition(windows, { pauseOnly: true }),
+    activeStreak: activeStreakCount >= 3,
+    slowingDown: hasThreeWindowSlowdown(windows),
+    coolingOff: hasCoolingOff(windows),
+  };
+  const labels = [];
+  if (flags.recoveredAfterPause) labels.push("восстановился после паузы");
+  else if (flags.returnedAfterDrop) labels.push("вернулся после просадки");
+  if (flags.activeStreak) labels.push(`держит ${formatNumber(activeStreakCount)}w серию`);
+  if (flags.slowingDown) labels.push("замедляется 3 окна подряд");
+  else if (flags.coolingOff) labels.push("остывает второе окно");
+  if (!labels.length && latest?.isActive) labels.push("активная неделя");
+  if (!labels.length && latest?.isLow) labels.push("слабая неделя");
+  if (!labels.length) labels.push("без резкого weekly-сдвига");
+
+  const trust = minCoverage >= 85 ? "reliable" : "partial";
+  return `weekly baseline: ${labels.join(", ")} (${latest.weekKey} ${latest.grade}, ${trust})`;
+}
+
 function buildViewerArchetypeLine({ tierlist = {}, approvedKills = null, killTier = null, mainCharacterLabels = [], progressState = {}, profile = null } = {}) {
   const formScore = normalizeFiniteNumber(tierlist?.form?.score);
   const chatScore = normalizeFiniteNumber(tierlist?.chat?.score);
@@ -1111,6 +1146,8 @@ function buildViewerArchetypeLine({ tierlist = {}, approvedKills = null, killTie
   const parts = [`Сейчас это ${archetype}`];
   if (mainLabel) parts.push(`${mainLabel}-main`);
   parts.push(growthPhrase);
+  const weeklyHint = buildWeeklyArchetypeHint(profile);
+  if (weeklyHint) parts.push(weeklyHint);
   parts.push(socialPhrase);
   return parts.join(" • ");
 }
