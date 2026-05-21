@@ -29,6 +29,49 @@ const PROFILE_LEVEL_AXIS_LABELS = Object.freeze({
   growth: { emoji: "📈", label: "Развитие" },
   social: { emoji: "🤝", label: "Соц" },
 });
+const PROFILE_TRUST_LABELS = Object.freeze({
+  reliable: "свежо",
+  fresh: "свежо",
+  measured: "свежо",
+  partial: "частично",
+  stale: "устарело",
+  outdated: "устарело",
+  heuristic: "эвристика",
+  inferred: "эвристика",
+  proxy: "эвристика",
+  sparse: "эвристика",
+  unavailable: "нет базы",
+  empty: "нет базы",
+});
+const PROFILE_SECTION_GROUPS = Object.freeze({
+  overview: [
+    { title: "⚡ Dashboard", tone: "summary", density: "compact", titles: ["✨ Обзор", "🧬 Уровень профиля", "🎭 Роли и места"] },
+    { title: "🧩 Сила и готовность", tone: "dossier", density: "normal", titles: ["Main Core", "Буквы и места", "🛡️ Готовность", "War Readiness"] },
+  ],
+  activity: [
+    { title: "🧭 Где живёт игрок", tone: "summary", density: "compact", titles: ["📊 Активность", "Activity mix", "Voice-срез"] },
+    { title: "🏆 Форма сезона", tone: "dossier", density: "normal", titles: ["Prime time МСК", "Лучшие периоды", "Weekly rollups", "История сезона"] },
+    { title: "🔎 Стабильность", tone: "technical", density: "dense", titles: ["Farm profile", "Relative component places", "Prime time confidence", "Season consistency", "Comeback metrics", "🔎 Детали activity"] },
+  ],
+  progress: [
+    { title: "⚔️ Рост и proof", tone: "summary", density: "normal", titles: ["Практический прогресс", "🏅 Вклад", "📈 Последний рост по kills", "Proof gap"] },
+    { title: "📜 История и рейтинги", tone: "dossier", density: "dense", titles: ["🧾 История approved ростов", "📬 Заявки и проверки", "📊 ELO и Tierlist", "Antiteam support"] },
+  ],
+  social: [
+    { title: "✅ Проверенные связи", tone: "summary", density: "normal", titles: ["🤝 Roblox и соц", "Проверенный круг", "Roblox-друзья на сервере", "Кто из друзей уже здесь"] },
+    { title: "🗺️ Социальная карта", tone: "dossier", density: "normal", titles: ["Социальная карта", "Voice + game overlap", "🎮 С кем чаще всего играет", "Скрытый круг"] },
+    { title: "🎭 Main dossier", tone: "dossier", density: "compact", titles: ["📚 Мейны и гайды", "Социальная эволюция"] },
+  ],
+  compact: [
+    { title: "⚡ Карточка", tone: "summary", density: "compact", titles: ["Карточка", "Моя карточка", "Готовность", "ELO и Tierlist", "Roblox и соц"] },
+  ],
+});
+const PROFILE_COMPONENT_BUDGET = Object.freeze({
+  maxTextDisplays: 8,
+  maxSectionTextDisplays: 5,
+  sectionTextLimit: 3900,
+  blockTextLimit: 1350,
+});
 
 function normalizeProfileDisplayMode(value, { isSelf = false } = {}) {
   const normalized = cleanString(value, 40).toLowerCase();
@@ -44,6 +87,118 @@ function normalizeFiniteNumber(value, fallback = null) {
 function normalizeNullableFiniteNumber(value, fallback = null) {
   if (value === null || value === undefined || value === "") return fallback;
   return normalizeFiniteNumber(value, fallback);
+}
+
+function normalizeTrustState(value = "", fallback = "partial") {
+  const normalized = cleanString(value, 40).toLowerCase();
+  if (["fresh", "reliable", "measured", "session-history"].includes(normalized)) return "reliable";
+  if (["partial", "short", "local_fallback"].includes(normalized)) return "partial";
+  if (["stale", "outdated"].includes(normalized)) return "outdated";
+  if (["heuristic", "inferred", "proxy", "sparse"].includes(normalized)) return "heuristic";
+  if (["unavailable", "n/a", "empty", "none"].includes(normalized)) return "unavailable";
+  return fallback;
+}
+
+function formatTrustLabel(value = "", fallback = "partial") {
+  return PROFILE_TRUST_LABELS[normalizeTrustState(value, fallback)] || PROFILE_TRUST_LABELS.partial;
+}
+
+function inferBlockTrustState(block = {}) {
+  const explicit = cleanString(block?.trustState || block?.confidenceState || block?.freshnessState, 40);
+  if (explicit) return normalizeTrustState(explicit);
+
+  const text = [
+    cleanString(block?.title, 120),
+    ...(Array.isArray(block?.lines) ? block.lines : []),
+  ].join("\n").toLowerCase();
+  if (/outdated|устар|stale|proof сильно отстал/.test(text)) return "outdated";
+  if (/unavailable|нет базы|source gap|n\/a|место n\/a|нет сигнала|пока не|ещё не|insufficient|недостат/.test(text)) return "unavailable";
+  if (/heuristic|inferred|proxy|эврист|rolling|коротк|частич|partial|sparse/.test(text)) return "partial";
+  if (/reliable|fresh|measured|session-history|свеж|подтвержд|verified/.test(text)) return "reliable";
+  return "partial";
+}
+
+function inferBlockSurfaceState(block = {}) {
+  const trust = inferBlockTrustState(block);
+  const text = (Array.isArray(block?.lines) ? block.lines : []).join("\n").toLowerCase();
+  if (trust === "unavailable") return /пока|ещё|нет|n\/a/.test(text) ? "empty" : "degraded";
+  if (trust === "outdated") return "degraded";
+  if (trust === "partial" || trust === "heuristic") return "partial";
+  return "rich";
+}
+
+function inferBlockPriority(block = {}) {
+  const title = cleanString(block?.title, 120);
+  if (/Обзор|Уровень|Роли|Main Core|Буквы|Готовность|Activity mix|Proof gap|Практический/.test(title)) return 10;
+  if (/Voice|Prime|Лучшие|Weekly|История сезона|Вклад|ELO|Roblox|Проверенный|Социальная карта/.test(title)) return 20;
+  return 30;
+}
+
+function annotateProfileBlock(block = {}, overrides = {}) {
+  const title = cleanString(block?.title, 120) || "Блок";
+  const lines = Array.isArray(block?.lines) ? block.lines : [];
+  const state = cleanString(overrides.state, 40) || inferBlockSurfaceState(block);
+  const trustState = cleanString(overrides.trustState, 40) || inferBlockTrustState(block);
+  const density = cleanString(overrides.density, 40) || (lines.length > 5 ? "dense" : "normal");
+  const priority = normalizeFiniteNumber(overrides.priority, inferBlockPriority(block));
+  const presentation = {
+    priority,
+    density,
+    state,
+    trustState,
+    trustLabel: formatTrustLabel(trustState),
+  };
+  return {
+    ...block,
+    title,
+    lines,
+    priority,
+    density,
+    state,
+    trustLabel: presentation.trustLabel,
+    presentation,
+  };
+}
+
+function buildSectionGroups(sections = {}) {
+  const result = {};
+  for (const [sectionKey, blocks] of Object.entries(sections || {})) {
+    const annotatedBlocks = (Array.isArray(blocks) ? blocks : [])
+      .map((block) => annotateProfileBlock(block))
+      .filter((block) => block.lines.length);
+    const used = new Set();
+    const groups = [];
+
+    for (const groupDef of PROFILE_SECTION_GROUPS[sectionKey] || []) {
+      const wanted = new Set(groupDef.titles || []);
+      const groupBlocks = annotatedBlocks.filter((block, index) => {
+        if (used.has(index) || !wanted.has(block.title)) return false;
+        used.add(index);
+        return true;
+      });
+      if (groupBlocks.length) {
+        groups.push({
+          title: groupDef.title,
+          tone: groupDef.tone,
+          density: groupDef.density,
+          blocks: groupBlocks,
+        });
+      }
+    }
+
+    const extras = annotatedBlocks.filter((_, index) => !used.has(index));
+    if (extras.length) {
+      groups.push({
+        title: "📌 Дополнительно",
+        tone: "technical",
+        density: "dense",
+        blocks: extras,
+      });
+    }
+
+    result[sectionKey] = groups;
+  }
+  return result;
 }
 
 function formatNumber(value) {
@@ -298,6 +453,107 @@ function buildProfileLevelLines({ levelState = {}, tierlist = null } = {}) {
   return lines;
 }
 
+function buildTierlistBadgeLine(tierlist = null) {
+  const parts = PROFILE_LEVEL_AXES
+    .map((axisName) => {
+      const axis = tierlist?.[axisName];
+      const meta = PROFILE_LEVEL_AXIS_LABELS[axisName] || { label: axisName };
+      const grade = cleanString(axis?.grade, 10);
+      if (!grade || grade === "N/A") return `${meta.label} нет базы`;
+      const trust = formatTrustLabel(axis?.confidenceState || axis?.freshnessState);
+      const debuff = normalizeFiniteNumber(axis?.influenceDebuffPercent, 0);
+      const suffix = debuff > 0 ? `, -${formatNumber(debuff)}%` : "";
+      return `${meta.label} ${grade} (${trust}${suffix})`;
+    })
+    .filter(Boolean);
+  return parts.length ? `🏷️ Буквы: ${parts.join(" • ")}` : "🏷️ Буквы: нет базы";
+}
+
+function buildProfileTrustBadges({ tierlist = null, levelState = {}, robloxUsability = {}, progress = null } = {}) {
+  const axes = PROFILE_LEVEL_AXES.map((axisName) => tierlist?.[axisName]).filter(Boolean);
+  const reliableAxes = axes.filter((axis) => normalizeTrustState(axis?.confidenceState || axis?.freshnessState) === "reliable").length;
+  const unavailableAxes = axes.filter((axis) => normalizeTrustState(axis?.confidenceState || axis?.freshnessState) === "unavailable").length;
+  const proofState = progress?.proofGap?.freshnessState || progress?.proofGap?.confidenceState || "unavailable";
+  return [
+    {
+      key: "letters",
+      label: "Буквы",
+      state: unavailableAxes > 0 ? "partial" : (reliableAxes >= Math.ceil(axes.length / 2) ? "reliable" : "partial"),
+      text: axes.length ? `${formatNumber(reliableAxes)}/${formatNumber(axes.length)} свежих` : "нет базы",
+    },
+    {
+      key: "roblox",
+      label: "Roblox",
+      state: robloxUsability.usable ? "reliable" : (robloxUsability.state ? "outdated" : "unavailable"),
+      text: robloxUsability.usable ? "активно" : (robloxUsability.state === "repairable" || robloxUsability.state === "manual_only" ? "требует перепривязки" : "нет сигнала"),
+    },
+    {
+      key: "weekly",
+      label: "Weekly",
+      state: Number(levelState.weeklyWindowCount) >= 3 ? "reliable" : (Number(levelState.weeklyWindowCount) > 0 ? "partial" : "unavailable"),
+      text: Number(levelState.weeklyWindowCount) > 0 ? `${formatNumber(levelState.weeklyWindowCount)} окон` : "нет базы",
+    },
+    {
+      key: "proof",
+      label: "Proof",
+      state: normalizeTrustState(proofState, "unavailable"),
+      text: formatTrustLabel(proofState, "unavailable"),
+    },
+  ].map((badge) => ({
+    ...badge,
+    trustLabel: formatTrustLabel(badge.state),
+  }));
+}
+
+function formatTrustBadgesLine(badges = []) {
+  const parts = (Array.isArray(badges) ? badges : [])
+    .map((badge) => `${badge.label}: ${badge.text} (${badge.trustLabel})`)
+    .filter(Boolean);
+  return parts.length ? `🧪 Данные: ${parts.join(" • ")}` : "🧪 Данные: нет базы";
+}
+
+function buildHeroSummary({
+  heroTitle = "Кто ты сейчас",
+  baseHeroLines = [],
+  levelState = {},
+  tierlist = null,
+  trustBadges = [],
+  mainCharacterLabels = [],
+  verifiedRobloxLabel = "",
+  robloxSummary = {},
+  approvedKills = null,
+  standing = {},
+  activitySummary = {},
+} = {}) {
+  const mainLabel = (Array.isArray(mainCharacterLabels) ? mainCharacterLabels : [])
+    .map((entry) => cleanString(entry, 80))
+    .filter(Boolean)
+    .slice(0, 2)
+    .join(", ") || "мейны не выбраны";
+  const activityRole = cleanString(activitySummary?.appliedActivityRoleKey || activitySummary?.desiredActivityRoleKey, 80) || "роль не накоплена";
+  const killPlace = Number.isFinite(Number(standing?.rank)) && Number.isFinite(Number(standing?.totalVerified))
+    ? `#${formatNumber(standing.rank)}/${formatNumber(standing.totalVerified)} по kills`
+    : "место по kills ждёт базу";
+  const robloxStatus = verifiedRobloxLabel
+    ? `Roblox ${verifiedRobloxLabel}`
+    : formatRobloxReadiness(robloxSummary);
+  const killText = Number.isFinite(approvedKills) ? `${formatNumber(approvedKills)} kills` : "kills ждут proof";
+
+  return {
+    title: heroTitle,
+    lines: [
+      formatProfileLevelLine(levelState),
+      formatProfileLevelSourceLine(levelState),
+      buildTierlistBadgeLine(tierlist),
+      `🎭 Main: ${mainLabel} • ${robloxStatus}`,
+      `🏆 ${killText} • ${killPlace} • активность ${activityRole}`,
+      formatTrustBadgesLine(trustBadges),
+      ...((Array.isArray(baseHeroLines) ? baseHeroLines : []).slice(0, 3)),
+    ].filter(Boolean),
+    state: (trustBadges || []).some((badge) => badge.state === "outdated") ? "degraded" : "rich",
+  };
+}
+
 function buildMetricPlace(value = null, samples = []) {
   const current = normalizeFiniteNumber(value);
   const normalizedSamples = (Array.isArray(samples) ? samples : [])
@@ -390,7 +646,7 @@ function buildRoleShowcaseLines({
   return lines;
 }
 
-function buildMandatoryLinks({ robloxProfileUrl = "", tierlistStatsUrl = "" } = {}) {
+function buildMandatoryLinks({ robloxProfileUrl = "" } = {}) {
   const links = [];
   const normalizedRobloxUrl = normalizeMediaUrl(robloxProfileUrl, 2000);
   if (normalizedRobloxUrl) {
@@ -407,15 +663,6 @@ function buildMandatoryLinks({ robloxProfileUrl = "", tierlistStatsUrl = "" } = 
     buttonLabel: "JJS Wiki: персонажи",
     url: JJS_WIKI_CHARACTERS_URL,
   });
-  const normalizedTierlistUrl = normalizeMediaUrl(tierlistStatsUrl, 2000);
-  if (normalizedTierlistUrl) {
-    links.push({
-      kind: "mandatory-tierlist",
-      label: "Текст-тирлист и статистика",
-      buttonLabel: "Текст-тирлист и статистика",
-      url: normalizedTierlistUrl,
-    });
-  }
   return links;
 }
 
@@ -665,8 +912,11 @@ function computeGuideCoverage(mainCharacterLabels = [], comboLinks = []) {
 }
 
 function buildMainAndGuideLines({
+  mainCharacterIds = [],
   mainCharacterLabels = [],
   comboLinks = [],
+  characterStats = [],
+  hiddenRoleIds = new Set(),
   tierlistMainName = "",
   accessGrantedAt = null,
   nonGgsAccessGrantedAt = null,
@@ -689,6 +939,7 @@ function buildMainAndGuideLines({
       .map((entry) => normalizeComboLookupKey(entry?.mainLabel || entry?.label))
       .filter(Boolean)
   );
+  const normalizedStats = normalizeCharacterStats(characterStats);
 
   if (mains.length) {
     lines.push(`Основные персонажи: ${mains.join(", ")}`);
@@ -698,11 +949,19 @@ function buildMainAndGuideLines({
     }
     for (let index = 0; index < mains.length; index += 1) {
       const mainLabel = mains[index];
+      const mainId = Array.isArray(mainCharacterIds) ? mainCharacterIds[index] : "";
+      const stat = findCharacterStat({ id: mainId, label: mainLabel, stats: normalizedStats });
       const guideBits = [
         mainGuideLookup.has(normalizeComboLookupKey(mainLabel)) ? "гайд доступен по кнопке" : "гайд пока не привязан",
       ];
       if (mainWikiLookup.has(normalizeComboLookupKey(mainLabel))) {
         guideBits.push("JJS wiki доступна по кнопке");
+      }
+      if (stat?.roleId && !hiddenRoleIds.has(stat.roleId)) {
+        guideBits.push(`роль <@&${stat.roleId}>`);
+      }
+      if (stat) {
+        guideBits.push(`место ${formatPlace({ rank: stat.rank, total: stat.total })} по мейнам`);
       }
       lines.push(`${index + 1}. ${mainLabel} — ${guideBits.join(" • ")}`);
     }
@@ -912,7 +1171,6 @@ function buildProfileReadModel(options = {}) {
   const robloxProfileUrl = hasVerifiedRoblox ? cleanString(robloxSummary.profileUrl, 1000) || null : null;
   const mandatoryLinks = buildMandatoryLinks({
     robloxProfileUrl,
-    tierlistStatsUrl: options.tierlistStatsUrl,
   });
   const verificationAvatarUrl = normalizeMediaUrl(verificationSummary.oauthAvatarUrl, 2000);
   const currentElo = options.eloProfile?.currentElo ?? eloSummary.currentElo;
@@ -1075,11 +1333,26 @@ function buildProfileReadModel(options = {}) {
   const baseHeroLines = Array.isArray(synergy?.blocks?.viewerHero?.lines) && synergy.blocks.viewerHero.lines.length
     ? synergy.blocks.viewerHero.lines
     : defaultHeroLines;
-  const heroLines = [
-    formatProfileLevelLine(profileLevelState),
-    formatProfileLevelSourceLine(profileLevelState),
-    ...baseHeroLines,
-  ];
+  const trustBadges = buildProfileTrustBadges({
+    tierlist: synergy?.viewerTierlist,
+    levelState: profileLevelState,
+    robloxUsability,
+    progress: synergy?.progress,
+  });
+  const heroSummary = buildHeroSummary({
+    heroTitle,
+    baseHeroLines,
+    levelState: profileLevelState,
+    tierlist: synergy?.viewerTierlist,
+    trustBadges,
+    mainCharacterLabels,
+    verifiedRobloxLabel,
+    robloxSummary,
+    approvedKills,
+    standing,
+    activitySummary,
+  });
+  const heroLines = heroSummary.lines;
 
   const overviewStatusLines = buildOverviewStatusLines({
     profile,
@@ -1308,8 +1581,11 @@ function buildProfileReadModel(options = {}) {
   }
 
   const mainAndGuideLines = buildMainAndGuideLines({
+    mainCharacterIds,
     mainCharacterLabels,
     comboLinks,
+    characterStats: options.characterStats,
+    hiddenRoleIds,
     tierlistMainName: tierlistSummary.mainName,
     accessGrantedAt: profile?.accessGrantedAt,
     nonGgsAccessGrantedAt: profile?.nonGgsAccessGrantedAt,
@@ -1342,6 +1618,73 @@ function buildProfileReadModel(options = {}) {
     });
   }
 
+  const sections = {
+    overview: [
+      { title: "✨ Обзор", lines: overviewLines },
+      { title: "🧬 Уровень профиля", lines: profileLevelLines },
+      { title: "🎭 Роли и места", lines: roleShowcaseLines },
+      ...(synergy?.blocks?.viewerMainCore ? [synergy.blocks.viewerMainCore] : []),
+      ...(synergy?.blocks?.viewerLetterPlaces ? [synergy.blocks.viewerLetterPlaces] : []),
+      {
+        title: "🛡️ Готовность",
+        lines: overviewStatusLines,
+      },
+      ...(synergy?.blocks?.personalWarReadiness ? [synergy.blocks.personalWarReadiness] : []),
+    ],
+    activity: [
+      { title: "📊 Активность", lines: activityLines },
+      ...(synergy?.blocks?.voiceSummary ? [synergy.blocks.voiceSummary] : []),
+      ...(synergy?.blocks?.primeTime ? [synergy.blocks.primeTime] : []),
+      ...(synergy?.blocks?.bestPeriods ? [synergy.blocks.bestPeriods] : []),
+      ...(synergy?.blocks?.seasonStory ? [synergy.blocks.seasonStory] : []),
+      ...(synergy?.blocks?.weeklyRollups ? [synergy.blocks.weeklyRollups] : []),
+      {
+        title: "🔎 Детали activity",
+        lines: [
+          Number.isFinite(Number(activitySummary.messages90d)) ? `Сообщения 90д: ${formatNumber(activitySummary.messages90d)}` : "",
+          Number.isFinite(Number(activitySummary.sessions90d)) ? `Сессии 90д: ${formatNumber(activitySummary.sessions90d)}` : "",
+          Number.isFinite(Number(activitySummary.activeDays7d)) ? `Активные дни 7д: ${formatNumber(activitySummary.activeDays7d)}` : "",
+          Number.isFinite(Number(activitySummary.activeWatchedChannels30d)) ? `Активные каналы 30д: ${formatNumber(activitySummary.activeWatchedChannels30d)}` : "",
+          Number.isFinite(Number(activitySummary.daysAbsent)) ? `Отсутствие: ${formatNumber(activitySummary.daysAbsent)} дн.` : "",
+          activitySummary.roleEligibilityStatus ? `Статус eligibility: ${cleanString(activitySummary.roleEligibilityStatus, 80)}` : "",
+        ],
+      },
+      ...(synergy?.blocks?.activityMix ? [synergy.blocks.activityMix] : []),
+      ...(synergy?.blocks?.farmProfile ? [synergy.blocks.farmProfile] : []),
+      ...(synergy?.blocks?.relativeComponents ? [synergy.blocks.relativeComponents] : []),
+      ...(synergy?.blocks?.primeTimeConfidence ? [synergy.blocks.primeTimeConfidence] : []),
+      ...(synergy?.blocks?.seasonConsistency ? [synergy.blocks.seasonConsistency] : []),
+      ...(synergy?.blocks?.comebackMetrics ? [synergy.blocks.comebackMetrics] : []),
+    ],
+    progress: [
+      ...(synergy?.blocks?.selfProgress ? [synergy.blocks.selfProgress] : []),
+      { title: "🏅 Вклад", lines: contributionLines },
+      { title: "📈 Последний рост по kills", lines: progressHistoryLines },
+      { title: "🧾 История approved ростов", lines: progressTimelineLines },
+      { title: "📬 Заявки и проверки", lines: submissionLines },
+      { title: "📊 ELO и Tierlist", lines: rankingLines },
+      ...(synergy?.blocks?.antiteamSupport ? [synergy.blocks.antiteamSupport] : []),
+      ...(synergy?.blocks?.proofGap ? [synergy.blocks.proofGap] : []),
+    ],
+    social: [
+      { title: "🤝 Roblox и соц", lines: robloxLines },
+      ...(synergy?.blocks?.friendOverlap ? [synergy.blocks.friendOverlap] : []),
+      ...(synergy?.blocks?.friendsAlreadyHere ? [synergy.blocks.friendsAlreadyHere] : []),
+      ...(synergy?.blocks?.socialEvolution ? [synergy.blocks.socialEvolution] : []),
+      { title: "🎮 С кем чаще всего играет", lines: socialPeerLines },
+      ...(synergy?.blocks?.socialSuggestions ? [synergy.blocks.socialSuggestions] : []),
+      { title: "📚 Мейны и гайды", lines: mainAndGuideLines },
+      ...(synergy?.blocks?.verifiedCircle ? [synergy.blocks.verifiedCircle] : []),
+      ...(synergy?.blocks?.socialMap ? [synergy.blocks.socialMap] : []),
+      ...(synergy?.blocks?.voiceGameOverlap ? [synergy.blocks.voiceGameOverlap] : []),
+    ],
+    compact: compactSections,
+  };
+  const sectionGroups = buildSectionGroups(sections);
+  const surfaceState = !profile && !pendingSubmission && !latestSubmission
+    ? "empty"
+    : (needsRobloxRebind ? "degraded" : (trustBadges.some((badge) => badge.state === "unavailable") ? "partial" : "rich"));
+
   return {
     userId,
     displayName,
@@ -1350,78 +1693,22 @@ function buildProfileReadModel(options = {}) {
     comboLinks,
     heroTitle,
     heroLines,
+    heroSummary,
     identityMediaItems,
     profileLevelState,
     profileLevelLines,
     roleShowcaseLines,
     mandatoryLinks,
+    trustBadges,
+    surfaceState,
+    componentBudget: PROFILE_COMPONENT_BUDGET,
     primaryAvatarUrl: primaryAvatar?.url || null,
     primaryAvatarDescription: primaryAvatar?.description || null,
     mediaGalleryItems,
     robloxProfileUrl,
     selfActionState,
-    sections: {
-      overview: [
-        { title: "✨ Обзор", lines: overviewLines },
-        { title: "🧬 Уровень профиля", lines: profileLevelLines },
-        { title: "🎭 Роли и места", lines: roleShowcaseLines },
-        ...(synergy?.blocks?.viewerMainCore ? [synergy.blocks.viewerMainCore] : []),
-        ...(synergy?.blocks?.viewerLetterPlaces ? [synergy.blocks.viewerLetterPlaces] : []),
-        {
-          title: "🛡️ Готовность",
-          lines: overviewStatusLines,
-        },
-        ...(synergy?.blocks?.personalWarReadiness ? [synergy.blocks.personalWarReadiness] : []),
-      ],
-      activity: [
-        { title: "📊 Активность", lines: activityLines },
-        ...(synergy?.blocks?.voiceSummary ? [synergy.blocks.voiceSummary] : []),
-        ...(synergy?.blocks?.primeTime ? [synergy.blocks.primeTime] : []),
-        ...(synergy?.blocks?.bestPeriods ? [synergy.blocks.bestPeriods] : []),
-        ...(synergy?.blocks?.seasonStory ? [synergy.blocks.seasonStory] : []),
-        ...(synergy?.blocks?.weeklyRollups ? [synergy.blocks.weeklyRollups] : []),
-        {
-          title: "🔎 Детали activity",
-          lines: [
-            Number.isFinite(Number(activitySummary.messages90d)) ? `Сообщения 90д: ${formatNumber(activitySummary.messages90d)}` : "",
-            Number.isFinite(Number(activitySummary.sessions90d)) ? `Сессии 90д: ${formatNumber(activitySummary.sessions90d)}` : "",
-            Number.isFinite(Number(activitySummary.activeDays7d)) ? `Активные дни 7д: ${formatNumber(activitySummary.activeDays7d)}` : "",
-            Number.isFinite(Number(activitySummary.activeWatchedChannels30d)) ? `Активные каналы 30д: ${formatNumber(activitySummary.activeWatchedChannels30d)}` : "",
-            Number.isFinite(Number(activitySummary.daysAbsent)) ? `Отсутствие: ${formatNumber(activitySummary.daysAbsent)} дн.` : "",
-            activitySummary.roleEligibilityStatus ? `Статус eligibility: ${cleanString(activitySummary.roleEligibilityStatus, 80)}` : "",
-          ],
-        },
-        ...(synergy?.blocks?.activityMix ? [synergy.blocks.activityMix] : []),
-        ...(synergy?.blocks?.farmProfile ? [synergy.blocks.farmProfile] : []),
-        ...(synergy?.blocks?.relativeComponents ? [synergy.blocks.relativeComponents] : []),
-        ...(synergy?.blocks?.primeTimeConfidence ? [synergy.blocks.primeTimeConfidence] : []),
-        ...(synergy?.blocks?.seasonConsistency ? [synergy.blocks.seasonConsistency] : []),
-        ...(synergy?.blocks?.comebackMetrics ? [synergy.blocks.comebackMetrics] : []),
-      ],
-      progress: [
-        ...(synergy?.blocks?.selfProgress ? [synergy.blocks.selfProgress] : []),
-        { title: "🏅 Вклад", lines: contributionLines },
-        { title: "📈 Последний рост по kills", lines: progressHistoryLines },
-        { title: "🧾 История approved ростов", lines: progressTimelineLines },
-        { title: "📬 Заявки и проверки", lines: submissionLines },
-        { title: "📊 ELO и Tierlist", lines: rankingLines },
-        ...(synergy?.blocks?.antiteamSupport ? [synergy.blocks.antiteamSupport] : []),
-        ...(synergy?.blocks?.proofGap ? [synergy.blocks.proofGap] : []),
-      ],
-      social: [
-        { title: "🤝 Roblox и соц", lines: robloxLines },
-        ...(synergy?.blocks?.friendOverlap ? [synergy.blocks.friendOverlap] : []),
-        ...(synergy?.blocks?.friendsAlreadyHere ? [synergy.blocks.friendsAlreadyHere] : []),
-        ...(synergy?.blocks?.socialEvolution ? [synergy.blocks.socialEvolution] : []),
-        { title: "🎮 С кем чаще всего играет", lines: socialPeerLines },
-        ...(synergy?.blocks?.socialSuggestions ? [synergy.blocks.socialSuggestions] : []),
-        { title: "📚 Мейны и гайды", lines: mainAndGuideLines },
-        ...(synergy?.blocks?.verifiedCircle ? [synergy.blocks.verifiedCircle] : []),
-        ...(synergy?.blocks?.socialMap ? [synergy.blocks.socialMap] : []),
-        ...(synergy?.blocks?.voiceGameOverlap ? [synergy.blocks.voiceGameOverlap] : []),
-      ],
-      compact: compactSections,
-    },
+    sections,
+    sectionGroups,
     verificationLines: verificationSummary.status && verificationSummary.status !== "not_started"
       ? [
         `Статус: ${cleanString(verificationSummary.status, 80)}`,

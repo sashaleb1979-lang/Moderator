@@ -204,11 +204,12 @@ test("profile operator builds private payload from injected runtime readers", as
   assert.ok(container.components.some((component) => component.type === 1 && component.components.some((button) => button.custom_id === buildProfileNavCustomId("requester", "user-1", "progress"))));
   assert.ok(container.components.some((component) => component.type === 10 && /### 🏅 Вклад/.test(component.content)));
   assert.ok(container.components.some((component) => component.type === 10 && /### 🧾 История approved ростов/.test(component.content)));
-  assert.ok(container.components.some((component) => component.type === 1 && component.components.some((button) => button.label === "JJS Wiki: Gojo")));
+  assert.ok(container.components.some((component) => component.type === 1 && component.components.some((button) => button.label === "JJS Wiki: персонажи")));
+  assert.ok(!container.components.some((component) => component.type === 1 && component.components.some((button) => button.label === "JJS Wiki: Gojo")));
   assert.match(JSON.stringify(container), /https:\/\/cdn\.discordapp\.com\/avatars\/user-1\/profile\.png/);
 });
 
-test("profile operator injects UX-only role, tierlist link, and character stats context", async () => {
+test("profile operator injects UX-only role and character stats context without noisy links", async () => {
   const operator = createTestOperator();
 
   const payload = await operator.buildPrivateProfilePayload({
@@ -222,7 +223,8 @@ test("profile operator injects UX-only role, tierlist link, and character stats 
   const serialized = JSON.stringify(container);
   assert.match(serialized, /### 🎭 Роли и места/);
   assert.match(serialized, /Gojo: <@&role-gojo>/);
-  assert.match(serialized, /Текст-тирлист и статистика/);
+  assert.match(serialized, /JJS Wiki: персонажи/);
+  assert.doesNotMatch(serialized, /Текст-тирлист и статистика|JJS Wiki: Gojo|Гайд: Gojo/);
   assert.doesNotMatch(serialized, /1146511958305144883/);
 });
 

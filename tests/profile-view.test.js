@@ -234,7 +234,8 @@ test("profile payload renders overview, activity, rankings, roblox, and link but
   assert.match(JSON.stringify(container), /Гайд-контур: гайды 1\/1 по мейнам .* wiki 1\/1 по мейнам .* общие техи доступны/);
   assert.doesNotMatch(JSON.stringify(container), /### Ключевые факты/);
   assert.ok(textDisplays.some((component) => /### 🛡️ Готовность/.test(component.content) && /JJS доступ: открыт с/.test(component.content) && /Верификация: verified/.test(component.content) && /Roblox-связка: подтверждена/.test(component.content)));
-  assert.ok(textDisplays.some((component) => /### 🛡️ Готовность к вару/.test(component.content) && /Готовность к вару: высокая/.test(component.content) && /Roblox 7д: 3 ч .* Discord last seen: ~6 д .* proof freshness: ~36 ч назад/.test(component.content) && /Prime time: 19:00-23:00 МСК/.test(component.content)));
+  assert.ok(textDisplays.some((component) => /### 🛡️ Готовность к вару/.test(component.content) && /Готовность к вару: высокая/.test(component.content) && /Roblox 7д: 3 ч .* Discord: ~6 д .* proof: ~36 ч назад/.test(component.content) && /Prime time: 19:00-23:00 МСК/.test(component.content)));
+  assert.doesNotMatch(JSON.stringify(container), /confidence|source|debuff|Discord last seen|proof freshness/);
   assert.ok(textDisplays.some((component) => /### Верификация/.test(component.content) && /verified/.test(component.content)));
   assert.match(JSON.stringify(container), /https:\/\/cdn\.discordapp\.com\/avatars\/user-1\/profile\.png/);
   assert.equal(actionRows.length, 2);
@@ -247,11 +248,10 @@ test("profile payload renders overview, activity, rankings, roblox, and link but
   })[view]));
   assert.equal(navButtons[0].disabled, true);
   const buttons = actionRows[1].components;
-  assert.ok(buttons.some((button) => button.label === "Гайд: Gojo"));
-  assert.ok(buttons.some((button) => button.label === "JJS Wiki: Gojo"));
-  assert.ok(buttons.some((button) => button.label === "Общие техи"));
   assert.ok(buttons.some((button) => button.label === "Roblox профиль"));
   assert.ok(buttons.some((button) => button.label === "JJS Wiki: персонажи"));
+  assert.ok(buttons.length <= 2);
+  assert.doesNotMatch(JSON.stringify(container), /"label":"Гайд: Gojo"|"label":"JJS Wiki: Gojo"|"label":"Общие техи"/);
 });
 
 test("profile payload switches sections by requested view", () => {
@@ -326,7 +326,7 @@ test("profile payload switches sections by requested view", () => {
   });
 
   const { textDisplays } = getProfileContainer(payload);
-  assert.ok(textDisplays.some((component) => /\*\*Секция:\*\* Активность/.test(component.content)));
+  assert.ok(textDisplays.some((component) => /\*\*Активность\*\*/.test(component.content)));
   assert.ok(textDisplays.some((component) => /### 📊 Активность/.test(component.content) && /Бакет: active/.test(component.content)));
   assert.ok(textDisplays.some((component) => /### 🎙️ Voice-срез/.test(component.content) && /Voice 7д\/30д: 1,5 ч \/ 2,5 ч/.test(component.content) && /Сейчас в voice: <#voice-lounge>/.test(component.content)));
   assert.ok(textDisplays.some((component) => /### 🕒 Prime time МСК/.test(component.content) && /Чаще всего играет с 19:00 до 23:00 МСК .* окно 5 ч/.test(component.content) && /Пиковый час: 20:00/.test(component.content)));
@@ -410,7 +410,7 @@ test("profile payload renders enriched progress and social sections", () => {
   });
 
   const progressDisplays = getProfileContainer(progressPayload).textDisplays;
-  assert.ok(progressDisplays.some((component) => /\*\*Секция:\*\* Прогресс/.test(component.content)));
+  assert.ok(progressDisplays.some((component) => /\*\*Прогресс\*\*/.test(component.content)));
   assert.ok(progressDisplays.some((component) => /### 📈 Последний рост по kills/.test(component.content) && /Прирост: \+20 kills/.test(component.content)));
   assert.ok(progressDisplays.some((component) => /### 🧾 История approved ростов/.test(component.content) && /1\. 100 -> 120/.test(component.content) && /2\. 80 -> 100/.test(component.content)));
   assert.ok(progressDisplays.some((component) => /### 📬 Заявки и проверки/.test(component.content) && /Последняя проверка:/.test(component.content)));
@@ -452,7 +452,7 @@ test("profile payload renders enriched progress and social sections", () => {
   });
 
   const socialSectionDisplays = getProfileContainer(socialEvolutionPayload).textDisplays;
-  assert.ok(socialSectionDisplays.some((component) => /\*\*Секция:\*\* Соц/.test(component.content)));
+  assert.ok(socialSectionDisplays.some((component) => /\*\*Соц\*\*/.test(component.content)));
   assert.ok(socialSectionDisplays.some((component) => /### 📈 Социальная эволюция/.test(component.content) && /Соц-архив: 12 дневных срезов/.test(component.content) && /Игровой круг: 1 -> 3 частых напарн\./.test(component.content)));
 
   const selfProgressPayload = buildProfilePayload({
@@ -533,6 +533,7 @@ test("profile payload renders enriched progress and social sections", () => {
     targetDisplayName: "Sasha",
     view: "social",
     targetAvatarUrl: "https://cdn.discordapp.com/avatars/user-1/profile.png",
+    characterStats: [{ id: "gojo", main: "Gojo", roleId: "role-gojo" }],
     profile: {
       accessGrantedAt: "2026-05-01T10:00:00.000Z",
       nonGgsAccessGrantedAt: "2026-05-03T10:00:00.000Z",
@@ -637,13 +638,13 @@ test("profile payload renders enriched progress and social sections", () => {
   });
 
   const socialViewDisplays = getProfileContainer(socialPayload).textDisplays;
-  assert.ok(socialViewDisplays.some((component) => /\*\*Секция:\*\* Соц/.test(component.content)));
+  assert.ok(socialViewDisplays.some((component) => /\*\*Соц\*\*/.test(component.content)));
   assert.ok(socialViewDisplays.some((component) => /### 🤝 Roblox и соц/.test(component.content) && /Связка Roblox: подтверждена/.test(component.content)));
   assert.ok(socialViewDisplays.some((component) => /### 🤝 Roblox-друзья на сервере/.test(component.content) && /Roblox-друзей на сервере: 3 .* видимых профилей: 2 .* verified: 2 .* активны 7д: 2 .* играли в JJS 7д: 1/.test(component.content)));
   assert.ok(socialViewDisplays.some((component) => /### 🫂 Кто из друзей уже здесь/.test(component.content) && /1\. <@friend-1> .* Friend One .* Roblox FriendOneRb .* verified Roblox .* JJS 7д 2,6 ч .* activity active/.test(component.content) && /2\. <@friend-2> .* Friend Two .* Roblox FriendTwoRb .* verified Roblox .* 4 msg 7д/.test(component.content)));
   assert.ok(socialViewDisplays.some((component) => /### 🎮 С кем чаще всего играет/.test(component.content) && /<@peer-1> • 3,5 ч вместе • 5 сесс\. • Roblox-друг/.test(component.content)));
   assert.ok(socialViewDisplays.some((component) => /### 🕵️ Скрытый круг/.test(component.content) && /1 кандидата по частым пересечениям в JJS/.test(component.content) && /<@peer-7> .* Todo .* Roblox TodoRb .* 1,1 ч вместе .* 2 общ\. сесс\. .* verified Roblox/.test(component.content)));
-  assert.ok(socialViewDisplays.some((component) => /### 📚 Мейны и гайды/.test(component.content) && /Основные персонажи: Gojo/.test(component.content) && /Гайды по мейнам: 1\/1/.test(component.content) && /1\. Gojo — гайд доступен по кнопке/.test(component.content) && /Общие техи: доступны по кнопке\./.test(component.content)));
+  assert.ok(socialViewDisplays.some((component) => /### 📚 Мейны и гайды/.test(component.content) && /Основные персонажи: Gojo/.test(component.content) && /Гайды по мейнам: 1\/1/.test(component.content) && /1\. Gojo — гайд доступен по кнопке .* роль <@&role-gojo> .* место #1\/1 по мейнам/.test(component.content) && /Общие техи: доступны по кнопке\./.test(component.content)));
   assert.match(JSON.stringify(getProfileContainer(socialPayload).container), /https:\/\/tr\.rbxcdn\.com\/gojo-avatar\.png/);
   assert.match(JSON.stringify(getProfileContainer(socialPayload).container), /https:\/\/cdn\.discordapp\.com\/oauth-avatar\.png/);
 });
@@ -662,7 +663,7 @@ test("profile payload handles empty profiles gracefully", () => {
   assert.ok(textDisplays.some((component) => /# Твой профиль/.test(component.content)));
   assert.ok(textDisplays.some((component) => /### ✨ Обзор/.test(component.content) && /ещё не заполнен/i.test(component.content)));
   assert.ok(textDisplays.some((component) => /### 🛡️ Готовность/.test(component.content) && /JJS доступ: пока не выдан/i.test(component.content) && /Верификация: не начата/i.test(component.content)));
-  assert.ok(textDisplays.some((component) => /### 📈 ELO submit/.test(component.content) && /Сначала отправь текст с числом ELO/i.test(component.content) && /Потом следующим сообщением кинь скрин/i.test(component.content)));
+  assert.ok(!textDisplays.some((component) => /### 📈 ELO submit/.test(component.content)));
   assert.ok(textDisplays.some((component) => /После онбординга профиль заполнится автоматически/i.test(component.content)));
   assert.deepEqual(actionRows[1].components.map((button) => button.label), [
     "⚔️ Добавить kills",
@@ -673,7 +674,7 @@ test("profile payload handles empty profiles gracefully", () => {
   ]);
 });
 
-test("profile payload splits many link buttons into multiple rows", () => {
+test("profile payload keeps bottom links limited to canonical profile/wiki links", () => {
   const payload = buildProfilePayload({
     requesterUserId: "requester",
     userId: "user-1",
@@ -702,9 +703,8 @@ test("profile payload splits many link buttons into multiple rows", () => {
   });
 
   const { actionRows } = getProfileContainer(payload);
-  assert.equal(actionRows.length, 3);
-  assert.deepEqual(actionRows[1].components.map((button) => button.label), ["Кнопка 1", "Кнопка 2", "Кнопка 3", "Кнопка 4", "Кнопка 5"]);
-  assert.deepEqual(actionRows[2].components.map((button) => button.label), ["Кнопка 6", "Roblox профиль"]);
+  assert.equal(actionRows.length, 2);
+  assert.deepEqual(actionRows[1].components.map((button) => button.label), ["Roblox профиль"]);
 });
 
 test("profile payload supports canonical compact-card mode without nav and self actions", () => {
@@ -741,7 +741,6 @@ test("profile payload supports canonical compact-card mode without nav and self 
 
   const { textDisplays, actionRows, container } = getProfileContainer(payload);
   assert.ok(textDisplays.some((component) => /# Моя карточка/.test(component.content)));
-  assert.ok(textDisplays.some((component) => /\*\*Секция:\*\* Карточка/.test(component.content)));
   assert.ok(textDisplays.some((component) => /### Моя карточка/.test(component.content) && /ELO: 145 \/ tier 2/.test(component.content)));
   assert.ok(textDisplays.some((component) => /### Готовность/.test(component.content) && /JJS доступ: открыт/.test(component.content)));
   assert.equal(actionRows.length, 0);

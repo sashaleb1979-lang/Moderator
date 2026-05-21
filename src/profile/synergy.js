@@ -71,6 +71,13 @@ function formatPercent(value, digits = 1) {
   }).format(amount)}%`;
 }
 
+function buildShareBar(value = 0, size = 6) {
+  const normalizedSize = Math.max(4, Number(size) || 6);
+  const amount = clampScore(value, 0, 100);
+  const filled = Math.max(0, Math.min(normalizedSize, Math.round((amount / 100) * normalizedSize)));
+  return `${"▰".repeat(filled)}${"▱".repeat(normalizedSize - filled)}`;
+}
+
 function formatDays(value, digits = 1) {
   return `${formatHours(value, digits)} д`;
 }
@@ -211,7 +218,7 @@ function applyAxisTrustState(axisState = {}, trustOptions = {}) {
 }
 
 function buildPopulationCalibratedAxisState(rawScore = null, populationScores = [], options = {}) {
-  const normalizedRawScore = normalizeFiniteNumber(rawScore);
+  const normalizedRawScore = normalizeNullableFiniteNumber(rawScore);
   const samples = (Array.isArray(populationScores) ? populationScores : [])
     .map((entry) => normalizeFiniteNumber(entry))
     .filter((entry) => Number.isFinite(entry));
@@ -227,7 +234,7 @@ function buildPopulationCalibratedAxisState(rawScore = null, populationScores = 
       place,
       confidenceState: "unavailable",
       freshnessState: "unavailable",
-      influenceDebuffPercent: 100,
+      influenceDebuffPercent: 90,
     });
   }
 
@@ -443,6 +450,22 @@ function hasUsableRobloxSummary(robloxSummary = {}) {
       && robloxSummary?.hasVerifiedAccount === true
       && Boolean(cleanString(robloxSummary?.userId, 80))
       && Boolean(cleanString(robloxSummary?.currentUsername || robloxSummary?.username, 120)));
+}
+
+function hasExplicitRobloxActivityBlocker(robloxSummary = {}) {
+  const trackingState = cleanString(robloxSummary?.trackingState, 40).toLowerCase();
+  const verificationStatus = cleanString(robloxSummary?.verificationStatus, 40).toLowerCase();
+  return robloxSummary?.isTrackable === false
+    || ["repairable", "manual_only", "pending", "failed", "unverified"].includes(trackingState)
+    || ["pending", "failed", "unverified"].includes(verificationStatus);
+}
+
+function hasUsableRobloxActivitySummary(robloxSummary = {}) {
+  if (hasExplicitRobloxActivityBlocker(robloxSummary)) return false;
+  if (hasUsableRobloxSummary(robloxSummary)) return true;
+  return Number.isFinite(normalizeNullableFiniteNumber(robloxSummary?.jjsMinutes7d))
+    || Number.isFinite(normalizeNullableFiniteNumber(robloxSummary?.totalJjsMinutes))
+    || Boolean(robloxSummary?.currentSessionStartedAt || robloxSummary?.lastSeenInJjsAt);
 }
 
 function hasReliableTrackedJjsDelta(latestProofWindow = null, robloxSummary = {}) {
@@ -786,10 +809,13 @@ function buildSelfProgressFocusLine({ progressState = {}, nextTierTarget = null,
 }
 
 function buildFormAxisScore({ robloxSummary = {}, activitySummary = {}, progressState = {}, now } = {}) {
-  const jjsMinutes7d = normalizeFiniteNumber(robloxSummary?.jjsMinutes7d);
+  const hasUsableRoblox = hasUsableRobloxActivitySummary(robloxSummary);
+  const jjsMinutes7d = hasUsableRoblox ? normalizeFiniteNumber(robloxSummary?.jjsMinutes7d) : null;
   const activityScore = normalizeFiniteNumber(activitySummary?.activityScore);
-  const hoursSinceLastApproved = normalizeFiniteNumber(progressState?.hoursSinceLastApprovedKillsUpdate);
-  const hoursSinceLastSeenInJjs = computeElapsedHours(robloxSummary?.currentSessionStartedAt || robloxSummary?.lastSeenInJjsAt, now);
+  const hoursSinceLastApproved = normalizeNullableFiniteNumber(progressState?.hoursSinceLastApprovedKillsUpdate);
+  const hoursSinceLastSeenInJjs = hasUsableRoblox
+    ? computeElapsedHours(robloxSummary?.currentSessionStartedAt || robloxSummary?.lastSeenInJjsAt, now)
+    : null;
 
   let score = 0;
   let hasSignal = false;
@@ -2322,16 +2348,16 @@ function buildActivityMixBlock({ activitySummary = {}, robloxSummary = {}, voice
   if (Number.isFinite(state.voiceSeconds30d)) rawBits.push(`voice ${formatHours(state.voiceSeconds30d / 3600)} ч 30д`);
 
   const shareBits = [];
-  if (Number.isFinite(state.chatShare)) shareBits.push(`chat ${formatPercent(state.chatShare, 0)}`);
-  if (Number.isFinite(state.jjsShare)) shareBits.push(`JJS ${formatPercent(state.jjsShare, 0)}`);
-  if (Number.isFinite(state.voiceShare)) shareBits.push(`voice ${formatPercent(state.voiceShare, 0)}`);
+  if (Number.isFinite(state.chatShare)) shareBits.push(`chat ${buildShareBar(state.chatShare)} ${formatPercent(state.chatShare, 0)}`);
+  if (Number.isFinite(state.jjsShare)) shareBits.push(`JJS ${buildShareBar(state.jjsShare)} ${formatPercent(state.jjsShare, 0)}`);
+  if (Number.isFinite(state.voiceShare)) shareBits.push(`voice ${buildShareBar(state.voiceShare)} ${formatPercent(state.voiceShare, 0)}`);
 
   return {
     title: "Activity mix",
     lines: [
       `Discord vs Roblox: ${state.balanceLabel}`,
       rawBits.join(" • "),
-      `Mix: ${shareBits.join(" • ")} • confidence ${state.confidenceState}`,
+      `Шкала: ${shareBits.join(" • ")} • доверие ${state.confidenceState}`,
     ].filter(Boolean),
   };
 }
@@ -3461,7 +3487,7 @@ function buildSeasonConsistencyBlock({ profile = null } = {}) {
 }
 
 function buildElapsedRecencyLabel(hours) {
-  const normalizedHours = normalizeFiniteNumber(hours);
+  const normalizedHours = normalizeNullableFiniteNumber(hours);
   if (!Number.isFinite(normalizedHours)) return null;
   if (normalizedHours < 48) {
     return `~${formatHours(normalizedHours)} ч назад`;
@@ -3471,7 +3497,7 @@ function buildElapsedRecencyLabel(hours) {
 
 function scoreWarReadiness({ robloxSummary = {}, activitySummary = {}, progressState = {}, primeTimeState = {} } = {}) {
   let score = 0;
-  const jjsMinutes7d = normalizeFiniteNumber(robloxSummary?.jjsMinutes7d);
+  const jjsMinutes7d = hasUsableRobloxActivitySummary(robloxSummary) ? normalizeFiniteNumber(robloxSummary?.jjsMinutes7d) : null;
   if (Number.isFinite(jjsMinutes7d) && jjsMinutes7d > 0) {
     if (jjsMinutes7d >= 600) score += 35;
     else if (jjsMinutes7d >= 300) score += 25;
@@ -3486,7 +3512,7 @@ function scoreWarReadiness({ robloxSummary = {}, activitySummary = {}, progressS
     else if (discordSeenHours <= 14 * 24) score += 10;
   }
 
-  const proofFreshnessHours = normalizeFiniteNumber(progressState?.hoursSinceLastApprovedKillsUpdate);
+  const proofFreshnessHours = normalizeNullableFiniteNumber(progressState?.hoursSinceLastApprovedKillsUpdate);
   if (Number.isFinite(proofFreshnessHours)) {
     if (proofFreshnessHours <= 72) score += 25;
     else if (proofFreshnessHours <= 7 * 24) score += 15;
@@ -3509,9 +3535,9 @@ function buildWarReadinessLevel(score = 0) {
 
 function buildPersonalWarReadinessBlock({ profile = null, robloxSummary = {}, activitySummary = {}, progressState = {}, now } = {}) {
   const primeTimeState = buildPrimeTimeState({ profile });
-  const jjsMinutes7d = normalizeFiniteNumber(robloxSummary?.jjsMinutes7d);
+  const jjsMinutes7d = hasUsableRobloxActivitySummary(robloxSummary) ? normalizeFiniteNumber(robloxSummary?.jjsMinutes7d) : null;
   const discordSeenHours = computeElapsedHours(activitySummary?.lastSeenAt, now);
-  const proofFreshnessHours = normalizeFiniteNumber(progressState?.hoursSinceLastApprovedKillsUpdate);
+  const proofFreshnessHours = normalizeNullableFiniteNumber(progressState?.hoursSinceLastApprovedKillsUpdate);
   const hasSignal = (Number.isFinite(jjsMinutes7d) && jjsMinutes7d > 0)
     || Number.isFinite(discordSeenHours)
     || Number.isFinite(proofFreshnessHours)

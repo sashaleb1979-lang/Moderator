@@ -614,7 +614,7 @@ test("buildProfileSynergyState calibrates viewer grades against population basel
   assert.ok(GRADE_RANK[weakPopulationGrades.form] > GRADE_RANK[localGrades.form]);
   assert.equal(weakPopulationState.blocks.viewerLetterPlaces.title, "Буквы и места");
   assert.match(weakPopulationState.blocks.viewerLetterPlaces.lines.join("\n"), /Форма S\+ \(#1\/5\).* Чат S\+ \(#1\/5\).* Килы S\+ \(#1\/5\)/);
-  assert.match(weakPopulationState.blocks.viewerLetterPlaces.lines.join("\n"), /Надёжность букв: reliable 3\/6 .* partial 3 .* baseline min 5 .* max debuff 15%/);
+  assert.match(weakPopulationState.blocks.viewerLetterPlaces.lines.join("\n"), /Надёжность букв: reliable 3\/6 .* N\/A 3 .* baseline min 5 .* max debuff 90%/);
 });
 
 test("buildProfileSynergyState exposes antiteam support points and population place", () => {
@@ -690,6 +690,26 @@ test("buildProfileSynergyState surfaces proof gap and applies kill-backed debuff
   assert.match(state.blocks.proofGap.lines.join("\n"), /JJS после proof: 70 ч .* proof сильно отстал от игры/);
   assert.match(state.blocks.proofGap.lines.join("\n"), /Trust: outdated .* kill-backed debuff 90%/);
   assert.match(state.blocks.viewerLetterPlaces.lines.join("\n"), /max debuff 90%/);
+});
+
+test("buildProfileSynergyState ignores repairable Roblox activity for form and war readiness", () => {
+  const state = buildProfileSynergyState({
+    now: "2026-05-16T12:00:00.000Z",
+    isSelf: false,
+    profile: {},
+    robloxSummary: {
+      hasVerifiedAccount: true,
+      isTrackable: false,
+      trackingState: "repairable",
+      currentUsername: "BrokenRoblox",
+      userId: "123",
+      jjsMinutes7d: 900,
+      lastSeenInJjsAt: "2026-05-16T10:00:00.000Z",
+    },
+  });
+
+  assert.equal(state.viewerTierlist.form.confidenceState, "unavailable");
+  assert.equal(state.blocks.personalWarReadiness, null);
 });
 
 test("buildProfileSynergyState exposes social suggestions from canonical cache without overclaiming coop", () => {
@@ -1009,7 +1029,7 @@ test("buildProfileSynergyState derives Discord vs Roblox activity mix", () => {
   assert.equal(state.blocks.activityMix.title, "Activity mix");
   assert.match(state.blocks.activityMix.lines.join("\n"), /Discord vs Roblox: больше Discord chat/);
   assert.match(state.blocks.activityMix.lines.join("\n"), /JJS 7 ч 30д .* chat 210 msg 30д .* voice 2,5 ч 30д/);
-  assert.match(state.blocks.activityMix.lines.join("\n"), /Mix: chat 60% .* JJS 30% .* voice 11% .* confidence reliable/);
+  assert.match(state.blocks.activityMix.lines.join("\n"), /Шкала: chat .* 60% .* JJS .* 30% .* voice .* 11% .* доверие reliable/);
 });
 
 test("buildProfileSynergyState derives a stable grinder farm profile from playtime buckets", () => {
