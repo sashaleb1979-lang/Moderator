@@ -90,21 +90,21 @@ function simplifyProfileLine(value = "") {
   return cleanString(value, 1000)
     .replace(/\bmax debuff\b/gi, "макс. снижение веса")
     .replace(/\bkill-backed debuff\b/gi, "снижение веса proof")
-    .replace(/\bbaseline min\b/gi, "база")
-    .replace(/\bbaseline\b/gi, "база")
+    .replace(/\bbaseline min\b/gi, "база сравнения")
+    .replace(/\bbaseline\b/gi, "база сравнения")
     .replace(/^Trust:/i, "Надёжность:")
-    .replace(/\bconfidence\b/gi, "доверие")
-    .replace(/\bsources\b/gi, "источники")
-    .replace(/\bsource\b/gi, "источник")
+    .replace(/\bconfidence\b/gi, "оценка")
+    .replace(/\bsources\b/gi, "по данным")
+    .replace(/\bsource\b/gi, "по данным")
     .replace(/\bdebuff\b/gi, "снижение веса")
-    .replace(/\breliable\b/gi, "свежо")
-    .replace(/\bfresh\b/gi, "свежо")
+    .replace(/\breliable\b/gi, "точный расчёт")
+    .replace(/\bfresh\b/gi, "точный расчёт")
     .replace(/\bpartial\b/gi, "частично")
-    .replace(/\boutdated\b/gi, "устарело")
-    .replace(/\bstale\b/gi, "устарело")
-    .replace(/\bheuristic\b/gi, "эвристика")
-    .replace(/\binferred\b/gi, "эвристика")
-    .replace(/\bproxy\b/gi, "эвристика")
+    .replace(/\boutdated\b/gi, "старые данные")
+    .replace(/\bstale\b/gi, "старые данные")
+    .replace(/\bheuristic\b/gi, "примерно")
+    .replace(/\binferred\b/gi, "примерно")
+    .replace(/\bproxy\b/gi, "примерно")
     .replace(/\bsparse\b/gi, "мало базы")
     .replace(/\bunavailable\b/gi, "нет базы")
     .replace(/\blocal_fallback\b/gi, "локальная оценка")
@@ -134,9 +134,7 @@ function buildSectionMarkdown(block = {}) {
   const lines = Array.isArray(block?.lines)
     ? block.lines.map((line) => simplifyProfileLine(line)).filter(Boolean)
     : [];
-  const stateLabel = normalizeNullableString(block?.trustLabel || block?.presentation?.trustLabel, 40);
-  const stateSuffix = stateLabel ? ` · ${stateLabel}` : "";
-  return `### ${heading}${stateSuffix}\n${buildFieldValue(lines, "—", 1600)}`;
+  return `### ${heading}\n${buildFieldValue(lines, "—", 1600)}`;
 }
 
 function buildSectionGroupMarkdown(group = {}, blockLimit = 1350) {
@@ -467,8 +465,26 @@ function buildProfilePayload(options = {}) {
   };
 }
 
+function buildProfileFallbackPayload({ view = "overview", message = "" } = {}) {
+  const label = PROFILE_VIEW_LABELS[normalizeProfileView(view)] || "раздел";
+  const text = cleanString(message, 500)
+    || `Раздел «${label}» сейчас не собрался. Я оставил профиль живым, чтобы кнопка не зависала.`;
+  const container = new ContainerBuilder()
+    .setAccentColor(0xC62828)
+    .addTextDisplayComponents(
+      new TextDisplayBuilder().setContent(`# Профиль\n**${label}**`),
+      new TextDisplayBuilder().setContent(`### Раздел временно недоступен\n${text}`)
+    );
+
+  return {
+    flags: MessageFlags.IsComponentsV2,
+    components: [container],
+  };
+}
+
 module.exports = {
   PROFILE_VIEWS,
+  buildProfileFallbackPayload,
   buildProfileHelperMessagePayload,
   buildProfilePayload,
 };

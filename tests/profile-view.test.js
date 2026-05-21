@@ -227,14 +227,13 @@ test("profile payload renders overview, activity, rankings, roblox, and link but
   assert.ok(textDisplays.some((component) => /# Профиль/.test(component.content)));
   assert.match(JSON.stringify(container), /### Кто ты сейчас/);
   assert.match(JSON.stringify(container), /Текст-тирлист: .* Килы A/);
-  assert.match(JSON.stringify(container), /Сейчас это .* Gojo-main/);
+  assert.match(JSON.stringify(container), /🎭 Main: Gojo .* Roblox GojoMain/);
   assert.ok(textDisplays.some((component) => /### ✨ Обзор/.test(component.content) && /Игрок: <@user-1>/.test(component.content) && /Подтверждённые kills: 120/.test(component.content) && /ELO: 145 \/ tier 2/.test(component.content)));
   assert.ok(textDisplays.some((component) => /### 🧬 Уровень профиля/.test(component.content) && /Сильнее всего даёт XP:/.test(component.content) && /Буквы:/.test(component.content)));
   assert.ok(textDisplays.some((component) => /### 🧩 Ядро профиля/.test(component.content) && /Ядро пиков: Gojo-main/.test(component.content) && /Серверный контур: форма .* рост .* стабильность .* #2 по kills .* ELO 145 \/ tier 2/.test(component.content) && /Игровая связка: чаще всего с <@peer-1>/.test(component.content)));
   assert.match(JSON.stringify(container), /Гайд-контур: гайды 1\/1 по мейнам .* wiki 1\/1 по мейнам .* общие техи доступны/);
   assert.doesNotMatch(JSON.stringify(container), /### Ключевые факты/);
-  assert.ok(textDisplays.some((component) => /### 🛡️ Готовность/.test(component.content) && /JJS доступ: открыт с/.test(component.content) && /Верификация: verified/.test(component.content) && /Roblox-связка: подтверждена/.test(component.content)));
-  assert.ok(textDisplays.some((component) => /### 🛡️ Готовность к вару/.test(component.content) && /Готовность к вару: высокая/.test(component.content) && /Roblox 7д: 3 ч .* Discord: ~6 д .* proof: ~36 ч назад/.test(component.content) && /Prime time: 19:00-23:00 МСК/.test(component.content)));
+  assert.doesNotMatch(JSON.stringify(container), /### 🛡️ Готовность|### 🛡️ Готовность к вару/);
   assert.doesNotMatch(JSON.stringify(container), /confidence|source|debuff|Discord last seen|proof freshness/);
   assert.ok(textDisplays.some((component) => /### Верификация/.test(component.content) && /verified/.test(component.content)));
   assert.match(JSON.stringify(container), /https:\/\/cdn\.discordapp\.com\/avatars\/user-1\/profile\.png/);
@@ -321,18 +320,27 @@ test("profile payload switches sections by requested view", () => {
           daysAbsent: 2,
           roleEligibilityStatus: "eligible",
         },
+        roblox: {
+          hasVerifiedAccount: true,
+          isTrackable: true,
+          trackingState: "trackable",
+          userId: "123",
+          currentUsername: "GojoMain",
+          jjsMinutes7d: 180,
+          jjsMinutes30d: 420,
+        },
       },
     },
   });
 
   const { textDisplays } = getProfileContainer(payload);
   assert.ok(textDisplays.some((component) => /\*\*Активность\*\*/.test(component.content)));
-  assert.ok(textDisplays.some((component) => /### 📊 Активность/.test(component.content) && /Бакет: active/.test(component.content)));
+  assert.ok(textDisplays.some((component) => /### 📊 Итог активности/.test(component.content) && /Роль активности: active/.test(component.content)));
   assert.ok(textDisplays.some((component) => /### 🎙️ Voice-срез/.test(component.content) && /Voice 7д\/30д: 1,5 ч \/ 2,5 ч/.test(component.content) && /Сейчас в voice: <#voice-lounge>/.test(component.content)));
   assert.ok(textDisplays.some((component) => /### 🕒 Prime time МСК/.test(component.content) && /Чаще всего играет с 19:00 до 23:00 МСК .* окно 5 ч/.test(component.content) && /Пиковый час: 20:00/.test(component.content)));
   assert.ok(textDisplays.some((component) => /### 🏆 Лучшие периоды/.test(component.content) && /Пик 7д: 06\.05\.2026-12\.05\.2026 .* 15 ч JJS/.test(component.content)));
-  assert.ok(textDisplays.some((component) => /### 📜 История сезона/.test(component.content) && /Траектория: 3.?200 -> 3.?750 kills \(\+550\)/.test(component.content) && /Нарратив: сезон разогнался/.test(component.content)));
-  assert.ok(textDisplays.some((component) => /### 🔎 Детали activity/.test(component.content) && /Сообщения 90д: 400/.test(component.content)));
+  assert.ok(textDisplays.some((component) => /### 🧭 Где живёт игрок/.test(component.content) && /Discord vs Roblox/.test(component.content)));
+  assert.ok(!textDisplays.some((component) => /### 🔎 Детали activity/.test(component.content)));
 });
 
 test("profile payload renders enriched progress and social sections", () => {
@@ -544,7 +552,7 @@ test("profile payload renders enriched progress and social sections", () => {
         roblox: {
           hasVerifiedAccount: true,
           currentUsername: "GojoMain",
-          userId: "rbx-main",
+          userId: "123",
           profileUrl: "https://www.roblox.com/users/123/profile",
           avatarUrl: "https://tr.rbxcdn.com/gojo-avatar.png",
           serverFriendsCount: 3,
@@ -639,7 +647,7 @@ test("profile payload renders enriched progress and social sections", () => {
 
   const socialViewDisplays = getProfileContainer(socialPayload).textDisplays;
   assert.ok(socialViewDisplays.some((component) => /\*\*Соц\*\*/.test(component.content)));
-  assert.ok(socialViewDisplays.some((component) => /### 🤝 Roblox и соц/.test(component.content) && /Связка Roblox: подтверждена/.test(component.content)));
+  assert.ok(socialViewDisplays.some((component) => /### 🤝 Roblox и соц/.test(component.content) && /Roblox-связка: подтверждена/.test(component.content)));
   assert.ok(socialViewDisplays.some((component) => /### 🤝 Roblox-друзья на сервере/.test(component.content) && /Roblox-друзей на сервере: 3 .* видимых профилей: 2 .* verified: 2 .* активны 7д: 2 .* играли в JJS 7д: 1/.test(component.content)));
   assert.ok(socialViewDisplays.some((component) => /### 🫂 Кто из друзей уже здесь/.test(component.content) && /1\. <@friend-1> .* Friend One .* Roblox FriendOneRb .* verified Roblox .* JJS 7д 2,6 ч .* activity active/.test(component.content) && /2\. <@friend-2> .* Friend Two .* Roblox FriendTwoRb .* verified Roblox .* 4 msg 7д/.test(component.content)));
   assert.ok(socialViewDisplays.some((component) => /### 🎮 С кем чаще всего играет/.test(component.content) && /<@peer-1> • 3,5 ч вместе • 5 сесс\. • Roblox-друг/.test(component.content)));
@@ -662,7 +670,7 @@ test("profile payload handles empty profiles gracefully", () => {
   assert.ok(textDisplays.some((component) => /### Быстрый статус/.test(component.content) && /Готовность: JJS доступ не выдан/i.test(component.content)));
   assert.ok(textDisplays.some((component) => /# Твой профиль/.test(component.content)));
   assert.ok(textDisplays.some((component) => /### ✨ Обзор/.test(component.content) && /ещё не заполнен/i.test(component.content)));
-  assert.ok(textDisplays.some((component) => /### 🛡️ Готовность/.test(component.content) && /JJS доступ: пока не выдан/i.test(component.content) && /Верификация: не начата/i.test(component.content)));
+  assert.ok(!textDisplays.some((component) => /### 🛡️ Готовность/.test(component.content)));
   assert.ok(!textDisplays.some((component) => /### 📈 ELO submit/.test(component.content)));
   assert.ok(textDisplays.some((component) => /После онбординга профиль заполнится автоматически/i.test(component.content)));
   assert.deepEqual(actionRows[1].components.map((button) => button.label), [

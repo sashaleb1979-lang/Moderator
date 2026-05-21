@@ -16,6 +16,7 @@ const {
   resolveProfileMessageTarget,
 } = require("./entry");
 const {
+  buildProfileFallbackPayload,
   buildProfileHelperMessagePayload,
   buildProfilePayload,
 } = require("./view");
@@ -427,7 +428,7 @@ function createProfileOperator(options = {}) {
         ? options.getTargetProfile(interaction?.user?.id)
         : null;
       const identity = buildProfileRobloxIdentitySession(
-        profile?.summary?.roblox || profile?.domains?.roblox || {}
+        profile?.domains?.roblox || profile?.summary?.roblox || {}
       );
       await interaction.showModal(await options.buildProfileRobloxBindModal({
         initialValue: identity.robloxUsername || "",
@@ -500,12 +501,22 @@ function createProfileOperator(options = {}) {
       return true;
     }
 
-    await interaction.editReply(await buildPrivateProfilePayload({
-      targetUserId: profileNavRequest.targetUserId,
-      isSelf: access.isSelf,
-      requesterUserId: interaction.user.id,
-      view: profileNavRequest.view,
-    }));
+    try {
+      await interaction.editReply(await buildPrivateProfilePayload({
+        targetUserId: profileNavRequest.targetUserId,
+        isSelf: access.isSelf,
+        requesterUserId: interaction.user.id,
+        view: profileNavRequest.view,
+      }));
+    } catch (error) {
+      if (typeof options.logWarning === "function") {
+        options.logWarning(`profile nav payload failed (${profileNavRequest.view}/${profileNavRequest.targetUserId}): ${error?.message || error}`);
+      }
+      await interaction.editReply(buildProfileFallbackPayload({
+        view: profileNavRequest.view,
+        message: "Профильная кнопка сработала, но этот раздел временно не собрался. Ошибка записана в лог.",
+      }));
+    }
     return true;
   }
 

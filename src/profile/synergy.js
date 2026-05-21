@@ -116,6 +116,14 @@ function buildLetterGrade(score = null) {
 }
 
 function buildAxisState(score = null, extras = {}) {
+  if (score === null || score === undefined || score === "") {
+    return {
+      score: null,
+      grade: "N/A",
+      ...extras,
+    };
+  }
+
   const amount = Number(score);
   if (!Number.isFinite(amount)) {
     return {
@@ -268,6 +276,125 @@ function buildPopulationCalibratedAxisState(rawScore = null, populationScores = 
     freshnessState: "fresh",
     influenceDebuffPercent: 0,
   }, options);
+}
+
+function resolveDataAgeDays(capturedAt = null, now = null) {
+  const capturedTimestamp = resolveTimestamp(capturedAt);
+  const nowTimestamp = resolveNowTimestamp(now);
+  if (!Number.isFinite(capturedTimestamp) || !Number.isFinite(nowTimestamp)) return null;
+  return Math.max(0, Math.floor((nowTimestamp - capturedTimestamp) / MS_PER_DAY));
+}
+
+function computeAgeDebuffPercent(dataAgeDays = null) {
+  const age = normalizeNullableFiniteNumber(dataAgeDays);
+  if (!Number.isFinite(age)) return 90;
+  if (age <= 2) return 0;
+  if (age <= 7) return 15;
+  if (age <= 14) return 30;
+  if (age <= 30) return 55;
+  return 75;
+}
+
+function getLatestSeasonSnapshot(profile = {}) {
+  const snapshots = Array.isArray(profile?.domains?.seasonArchive?.snapshots)
+    ? profile.domains.seasonArchive.snapshots
+    : [];
+  return snapshots
+    .filter((entry) => entry && typeof entry === "object")
+    .slice()
+    .sort((left, right) => resolveTimestamp(right?.capturedAt || right?.dayKey) - resolveTimestamp(left?.capturedAt || left?.dayKey))[0] || null;
+}
+
+function getLatestWeeklyRollup(profile = {}) {
+  const rollups = Array.isArray(profile?.domains?.seasonArchive?.weeklyRollups)
+    ? profile.domains.seasonArchive.weeklyRollups
+    : [];
+  return rollups
+    .filter((entry) => entry && typeof entry === "object")
+    .slice()
+    .sort((left, right) => {
+      const rightTime = resolveTimestamp(right?.endDayKey || right?.capturedAt || right?.weekKey);
+      const leftTime = resolveTimestamp(left?.endDayKey || left?.capturedAt || left?.weekKey);
+      if (Number.isFinite(rightTime) && Number.isFinite(leftTime) && rightTime !== leftTime) return rightTime - leftTime;
+      return cleanString(right?.weekKey, 20).localeCompare(cleanString(left?.weekKey, 20));
+    })[0] || null;
+}
+
+function buildHistoricalAxisFallbackRawScores({ profile = null, now } = {}) {
+  const snapshot = getLatestSeasonSnapshot(profile || {});
+  const weekly = getLatestWeeklyRollup(profile || {});
+  const capturedAt = snapshot?.capturedAt || snapshot?.dayKey || weekly?.endDayKey || weekly?.weekKey || null;
+  if (!snapshot && !weekly) {
+    return { scores: {}, capturedAt: null, dataAgeDays: null, ageDebuffPercent: 90 };
+  }
+
+  const weeklyScore = normalizeNullableFiniteNumber(weekly?.composite?.score);
+  const approvedKills = normalizeNullableFiniteNumber(snapshot?.approvedKills);
+  const killTier = normalizeNullableFiniteNumber(snapshot?.killTier);
+  const jjsMinutes7d = normalizeNullableFiniteNumber(snapshot?.jjsMinutes7d ?? snapshot?.dayJjsMinutes);
+  const activityScore = normalizeNullableFiniteNumber(snapshot?.activityScore);
+  const messages7d = normalizeNullableFiniteNumber(snapshot?.messages7d);
+  const sessions7d = normalizeNullableFiniteNumber(snapshot?.sessions7d);
+  const activeDays7d = normalizeNullableFiniteNumber(snapshot?.activeDays7d);
+  const serverFriendsCount = normalizeNullableFiniteNumber(snapshot?.serverFriendsCount);
+  const peerCount = Array.isArray(snapshot?.topCoPlayPeerUserIds) ? snapshot.topCoPlayPeerUserIds.length : normalizeNullableFiniteNumber(snapshot?.peerCount);
+  const suggestionCount = normalizeNullableFiniteNumber(snapshot?.socialSuggestionCount);
+  const dataAgeDays = resolveDataAgeDays(capturedAt, now);
+
+  const scores = {};
+  scores.form = Number.isFinite(jjsMinutes7d) || Number.isFinite(activityScore)
+    ? Math.min(55, Math.max(0, Number(jjsMinutes7d) || 0) / 8) + Math.min(35, Math.max(0, Number(activityScore) || 0) / 3)
+    : weeklyScore;
+  scores.chat = Number.isFinite(messages7d) || Number.isFinite(sessions7d) || Number.isFinite(activeDays7d)
+    ? Math.min(55, Math.max(0, Number(messages7d) || 0)) + Math.min(25, Math.max(0, Number(sessions7d) || 0) * 2.5) + Math.min(20, Math.max(0, Number(activeDays7d) || 0) * (20 / 7))
+    : weeklyScore;
+  scores.kills = Number.isFinite(killTier) || Number.isFinite(approvedKills)
+    ? Math.min(72, Math.max(0, Number(killTier) || 0) * 18) + Math.min(18, Math.log10(Math.max(1, (Number(approvedKills) || 0) + 1)) * 6)
+    : weeklyScore;
+  scores.stability = weeklyScore;
+  scores.growth = weeklyScore;
+  scores.social = Number.isFinite(serverFriendsCount) || Number.isFinite(peerCount) || Number.isFinite(suggestionCount)
+    ? Math.min(40, Math.max(0, Number(serverFriendsCount) || 0) * 8) + Math.min(35, Math.max(0, Number(peerCount) || 0) * 8) + Math.min(20, Math.max(0, Number(suggestionCount) || 0) * 5)
+    : weeklyScore;
+
+  return {
+    scores,
+    capturedAt,
+    dataAgeDays,
+    ageDebuffPercent: computeAgeDebuffPercent(dataAgeDays),
+  };
+}
+
+function buildAxisStateWithHistoricalFallback(rawScore = null, populationScores = [], options = {}) {
+  if (Number.isFinite(normalizeNullableFiniteNumber(rawScore))) {
+    return {
+      ...buildPopulationCalibratedAxisState(rawScore, populationScores, options),
+      isHistoricalFallback: false,
+      dataAgeDays: 0,
+    };
+  }
+
+  const historicalScore = normalizeNullableFiniteNumber(options.historicalRawScore);
+  if (!Number.isFinite(historicalScore)) {
+    return buildPopulationCalibratedAxisState(rawScore, populationScores, options);
+  }
+
+  const ageDebuff = normalizeInfluenceDebuffPercent(options.ageDebuffPercent, 90);
+  const fallbackState = buildPopulationCalibratedAxisState(historicalScore, populationScores, {
+    freshnessState: "outdated",
+    influenceDebuffPercent: ageDebuff,
+    trustSource: "season_archive",
+  });
+  return {
+    ...fallbackState,
+    isHistoricalFallback: true,
+    dataAgeDays: normalizeNullableFiniteNumber(options.dataAgeDays),
+    historicalCapturedAt: cleanString(options.capturedAt, 80) || null,
+    historicalRawScore: historicalScore,
+    confidenceState: ageDebuff >= 55 ? "outdated" : "partial",
+    freshnessState: "outdated",
+    influenceDebuffPercent: Math.min(90, Math.max(normalizeInfluenceDebuffPercent(fallbackState.influenceDebuffPercent, 0), ageDebuff)),
+  };
 }
 
 function resolveTimestamp(value) {
@@ -1059,6 +1186,7 @@ function buildPopulationAxisSamples({ populationProfiles = [], approvedEntries =
 }
 
 function buildViewerTierlistState({
+  profile = null,
   approvedKills = null,
   killTier = null,
   standing = {},
@@ -1084,14 +1212,22 @@ function buildViewerTierlistState({
     now,
   });
   const proofBackedTrust = buildProofBackedAxisTrustOptions(progressState?.proofGap);
+  const historicalFallback = buildHistoricalAxisFallbackRawScores({ profile, now });
+  const fallbackOptions = (axisName, baseOptions = {}) => ({
+    ...baseOptions,
+    historicalRawScore: historicalFallback.scores?.[axisName],
+    capturedAt: historicalFallback.capturedAt,
+    dataAgeDays: historicalFallback.dataAgeDays,
+    ageDebuffPercent: historicalFallback.ageDebuffPercent,
+  });
 
   return {
-    form: buildPopulationCalibratedAxisState(rawScores.form, populationSamples.form),
-    chat: buildPopulationCalibratedAxisState(rawScores.chat, populationSamples.chat),
-    kills: buildPopulationCalibratedAxisState(rawScores.kills, populationSamples.kills, proofBackedTrust),
-    stability: buildPopulationCalibratedAxisState(rawScores.stability, populationSamples.stability, proofBackedTrust),
-    growth: buildPopulationCalibratedAxisState(rawScores.growth, populationSamples.growth, proofBackedTrust),
-    social: buildPopulationCalibratedAxisState(rawScores.social, populationSamples.social),
+    form: buildAxisStateWithHistoricalFallback(rawScores.form, populationSamples.form, fallbackOptions("form")),
+    chat: buildAxisStateWithHistoricalFallback(rawScores.chat, populationSamples.chat, fallbackOptions("chat")),
+    kills: buildAxisStateWithHistoricalFallback(rawScores.kills, populationSamples.kills, fallbackOptions("kills", proofBackedTrust)),
+    stability: buildAxisStateWithHistoricalFallback(rawScores.stability, populationSamples.stability, fallbackOptions("stability", proofBackedTrust)),
+    growth: buildAxisStateWithHistoricalFallback(rawScores.growth, populationSamples.growth, fallbackOptions("growth", proofBackedTrust)),
+    social: buildAxisStateWithHistoricalFallback(rawScores.social, populationSamples.social, fallbackOptions("social")),
   };
 }
 
@@ -3607,20 +3743,27 @@ function buildViewerHeroBlock({
 
 function formatAxisPlaceSegment(axis = {}, label = "Ось") {
   const grade = cleanString(axis?.grade, 10) || "N/A";
+  if (!grade || grade === "N/A") return `${label}: нет данных`;
   const place = axis?.place && typeof axis.place === "object" ? axis.place : {};
   const rank = normalizeNullableFiniteNumber(place.rank);
   const total = normalizeNullableFiniteNumber(place.total);
   const populationSize = normalizeNullableFiniteNumber(axis?.populationSize, total);
+  const debuff = normalizeInfluenceDebuffPercent(axis?.influenceDebuffPercent, 0);
+  const age = normalizeNullableFiniteNumber(axis?.dataAgeDays);
+  const stateText = axis?.isHistoricalFallback === true
+    ? `данные ${Number.isFinite(age) ? `${formatNumber(age)}д назад` : "из архива"}`
+    : "текущий расчёт";
+  const weightText = debuff > 0 ? ` · вес -${formatNumber(debuff)}%` : "";
 
   if (Number.isFinite(rank) && Number.isFinite(total) && total > 0) {
-    return `${label} ${grade} (#${formatNumber(rank)}/${formatNumber(total)})`;
+    return `${label} ${grade} (#${formatNumber(rank)}/${formatNumber(total)}) · ${stateText}${weightText}`;
   }
 
   if (Number.isFinite(populationSize) && populationSize > 0) {
-    return `${label} ${grade} (baseline ${formatNumber(populationSize)}/${formatNumber(MIN_POPULATION_BASELINE)})`;
+    return `${label} ${grade} (место ждёт базу ${formatNumber(populationSize)}/${formatNumber(MIN_POPULATION_BASELINE)}) · ${stateText}${weightText}`;
   }
 
-  return `${label} ${grade} (место N/A)`;
+  return `${label} ${grade} (место ждёт базу) · ${stateText}${weightText}`;
 }
 
 function buildAxisConfidenceSummaryLine(tierlist = {}) {
@@ -3629,25 +3772,23 @@ function buildAxisConfidenceSummaryLine(tierlist = {}) {
     .filter((axis) => axis && typeof axis === "object");
   if (!axes.length) return null;
 
-  const validAxes = axes.filter((axis) => cleanString(axis?.grade, 10) && axis.grade !== "N/A");
-  const reliableCount = axes.filter((axis) => cleanString(axis?.confidenceState, 40) === "reliable").length;
-  const partialCount = axes.filter((axis) => cleanString(axis?.confidenceState, 40) === "partial").length;
+  const currentCount = axes.filter((axis) => (
+    axis?.isHistoricalFallback !== true
+      && cleanString(axis?.confidenceState, 40) !== "unavailable"
+      && cleanString(axis?.grade, 10) !== "N/A"
+  )).length;
+  const historicalCount = axes.filter((axis) => axis?.isHistoricalFallback === true).length;
   const unavailableCount = axes.filter((axis) => cleanString(axis?.confidenceState, 40) === "unavailable").length;
   const maxDebuff = axes.reduce((max, axis) => {
     const debuff = normalizeFiniteNumber(axis?.influenceDebuffPercent, 0);
     return Number.isFinite(debuff) ? Math.max(max, debuff) : max;
   }, 0);
-  const populationSizes = axes
-    .map((axis) => normalizeNullableFiniteNumber(axis?.populationSize))
-    .filter((entry) => Number.isFinite(entry) && entry > 0);
-  const minPopulationSize = populationSizes.length ? Math.min(...populationSizes) : null;
 
-  const parts = [`Надёжность букв: reliable ${formatNumber(reliableCount)}/${formatNumber(axes.length)}`];
-  if (partialCount > 0) parts.push(`partial ${formatNumber(partialCount)}`);
-  if (unavailableCount > 0) parts.push(`N/A ${formatNumber(unavailableCount)}`);
-  if (Number.isFinite(minPopulationSize)) parts.push(`baseline min ${formatNumber(minPopulationSize)}`);
-  parts.push(`max debuff ${formatNumber(maxDebuff)}%`);
-  if (validAxes.length < axes.length) {
+  const parts = [`Буквы: текущий расчёт ${formatNumber(currentCount)}/${formatNumber(axes.length)}`];
+  if (historicalCount > 0) parts.push(`старые данные ${formatNumber(historicalCount)}`);
+  if (unavailableCount > 0) parts.push(`нет данных ${formatNumber(unavailableCount)}`);
+  if (maxDebuff > 0) parts.push(`самый сильный штраф веса -${formatNumber(maxDebuff)}%`);
+  if (currentCount + historicalCount < axes.length) {
     parts.push("часть осей ждёт данных");
   }
 

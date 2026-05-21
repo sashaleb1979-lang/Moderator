@@ -427,6 +427,39 @@ test("profile operator handles open and nav buttons through one runtime seam", a
   assert.equal(navCalls[1].payload.flags, MessageFlags.IsComponentsV2);
 });
 
+test("profile operator returns a safe fallback when profile nav payload build fails", async () => {
+  const warnings = [];
+  const operator = createTestOperator({
+    getTargetProfile: () => {
+      throw new Error("broken profile build");
+    },
+    logWarning: (message) => warnings.push(message),
+  });
+  const calls = [];
+
+  const handled = await operator.handleProfileButtonInteraction({
+    interaction: {
+      customId: buildProfileNavCustomId("requester", "user-1", "activity"),
+      user: { id: "requester", username: "Requester" },
+      member: makeMember({
+        userId: "requester",
+        username: "Requester",
+        displayName: "Requester",
+        primaryGuild: makePrimaryGuild("TAG"),
+      }),
+      reply: async (payload) => calls.push({ step: "reply", payload }),
+      deferUpdate: async () => calls.push({ step: "deferUpdate" }),
+      editReply: async (payload) => calls.push({ step: "editReply", payload }),
+    },
+  });
+
+  assert.equal(handled, true);
+  assert.deepEqual(calls.map((entry) => entry.step), ["deferUpdate", "editReply"]);
+  assert.equal(calls[1].payload.flags, MessageFlags.IsComponentsV2);
+  assert.match(JSON.stringify(calls[1].payload.components[0].toJSON()), /Раздел временно недоступен/);
+  assert.ok(warnings.some((message) => /profile nav payload failed \(activity\/user-1\): broken profile build/.test(message)));
+});
+
 test("profile operator opens Roblox bind modal from the self action button", async () => {
   const operator = createTestOperator({
     getTargetProfile: () => ({
@@ -453,6 +486,39 @@ test("profile operator opens Roblox bind modal from the self action button", asy
   assert.equal(calls.length, 1);
   assert.equal(calls[0].customId, "profile_bind_roblox_modal");
   assert.equal(calls[0].initialValue, "GojoMain");
+});
+
+test("profile operator pre-fills Roblox bind modal from canonical domains state", async () => {
+  const operator = createTestOperator({
+    getTargetProfile: () => ({
+      summary: {
+        roblox: {
+          currentUsername: "WrongSummaryName",
+          verificationStatus: "unverified",
+        },
+      },
+      domains: {
+        roblox: {
+          username: "CanonicalRb",
+          verificationStatus: "verified",
+          userId: "123",
+        },
+      },
+    }),
+  });
+  const calls = [];
+
+  const handled = await operator.handleProfileButtonInteraction({
+    interaction: {
+      customId: "profile_bind_roblox",
+      user: { id: "user-1", username: "Sasha" },
+      showModal: async (payload) => calls.push(payload),
+    },
+  });
+
+  assert.equal(handled, true);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].initialValue, "CanonicalRb");
 });
 
 test("profile operator routes elo self-card button into canonical compact-card payload", async () => {

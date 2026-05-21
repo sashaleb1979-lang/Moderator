@@ -5,6 +5,14 @@ const {
   formatRobloxBindingStatusLine,
   formatRobloxReadinessLabel,
 } = require("../integrations/roblox-binding-status");
+const {
+  buildRobloxProfileUrl,
+  deriveProfileMainView,
+  getRobloxTrackabilityBlocker,
+  getRobloxTrackabilityState,
+  normalizeRobloxDomainState,
+  resolveUsableVerifiedRobloxIdentity,
+} = require("../integrations/shared-profile");
 
 function cleanString(value, limit = 2000) {
   return String(value || "").trim().slice(0, Math.max(0, Number(limit) || 0));
@@ -30,28 +38,28 @@ const PROFILE_LEVEL_AXIS_LABELS = Object.freeze({
   social: { emoji: "🤝", label: "Соц" },
 });
 const PROFILE_TRUST_LABELS = Object.freeze({
-  reliable: "свежо",
-  fresh: "свежо",
-  measured: "свежо",
-  partial: "частично",
-  stale: "устарело",
-  outdated: "устарело",
-  heuristic: "эвристика",
-  inferred: "эвристика",
-  proxy: "эвристика",
-  sparse: "эвристика",
+  reliable: "точный расчёт",
+  fresh: "точный расчёт",
+  measured: "точный расчёт",
+  partial: "частичный расчёт",
+  stale: "старые данные",
+  outdated: "старые данные",
+  heuristic: "примерная оценка",
+  inferred: "примерная оценка",
+  proxy: "примерная оценка",
+  sparse: "мало базы",
   unavailable: "нет базы",
   empty: "нет базы",
 });
 const PROFILE_SECTION_GROUPS = Object.freeze({
   overview: [
-    { title: "⚡ Dashboard", tone: "summary", density: "compact", titles: ["✨ Обзор", "🧬 Уровень профиля", "🎭 Роли и места"] },
-    { title: "🧩 Сила и готовность", tone: "dossier", density: "normal", titles: ["Main Core", "Буквы и места", "🛡️ Готовность", "War Readiness"] },
+    { title: "⚡ Главное", tone: "summary", density: "compact", titles: ["✨ Обзор", "🧬 Уровень профиля", "🎭 Роли и места"] },
+    { title: "🧩 Сила", tone: "dossier", density: "normal", titles: ["Буквы и места", "Main Core", "📚 Мейны"] },
   ],
   activity: [
-    { title: "🧭 Где живёт игрок", tone: "summary", density: "compact", titles: ["📊 Активность", "Activity mix", "Voice-срез"] },
-    { title: "🏆 Форма сезона", tone: "dossier", density: "normal", titles: ["Prime time МСК", "Лучшие периоды", "Weekly rollups", "История сезона"] },
-    { title: "🔎 Стабильность", tone: "technical", density: "dense", titles: ["Farm profile", "Relative component places", "Prime time confidence", "Season consistency", "Comeback metrics", "🔎 Детали activity"] },
+    { title: "📊 Итог", tone: "summary", density: "compact", titles: ["📊 Итог активности", "Activity mix", "Voice-срез"] },
+    { title: "🧭 Режим", tone: "dossier", density: "normal", titles: ["Farm profile", "Prime time МСК", "Prime time confidence"] },
+    { title: "🏆 Сезон", tone: "dossier", density: "normal", titles: ["Лучшие периоды", "Weekly rollups", "Season consistency", "Comeback metrics"] },
   ],
   progress: [
     { title: "⚔️ Рост и proof", tone: "summary", density: "normal", titles: ["Практический прогресс", "🏅 Вклад", "📈 Последний рост по kills", "Proof gap"] },
@@ -409,6 +417,8 @@ function buildProfileLevelAxisEntries(tierlist = null) {
       confidenceState,
       debuffPercent,
       adjustedXp,
+      isHistoricalFallback: axis?.isHistoricalFallback === true,
+      dataAgeDays: normalizeNullableFiniteNumber(axis?.dataAgeDays),
     };
   }).filter(Boolean);
 }
@@ -430,25 +440,21 @@ function buildProfileLevelLines({ levelState = {}, tierlist = null } = {}) {
 
   const strongest = axes.slice().sort((left, right) => right.adjustedXp - left.adjustedXp)[0];
   const weakest = axes.slice().sort((left, right) => left.score - right.score)[0];
-  const counts = axes.reduce((acc, entry) => {
-    acc[entry.confidenceState] = (acc[entry.confidenceState] || 0) + 1;
-    return acc;
-  }, {});
+  const currentCount = axes.filter((entry) => entry.isHistoricalFallback !== true).length;
+  const historicalCount = axes.filter((entry) => entry.isHistoricalFallback === true).length;
   const maxDebuff = axes.reduce((max, entry) => Math.max(max, entry.debuffPercent), 0);
 
   lines.push(`Сильнее всего даёт XP: ${formatLevelAxis(strongest)} • +${formatNumber(strongest.adjustedXp)} XP`);
-  lines.push(`Где тоньше: ${formatLevelAxis(weakest)} • score ${formatNumber(weakest.score)}`);
+  lines.push(`Где тоньше: ${formatLevelAxis(weakest)} • оценка ${formatNumber(weakest.score)}`);
   lines.push(`Буквы: ${axes.map((entry) => formatLevelAxis(entry)).join(" • ")}`);
   lines.push(
     [
-      "Доверие",
-      `fresh ${formatNumber(counts.reliable || 0)}`,
-      `partial ${formatNumber(counts.partial || 0)}`,
-      `heuristic ${formatNumber(counts.heuristic || 0)}`,
-      `outdated ${formatNumber(counts.outdated || 0)}`,
-      `max debuff ${formatNumber(maxDebuff)}%`,
-      `weekly окон ${formatNumber(levelState.weeklyWindowCount)}`,
-    ].join(" • ")
+      "Вес букв",
+      `текущий расчёт ${formatNumber(currentCount)}/${formatNumber(axes.length)}`,
+      historicalCount ? `старые данные ${formatNumber(historicalCount)}` : "",
+      maxDebuff > 0 ? `макс. вес -${formatNumber(maxDebuff)}%` : "без штрафа веса",
+      `недель ${formatNumber(levelState.weeklyWindowCount)}`,
+    ].filter(Boolean).join(" • ")
   );
   return lines;
 }
@@ -460,10 +466,13 @@ function buildTierlistBadgeLine(tierlist = null) {
       const meta = PROFILE_LEVEL_AXIS_LABELS[axisName] || { label: axisName };
       const grade = cleanString(axis?.grade, 10);
       if (!grade || grade === "N/A") return `${meta.label} нет базы`;
-      const trust = formatTrustLabel(axis?.confidenceState || axis?.freshnessState);
       const debuff = normalizeFiniteNumber(axis?.influenceDebuffPercent, 0);
-      const suffix = debuff > 0 ? `, -${formatNumber(debuff)}%` : "";
-      return `${meta.label} ${grade} (${trust}${suffix})`;
+      const age = normalizeNullableFiniteNumber(axis?.dataAgeDays);
+      const suffix = axis?.isHistoricalFallback === true && Number.isFinite(age)
+        ? `данные ${formatNumber(age)}д назад`
+        : "текущий расчёт";
+      const weight = debuff > 0 ? `, вес -${formatNumber(debuff)}%` : "";
+      return `${meta.label} ${grade} (${suffix}${weight})`;
     })
     .filter(Boolean);
   return parts.length ? `🏷️ Буквы: ${parts.join(" • ")}` : "🏷️ Буквы: нет базы";
@@ -479,13 +488,13 @@ function buildProfileTrustBadges({ tierlist = null, levelState = {}, robloxUsabi
       key: "letters",
       label: "Буквы",
       state: unavailableAxes > 0 ? "partial" : (reliableAxes >= Math.ceil(axes.length / 2) ? "reliable" : "partial"),
-      text: axes.length ? `${formatNumber(reliableAxes)}/${formatNumber(axes.length)} свежих` : "нет базы",
+      text: axes.length ? `${formatNumber(reliableAxes)}/${formatNumber(axes.length)} текущий расчёт` : "нет базы",
     },
     {
       key: "roblox",
       label: "Roblox",
       state: robloxUsability.usable ? "reliable" : (robloxUsability.state ? "outdated" : "unavailable"),
-      text: robloxUsability.usable ? "активно" : (robloxUsability.state === "repairable" || robloxUsability.state === "manual_only" ? "требует перепривязки" : "нет сигнала"),
+      text: robloxUsability.usable ? "привязан" : (robloxUsability.state === "repairable" || robloxUsability.state === "manual_only" ? "нужно обновить" : "нет связки"),
     },
     {
       key: "weekly",
@@ -507,7 +516,7 @@ function buildProfileTrustBadges({ tierlist = null, levelState = {}, robloxUsabi
 
 function formatTrustBadgesLine(badges = []) {
   const parts = (Array.isArray(badges) ? badges : [])
-    .map((badge) => `${badge.label}: ${badge.text} (${badge.trustLabel})`)
+    .map((badge) => `${badge.label}: ${badge.text}`)
     .filter(Boolean);
   return parts.length ? `🧪 Данные: ${parts.join(" • ")}` : "🧪 Данные: нет базы";
 }
@@ -521,6 +530,7 @@ function buildHeroSummary({
   mainCharacterLabels = [],
   verifiedRobloxLabel = "",
   robloxSummary = {},
+  robloxDisplayState = null,
   approvedKills = null,
   standing = {},
   activitySummary = {},
@@ -536,7 +546,7 @@ function buildHeroSummary({
     : "место по kills ждёт базу";
   const robloxStatus = verifiedRobloxLabel
     ? `Roblox ${verifiedRobloxLabel}`
-    : formatRobloxReadiness(robloxSummary);
+    : (robloxDisplayState?.readinessLabel || formatRobloxReadiness(robloxSummary));
   const killText = Number.isFinite(approvedKills) ? `${formatNumber(approvedKills)} kills` : "kills ждут proof";
 
   return {
@@ -547,8 +557,7 @@ function buildHeroSummary({
       buildTierlistBadgeLine(tierlist),
       `🎭 Main: ${mainLabel} • ${robloxStatus}`,
       `🏆 ${killText} • ${killPlace} • активность ${activityRole}`,
-      formatTrustBadgesLine(trustBadges),
-      ...((Array.isArray(baseHeroLines) ? baseHeroLines : []).slice(0, 3)),
+      ...((Array.isArray(baseHeroLines) ? baseHeroLines : []).slice(0, 1)),
     ].filter(Boolean),
     state: (trustBadges || []).some((badge) => badge.state === "outdated") ? "degraded" : "rich",
   };
@@ -996,6 +1005,7 @@ function buildOverviewStatusLines({
   profile = null,
   verificationSummary = {},
   robloxSummary = {},
+  robloxDisplayState = null,
   pendingSubmission = null,
 } = {}) {
   const lines = [];
@@ -1014,25 +1024,184 @@ function buildOverviewStatusLines({
 
   lines.push(`Верификация: ${cleanString(verificationSummary.status, 80) || "не начата"}`);
 
-  lines.push(formatRobloxBindingStatusLine(profile || robloxSummary));
+  lines.push(robloxDisplayState?.statusLine || formatRobloxBindingStatusLine(profile || robloxSummary));
 
   return lines;
 }
 
-function resolveRobloxSummaryUsability(robloxSummary = {}) {
-  const summary = robloxSummary && typeof robloxSummary === "object" ? robloxSummary : {};
-  const trackingState = cleanString(summary.trackingState, 40);
-  const username = cleanString(summary.currentUsername || summary.username, 120);
-  const userId = cleanString(summary.userId, 80);
-  const usable = summary.isTrackable === true
-    || trackingState === "trackable"
-    || (!trackingState && summary.hasVerifiedAccount === true && Boolean(username) && Boolean(userId));
+function hasOwn(source, key) {
+  return Boolean(source) && Object.prototype.hasOwnProperty.call(source, key);
+}
+
+function firstCleanString(values = [], limit = 2000) {
+  for (const value of Array.isArray(values) ? values : []) {
+    const text = cleanString(value, limit);
+    if (text) return text;
+  }
+  return "";
+}
+
+function hasMeaningfulRobloxDomain(source = {}) {
+  const value = source && typeof source === "object" ? source : {};
+  return [
+    value.username,
+    value.currentUsername,
+    value.userId,
+    value.robloxUserId,
+    value.profileUrl,
+    value.avatarUrl,
+    value.verificationStatus,
+    value.verifiedAt,
+  ].some((entry) => cleanString(entry, 200))
+    || Boolean(value.playtime && typeof value.playtime === "object");
+}
+
+function buildRobloxLegacyCandidate(profile = {}) {
+  const source = profile && typeof profile === "object" ? profile : {};
+  return {
+    username: source.robloxUsername,
+    currentUsername: source.robloxUsername,
+    displayName: source.robloxDisplayName,
+    currentDisplayName: source.robloxDisplayName,
+    userId: source.robloxUserId,
+    avatarUrl: source.robloxAvatarUrl,
+    profileUrl: source.robloxProfileUrl,
+    verificationStatus: source.verificationStatus,
+    verifiedAt: source.robloxVerifiedAt || source.verifiedAt,
+  };
+}
+
+function isRobloxCandidateLinked(candidate = {}) {
+  const source = candidate && typeof candidate === "object" ? candidate : {};
+  const status = cleanString(source.verificationStatus || source.status, 40).toLowerCase();
+  if (["failed", "unverified", "rejected", "denied"].includes(status)) return false;
+  return status === "verified"
+    || source.hasVerifiedAccount === true
+    || Boolean(cleanString(source.verifiedAt || source.robloxVerifiedAt, 80));
+}
+
+function normalizeSummaryRobloxToDomainShape(summary = {}) {
+  const source = summary && typeof summary === "object" ? summary : {};
+  return {
+    username: source.username || source.currentUsername,
+    displayName: source.displayName || source.currentDisplayName,
+    userId: source.userId,
+    avatarUrl: source.avatarUrl,
+    profileUrl: source.profileUrl,
+    verificationStatus: source.verificationStatus || (source.hasVerifiedAccount === true ? "verified" : null),
+    verifiedAt: source.verifiedAt,
+    lastRefreshAt: source.lastRefreshAt,
+    refreshStatus: source.refreshStatus,
+    refreshError: source.refreshError,
+  };
+}
+
+function pickRobloxPlaytimeValue(domainPlaytime = {}, summary = {}, key = "") {
+  const domainValue = normalizeNullableFiniteNumber(domainPlaytime?.[key]);
+  if (hasOwn(domainPlaytime, key) && Number.isFinite(domainValue)) {
+    return domainValue;
+  }
+  const summaryValue = normalizeNullableFiniteNumber(summary?.[key]);
+  if (hasOwn(summary, key) && Number.isFinite(summaryValue)) {
+    return summaryValue;
+  }
+  return null;
+}
+
+function buildCanonicalRobloxSummary({ profile = null, summaryRoblox = {} } = {}) {
+  const rawDomain = profile?.domains?.roblox && typeof profile.domains.roblox === "object"
+    ? profile.domains.roblox
+    : null;
+  const normalizedDomain = rawDomain ? normalizeRobloxDomainState(rawDomain) : null;
+  const normalizedSummary = normalizeRobloxDomainState(normalizeSummaryRobloxToDomainShape(summaryRoblox));
+  const legacy = normalizeRobloxDomainState(buildRobloxLegacyCandidate(profile || {}));
+  const identityCandidates = [normalizedDomain, normalizedSummary, legacy]
+    .filter((entry) => entry && hasMeaningfulRobloxDomain(entry));
+  const usableIdentity = identityCandidates
+    .map((entry) => resolveUsableVerifiedRobloxIdentity(entry))
+    .find(Boolean) || null;
+  const linkedCandidate = identityCandidates.find(isRobloxCandidateLinked) || null;
+  const identity = usableIdentity || linkedCandidate || normalizedDomain || normalizedSummary || legacy || {};
+  const domainPlaytime = rawDomain?.playtime && typeof rawDomain.playtime === "object" ? rawDomain.playtime : {};
+  const trackingState = cleanString(summaryRoblox?.trackingState, 40)
+    || (linkedCandidate ? getRobloxTrackabilityState(linkedCandidate) : getRobloxTrackabilityState(identity));
+  const trackingBlocker = cleanString(summaryRoblox?.trackingBlocker, 80)
+    || getRobloxTrackabilityBlocker(linkedCandidate || identity, trackingState);
+  const username = firstCleanString([usableIdentity?.username, identity.username, summaryRoblox.currentUsername, summaryRoblox.username], 120);
+  const displayName = firstCleanString([usableIdentity?.displayName, identity.displayName, summaryRoblox.currentDisplayName, summaryRoblox.displayName], 120);
+  const userId = firstCleanString([usableIdentity?.userId, identity.userId, summaryRoblox.userId], 80);
+  const builtProfileUrl = /^\d+$/.test(userId) ? buildRobloxProfileUrl(userId) : "";
+  const profileUrl = normalizeMediaUrl(firstCleanString([
+    usableIdentity?.profileUrl,
+    identity.profileUrl,
+    summaryRoblox.profileUrl,
+    builtProfileUrl,
+  ], 2000), 2000);
+  const avatarUrl = normalizeMediaUrl(firstCleanString([usableIdentity?.avatarUrl, identity.avatarUrl, summaryRoblox.avatarUrl], 2000), 2000);
+  const isLinked = Boolean(usableIdentity || linkedCandidate || (username && cleanString(identity.verificationStatus, 40) === "verified"));
+  const isTrackable = trackingState === "trackable" && Boolean(userId);
+  const hasPlaytimeDomain = Boolean(rawDomain?.playtime && typeof rawDomain.playtime === "object");
 
   return {
-    usable,
-    state: trackingState || (usable ? "trackable" : cleanString(summary.verificationStatus, 40)),
+    ...summaryRoblox,
+    identityUsable: Boolean(usableIdentity),
+    hasVerifiedAccount: isLinked,
+    isTrackable,
+    trackingState: trackingState || (isLinked ? "manual_only" : "unverified"),
+    trackingBlocker: trackingBlocker || (isTrackable ? "none" : "unverified"),
+    username,
+    currentUsername: username,
+    displayName,
+    currentDisplayName: displayName,
+    userId,
+    avatarUrl,
+    profileUrl,
+    totalJjsMinutes: pickRobloxPlaytimeValue(domainPlaytime, summaryRoblox, "totalJjsMinutes"),
+    jjsMinutes7d: pickRobloxPlaytimeValue(domainPlaytime, summaryRoblox, "jjsMinutes7d"),
+    jjsMinutes30d: pickRobloxPlaytimeValue(domainPlaytime, summaryRoblox, "jjsMinutes30d"),
+    sessionCount: pickRobloxPlaytimeValue(domainPlaytime, summaryRoblox, "sessionCount"),
+    currentSessionStartedAt: firstCleanString([domainPlaytime.currentSessionStartedAt, summaryRoblox.currentSessionStartedAt], 80) || null,
+    lastSeenInJjsAt: firstCleanString([domainPlaytime.lastSeenInJjsAt, summaryRoblox.lastSeenInJjsAt], 80) || null,
+    hourlyBucketsMsk: domainPlaytime.hourlyBucketsMsk || summaryRoblox.hourlyBucketsMsk,
+    playtimeSource: hasPlaytimeDomain ? "domains.roblox.playtime" : "summary.roblox",
+  };
+}
+
+function buildRobloxDisplayState({ profile = null, summaryRoblox = {} } = {}) {
+  const canonicalSummary = buildCanonicalRobloxSummary({ profile, summaryRoblox });
+  const trackingState = cleanString(canonicalSummary.trackingState, 40);
+  const isLinked = canonicalSummary.hasVerifiedAccount === true;
+  const isTrackable = canonicalSummary.isTrackable === true;
+  const needsRebind = isLinked && !isTrackable && ["repairable", "manual_only"].includes(trackingState);
+  const username = cleanString(canonicalSummary.currentUsername || canonicalSummary.username, 120);
+  const userId = cleanString(canonicalSummary.userId, 80);
+  const label = canonicalSummary.identityUsable === true || isTrackable
+    ? (username || userId)
+    : "";
+  const statusLine = isLinked
+    ? (isTrackable
+      ? "Roblox-связка: подтверждена"
+      : "Roblox привязан, JJS-активность не обновляется")
+    : formatRobloxBindingStatusLine(profile || canonicalSummary);
+  const readinessLabel = isLinked
+    ? (isTrackable ? "Roblox готов" : "Roblox привязан, трекер ждёт обновления")
+    : formatRobloxReadinessLabel(canonicalSummary);
+  const canShowIdentityMedia = canonicalSummary.identityUsable === true || isTrackable;
+
+  return {
+    isLinked,
+    isTrackable,
+    needsRebind,
+    state: trackingState || (isLinked ? "verified" : "unverified"),
+    trackingBlocker: cleanString(canonicalSummary.trackingBlocker, 80),
     username,
     userId,
+    label,
+    avatarUrl: canShowIdentityMedia ? normalizeMediaUrl(canonicalSummary.avatarUrl, 2000) : null,
+    profileUrl: canShowIdentityMedia ? normalizeMediaUrl(canonicalSummary.profileUrl, 2000) : null,
+    summary: canonicalSummary,
+    statusLine,
+    readinessLabel,
   };
 }
 
@@ -1077,9 +1246,9 @@ function buildHeroLines({
   if (mainLabel.length) {
     focusBits.push(`мейны ${mainLabel.join(", ")}`);
   }
-  const robloxUsability = resolveRobloxSummaryUsability(robloxSummary);
-  if (robloxUsability.usable && robloxUsability.username) {
-    focusBits.push(`Roblox ${robloxUsability.username}`);
+  if ((robloxSummary?.isTrackable === true || robloxSummary?.identityUsable === true)
+    && cleanString(robloxSummary.currentUsername || robloxSummary.username, 120)) {
+    focusBits.push(`Roblox ${cleanString(robloxSummary.currentUsername || robloxSummary.username, 120)}`);
   }
   if (activitySummary.appliedActivityRoleKey || activitySummary.desiredActivityRoleKey) {
     focusBits.push(`активность ${cleanString(activitySummary.appliedActivityRoleKey || activitySummary.desiredActivityRoleKey, 80)}`);
@@ -1121,7 +1290,9 @@ function buildProfileReadModel(options = {}) {
   const activitySummary = summary.activity && typeof summary.activity === "object" ? summary.activity : {};
   const eloSummary = summary.elo && typeof summary.elo === "object" ? summary.elo : {};
   const tierlistSummary = summary.tierlist && typeof summary.tierlist === "object" ? summary.tierlist : {};
-  const robloxSummary = summary.roblox && typeof summary.roblox === "object" ? summary.roblox : {};
+  const rawRobloxSummary = summary.roblox && typeof summary.roblox === "object" ? summary.roblox : {};
+  const robloxDisplayState = buildRobloxDisplayState({ profile, summaryRoblox: rawRobloxSummary });
+  const robloxSummary = robloxDisplayState.summary;
   const verificationSummary = summary.verification && typeof summary.verification === "object" ? summary.verification : {};
   const progressSummary = summary.progress && typeof summary.progress === "object" ? summary.progress : {};
   const voiceSummary = summary.voice && typeof summary.voice === "object" ? summary.voice : {};
@@ -1136,8 +1307,9 @@ function buildProfileReadModel(options = {}) {
   const hiddenRoleIds = normalizeHiddenRoleIds(options.hiddenProfileRoleIds);
   const roleMentions = filterDisplayRoleMentions(options.roleMentions, hiddenRoleIds);
   const displayMode = normalizeProfileDisplayMode(options.displayMode, { isSelf: options.isSelf });
-  const mainCharacterIds = Array.isArray(profile?.mainCharacterIds) ? profile.mainCharacterIds : [];
-  const mainCharacterLabels = Array.isArray(profile?.mainCharacterLabels) ? profile.mainCharacterLabels : [];
+  const derivedMainView = deriveProfileMainView(profile || {}, characterCatalog);
+  const mainCharacterIds = derivedMainView.mainCharacterIds;
+  const mainCharacterLabels = derivedMainView.mainCharacterLabels;
   const displayName = cleanString(
     options.targetDisplayName
     || summary.preferredDisplayName
@@ -1161,14 +1333,19 @@ function buildProfileReadModel(options = {}) {
   });
   const comboLinks = mergeProfileLinks(comboGuideLinks, characterWikiLinks);
   const targetAvatarUrl = normalizeMediaUrl(options.targetAvatarUrl, 2000);
-  const robloxUsability = resolveRobloxSummaryUsability(robloxSummary);
-  const hasVerifiedRoblox = robloxUsability.usable;
-  const needsRobloxRebind = robloxUsability.state === "repairable" || robloxUsability.state === "manual_only";
-  const verifiedRobloxLabel = hasVerifiedRoblox
-    ? cleanString(robloxUsability.username || robloxUsability.userId, 120)
-    : "";
-  const robloxAvatarUrl = hasVerifiedRoblox ? normalizeMediaUrl(robloxSummary.avatarUrl, 2000) : null;
-  const robloxProfileUrl = hasVerifiedRoblox ? cleanString(robloxSummary.profileUrl, 1000) || null : null;
+  const robloxUsability = {
+    usable: robloxDisplayState.isLinked,
+    state: robloxDisplayState.state,
+    username: robloxDisplayState.username,
+    userId: robloxDisplayState.userId,
+  };
+  const hasVerifiedRoblox = robloxDisplayState.isLinked;
+  const needsRobloxRebind = robloxDisplayState.needsRebind;
+  const verifiedRobloxLabel = hasVerifiedRoblox ? cleanString(robloxDisplayState.label, 120) : "";
+  const robloxOverviewLabel = verifiedRobloxLabel
+    || (hasVerifiedRoblox ? "привязан, нужно обновить" : "не привязан");
+  const robloxAvatarUrl = hasVerifiedRoblox ? robloxDisplayState.avatarUrl : null;
+  const robloxProfileUrl = hasVerifiedRoblox ? robloxDisplayState.profileUrl : null;
   const mandatoryLinks = buildMandatoryLinks({
     robloxProfileUrl,
   });
@@ -1180,7 +1357,8 @@ function buildProfileReadModel(options = {}) {
   const eloSubmissionCreatedAt = options.eloProfile?.lastSubmissionCreatedAt || eloSummary.lastSubmissionCreatedAt || null;
   const eloProofUrl = cleanString(options.eloProfile?.proofUrl || eloSummary.proofUrl, 1000);
   const robloxIdentityHint = cleanString(
-    robloxSummary.currentUsername
+    robloxDisplayState.username
+      || robloxSummary.currentUsername
       || profile?.domains?.roblox?.username
       || profile?.robloxUsername,
     120
@@ -1193,7 +1371,7 @@ function buildProfileReadModel(options = {}) {
     killsLabel: Number.isFinite(approvedKills) ? "Обновить kills" : "Добавить kills",
     mainsLabel: mainCharacterLabels.length ? "Сменить мейнов" : "Выбрать мейнов",
     robloxLabel: hasVerifiedRoblox
-      ? "Обновить Roblox"
+      ? (needsRobloxRebind ? "Перепривязать Roblox" : "Обновить Roblox")
       : (needsRobloxRebind ? "Перепривязать Roblox" : (robloxIdentityHint ? "Проверить Roblox" : "Привязать Roblox")),
     eloLabel: Number.isFinite(Number(currentElo)) ? "Обновить ELO" : "ELO: текст + скрин",
   };
@@ -1255,7 +1433,7 @@ function buildProfileReadModel(options = {}) {
   const overviewLines = [];
   overviewLines.push(`Игрок: <@${userId}>`);
   overviewLines.push(`Роли: ${roleMentions.length ? roleMentions.join(", ") : "—"}`);
-  overviewLines.push(`Roblox: ${verifiedRobloxLabel || "не привязан"}`);
+  overviewLines.push(`Roblox: ${robloxOverviewLabel}${robloxDisplayState.isLinked && !robloxDisplayState.isTrackable ? " • JJS-трекер ждёт обновления" : ""}`);
   overviewLines.push(`Подтверждённые kills: ${Number.isFinite(approvedKills) ? formatNumber(approvedKills) : "—"}`);
   if (Number.isFinite(Number(currentElo)) || Number.isFinite(Number(currentEloTier))) {
     const eloBits = [];
@@ -1348,6 +1526,7 @@ function buildProfileReadModel(options = {}) {
     mainCharacterLabels,
     verifiedRobloxLabel,
     robloxSummary,
+    robloxDisplayState,
     approvedKills,
     standing,
     activitySummary,
@@ -1358,6 +1537,7 @@ function buildProfileReadModel(options = {}) {
     profile,
     verificationSummary,
     robloxSummary,
+    robloxDisplayState,
     pendingSubmission,
   });
 
@@ -1365,33 +1545,39 @@ function buildProfileReadModel(options = {}) {
   const rawVoiceHours30d = Number.isFinite(Number(voiceSummary.voiceDurationSeconds30d))
     ? Number(voiceSummary.voiceDurationSeconds30d) / 3600
     : null;
+  activityLines.push(robloxDisplayState.isLinked
+    ? (robloxDisplayState.isTrackable ? "Roblox/JJS: трекается" : "Roblox привязан, JJS-активность не обновляется")
+    : "Roblox/JJS: нет привязки");
   if (activitySummary.appliedActivityRoleKey || activitySummary.desiredActivityRoleKey) {
-    activityLines.push(`Бакет: ${cleanString(activitySummary.appliedActivityRoleKey || activitySummary.desiredActivityRoleKey, 80)}`);
+    activityLines.push(`Роль активности: ${cleanString(activitySummary.appliedActivityRoleKey || activitySummary.desiredActivityRoleKey, 80)}`);
   }
   if (Number.isFinite(Number(activitySummary.activityScore))) {
     activityLines.push(`Счёт активности: ${formatNumber(activitySummary.activityScore)}`);
   }
+  if (Number.isFinite(Number(robloxSummary.jjsMinutes7d)) || Number.isFinite(Number(robloxSummary.jjsMinutes30d))) {
+    activityLines.push(`JJS: ${formatJjsHoursFromMinutes(robloxSummary.jjsMinutes7d)} за 7д • ${formatJjsHoursFromMinutes(robloxSummary.jjsMinutes30d)} за 30д`);
+  }
   if (Number.isFinite(Number(activitySummary.messages7d)) || Number.isFinite(Number(activitySummary.messages30d))) {
-    activityLines.push(`Сообщения 7д/30д: ${formatNumber(activitySummary.messages7d)} / ${formatNumber(activitySummary.messages30d)}`);
+    activityLines.push(`Чат: ${formatNumber(activitySummary.messages7d)} msg за 7д • ${formatNumber(activitySummary.messages30d)} за 30д`);
   }
   if (Number.isFinite(Number(activitySummary.sessions7d)) || Number.isFinite(Number(activitySummary.sessions30d))) {
-    activityLines.push(`Сессии 7д/30д: ${formatNumber(activitySummary.sessions7d)} / ${formatNumber(activitySummary.sessions30d)}`);
+    activityLines.push(`Discord-сессии: ${formatNumber(activitySummary.sessions7d)} за 7д • ${formatNumber(activitySummary.sessions30d)} за 30д`);
   }
   if (Number.isFinite(Number(activitySummary.activeDays30d))) {
     activityLines.push(`Активные дни 30д: ${formatNumber(activitySummary.activeDays30d)}`);
   }
   if (Number.isFinite(rawVoiceHours30d) || Number.isFinite(Number(activitySummary.effectiveVoiceHours30d))) {
-    activityLines.push(`Voice raw/effective 30д: ${formatHours(rawVoiceHours30d)} ч / ${formatHours(activitySummary.effectiveVoiceHours30d)} ч`);
+    activityLines.push(`Voice: ${formatHours(rawVoiceHours30d)} ч за 30д • активный вес ${formatHours(activitySummary.effectiveVoiceHours30d)} ч`);
   }
   if (Number.isFinite(Number(activitySummary.effectiveActiveVoiceSignalHours30d)) || Number.isFinite(Number(activitySummary.effectiveVoiceDays30d))) {
-    activityLines.push(`Voice signal 30д: ${formatHours(activitySummary.effectiveActiveVoiceSignalHours30d)} ч • effective дни: ${formatHours(activitySummary.effectiveVoiceDays30d)}`);
+    activityLines.push(`Активный voice: ${formatHours(activitySummary.effectiveActiveVoiceSignalHours30d)} ч • ${formatHours(activitySummary.effectiveVoiceDays30d)} активных дней`);
   }
   if (Number.isFinite(Number(activitySummary.voiceEngagementRatio30d))
     || Number.isFinite(Number(activitySummary.voiceEngagementMultiplier))
     || Number.isFinite(Number(activitySummary.voicePart))
     || Number.isFinite(Number(activitySummary.activeVoicePart))) {
     activityLines.push(
-      `Voice engagement: ${formatPercent(Number(activitySummary.voiceEngagementRatio30d) * 100)} • credit x${formatHours(activitySummary.voiceEngagementMultiplier, 2)} • вклад ${formatHours(activitySummary.voicePart)} + ${formatHours(activitySummary.activeVoicePart)}`
+      `Voice-вклад: ${formatPercent(Number(activitySummary.voiceEngagementRatio30d) * 100)} • x${formatHours(activitySummary.voiceEngagementMultiplier, 2)} • ${formatHours(activitySummary.voicePart)} + ${formatHours(activitySummary.activeVoicePart)}`
     );
   }
   if (Number.isFinite(Number(activitySummary.daysSinceGuildJoin))) {
@@ -1399,9 +1585,6 @@ function buildProfileReadModel(options = {}) {
   }
   if (activitySummary.lastSeenAt) {
     activityLines.push(`Последняя активность: ${formatDateTime(activitySummary.lastSeenAt)}`);
-  }
-  if (!activityLines.length) {
-    activityLines.push("Активность ещё не накоплена.");
   }
 
   const contributionLines = [];
@@ -1502,12 +1685,12 @@ function buildProfileReadModel(options = {}) {
 
   const robloxLines = [];
   if (hasVerifiedRoblox) {
-    robloxLines.push("Связка Roblox: подтверждена");
-    robloxLines.push(`Аккаунт: ${cleanString(robloxSummary.currentUsername, 120) || cleanString(robloxSummary.userId, 80) || "verified"}`);
-  } else if (robloxUsability.state === "repairable") {
-    robloxLines.push("Связка Roblox требует перепривязки: нет валидного Roblox userId.");
-  } else if (robloxUsability.state === "manual_only") {
-    robloxLines.push("Связка Roblox требует перепривязки: нет полного Roblox аккаунта.");
+    robloxLines.push(robloxDisplayState.statusLine);
+    robloxLines.push(`Аккаунт: ${verifiedRobloxLabel || "нужно обновить привязку"}`);
+  } else if (robloxDisplayState.state === "repairable") {
+    robloxLines.push("Roblox привязан, но нужно обновить userId.");
+  } else if (robloxDisplayState.state === "manual_only") {
+    robloxLines.push("Roblox привязан, но не хватает полного аккаунта.");
   } else if (robloxSummary.verificationStatus) {
     robloxLines.push(`Связка Roblox: ${cleanString(robloxSummary.verificationStatus, 80)}`);
   } else {
@@ -1572,11 +1755,8 @@ function buildProfileReadModel(options = {}) {
     if (robloxSummary.lastRefreshAt) {
       robloxLines.push(`Последнее обновление: ${formatDateTime(robloxSummary.lastRefreshAt)}`);
     }
-    if (robloxSummary.refreshStatus) {
-      robloxLines.push(`Статус обновления: ${cleanString(robloxSummary.refreshStatus, 80)}`);
-    }
     if (robloxSummary.refreshError) {
-      robloxLines.push(`Ошибка обновления: ${cleanString(robloxSummary.refreshError, 180)}`);
+      robloxLines.push("Обновление Roblox сломалось.");
     }
   }
 
@@ -1594,7 +1774,7 @@ function buildProfileReadModel(options = {}) {
   const socialPeerLines = buildTopCoPlayPeerLines(robloxSummary.topCoPlayPeers, 3);
   const compactCardLines = [
     `Игрок: <@${userId}>`,
-    `Roblox: ${verifiedRobloxLabel || "не привязан"}`,
+    `Roblox: ${robloxOverviewLabel}`,
     `Kills: ${Number.isFinite(approvedKills) ? formatNumber(approvedKills) : "—"}`,
     Number.isFinite(Number(currentElo)) || Number.isFinite(Number(currentEloTier))
       ? `ELO: ${[Number.isFinite(Number(currentElo)) ? formatNumber(currentElo) : "", Number.isFinite(Number(currentEloTier)) ? `tier ${formatNumber(currentEloTier)}` : ""].filter(Boolean).join(" / ")}`
@@ -1623,36 +1803,19 @@ function buildProfileReadModel(options = {}) {
       { title: "✨ Обзор", lines: overviewLines },
       { title: "🧬 Уровень профиля", lines: profileLevelLines },
       { title: "🎭 Роли и места", lines: roleShowcaseLines },
-      ...(synergy?.blocks?.viewerMainCore ? [synergy.blocks.viewerMainCore] : []),
       ...(synergy?.blocks?.viewerLetterPlaces ? [synergy.blocks.viewerLetterPlaces] : []),
-      {
-        title: "🛡️ Готовность",
-        lines: overviewStatusLines,
-      },
-      ...(synergy?.blocks?.personalWarReadiness ? [synergy.blocks.personalWarReadiness] : []),
+      ...(synergy?.blocks?.viewerMainCore ? [synergy.blocks.viewerMainCore] : []),
+      { title: "📚 Мейны", lines: mainAndGuideLines.slice(0, 5) },
     ],
     activity: [
-      { title: "📊 Активность", lines: activityLines },
-      ...(synergy?.blocks?.voiceSummary ? [synergy.blocks.voiceSummary] : []),
-      ...(synergy?.blocks?.primeTime ? [synergy.blocks.primeTime] : []),
-      ...(synergy?.blocks?.bestPeriods ? [synergy.blocks.bestPeriods] : []),
-      ...(synergy?.blocks?.seasonStory ? [synergy.blocks.seasonStory] : []),
-      ...(synergy?.blocks?.weeklyRollups ? [synergy.blocks.weeklyRollups] : []),
-      {
-        title: "🔎 Детали activity",
-        lines: [
-          Number.isFinite(Number(activitySummary.messages90d)) ? `Сообщения 90д: ${formatNumber(activitySummary.messages90d)}` : "",
-          Number.isFinite(Number(activitySummary.sessions90d)) ? `Сессии 90д: ${formatNumber(activitySummary.sessions90d)}` : "",
-          Number.isFinite(Number(activitySummary.activeDays7d)) ? `Активные дни 7д: ${formatNumber(activitySummary.activeDays7d)}` : "",
-          Number.isFinite(Number(activitySummary.activeWatchedChannels30d)) ? `Активные каналы 30д: ${formatNumber(activitySummary.activeWatchedChannels30d)}` : "",
-          Number.isFinite(Number(activitySummary.daysAbsent)) ? `Отсутствие: ${formatNumber(activitySummary.daysAbsent)} дн.` : "",
-          activitySummary.roleEligibilityStatus ? `Статус eligibility: ${cleanString(activitySummary.roleEligibilityStatus, 80)}` : "",
-        ],
-      },
+      { title: "📊 Итог активности", lines: activityLines.slice(0, 8) },
       ...(synergy?.blocks?.activityMix ? [synergy.blocks.activityMix] : []),
+      ...(synergy?.blocks?.voiceSummary ? [synergy.blocks.voiceSummary] : []),
       ...(synergy?.blocks?.farmProfile ? [synergy.blocks.farmProfile] : []),
-      ...(synergy?.blocks?.relativeComponents ? [synergy.blocks.relativeComponents] : []),
+      ...(synergy?.blocks?.primeTime ? [synergy.blocks.primeTime] : []),
       ...(synergy?.blocks?.primeTimeConfidence ? [synergy.blocks.primeTimeConfidence] : []),
+      ...(synergy?.blocks?.bestPeriods ? [synergy.blocks.bestPeriods] : []),
+      ...(synergy?.blocks?.weeklyRollups ? [synergy.blocks.weeklyRollups] : []),
       ...(synergy?.blocks?.seasonConsistency ? [synergy.blocks.seasonConsistency] : []),
       ...(synergy?.blocks?.comebackMetrics ? [synergy.blocks.comebackMetrics] : []),
     ],
@@ -1706,6 +1869,7 @@ function buildProfileReadModel(options = {}) {
     primaryAvatarDescription: primaryAvatar?.description || null,
     mediaGalleryItems,
     robloxProfileUrl,
+    robloxDisplayState,
     selfActionState,
     sections,
     sectionGroups,
