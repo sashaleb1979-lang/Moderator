@@ -128,29 +128,52 @@ function buildButtonRows(buttons = [], maxPerRow = 5) {
   return rows;
 }
 
-function buildLinkButtons({ comboLinks = [], robloxProfileUrl = null } = {}) {
+function buildLinkButton(link = {}) {
+  const url = normalizeNullableString(link?.url, 1000);
+  if (!url) return null;
+  return new ButtonBuilder()
+    .setStyle(ButtonStyle.Link)
+    .setLabel(cleanString(link?.buttonLabel || link?.label, 80) || "Ссылка")
+    .setURL(url);
+}
+
+function buildLinkButtons({ comboLinks = [], mandatoryLinks = [], robloxProfileUrl = null } = {}) {
   const buttons = [];
+  const seenUrls = new Set();
+  const mandatoryUrlSet = new Set(
+    (Array.isArray(mandatoryLinks) ? mandatoryLinks : [])
+      .map((entry) => normalizeNullableString(entry?.url, 1000))
+      .filter(Boolean)
+  );
+
+  function pushButton(link) {
+    const url = normalizeNullableString(link?.url, 1000);
+    if (!url || seenUrls.has(url)) return;
+    const button = buildLinkButton(link);
+    if (!button) return;
+    seenUrls.add(url);
+    buttons.push(button);
+  }
 
   for (const link of Array.isArray(comboLinks) ? comboLinks : []) {
     const url = normalizeNullableString(link?.url, 500);
-    if (!url) continue;
-    buttons.push(
-      new ButtonBuilder()
-        .setStyle(ButtonStyle.Link)
-        .setLabel(cleanString(link?.buttonLabel || link?.label, 80) || "Ссылка")
-        .setURL(url)
-    );
-    if (buttons.length >= 8) break;
+    if (!url || mandatoryUrlSet.has(url)) continue;
+    pushButton(link);
+    if (buttons.length >= Math.max(0, 10 - mandatoryUrlSet.size)) break;
   }
 
-  const normalizedRobloxProfileUrl = normalizeNullableString(robloxProfileUrl, 1000);
-  if (normalizedRobloxProfileUrl && buttons.length < 10) {
-    buttons.push(
-      new ButtonBuilder()
-        .setStyle(ButtonStyle.Link)
-        .setLabel("Roblox профиль")
-        .setURL(normalizedRobloxProfileUrl)
-    );
+  const mandatory = Array.isArray(mandatoryLinks) ? mandatoryLinks : [];
+  if (mandatory.length) {
+    for (const link of mandatory) pushButton(link);
+  } else {
+    const normalizedRobloxProfileUrl = normalizeNullableString(robloxProfileUrl, 1000);
+    if (normalizedRobloxProfileUrl) {
+      pushButton({
+        label: "Roblox профиль",
+        buttonLabel: "Roblox профиль",
+        url: normalizedRobloxProfileUrl,
+      });
+    }
   }
 
   return buttons.length ? buildButtonRows(buttons, 5) : [];
@@ -177,27 +200,31 @@ function buildProfileActionRows({ isSelf = false, selfActionState = {} } = {}) {
 
   const hasMains = selfActionState.hasMains === true;
   const hasVerifiedRoblox = selfActionState.hasVerifiedRoblox === true;
+  const prefixLabel = (emoji, label, fallback) => {
+    const text = cleanString(label, 80) || fallback;
+    return text.startsWith(emoji) ? text : `${emoji} ${text}`;
+  };
 
   return buildButtonRows([
     new ButtonBuilder()
       .setCustomId("onboard_begin")
-      .setLabel(cleanString(selfActionState.killsLabel, 80) || "Добавить kills")
+      .setLabel(prefixLabel("⚔️", selfActionState.killsLabel, "Добавить kills"))
       .setStyle(ButtonStyle.Primary),
     new ButtonBuilder()
       .setCustomId("onboard_change_mains")
-      .setLabel(cleanString(selfActionState.mainsLabel, 80) || "Сменить мейнов")
+      .setLabel(prefixLabel("🎭", selfActionState.mainsLabel, "Сменить мейнов"))
       .setStyle(hasMains ? ButtonStyle.Secondary : ButtonStyle.Primary),
     new ButtonBuilder()
       .setCustomId("profile_bind_roblox")
-      .setLabel(cleanString(selfActionState.robloxLabel, 80) || "Привязать Roblox")
+      .setLabel(prefixLabel("🔗", selfActionState.robloxLabel, "Привязать Roblox"))
       .setStyle(hasVerifiedRoblox ? ButtonStyle.Secondary : ButtonStyle.Primary),
     new ButtonBuilder()
       .setCustomId("elo_submit_open")
-      .setLabel(cleanString(selfActionState.eloLabel, 80) || "ELO: текст + скрин")
+      .setLabel(prefixLabel("📈", selfActionState.eloLabel, "ELO: текст + скрин"))
       .setStyle(ButtonStyle.Primary),
     new ButtonBuilder()
       .setCustomId("rate_new_characters")
-      .setLabel("Оценить персонажей")
+      .setLabel("🏆 Оценить персонажей по скилу")
       .setStyle(ButtonStyle.Secondary),
   ], 5);
 }
@@ -233,6 +260,7 @@ function buildProfilePayload(options = {}) {
     primaryAvatarUrl: readModel.primaryAvatarUrl,
     primaryAvatarDescription: readModel.primaryAvatarDescription,
   });
+  const identityMediaGallery = buildProfileMediaGallery(readModel.identityMediaItems);
   const mediaGallery = buildProfileMediaGallery(readModel.mediaGalleryItems);
 
   const container = new ContainerBuilder()
@@ -255,6 +283,10 @@ function buildProfilePayload(options = {}) {
       )
     );
 
+  if (displayMode !== "compact-card" && identityMediaGallery) {
+    container.addMediaGalleryComponents(identityMediaGallery);
+  }
+
   if (heroSection) {
     container.addSectionComponents(heroSection);
   } else {
@@ -272,26 +304,6 @@ function buildProfilePayload(options = {}) {
           currentView,
         })
       );
-  }
-
-  if (displayMode !== "compact-card") {
-    const actionRows = buildProfileActionRows({
-      isSelf: readModel.isSelf,
-      selfActionState: readModel.selfActionState,
-    });
-    if (actionRows.length) {
-      container.addActionRowComponents(...actionRows);
-    }
-  }
-
-  if (displayMode !== "compact-card" && readModel.isSelf && currentView === "overview") {
-    container.addTextDisplayComponents(
-      buildTextDisplay("ELO", [
-        "Кнопка ниже открывает ELO submit.",
-        "1. Сначала отправь текст с числом ELO.",
-        "2. Потом следующим сообщением кинь скрин.",
-      ], "—", 1200)
-    );
   }
 
   container
@@ -323,9 +335,32 @@ function buildProfilePayload(options = {}) {
       .addMediaGalleryComponents(mediaGallery);
   }
 
+  if (displayMode !== "compact-card" && readModel.isSelf && currentView === "overview") {
+    container.addTextDisplayComponents(
+      buildTextDisplay("📈 ELO submit", [
+        "Кнопка ниже открывает ELO submit.",
+        "1. Сначала отправь текст с числом ELO.",
+        "2. Потом следующим сообщением кинь скрин.",
+      ], "—", 1200)
+    );
+  }
+
+  if (displayMode !== "compact-card") {
+    const actionRows = buildProfileActionRows({
+      isSelf: readModel.isSelf,
+      selfActionState: readModel.selfActionState,
+    });
+    if (actionRows.length) {
+      container
+        .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
+        .addActionRowComponents(...actionRows);
+    }
+  }
+
   if (displayMode !== "compact-card") {
     const linkRows = buildLinkButtons({
       comboLinks: readModel.comboLinks,
+      mandatoryLinks: readModel.mandatoryLinks,
       robloxProfileUrl: readModel.robloxProfileUrl,
     });
     if (linkRows.length) {

@@ -41,6 +41,7 @@ function createTestOperator(overrides = {}) {
   return createProfileOperator({
     commandName: "профиль",
     guildId: "guild-1",
+    hiddenProfileRoleIds: ["1146511958305144883"],
     hasStaffBypass: () => false,
     getRequesterProfile: () => ({ domains: { activity: { desiredActivityRoleKey: "active" } } }),
     getTargetProfile: () => ({
@@ -92,7 +93,7 @@ function createTestOperator(overrides = {}) {
     }),
     getTargetDisplayName: () => "Sasha",
     fetchAccessUser: async (_userId, seedUser) => seedUser || null,
-    fetchMember: async (userId) => makeMember({ roleIds: ["role-1", "role-2"], userId, username: "Sasha", displayName: "Sasha Display" }),
+    fetchMember: async (userId) => makeMember({ roleIds: ["role-1", "1146511958305144883", "role-2"], userId, username: "Sasha", displayName: "Sasha Display" }),
     fetchUser: async (userId) => ({
       id: userId,
       username: "Sasha",
@@ -143,6 +144,12 @@ function createTestOperator(overrides = {}) {
     }),
     getEloProfile: () => ({ currentElo: 145, currentTier: 2, lastSubmissionStatus: "approved" }),
     getTierlistProfile: () => ({ mainName: "Gojo", influenceMultiplier: 1.2 }),
+    getTierlistStatsUrl: () => "https://discord.com/channels/guild-1/tierlist/summary",
+    getCharacterStatsContext: () => ({
+      characterStats: [
+        { id: "gojo", main: "Gojo", roleId: "role-gojo" },
+      ],
+    }),
     getComboGuideState: () => ({
       generalTechsThreadId: "general-thread",
       characters: [{ id: "gojo", name: "Gojo", threadId: "thread-1" }],
@@ -195,10 +202,28 @@ test("profile operator builds private payload from injected runtime readers", as
   assert.equal(container.type, 17);
   assert.ok(container.components.some((component) => component.type === 10 && /# Профиль/.test(component.content)));
   assert.ok(container.components.some((component) => component.type === 1 && component.components.some((button) => button.custom_id === buildProfileNavCustomId("requester", "user-1", "progress"))));
-  assert.ok(container.components.some((component) => component.type === 10 && /### Вклад/.test(component.content)));
-  assert.ok(container.components.some((component) => component.type === 10 && /### История approved ростов/.test(component.content)));
+  assert.ok(container.components.some((component) => component.type === 10 && /### 🏅 Вклад/.test(component.content)));
+  assert.ok(container.components.some((component) => component.type === 10 && /### 🧾 История approved ростов/.test(component.content)));
   assert.ok(container.components.some((component) => component.type === 1 && component.components.some((button) => button.label === "JJS Wiki: Gojo")));
   assert.match(JSON.stringify(container), /https:\/\/cdn\.discordapp\.com\/avatars\/user-1\/profile\.png/);
+});
+
+test("profile operator injects UX-only role, tierlist link, and character stats context", async () => {
+  const operator = createTestOperator();
+
+  const payload = await operator.buildPrivateProfilePayload({
+    targetUserId: "user-1",
+    requesterUserId: "requester",
+    isSelf: false,
+    view: "overview",
+  });
+
+  const container = payload.components[0].toJSON();
+  const serialized = JSON.stringify(container);
+  assert.match(serialized, /### 🎭 Роли и места/);
+  assert.match(serialized, /Gojo: <@&role-gojo>/);
+  assert.match(serialized, /Текст-тирлист и статистика/);
+  assert.doesNotMatch(serialized, /1146511958305144883/);
 });
 
 test("profile operator exposes deny payload text through the runtime seam", () => {

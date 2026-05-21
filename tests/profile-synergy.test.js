@@ -539,7 +539,7 @@ test("buildProfileSynergyState builds a viewer-first hero block and Main Core su
   assert.equal(state.blocks.viewerMainCore.title, "Main Core");
   assert.match(state.blocks.viewerMainCore.lines.join("\n"), /Ядро пиков: Gojo-main/);
   assert.match(state.blocks.viewerMainCore.lines.join("\n"), /Серверный контур: форма B\+ .* рост C- .* стабильность C- .* #2 по kills .* ELO 145 \/ tier 2/);
-  assert.match(state.blocks.viewerMainCore.lines.join("\n"), /Игровая связка: чаще всего с <@peer-1> .* 210 мин вместе .* 5 сесс\. .* Roblox-друг/);
+  assert.match(state.blocks.viewerMainCore.lines.join("\n"), /Игровая связка: чаще всего с <@peer-1> .* 3,5 ч вместе .* 5 сесс\. .* Roblox-друг/);
   assert.match(state.blocks.viewerMainCore.lines.join("\n"), /Гайд-контур: гайды 1\/1 по мейнам .* wiki 1\/1 по мейнам .* общие техи доступны/);
 });
 
@@ -730,8 +730,8 @@ test("buildProfileSynergyState exposes social suggestions from canonical cache w
 
   assert.equal(state.blocks.socialSuggestions.title, "Скрытый круг");
   assert.match(state.blocks.socialSuggestions.lines.join("\n"), /Скрытый круг: 2 кандидата .* Roblox-друзей на сервере: 2 .* не точный кооп/);
-  assert.match(state.blocks.socialSuggestions.lines.join("\n"), /1\. <@peer-1> .* Gojo .* Roblox GojoRb .* 80 мин вместе .* 1 общ\. сесс\. .* verified Roblox/);
-  assert.match(state.blocks.socialSuggestions.lines.join("\n"), /2\. <@peer-4> .* junpei .* 40 мин вместе .* 3 общ\. сесс\./);
+  assert.match(state.blocks.socialSuggestions.lines.join("\n"), /1\. <@peer-1> .* Gojo .* Roblox GojoRb .* 1,3 ч вместе .* 1 общ\. сесс\. .* verified Roblox/);
+  assert.match(state.blocks.socialSuggestions.lines.join("\n"), /2\. <@peer-4> .* junpei .* 0,6 ч вместе .* 3 общ\. сесс\./);
   assert.match(state.blocks.socialSuggestions.lines.join("\n"), /Social-срез: обновлялся ~3 ч назад/);
 });
 
@@ -801,7 +801,7 @@ test("buildProfileSynergyState derives friend overlap from server friend ids and
   assert.match(state.blocks.friendOverlap.lines.join("\n"), /Roblox-друзей на сервере: 3 .* видимых профилей: 2 .* verified: 2 .* активны 7д: 1 .* играли в JJS 7д: 1/);
   assert.match(state.blocks.friendOverlap.lines.join("\n"), /Список друзей обновлялся ~4 ч назад/);
   assert.equal(state.blocks.friendsAlreadyHere.title, "Кто из друзей уже здесь");
-  assert.match(state.blocks.friendsAlreadyHere.lines.join("\n"), /1\. <@friend-1> .* Gojo .* Roblox GojoRb .* verified Roblox .* JJS 7д 150 мин .* activity active/);
+  assert.match(state.blocks.friendsAlreadyHere.lines.join("\n"), /1\. <@friend-1> .* Gojo .* Roblox GojoRb .* verified Roblox .* JJS 7д 2,5 ч .* activity active/);
   assert.match(state.blocks.friendsAlreadyHere.lines.join("\n"), /2\. <@friend-2> .* Megumi .* Roblox MegumiRb .* verified Roblox/);
 });
 
@@ -873,13 +873,13 @@ test("buildProfileSynergyState builds verified circle and social map without exa
 
   assert.equal(state.blocks.verifiedCircle.title, "Проверенный круг");
   assert.match(state.blocks.verifiedCircle.lines.join("\n"), /Проверенный круг: verified\+friend\+JJS 1 .* verified friends 1 .* active 7д 1 .* JJS 7д 1/);
-  assert.match(state.blocks.verifiedCircle.lines.join("\n"), /<@friend-1> .* Gojo .* Roblox GojoRb .* verified Roblox .* Roblox-друг .* 210 мин вместе .* 5 общ\. сесс\. .* JJS 7д 150 мин/);
+  assert.match(state.blocks.verifiedCircle.lines.join("\n"), /<@friend-1> .* Gojo .* Roblox GojoRb .* verified Roblox .* Roblox-друг .* 3,5 ч вместе .* 5 общ\. сесс\. .* JJS 7д 2,5 ч/);
   assert.match(state.blocks.verifiedCircle.lines.join("\n"), /Trust: reliable .* no exact party claim/);
   assert.equal(state.blocks.socialMap.title, "Социальная карта");
   assert.match(state.blocks.socialMap.lines.join("\n"), /Социальная карта: strong 1 .* medium 1 .* friends here 1 .* inferred 1/);
   assert.match(state.blocks.socialMap.lines.join("\n"), /Strong ties: <@friend-1> .* verified Roblox .* Roblox-друг/);
-  assert.match(state.blocks.socialMap.lines.join("\n"), /Medium ties: <@peer-2> .* частый non-friend .* 140 мин вместе .* 3 общ\. сесс\./);
-  assert.match(state.blocks.socialMap.lines.join("\n"), /Inferred ties: <@peer-3> .* Inferred .* Roblox InferredRb .* inferred .* 45 мин вместе .* 2 общ\. сесс\./);
+  assert.match(state.blocks.socialMap.lines.join("\n"), /Medium ties: <@peer-2> .* частый non-friend .* 2,3 ч вместе .* 3 общ\. сесс\./);
+  assert.match(state.blocks.socialMap.lines.join("\n"), /Inferred ties: <@peer-3> .* Inferred .* Roblox InferredRb .* inferred .* 0,7 ч вместе .* 2 общ\. сесс\./);
   assert.match(state.blocks.socialMap.lines.join("\n"), /sources Roblox friends\/co-play\/social suggestions .* no exact party claim/);
 });
 
@@ -949,7 +949,7 @@ test("buildProfileSynergyState uses mirrored voice contacts for voice plus game 
 
   assert.equal(state.blocks.voiceGameOverlap.title, "Voice + game overlap");
   assert.match(state.blocks.voiceGameOverlap.lines.join("\n"), /Voice \+ JJS overlap: 1 совпадений .* voice contacts 2 .* JJS peers 1/);
-  assert.match(state.blocks.voiceGameOverlap.lines.join("\n"), /<@peer-1> .* Todo .* voice 2 ч .* 2 voice сесс\. .* JJS 90 мин .* 2 JJS сесс\./);
+  assert.match(state.blocks.voiceGameOverlap.lines.join("\n"), /<@peer-1> .* Todo .* voice 2 ч .* 2 voice сесс\. .* JJS 1,5 ч .* 2 JJS сесс\./);
   assert.match(state.blocks.voiceGameOverlap.lines.join("\n"), /Trust: reliable .* no exact party claim/);
 });
 
@@ -1052,7 +1052,7 @@ test("buildProfileSynergyState derives a stable grinder farm profile from playti
   assert.equal(state.blocks.farmProfile.title, "Farm profile");
   assert.match(state.blocks.farmProfile.lines.join("\n"), /Farm profile: стабильный гриндер .* длинные сессии \(proxy\) .* confidence partial/);
   assert.match(state.blocks.farmProfile.lines.join("\n"), /Daily rhythm: active days 10 .* span 10д .* avg active day 1,1 ч .* top day 11% .* top3 32%/);
-  assert.match(state.blocks.farmProfile.lines.join("\n"), /Session proxy: avg 75 мин\/session .* sessions 12 .* lifetime proxy .* avg active hour/);
+  assert.match(state.blocks.farmProfile.lines.join("\n"), /Session proxy: avg 1,2 ч\/session .* sessions 12 .* lifetime proxy .* avg active hour/);
   assert.match(state.blocks.farmProfile.lines.join("\n"), /no strong farm claim without session histograms/);
 });
 
@@ -1081,7 +1081,7 @@ test("buildProfileSynergyState marks bursty short farm profile as proxy only", (
   assert.equal(state.blocks.farmProfile.title, "Farm profile");
   assert.match(state.blocks.farmProfile.lines.join("\n"), /Farm profile: вспышками .* короткие рывки \(proxy\) .* confidence heuristic/);
   assert.match(state.blocks.farmProfile.lines.join("\n"), /Daily rhythm: active days 3 .* span 10д .* avg active day 1,8 ч .* top day 91% .* top3 100%/);
-  assert.match(state.blocks.farmProfile.lines.join("\n"), /Session proxy: avg 16,5 мин\/session .* sessions 20 .* lifetime proxy/);
+  assert.match(state.blocks.farmProfile.lines.join("\n"), /Session proxy: avg 0,2 ч\/session .* sessions 20 .* lifetime proxy/);
   assert.match(state.blocks.farmProfile.lines.join("\n"), /Trust: proxy/);
 });
 
@@ -1126,7 +1126,7 @@ test("buildProfileSynergyState promotes farm profile when JJS session history ex
 
   assert.equal(state.blocks.farmProfile.title, "Farm profile");
   assert.match(state.blocks.farmProfile.lines.join("\n"), /Farm profile: .* длинные сессии .* confidence reliable/);
-  assert.match(state.blocks.farmProfile.lines.join("\n"), /Session histogram: avg 75 мин\/session .* median 75 min .* long>=60 100% .* sessions 5/);
+  assert.match(state.blocks.farmProfile.lines.join("\n"), /Session histogram: avg 1,2 ч\/session .* median 1,2 ч .* long>=60 100% .* sessions 5/);
   assert.match(state.blocks.farmProfile.lines.join("\n"), /Trust: session-history .* strong farm claim bounded by captured sessions/);
 });
 
@@ -1269,8 +1269,8 @@ test("buildProfileSynergyState derives prime time from hourly MSK buckets", () =
   });
 
   assert.equal(state.blocks.primeTime.title, "Prime time МСК");
-  assert.match(state.blocks.primeTime.lines.join("\n"), /Чаще всего играет с 19:00 до 23:00 МСК .* окно 305 мин/);
-  assert.match(state.blocks.primeTime.lines.join("\n"), /Пиковый час: 20:00 .* активных часов: 5 .* tracked минут в bucket-слое: 315/);
+  assert.match(state.blocks.primeTime.lines.join("\n"), /Чаще всего играет с 19:00 до 23:00 МСК .* окно 5 ч/);
+  assert.match(state.blocks.primeTime.lines.join("\n"), /Пиковый час: 20:00 .* активных часов: 5 .* tracked 5,2 ч в bucket-слое/);
   assert.match(state.blocks.primeTime.lines.join("\n"), /Hourly-срез обновлялся ~6 ч назад/);
 });
 

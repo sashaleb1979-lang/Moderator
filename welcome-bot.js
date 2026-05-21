@@ -4882,6 +4882,36 @@ function getRoleGrantMessageUrl(record) {
   return `https://discord.com/channels/${GUILD_ID}/${record.channelId}/${record.messageId}`;
 }
 
+function buildDiscordPanelUrl(channelId = "", messageId = "") {
+  const normalizedChannelId = String(channelId || "").trim();
+  const normalizedMessageId = String(messageId || "").trim();
+  if (!GUILD_ID || !normalizedChannelId) return "";
+  return normalizedMessageId
+    ? `https://discord.com/channels/${GUILD_ID}/${normalizedChannelId}/${normalizedMessageId}`
+    : `https://discord.com/channels/${GUILD_ID}/${normalizedChannelId}`;
+}
+
+function getProfileTierlistStatsUrl() {
+  const snapshots = [
+    getResolvedLegacyTierlistSummarySnapshot(),
+    getResolvedLegacyTierlistDashboardSnapshot(),
+    getResolvedTextTierlistBoardSnapshot(),
+  ];
+
+  for (const snapshot of snapshots) {
+    const messageId = String(
+      snapshot?.messageId
+      || snapshot?.messageIdSummary
+      || snapshot?.messageIdPages
+      || ""
+    ).trim();
+    const url = buildDiscordPanelUrl(snapshot?.channelId, messageId);
+    if (url) return url;
+  }
+
+  return buildDiscordPanelUrl(getResolvedChannelId("tierlistText") || appConfig.channels.tierlistChannelId, "");
+}
+
 function getSelectedRoleGrantRecord(userId) {
   const records = listRoleGrantRecords({ activeOnly: false });
   if (!records.length) return null;
@@ -5559,6 +5589,7 @@ function getProfileOperator() {
   profileOperator = createProfileOperator({
     commandName: "профиль",
     guildId: GUILD_ID,
+    hiddenProfileRoleIds: ["1146511958305144883"],
 
     hasStaffBypass: (member) => isModerator(member),
     getRequesterProfile: (userId) => db.profiles?.[userId] ? getProfile(userId) : null,
@@ -5583,6 +5614,8 @@ function getProfileOperator() {
       .find((entry) => entry.userId === String(userId || "").trim()) || null,
     getEloProfile: (userId) => getDormantEloProfileSnapshot(db, userId),
     getTierlistProfile: (userId) => getDormantTierlistProfileSnapshot(db, userId),
+    getTierlistStatsUrl: () => getProfileTierlistStatsUrl(),
+    getCharacterStatsContext: () => liveCharacterStatsContextCache.value || null,
     getComboGuideState: () => db.comboGuide,
     getCharacterCatalog: () => getCharacterCatalog(),
     buildProfileRobloxBindModal: ({ initialValue = "" } = {}) => buildRobloxUsernameModal("profile_bind_roblox_modal", initialValue),

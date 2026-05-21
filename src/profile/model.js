@@ -11,6 +11,16 @@ function cleanString(value, limit = 2000) {
 }
 
 const PROFILE_DISPLAY_MODES = Object.freeze(["viewer", "self", "compact-card"]);
+const DEFAULT_HIDDEN_PROFILE_ROLE_IDS = Object.freeze(["1146511958305144883"]);
+const JJS_WIKI_CHARACTERS_URL = "https://jujutsu-shenanigans.fandom.com/wiki/Characters";
+const PROFILE_LEVEL_AXES = Object.freeze(["form", "chat", "kills", "stability", "growth", "social"]);
+const PROFILE_LEVEL_CONFIDENCE_MULTIPLIERS = Object.freeze({
+  reliable: 1,
+  partial: 0.85,
+  heuristic: 0.65,
+  outdated: 0.35,
+  unavailable: 0,
+});
 
 function normalizeProfileDisplayMode(value, { isSelf = false } = {}) {
   const normalized = cleanString(value, 40).toLowerCase();
@@ -74,9 +84,35 @@ function formatHours(value, digits = 1) {
   }).format(amount);
 }
 
+function formatJjsHoursFromMinutes(value, digits = 1) {
+  const minutes = Number(value);
+  if (!Number.isFinite(minutes)) return "—";
+  const hours = Math.floor((minutes / 60) * 10) / 10;
+  return `${formatHours(hours, digits)} ч`;
+}
+
 function normalizeMediaUrl(value, limit = 2000) {
   const text = cleanString(value, limit);
   return /^https?:\/\//i.test(text) ? text : null;
+}
+
+function normalizeHiddenRoleIds(values = []) {
+  return new Set([
+    ...DEFAULT_HIDDEN_PROFILE_ROLE_IDS,
+    ...(Array.isArray(values) ? values : []),
+  ].map((entry) => cleanString(entry, 80)).filter(Boolean));
+}
+
+function extractRoleMentionId(value = "") {
+  const text = cleanString(value, 120);
+  const match = text.match(/^<@&([^>]+)>$/);
+  return match ? cleanString(match[1], 80) : text;
+}
+
+function filterDisplayRoleMentions(roleMentions = [], hiddenRoleIds = new Set()) {
+  return (Array.isArray(roleMentions) ? roleMentions : [])
+    .filter(Boolean)
+    .filter((mention) => !hiddenRoleIds.has(extractRoleMentionId(mention)));
 }
 
 function computeKillStanding(entries = [], userId = "") {
@@ -106,6 +142,208 @@ function computeKillStanding(entries = [], userId = "") {
     totalKills,
     shareOfServerKills,
   };
+}
+
+function getAxisConfidenceMultiplier(axis = {}) {
+  const key = cleanString(axis?.confidenceState, 40).toLowerCase();
+  return PROFILE_LEVEL_CONFIDENCE_MULTIPLIERS[key] ?? PROFILE_LEVEL_CONFIDENCE_MULTIPLIERS.heuristic;
+}
+
+function getAxisInfluenceMultiplier(axis = {}) {
+  const debuff = Math.max(0, Math.min(100, normalizeFiniteNumber(axis?.influenceDebuffPercent, 0)));
+  return 1 - (debuff / 100);
+}
+
+function calculateProfileLevel(totalXp = 0) {
+  let remainingXp = Math.max(0, Math.round(Number(totalXp) || 0));
+  let level = 1;
+  let nextLevelXp = 800 + (180 * level) + Math.floor(35 * (level ** 1.35));
+
+  while (remainingXp >= nextLevelXp) {
+    remainingXp -= nextLevelXp;
+    level += 1;
+    nextLevelXp = 800 + (180 * level) + Math.floor(35 * (level ** 1.35));
+  }
+
+  return {
+    level,
+    currentLevelXp: remainingXp,
+    nextLevelXp,
+    nextLevel: level + 1,
+  };
+}
+
+function buildProfileLevelState({ tierlist = null, profile = null } = {}) {
+  const axes = PROFILE_LEVEL_AXES.map((axisName) => tierlist?.[axisName]).filter(Boolean);
+  const letterXp = Math.round(axes.reduce((sum, axis) => {
+    const score = normalizeFiniteNumber(axis?.score);
+    if (!Number.isFinite(score)) return sum;
+    return sum + (score * getAxisConfidenceMultiplier(axis) * getAxisInfluenceMultiplier(axis) * 100);
+  }, 0));
+  const weeklyRollups = Array.isArray(profile?.domains?.seasonArchive?.weeklyRollups)
+    ? profile.domains.seasonArchive.weeklyRollups
+    : [];
+  const weeklyXp = Math.round(weeklyRollups.reduce((sum, rollup) => {
+    const score = normalizeFiniteNumber(rollup?.composite?.score);
+    if (!Number.isFinite(score)) return sum;
+    const coveragePercent = normalizeFiniteNumber(rollup?.coverage?.coveragePercent, 100);
+    const coverageMultiplier = Math.max(0, Math.min(100, coveragePercent)) / 100;
+    return sum + (score * coverageMultiplier * 35);
+  }, 0));
+  const totalXp = Math.max(0, letterXp + weeklyXp);
+  const levelState = calculateProfileLevel(totalXp);
+  const progressPercent = levelState.nextLevelXp > 0
+    ? (levelState.currentLevelXp / levelState.nextLevelXp) * 100
+    : 0;
+
+  return {
+    ...levelState,
+    totalXp,
+    letterXp,
+    weeklyXp,
+    axisCount: axes.length,
+    weeklyWindowCount: weeklyRollups.length,
+    progressPercent,
+  };
+}
+
+function buildXpBar(percent = 0, size = 8) {
+  const normalizedSize = Math.max(4, Number(size) || 8);
+  const filled = Math.max(0, Math.min(normalizedSize, Math.round((Math.max(0, Math.min(100, Number(percent) || 0)) / 100) * normalizedSize)));
+  return `${"▰".repeat(filled)}${"▱".repeat(normalizedSize - filled)}`;
+}
+
+function formatProfileLevelLine(levelState = {}) {
+  return [
+    `🧬 Ур. ${formatNumber(levelState.level)}`,
+    buildXpBar(levelState.progressPercent),
+    `${formatNumber(levelState.currentLevelXp)}/${formatNumber(levelState.nextLevelXp)} XP до ${formatNumber(levelState.nextLevel)}`,
+  ].join(" ");
+}
+
+function formatProfileLevelSourceLine(levelState = {}) {
+  return `📚 XP: буквы ${formatNumber(levelState.letterXp)} • недели ${formatNumber(levelState.weeklyXp)} • всего ${formatNumber(levelState.totalXp)}`;
+}
+
+function buildMetricPlace(value = null, samples = []) {
+  const current = normalizeFiniteNumber(value);
+  const normalizedSamples = (Array.isArray(samples) ? samples : [])
+    .map((entry) => normalizeFiniteNumber(entry))
+    .filter((entry) => Number.isFinite(entry));
+  if (!Number.isFinite(current) || normalizedSamples.length < 1) {
+    return { rank: null, total: normalizedSamples.length };
+  }
+  const sorted = (normalizedSamples.some((entry) => entry === current)
+    ? normalizedSamples.slice()
+    : [...normalizedSamples, current])
+    .sort((left, right) => right - left);
+  return {
+    rank: sorted.findIndex((entry) => entry === current) + 1,
+    total: sorted.length,
+  };
+}
+
+function formatPlace(place = {}) {
+  return Number.isFinite(Number(place?.rank)) && Number.isFinite(Number(place?.total)) && Number(place.total) > 0
+    ? `#${formatNumber(place.rank)}/${formatNumber(place.total)}`
+    : "N/A";
+}
+
+function collectPopulationActivityScores(populationProfiles = []) {
+  return (Array.isArray(populationProfiles) ? populationProfiles : [])
+    .map((entry) => entry?.profile || entry)
+    .map((profile) => profile?.summary?.activity?.activityScore ?? profile?.domains?.activity?.activityScore)
+    .map((entry) => normalizeFiniteNumber(entry))
+    .filter((entry) => Number.isFinite(entry));
+}
+
+function normalizeCharacterStats(characterStats = []) {
+  return (Array.isArray(characterStats) ? characterStats : [])
+    .map((entry, index) => ({
+      ...entry,
+      id: cleanString(entry?.id, 80),
+      main: cleanString(entry?.main || entry?.label, 120),
+      roleId: cleanString(entry?.roleId, 80),
+      rank: index + 1,
+      total: characterStats.length,
+    }))
+    .filter((entry) => entry.id || entry.main || entry.roleId);
+}
+
+function findCharacterStat({ id = "", label = "", stats = [] } = {}) {
+  const normalizedId = normalizeComboLookupKey(id);
+  const normalizedLabel = normalizeComboLookupKey(label);
+  return stats.find((entry) => (normalizedId && normalizeComboLookupKey(entry.id) === normalizedId)
+    || (normalizedLabel && normalizeComboLookupKey(entry.main) === normalizedLabel)) || null;
+}
+
+function buildRoleShowcaseLines({
+  mainCharacterIds = [],
+  mainCharacterLabels = [],
+  characterStats = [],
+  activitySummary = {},
+  populationProfiles = [],
+  killTier = null,
+  standing = {},
+  hiddenRoleIds = new Set(),
+} = {}) {
+  const lines = [];
+  const normalizedStats = normalizeCharacterStats(characterStats);
+  const mains = (Array.isArray(mainCharacterLabels) ? mainCharacterLabels : [])
+    .map((label, index) => ({
+      id: Array.isArray(mainCharacterIds) ? mainCharacterIds[index] : "",
+      label: cleanString(label, 80),
+    }))
+    .filter((entry) => entry.label)
+    .slice(0, 3);
+
+  if (mains.length) {
+    for (const main of mains) {
+      const stat = findCharacterStat({ id: main.id, label: main.label, stats: normalizedStats });
+      const role = stat?.roleId && !hiddenRoleIds.has(stat.roleId) ? `<@&${stat.roleId}>` : main.label;
+      lines.push(`🎭 ${main.label}: ${role} • место ${formatPlace(stat ? { rank: stat.rank, total: stat.total } : {})} по мейнам`);
+    }
+  } else {
+    lines.push("🎭 Мейны: место N/A • персонажи ещё не выбраны");
+  }
+
+  const activityRole = cleanString(activitySummary?.appliedActivityRoleKey || activitySummary?.desiredActivityRoleKey, 80);
+  const activityPlace = buildMetricPlace(activitySummary?.activityScore, collectPopulationActivityScores(populationProfiles));
+  lines.push(`⚡ Активность: ${activityRole || "роль N/A"} • место ${formatPlace(activityPlace)} по activity score`);
+
+  const killPlace = { rank: standing?.rank, total: standing?.totalVerified };
+  lines.push(`⚔️ Kill-role: ${Number.isFinite(Number(killTier)) ? `tier ${formatNumber(killTier)}` : "tier N/A"} • место ${formatPlace(killPlace)} по kills`);
+
+  return lines;
+}
+
+function buildMandatoryLinks({ robloxProfileUrl = "", tierlistStatsUrl = "" } = {}) {
+  const links = [];
+  const normalizedRobloxUrl = normalizeMediaUrl(robloxProfileUrl, 2000);
+  if (normalizedRobloxUrl) {
+    links.push({
+      kind: "mandatory-roblox",
+      label: "Roblox профиль",
+      buttonLabel: "Roblox профиль",
+      url: normalizedRobloxUrl,
+    });
+  }
+  links.push({
+    kind: "mandatory-jjs-wiki",
+    label: "JJS Wiki: персонажи",
+    buttonLabel: "JJS Wiki: персонажи",
+    url: JJS_WIKI_CHARACTERS_URL,
+  });
+  const normalizedTierlistUrl = normalizeMediaUrl(tierlistStatsUrl, 2000);
+  if (normalizedTierlistUrl) {
+    links.push({
+      kind: "mandatory-tierlist",
+      label: "Текст-тирлист и статистика",
+      buttonLabel: "Текст-тирлист и статистика",
+      url: normalizedTierlistUrl,
+    });
+  }
+  return links;
 }
 
 function summarizeRecentKillChange(change = {}) {
@@ -188,7 +426,7 @@ function buildTopCoPlayPeerLines(peers = [], limit = 3) {
     const peerId = cleanString(peer?.peerUserId, 80) || "unknown";
     const parts = [`<@${peerId}>`];
     if (Number.isFinite(Number(peer?.minutesTogether)) && Number(peer.minutesTogether) > 0) {
-      parts.push(`${formatNumber(peer.minutesTogether)} мин вместе`);
+      parts.push(`${formatJjsHoursFromMinutes(peer.minutesTogether)} вместе`);
     }
     if (Number.isFinite(Number(peer?.sessionsTogether)) && Number(peer.sessionsTogether) > 0) {
       parts.push(`${formatNumber(peer.sessionsTogether)} сесс.`);
@@ -563,7 +801,8 @@ function buildProfileReadModel(options = {}) {
   const characterCatalog = Array.isArray(options.characterCatalog) ? options.characterCatalog : [];
   const recentKillChange = options.recentKillChange && typeof options.recentKillChange === "object" ? options.recentKillChange : null;
   const recentKillChanges = normalizeRecentKillChanges(options.recentKillChanges, recentKillChange, 3);
-  const roleMentions = Array.isArray(options.roleMentions) ? options.roleMentions.filter(Boolean) : [];
+  const hiddenRoleIds = normalizeHiddenRoleIds(options.hiddenProfileRoleIds);
+  const roleMentions = filterDisplayRoleMentions(options.roleMentions, hiddenRoleIds);
   const displayMode = normalizeProfileDisplayMode(options.displayMode, { isSelf: options.isSelf });
   const mainCharacterIds = Array.isArray(profile?.mainCharacterIds) ? profile.mainCharacterIds : [];
   const mainCharacterLabels = Array.isArray(profile?.mainCharacterLabels) ? profile.mainCharacterLabels : [];
@@ -597,6 +836,11 @@ function buildProfileReadModel(options = {}) {
     ? cleanString(robloxUsability.username || robloxUsability.userId, 120)
     : "";
   const robloxAvatarUrl = hasVerifiedRoblox ? normalizeMediaUrl(robloxSummary.avatarUrl, 2000) : null;
+  const robloxProfileUrl = hasVerifiedRoblox ? cleanString(robloxSummary.profileUrl, 1000) || null : null;
+  const mandatoryLinks = buildMandatoryLinks({
+    robloxProfileUrl,
+    tierlistStatsUrl: options.tierlistStatsUrl,
+  });
   const verificationAvatarUrl = normalizeMediaUrl(verificationSummary.oauthAvatarUrl, 2000);
   const currentElo = options.eloProfile?.currentElo ?? eloSummary.currentElo;
   const currentEloTier = options.eloProfile?.currentTier ?? eloSummary.currentTier;
@@ -622,6 +866,17 @@ function buildProfileReadModel(options = {}) {
       : (needsRobloxRebind ? "Перепривязать Roblox" : (robloxIdentityHint ? "Проверить Roblox" : "Привязать Roblox")),
     eloLabel: Number.isFinite(Number(currentElo)) ? "Обновить ELO" : "ELO: текст + скрин",
   };
+  const discordAvatarItem = targetAvatarUrl ? {
+    url: targetAvatarUrl,
+    description: `Аватар Discord${displayName ? ` • ${displayName}` : ""}`,
+  } : null;
+  const robloxAvatarItem = robloxAvatarUrl ? {
+    url: robloxAvatarUrl,
+    description: verifiedRobloxLabel
+      ? `Аватар Roblox • ${verifiedRobloxLabel}`
+      : "Аватар Roblox",
+  } : null;
+  const identityMediaItems = [discordAvatarItem, robloxAvatarItem].filter(Boolean);
   const primaryAvatar = [
     {
       url: targetAvatarUrl,
@@ -710,6 +965,20 @@ function buildProfileReadModel(options = {}) {
     isSelf: options.isSelf,
     now: options.now,
   });
+  const profileLevelState = buildProfileLevelState({
+    tierlist: synergy?.viewerTierlist,
+    profile,
+  });
+  const roleShowcaseLines = buildRoleShowcaseLines({
+    mainCharacterIds,
+    mainCharacterLabels,
+    characterStats: options.characterStats,
+    activitySummary,
+    populationProfiles,
+    killTier,
+    standing,
+    hiddenRoleIds,
+  });
 
   const defaultHeroLines = buildHeroLines({
     userId,
@@ -726,9 +995,14 @@ function buildProfileReadModel(options = {}) {
     pendingSubmission,
   });
   const heroTitle = cleanString(synergy?.blocks?.viewerHero?.title, 120) || "Быстрый статус";
-  const heroLines = Array.isArray(synergy?.blocks?.viewerHero?.lines) && synergy.blocks.viewerHero.lines.length
+  const baseHeroLines = Array.isArray(synergy?.blocks?.viewerHero?.lines) && synergy.blocks.viewerHero.lines.length
     ? synergy.blocks.viewerHero.lines
     : defaultHeroLines;
+  const heroLines = [
+    formatProfileLevelLine(profileLevelState),
+    formatProfileLevelSourceLine(profileLevelState),
+    ...baseHeroLines,
+  ];
 
   const overviewStatusLines = buildOverviewStatusLines({
     profile,
@@ -890,7 +1164,7 @@ function buildProfileReadModel(options = {}) {
     robloxLines.push("Связка Roblox ещё не подтверждена.");
   }
   if (hasVerifiedRoblox) {
-    if (robloxSummary.profileUrl) {
+    if (robloxProfileUrl) {
       robloxLines.push("Профиль Roblox: доступен по кнопке ниже");
     }
     if (robloxSummary.currentDisplayName
@@ -922,13 +1196,13 @@ function buildProfileReadModel(options = {}) {
       robloxLines.push(`Друзья на сервере: ${formatNumber(robloxSummary.serverFriendsCount)}`);
     }
     if (Number.isFinite(Number(robloxSummary.jjsMinutes7d))) {
-      robloxLines.push(`JJS минут 7д: ${formatNumber(robloxSummary.jjsMinutes7d)}`);
+      robloxLines.push(`JJS 7д: ${formatJjsHoursFromMinutes(robloxSummary.jjsMinutes7d)}`);
     }
     if (Number.isFinite(Number(robloxSummary.jjsMinutes30d))) {
-      robloxLines.push(`JJS минут 30д: ${formatNumber(robloxSummary.jjsMinutes30d)}`);
+      robloxLines.push(`JJS 30д: ${formatJjsHoursFromMinutes(robloxSummary.jjsMinutes30d)}`);
     }
     if (Number.isFinite(Number(robloxSummary.totalJjsMinutes))) {
-      robloxLines.push(`JJS минут всего: ${formatNumber(robloxSummary.totalJjsMinutes)}`);
+      robloxLines.push(`JJS всего: ${formatJjsHoursFromMinutes(robloxSummary.totalJjsMinutes)}`);
     }
     if (Number.isFinite(Number(robloxSummary.frequentNonFriendCount))) {
       robloxLines.push(`Частые non-friend: ${formatNumber(robloxSummary.frequentNonFriendCount)}`);
@@ -999,32 +1273,36 @@ function buildProfileReadModel(options = {}) {
     comboLinks,
     heroTitle,
     heroLines,
+    identityMediaItems,
+    profileLevelState,
+    roleShowcaseLines,
+    mandatoryLinks,
     primaryAvatarUrl: primaryAvatar?.url || null,
     primaryAvatarDescription: primaryAvatar?.description || null,
     mediaGalleryItems,
-    robloxProfileUrl: hasVerifiedRoblox ? cleanString(robloxSummary.profileUrl, 1000) || null : null,
+    robloxProfileUrl,
     selfActionState,
     sections: {
       overview: [
-        { title: "Обзор", lines: overviewLines },
+        { title: "✨ Обзор", lines: overviewLines },
+        { title: "🎭 Роли и места", lines: roleShowcaseLines },
         ...(synergy?.blocks?.viewerMainCore ? [synergy.blocks.viewerMainCore] : []),
         ...(synergy?.blocks?.viewerLetterPlaces ? [synergy.blocks.viewerLetterPlaces] : []),
-        ...(synergy?.blocks?.antiteamSupport ? [synergy.blocks.antiteamSupport] : []),
         {
-          title: "Готовность",
+          title: "🛡️ Готовность",
           lines: overviewStatusLines,
         },
         ...(synergy?.blocks?.personalWarReadiness ? [synergy.blocks.personalWarReadiness] : []),
       ],
       activity: [
-        { title: "Активность", lines: activityLines },
+        { title: "📊 Активность", lines: activityLines },
         ...(synergy?.blocks?.voiceSummary ? [synergy.blocks.voiceSummary] : []),
         ...(synergy?.blocks?.primeTime ? [synergy.blocks.primeTime] : []),
         ...(synergy?.blocks?.bestPeriods ? [synergy.blocks.bestPeriods] : []),
         ...(synergy?.blocks?.seasonStory ? [synergy.blocks.seasonStory] : []),
         ...(synergy?.blocks?.weeklyRollups ? [synergy.blocks.weeklyRollups] : []),
         {
-          title: "Детали activity",
+          title: "🔎 Детали activity",
           lines: [
             Number.isFinite(Number(activitySummary.messages90d)) ? `Сообщения 90д: ${formatNumber(activitySummary.messages90d)}` : "",
             Number.isFinite(Number(activitySummary.sessions90d)) ? `Сессии 90д: ${formatNumber(activitySummary.sessions90d)}` : "",
@@ -1043,21 +1321,22 @@ function buildProfileReadModel(options = {}) {
       ],
       progress: [
         ...(synergy?.blocks?.selfProgress ? [synergy.blocks.selfProgress] : []),
-        { title: "Вклад", lines: contributionLines },
-        { title: "Последний рост по kills", lines: progressHistoryLines },
-        { title: "История approved ростов", lines: progressTimelineLines },
-        { title: "Заявки и проверки", lines: submissionLines },
-        { title: "ELO и Tierlist", lines: rankingLines },
+        { title: "🏅 Вклад", lines: contributionLines },
+        { title: "📈 Последний рост по kills", lines: progressHistoryLines },
+        { title: "🧾 История approved ростов", lines: progressTimelineLines },
+        { title: "📬 Заявки и проверки", lines: submissionLines },
+        { title: "📊 ELO и Tierlist", lines: rankingLines },
+        ...(synergy?.blocks?.antiteamSupport ? [synergy.blocks.antiteamSupport] : []),
         ...(synergy?.blocks?.proofGap ? [synergy.blocks.proofGap] : []),
       ],
       social: [
-        { title: "Roblox и соц", lines: robloxLines },
+        { title: "🤝 Roblox и соц", lines: robloxLines },
         ...(synergy?.blocks?.friendOverlap ? [synergy.blocks.friendOverlap] : []),
         ...(synergy?.blocks?.friendsAlreadyHere ? [synergy.blocks.friendsAlreadyHere] : []),
         ...(synergy?.blocks?.socialEvolution ? [synergy.blocks.socialEvolution] : []),
-        { title: "С кем чаще всего играет", lines: socialPeerLines },
+        { title: "🎮 С кем чаще всего играет", lines: socialPeerLines },
         ...(synergy?.blocks?.socialSuggestions ? [synergy.blocks.socialSuggestions] : []),
-        { title: "Мейны и гайды", lines: mainAndGuideLines },
+        { title: "📚 Мейны и гайды", lines: mainAndGuideLines },
         ...(synergy?.blocks?.verifiedCircle ? [synergy.blocks.verifiedCircle] : []),
         ...(synergy?.blocks?.socialMap ? [synergy.blocks.socialMap] : []),
         ...(synergy?.blocks?.voiceGameOverlap ? [synergy.blocks.voiceGameOverlap] : []),

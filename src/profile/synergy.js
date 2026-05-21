@@ -55,6 +55,13 @@ function formatHours(value, digits = 1) {
   }).format(amount);
 }
 
+function formatJjsHoursFromMinutes(value, digits = 1) {
+  const minutes = Number(value);
+  if (!Number.isFinite(minutes)) return "—";
+  const hours = Math.floor((minutes / 60) * 10) / 10;
+  return `${formatHours(hours, digits)} ч`;
+}
+
 function formatPercent(value, digits = 1) {
   const amount = Number(value);
   if (!Number.isFinite(amount)) return "—";
@@ -1236,7 +1243,7 @@ function buildMainCorePeerLine(robloxSummary = {}) {
     parts.push("частый co-play партнёр");
   }
   if (Number.isFinite(Number(topPeer?.minutesTogether)) && Number(topPeer.minutesTogether) > 0) {
-    parts.push(`${formatNumber(topPeer.minutesTogether)} мин вместе`);
+    parts.push(`${formatJjsHoursFromMinutes(topPeer.minutesTogether)} вместе`);
   }
   if (Number.isFinite(Number(topPeer?.sessionsTogether)) && Number(topPeer.sessionsTogether) > 0) {
     parts.push(`${formatNumber(topPeer.sessionsTogether)} сесс.`);
@@ -1332,7 +1339,7 @@ function buildSocialSuggestionEntryLine(entry = {}, index = 0) {
     parts.push(`Roblox ${robloxUsername}`);
   }
   if (Number.isFinite(minutesTogether) && minutesTogether > 0) {
-    parts.push(`${formatNumber(minutesTogether)} мин вместе`);
+    parts.push(`${formatJjsHoursFromMinutes(minutesTogether)} вместе`);
   }
   if (Number.isFinite(sessionsTogether) && sessionsTogether > 0) {
     parts.push(`${formatNumber(sessionsTogether)} общ. сесс.`);
@@ -1504,7 +1511,7 @@ function buildFriendOverlapEntryLine(entry = {}, index = 0) {
     parts.push("verified Roblox");
   }
   if (Number.isFinite(entry?.jjsMinutes7d) && entry.jjsMinutes7d > 0) {
-    parts.push(`JJS 7д ${formatNumber(entry.jjsMinutes7d)} мин`);
+    parts.push(`JJS 7д ${formatJjsHoursFromMinutes(entry.jjsMinutes7d)}`);
   }
   if (cleanString(entry?.appliedActivityRoleKey, 80)) {
     parts.push(`activity ${cleanString(entry.appliedActivityRoleKey, 80)}`);
@@ -1720,7 +1727,7 @@ function formatSocialTie(tie = {}) {
     if (normalized) parts.push(normalized);
   }
   if (Number.isFinite(Number(tie?.minutesTogether)) && Number(tie.minutesTogether) > 0) {
-    parts.push(`${formatNumber(tie.minutesTogether)} мин вместе`);
+    parts.push(`${formatJjsHoursFromMinutes(tie.minutesTogether)} вместе`);
   }
   if (Number.isFinite(Number(tie?.sessionsTogether)) && Number(tie.sessionsTogether) > 0) {
     parts.push(`${formatNumber(tie.sessionsTogether)} общ. сесс.`);
@@ -1736,7 +1743,7 @@ function formatSocialTie(tie = {}) {
     parts.push(`mutual friends ${formatNumber(mutualCount)}`);
   }
   if (Number.isFinite(Number(tie?.jjsMinutes7d)) && Number(tie.jjsMinutes7d) > 0) {
-    parts.push(`JJS 7д ${formatNumber(tie.jjsMinutes7d)} мин`);
+    parts.push(`JJS 7д ${formatJjsHoursFromMinutes(tie.jjsMinutes7d)}`);
   }
   return parts.join(" • ");
 }
@@ -1947,7 +1954,7 @@ function formatVoiceGameOverlapEntry(entry = {}) {
     parts.push(`${formatNumber(entry.voiceSessionsTogether)} voice сесс.`);
   }
   if (Number.isFinite(Number(entry?.minutesTogether)) && Number(entry.minutesTogether) > 0) {
-    parts.push(`JJS ${formatNumber(entry.minutesTogether)} мин`);
+    parts.push(`JJS ${formatJjsHoursFromMinutes(entry.minutesTogether)}`);
   }
   if (Number.isFinite(Number(entry?.sessionsTogether)) && Number(entry.sessionsTogether) > 0) {
     parts.push(`${formatNumber(entry.sessionsTogether)} JJS сесс.`);
@@ -2503,9 +2510,9 @@ function buildFarmProfileBlock({ profile = null, robloxSummary = {} } = {}) {
   const sessionBits = [];
   const sessionLineTitle = state.hasSessionHistogram ? "Session histogram" : "Session proxy";
   if (Number.isFinite(state.averageSessionMinutes)) {
-    sessionBits.push(`avg ${formatHours(state.averageSessionMinutes)} мин/session`);
+    sessionBits.push(`avg ${formatJjsHoursFromMinutes(state.averageSessionMinutes)}/session`);
     if (state.hasSessionHistogram) {
-      if (Number.isFinite(state.medianSessionMinutes)) sessionBits.push(`median ${formatHours(state.medianSessionMinutes)} min`);
+      if (Number.isFinite(state.medianSessionMinutes)) sessionBits.push(`median ${formatJjsHoursFromMinutes(state.medianSessionMinutes)}`);
       if (Number.isFinite(state.longSessionShare)) sessionBits.push(`long>=60 ${formatPercent(state.longSessionShare, 0)}`);
       if (Number.isFinite(state.shortSessionShare)) sessionBits.push(`short<=25 ${formatPercent(state.shortSessionShare, 0)}`);
       sessionBits.push(`sessions ${formatNumber(state.sessionHistoryCount)}`);
@@ -2636,13 +2643,13 @@ function buildPrimeTimeBlock({ profile = null, now } = {}) {
 
   const lines = [];
   if (state.insufficient || !state.bestWindow || state.bestWindow.minutes <= 0) {
-    lines.push(`Hourly buckets пока ещё короткие: активных часов ${formatNumber(state.activeHourCount)} • tracked минут ${formatNumber(state.totalMinutes)}.`);
+    lines.push(`Hourly buckets пока ещё короткие: активных часов ${formatNumber(state.activeHourCount)} • tracked ${formatJjsHoursFromMinutes(state.totalMinutes)}.`);
   } else {
     lines.push(
-      `Чаще всего играет с ${formatHourLabel(state.bestWindow.startHour)} до ${formatHourLabel(state.bestWindow.endHourExclusive)} МСК • окно ${formatNumber(state.bestWindow.minutes)} мин`
+      `Чаще всего играет с ${formatHourLabel(state.bestWindow.startHour)} до ${formatHourLabel(state.bestWindow.endHourExclusive)} МСК • окно ${formatJjsHoursFromMinutes(state.bestWindow.minutes)}`
     );
     lines.push(
-      `Пиковый час: ${formatHourLabel(state.peakHour)} • активных часов: ${formatNumber(state.activeHourCount)} • tracked минут в bucket-слое: ${formatNumber(state.totalMinutes)}`
+      `Пиковый час: ${formatHourLabel(state.peakHour)} • активных часов: ${formatNumber(state.activeHourCount)} • tracked ${formatJjsHoursFromMinutes(state.totalMinutes)} в bucket-слое`
     );
   }
 
@@ -2761,7 +2768,7 @@ function buildPrimeTimeConfidenceBlock({ profile = null } = {}) {
           "Prime confidence: короткая история",
           `недель с данными ${formatNumber(validWeeks.length)}/2`,
           `hourly buckets ${formatNumber(state.buckets.length)}`,
-          `tracked ${formatNumber(state.totalMinutes)} мин`,
+          `tracked ${formatJjsHoursFromMinutes(state.totalMinutes)}`,
         ].join(" • "),
         "Trust: partial • нужно минимум 2 недельных среза; текущее окно не считаем устойчивым.",
       ],
@@ -2774,7 +2781,7 @@ function buildPrimeTimeConfidenceBlock({ profile = null } = {}) {
   const confidenceState = validWeeks.length >= 3 && matchRatio >= 0.67 ? "reliable" : "partial";
   const weeklyWindowLine = validWeeks
     .slice(-4)
-    .map((entry) => `${entry.weekKey} ${formatHourLabel(entry.bestWindow.startHour)}-${formatHourLabel(entry.bestWindow.endHourExclusive)} (${formatNumber(entry.bestWindow.minutes)} мин)`)
+    .map((entry) => `${entry.weekKey} ${formatHourLabel(entry.bestWindow.startHour)}-${formatHourLabel(entry.bestWindow.endHourExclusive)} (${formatJjsHoursFromMinutes(entry.bestWindow.minutes)})`)
     .join("; ");
 
   return {
@@ -4263,15 +4270,14 @@ function buildProgressSynergyState({ profile = null, robloxSummary = {}, recentK
 
 function buildProfileSynergyState(options = {}) {
   const progress = buildProgressSynergyState(options);
-  const viewerTierlist = options.isSelf
-    ? null
-    : buildViewerTierlistState({
+  const viewerTierlist = buildViewerTierlistState({
       ...options,
       progressState: progress,
     });
 
   return {
     progress,
+    viewerTierlist,
     blocks: {
       selfProgress: buildSelfProgressBlock({
         ...options,
