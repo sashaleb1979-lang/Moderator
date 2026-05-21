@@ -1504,7 +1504,7 @@ function createAntiteamOperator(options = {}) {
         return true;
       }
       const page = Number.parseInt(pageRaw, 10) || 0;
-      const arrived = !current.arrived;
+      const arrived = current.arrived === false;
       const optimisticTicket = {
         ...ticket,
         helpers: {
@@ -1512,7 +1512,7 @@ function createAntiteamOperator(options = {}) {
           [helperId]: {
             ...current,
             arrived,
-            arrivedSetAt: arrived ? nowIso() : current.arrivedSetAt,
+            arrivedSetAt: nowIso(),
           },
         },
       };
@@ -1840,7 +1840,7 @@ function createAntiteamOperator(options = {}) {
       }
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       const summary = interaction.fields.getTextInputValue("summary");
-      const confirmedHelperIds = Object.values(ticket.helpers || {}).filter((helper) => helper.arrived).map((helper) => helper.userId);
+      const confirmedHelperIds = Object.values(ticket.helpers || {}).filter((helper) => helper.arrived !== false).map((helper) => helper.userId);
       const updated = await persist("antiteam-close", () => {
         const closed = closeAntiteamTicket(db, ticketId, {
           now: nowIso(),
@@ -1906,7 +1906,7 @@ function createAntiteamOperator(options = {}) {
         now: nowIso(),
         closedBy: "system",
         summaryText: "Автозавершено после 2 часов без движения.",
-        confirmedHelperIds: Object.values(ticket.helpers || {}).filter((helper) => helper.arrived).map((helper) => helper.userId),
+        confirmedHelperIds: Object.values(ticket.helpers || {}).filter((helper) => helper.arrived !== false).map((helper) => helper.userId),
         autoClosed: true,
       }));
       await finalizeClosedTicket(updated).catch(() => {});

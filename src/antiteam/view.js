@@ -1054,16 +1054,20 @@ function normalizeHelperIdSet(values = []) {
     .filter(Boolean));
 }
 
+function didHelperArrive(helper = {}) {
+  return helper?.arrived !== false;
+}
+
 function formatHelpersBlock(ticket = {}, options = {}) {
   const helpers = Object.values(ticket.helpers || {})
     .sort((left, right) => String(left.respondedAt || "").localeCompare(String(right.respondedAt || "")) || String(left.userId || "").localeCompare(String(right.userId || "")));
-  const confirmed = helpers.filter((helper) => helper.arrived === true);
+  const confirmed = helpers.filter((helper) => didHelperArrive(helper));
   const apiPresentIds = normalizeHelperIdSet(options.apiPresentHelperIds);
   const apiPresentCount = helpers.filter((helper) => apiPresentIds.has(cleanString(helper.userId, 80))).length;
   const isClosed = ticket.status === "closed";
   if (!helpers.length) return "Пока никто не отозвался.";
   const helperLine = helpers.slice(0, 8)
-    .map((helper) => isClosed ? `${helper.arrived ? "✅" : "❌"} <@${helper.userId}>` : `<@${helper.userId}>`)
+    .map((helper) => isClosed ? `${didHelperArrive(helper) ? "✅" : "❌"} <@${helper.userId}>` : `<@${helper.userId}>`)
     .join(" • ");
   const overflow = helpers.length > 8 ? ` +${helpers.length - 8}` : "";
   const responseLine = isClosed
@@ -1314,12 +1318,13 @@ function buildCloseReviewPayload(ticket = {}, page = 0) {
     );
 
   for (const helper of visibleHelpers) {
+    const arrived = didHelperArrive(helper);
     container.addActionRowComponents(
       new ActionRowBuilder().addComponents(
         new ButtonBuilder()
           .setCustomId(ticketButtonId("arrived", ticket.id, `${helper.userId}:${currentPage}`))
-          .setLabel(`${helper.arrived ? "Пришёл" : "Не пришёл"} • ${helper.discordTag || helper.userId}`.slice(0, 80))
-          .setStyle(helper.arrived ? ButtonStyle.Success : ButtonStyle.Secondary)
+          .setLabel(`${arrived ? "Пришёл" : "Не пришёл"} • ${helper.discordTag || helper.userId}`.slice(0, 80))
+          .setStyle(arrived ? ButtonStyle.Success : ButtonStyle.Secondary)
       )
     );
   }

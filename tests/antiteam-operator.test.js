@@ -1298,7 +1298,7 @@ test("arrival toggle updates the close review before serialized persistence fini
       userId: "helper-1",
       discordTag: "Helper",
       respondedAt: "2026-05-16T10:02:00.000Z",
-      arrived: false,
+      arrived: true,
     },
   };
 
@@ -1325,10 +1325,77 @@ test("arrival toggle updates the close review before serialized persistence fini
   const callsBeforePersist = await persistEntered;
 
   assert.deepEqual(callsBeforePersist, ["update"]);
-  assert.match(JSON.stringify(interaction.calls[0][1].components[0].toJSON()), /Пришёл • Helper/);
+  assert.match(JSON.stringify(interaction.calls[0][1].components[0].toJSON()), /Не пришёл • Helper/);
   releasePersist();
   assert.equal(await pending, true);
-  assert.equal(db.sot.antiteam.tickets["ticket-1"].helpers["helper-1"].arrived, true);
+  assert.equal(db.sot.antiteam.tickets["ticket-1"].helpers["helper-1"].arrived, false);
+});
+
+test("close modal counts untouched helpers as arrived by default", async () => {
+  const db = {};
+  const state = ensureAntiteamState(db).state;
+  state.config.helperRewardRoles = { "1": "role-1", "5": "", "10": "", "20": "", "50": "" };
+  state.stats.helpers["helper-1"] = { responded: 1, linkGranted: 1, confirmedArrived: 0, lastHelpedAt: "2026-05-16T09:00:00.000Z" };
+  const draft = setAntiteamDraft(db, "author-1", {
+    userTag: "Author",
+    roblox: { userId: "101", username: "Anchor" },
+    level: "high",
+    count: "2-4",
+    description: "Цели A/B.",
+  }, { now: "2026-05-16T10:00:00.000Z" });
+  createAntiteamTicketFromDraft(db, draft, {
+    id: "ticket-default-arrived",
+    now: "2026-05-16T10:01:00.000Z",
+  });
+  db.sot.antiteam.tickets["ticket-default-arrived"].helpers = {
+    "helper-1": {
+      userId: "helper-1",
+      discordTag: "Helper 1",
+      respondedAt: "2026-05-16T10:02:00.000Z",
+    },
+  };
+  db.sot.antiteam.tickets["ticket-default-arrived"].message = {
+    channelId: "channel-1",
+    messageId: "message-1",
+    threadId: "thread-1",
+    threadPanelMessageId: "thread-panel-1",
+  };
+
+  const granted = [];
+  const operator = createAntiteamOperator({
+    db,
+    now: () => "2026-05-16T10:04:00.000Z",
+    saveDb() {},
+    grantRole: async (userId, roleId) => {
+      granted.push({ userId, roleId });
+    },
+    fetchChannel: async (channelId) => channelId === "channel-1"
+      ? {
+        messages: {
+          fetch: async () => ({
+            edit: async () => {},
+          }),
+        },
+      }
+      : {
+        setName: async () => {},
+        messages: {
+          fetch: async () => ({
+            edit: async () => {},
+          }),
+        },
+      },
+  });
+  const interaction = createModalInteraction(
+    ticketButtonId("close_modal", "ticket-default-arrived"),
+    { summary: "готово" },
+    { id: "author-1", username: "Author" }
+  );
+
+  assert.equal(await operator.handleModalSubmitInteraction(interaction), true);
+  assert.deepEqual(db.sot.antiteam.tickets["ticket-default-arrived"].closeSummary.confirmedHelperIds, ["helper-1"]);
+  assert.equal(db.sot.antiteam.stats.helpers["helper-1"].confirmedArrived, 1);
+  assert.deepEqual(granted, [{ userId: "helper-1", roleId: "role-1" }]);
 });
 
 test("draft submit asks for photo when photo toggle is enabled", async () => {

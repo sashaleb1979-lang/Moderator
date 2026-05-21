@@ -322,7 +322,7 @@ function normalizeHelperRecord(value = {}, userId = "") {
     linkKind: cleanString(source.linkKind, 40),
     linkGrantedAt: normalizeIsoTimestamp(source.linkGrantedAt, null),
     friendRequestNotifiedAt: normalizeIsoTimestamp(source.friendRequestNotifiedAt, null),
-    arrived: normalizeBoolean(source.arrived, false),
+    arrived: normalizeBoolean(source.arrived, true),
     arrivedSetAt: normalizeIsoTimestamp(source.arrivedSetAt, null),
   };
 }
