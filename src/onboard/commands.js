@@ -7,6 +7,7 @@ const { VERIFY_COMMAND_NAME, VERIFY_SUBCOMMAND_NAMES } = require("../verificatio
 const PROFILE_COMMAND_NAME = "профиль";
 
 const ONBOARD_SUBCOMMAND_NAMES = [
+  "activitystatus",
   "panel",
   "sotreport",
   "welcomeedit",
@@ -28,6 +29,30 @@ function buildCommands() {
     new SlashCommandBuilder()
       .setName("onboard")
       .setDescription("Welcome bot commands")
+      .addSubcommand((subcommand) =>
+        subcommand
+          .setName("activitystatus")
+          .setDescription("Временно вручную поставить activity статус или вернуть auto")
+          .addStringOption((option) =>
+            option
+              .setName("status")
+              .setDescription("Какой activity статус выставить")
+              .setRequired(true)
+              .addChoices(
+                { name: "Авто (снять override)", value: "auto" },
+                { name: "Newcomer", value: "newcomer" },
+                { name: "Dead", value: "dead" },
+                { name: "Weak", value: "weak" },
+                { name: "Floating", value: "floating" },
+                { name: "Active", value: "active" },
+                { name: "Stable", value: "stable" },
+                { name: "Core", value: "core" }
+              )
+          )
+          .addUserOption((option) => option.setName("target").setDescription("Игрок (если в сервере)"))
+          .addStringOption((option) => option.setName("user_id").setDescription("ID игрока (если вышел из сервера)"))
+          .addStringOption((option) => option.setName("note").setDescription("Короткая заметка для audit log").setMaxLength(300))
+      )
       .addSubcommand((subcommand) =>
         subcommand.setName("panel").setDescription("Открыть модераторскую панель управления")
       )

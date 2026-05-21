@@ -1816,7 +1816,7 @@ test("closing ticket edits messages and renames thread with gray marker", async 
   assert.match(JSON.stringify(threadPanelEdit.components[0].toJSON()), /✅ Закрыто/);
 });
 
-test("closing ticket removes ping message, evicts non-owner thread members, locks thread, and archives it", async () => {
+test("closing ticket removes ping message, keeps thread members, locks thread, and archives it", async () => {
   const db = {};
   const draft = setAntiteamDraft(db, "author-1", {
     userTag: "Author",
@@ -1840,6 +1840,7 @@ test("closing ticket removes ping message, evicts non-owner thread members, lock
   let pingDeleted = false;
   let archived = null;
   let locked = null;
+  let membersFetched = false;
   const removedMembers = [];
   const channel = {
     messages: {
@@ -1857,11 +1858,14 @@ test("closing ticket removes ping message, evicts non-owner thread members, lock
       locked = value;
     },
     members: {
-      fetch: async () => new Map([
-        ["author-1", { id: "author-1", user: { id: "author-1", bot: false } }],
-        ["helper-1", { id: "helper-1", user: { id: "helper-1", bot: false } }],
-        ["admin-1", { id: "admin-1", user: { id: "admin-1", bot: false }, permissions: { has: () => true } }],
-      ]),
+      fetch: async () => {
+        membersFetched = true;
+        return new Map([
+          ["author-1", { id: "author-1", user: { id: "author-1", bot: false } }],
+          ["helper-1", { id: "helper-1", user: { id: "helper-1", bot: false } }],
+          ["admin-1", { id: "admin-1", user: { id: "admin-1", bot: false }, permissions: { has: () => true } }],
+        ]);
+      },
       remove: async (userId) => {
         removedMembers.push(userId);
       },
@@ -1898,7 +1902,8 @@ test("closing ticket removes ping message, evicts non-owner thread members, lock
   assert.equal(pingDeleted, true);
   assert.equal(archived, true);
   assert.equal(locked, true);
-  assert.deepEqual(removedMembers, ["helper-1"]);
+  assert.equal(membersFetched, false);
+  assert.deepEqual(removedMembers, []);
 });
 
 test("closing ticket writes helper result markers into the public message", async () => {
@@ -1983,7 +1988,7 @@ test("closing ticket writes helper result markers into the public message", asyn
   ]);
 });
 
-test("auto-close reuses thread cleanup, evicts non-owner thread members, and archives the mission", async () => {
+test("auto-close reuses thread cleanup, keeps thread members, and archives the mission", async () => {
   const db = {};
   const state = ensureAntiteamState(db).state;
   state.config.missionAutoCloseMinutes = 120;
@@ -2010,6 +2015,7 @@ test("auto-close reuses thread cleanup, evicts non-owner thread members, and arc
   let archived = false;
   let locked = false;
   let pingDeleted = false;
+  let membersFetched = false;
   const removedMembers = [];
   const operator = createAntiteamOperator({
     db,
@@ -2032,10 +2038,13 @@ test("auto-close reuses thread cleanup, evicts non-owner thread members, and arc
           locked = true;
         },
         members: {
-          fetch: async () => new Map([
-            ["author-1", { id: "author-1", user: { id: "author-1", bot: false } }],
-            ["helper-1", { id: "helper-1", user: { id: "helper-1", bot: false } }],
-          ]),
+          fetch: async () => {
+            membersFetched = true;
+            return new Map([
+              ["author-1", { id: "author-1", user: { id: "author-1", bot: false } }],
+              ["helper-1", { id: "helper-1", user: { id: "helper-1", bot: false } }],
+            ]);
+          },
           remove: async (userId) => {
             removedMembers.push(userId);
           },
@@ -2061,7 +2070,8 @@ test("auto-close reuses thread cleanup, evicts non-owner thread members, and arc
   assert.equal(pingDeleted, true);
   assert.equal(locked, true);
   assert.equal(archived, true);
-  assert.deepEqual(removedMembers, ["helper-1"]);
+  assert.equal(membersFetched, false);
+  assert.deepEqual(removedMembers, []);
 });
 
 test("advanced config modal updates timing and Roblox link settings", async () => {

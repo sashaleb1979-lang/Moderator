@@ -1308,7 +1308,7 @@ function buildCloseReviewPayload(ticket = {}, page = 0) {
     .addTextDisplayComponents(
       new TextDisplayBuilder().setContent("# Завершение антитима"),
       new TextDisplayBuilder().setContent(helpers.length
-        ? "Отметь каждого, кто реально пришёл. Даже если помогал мало, рычаг нужно выставить честно."
+        ? "Выбери по каждому helper-у: кто реально пришёл, а кто не пришёл. Даже если помогал мало, ставь честно."
         : "Пока никто не получал ссылки помощи. Можно закрыть без отметок."),
       new TextDisplayBuilder().setContent(`Страница **${currentPage + 1}/${totalPages}** • helper-ов: **${helpers.length}**`)
     );
@@ -1318,7 +1318,7 @@ function buildCloseReviewPayload(ticket = {}, page = 0) {
       new ActionRowBuilder().addComponents(
         new ButtonBuilder()
           .setCustomId(ticketButtonId("arrived", ticket.id, `${helper.userId}:${currentPage}`))
-          .setLabel(`${helper.arrived ? "Пришёл" : "Не отмечен"} • ${helper.discordTag || helper.userId}`.slice(0, 80))
+          .setLabel(`${helper.arrived ? "Пришёл" : "Не пришёл"} • ${helper.discordTag || helper.userId}`.slice(0, 80))
           .setStyle(helper.arrived ? ButtonStyle.Success : ButtonStyle.Secondary)
       )
     );

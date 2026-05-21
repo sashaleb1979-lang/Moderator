@@ -102,6 +102,7 @@ const ACTIVITY_PANEL_BUTTON_IDS = Object.freeze([
     const ACTIVITY_ROLE_MAPPING_SECONDARY_KEYS = Object.freeze(["floating", "weak", "newcomer", "dead"]);
     const ACTIVITY_FIRST_RANK_ROLE_KEYS = new Set(["weak", "floating", "active", "stable", "core"]);
     const ACTIVITY_NEWCOMER_ROLE_KEY = "newcomer";
+    const ACTIVITY_MANUAL_STATUS_ROLE_KEYS = new Set(["dead", "weak", "floating", "active", "stable", "core", ACTIVITY_NEWCOMER_ROLE_KEY]);
     const ACTIVE_HISTORICAL_IMPORTS = new WeakSet();
 
     function clone(value) {
@@ -984,6 +985,327 @@ function syncAppliedActivityRoleMetadata(db, userId, { appliedActivityRoleKey, l
   }
 
   return db.profiles[userId];
+}
+
+function normalizeActivityManualStatusRoleKey(value, fallback = null) {
+  const roleKey = cleanString(value, 80).toLowerCase();
+  return ACTIVITY_MANUAL_STATUS_ROLE_KEYS.has(roleKey) ? roleKey : fallback;
+}
+
+function getActivityManualStatusRestoreMap(state) {
+  state.ops ||= {};
+  if (!state.ops.manualStatusRestore || typeof state.ops.manualStatusRestore !== "object" || Array.isArray(state.ops.manualStatusRestore)) {
+    state.ops.manualStatusRestore = {};
+  }
+  return state.ops.manualStatusRestore;
+}
+
+function readActivityManualStatusRestore(state, userId) {
+  const restoreMap = getActivityManualStatusRestoreMap(state);
+  const entry = restoreMap[userId];
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+    return null;
+  }
+
+  return {
+    desiredActivityRoleKey: normalizeNullableString(entry.desiredActivityRoleKey, 80),
+    appliedActivityRoleKey: normalizeNullableString(entry.appliedActivityRoleKey, 80),
+    manualOverride: entry.manualOverride === true,
+    autoRoleFrozen: entry.autoRoleFrozen === true,
+    savedAt: normalizeIsoTimestamp(entry.savedAt, null),
+    savedByUserId: normalizeNullableString(entry.savedByUserId, 80),
+  };
+}
+
+function writeActivityManualStatusRestore(state, userId, entry = null) {
+  const restoreMap = getActivityManualStatusRestoreMap(state);
+  if (!entry) {
+    delete restoreMap[userId];
+    return null;
+  }
+
+  restoreMap[userId] = {
+    desiredActivityRoleKey: normalizeNullableString(entry.desiredActivityRoleKey, 80),
+    appliedActivityRoleKey: normalizeNullableString(entry.appliedActivityRoleKey, 80),
+    manualOverride: entry.manualOverride === true,
+    autoRoleFrozen: entry.autoRoleFrozen === true,
+    savedAt: normalizeIsoTimestamp(entry.savedAt, null),
+    savedByUserId: normalizeNullableString(entry.savedByUserId, 80),
+  };
+  return clone(restoreMap[userId]);
+}
+
+function syncActivityStatusSnapshot(db, userId, patch = {}) {
+  const state = ensureActivityState(db);
+  const profile = ensureProfileRecord(db, userId);
+  const currentActivity = resolveActivityRolePlanSource(state, profile, userId);
+  const nextProfile = clone(profile);
+  nextProfile.domains ||= {};
+  const nextActivity = {
+    ...clone(currentActivity),
+    ...clone(patch),
+  };
+  const normalizedAppliedActivityRoleKey = normalizeNullableString(nextActivity.appliedActivityRoleKey, 80);
+  const normalizedLastRoleAppliedAt = normalizeIsoTimestamp(nextActivity.lastRoleAppliedAt, null);
+  const existingFirstActivityRoleGrantedAt = normalizeIsoTimestamp(
+    nextActivity.firstActivityRoleGrantedAt,
+    normalizeIsoTimestamp(currentActivity.firstActivityRoleGrantedAt, null)
+  );
+
+  nextActivity.desiredActivityRoleKey = normalizeNullableString(nextActivity.desiredActivityRoleKey, 80);
+  nextActivity.appliedActivityRoleKey = normalizedAppliedActivityRoleKey;
+  nextActivity.manualOverride = nextActivity.manualOverride === true;
+  nextActivity.autoRoleFrozen = nextActivity.autoRoleFrozen === true;
+  nextActivity.lastRoleAppliedAt = normalizedLastRoleAppliedAt;
+  nextActivity.firstActivityRoleGrantedAt = existingFirstActivityRoleGrantedAt
+    || (isFirstActivityRankRoleKey(normalizedAppliedActivityRoleKey) ? normalizedLastRoleAppliedAt : null);
+
+  nextProfile.domains.activity = nextActivity;
+  db.profiles[userId] = ensureSharedProfile(nextProfile, userId).profile;
+  state.userSnapshots ||= {};
+  state.userSnapshots[userId] = {
+    ...(state.userSnapshots[userId] && typeof state.userSnapshots[userId] === "object" && !Array.isArray(state.userSnapshots[userId])
+      ? state.userSnapshots[userId]
+      : {}),
+    ...clone(db.profiles[userId].domains.activity || {}),
+  };
+  db.sot.activity = state;
+  return clone(db.profiles[userId].domains.activity || {});
+}
+
+async function setManualActivityUserStatus({
+  db = {},
+  userId = "",
+  statusKey = "",
+  requestedByUserId = "",
+  changedAt,
+  note = "",
+  memberPresent = null,
+  memberRoleIds = [],
+  applyRoleChanges,
+  saveDb,
+  runSerialized,
+} = {}) {
+  const normalizedUserId = cleanString(userId, 80);
+  if (!normalizedUserId) {
+    return {
+      ok: false,
+      message: "User ID is required.",
+    };
+  }
+
+  const normalizedStatusKey = cleanString(statusKey, 80).toLowerCase();
+  const normalizedRequestedByUserId = normalizeNullableString(requestedByUserId, 80);
+  const normalizedNote = normalizeNullableString(note, 300);
+  const safeChangedAt = normalizeIsoTimestamp(changedAt, new Date().toISOString());
+  const isAutoRestore = normalizedStatusKey === "auto";
+  const normalizedManualStatusKey = isAutoRestore
+    ? "auto"
+    : normalizeActivityManualStatusRoleKey(normalizedStatusKey, null);
+  if (!normalizedManualStatusKey) {
+    return {
+      ok: false,
+      message: "Поддерживаются только activity статусы: auto, newcomer, dead, weak, floating, active, stable, core.",
+    };
+  }
+
+  const execute = async () => {
+    const state = ensureActivityState(db);
+    const profile = ensureProfileRecord(db, normalizedUserId);
+    const currentActivity = resolveActivityRolePlanSource(state, profile, normalizedUserId);
+    const normalizedMemberRoleIds = normalizeStringArray(memberRoleIds, 5000);
+    const currentAppliedActivityRoleKey = normalizeNullableString(currentActivity.appliedActivityRoleKey, 80);
+    const currentLastRoleAppliedAt = normalizeIsoTimestamp(currentActivity.lastRoleAppliedAt, null);
+    const restoreEntry = readActivityManualStatusRestore(state, normalizedUserId);
+    const memberState = memberPresent === true ? true : memberPresent === false ? false : null;
+
+    if (isAutoRestore) {
+      const restoredFromShadow = Boolean(restoreEntry);
+      if (restoreEntry) {
+        writeActivityManualStatusRestore(state, normalizedUserId, null);
+      }
+
+      const nextSnapshot = syncActivityStatusSnapshot(db, normalizedUserId, {
+        desiredActivityRoleKey: restoreEntry ? restoreEntry.desiredActivityRoleKey : currentActivity.desiredActivityRoleKey,
+        appliedActivityRoleKey: restoreEntry ? restoreEntry.appliedActivityRoleKey : currentAppliedActivityRoleKey,
+        manualOverride: restoreEntry ? restoreEntry.manualOverride : false,
+        autoRoleFrozen: restoreEntry ? restoreEntry.autoRoleFrozen : false,
+        lastRoleAppliedAt: currentLastRoleAppliedAt,
+      });
+
+      let roleSync = {
+        memberPresent: memberState,
+        attempted: false,
+        applied: null,
+        skipReason: restoredFromShadow ? "unchanged" : "restore_state_missing",
+        desiredRoleKey: null,
+        desiredRoleId: null,
+        addRoleIds: [],
+        removeRoleIds: [],
+      };
+
+      if (restoredFromShadow && memberState === true) {
+        const plan = buildActivityRoleAssignmentPlan({
+          db,
+          userId: normalizedUserId,
+          memberRoleIds: normalizedMemberRoleIds,
+        });
+        roleSync = {
+          memberPresent: true,
+          attempted: plan.shouldApply,
+          applied: null,
+          skipReason: plan.shouldApply ? null : plan.skipReason,
+          desiredRoleKey: plan.desiredRoleKey,
+          desiredRoleId: plan.desiredRoleId,
+          addRoleIds: plan.addRoleIds.slice(),
+          removeRoleIds: plan.removeRoleIds.slice(),
+        };
+
+        if (plan.shouldApply) {
+          const applyAccepted = typeof applyRoleChanges === "function"
+            ? await Promise.resolve(applyRoleChanges({
+              userId: normalizedUserId,
+              desiredRoleKey: plan.desiredRoleKey,
+              desiredRoleId: plan.desiredRoleId,
+              addRoleIds: plan.addRoleIds,
+              removeRoleIds: plan.removeRoleIds,
+            }))
+            : false;
+
+          roleSync.applied = applyAccepted === true;
+          roleSync.skipReason = applyAccepted === true ? null : "apply_declined";
+          if (applyAccepted === true) {
+            syncAppliedActivityRoleMetadata(db, normalizedUserId, {
+              appliedActivityRoleKey: plan.desiredRoleId ? plan.desiredRoleKey : null,
+              lastRoleAppliedAt: safeChangedAt,
+            });
+          }
+        }
+      }
+
+      appendActivityAuditLog(db, {
+        actionType: "activity_manual_status_clear",
+        userId: normalizedUserId,
+        moderatorUserId: normalizedRequestedByUserId,
+        createdAt: safeChangedAt,
+        note: normalizedNote,
+        restoredFromShadow,
+      });
+
+      if (typeof saveDb === "function") {
+        saveDb();
+      }
+
+      return {
+        ok: true,
+        action: "clear",
+        userId: normalizedUserId,
+        restoredFromShadow,
+        roleSync,
+        snapshot: clone(db.profiles?.[normalizedUserId]?.domains?.activity || nextSnapshot || {}),
+      };
+    }
+
+    const config = state.config || {};
+    const desiredRoleId = normalizeNullableString(config.activityRoleIds?.[normalizedManualStatusKey], 80);
+    const managedRoleIds = listActivityManagedRoleIds(config);
+    const addRoleIds = memberState === true && desiredRoleId && !normalizedMemberRoleIds.includes(desiredRoleId)
+      ? [desiredRoleId]
+      : [];
+    const removeRoleIds = memberState === true
+      ? managedRoleIds.filter((roleId) => roleId !== desiredRoleId && normalizedMemberRoleIds.includes(roleId))
+      : [];
+
+    let createdRestoreState = false;
+    let restoreStateKnown = Boolean(restoreEntry);
+    if (!restoreEntry && currentActivity.manualOverride !== true) {
+      writeActivityManualStatusRestore(state, normalizedUserId, {
+        desiredActivityRoleKey: currentActivity.desiredActivityRoleKey,
+        appliedActivityRoleKey: currentAppliedActivityRoleKey,
+        manualOverride: currentActivity.manualOverride === true,
+        autoRoleFrozen: currentActivity.autoRoleFrozen === true,
+        savedAt: safeChangedAt,
+        savedByUserId: normalizedRequestedByUserId,
+      });
+      createdRestoreState = true;
+      restoreStateKnown = true;
+    }
+
+    let roleSync = {
+      memberPresent: memberState,
+      attempted: false,
+      applied: null,
+      skipReason: memberState === true ? "unchanged" : "member_not_found",
+      desiredRoleKey: normalizedManualStatusKey,
+      desiredRoleId,
+      addRoleIds: addRoleIds.slice(),
+      removeRoleIds: removeRoleIds.slice(),
+    };
+
+    if (memberState === true && (addRoleIds.length || removeRoleIds.length)) {
+      roleSync.attempted = true;
+      const applyAccepted = typeof applyRoleChanges === "function"
+        ? await Promise.resolve(applyRoleChanges({
+          userId: normalizedUserId,
+          desiredRoleKey: normalizedManualStatusKey,
+          desiredRoleId,
+          addRoleIds,
+          removeRoleIds,
+        }))
+        : false;
+
+      roleSync.applied = applyAccepted === true;
+      roleSync.skipReason = applyAccepted === true ? null : "apply_declined";
+    }
+
+    const nextAppliedActivityRoleKey = memberState === true
+      ? roleSync.skipReason === null || roleSync.skipReason === "unchanged"
+        ? desiredRoleId ? normalizedManualStatusKey : null
+        : currentAppliedActivityRoleKey
+      : currentAppliedActivityRoleKey;
+    const nextLastRoleAppliedAt = memberState === true && (roleSync.skipReason === null || roleSync.skipReason === "unchanged")
+      ? safeChangedAt
+      : currentLastRoleAppliedAt;
+    const nextSnapshot = syncActivityStatusSnapshot(db, normalizedUserId, {
+      desiredActivityRoleKey: normalizedManualStatusKey,
+      appliedActivityRoleKey: nextAppliedActivityRoleKey,
+      manualOverride: true,
+      autoRoleFrozen: false,
+      lastRoleAppliedAt: nextLastRoleAppliedAt,
+    });
+
+    appendActivityAuditLog(db, {
+      actionType: "activity_manual_status_set",
+      userId: normalizedUserId,
+      moderatorUserId: normalizedRequestedByUserId,
+      createdAt: safeChangedAt,
+      note: normalizedNote,
+      statusKey: normalizedManualStatusKey,
+      desiredRoleId,
+      createdRestoreState,
+      restoreStateKnown,
+      roleSync,
+    });
+
+    if (typeof saveDb === "function") {
+      saveDb();
+    }
+
+    return {
+      ok: true,
+      action: "set",
+      userId: normalizedUserId,
+      statusKey: normalizedManualStatusKey,
+      createdRestoreState,
+      restoreStateKnown,
+      roleSync,
+      snapshot: clone(db.profiles?.[normalizedUserId]?.domains?.activity || nextSnapshot || {}),
+    };
+  };
+
+  return typeof runSerialized === "function"
+    ? runSerialized(execute, `activity-manual-status:${normalizedUserId}`)
+    : execute();
 }
 
 function getActivityUserInspection({ db = {}, userId = "", memberRoleIds = [] } = {}) {
@@ -3376,4 +3698,5 @@ module.exports = {
   importHistoricalActivityFromWatchedChannels,
   runActivityRoleSyncFromSnapshots,
   runDailyActivityRoleSync,
+  setManualActivityUserStatus,
 };

@@ -331,22 +331,6 @@ function createAntiteamOperator(options = {}) {
       }
     }
 
-    if (thread.members?.fetch && thread.members?.remove) {
-      const threadMembers = await thread.members.fetch().catch(() => null);
-      if (threadMembers?.values) {
-        for (const member of threadMembers.values()) {
-          const memberId = cleanString(member?.id || member?.user?.id, 80);
-          if (!memberId || memberId === cleanString(ticket.createdBy, 80) || member?.user?.bot === true || hasAdmin(member)) {
-            continue;
-          }
-
-          await thread.members.remove(memberId, "antiteam mission closed").catch((error) => {
-            logError("Antiteam thread member cleanup failed:", error?.message || error);
-          });
-        }
-      }
-    }
-
     if (typeof thread.setLocked === "function") {
       await thread.setLocked(true, "antiteam mission closed").catch((error) => {
         logError("Antiteam thread lock failed:", error?.message || error);

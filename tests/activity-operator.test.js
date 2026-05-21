@@ -12,6 +12,7 @@ const {
   importHistoricalActivityFromWatchedChannels,
   runActivityRoleSyncFromSnapshots,
   runDailyActivityRoleSync,
+  setManualActivityUserStatus,
 } = require("../src/activity/operator");
 const { ensureActivityState, updateActivityConfig, upsertWatchedChannel } = require("../src/activity/state");
 
@@ -246,6 +247,147 @@ test("buildActivityRoleAssignmentPlan removes stale managed roles when desired r
   assert.equal(unmappedPlan.desiredRoleId, null);
   assert.deepEqual(unmappedPlan.addRoleIds, []);
   assert.deepEqual(unmappedPlan.removeRoleIds, ["role-weak"]);
+});
+
+test("setManualActivityUserStatus stores and restores the previous auto activity state", async () => {
+  const db = {
+    profiles: {
+      member: {
+        userId: "member",
+        domains: {
+          activity: {
+            desiredActivityRoleKey: "weak",
+            appliedActivityRoleKey: "weak",
+            manualOverride: false,
+            autoRoleFrozen: false,
+            activityScore: 28,
+          },
+        },
+      },
+    },
+  };
+
+  updateActivityConfig(db, {
+    activityRoleIds: {
+      weak: "role-weak",
+      active: "role-active",
+    },
+  });
+
+  const roleChanges = [];
+  const setResult = await setManualActivityUserStatus({
+    db,
+    userId: "member",
+    statusKey: "active",
+    requestedByUserId: "mod-1",
+    changedAt: "2026-05-21T10:00:00.000Z",
+    memberPresent: true,
+    memberRoleIds: ["role-weak"],
+    applyRoleChanges(change) {
+      roleChanges.push(change);
+      return true;
+    },
+  });
+
+  assert.equal(setResult.ok, true);
+  assert.equal(setResult.action, "set");
+  assert.equal(setResult.statusKey, "active");
+  assert.equal(setResult.createdRestoreState, true);
+  assert.equal(setResult.roleSync.skipReason, null);
+  assert.deepEqual(roleChanges[0], {
+    userId: "member",
+    desiredRoleKey: "active",
+    desiredRoleId: "role-active",
+    addRoleIds: ["role-active"],
+    removeRoleIds: ["role-weak"],
+  });
+  assert.equal(db.profiles.member.domains.activity.desiredActivityRoleKey, "active");
+  assert.equal(db.profiles.member.domains.activity.appliedActivityRoleKey, "active");
+  assert.equal(db.profiles.member.domains.activity.manualOverride, true);
+  assert.equal(db.sot.activity.ops.manualStatusRestore.member.desiredActivityRoleKey, "weak");
+  assert.equal(db.sot.activity.ops.manualStatusRestore.member.appliedActivityRoleKey, "weak");
+
+  const clearResult = await setManualActivityUserStatus({
+    db,
+    userId: "member",
+    statusKey: "auto",
+    requestedByUserId: "mod-1",
+    changedAt: "2026-05-21T11:00:00.000Z",
+    memberPresent: true,
+    memberRoleIds: ["role-active"],
+    applyRoleChanges(change) {
+      roleChanges.push(change);
+      return true;
+    },
+  });
+
+  assert.equal(clearResult.ok, true);
+  assert.equal(clearResult.action, "clear");
+  assert.equal(clearResult.restoredFromShadow, true);
+  assert.equal(clearResult.roleSync.skipReason, null);
+  assert.deepEqual(roleChanges[1], {
+    userId: "member",
+    desiredRoleKey: "weak",
+    desiredRoleId: "role-weak",
+    addRoleIds: ["role-weak"],
+    removeRoleIds: ["role-active"],
+  });
+  assert.equal(db.profiles.member.domains.activity.desiredActivityRoleKey, "weak");
+  assert.equal(db.profiles.member.domains.activity.appliedActivityRoleKey, "weak");
+  assert.equal(db.profiles.member.domains.activity.manualOverride, false);
+  assert.equal(db.sot.activity.ops.manualStatusRestore.member, undefined);
+});
+
+test("setManualActivityUserStatus clears managed roles for manual dead status without a mapped Discord role", async () => {
+  const db = {
+    profiles: {
+      member: {
+        userId: "member",
+        domains: {
+          activity: {
+            desiredActivityRoleKey: "weak",
+            appliedActivityRoleKey: "weak",
+          },
+        },
+      },
+    },
+  };
+
+  updateActivityConfig(db, {
+    activityRoleIds: {
+      weak: "role-weak",
+      active: "role-active",
+    },
+  });
+
+  const roleChanges = [];
+  const result = await setManualActivityUserStatus({
+    db,
+    userId: "member",
+    statusKey: "dead",
+    requestedByUserId: "mod-1",
+    changedAt: "2026-05-21T12:00:00.000Z",
+    memberPresent: true,
+    memberRoleIds: ["role-weak", "role-active"],
+    applyRoleChanges(change) {
+      roleChanges.push(change);
+      return true;
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.action, "set");
+  assert.equal(result.statusKey, "dead");
+  assert.equal(result.roleSync.desiredRoleId, null);
+  assert.equal(roleChanges.length, 1);
+  assert.equal(roleChanges[0].userId, "member");
+  assert.equal(roleChanges[0].desiredRoleKey, "dead");
+  assert.equal(roleChanges[0].desiredRoleId, null);
+  assert.deepEqual(roleChanges[0].addRoleIds, []);
+  assert.deepEqual(roleChanges[0].removeRoleIds.slice().sort(), ["role-active", "role-weak"]);
+  assert.equal(db.profiles.member.domains.activity.desiredActivityRoleKey, "dead");
+  assert.equal(db.profiles.member.domains.activity.appliedActivityRoleKey, null);
+  assert.equal(db.profiles.member.domains.activity.manualOverride, true);
 });
 
 test("applyInitialActivityRoleAssignments cleans duplicate managed roles when desired role is missing", async () => {

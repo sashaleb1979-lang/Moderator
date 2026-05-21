@@ -147,6 +147,7 @@ const {
   handleActivityPanelButtonInteraction,
   handleActivityPanelModalSubmitInteraction,
   runDailyActivityRoleSync,
+  setManualActivityUserStatus,
 } = require("./src/activity/operator");
 const {
   flushActivityRuntime,
@@ -15544,6 +15545,7 @@ client.on("interactionCreate", async (interaction) => {
     const primaryAdminUserId = getAutonomyGuardPrimaryAdminUserId();
     const isIsolatorCommand = subcommand === "isolator" || subcommand === "isolatoroff";
     const deferredOnboardSubcommands = new Set([
+      "activitystatus",
       "movegraphic",
       "movetext",
       "movenotices",
@@ -15651,6 +15653,93 @@ client.on("interactionCreate", async (interaction) => {
         ? ` Было: <#${result.previousChannelId}>.`
         : "";
       await interaction.editReply(`Канал уведомлений бота теперь <#${result.channelId}>.${movedText}`);
+      return;
+    }
+
+    if (subcommand === "activitystatus") {
+      const targetUser = interaction.options.getUser("target");
+      const userIdInput = (interaction.options.getString("user_id") || "").trim();
+      const statusKey = (interaction.options.getString("status", true) || "").trim().toLowerCase();
+      const note = String(interaction.options.getString("note") || "").trim().slice(0, 300);
+      let targetId = targetUser?.id || null;
+
+      if (!targetId && userIdInput) {
+        if (!/^\d{17,20}$/.test(userIdInput)) {
+          await interaction.editReply("user_id должен быть числовым Discord ID (17–20 цифр).");
+          return;
+        }
+        targetId = userIdInput;
+      }
+
+      if (!targetId) {
+        await interaction.editReply("Укажи `target` или `user_id`.");
+        return;
+      }
+
+      if (await replyAutonomyGuardIsolatedTarget(interaction, targetId, { editReply: true })) {
+        return;
+      }
+
+      const activityMember = await getActivityGuildMember(client, targetId, interaction.guild || null);
+      const activityMemberRoleIds = activityMember ? [...activityMember.roles.cache.keys()] : [];
+      const result = await setManualActivityUserStatus({
+        db,
+        userId: targetId,
+        statusKey,
+        requestedByUserId: interaction.user.id,
+        changedAt: nowIso(),
+        note,
+        memberPresent: Boolean(activityMember),
+        memberRoleIds: activityMemberRoleIds,
+        applyRoleChanges: ({ userId, addRoleIds, removeRoleIds }) => applyActivityMemberRoleChanges(client, {
+          userId,
+          addRoleIds,
+          removeRoleIds,
+          guildHint: interaction.guild || null,
+          reason: `activity manual status by ${interaction.user?.tag || interaction.user?.id || "unknown"}`,
+        }),
+        saveDb,
+        runSerialized: runSerializedDbTask,
+      });
+
+      if (!result?.ok) {
+        await interaction.editReply(String(result?.message || "Не удалось обновить activity status."));
+        return;
+      }
+
+      const lines = [];
+      if (result.action === "set") {
+        lines.push(`Activity status для <@${targetId}> вручную поставлен на **${result.statusKey}**.`);
+        if (result.createdRestoreState) {
+          lines.push("Предыдущий auto-срез сохранён: верни его через `status = auto`.");
+        } else if (!result.restoreStateKnown) {
+          lines.push("У пользователя уже был старый manual override без restore-state: `status = auto` потом только снимет ручной режим.");
+        }
+      } else if (result.restoredFromShadow) {
+        lines.push(`Ручной activity override для <@${targetId}> снят, восстановлен сохранённый auto-срез.`);
+      } else {
+        lines.push(`Ручной activity override для <@${targetId}> снят.`);
+        lines.push("Restore-state не найден: если нужен немедленный возврат live-роли, после этого запусти activity rebuild/sync.");
+      }
+
+      if (note) {
+        lines.push(`Заметка: ${note}`);
+      }
+
+      if (result.roleSync?.memberPresent === false) {
+        lines.push("Участника сейчас нет на сервере: обновлён только saved activity snapshot, без live Discord role sync.");
+      } else if (result.roleSync?.skipReason === null) {
+        lines.push(`Discord роли обновлены: +${result.roleSync.addRoleIds.length}, -${result.roleSync.removeRoleIds.length}.`);
+      } else if (result.roleSync?.skipReason === "unchanged") {
+        lines.push("Discord роли уже совпадали, отдельный sync не потребовался.");
+      } else if (result.roleSync?.skipReason === "apply_declined") {
+        lines.push("Saved activity status обновлён, но Discord role mutation не прошла. Проверь права бота и hierarchy ролей.");
+      }
+
+      const desiredStatus = String(result.snapshot?.desiredActivityRoleKey || "").trim() || "—";
+      const appliedStatus = String(result.snapshot?.appliedActivityRoleKey || "").trim() || "—";
+      lines.push(`Saved snapshot: manual=${result.snapshot?.manualOverride === true ? "on" : "off"}, desired=${desiredStatus}, applied=${appliedStatus}.`);
+      await interaction.editReply(lines.join("\n"));
       return;
     }
 
