@@ -10,7 +10,7 @@ test("welcome-bot approval flow appends proof-window snapshots before saveDb", (
 
   assert.match(
     source,
-    /const \{ appendProofWindowSnapshot \} = require\("\.\/src\/profile\/synergy-snapshots"\);/,
+    /const\s*\{[\s\S]*?appendProofWindowSnapshot[\s\S]*?\}\s*=\s*require\("\.\/src\/profile\/synergy-snapshots"\);/,
     "expected welcome-bot to import the proof-window snapshot helper"
   );
 

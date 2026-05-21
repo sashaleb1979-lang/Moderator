@@ -163,9 +163,9 @@ Owner:
 
 ### 3.4. Voice Contact Mirror
 
-Нужен до `Voice + game overlap`.
+Live canonical path для `Voice + game overlap` и voice summary.
 
-Целевой path:
+Canonical path:
 ```json
 profile.domains.voice.contacts[] = {
   "peerUserId": "123",
@@ -178,7 +178,7 @@ profile.domains.voice.contacts[] = {
 }
 ```
 
-Важно: текущие voice sessions не являются идеальным per-contact truth. Если V1 contact layer выводится через interval overlap, он должен быть помечен `inferred`. Сильное утверждение `часто сидят вместе в voice` допустимо только после отдельного contact aggregation, где known channel/time overlap достаточно плотный.
+Важно: текущие voice sessions не являются идеальным per-contact truth. Текущий contact layer допустим как canonical mirror только с честной маркировкой `inferred` для overlap-derived контактов. Сильное утверждение `часто сидят вместе в voice` допустимо только после более плотного contact aggregation, где known channel/time overlap уже достаточно точный.
 
 ### 3.5. Social Map Read-Side Shape
 
@@ -977,18 +977,19 @@ Tests:
 
 ### Phase K. Voice Contact Layer And Voice + Game Overlap
 
-Status: gated read-side block live; voice contact mirror remains future work.
+Status: voice contact mirror and gated read-side block live.
 
 Deliverables:
-1. voice contact mirror or derived contact aggregator;
+1. canonical voice contact mirror or derived contact aggregator;
 2. overlap with JJS co-play peers;
 3. block `Voice + game overlap`;
 4. confidence labels for inferred contact.
 
 Implemented:
-1. `src/profile/synergy.js` exposes `Voice + game overlap`;
-2. when `profile.domains.voice.contacts[]` is absent, block reports the source gap and does not claim person-level voice ties;
-3. when future contacts are present, the same block intersects contacts with JJS co-play peers and labels confidence.
+1. `src/integrations/shared-profile.js` normalizes canonical `profile.domains.voice.contacts[]` entries for the profile mirror;
+2. `src/profile/synergy.js` exposes `Voice + game overlap` and voice summary from that canonical mirror;
+3. when `profile.domains.voice.contacts[]` is absent, block reports the source gap and does not claim person-level voice ties;
+4. when contacts are present, the block intersects them with JJS co-play peers and labels confidence honestly.
 
 Tests:
 1. same channel/time overlap;
@@ -1024,11 +1025,19 @@ Tests:
 
 ### Phase M. Burn-In
 
+Status: focused tests, full `npm test`, runtime restart smoke and docs sync complete.
+
 Deliverables:
 1. focused tests after every slice;
 2. full `npm test`;
 3. runtime log smoke after restart for profile open, self profile, other profile, compact-card;
 4. docs sync: calculation spec, system plan, this implementation plan.
+
+Implemented:
+1. focused read-side and routing slices stay covered by `tests/profile-*.test.js` plus dedicated startup smoke checks;
+2. `tests/welcome-bot-startup-smoke.test.js` now covers startup boot, modal wiring, profile helper open, self profile, other profile and compact-card through live `welcome-bot.js` routing;
+3. latest full baseline is `npm test` = 747 pass / 0 fail;
+4. calculation spec, system plan and this implementation plan are synced to live Phase K/M state.
 
 ---
 
@@ -1103,9 +1112,9 @@ V2 is considered usable when:
 - [x] Phase I: season consistency first read-side slice.
 - [x] Phase I: comeback/streak/slowdown states.
 - [x] Phase J: verified circle/social map first read-side slice.
-- [ ] Phase K: voice contact mirror.
+- [x] Phase K: voice contact mirror.
 - [x] Phase K: gated voice/game overlap read-side block.
 - [x] Phase L: activity mix first slice.
 - [x] Phase L: prime-time confidence.
 - [x] Phase L: farm profile proxy.
-- [ ] Phase M: burn-in and docs sync.
+- [x] Phase M: burn-in and docs sync.

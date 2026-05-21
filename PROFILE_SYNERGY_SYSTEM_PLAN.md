@@ -761,9 +761,9 @@
 ### Phase 10. Burn-In И Sync Docs
 1. Focused tests. Выполнено для `tests/profile-synergy.test.js`, `tests/profile-model.test.js` и `tests/profile-view.test.js`.
 
-2. Full active-tree `node --test`. Выполнено по `tests/*.test.js`: 709 pass / 0 fail.
-3. Discord smoke. Всё ещё pending.
-4. Sync `PROFILE_VISION_PLAN.md`, `PROFILE_SYNERGY_SYSTEM_PLAN.md` и `PROFILE_SYNERGY_CALCULATION_SPEC.md`. Обновлено под текущий Phase 9 state.
+2. Full active-tree `npm test`. Выполнено: 747 pass / 0 fail.
+3. Runtime restart smoke. Выполнено через `tests/welcome-bot-startup-smoke.test.js`: startup boot, modal wiring, profile helper open, self profile, other profile и compact-card path проходят через live `welcome-bot.js` routing.
+4. Docs sync. `PROFILE_SYNERGY_SYSTEM_PLAN.md`, `PROFILE_SYNERGY_V2_IMPLEMENTATION_PLAN.md` и `PROFILE_SYNERGY_CALCULATION_SPEC.md` выровнены под live Phase K/M state.
 
 ## 11. План Закрытия Незаполненных Частей
 
@@ -810,7 +810,7 @@
 4. Presentation final polish.
    Hero/media/readability уже лучше старого состояния, но UI ещё не дотянут до финального "круче и в подробностях" уровня.
 5. Live runtime confidence.
-   Нет закрытого Discord smoke и нет полного cutover confidence по compat surfaces.
+   Локальный restart smoke уже закрыт, но отдельный live guild smoke всё ещё относится к будущему compat/hard-cutover сценарию, если старые и новые surfaces будут жить параллельно.
 
 ### 11.4. Рекомендуемый Порядок Закрытия
 
@@ -861,7 +861,7 @@
 3. view остаётся pure rendering owner без business logic drift.
 
 #### Phase 15. Burn-In, Smoke И Cutover
-1. Прогнать live Discord smoke по self-profile, other-profile и compact-card surface.
+1. Локальный restart smoke по helper open, self-profile, other-profile и compact-card surface уже автоматизирован в `tests/welcome-bot-startup-smoke.test.js`; для production hard cutover отдельно прогнать live guild smoke.
 2. Добавить shadow-compare логирование для compat phase, если старый и новый payload путь ещё живут параллельно.
 3. После стабильного burn-in удалить legacy payload paths и оставить один canonical route.
 4. Зафиксировать post-cutover SoT в vision/spec/memory.

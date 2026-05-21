@@ -887,7 +887,7 @@ V2 first slice is live: каждая текущая буквенная ось т
 V2 second slice is live: `Antiteam support`, `Proof gap`, season archive coverage line и `Activity mix` добавлены в read-model без новых collectors.
 V2 third slice is live: separate relative components, persisted population snapshots and weekly rollups are implemented in the canonical profile seams.
 V2 fourth slice is live: verified social map, gated voice+game overlap, prime-time confidence, season consistency, comeback metrics and farm profile proxy are read-side blocks.
-Future work: richer Main Core enrichment поверх voice/social layers and voice contact mirror.
+Future work: richer Main Core enrichment поверх voice/social layers.
 
 ### Owner
 1. Derived owner: [src/profile/synergy.js](src/profile/synergy.js)

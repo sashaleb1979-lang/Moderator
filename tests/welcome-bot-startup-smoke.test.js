@@ -339,3 +339,398 @@ test("welcome-bot modal smoke covers SoT Activity and bot-helper submit wiring",
     `expected modal smoke marker\nstdout:\n${result.stdout || ""}\nstderr:\n${result.stderr || ""}`
   );
 });
+
+test("welcome-bot profile smoke covers helper open, self, other and compact-card routes", () => {
+  const repoRoot = path.join(__dirname, "..");
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "welcome-bot-profile-smoke-"));
+  const script = String.raw`
+    const fs = require("node:fs");
+    const path = require("node:path");
+
+    const failures = [];
+    const calls = [];
+
+    process.env.DISCORD_TOKEN = "smoke-token";
+    process.env.GUILD_ID = "123";
+    process.env.BOT_DATA_DIR = ${JSON.stringify(tempDir)};
+    process.env.DB_PATH = "welcome-db.json";
+
+    function render(value) {
+      try {
+        return JSON.stringify(value, (_key, entry) => {
+          if (typeof entry === "function") return "[function]";
+          if (entry && typeof entry === "object" && entry.constructor && entry.constructor.name !== "Object" && !Array.isArray(entry)) {
+            if (entry.data) return entry.data;
+            if (typeof entry.toJSON === "function") return entry.toJSON();
+          }
+          return entry;
+        });
+      } catch {
+        return String(value);
+      }
+    }
+
+    function recordFailure(error) {
+      const text = error && typeof error === "object" && error.stack ? error.stack : String(error);
+      failures.push(text);
+    }
+
+    process.on("uncaughtException", recordFailure);
+    process.on("unhandledRejection", recordFailure);
+
+    const dbPath = path.join(process.env.BOT_DATA_DIR, process.env.DB_PATH);
+    fs.mkdirSync(process.env.BOT_DATA_DIR, { recursive: true });
+    fs.writeFileSync(dbPath, JSON.stringify({
+      profiles: {
+        "user-1": {
+          displayName: "Smoke Self",
+          username: "SmokeSelf",
+          approvedKills: 120,
+          killTier: 4,
+          accessGrantedAt: "2026-05-01T10:00:00.000Z",
+          mainCharacterIds: ["honored_one"],
+          summary: {
+            onboarding: { approvedKills: 120, killTier: 4 },
+            activity: {
+              desiredActivityRoleKey: "active",
+              appliedActivityRoleKey: "active",
+              activityScore: 77,
+              messages7d: 35,
+              messages30d: 210
+            },
+            roblox: {
+              hasVerifiedAccount: true,
+              currentUsername: "SmokeSelf",
+              profileUrl: "https://www.roblox.com/users/1/profile",
+              avatarUrl: "https://tr.rbxcdn.com/self.png"
+            },
+            verification: {
+              status: "verified",
+              decision: "approved"
+            }
+          }
+        },
+        "user-2": {
+          displayName: "Smoke Target",
+          username: "SmokeTarget",
+          approvedKills: 200,
+          killTier: 5,
+          accessGrantedAt: "2026-05-01T10:00:00.000Z",
+          mainCharacterIds: ["vessel"],
+          summary: {
+            onboarding: { approvedKills: 200, killTier: 5 },
+            activity: {
+              desiredActivityRoleKey: "active",
+              appliedActivityRoleKey: "active",
+              activityScore: 84,
+              messages7d: 42,
+              messages30d: 260
+            },
+            roblox: {
+              hasVerifiedAccount: true,
+              currentUsername: "SmokeTarget",
+              profileUrl: "https://www.roblox.com/users/2/profile",
+              avatarUrl: "https://tr.rbxcdn.com/target.png"
+            },
+            verification: {
+              status: "verified",
+              decision: "approved"
+            }
+          }
+        }
+      },
+      submissions: {
+        "sub-1": {
+          id: "sub-1",
+          userId: "user-1",
+          status: "approved",
+          kills: 120,
+          reviewedAt: "2026-05-10T00:00:00.000Z",
+          reviewedBy: "SmokeMod#0001",
+          mainCharacterIds: ["honored_one"]
+        },
+        "sub-2": {
+          id: "sub-2",
+          userId: "user-2",
+          status: "approved",
+          kills: 200,
+          reviewedAt: "2026-05-11T00:00:00.000Z",
+          reviewedBy: "SmokeMod#0001",
+          mainCharacterIds: ["vessel"]
+        }
+      },
+      cooldowns: {},
+      sot: {}
+    }, null, 2));
+
+    const originalConsoleError = console.error;
+    console.error = (...args) => {
+      const rendered = args.map((arg) => (arg && typeof arg === "object" && arg.stack) ? arg.stack : String(arg)).join(" ");
+      if (/\bReferenceError\b|\bis not defined\b|not a function/i.test(rendered)) {
+        failures.push(rendered);
+      }
+      originalConsoleError(...args);
+    };
+
+    const discord = require("discord.js");
+    const { buildProfileOpenCustomId } = require("./src/profile/entry");
+    const originalEmit = discord.Client.prototype.emit;
+
+    function makeUser(id, username, options = {}) {
+      return {
+        id,
+        username,
+        globalName: options.globalName || username,
+        tag: options.tag || username + "#0001",
+        primaryGuild: options.primaryGuild || undefined,
+        displayAvatarURL: () => "https://cdn.discordapp.com/avatars/" + id + "/profile.png",
+      };
+    }
+
+    function makeMember(user, displayName) {
+      const roleState = new discord.Collection();
+      return {
+        id: user.id,
+        user,
+        guild: { id: "123" },
+        displayName,
+        permissions: { has: () => false },
+        roles: {
+          cache: roleState,
+          add: async (roleIds) => {
+            const ids = Array.isArray(roleIds) ? roleIds : [roleIds];
+            for (const roleId of ids) {
+              const normalizedRoleId = String(roleId || "").trim();
+              if (!normalizedRoleId) continue;
+              roleState.set(normalizedRoleId, roleCache.get(normalizedRoleId) || { id: normalizedRoleId, position: 0 });
+            }
+            return true;
+          },
+          remove: async (roleIds) => {
+            const ids = Array.isArray(roleIds) ? roleIds : [roleIds];
+            for (const roleId of ids) {
+              roleState.delete(String(roleId || "").trim());
+            }
+            return true;
+          },
+        },
+      };
+    }
+
+    const requesterUser = makeUser("user-1", "SmokeSelf", {
+      primaryGuild: { tag: "TAG", identityEnabled: true },
+    });
+    const targetUser = makeUser("user-2", "SmokeTarget");
+    const userCache = new Map([
+      [requesterUser.id, requesterUser],
+      [targetUser.id, targetUser],
+    ]);
+
+    const requesterMember = makeMember(requesterUser, "Smoke Self");
+    const targetMember = makeMember(targetUser, "Smoke Target");
+    const memberCache = new discord.Collection([
+      [requesterMember.id, requesterMember],
+      [targetMember.id, targetMember],
+    ]);
+    const roleCache = new discord.Collection();
+    const channelCache = new discord.Collection();
+    const guild = {
+      id: "123",
+      name: "smoke-guild",
+      commands: { set: async (commands) => commands },
+      channels: {
+        cache: channelCache,
+        fetch: async (channelId) => channelId ? (channelCache.get(channelId) || null) : channelCache,
+      },
+      members: {
+        cache: memberCache,
+        fetch: async (userId) => userId ? (memberCache.get(userId) || null) : memberCache,
+      },
+      roles: {
+        cache: roleCache,
+        create: async (options = {}) => {
+          const created = {
+            id: String(900000000000000000n + BigInt(roleCache.size + 1)),
+            name: String(options.name || "created-smoke-role"),
+            managed: false,
+            editable: true,
+            members: new discord.Collection(),
+          };
+          roleCache.set(created.id, created);
+          return created;
+        },
+        fetch: async (roleId) => roleId ? (roleCache.get(roleId) || null) : roleCache,
+      },
+    };
+
+    function pushCall(label, step, payload) {
+      calls.push([label, step, render(payload)]);
+    }
+
+    function makeCommandInteraction(label, target) {
+      return {
+        commandName: "профиль",
+        channelId: "profile-room",
+        user: requesterUser,
+        member: requesterMember,
+        options: {
+          getUser(name) {
+            if (name !== "target") throw new Error("unexpected option " + name);
+            return target || null;
+          },
+        },
+        isChatInputCommand: () => true,
+        isButton: () => false,
+        isStringSelectMenu: () => false,
+        isModalSubmit: () => false,
+        reply: async (payload) => pushCall(label, "reply", payload),
+        deferReply: async (payload) => pushCall(label, "deferReply", payload),
+        editReply: async (payload) => pushCall(label, "editReply", payload),
+      };
+    }
+
+    function makeButtonInteraction(label, customId, options = {}) {
+      return {
+        customId,
+        user: requesterUser,
+        member: requesterMember,
+        guild,
+        message: options.message || null,
+        isChatInputCommand: () => false,
+        isButton: () => true,
+        isStringSelectMenu: () => false,
+        isModalSubmit: () => false,
+        reply: async (payload) => pushCall(label, "reply", payload),
+        deferReply: async (payload) => pushCall(label, "deferReply", payload),
+        editReply: async (payload) => pushCall(label, "editReply", payload),
+        deferUpdate: async () => pushCall(label, "deferUpdate", "ok"),
+      };
+    }
+
+    discord.Client.prototype.login = function login() {
+      this.user = { id: "1", tag: "SmokeBot#0001" };
+      this.guilds = { fetch: async () => guild };
+      this.channels = { cache: channelCache, fetch: async (channelId) => channelId ? (channelCache.get(channelId) || null) : null };
+      this.users = {
+        fetch: async (userId) => userCache.get(String(userId || "")) || makeUser(String(userId || "unknown"), "User" + String(userId || "unknown")),
+      };
+      this.destroy = () => {};
+
+      setImmediate(() => originalEmit.call(this, "clientReady"));
+
+      setTimeout(() => {
+        const helperMessage = {
+          content: "профиль",
+          author: { ...requesterUser, bot: false },
+          member: requesterMember,
+          guildId: "123",
+          channelId: "profile-room",
+          createdAt: new Date("2026-05-20T00:00:00.000Z"),
+          attachments: new discord.Collection(),
+          mentions: { users: new discord.Collection() },
+          reference: null,
+          reply: async (payload) => {
+            pushCall("helper", "reply", payload);
+            return {
+              id: "helper-reply",
+              delete: async () => {
+                pushCall("helper", "delete", "ok");
+                return true;
+              },
+            };
+          },
+        };
+
+        const interactions = [
+          makeButtonInteraction("profile_open", buildProfileOpenCustomId(requesterUser.id, requesterUser.id), {
+            message: {
+              delete: async () => {
+                pushCall("profile_open", "deleteMessage", "ok");
+                return true;
+              },
+            },
+          }),
+          makeCommandInteraction("profile_other", targetUser),
+          makeButtonInteraction("compact_card", "elo_submit_card"),
+        ];
+
+        originalEmit.call(this, "messageCreate", helperMessage);
+        for (const interaction of interactions) {
+          originalEmit.call(this, "interactionCreate", interaction);
+        }
+      }, 150);
+
+      setTimeout(() => {
+        const renderedCalls = calls.map((entry) => entry.join(" ")).join("\n");
+        if (/\bReferenceError\b|\bis not defined\b|not a function/i.test(renderedCalls)) {
+          failures.push(renderedCalls);
+        }
+
+        if (!calls.some((entry) => entry[0] === "helper" && entry[1] === "reply" && /profile_open:user-1:user-1/.test(entry[2]) && /Открыть свой профиль/.test(entry[2]))) {
+          failures.push("profile helper route did not publish the self-open payload");
+        }
+
+        if (!calls.some((entry) => entry[0] === "profile_open" && entry[1] === "editReply" && /# Твой профиль/.test(entry[2]))) {
+          failures.push("profile open button did not render the private self profile");
+        }
+
+        if (!calls.some((entry) => entry[0] === "profile_other" && entry[1] === "editReply" && /# Профиль/.test(entry[2]) && /Smoke Target/.test(entry[2]))) {
+          failures.push("profile slash command did not render the other profile payload");
+        }
+
+        const compactCardCall = calls.find((entry) => entry[0] === "compact_card" && entry[1] === "editReply");
+        if (!compactCardCall || !/# Моя карточка/.test(compactCardCall[2])) {
+          failures.push("compact-card route did not render the compact card payload");
+        } else {
+          if (/profile_nav:/.test(compactCardCall[2])) {
+            failures.push("compact-card unexpectedly rendered profile navigation");
+          }
+          if (/profile_bind_roblox/.test(compactCardCall[2])) {
+            failures.push("compact-card unexpectedly rendered self-action buttons");
+          }
+        }
+
+        if (failures.length) {
+          failures.push("calls:\n" + renderedCalls);
+          console.error(failures.join("\n---\n"));
+          process.exit(1);
+          return;
+        }
+
+        console.log("profile-smoke-ok");
+        process.exit(0);
+      }, 1800);
+
+      return Promise.resolve("smoke-login");
+    };
+
+    require("./welcome-bot.js");
+  `;
+
+  const result = spawnSync(process.execPath, ["-e", script], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    timeout: 20000,
+  });
+
+  try {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  } catch {
+    // Best effort cleanup for Windows temp files held briefly by the child process.
+  }
+
+  if (result.error) {
+    throw result.error;
+  }
+
+  assert.equal(
+    result.status,
+    0,
+    `profile smoke failed\nstdout:\n${result.stdout || ""}\nstderr:\n${result.stderr || ""}`
+  );
+  assert.match(
+    result.stdout || "",
+    /profile-smoke-ok/,
+    `expected profile smoke marker\nstdout:\n${result.stdout || ""}\nstderr:\n${result.stderr || ""}`
+  );
+});
