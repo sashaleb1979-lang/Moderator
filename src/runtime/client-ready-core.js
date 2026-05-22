@@ -101,6 +101,7 @@ function buildRobloxPeriodicJobs(options = {}) {
       key: "roblox.playtimeSync",
       run: syncRobloxPlaytime,
       intervalMs: Math.max(1, Number(roblox?.playtimePollMinutes) || 2) * 60 * 1000,
+      initialDelayMs: 0,
       errorLabel: "Roblox playtime sync failed",
     });
   }
@@ -401,18 +402,40 @@ function schedulePeriodicJobs(client, options = {}) {
   const {
     periodicJobs = [],
     setIntervalFn = setInterval,
+    setTimeoutFn = setTimeout,
     logError = () => {},
   } = options;
 
   assertFunction(setIntervalFn, "setIntervalFn");
+  assertFunction(setTimeoutFn, "setTimeoutFn");
   assertFunction(logError, "logError");
   const jobs = normalizePeriodicJobs(periodicJobs);
 
-  return jobs.map((job) => setIntervalFn(() => {
-    Promise.resolve(job.run(client)).catch((error) => {
-      logError(`${job.errorLabel}:`, formatErrorText(error));
-    });
-  }, job.intervalMs));
+  const handles = [];
+
+  for (const job of jobs) {
+    const runJob = () => {
+      Promise.resolve(job.run(client)).catch((error) => {
+        logError(`${job.errorLabel}:`, formatErrorText(error));
+      });
+    };
+
+    if (job.initialDelayMs === null || job.initialDelayMs <= 0 || job.initialDelayMs >= job.intervalMs) {
+      if (job.initialDelayMs === 0) {
+        runJob();
+      }
+      handles.push(setIntervalFn(runJob, job.intervalMs));
+      continue;
+    }
+
+    const timeoutHandle = setTimeoutFn(() => {
+      runJob();
+      handles.push(setIntervalFn(runJob, job.intervalMs));
+    }, job.initialDelayMs);
+    handles.push(timeoutHandle);
+  }
+
+  return handles;
 }
 
 module.exports = {

@@ -743,6 +743,116 @@ test("profile read-model presents repairable Roblox as linked but not JJS-tracka
   assert.equal(readModel.robloxProfileUrl, null);
 });
 
+test("profile read-model flags suspicious old Roblox bindings instead of showing fake links", () => {
+  const readModel = buildProfileReadModel({
+    now: "2026-05-16T12:00:00.000Z",
+    guildId: "guild-1",
+    userId: "1146511958305144883",
+    targetDisplayName: "gno2m007",
+    isSelf: true,
+    profile: {
+      userId: "1146511958305144883",
+      username: "gno2m007",
+      displayName: "gno2m007",
+      domains: {
+        roblox: {
+          username: "gno2m007",
+          profileUrl: "https://www.roblox.com/users/1146511958305144883/profile",
+          verificationStatus: "verified",
+        },
+      },
+      summary: {
+        preferredDisplayName: "gno2m007",
+        roblox: {
+          hasVerifiedAccount: true,
+          currentUsername: "gno2m007",
+          profileUrl: "https://www.roblox.com/users/1146511958305144883/profile",
+          verificationStatus: "verified",
+        },
+      },
+    },
+  });
+
+  assert.equal(readModel.robloxDisplayState.state, "suspicious");
+  assert.equal(readModel.robloxDisplayState.isLinked, false);
+  assert.equal(readModel.robloxDisplayState.isTrackable, false);
+  assert.equal(readModel.robloxProfileUrl, null);
+  assert.equal(readModel.selfActionState.robloxLabel, "Перепривязать Roblox");
+  assert.match(readModel.sections.overview[0].lines.join("\n"), /Roblox: нужна перепривязка/);
+  assert.match(readModel.sections.social[0].lines.join("\n"), /Roblox-связка требует перепривязки/);
+  assert.doesNotMatch(readModel.heroLines.join("\n"), /Roblox gno2m007/);
+});
+
+test("profile read-model activity uses canonical activity voice before social voice mirror", () => {
+  const readModel = buildProfileReadModel({
+    now: "2026-05-16T12:00:00.000Z",
+    guildId: "guild-1",
+    userId: "user-1",
+    targetDisplayName: "Voice User",
+    isSelf: true,
+    profile: {
+      summary: {
+        activity: {
+          appliedActivityRoleKey: "active",
+          messages30d: 210,
+          voiceDurationSeconds30d: 46413,
+          effectiveVoiceHours30d: 10.9,
+        },
+        voice: {
+          voiceDurationSeconds30d: 5567,
+        },
+      },
+      domains: {
+        roblox: {
+          username: "VoiceRb",
+          userId: "123",
+          verificationStatus: "verified",
+          playtime: {
+            jjsMinutes7d: 180,
+            jjsMinutes30d: 420,
+          },
+        },
+      },
+    },
+  });
+
+  const activityText = readModel.sections.activity[0].lines.join("\n");
+  assert.match(activityText, /voice 12,9 ч · учёт 10,9 ч/);
+  assert.doesNotMatch(activityText, /voice 1,5 ч/);
+});
+
+test("profile read-model surfaces stale Roblox playtime sync telemetry", () => {
+  const readModel = buildProfileReadModel({
+    now: "2026-05-16T12:10:00.000Z",
+    guildId: "guild-1",
+    userId: "user-1",
+    targetDisplayName: "Sync User",
+    isSelf: true,
+    robloxPlaytimePollMinutes: 2,
+    robloxJobState: {
+      status: "ok",
+      lastFinishedAt: "2026-05-16T12:00:00.000Z",
+      summary: { activeJjsUsers: 0 },
+    },
+    profile: {
+      domains: {
+        roblox: {
+          username: "SyncRb",
+          userId: "123",
+          verificationStatus: "verified",
+          playtime: {
+            jjsMinutes30d: 60,
+          },
+        },
+      },
+    },
+  });
+
+  assert.equal(readModel.robloxSyncHealth.state, "stale");
+  assert.match(readModel.heroLines.join("\n"), /JJS sync молчит/);
+  assert.match(readModel.sections.activity[0].lines.join("\n"), /JJS sync молчит/);
+});
+
 test("profile read-model keeps Roblox-hours line honest when proof snapshot has no reliable playtime baseline", () => {
   const readModel = buildProfileReadModel({
     now: "2026-05-16T12:00:00.000Z",

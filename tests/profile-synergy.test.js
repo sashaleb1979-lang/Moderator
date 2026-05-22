@@ -1033,6 +1033,25 @@ test("buildProfileSynergyState derives Discord vs Roblox activity mix", () => {
   assert.match(state.blocks.activityMix.lines.join("\n"), /Шкала: chat .* 60% .* JJS .* 30% .* voice .* 11% .* доверие reliable/);
 });
 
+test("buildProfileSynergyState prefers activity voice over social voice mirror for activity mix", () => {
+  const state = buildProfileSynergyState({
+    activitySummary: {
+      messages30d: 30,
+      voiceDurationSeconds30d: 46413,
+    },
+    robloxSummary: {
+      jjsMinutes30d: 60,
+    },
+    voiceSummary: {
+      voiceDurationSeconds30d: 5567,
+    },
+  });
+
+  const text = state.blocks.activityMix.lines.join("\n");
+  assert.match(text, /voice 12,9 ч 30д/);
+  assert.doesNotMatch(text, /voice 1,5 ч 30д/);
+});
+
 test("buildProfileSynergyState derives a stable grinder farm profile from playtime buckets", () => {
   const state = buildProfileSynergyState({
     profile: {

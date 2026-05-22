@@ -2,6 +2,7 @@
 
 require("dotenv").config();
 
+const fs = require("node:fs");
 const path = require("node:path");
 
 const { loadJsonFile, saveJsonFile } = require("../src/db/store");
@@ -44,12 +45,21 @@ async function main() {
     throw new Error(`DB not found or unreadable: ${dbPath}`);
   }
 
+  let backupPath = null;
+  if (options.write === true) {
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    backupPath = `${dbPath}.bak-${timestamp}`;
+    fs.copyFileSync(dbPath, backupPath);
+  }
+
   const robloxApiClient = createRobloxApiClient();
   const result = await applyRobloxBindingRepairPass({
     db,
     dryRun: options.write !== true,
     persistTrail: options.write === true,
     source: options.write === true ? "repair_script_apply" : "repair_script_dry_run",
+    recoverFromSubmissions: true,
+    resetSuspiciousBindings: true,
     fetchUsersByUsernames: robloxApiClient.fetchUsersByUsernames.bind(robloxApiClient),
   });
 
@@ -59,6 +69,7 @@ async function main() {
 
   console.log(JSON.stringify({
     dbPath,
+    backupPath,
     write: options.write,
     ...result,
   }, null, 2));

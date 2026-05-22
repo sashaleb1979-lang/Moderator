@@ -307,6 +307,10 @@ test("runRobloxPlaytimeSyncJob reports missing verified candidates explicitly", 
     unresolvedBindingCount: 0,
     failedRepairBatchCount: 0,
     sanitizedBindingCount: 0,
+    skippedSuspiciousBindingCount: 0,
+    restoredFromSubmissionCount: 0,
+    resetSuspiciousCount: 0,
+    staleSessionClosedCount: 0,
     skippedReason: "no_verified_candidates",
   });
 });
@@ -374,6 +378,10 @@ test("runRobloxPlaytimeSyncJob repairs verified bindings with invalid Roblox ids
     unresolvedBindingCount: 0,
     failedRepairBatchCount: 0,
     sanitizedBindingCount: 1,
+    skippedSuspiciousBindingCount: 0,
+    restoredFromSubmissionCount: 0,
+    resetSuspiciousCount: 0,
+    staleSessionClosedCount: 0,
   });
   assert.equal(db.profiles.user_a.domains.roblox.userId, "101");
   assert.equal(db.profiles.user_a.domains.roblox.displayName, "Alpha Display");
@@ -427,6 +435,10 @@ test("runRobloxPlaytimeSyncJob marks sanitized invalid verified bindings dirty e
     unresolvedBindingCount: 0,
     failedRepairBatchCount: 0,
     sanitizedBindingCount: 1,
+    skippedSuspiciousBindingCount: 0,
+    restoredFromSubmissionCount: 0,
+    resetSuspiciousCount: 0,
+    staleSessionClosedCount: 0,
     skippedReason: "no_verified_candidates",
   });
   assert.equal(db.profiles.user_a.domains.roblox.userId, null);
@@ -484,6 +496,10 @@ test("runRobloxPlaytimeSyncJob reports unresolved verified username repairs when
     unresolvedBindingCount: 1,
     failedRepairBatchCount: 0,
     sanitizedBindingCount: 1,
+    skippedSuspiciousBindingCount: 0,
+    restoredFromSubmissionCount: 0,
+    resetSuspiciousCount: 0,
+    staleSessionClosedCount: 0,
     skippedReason: "no_verified_candidates",
   });
   assert.equal(db.profiles.user_a.domains.roblox.userId, null);
@@ -584,6 +600,10 @@ test("runRobloxPlaytimeSyncJob updates rolling JJS minutes and co-play state in 
     unresolvedBindingCount: 0,
     failedRepairBatchCount: 0,
     sanitizedBindingCount: 0,
+    skippedSuspiciousBindingCount: 0,
+    restoredFromSubmissionCount: 0,
+    resetSuspiciousCount: 0,
+    staleSessionClosedCount: 0,
   });
   assert.equal(db.profiles.user_a.domains.roblox.playtime.totalJjsMinutes, 2);
   assert.equal(db.profiles.user_a.domains.roblox.playtime.jjsMinutes7d, 2);
@@ -680,6 +700,10 @@ test("runRobloxPlaytimeSyncJob keeps active sessions open when presence polling 
     unresolvedBindingCount: 0,
     failedRepairBatchCount: 0,
     sanitizedBindingCount: 0,
+    skippedSuspiciousBindingCount: 0,
+    restoredFromSubmissionCount: 0,
+    resetSuspiciousCount: 0,
+    staleSessionClosedCount: 0,
   });
   assert.deepEqual(runtimeState.activeSessionsByDiscordUserId.user_a, {
     startedAt: "2026-05-09T12:00:00.000Z",
@@ -758,6 +782,10 @@ test("runRobloxPlaytimeSyncJob clears stale persisted session markers after rest
     unresolvedBindingCount: 0,
     failedRepairBatchCount: 0,
     sanitizedBindingCount: 0,
+    skippedSuspiciousBindingCount: 0,
+    restoredFromSubmissionCount: 0,
+    resetSuspiciousCount: 0,
+    staleSessionClosedCount: 1,
   });
   assert.equal(db.profiles.user_a.domains.roblox.playtime.currentSessionStartedAt, null);
   assert.deepEqual(db.profiles.user_a.domains.roblox.playtime.sessionHistory, [
@@ -826,6 +854,10 @@ test("runRobloxPlaytimeSyncJob reports opaque in-game presences separately from 
     unresolvedBindingCount: 0,
     failedRepairBatchCount: 0,
     sanitizedBindingCount: 0,
+    skippedSuspiciousBindingCount: 0,
+    restoredFromSubmissionCount: 0,
+    resetSuspiciousCount: 0,
+    staleSessionClosedCount: 0,
   });
   assert.equal(db.profiles.user_a.domains.roblox.playtime.currentSessionStartedAt, "2026-05-09T12:02:00.000Z");
   assert.equal(runtimeState.activeSessionsByDiscordUserId.user_a.gameId, "opaque:101");
@@ -917,6 +949,10 @@ test("runRobloxPlaytimeSyncJob keeps opaque in-game fallback users out of fake c
     unresolvedBindingCount: 0,
     failedRepairBatchCount: 0,
     sanitizedBindingCount: 0,
+    skippedSuspiciousBindingCount: 0,
+    restoredFromSubmissionCount: 0,
+    resetSuspiciousCount: 0,
+    staleSessionClosedCount: 0,
   });
   assert.equal(db.profiles.user_a.domains.roblox.playtime.totalJjsMinutes, 2);
   assert.equal(db.profiles.user_b.domains.roblox.playtime.totalJjsMinutes, 2);

@@ -38,6 +38,7 @@ test("buildRobloxPeriodicJobs restores the Roblox-only descriptor set for welcom
     "Roblox runtime flush failed",
   ]);
   assert.deepEqual(jobs.map((job) => job.intervalMs), [21600000, 900000, 660000]);
+  assert.deepEqual(jobs.map((job) => job.initialDelayMs ?? null), [null, 0, null]);
 });
 
 test("schedulePeriodicJobs schedules normalized jobs without startup alert wiring", async () => {
@@ -63,6 +64,57 @@ test("schedulePeriodicJobs schedules normalized jobs without startup alert wirin
   assert.deepEqual(handles, [1234]);
   assert.deepEqual(calls, [{ id: "client" }]);
   assert.deepEqual(result, ["handle-1234"]);
+});
+
+test("schedulePeriodicJobs honors zero and delayed initial runs for Roblox jobs", async () => {
+  const scheduledIntervals = [];
+  const scheduledTimeouts = [];
+  const calls = [];
+
+  const result = schedulePeriodicJobs({ id: "client" }, {
+    periodicJobs: [
+      {
+        key: "roblox.playtimeSync",
+        run(client) {
+          calls.push(["playtime", client]);
+        },
+        intervalMs: 120000,
+        initialDelayMs: 0,
+        errorLabel: "Roblox playtime sync failed",
+      },
+      {
+        key: "roblox.metadataRefresh",
+        run(client) {
+          calls.push(["metadata", client]);
+        },
+        intervalMs: 3600000,
+        initialDelayMs: 60000,
+        errorLabel: "Roblox metadata refresh failed",
+      },
+    ],
+    setIntervalFn(handler, intervalMs) {
+      scheduledIntervals.push({ handler, intervalMs });
+      return `interval-${intervalMs}-${scheduledIntervals.length}`;
+    },
+    setTimeoutFn(handler, delayMs) {
+      scheduledTimeouts.push({ handler, delayMs });
+      return `timeout-${delayMs}`;
+    },
+  });
+
+  assert.deepEqual(calls, [["playtime", { id: "client" }]]);
+  assert.deepEqual(scheduledIntervals.map((entry) => entry.intervalMs), [120000]);
+  assert.deepEqual(scheduledTimeouts.map((entry) => entry.delayMs), [60000]);
+  assert.deepEqual(result, ["interval-120000-1", "timeout-60000"]);
+
+  await scheduledTimeouts[0].handler();
+
+  assert.deepEqual(calls, [
+    ["playtime", { id: "client" }],
+    ["metadata", { id: "client" }],
+  ]);
+  assert.deepEqual(scheduledIntervals.map((entry) => entry.intervalMs), [120000, 3600000]);
+  assert.deepEqual(result, ["interval-120000-1", "timeout-60000", "interval-3600000-2"]);
 });
 
 test("buildClientReadyPeriodicJobs owns interval defaults and feature gating for periodic startup jobs", async () => {

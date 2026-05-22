@@ -962,6 +962,61 @@ function normalizeRobloxPlatformUserId(value) {
   return normalized ? String(normalized) : null;
 }
 
+function extractRobloxProfileUrlUserId(value = "") {
+  const text = cleanString(value, 2000);
+  if (!text) return null;
+  const match = text.match(/roblox\.com\/users\/(\d+)\/profile/i);
+  return match ? match[1] : null;
+}
+
+function normalizeComparableIdentityText(value = "") {
+  return cleanString(value, 200).toLowerCase();
+}
+
+function isRobloxProfileUrlForDiscordUser(profile = {}, roblox = {}) {
+  const discordUserId = cleanString(profile?.userId, 80);
+  if (!discordUserId) return false;
+  const profileUrlUserId = extractRobloxProfileUrlUserId(roblox?.profileUrl || roblox?.robloxProfileUrl);
+  return Boolean(profileUrlUserId && profileUrlUserId === discordUserId);
+}
+
+function isRobloxUsernameCopiedFromDiscordIdentity(profile = {}, roblox = {}) {
+  const robloxUsername = normalizeComparableIdentityText(
+    roblox?.username ?? roblox?.currentUsername ?? roblox?.robloxUsername
+  );
+  if (!robloxUsername) return false;
+
+  const discordNames = [
+    profile?.username,
+    profile?.displayName,
+    profile?.summary?.preferredDisplayName,
+  ]
+    .map((value) => normalizeComparableIdentityText(value))
+    .filter(Boolean);
+
+  return discordNames.includes(robloxUsername);
+}
+
+function isSuspiciousRobloxBinding(profile = {}) {
+  const source = profile && typeof profile === "object" ? profile : {};
+  const roblox = normalizeRobloxDomainState(source?.domains?.roblox || buildLegacyRobloxSource(source));
+  const usableIdentity = resolveUsableVerifiedRobloxIdentity(roblox);
+  if (usableIdentity) return false;
+
+  const verificationStatus = cleanString(roblox.verificationStatus, 40).toLowerCase();
+  const hasRobloxFootprint = Boolean(
+    cleanString(roblox.username, 120)
+    || cleanString(roblox.profileUrl, 500)
+    || cleanString(roblox.avatarUrl, 2000)
+    || cleanString(roblox.verifiedAt, 80)
+    || verificationStatus === "verified"
+  );
+  if (!hasRobloxFootprint) return false;
+
+  return isRobloxProfileUrlForDiscordUser(source, roblox)
+    || isRobloxUsernameCopiedFromDiscordIdentity(source, roblox);
+}
+
 function buildLegacyRobloxSource(profile = {}) {
   const source = profile && typeof profile === "object" ? profile : {};
   return {
@@ -1034,6 +1089,18 @@ function getRobloxRenameCount(currentName, history = []) {
 
   if (!current) return Math.max(0, unique.length - 1);
   return unique.filter((value) => value.toLowerCase() !== current.toLowerCase()).length;
+}
+
+function isLikelySharedProfileRoot(value = {}) {
+  return Boolean(
+    value && typeof value === "object" && !Array.isArray(value)
+    && (
+      value.domains && typeof value.domains === "object"
+      || Object.prototype.hasOwnProperty.call(value, "mainCharacterIds")
+      || Object.prototype.hasOwnProperty.call(value, "approvedKills")
+      || Object.prototype.hasOwnProperty.call(value, "killTier")
+    )
+  );
 }
 
 function getRobloxLastRenameSeenAt(currentName, history = []) {
@@ -1651,10 +1718,11 @@ function buildRobloxTopCoPlayPeers(peers = [], limit = ROBLOX_TOP_COPLAY_PEER_LI
 
 function normalizeRobloxDomainState(value = {}) {
   const source = value && typeof value === "object" ? value : {};
+  const sourceIsProfileRoot = isLikelySharedProfileRoot(source);
   const rawStatus = cleanString(source.verificationStatus || source.status, 40).toLowerCase();
-  const userId = normalizeRobloxPlatformUserId(source.robloxUserId ?? source.userId);
-  const username = normalizeNullableString(source.robloxUsername ?? source.username, 120);
-  const displayName = normalizeNullableString(source.robloxDisplayName ?? source.displayName, 120);
+  const userId = normalizeRobloxPlatformUserId(source.robloxUserId ?? (sourceIsProfileRoot ? null : source.userId));
+  const username = normalizeNullableString(source.robloxUsername ?? (sourceIsProfileRoot ? null : source.username), 120);
+  const displayName = normalizeNullableString(source.robloxDisplayName ?? (sourceIsProfileRoot ? null : source.displayName), 120);
   const verifiedAt = normalizeNullableString(source.verifiedAt, 80);
   const implicitlyTrustedVerified = Boolean(userId)
     && (source.hasVerifiedAccount === true || Boolean(verifiedAt));
@@ -1785,6 +1853,47 @@ function getRobloxTrackabilityBlocker(roblox = {}, trackabilityState = getRoblox
     return "unverified";
   }
   return "none";
+}
+
+function resolveRobloxDisplayIdentity(profile = {}) {
+  const source = profile && typeof profile === "object" ? profile : {};
+  const roblox = normalizeRobloxDomainState(source?.domains?.roblox || buildLegacyRobloxSource(source));
+  const usableIdentity = resolveUsableVerifiedRobloxIdentity(roblox);
+  const suspicious = isSuspiciousRobloxBinding(source);
+  if (suspicious) {
+    return {
+      state: "suspicious",
+      isLinked: false,
+      isTrackable: false,
+      needsRebind: true,
+      trackingBlocker: "suspicious_identity",
+      username: null,
+      displayName: null,
+      userId: null,
+      avatarUrl: null,
+      profileUrl: null,
+      roblox,
+    };
+  }
+
+  const trackingState = getRobloxTrackabilityState(roblox);
+  const trackingBlocker = getRobloxTrackabilityBlocker(roblox, trackingState);
+  const isTrackable = trackingState === "trackable" && Boolean(usableIdentity?.userId);
+  const isLinked = Boolean(usableIdentity) || ["repairable", "manual_only", "pending"].includes(trackingState);
+
+  return {
+    state: trackingState,
+    isLinked,
+    isTrackable,
+    needsRebind: ["repairable", "manual_only", "failed"].includes(trackingState),
+    trackingBlocker,
+    username: usableIdentity?.username || roblox.username,
+    displayName: usableIdentity?.displayName || roblox.displayName,
+    userId: usableIdentity?.userId || roblox.userId,
+    avatarUrl: usableIdentity?.avatarUrl || roblox.avatarUrl,
+    profileUrl: usableIdentity?.profileUrl || roblox.profileUrl,
+    roblox,
+  };
 }
 
 function applyRobloxAccountSnapshot(profile = {}, snapshot = {}, options = {}) {
@@ -2398,9 +2507,11 @@ module.exports = {
   SHARED_PROFILE_VERSION,
   createDefaultIntegrationState,
   ensureSharedProfile,
+  isSuspiciousRobloxBinding,
   normalizeActivityDomainState,
   normalizeIntegrationState,
   normalizeProgressDomainState,
+  resolveRobloxDisplayIdentity,
   resolveUsableVerifiedRobloxIdentity,
   getRobloxTrackabilityBlocker,
   getRobloxTrackabilityState,
