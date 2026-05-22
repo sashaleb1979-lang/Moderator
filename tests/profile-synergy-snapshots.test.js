@@ -389,6 +389,8 @@ test("captureProfilePopulationSnapshot writes idempotent persisted relative base
           activity: {
             messages30d: 210,
             sessions30d: 25,
+            voiceSessions30d: 4,
+            voiceDurationSeconds30d: 10800,
             effectiveVoiceHours30d: 2,
             effectiveActiveVoiceSignalHours30d: 1,
           },
@@ -447,8 +449,8 @@ test("captureProfilePopulationSnapshot writes idempotent persisted relative base
   assert.equal(firstRun.snapshot.eligibleProfileCount, 1);
   assert.deepEqual(firstRun.snapshot.axes.discord_messages_30d.values, [210]);
   assert.deepEqual(firstRun.snapshot.axes.discord_sessions_30d.values, [25]);
-  assert.deepEqual(firstRun.snapshot.axes.voice_hours_30d.values, [2]);
-  assert.deepEqual(firstRun.snapshot.axes.voice_sessions_30d.values, [3]);
+  assert.deepEqual(firstRun.snapshot.axes.voice_hours_30d.values, [3]);
+  assert.deepEqual(firstRun.snapshot.axes.voice_sessions_30d.values, [4]);
   assert.deepEqual(firstRun.snapshot.axes.active_voice_share_30d.values, [50]);
   assert.deepEqual(firstRun.snapshot.axes.jjs_time_30d.values, [7]);
   assert.deepEqual(firstRun.snapshot.axes.jjs_session_count.values, [9]);

@@ -488,6 +488,10 @@ function collectPopulationSnapshotAxisValues(profile = {}) {
   const rawVoiceDomain = domains.voice && typeof domains.voice === "object" ? domains.voice : {};
   const rawVoice = rawVoiceDomain.summary && typeof rawVoiceDomain.summary === "object" ? rawVoiceDomain.summary : summary.voice;
   const activity = normalizeActivityDomainState(rawActivity);
+  const activityVoiceSeconds30d = normalizeNullableNumber(activity?.voiceDurationSeconds30d, { min: 0 });
+  const mirrorVoiceSeconds30d = normalizeNullableNumber(rawVoice?.voiceDurationSeconds30d, { min: 0 });
+  const activityVoiceSessions30d = normalizeNullableNumber(activity?.voiceSessions30d, { min: 0 });
+  const mirrorVoiceSessions30d = normalizeNullableNumber(rawVoice?.sessionCount30d, { min: 0 });
   const support = normalizeSupportDomainState(profile?.domains?.support || summary.support);
   const hasRobloxSignal = Boolean(
     cleanString(rawRoblox?.userId, 80)
@@ -497,6 +501,8 @@ function collectPopulationSnapshotAxisValues(profile = {}) {
   );
   const hasVoiceSignal = Boolean(
     cleanString(rawVoice?.lastCapturedAt || rawVoice?.lastVoiceSeenAt, 80)
+      || (Number(activityVoiceSeconds30d) || 0) > 0
+      || (Number(activityVoiceSessions30d) || 0) > 0
       || (Number(rawVoice?.voiceDurationSeconds30d) || 0) > 0
       || (Number(rawVoice?.sessionCount30d) || 0) > 0
       || (Number(activity?.effectiveVoiceHours30d) || 0) > 0
@@ -506,8 +512,8 @@ function collectPopulationSnapshotAxisValues(profile = {}) {
     jjs_time_30d: hasRobloxSignal ? normalizeNullableNumber(rawRoblox?.playtime?.jjsMinutes30d ?? rawRoblox?.jjsMinutes30d, { min: 0 }) : null,
     discord_messages_30d: normalizeNullableNumber(activity?.messages30d, { min: 0 }),
     discord_sessions_30d: normalizeNullableNumber(activity?.sessions30d, { min: 0 }),
-    voice_hours_30d: hasVoiceSignal ? normalizeNullableNumber(rawVoice?.voiceDurationSeconds30d, { min: 0 }) : null,
-    voice_sessions_30d: hasVoiceSignal ? normalizeNullableNumber(rawVoice?.sessionCount30d ?? activity?.voiceSessions30d, { min: 0 }) : null,
+    voice_hours_30d: hasVoiceSignal ? (activityVoiceSeconds30d ?? mirrorVoiceSeconds30d) : null,
+    voice_sessions_30d: hasVoiceSignal ? (activityVoiceSessions30d ?? mirrorVoiceSessions30d) : null,
     active_voice_share_30d: hasVoiceSignal ? computePopulationActiveVoiceShare(activity) : null,
     jjs_session_count: hasRobloxSignal ? normalizeNullableNumber(rawRoblox?.playtime?.sessionCount ?? rawRoblox?.sessionCount, { min: 0 }) : null,
     kills_per_covered_day: computePopulationKillsPerCoveredDay(profile),

@@ -1345,19 +1345,33 @@ function buildActivityUserInspectionPayload({ db = {}, userId = "", memberRoleId
   const profile = db.profiles?.[inspection.userId] || {};
   const state = ensureActivityState(db);
   const voiceScoringConfig = state.config?.voiceScoring || {};
+  const activitySummary = profile?.summary?.activity && typeof profile.summary.activity === "object"
+    ? profile.summary.activity
+    : {};
+  const domainActivity = profile?.domains?.activity && typeof profile.domains.activity === "object"
+    ? profile.domains.activity
+    : {};
   const voiceSummary = profile?.summary?.voice && typeof profile.summary.voice === "object"
     ? profile.summary.voice
     : {};
   const domainVoiceSummary = profile?.domains?.voice?.summary && typeof profile.domains.voice.summary === "object"
     ? profile.domains.voice.summary
     : {};
-  const rawVoiceHours30d = [
-    Number.isFinite(Number(snapshot.voiceDurationSeconds30d)) ? Number(snapshot.voiceDurationSeconds30d) / 3600 : null,
-    Number.isFinite(Number(voiceSummary.voiceDurationSeconds30d)) ? Number(voiceSummary.voiceDurationSeconds30d) / 3600 : null,
-    Number.isFinite(Number(domainVoiceSummary.voiceDurationSeconds30d)) ? Number(domainVoiceSummary.voiceDurationSeconds30d) / 3600 : null,
-  ]
+  const resolveMaxFinite = (values = []) => values
     .filter((value) => Number.isFinite(value))
     .sort((left, right) => right - left)[0] ?? null;
+  const canonicalVoiceHours30d = resolveMaxFinite([
+    Number.isFinite(Number(snapshot.voiceDurationSeconds30d)) ? Number(snapshot.voiceDurationSeconds30d) / 3600 : null,
+    Number.isFinite(Number(domainActivity.voiceDurationSeconds30d)) ? Number(domainActivity.voiceDurationSeconds30d) / 3600 : null,
+    Number.isFinite(Number(activitySummary.voiceDurationSeconds30d)) ? Number(activitySummary.voiceDurationSeconds30d) / 3600 : null,
+    Number.isFinite(Number(domainActivity.effectiveVoiceHours30d)) ? Number(domainActivity.effectiveVoiceHours30d) : null,
+    Number.isFinite(Number(activitySummary.effectiveVoiceHours30d)) ? Number(activitySummary.effectiveVoiceHours30d) : null,
+  ]);
+  const fallbackVoiceHours30d = resolveMaxFinite([
+    Number.isFinite(Number(domainVoiceSummary.voiceDurationSeconds30d)) ? Number(domainVoiceSummary.voiceDurationSeconds30d) / 3600 : null,
+    Number.isFinite(Number(voiceSummary.voiceDurationSeconds30d)) ? Number(voiceSummary.voiceDurationSeconds30d) / 3600 : null,
+  ]);
+  const rawVoiceHours30d = canonicalVoiceHours30d ?? fallbackVoiceHours30d;
   const label = cleanString(profile.displayName, 120)
     || cleanString(profile.username, 120)
     || inspection.userId

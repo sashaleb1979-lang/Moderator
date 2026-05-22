@@ -4083,7 +4083,7 @@ function buildSubmitSessionBootstrap(userId, member) {
     ? ensureSharedProfile(existingProfile, userId).profile
     : null;
   const robloxIdentity = buildProfileRobloxIdentitySession(
-    ensuredProfile?.summary?.roblox || ensuredProfile?.domains?.roblox || {}
+    ensuredProfile?.domains?.roblox || ensuredProfile?.summary?.roblox || {}
   );
 
   return {
@@ -19749,7 +19749,7 @@ client.on("interactionCreate", async (interaction) => {
         }
 
         const profile = db.profiles?.[interaction.user.id] || null;
-        const profileIdentity = buildProfileRobloxIdentitySession(profile?.summary?.roblox || profile?.domains?.roblox || {});
+        const profileIdentity = buildProfileRobloxIdentitySession(profile?.domains?.roblox || profile?.summary?.roblox || {});
         await interaction.showModal(buildRobloxUsernameModal(
           "onboard_roblox_username_modal",
           session?.robloxUsername || pending?.robloxUsername || profileIdentity.robloxUsername || ""
@@ -19758,7 +19758,7 @@ client.on("interactionCreate", async (interaction) => {
       }
 
       const profile = db.profiles?.[interaction.user.id] || null;
-      const profileIdentity = buildProfileRobloxIdentitySession(profile?.summary?.roblox || profile?.domains?.roblox || {});
+      const profileIdentity = buildProfileRobloxIdentitySession(profile?.domains?.roblox || profile?.summary?.roblox || {});
       await interaction.showModal(buildRobloxUsernameModal("profile_bind_roblox_modal", profileIdentity.robloxUsername || ""));
       return;
     }

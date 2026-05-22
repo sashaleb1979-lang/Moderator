@@ -884,6 +884,101 @@ test("handleActivityPanelModalSubmitInteraction returns a rich inspection payloa
   assert.match(metricsText, /Meaningful segment: \*\*>= 90s\*\* .* debounce: \*\*5s\*\*/i);
 });
 
+test("handleActivityPanelModalSubmitInteraction prefers canonical activity voice over stale voice mirrors", async () => {
+  const replies = [];
+  const db = {
+    profiles: {
+      "123456789012345678": {
+        userId: "123456789012345678",
+        displayName: "Voice User",
+        summary: {
+          voice: {
+            voiceDurationSeconds30d: 5567,
+          },
+        },
+        domains: {
+          activity: {
+            activityScore: 44,
+            baseActivityScore: 44,
+            desiredActivityRoleKey: "active",
+            roleEligibilityStatus: "eligible",
+            roleEligibleForActivityRole: true,
+            voiceDurationSeconds30d: 46413,
+            effectiveVoiceHours30d: 10.9,
+            effectiveActiveVoiceSignalHours30d: 8.1,
+            recalculatedAt: "2026-05-09T12:00:00.000Z",
+            lastSeenAt: "2026-05-09T11:50:00.000Z",
+          },
+        },
+      },
+    },
+    sot: {
+      activity: {
+        config: {},
+        watchedChannels: [],
+        globalUserSessions: [],
+        userChannelDailyStats: [],
+        userSnapshots: {
+          "123456789012345678": {
+            activityScore: 44,
+            desiredActivityRoleKey: "active",
+            roleEligibilityStatus: "eligible",
+            roleEligibleForActivityRole: true,
+            recalculatedAt: "2026-05-09T12:00:00.000Z",
+            lastSeenAt: "2026-05-09T11:50:00.000Z",
+          },
+        },
+        calibrationRuns: [],
+        ops: { moderationAuditLog: [] },
+        runtime: { openSessions: {}, dirtyUsers: [] },
+      },
+    },
+  };
+
+  updateActivityConfig(db, {
+    activityRoleIds: {
+      active: "role-active",
+    },
+  });
+
+  const handled = await handleActivityPanelModalSubmitInteraction({
+    interaction: {
+      customId: "activity_panel_inspect_user_modal",
+      member: { id: "mod-1" },
+      user: { id: "mod-1" },
+      fields: {
+        getTextInputValue(fieldId) {
+          if (fieldId === "activity_inspect_user_id") return "123456789012345678";
+          return "";
+        },
+      },
+    },
+    db,
+    isModerator: () => true,
+    replyNoPermission: async () => {
+      throw new Error("should not run");
+    },
+    replyError: async (_interaction, text) => {
+      replies.push(["error", text]);
+    },
+    replySuccess: async (_interaction, payload) => {
+      replies.push(["success", payload]);
+    },
+    parseRequestedUserId(value) {
+      return /^\d+$/.test(String(value || "")) ? String(value) : "";
+    },
+    resolveMemberRoleIds() {
+      return [];
+    },
+  });
+
+  assert.equal(handled, true);
+  assert.equal(replies[0][0], "success");
+  const metricsText = replies[0][1].embeds[1].data.fields.map((field) => `${field.name}: ${field.value}`).join("\n");
+  assert.match(metricsText, /Raw voice 30d: \*\*12,9 ч\*\*/i);
+  assert.doesNotMatch(metricsText, /Raw voice 30d: \*\*1,5 ч\*\*/i);
+});
+
 test("handleActivityPanelModalSubmitInteraction shows effective newcomer role in inspection payload", async () => {
   const replies = [];
   const db = {
