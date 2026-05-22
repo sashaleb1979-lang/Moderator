@@ -230,9 +230,9 @@ test("profile payload renders overview, activity, rankings, roblox, and link but
   assert.match(JSON.stringify(container), /🎭 Gojo #2\/2 .* 38% kills/);
   assert.match(JSON.stringify(container), /JJS 7 ч .* chat 210 .* Roblox готов/);
   assert.ok(textDisplays.some((component) => /### 🔥 Рейтинг профиля/.test(component.content) && /Рейтинг профиля:/.test(component.content) && /Открыто:/.test(component.content) && /учёт \d+%/.test(component.content)));
-  assert.ok(textDisplays.some((component) => /### 📊 Сводка активности/.test(component.content) && /Статус: Roblox готов/.test(component.content)));
+  assert.ok(textDisplays.some((component) => /### 📊 Сводка активности/.test(component.content) && /Roblox готов/.test(component.content)));
   assert.ok(textDisplays.some((component) => /### 🎭 Мейны и места/.test(component.content) && /Gojo \(#2\/2 .* 38% kills мейна .* \+81 kills до #1\)/.test(component.content)));
-  assert.ok(textDisplays.some((component) => /### 🧩 Ядро профиля/.test(component.content) && /Ядро пиков: Gojo-main/.test(component.content) && /Серверный контур: форма .* рост .* стабильность .* #2 по kills .* ELO 145 \/ tier 2/.test(component.content) && /Игровая связка: чаще всего с <@peer-1>/.test(component.content)));
+  assert.ok(!textDisplays.some((component) => /### 🧩 Ядро профиля/.test(component.content)));
   assert.doesNotMatch(JSON.stringify(container), /Гайд-контур|### 📚 Мейны|### 📚 Мейны и гайды|гайд доступен по кнопке/);
   assert.doesNotMatch(JSON.stringify(container), /### Ключевые факты/);
   assert.doesNotMatch(JSON.stringify(container), /### 🛡️ Готовность|### 🛡️ Готовность к вару/);
@@ -337,7 +337,7 @@ test("profile payload switches sections by requested view", () => {
 
   const { textDisplays } = getProfileContainer(payload);
   assert.ok(textDisplays.some((component) => /\*\*Активность\*\*/.test(component.content)));
-  assert.ok(textDisplays.some((component) => /### 📊 Итог активности/.test(component.content) && /JJS 7 ч\/30д .* chat 210 msg\/30д/.test(component.content) && /роль active/.test(component.content)));
+  assert.ok(textDisplays.some((component) => /### 📊 Итог активности/.test(component.content) && /JJS 7 ч\/30д[\s\S]*Chat 210 msg\/30д[\s\S]*роль active/.test(component.content)));
   assert.ok(textDisplays.some((component) => /### 💬 Сообщения/.test(component.content) && /7д 35 .* 30д 210 .* 90д 400/.test(component.content)));
   assert.ok(textDisplays.some((component) => /### 🎮 JJS/.test(component.content) && /Чаще всего играет с 19:00 до 23:00 МСК .* окно 5 ч/.test(component.content)));
   assert.ok(textDisplays.some((component) => /### 🏆 Сезон/.test(component.content) && /Сезон откроется после 3 недель истории/.test(component.content)));

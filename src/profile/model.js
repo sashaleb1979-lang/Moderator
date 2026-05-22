@@ -82,7 +82,7 @@ const PROFILE_SECTION_GROUPS = Object.freeze({
 });
 const PROFILE_COMPONENT_BUDGET = Object.freeze({
   maxTextDisplays: 8,
-  maxSectionTextDisplays: 5,
+  maxSectionTextDisplays: 8,
   sectionTextLimit: 3900,
   blockTextLimit: 1350,
 });
@@ -744,7 +744,8 @@ function formatProfileRatingAxisLine(axis = {}) {
       .filter(Boolean)
       .slice(0, 2)
       .join(" · ");
-    return `${axis.label} 🔒 · ${axis.lockReason || "нужно больше данных"}${missing ? ` · нужно ${missing}` : ""} · итог -${formatNumber(axis.lockedPenaltyPercent || PROFILE_RATING_LOCK_PENALTY_PERCENT)}%`;
+    const needText = missing || cleanString(axis.lockReason, 160) || "нужно больше данных";
+    return `${axis.label} 🔒 · ${needText} · -${formatNumber(axis.lockedPenaltyPercent || PROFILE_RATING_LOCK_PENALTY_PERCENT)}% к итогу`;
   }
   const weight = Math.max(0, Math.min(100, normalizeFiniteNumber(axis.effectiveWeightPercent, 0)));
   const hint = cleanString(axis.nextUpgradeHint, 160);
@@ -812,10 +813,7 @@ function buildProfileRatingSummary({ axes = [] } = {}) {
     radarLine,
   ].filter(Boolean);
   if (strongestAxis) {
-    lines.push(`Сильная сторона: ${strongestAxis.label} ${strongestAxis.grade} · ${formatProfileRatingScore(strongestAxis.score)}/100`);
-  }
-  if (hiddenAxisCount > 0) {
-    lines.push(`Часть рейтинга откроется после активности, proof и связей: ${formatNumber(hiddenAxisCount)}/${formatNumber(PROFILE_RATING_AXES.length)}.`);
+    lines.push(`Пик: ${strongestAxis.label} ${strongestAxis.grade} · ${formatProfileRatingScore(strongestAxis.score)}/100`);
   }
 
   return {
@@ -1154,16 +1152,16 @@ function buildActivityDashboard({
     : (robloxDisplayState?.state === "suspicious" ? "Roblox требует перепривязки" : "Roblox не привязан");
 
   const summaryLines = [
-    `Статус: ${statusLine}`,
+    `JJS ${Number.isFinite(Number(robloxSummary?.jjsMinutes30d)) && canShowJjs ? `${formatJjsHoursFromMinutes(robloxSummary.jjsMinutes30d)}/30д` : "—"} ${buildStatBar(Number.isFinite(jjsHours30d) ? Math.min(100, (jjsHours30d / 20) * 100) : 0, 5)} · ${statusLine}`,
     robloxDisplayState?.isTrackable && robloxSyncHealth?.critical && robloxSyncHealth?.line
       ? robloxSyncHealth.line
       : "",
-    `JJS ${Number.isFinite(Number(robloxSummary?.jjsMinutes30d)) && canShowJjs ? `${formatJjsHoursFromMinutes(robloxSummary.jjsMinutes30d)}/30д` : "—"} · chat ${formatActivityMetric(messages30d)} msg/30д · voice ${Number.isFinite(rawVoiceHours30d) ? `${formatHours(rawVoiceHours30d)} ч` : "—"}${Number.isFinite(effectiveVoiceHours30d) ? ` · учёт ${formatHours(effectiveVoiceHours30d)} ч` : ""}`,
-    mixMeter || "Инфографика откроется после JJS, чата или voice.",
+    `Chat ${formatActivityMetric(messages30d)} msg/30д ${buildStatBar(Number.isFinite(messages30d) ? Math.min(100, (messages30d / 1000) * 100) : 0, 5)}${Number.isFinite(activeDays30d) ? ` · ${formatNumber(activeDays30d)}/30 активных дней` : ""}`,
+    `Voice ${Number.isFinite(rawVoiceHours30d) ? `${formatHours(rawVoiceHours30d)} ч` : "—"}${Number.isFinite(effectiveVoiceHours30d) ? ` · активное ${formatHours(effectiveVoiceHours30d)} ч` : ""}${Number.isFinite(activeVoiceQuality) ? ` · качество ${formatPercent(activeVoiceQuality, 0)} ${buildStatBar(activeVoiceQuality, 5)}` : ""}`,
     [
       activityRole ? `роль ${activityRole}` : null,
-      Number.isFinite(activeDays30d) ? `${formatNumber(activeDays30d)} активных дней` : null,
       Number.isFinite(antiteamArrived) ? `Antiteam ${formatNumber(antiteamArrived)} отклик` : "Antiteam —",
+      mixMeter ? `mix ${mixMeter}` : null,
     ].filter(Boolean).join(" · "),
   ].filter(Boolean);
 
@@ -2226,72 +2224,6 @@ function buildProfileReadModel(options = {}) {
     pendingSubmission,
   });
 
-  const activityLines = [];
-  const rawActivityVoiceHours30d = Number.isFinite(Number(activitySummary.voiceDurationSeconds30d))
-    ? Number(activitySummary.voiceDurationSeconds30d) / 3600
-    : null;
-  const rawVoiceMirrorHours30d = Number.isFinite(Number(voiceSummary.voiceDurationSeconds30d))
-    ? Number(voiceSummary.voiceDurationSeconds30d) / 3600
-    : null;
-  const rawVoiceHours30d = Number.isFinite(rawActivityVoiceHours30d) ? rawActivityVoiceHours30d : rawVoiceMirrorHours30d;
-  const jjsHours30d = Number.isFinite(Number(robloxSummary.jjsMinutes30d)) ? Number(robloxSummary.jjsMinutes30d) / 60 : null;
-  const chatMessages30d = normalizeNullableFiniteNumber(activitySummary.messages30d);
-  const voiceHours30d = Number.isFinite(rawVoiceHours30d)
-    ? rawVoiceHours30d
-    : normalizeNullableFiniteNumber(activitySummary.effectiveVoiceHours30d);
-  const modeParts = [];
-  if (Number.isFinite(jjsHours30d) || Number.isFinite(Number(robloxSummary.jjsMinutes7d))) {
-    const jjsBits = [];
-    if (Number.isFinite(Number(robloxSummary.jjsMinutes7d))) jjsBits.push(`${formatJjsHoursFromMinutes(robloxSummary.jjsMinutes7d)}/7д`);
-    if (Number.isFinite(Number(robloxSummary.jjsMinutes30d))) jjsBits.push(`${formatJjsHoursFromMinutes(robloxSummary.jjsMinutes30d)}/30д`);
-    modeParts.push(`JJS ${jjsBits.join(" · ")}`);
-  }
-  if (Number.isFinite(chatMessages30d)) modeParts.push(`чат ${formatNumber(chatMessages30d)} msg`);
-  if (Number.isFinite(voiceHours30d)) {
-    const effectiveVoiceHours30d = normalizeNullableFiniteNumber(activitySummary.effectiveVoiceHours30d);
-    const voiceCreditSuffix = Number.isFinite(effectiveVoiceHours30d) && Math.abs(effectiveVoiceHours30d - voiceHours30d) >= 0.2
-      ? ` · учёт ${formatHours(effectiveVoiceHours30d)} ч`
-      : "";
-    modeParts.push(`voice ${formatHours(voiceHours30d)} ч${voiceCreditSuffix}`);
-  }
-  const dominantActivity = [
-    { label: "JJS", value: Number.isFinite(jjsHours30d) ? jjsHours30d : -1 },
-    { label: "Discord chat", value: Number.isFinite(chatMessages30d) ? chatMessages30d / 30 : -1 },
-    { label: "voice", value: Number.isFinite(voiceHours30d) ? voiceHours30d : -1 },
-  ].sort((left, right) => right.value - left.value)[0];
-  activityLines.push(robloxDisplayState.state === "suspicious"
-    ? "Статус: Roblox требует перепривязки"
-    : robloxDisplayState.isLinked
-      ? (robloxDisplayState.isTrackable ? "Статус: Roblox/JJS трекается" : "Статус: Roblox привязан, JJS не обновляется")
-      : "Статус: Roblox не привязан");
-  if (robloxDisplayState.isTrackable && robloxSyncHealth?.critical && robloxSyncHealth?.line) {
-    activityLines.push(robloxSyncHealth.line);
-  }
-  if (modeParts.length) {
-    const totalMix = [jjsHours30d, Number.isFinite(chatMessages30d) ? chatMessages30d / 30 : null, voiceHours30d]
-      .filter((entry) => Number.isFinite(Number(entry)) && Number(entry) > 0)
-      .reduce((sum, entry) => sum + Number(entry), 0);
-    const mixBar = totalMix > 0
-      ? [
-        `JJS ${buildStatBar((Number.isFinite(jjsHours30d) ? jjsHours30d : 0) / totalMix * 100, 3)}`,
-        `чат ${buildStatBar((Number.isFinite(chatMessages30d) ? chatMessages30d / 30 : 0) / totalMix * 100, 3)}`,
-        `voice ${buildStatBar((Number.isFinite(voiceHours30d) ? voiceHours30d : 0) / totalMix * 100, 3)}`,
-      ].join(" · ")
-      : "";
-    activityLines.push(`Режим: ${modeParts.join(" · ")}${dominantActivity?.value >= 0 ? ` → больше ${dominantActivity.label}` : ""}`);
-    if (mixBar) activityLines.push(`Микс: ${mixBar}`);
-  } else {
-    activityLines.push("Режим откроется после JJS, чата или voice.");
-  }
-  const activityBits = [];
-  const activityRole = cleanString(activitySummary.appliedActivityRoleKey || activitySummary.desiredActivityRoleKey, 80);
-  if (activityRole) activityBits.push(activityRole);
-  if (Number.isFinite(Number(activitySummary.activityScore))) activityBits.push(`score ${formatNumber(activitySummary.activityScore)}`);
-  const activityPlaceText = formatPlace(activityPlace);
-  if (activityPlaceText !== "N/A") activityBits.push(`${activityPlaceText} среди активных`);
-  if (Number.isFinite(Number(activitySummary.activeDays30d))) activityBits.push(`${formatNumber(activitySummary.activeDays30d)} активных дней`);
-  if (activityBits.length) activityLines.push(`Активность: ${activityBits.join(" · ")}`);
-
   const activityDashboard = buildActivityDashboard({
     activitySummary,
     robloxSummary,
@@ -2540,7 +2472,6 @@ function buildProfileReadModel(options = {}) {
       { title: "🔥 Рейтинг профиля", lines: profileRatingLines },
       { title: "📊 Сводка активности", lines: activityDashboard.summaryLines.slice(0, 4) },
       { title: "🎭 Мейны и места", lines: roleShowcaseLines },
-      ...(synergy?.blocks?.viewerMainCore ? [synergy.blocks.viewerMainCore] : []),
     ],
     activity: [
       ...activityDashboard.blocks,

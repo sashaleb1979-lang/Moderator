@@ -403,12 +403,13 @@ function buildProfilePayload(options = {}) {
   const sectionKey = displayMode === "compact-card" ? "compact" : currentView;
   const sectionBlocks = Array.isArray(readModel.sections?.[sectionKey]) ? readModel.sections[sectionKey] : [];
   const sectionGroups = Array.isArray(readModel.sectionGroups?.[sectionKey]) ? readModel.sectionGroups[sectionKey] : [];
+  const useSectionGroups = displayMode !== "compact-card" && !["overview", "activity"].includes(sectionKey);
   if (sectionBlocks.length) {
     container.addTextDisplayComponents(...buildSectionTextDisplays(
       sectionBlocks,
       componentBudget.sectionTextLimit,
       {
-        groups: sectionGroups,
+        groups: useSectionGroups ? sectionGroups : [],
         maxDisplays: displayMode === "compact-card" ? 3 : componentBudget.maxSectionTextDisplays,
         blockLimit: componentBudget.blockTextLimit,
       }
