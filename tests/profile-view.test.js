@@ -181,8 +181,8 @@ test("profile payload renders overview, activity, rankings, roblox, and link but
       lockUntil: "2026-05-20T12:00:00.000Z",
     },
     approvedEntries: [
-      { userId: "user-2", displayName: "Top", approvedKills: 200 },
-      { userId: "user-1", displayName: "Sasha", approvedKills: 120 },
+      { userId: "user-2", displayName: "Top", approvedKills: 200, mains: ["Gojo"] },
+      { userId: "user-1", displayName: "Sasha", approvedKills: 120, mains: ["Gojo"] },
     ],
       recentKillChange: {
         userId: "user-1",
@@ -225,16 +225,17 @@ test("profile payload renders overview, activity, rankings, roblox, and link but
   const { container, textDisplays, actionRows } = getProfileContainer(payload);
   assert.equal(container.type, 17);
   assert.ok(textDisplays.some((component) => /# Профиль/.test(component.content)));
-  assert.match(JSON.stringify(container), /### Кто ты сейчас/);
-  assert.match(JSON.stringify(container), /Текст-тирлист: .* Килы A/);
-  assert.match(JSON.stringify(container), /🎭 Main: Gojo .* Roblox GojoMain/);
-  assert.ok(textDisplays.some((component) => /### ✨ Обзор/.test(component.content) && /Игрок: <@user-1>/.test(component.content) && /Подтверждённые kills: 120/.test(component.content) && /ELO: 145 \/ tier 2/.test(component.content)));
-  assert.ok(textDisplays.some((component) => /### 🧬 Уровень профиля/.test(component.content) && /Сильнее всего даёт XP:/.test(component.content) && /Буквы:/.test(component.content)));
+  assert.match(JSON.stringify(container), /### ⚡ Главное/);
+  assert.match(JSON.stringify(container), /🔥 Сила профиля .* Ур\. \d+ .* XP/);
+  assert.match(JSON.stringify(container), /Main: Gojo/);
+  assert.ok(textDisplays.some((component) => /### ⚡ Главное/.test(component.content) && /Игрок: <@user-1>/.test(component.content) && /Подтверждённые kills: 120/.test(component.content)));
+  assert.ok(textDisplays.some((component) => /### 🔥 Оценка профиля/.test(component.content) && /Сила профиля:/.test(component.content) && /XP: оценка/.test(component.content) && /учёт \d+%/.test(component.content)));
+  assert.ok(textDisplays.some((component) => /### 🎭 Мейны и места/.test(component.content) && /Gojo: .*#2\/2 среди Gojo-main .* \+81 kills до #1/.test(component.content)));
   assert.ok(textDisplays.some((component) => /### 🧩 Ядро профиля/.test(component.content) && /Ядро пиков: Gojo-main/.test(component.content) && /Серверный контур: форма .* рост .* стабильность .* #2 по kills .* ELO 145 \/ tier 2/.test(component.content) && /Игровая связка: чаще всего с <@peer-1>/.test(component.content)));
   assert.match(JSON.stringify(container), /Гайд-контур: гайды 1\/1 по мейнам .* wiki 1\/1 по мейнам .* общие техи доступны/);
   assert.doesNotMatch(JSON.stringify(container), /### Ключевые факты/);
   assert.doesNotMatch(JSON.stringify(container), /### 🛡️ Готовность|### 🛡️ Готовность к вару/);
-  assert.doesNotMatch(JSON.stringify(container), /confidence|source|debuff|Discord last seen|proof freshness/);
+  assert.doesNotMatch(JSON.stringify(container), /Буквы|confidence|source|debuff|Discord last seen|proof freshness|baseline|fresh/);
   assert.ok(textDisplays.some((component) => /### Верификация/.test(component.content) && /verified/.test(component.content)));
   assert.match(JSON.stringify(container), /https:\/\/cdn\.discordapp\.com\/avatars\/user-1\/profile\.png/);
   assert.equal(actionRows.length, 2);
@@ -335,10 +336,9 @@ test("profile payload switches sections by requested view", () => {
 
   const { textDisplays } = getProfileContainer(payload);
   assert.ok(textDisplays.some((component) => /\*\*Активность\*\*/.test(component.content)));
-  assert.ok(textDisplays.some((component) => /### 📊 Итог активности/.test(component.content) && /Роль активности: active/.test(component.content)));
-  assert.ok(textDisplays.some((component) => /### 🎙️ Voice-срез/.test(component.content) && /Voice 7д\/30д: 1,5 ч \/ 2,5 ч/.test(component.content) && /Сейчас в voice: <#voice-lounge>/.test(component.content)));
+  assert.ok(textDisplays.some((component) => /### 📊 Итог активности/.test(component.content) && /Режим: JJS 3 ч\/7д .* 7 ч\/30д .* чат 210 msg .* voice 2,5 ч/.test(component.content) && /Активность: active/.test(component.content)));
   assert.ok(textDisplays.some((component) => /### 🕒 Prime time МСК/.test(component.content) && /Чаще всего играет с 19:00 до 23:00 МСК .* окно 5 ч/.test(component.content) && /Пиковый час: 20:00/.test(component.content)));
-  assert.ok(textDisplays.some((component) => /### 🏆 Лучшие периоды/.test(component.content) && /Пик 7д: 06\.05\.2026-12\.05\.2026 .* 15 ч JJS/.test(component.content)));
+  assert.ok(textDisplays.some((component) => /### 🏆 Сезон/.test(component.content) && /Сезон откроется после 3 недель истории/.test(component.content)));
   assert.ok(textDisplays.some((component) => /### 🧭 Где живёт игрок/.test(component.content) && /Discord vs Roblox/.test(component.content)));
   assert.ok(!textDisplays.some((component) => /### 🔎 Детали activity/.test(component.content)));
 });
@@ -385,8 +385,8 @@ test("profile payload renders enriched progress and social sections", () => {
       reviewedAt: "2026-05-02T12:00:00.000Z",
     },
     approvedEntries: [
-      { userId: "user-2", displayName: "Top", approvedKills: 200 },
-      { userId: "user-1", displayName: "Sasha", approvedKills: 120 },
+      { userId: "user-2", displayName: "Top", approvedKills: 200, mains: ["Gojo"] },
+      { userId: "user-1", displayName: "Sasha", approvedKills: 120, mains: ["Gojo"] },
     ],
     recentKillChange: {
       userId: "user-1",
@@ -606,6 +606,10 @@ test("profile payload renders enriched progress and social sections", () => {
       generalTechsThreadId: "general-thread",
       characters: [{ id: "gojo", name: "Gojo", threadId: "thread-1" }],
     },
+    approvedEntries: [
+      { userId: "user-2", displayName: "Top", approvedKills: 200, mains: ["Gojo"] },
+      { userId: "user-1", displayName: "Sasha", approvedKills: 120, mains: ["Gojo"] },
+    ],
     populationProfiles: [
       {
         userId: "friend-1",
@@ -652,7 +656,7 @@ test("profile payload renders enriched progress and social sections", () => {
   assert.ok(socialViewDisplays.some((component) => /### 🫂 Кто из друзей уже здесь/.test(component.content) && /1\. <@friend-1> .* Friend One .* Roblox FriendOneRb .* verified Roblox .* JJS 7д 2,6 ч .* activity active/.test(component.content) && /2\. <@friend-2> .* Friend Two .* Roblox FriendTwoRb .* verified Roblox .* 4 msg 7д/.test(component.content)));
   assert.ok(socialViewDisplays.some((component) => /### 🎮 С кем чаще всего играет/.test(component.content) && /<@peer-1> • 3,5 ч вместе • 5 сесс\. • Roblox-друг/.test(component.content)));
   assert.ok(socialViewDisplays.some((component) => /### 🕵️ Скрытый круг/.test(component.content) && /1 кандидата по частым пересечениям в JJS/.test(component.content) && /<@peer-7> .* Todo .* Roblox TodoRb .* 1,1 ч вместе .* 2 общ\. сесс\. .* verified Roblox/.test(component.content)));
-  assert.ok(socialViewDisplays.some((component) => /### 📚 Мейны и гайды/.test(component.content) && /Основные персонажи: Gojo/.test(component.content) && /Гайды по мейнам: 1\/1/.test(component.content) && /1\. Gojo — гайд доступен по кнопке .* роль <@&role-gojo> .* место #1\/1 по мейнам/.test(component.content) && /Общие техи: доступны по кнопке\./.test(component.content)));
+  assert.ok(socialViewDisplays.some((component) => /### 📚 Мейны и гайды/.test(component.content) && /Основные персонажи: Gojo/.test(component.content) && /Гайды по мейнам: 1\/1/.test(component.content) && /1\. Gojo — гайд доступен по кнопке .* роль <@&role-gojo> .* Gojo #2\/2 \(\+81 до #1\)/.test(component.content) && /Общие техи: доступны по кнопке\./.test(component.content)));
   assert.match(JSON.stringify(getProfileContainer(socialPayload).container), /https:\/\/tr\.rbxcdn\.com\/gojo-avatar\.png/);
   assert.match(JSON.stringify(getProfileContainer(socialPayload).container), /https:\/\/cdn\.discordapp\.com\/oauth-avatar\.png/);
 });
@@ -667,9 +671,10 @@ test("profile payload handles empty profiles gracefully", () => {
   });
 
   const { textDisplays, actionRows } = getProfileContainer(payload);
-  assert.ok(textDisplays.some((component) => /### Быстрый статус/.test(component.content) && /Готовность: JJS доступ не выдан/i.test(component.content)));
+  assert.ok(textDisplays.some((component) => /### ⚡ Главное/.test(component.content) && /Сила профиля/.test(component.content)));
   assert.ok(textDisplays.some((component) => /# Твой профиль/.test(component.content)));
-  assert.ok(textDisplays.some((component) => /### ✨ Обзор/.test(component.content) && /ещё не заполнен/i.test(component.content)));
+  assert.ok(textDisplays.some((component) => /### ⚡ Главное/.test(component.content) && /ещё не заполнен/i.test(component.content)));
+  assert.ok(textDisplays.some((component) => /### 🔥 Оценка профиля/.test(component.content) && /откроется после данных/i.test(component.content)));
   assert.ok(!textDisplays.some((component) => /### 🛡️ Готовность/.test(component.content)));
   assert.ok(!textDisplays.some((component) => /### 📈 ELO submit/.test(component.content)));
   assert.ok(textDisplays.some((component) => /После онбординга профиль заполнится автоматически/i.test(component.content)));

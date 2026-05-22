@@ -221,7 +221,7 @@ test("profile operator injects UX-only role and character stats context without 
 
   const container = payload.components[0].toJSON();
   const serialized = JSON.stringify(container);
-  assert.match(serialized, /### 🎭 Роли и места/);
+  assert.match(serialized, /### 🎭 Мейны и места/);
   assert.match(serialized, /Gojo: <@&role-gojo>/);
   assert.match(serialized, /JJS Wiki: персонажи/);
   assert.doesNotMatch(serialized, /Текст-тирлист и статистика|JJS Wiki: Gojo|Гайд: Gojo/);

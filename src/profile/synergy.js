@@ -12,11 +12,11 @@ const MIN_POPULATION_BASELINE = 5;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const VIEWER_TIERLIST_AXES = Object.freeze([
   ["form", "Форма"],
-  ["chat", "Чат"],
+  ["chat", "Общение"],
   ["kills", "Килы"],
   ["stability", "Стабильность"],
-  ["growth", "Развитие"],
-  ["social", "Соц"],
+  ["growth", "Рост"],
+  ["social", "Связи"],
 ]);
 
 function cleanString(value, limit = 2000) {
@@ -3734,7 +3734,7 @@ function buildViewerHeroBlock({
   return {
     title: "Кто ты сейчас",
     lines: [
-      `Текст-тирлист: Форма ${tierlist.form.grade} • Чат ${tierlist.chat.grade} • Килы ${tierlist.kills.grade} • Стабильность ${tierlist.stability.grade} • Развитие ${tierlist.growth.grade} • Соц ${tierlist.social.grade}`,
+      `Текст-тирлист: Форма ${tierlist.form.grade} • Общение ${tierlist.chat.grade} • Килы ${tierlist.kills.grade} • Стабильность ${tierlist.stability.grade} • Рост ${tierlist.growth.grade} • Связи ${tierlist.social.grade}`,
       buildViewerArchetypeLine({ tierlist, approvedKills, killTier, mainCharacterLabels, progressState, profile }),
       buildViewerAnchorLine({ standing, killTier, eloSummary, robloxSummary, activitySummary }),
     ],
@@ -3784,7 +3784,7 @@ function buildAxisConfidenceSummaryLine(tierlist = {}) {
     return Number.isFinite(debuff) ? Math.max(max, debuff) : max;
   }, 0);
 
-  const parts = [`Буквы: текущий расчёт ${formatNumber(currentCount)}/${formatNumber(axes.length)}`];
+  const parts = [`Оценка профиля: текущий расчёт ${formatNumber(currentCount)}/${formatNumber(axes.length)}`];
   if (historicalCount > 0) parts.push(`старые данные ${formatNumber(historicalCount)}`);
   if (unavailableCount > 0) parts.push(`нет данных ${formatNumber(unavailableCount)}`);
   if (maxDebuff > 0) parts.push(`самый сильный штраф веса -${formatNumber(maxDebuff)}%`);
@@ -3804,7 +3804,7 @@ function buildViewerLetterPlacesBlock({ isSelf = false, tierlist = null } = {}) 
   const confidenceLine = buildAxisConfidenceSummaryLine(tierlist);
 
   return {
-    title: "Буквы и места",
+    title: "Оценка профиля",
     lines: [
       segments.slice(0, 3).join(" • "),
       segments.slice(3).join(" • "),

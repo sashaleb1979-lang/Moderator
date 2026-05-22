@@ -24,7 +24,7 @@ const GRADE_RANK = Object.freeze({
 });
 
 function extractViewerGrades(line = "") {
-  const match = String(line).match(/Форма (S\+|S|A\+|A|A-|B\+|B|B-|C\+|C|C-|D\+|D|D-|N\/A) • Чат (S\+|S|A\+|A|A-|B\+|B|B-|C\+|C|C-|D\+|D|D-|N\/A) • Килы (S\+|S|A\+|A|A-|B\+|B|B-|C\+|C|C-|D\+|D|D-|N\/A) • Стабильность (S\+|S|A\+|A|A-|B\+|B|B-|C\+|C|C-|D\+|D|D-|N\/A) • Развитие (S\+|S|A\+|A|A-|B\+|B|B-|C\+|C|C-|D\+|D|D-|N\/A) • Соц (S\+|S|A\+|A|A-|B\+|B|B-|C\+|C|C-|D\+|D|D-|N\/A)/);
+  const match = String(line).match(/Форма (S\+|S|A\+|A|A-|B\+|B|B-|C\+|C|C-|D\+|D|D-|N\/A) • Общение (S\+|S|A\+|A|A-|B\+|B|B-|C\+|C|C-|D\+|D|D-|N\/A) • Килы (S\+|S|A\+|A|A-|B\+|B|B-|C\+|C|C-|D\+|D|D-|N\/A) • Стабильность (S\+|S|A\+|A|A-|B\+|B|B-|C\+|C|C-|D\+|D|D-|N\/A) • Рост (S\+|S|A\+|A|A-|B\+|B|B-|C\+|C|C-|D\+|D|D-|N\/A) • Связи (S\+|S|A\+|A|A-|B\+|B|B-|C\+|C|C-|D\+|D|D-|N\/A)/);
   return match
     ? {
       form: match[1],
@@ -533,7 +533,7 @@ test("buildProfileSynergyState builds a viewer-first hero block and Main Core su
   });
 
   assert.equal(state.blocks.viewerHero.title, "Кто ты сейчас");
-  assert.match(state.blocks.viewerHero.lines.join("\n"), /Текст-тирлист: Форма B\+ .* Чат B .* Килы A .* Стабильность C- .* Развитие C- .* Соц B-/);
+  assert.match(state.blocks.viewerHero.lines.join("\n"), /Текст-тирлист: Форма B\+ .* Общение B .* Килы A .* Стабильность C- .* Рост C- .* Связи B-/);
   assert.match(state.blocks.viewerHero.lines.join("\n"), /Сейчас это живой core-игрок .* Gojo-main .* рост ещё только собирается .* weekly baseline: восстановился после паузы, держит 3w серию \(2026-W22 A-, reliable\) .* держит заметный игровой круг/);
   assert.match(state.blocks.viewerHero.lines.join("\n"), /Опора профиля: #2 по kills .* tier 4 .* ELO 145 \/ tier 2 .* Roblox GojoMain .* активность active/);
   assert.equal(state.blocks.viewerMainCore.title, "Main Core");
@@ -612,9 +612,9 @@ test("buildProfileSynergyState calibrates viewer grades against population basel
 
   assert.ok(GRADE_RANK[strongPopulationGrades.form] < GRADE_RANK[localGrades.form]);
   assert.ok(GRADE_RANK[weakPopulationGrades.form] > GRADE_RANK[localGrades.form]);
-  assert.equal(weakPopulationState.blocks.viewerLetterPlaces.title, "Буквы и места");
-  assert.match(weakPopulationState.blocks.viewerLetterPlaces.lines.join("\n"), /Форма S\+ \(#1\/5\).* Чат S\+ \(#1\/5\).* Килы S\+ \(#1\/5\)/);
-  assert.match(weakPopulationState.blocks.viewerLetterPlaces.lines.join("\n"), /Буквы: текущий расчёт 3\/6 .* нет данных 3 .* самый сильный штраф веса -90%/);
+  assert.equal(weakPopulationState.blocks.viewerLetterPlaces.title, "Оценка профиля");
+  assert.match(weakPopulationState.blocks.viewerLetterPlaces.lines.join("\n"), /Форма S\+ \(#1\/5\).* Общение S\+ \(#1\/5\).* Килы S\+ \(#1\/5\)/);
+  assert.match(weakPopulationState.blocks.viewerLetterPlaces.lines.join("\n"), /Оценка профиля: текущий расчёт 3\/6 .* нет данных 3 .* самый сильный штраф веса -90%/);
 });
 
 test("buildProfileSynergyState exposes antiteam support points and population place", () => {
