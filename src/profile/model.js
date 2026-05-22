@@ -30,10 +30,12 @@ const PROFILE_RATING_CONFIDENCE_MULTIPLIERS = Object.freeze({
   outdated: 0.35,
   unavailable: 0,
 });
+const PROFILE_RATING_LOCK_PENALTY_PERCENT = 20;
+const PROFILE_RATING_LOCK_PENALTY_CAP_PERCENT = 80;
 const PROFILE_RATING_AXIS_LABELS = Object.freeze({
-  form: { emoji: "🏃", label: "Форма" },
+  form: { emoji: "🔥", label: "Боевая форма" },
   chat: { emoji: "💬", label: "Общение" },
-  kills: { emoji: "⚔️", label: "Килы" },
+  kills: { emoji: "⚔️", label: "Proof/Kills" },
   stability: { emoji: "🛡️", label: "Стабильность" },
   growth: { emoji: "📈", label: "Рост" },
   social: { emoji: "🤝", label: "Связи" },
@@ -54,20 +56,22 @@ const PROFILE_TRUST_LABELS = Object.freeze({
 });
 const PROFILE_SECTION_GROUPS = Object.freeze({
   overview: [
-    { title: "⚡ Главное", tone: "summary", density: "compact", titles: ["⚡ Главное", "🔥 Оценка профиля"] },
+    { title: "🔥 Рейтинг", tone: "summary", density: "compact", titles: ["🔥 Рейтинг профиля"] },
+    { title: "📊 Активность", tone: "summary", density: "compact", titles: ["📊 Сводка активности"] },
     { title: "🎭 Мейны", tone: "dossier", density: "normal", titles: ["🎭 Мейны и места"] },
     { title: "🧩 Ядро", tone: "dossier", density: "compact", titles: ["Main Core", "🧩 Ядро профиля"] },
   ],
   activity: [
-    { title: "📊 Итог", tone: "summary", density: "compact", titles: ["📊 Итог активности", "Activity mix", "Voice-срез"] },
-    { title: "🧭 Режим", tone: "dossier", density: "normal", titles: ["Farm profile", "Prime time МСК", "Prime time confidence"] },
-    { title: "🏆 Сезон", tone: "dossier", density: "normal", titles: ["Лучшие периоды", "Weekly rollups", "Season consistency", "Comeback metrics"] },
+    { title: "📊 Итог", tone: "summary", density: "compact", titles: ["📊 Итог активности", "💬 Сообщения", "🎙️ Voice", "🎮 JJS"] },
+    { title: "🗓️ Неделя", tone: "dossier", density: "normal", titles: ["🗓️ Неделя", "⚔️ Рост активности", "Prime time МСК", "Prime time confidence"] },
+    { title: "🏆 Сезон", tone: "dossier", density: "normal", titles: ["Лучшие периоды", "Weekly rollups", "Season consistency", "Comeback metrics", "🏆 Сезон"] },
   ],
   progress: [
     { title: "⚔️ Рост и proof", tone: "summary", density: "normal", titles: ["Практический прогресс", "🏅 Вклад", "📈 Последний рост по kills", "Proof gap", "🧾 Proof"] },
     { title: "📜 История и рейтинги", tone: "dossier", density: "dense", titles: ["🧾 История approved ростов", "📬 Заявки и проверки", "📊 ELO и Tierlist", "Antiteam support"] },
   ],
   social: [
+    { title: "🚧 Статус", tone: "summary", density: "compact", titles: ["🚧 Соц-карта"] },
     { title: "✅ Проверенные связи", tone: "summary", density: "normal", titles: ["🤝 Roblox и соц", "Проверенный круг", "Roblox-друзья на сервере", "Кто из друзей уже здесь"] },
     { title: "🗺️ Социальная карта", tone: "dossier", density: "normal", titles: ["Социальная карта", "Voice + game overlap", "🎮 С кем чаще всего играет", "Скрытый круг"] },
     { title: "🎭 Main dossier", tone: "dossier", density: "compact", titles: ["Социальная эволюция"] },
@@ -426,6 +430,7 @@ function buildScoreBar(score = 0, size = 5) {
 }
 
 function formatProfileRatingScore(score = null) {
+  if (score === null || score === undefined || score === "") return "—";
   const amount = normalizeFiniteNumber(score);
   return Number.isFinite(amount) ? formatNumber(Math.round(amount)) : "—";
 }
@@ -443,12 +448,204 @@ function formatProfileRatingRank(summary = {}) {
     : "";
 }
 
-function buildProfileRatingAxisEntries(tierlist = null) {
+function getActivityVoiceHours(activitySummary = {}, period = "30d") {
+  const suffix = period === "7d" ? "7d" : "30d";
+  const rawSeconds = normalizeNullableFiniteNumber(activitySummary?.[`voiceDurationSeconds${suffix}`]);
+  if (Number.isFinite(rawSeconds)) return rawSeconds / 3600;
+  const effectiveHours = normalizeNullableFiniteNumber(activitySummary?.[`effectiveVoiceHours${suffix}`]);
+  return Number.isFinite(effectiveHours) ? effectiveHours : null;
+}
+
+function getActivityActiveDays(activitySummary = {}, period = "7d") {
+  const direct = normalizeNullableFiniteNumber(activitySummary?.[`activeDays${period === "7d" ? "7d" : "30d"}`]);
+  if (Number.isFinite(direct)) return direct;
+  if (period === "7d") {
+    const fallback30d = normalizeNullableFiniteNumber(activitySummary?.activeDays30d);
+    if (Number.isFinite(fallback30d)) return Math.min(7, fallback30d);
+  }
+  return null;
+}
+
+function getProfileProofWindows(profile = null) {
+  return Array.isArray(profile?.domains?.progress?.proofWindows)
+    ? profile.domains.progress.proofWindows
+    : [];
+}
+
+function getProfileSocialSignalCount(robloxSummary = {}, synergy = null) {
+  const topPeers = Array.isArray(robloxSummary?.topCoPlayPeers) ? robloxSummary.topCoPlayPeers : [];
+  const numericSignals = [
+    normalizeNullableFiniteNumber(robloxSummary?.serverFriendsCount),
+    normalizeNullableFiniteNumber(robloxSummary?.frequentNonFriendCount),
+    normalizeNullableFiniteNumber(robloxSummary?.nonFriendPeerCount) ? 1 : null,
+    topPeers.length,
+  ].filter((entry) => Number.isFinite(entry) && entry > 0);
+  const blockSignals = [
+    synergy?.blocks?.verifiedCircle,
+    synergy?.blocks?.socialMap,
+    synergy?.blocks?.voiceGameOverlap,
+  ].filter((block) => block && !isSparseProfileBlock(block)).length;
+  return numericSignals.reduce((sum, entry) => sum + Math.min(2, Number(entry)), 0) + blockSignals;
+}
+
+function buildMissingRequirement(label, current, required, unit = "") {
+  const normalizedCurrent = normalizeNullableFiniteNumber(current, null);
+  const normalizedRequired = normalizeNullableFiniteNumber(required, null);
+  const shortfall = Number.isFinite(normalizedCurrent) && Number.isFinite(normalizedRequired)
+    ? Math.max(0, normalizedRequired - normalizedCurrent)
+    : normalizedRequired;
+  return {
+    label,
+    current: normalizedCurrent,
+    required: normalizedRequired,
+    shortfall,
+    unit,
+  };
+}
+
+function formatMissingRequirement(requirement = {}) {
+  const amount = normalizeNullableFiniteNumber(requirement.shortfall);
+  const unit = cleanString(requirement.unit, 20);
+  const label = cleanString(requirement.label, 80);
+  if (!Number.isFinite(amount)) return cleanString(requirement.label, 80);
+  const unitSuffix = unit && !label.toLowerCase().includes(unit.toLowerCase()) ? ` ${unit}` : "";
+  const formatted = unit === "ч"
+    ? `${formatHours(amount)} ч`
+    : `${formatNumber(Math.ceil(amount))}${unitSuffix}`;
+  return `${formatted} ${label}`.trim();
+}
+
+function buildRatingGateStates({
+  profile = null,
+  activitySummary = {},
+  robloxSummary = {},
+  robloxDisplayState = null,
+  approvedKills = null,
+  progressState = {},
+  synergy = null,
+} = {}) {
+  const jjsHours7d = Number.isFinite(Number(robloxSummary?.jjsMinutes7d))
+    ? Number(robloxSummary.jjsMinutes7d) / 60
+    : null;
+  const messages7d = normalizeNullableFiniteNumber(activitySummary?.messages7d);
+  const messages30d = normalizeNullableFiniteNumber(activitySummary?.messages30d);
+  const voiceHours7d = getActivityVoiceHours(activitySummary, "7d");
+  const activeDays7d = getActivityActiveDays(activitySummary, "7d");
+  const proofWindows = getProfileProofWindows(profile);
+  const weeklyWindowCount = getProfileWeeklyWindowCount(profile);
+  const socialSignals = getProfileSocialSignalCount(robloxSummary, synergy);
+  const jjsSinceProof = normalizeNullableFiniteNumber(progressState?.jjsHoursSinceLastApprovedKillsUpdate);
+  const trackable = robloxDisplayState?.isTrackable === true || robloxSummary?.isTrackable === true;
+
+  const formByJjs = trackable && Number.isFinite(jjsHours7d) && jjsHours7d >= 3;
+  const formByNewcomer = Number.isFinite(messages7d) && messages7d >= 50
+    && Number.isFinite(voiceHours7d) && voiceHours7d >= 1
+    && Number.isFinite(activeDays7d) && activeDays7d >= 2;
+  const chatOpen = ((Number.isFinite(messages7d) && messages7d >= 25)
+    || (Number.isFinite(messages30d) && messages30d >= 100))
+    && Number.isFinite(activeDays7d) && activeDays7d >= 2;
+  const growthOpen = proofWindows.length >= 2
+    || (proofWindows.length >= 1 && trackable && Number.isFinite(jjsSinceProof) && jjsSinceProof >= 3);
+
+  const states = {
+    form: {
+      isOpen: formByJjs || formByNewcomer,
+      lockReason: trackable
+        ? "нужно больше боевой активности за неделю"
+        : "нужен JJS-трек или fallback новичка",
+      missingRequirements: formByJjs || formByNewcomer ? [] : [
+        ...(trackable ? [buildMissingRequirement("JJS за неделю", jjsHours7d, 3, "ч")] : []),
+        ...(trackable ? [] : [
+          buildMissingRequirement("msg за 7д", messages7d, 50, "msg"),
+          buildMissingRequirement("voice за 7д", voiceHours7d, 1, "ч"),
+          buildMissingRequirement("активных дня", activeDays7d, 2, "дн."),
+        ]),
+      ],
+    },
+    chat: {
+      isOpen: chatOpen,
+      lockReason: "нужно больше общения за неделю",
+      missingRequirements: chatOpen ? [] : [
+        buildMissingRequirement("msg за 7д", messages7d, 25, "msg"),
+        buildMissingRequirement("активных дня", activeDays7d, 2, "дн."),
+      ],
+    },
+    kills: {
+      isOpen: Number.isFinite(Number(approvedKills)),
+      lockReason: "нужен approved proof по kills",
+      missingRequirements: Number.isFinite(Number(approvedKills)) ? [] : [buildMissingRequirement("approved proof", 0, 1, "срез")],
+    },
+    stability: {
+      isOpen: weeklyWindowCount >= 3,
+      lockReason: `нужно ещё ${formatNumber(Math.max(0, 3 - weeklyWindowCount))} weekly окна`,
+      missingRequirements: weeklyWindowCount >= 3 ? [] : [buildMissingRequirement("weekly окна", weeklyWindowCount, 3, "окна")],
+    },
+    growth: {
+      isOpen: growthOpen,
+      lockReason: "нужно 2 proof-среза или JJS после proof",
+      missingRequirements: growthOpen ? [] : [
+        buildMissingRequirement("proof-среза", proofWindows.length, 2, "среза"),
+        buildMissingRequirement("JJS после proof", jjsSinceProof, 3, "ч"),
+      ],
+    },
+    social: {
+      isOpen: socialSignals >= 2,
+      lockReason: "соц-карта ждёт проверяемые связи",
+      missingRequirements: socialSignals >= 2 ? [] : [buildMissingRequirement("соц-сигнала", socialSignals, 2, "сигнала")],
+    },
+  };
+
+  return Object.fromEntries(Object.entries(states).map(([axisName, state]) => [axisName, {
+    axisName,
+    ...state,
+    lockedPenaltyPercent: state.isOpen ? 0 : PROFILE_RATING_LOCK_PENALTY_PERCENT,
+  }]));
+}
+
+function buildProfileAxisUpgradeHint(axisName = "", axis = {}, gateState = {}) {
+  if (axisName === "kills") {
+    const place = axis?.place && typeof axis.place === "object" ? axis.place : {};
+    if (Number(place.rank) === 1) return "лидер";
+    return "держи proof свежим";
+  }
+  if (axisName === "form") return gateState?.isOpen ? "до S: больше JJS/voice в неделю" : "";
+  if (axisName === "chat") return "до апа: больше активных дней";
+  if (axisName === "stability") return "до апа: ровные weekly окна";
+  if (axisName === "growth") return "до апа: новый proof-срез";
+  if (axisName === "social") return "до апа: больше verified связей";
+  return "";
+}
+
+function buildProfileRatingAxisEntries(tierlist = null, gateStates = {}) {
   return PROFILE_RATING_AXES.map((axisName) => {
     const axis = tierlist?.[axisName];
     const score = normalizeFiniteNumber(axis?.score);
-    if (!Number.isFinite(score)) return null;
     const meta = PROFILE_RATING_AXIS_LABELS[axisName] || { emoji: "▫️", label: axisName };
+    const gateState = gateStates?.[axisName] && typeof gateStates[axisName] === "object" ? gateStates[axisName] : {};
+    const isLocked = gateState.isOpen === false || !Number.isFinite(score);
+    if (isLocked) {
+      return {
+        axisName,
+        ...meta,
+        grade: "",
+        score: null,
+        rawScore: normalizeNullableFiniteNumber(axis?.rawScore),
+        confidenceState: "unavailable",
+        debuffPercent: 0,
+        confidenceMultiplier: 0,
+        influenceMultiplier: 0,
+        effectiveWeightPercent: 0,
+        scoreContributionPercent: 0,
+        place: { rank: null, total: null },
+        isHistoricalFallback: axis?.isHistoricalFallback === true,
+        dataAgeDays: normalizeNullableFiniteNumber(axis?.dataAgeDays),
+        isLocked: true,
+        displayState: "locked",
+        lockedPenaltyPercent: normalizeFiniteNumber(gateState.lockedPenaltyPercent, PROFILE_RATING_LOCK_PENALTY_PERCENT),
+        lockReason: cleanString(gateState.lockReason, 160) || "нужно больше данных",
+        missingRequirements: Array.isArray(gateState.missingRequirements) ? gateState.missingRequirements : [],
+      };
+    }
     const confidenceState = cleanString(axis?.confidenceState, 40) || "heuristic";
     const debuffPercent = Math.max(0, Math.min(100, normalizeFiniteNumber(axis?.influenceDebuffPercent, 0)));
     const confidenceMultiplier = getAxisConfidenceMultiplier(axis);
@@ -473,6 +670,12 @@ function buildProfileRatingAxisEntries(tierlist = null) {
       },
       isHistoricalFallback: axis?.isHistoricalFallback === true,
       dataAgeDays: normalizeNullableFiniteNumber(axis?.dataAgeDays),
+      isLocked: false,
+      displayState: "open",
+      lockedPenaltyPercent: 0,
+      lockReason: "",
+      missingRequirements: [],
+      nextUpgradeHint: cleanString(axis?.nextUpgradeHint, 160) || buildProfileAxisUpgradeHint(axisName, axis, gateState),
     };
   }).filter(Boolean);
 }
@@ -497,13 +700,16 @@ function buildProfileGrade(score = null) {
   return "D-";
 }
 
-function buildProfileScoreAxes(tierlist = null) {
-  return buildProfileRatingAxisEntries(tierlist)
+function buildProfileScoreAxes(tierlist = null, gateStates = {}) {
+  return buildProfileRatingAxisEntries(tierlist, gateStates)
     .filter((entry) => (
-      Number.isFinite(Number(entry.score))
-        && cleanString(entry.grade, 10)
-        && entry.grade !== "N/A"
-        && normalizeTrustState(entry.confidenceState, "partial") !== "unavailable"
+      entry.isLocked === true
+        || (
+          Number.isFinite(Number(entry.score))
+          && cleanString(entry.grade, 10)
+          && entry.grade !== "N/A"
+          && normalizeTrustState(entry.confidenceState, "partial") !== "unavailable"
+        )
     ));
 }
 
@@ -521,8 +727,8 @@ function getProfileAxisSourceLabel(axis = {}) {
     return Number.isFinite(age) ? `архив ${formatNumber(age)}д` : "архив";
   }
   const labels = {
-    form: "live 30д",
-    chat: "чат 30д",
+    form: "неделя",
+    chat: "чат 7/30д",
     kills: "proof",
     stability: "сезон",
     growth: "рост",
@@ -532,12 +738,23 @@ function getProfileAxisSourceLabel(axis = {}) {
 }
 
 function formatProfileRatingAxisLine(axis = {}) {
+  if (axis.isLocked === true) {
+    const missing = (Array.isArray(axis.missingRequirements) ? axis.missingRequirements : [])
+      .map(formatMissingRequirement)
+      .filter(Boolean)
+      .slice(0, 2)
+      .join(" · ");
+    return `${axis.label} 🔒 · ${axis.lockReason || "нужно больше данных"}${missing ? ` · нужно ${missing}` : ""} · итог -${formatNumber(axis.lockedPenaltyPercent || PROFILE_RATING_LOCK_PENALTY_PERCENT)}%`;
+  }
   const weight = Math.max(0, Math.min(100, normalizeFiniteNumber(axis.effectiveWeightPercent, 0)));
-  return `${axis.label} ${axis.grade}${formatProfileAxisRank(axis)} · ${getProfileAxisSourceLabel(axis)} · учёт ${formatNumber(weight)}% ${buildStatBar(weight, 5)}`;
+  const hint = cleanString(axis.nextUpgradeHint, 160);
+  const source = getProfileAxisSourceLabel(axis);
+  return `${axis.label} ${axis.grade}${formatProfileAxisRank(axis)} · ${source} · учёт ${formatNumber(weight)}% ${buildStatBar(weight, 5)}${hint ? ` · ${hint}` : ""}`;
 }
 
 function buildProfileMiniRadarLine(axes = []) {
   const items = (Array.isArray(axes) ? axes : [])
+    .filter((axis) => axis?.isLocked !== true && Number.isFinite(Number(axis?.score)))
     .slice()
     .sort((left, right) => right.score - left.score)
     .slice(0, 4)
@@ -566,22 +783,32 @@ function resolveProfileRatingPlace(axes = []) {
 }
 
 function buildProfileRatingSummary({ axes = [] } = {}) {
-  const availableAxes = Array.isArray(axes) ? axes : [];
+  const allAxes = Array.isArray(axes) ? axes : [];
+  const availableAxes = allAxes.filter((axis) => axis?.isLocked !== true && Number.isFinite(Number(axis?.score)));
+  const lockedAxes = allAxes.filter((axis) => axis?.isLocked === true);
   const weightSum = availableAxes.reduce((sum, axis) => sum + Math.max(0, normalizeFiniteNumber(axis.effectiveWeightPercent, 0)), 0);
-  const score = weightSum > 0
+  const rawScore = weightSum > 0
     ? availableAxes.reduce((sum, axis) => sum + (Number(axis.score) * Math.max(0, normalizeFiniteNumber(axis.effectiveWeightPercent, 0))), 0) / weightSum
+    : null;
+  const lockedAxisPenaltyPercent = Math.min(
+    PROFILE_RATING_LOCK_PENALTY_CAP_PERCENT,
+    lockedAxes.reduce((sum, axis) => sum + Math.max(0, normalizeFiniteNumber(axis.lockedPenaltyPercent, PROFILE_RATING_LOCK_PENALTY_PERCENT)), 0)
+  );
+  const score = rawScore !== null && rawScore !== undefined && Number.isFinite(Number(rawScore))
+    ? Math.max(0, Number(rawScore) * (1 - (lockedAxisPenaltyPercent / 100)))
     : null;
   const grade = Number.isFinite(Number(score)) ? buildProfileGrade(score) : "N/A";
   const strongestAxis = availableAxes.slice().sort((left, right) => right.score - left.score)[0] || null;
   const radarLine = buildProfileMiniRadarLine(availableAxes);
-  const hiddenAxisCount = Math.max(0, PROFILE_RATING_AXES.length - availableAxes.length);
+  const hiddenAxisCount = lockedAxes.length;
   const liveWeightPercent = Math.round(Math.max(0, Math.min(100, weightSum / PROFILE_RATING_AXES.length)));
   const place = resolveProfileRatingPlace(availableAxes);
   const lines = [
     Number.isFinite(score)
       ? `Рейтинг профиля: ${grade} · ${formatProfileRatingScore(score)}/100${formatProfileRatingRank(place)}`
       : "Рейтинг профиля откроется после активности, proof и связей.",
-    availableAxes.length ? `Учёт данных: ${formatNumber(liveWeightPercent)}% ${buildStatBar(liveWeightPercent, 6)}` : "",
+    availableAxes.length ? `Открыто: ${formatNumber(availableAxes.length)}/${formatNumber(PROFILE_RATING_AXES.length)} · учёт ${formatNumber(liveWeightPercent)}% ${buildStatBar(liveWeightPercent, 6)}` : "",
+    lockedAxisPenaltyPercent > 0 ? `Закрытые категории: ${formatNumber(lockedAxes.length)} · итог -${formatNumber(lockedAxisPenaltyPercent)}%` : "",
     radarLine,
   ].filter(Boolean);
   if (strongestAxis) {
@@ -594,10 +821,13 @@ function buildProfileRatingSummary({ axes = [] } = {}) {
   return {
     grade,
     score,
+    rawScore,
     rank: place.rank,
     total: place.total,
     liveWeightPercent,
     axisCount: availableAxes.length,
+    lockedAxisCount: lockedAxes.length,
+    lockedAxisPenaltyPercent,
     hiddenAxisCount,
     strongestAxis,
     radarLine,
@@ -688,45 +918,43 @@ function buildHeroSummary({
   heroTitle = "Игровое досье",
   userId = "",
   displayName = "",
-  trustBadges = [],
   mainCharacterLabels = [],
   mainStandings = [],
   profileRatingSummary = null,
-  verifiedRobloxLabel = "",
   robloxSummary = {},
   robloxDisplayState = null,
   approvedKills = null,
   standing = {},
   activitySummary = {},
-  activityPlace = {},
   proofGap = null,
   robloxSyncHealth = null,
 } = {}) {
-  const mainLabel = (Array.isArray(mainCharacterLabels) ? mainCharacterLabels : [])
+  const fallbackMainLabel = (Array.isArray(mainCharacterLabels) ? mainCharacterLabels : [])
     .map((entry) => cleanString(entry, 80))
     .filter(Boolean)
     .slice(0, 2)
     .join(", ") || "мейны не выбраны";
-  const activityRole = cleanString(activitySummary?.appliedActivityRoleKey || activitySummary?.desiredActivityRoleKey, 80) || "роль не накоплена";
   const killPlace = Number.isFinite(Number(standing?.rank)) && Number(standing.rank) > 0
     && Number.isFinite(Number(standing?.totalVerified)) && Number(standing.totalVerified) > 0
     ? `kills #${formatNumber(standing.rank)}/${formatNumber(standing.totalVerified)}`
     : "";
-  const activityPlaceText = formatPlace(activityPlace);
-  const activityText = activityPlaceText !== "N/A"
-    ? `активность ${activityPlaceText}`
-    : `активность ${activityRole}`;
   const mainStandingText = (Array.isArray(mainStandings) ? mainStandings : [])
     .filter((entry) => entry?.available)
-    .slice(0, 1)
-    .map(formatMainStandingShort)[0] || "";
-  const robloxStatus = verifiedRobloxLabel
-    ? `Roblox ${verifiedRobloxLabel}`
-    : (robloxDisplayState?.readinessLabel || formatRobloxReadiness(robloxSummary));
-  const killText = Number.isFinite(approvedKills) ? `${formatNumber(approvedKills)} kills` : "kills ждут proof";
+    .slice(0, 2)
+    .map(formatMainStandingShort)
+    .join(", ") || fallbackMainLabel;
   const scoreGrade = cleanString(profileRatingSummary?.grade, 10) || "N/A";
   const scoreValue = formatProfileRatingScore(profileRatingSummary?.score);
   const ratingRank = formatProfileRatingRank(profileRatingSummary);
+  const jjsMinutes30d = robloxDisplayState?.isTrackable === true && Number.isFinite(Number(robloxSummary?.jjsMinutes30d))
+    ? Number(robloxSummary.jjsMinutes30d)
+    : null;
+  const chatMessages30d = normalizeNullableFiniteNumber(activitySummary?.messages30d);
+  const voiceHours30d = getActivityVoiceHours(activitySummary, "30d");
+  const activeVoiceQuality = buildActivityQualityPercent(activitySummary);
+  const robloxStatus = robloxDisplayState?.isLinked
+    ? (robloxDisplayState.isTrackable ? "Roblox готов" : "Roblox привязан, JJS не обновляется")
+    : (robloxDisplayState?.state === "suspicious" ? "Roblox требует перепривязки" : "Roblox не привязан");
   const warningLine = (() => {
     if (robloxSyncHealth?.critical && robloxSyncHealth?.line) {
       return `⚠️ ${cleanString(robloxSyncHealth.line, 180)}`;
@@ -734,39 +962,28 @@ function buildHeroSummary({
     if (robloxDisplayState?.isLinked && !robloxDisplayState?.isTrackable) {
       return "⚠️ Roblox привязан, но JJS-активность не обновляется.";
     }
-    if (proofGap && Number(proofGap.influenceDebuffPercent) >= 55) {
-      return "⚠️ Proof отстал: килы и рост учитываются слабее.";
-    }
-    if (Number(profileRatingSummary?.axisCount) === 0) {
-      return "⚠️ Рейтинг откроется после активности, proof и связей.";
-    }
-    if (Number(profileRatingSummary?.axisCount) > 0 && Number(profileRatingSummary.axisCount) < 3) {
-      return "⚠️ Рейтинг станет точнее после активности, proof и связей.";
-    }
     return "";
   })();
-  const identityText = [
-    cleanString(displayName, 80) || (userId ? `<@${userId}>` : "Игрок"),
+  const activityLine = [
+    Number.isFinite(jjsMinutes30d) ? `JJS ${formatJjsHoursFromMinutes(jjsMinutes30d)}` : null,
+    Number.isFinite(chatMessages30d) ? `chat ${formatNumber(chatMessages30d)}` : null,
+    Number.isFinite(voiceHours30d) ? `voice ${formatHours(voiceHours30d)}ч` : null,
+    Number.isFinite(activeVoiceQuality) ? `активное ${formatPercent(activeVoiceQuality, 0)}` : null,
     robloxStatus,
-    `Main: ${mainLabel}`,
   ].filter(Boolean).join(" · ");
-  const placesText = [
-    killPlace || killText,
-    activityText,
-    mainStandingText,
-  ].filter(Boolean).join(" · ");
+
+  const lines = [
+    hasProfileRatingScore(profileRatingSummary?.score)
+      ? `🔥 Рейтинг ${scoreGrade} · ${scoreValue}/100${ratingRank}`
+      : "🔥 Рейтинг профиля откроется после данных",
+    `🎭 ${mainStandingText}${killPlace ? ` · ${killPlace}` : (Number.isFinite(approvedKills) ? ` · kills ${formatNumber(approvedKills)}` : "")}`,
+    warningLine || activityLine,
+  ].filter(Boolean).slice(0, 3);
 
   return {
     title: heroTitle,
-    lines: [
-      `👤 ${identityText}`,
-      hasProfileRatingScore(profileRatingSummary?.score)
-        ? `🔥 Рейтинг ${scoreGrade} · ${scoreValue}/100${ratingRank}`
-        : "🔥 Рейтинг профиля откроется после данных",
-      placesText ? `🏆 Места: ${placesText}` : `🏆 ${killText} · ${activityRole}`,
-      warningLine,
-    ].filter(Boolean),
-    state: (trustBadges || []).some((badge) => badge.state === "outdated") ? "degraded" : "rich",
+    lines,
+    state: warningLine ? "degraded" : "rich",
   };
 }
 
@@ -839,6 +1056,168 @@ function buildProfileProofGapBlock(proofGap = null) {
       proofLine ? `Срез: ${proofLine}` : "",
       jjsLine,
     ].filter(Boolean),
+  };
+}
+
+function getSupportAntiteamSummary(supportSummary = {}) {
+  const antiteam = supportSummary?.antiteam && typeof supportSummary.antiteam === "object"
+    ? supportSummary.antiteam
+    : supportSummary;
+  return antiteam && typeof antiteam === "object" ? antiteam : {};
+}
+
+function getPopulationActivityTotal(populationProfiles = [], field = "messages30d") {
+  return (Array.isArray(populationProfiles) ? populationProfiles : [])
+    .map((entry) => entry?.profile || entry)
+    .map((profile) => profile?.summary?.activity?.[field] ?? profile?.domains?.activity?.[field])
+    .map((entry) => normalizeFiniteNumber(entry, 0))
+    .filter((entry) => Number.isFinite(entry) && entry > 0)
+    .reduce((sum, entry) => sum + entry, 0);
+}
+
+function formatActivityMetric(value, fallback = "—") {
+  const amount = normalizeNullableFiniteNumber(value);
+  return Number.isFinite(amount) ? formatNumber(amount) : fallback;
+}
+
+function formatVoiceHoursFromSeconds(value) {
+  const seconds = normalizeNullableFiniteNumber(value);
+  return Number.isFinite(seconds) ? `${formatHours(seconds / 3600)} ч` : "—";
+}
+
+function buildActivityQualityPercent(activitySummary = {}) {
+  const effectiveActive = normalizeNullableFiniteNumber(activitySummary?.effectiveActiveVoiceSignalHours30d);
+  const effectiveVoice = normalizeNullableFiniteNumber(activitySummary?.effectiveVoiceHours30d);
+  if (Number.isFinite(effectiveActive) && Number.isFinite(effectiveVoice) && effectiveVoice > 0) {
+    return Math.max(0, Math.min(100, (effectiveActive / effectiveVoice) * 100));
+  }
+  const activeSeconds = normalizeNullableFiniteNumber(activitySummary?.activeVoiceDurationSeconds30d);
+  const rawSeconds = normalizeNullableFiniteNumber(activitySummary?.voiceDurationSeconds30d);
+  if (Number.isFinite(activeSeconds) && Number.isFinite(rawSeconds) && rawSeconds > 0) {
+    return Math.max(0, Math.min(100, (activeSeconds / rawSeconds) * 100));
+  }
+  return null;
+}
+
+function buildActivityMixMeter({ jjsHours30d = null, messages30d = null, voiceHours30d = null } = {}) {
+  const chatProxy = Number.isFinite(messages30d) ? messages30d / 30 : null;
+  const total = [jjsHours30d, chatProxy, voiceHours30d]
+    .filter((entry) => Number.isFinite(entry) && entry > 0)
+    .reduce((sum, entry) => sum + entry, 0);
+  if (total <= 0) return "";
+  return [
+    `JJS ${buildStatBar((Number.isFinite(jjsHours30d) ? jjsHours30d : 0) / total * 100, 4)}`,
+    `Chat ${buildStatBar((Number.isFinite(chatProxy) ? chatProxy : 0) / total * 100, 4)}`,
+    `Voice ${buildStatBar((Number.isFinite(voiceHours30d) ? voiceHours30d : 0) / total * 100, 4)}`,
+  ].join(" · ");
+}
+
+function buildActivityDashboard({
+  activitySummary = {},
+  robloxSummary = {},
+  supportSummary = {},
+  robloxDisplayState = null,
+  robloxSyncHealth = null,
+  populationProfiles = [],
+  synergy = null,
+  progressState = {},
+  weeklyWindowCount = 0,
+} = {}) {
+  const support = getSupportAntiteamSummary(supportSummary);
+  const canShowJjs = robloxDisplayState?.isTrackable === true;
+  const jjsHours7d = canShowJjs && Number.isFinite(Number(robloxSummary?.jjsMinutes7d)) ? Number(robloxSummary.jjsMinutes7d) / 60 : null;
+  const jjsHours30d = canShowJjs && Number.isFinite(Number(robloxSummary?.jjsMinutes30d)) ? Number(robloxSummary.jjsMinutes30d) / 60 : null;
+  const messages7d = normalizeNullableFiniteNumber(activitySummary?.messages7d);
+  const messages30d = normalizeNullableFiniteNumber(activitySummary?.messages30d);
+  const messages90d = normalizeNullableFiniteNumber(activitySummary?.messages90d);
+  const rawVoiceHours30d = getActivityVoiceHours(activitySummary, "30d");
+  const rawVoiceHours7d = getActivityVoiceHours(activitySummary, "7d");
+  const effectiveVoiceHours30d = normalizeNullableFiniteNumber(activitySummary?.effectiveVoiceHours30d);
+  const activeVoiceQuality = buildActivityQualityPercent(activitySummary);
+  const antiteamArrived = normalizeNullableFiniteNumber(support?.confirmedArrived);
+  const messageTotal30d = getPopulationActivityTotal(populationProfiles, "messages30d") + (Number.isFinite(messages30d) ? messages30d : 0);
+  const messageShare30d = Number.isFinite(messages30d) && messageTotal30d > 0 ? (messages30d / messageTotal30d) * 100 : null;
+  const activeDays30d = normalizeNullableFiniteNumber(activitySummary?.activeDays30d);
+  const activeDays7d = getActivityActiveDays(activitySummary, "7d");
+  const activityRole = cleanString(activitySummary?.appliedActivityRoleKey || activitySummary?.desiredActivityRoleKey, 80);
+  const mixMeter = buildActivityMixMeter({ jjsHours30d, messages30d, voiceHours30d: rawVoiceHours30d });
+  const voiceSessions = normalizeNullableFiniteNumber(activitySummary?.voiceSessions30d);
+  const jjsSessions = normalizeNullableFiniteNumber(robloxSummary?.sessionCount);
+  const primeBlock = synergy?.blocks?.primeTime;
+  const weeklyScore = synergy?.blocks?.weeklyRollups?.lines?.[0] || null;
+  const growthWindow = progressState?.latestGrowthWindow && typeof progressState.latestGrowthWindow === "object"
+    ? progressState.latestGrowthWindow
+    : null;
+
+  const statusLine = robloxDisplayState?.isLinked
+    ? (robloxDisplayState.isTrackable ? "Roblox готов" : "Roblox привязан, JJS не обновляется")
+    : (robloxDisplayState?.state === "suspicious" ? "Roblox требует перепривязки" : "Roblox не привязан");
+
+  const summaryLines = [
+    `Статус: ${statusLine}`,
+    robloxDisplayState?.isTrackable && robloxSyncHealth?.critical && robloxSyncHealth?.line
+      ? robloxSyncHealth.line
+      : "",
+    `JJS ${Number.isFinite(Number(robloxSummary?.jjsMinutes30d)) && canShowJjs ? `${formatJjsHoursFromMinutes(robloxSummary.jjsMinutes30d)}/30д` : "—"} · chat ${formatActivityMetric(messages30d)} msg/30д · voice ${Number.isFinite(rawVoiceHours30d) ? `${formatHours(rawVoiceHours30d)} ч` : "—"}${Number.isFinite(effectiveVoiceHours30d) ? ` · учёт ${formatHours(effectiveVoiceHours30d)} ч` : ""}`,
+    mixMeter || "Инфографика откроется после JJS, чата или voice.",
+    [
+      activityRole ? `роль ${activityRole}` : null,
+      Number.isFinite(activeDays30d) ? `${formatNumber(activeDays30d)} активных дней` : null,
+      Number.isFinite(antiteamArrived) ? `Antiteam ${formatNumber(antiteamArrived)} отклик` : "Antiteam —",
+    ].filter(Boolean).join(" · "),
+  ].filter(Boolean);
+
+  const messageLines = [
+    `7д ${formatActivityMetric(messages7d)} · 30д ${formatActivityMetric(messages30d)} · 90д ${formatActivityMetric(messages90d)}`,
+    Number.isFinite(messageShare30d)
+      ? `Доля от видимого чата: ${formatPercent(messageShare30d, 1)} ${buildStatBar(messageShare30d, 5)}`
+      : "Доля от видимого чата откроется после population-среза.",
+    Number.isFinite(activeDays7d) || Number.isFinite(activeDays30d)
+      ? `Ритм: ${Number.isFinite(activeDays7d) ? `${formatNumber(activeDays7d)}/7д` : "—"} · ${Number.isFinite(activeDays30d) ? `${formatNumber(activeDays30d)}/30д` : "—"} активных дней`
+      : "Ритм откроется после дневной истории.",
+  ];
+
+  const voiceLines = [
+    `Raw ${Number.isFinite(rawVoiceHours30d) ? `${formatHours(rawVoiceHours30d)} ч` : "—"} · учёт ${Number.isFinite(effectiveVoiceHours30d) ? `${formatHours(effectiveVoiceHours30d)} ч` : "—"}${Number.isFinite(activeVoiceQuality) ? ` · качество ${formatPercent(activeVoiceQuality, 0)}` : ""}`,
+    `7д ${Number.isFinite(rawVoiceHours7d) ? `${formatHours(rawVoiceHours7d)} ч` : "—"} · sessions ${Number.isFinite(voiceSessions) ? formatNumber(voiceSessions) : "—"}`,
+    Number.isFinite(activeVoiceQuality) ? `Качество ${buildStatBar(activeVoiceQuality, 5)} · активное voice` : "Качество voice откроется после active-сигналов.",
+  ];
+
+  const jjsLines = [
+    `7д ${Number.isFinite(Number(robloxSummary?.jjsMinutes7d)) && canShowJjs ? formatJjsHoursFromMinutes(robloxSummary.jjsMinutes7d) : "—"} · 30д ${Number.isFinite(Number(robloxSummary?.jjsMinutes30d)) && canShowJjs ? formatJjsHoursFromMinutes(robloxSummary.jjsMinutes30d) : "—"} · sessions ${Number.isFinite(jjsSessions) ? formatNumber(jjsSessions) : "—"}`,
+    primeBlock?.lines?.[0] ? cleanString(primeBlock.lines[0], 220) : "Prime time откроется после hourly buckets.",
+    Number.isFinite(jjsHours7d) ? `Покрытие недели: ${buildStatBar(Math.min(100, (jjsHours7d / 3) * 100), 5)} · база 3 ч для боевой формы` : "Покрытие недели откроется после JJS sync.",
+  ];
+
+  const weekLines = weeklyWindowCount >= 1
+    ? [
+      weeklyScore || `Weekly история: ${formatNumber(weeklyWindowCount)} окно`,
+      weeklyWindowCount >= 3
+        ? "Стабильность доступна: 3+ weekly окна"
+        : `🔒 Стабильность откроется после 3 weekly окон · сейчас ${formatNumber(weeklyWindowCount)}/3`,
+    ]
+    : ["🔒 Неделя откроется после 7 дней покрытия · сейчас 0/7"];
+
+  const growthLines = growthWindow
+    ? [
+      `Kills: ${formatSignedNumber(growthWindow.deltaKills)} за ${formatNumber(growthWindow.wallClockDays)} дн.`,
+      Number.isFinite(growthWindow.killsPerDay) ? `Темп: ${formatHours(growthWindow.killsPerDay, 1)} kills/день` : "",
+      Number.isFinite(progressState?.jjsHoursSinceLastApprovedKillsUpdate)
+        ? `После proof: ${formatHours(progressState.jjsHoursSinceLastApprovedKillsUpdate)} ч JJS`
+        : "JJS после proof не покрыт.",
+    ].filter(Boolean)
+    : ["🔒 Рост откроется после 2 proof-срезов или JJS после proof."];
+
+  return {
+    summaryLines: summaryLines.slice(0, 4),
+    blocks: [
+      { title: "📊 Итог активности", lines: summaryLines.slice(0, 4) },
+      { title: "💬 Сообщения", lines: messageLines.slice(0, 3) },
+      { title: "🎙️ Voice", lines: voiceLines.slice(0, 3) },
+      { title: "🎮 JJS", lines: jjsLines.slice(0, 3) },
+      { title: "🗓️ Неделя", lines: weekLines.slice(0, 3) },
+      { title: "⚔️ Рост активности", lines: growthLines.slice(0, 3) },
+    ],
   };
 }
 
@@ -923,6 +1302,10 @@ function buildMainStandings({
       const indexInMain = ranked.findIndex((entry) => entry.userId === normalizedUserId);
       const currentEntry = indexInMain >= 0 ? ranked[indexInMain] : null;
       const previousEntry = indexInMain > 0 ? ranked[indexInMain - 1] : null;
+      const mainKillsTotal = ranked.reduce((sum, entry) => sum + (Number(entry.approvedKills) || 0), 0);
+      const mainKillSharePercent = currentEntry && mainKillsTotal > 0
+        ? (Number(currentEntry.approvedKills) / mainKillsTotal) * 100
+        : null;
       const killsToNext = previousEntry
         ? Math.max(1, Math.floor(previousEntry.approvedKills - currentEntry.approvedKills + 1))
         : null;
@@ -935,6 +1318,8 @@ function buildMainStandings({
         rank: indexInMain >= 0 ? indexInMain + 1 : null,
         total: ranked.length,
         currentKills: currentEntry?.approvedKills ?? null,
+        mainKillsTotal,
+        mainKillSharePercent,
         killsToNext,
         nextRank: indexInMain > 0 ? indexInMain : null,
         isLeader: indexInMain === 0 && ranked.length > 0,
@@ -947,31 +1332,34 @@ function buildMainStandings({
 function formatMainStandingLine(standing = {}) {
   const label = cleanString(standing.label, 80);
   if (!label) return "";
-  const parts = [];
-  if (standing.roleMention) parts.push(standing.roleMention);
+  const suffixParts = [];
   if (standing.available) {
-    const placePower = Number(standing.total) > 0
-      ? ((Number(standing.total) - Number(standing.rank) + 1) / Number(standing.total)) * 100
-      : 0;
-    parts.push(`#${formatNumber(standing.rank)}/${formatNumber(standing.total)} среди ${label}-main ${buildStatBar(placePower, 4)}`);
+    suffixParts.push(`#${formatNumber(standing.rank)}/${formatNumber(standing.total)}`);
+    if (Number.isFinite(Number(standing.mainKillSharePercent))) {
+      suffixParts.push(`${formatPercent(standing.mainKillSharePercent, 0)} kills мейна`);
+    }
     if (standing.isLeader) {
-      parts.push("👑 лидер мейна");
+      suffixParts.push("👑 лидер");
     } else if (Number.isFinite(Number(standing.killsToNext)) && Number.isFinite(Number(standing.nextRank))) {
-      parts.push(`до апа: +${formatNumber(standing.killsToNext)} kills до #${formatNumber(standing.nextRank)}`);
+      suffixParts.push(`+${formatNumber(standing.killsToNext)} kills до #${formatNumber(standing.nextRank)}`);
     }
   }
-  return `${label}: ${parts.length ? parts.join(" · ") : "место откроется после рейтинга мейнов"}`;
+  const role = standing.roleMention ? ` ${standing.roleMention}` : "";
+  return `${label}${role}${suffixParts.length ? ` (${suffixParts.join(" · ")})` : " (место откроется после рейтинга мейнов)"}`;
 }
 
 function formatMainStandingShort(standing = {}) {
   if (!standing?.available) return cleanString(standing?.label, 80);
   const label = cleanString(standing.label, 80);
   const place = `${label} #${formatNumber(standing.rank)}/${formatNumber(standing.total)}`;
-  if (standing.isLeader) return `${place} лидер`;
+  const share = Number.isFinite(Number(standing.mainKillSharePercent))
+    ? ` · ${formatPercent(standing.mainKillSharePercent, 0)} kills`
+    : "";
+  if (standing.isLeader) return `${place}${share} · лидер`;
   if (Number.isFinite(Number(standing.killsToNext)) && Number.isFinite(Number(standing.nextRank))) {
-    return `${place} (+${formatNumber(standing.killsToNext)} до #${formatNumber(standing.nextRank)})`;
+    return `${place}${share} · +${formatNumber(standing.killsToNext)} до #${formatNumber(standing.nextRank)}`;
   }
-  return place;
+  return `${place}${share}`;
 }
 
 function buildRoleShowcaseLines({
@@ -979,10 +1367,6 @@ function buildRoleShowcaseLines({
   mainCharacterLabels = [],
   characterStats = [],
   mainStandings = [],
-  activitySummary = {},
-  populationProfiles = [],
-  killTier = null,
-  standing = {},
   hiddenRoleIds = new Set(),
 } = {}) {
   const lines = [];
@@ -1013,20 +1397,6 @@ function buildRoleShowcaseLines({
   } else {
     lines.push("🎭 Мейны откроются после выбора персонажей.");
   }
-
-  const activityRole = cleanString(activitySummary?.appliedActivityRoleKey || activitySummary?.desiredActivityRoleKey, 80);
-  const activityPlace = buildMetricPlace(activitySummary?.activityScore, collectPopulationActivityScores(populationProfiles));
-  const activityBits = [activityRole || "роль ещё не накоплена"];
-  const activityPlaceText = formatPlace(activityPlace);
-  if (activityPlaceText !== "N/A") activityBits.push(`${activityPlaceText} по активности`);
-  lines.push(`⚡ Активность: ${activityBits.join(" · ")}`);
-
-  const killPlace = { rank: standing?.rank, total: standing?.totalVerified };
-  const killBits = [];
-  if (Number.isFinite(Number(killTier))) killBits.push(`tier ${formatNumber(killTier)}`);
-  const killPlaceText = formatPlace(killPlace);
-  if (killPlaceText !== "N/A") killBits.push(`${killPlaceText} по kills`);
-  lines.push(`⚔️ Kill-role: ${killBits.length ? killBits.join(" · ") : "откроется после proof"}`);
 
   return lines;
 }
@@ -1758,6 +2128,15 @@ function buildProfileReadModel(options = {}) {
     now: options.now,
   });
   const weeklyWindowCount = getProfileWeeklyWindowCount(profile);
+  const ratingGateStates = buildRatingGateStates({
+    profile,
+    activitySummary,
+    robloxSummary,
+    robloxDisplayState,
+    approvedKills,
+    progressState: synergy?.progress,
+    synergy,
+  });
   const profileRatingAxes = hasProfileScoreSignals({
     profile,
     approvedKills,
@@ -1765,10 +2144,13 @@ function buildProfileReadModel(options = {}) {
     robloxSummary,
     voiceSummary,
     progressSummary,
-  }) ? buildProfileScoreAxes(synergy?.viewerTierlist) : [];
+  }) ? buildProfileScoreAxes(synergy?.viewerTierlist, ratingGateStates) : [];
   const profileRatingSummary = buildProfileRatingSummary({
     axes: profileRatingAxes,
   });
+  const lockedAxisReasons = Object.fromEntries(profileRatingAxes
+    .filter((axis) => axis.isLocked === true)
+    .map((axis) => [axis.axisName, axis.lockReason]));
   const profileRatingLines = [
     ...profileRatingSummary.lines,
     ...(profileRatingAxes.length
@@ -1789,10 +2171,6 @@ function buildProfileReadModel(options = {}) {
     mainCharacterLabels,
     characterStats: options.characterStats,
     mainStandings,
-    activitySummary,
-    populationProfiles,
-    killTier,
-    standing,
     hiddenRoleIds,
   });
 
@@ -1913,6 +2291,18 @@ function buildProfileReadModel(options = {}) {
   if (activityPlaceText !== "N/A") activityBits.push(`${activityPlaceText} среди активных`);
   if (Number.isFinite(Number(activitySummary.activeDays30d))) activityBits.push(`${formatNumber(activitySummary.activeDays30d)} активных дней`);
   if (activityBits.length) activityLines.push(`Активность: ${activityBits.join(" · ")}`);
+
+  const activityDashboard = buildActivityDashboard({
+    activitySummary,
+    robloxSummary,
+    supportSummary,
+    robloxDisplayState,
+    robloxSyncHealth,
+    populationProfiles,
+    synergy,
+    progressState: synergy?.progress,
+    weeklyWindowCount,
+  });
 
   const contributionLines = [];
   if (Number.isFinite(approvedKills)) {
@@ -2057,13 +2447,13 @@ function buildProfileReadModel(options = {}) {
     if (Number.isFinite(Number(robloxSummary.serverFriendsCount))) {
       robloxLines.push(`Друзья на сервере: ${formatNumber(robloxSummary.serverFriendsCount)}`);
     }
-    if (Number.isFinite(Number(robloxSummary.jjsMinutes7d))) {
+    if (robloxDisplayState.isTrackable && Number.isFinite(Number(robloxSummary.jjsMinutes7d))) {
       robloxLines.push(`JJS 7д: ${formatJjsHoursFromMinutes(robloxSummary.jjsMinutes7d)}`);
     }
-    if (Number.isFinite(Number(robloxSummary.jjsMinutes30d))) {
+    if (robloxDisplayState.isTrackable && Number.isFinite(Number(robloxSummary.jjsMinutes30d))) {
       robloxLines.push(`JJS 30д: ${formatJjsHoursFromMinutes(robloxSummary.jjsMinutes30d)}`);
     }
-    if (Number.isFinite(Number(robloxSummary.totalJjsMinutes))) {
+    if (robloxDisplayState.isTrackable && Number.isFinite(Number(robloxSummary.totalJjsMinutes))) {
       robloxLines.push(`JJS всего: ${formatJjsHoursFromMinutes(robloxSummary.totalJjsMinutes)}`);
     }
     if (Number.isFinite(Number(robloxSummary.frequentNonFriendCount))) {
@@ -2072,13 +2462,13 @@ function buildProfileReadModel(options = {}) {
     if (Number.isFinite(Number(robloxSummary.nonFriendPeerCount))) {
       robloxLines.push(`Всего non-friend peers: ${formatNumber(robloxSummary.nonFriendPeerCount)}`);
     }
-    if (Number.isFinite(Number(robloxSummary.sessionCount))) {
+    if (robloxDisplayState.isTrackable && Number.isFinite(Number(robloxSummary.sessionCount))) {
       robloxLines.push(`JJS сессий всего: ${formatNumber(robloxSummary.sessionCount)}`);
     }
-    if (robloxSummary.currentSessionStartedAt) {
+    if (robloxDisplayState.isTrackable && robloxSummary.currentSessionStartedAt) {
       robloxLines.push(`Текущая JJS сессия с: ${formatDateTime(robloxSummary.currentSessionStartedAt)}`);
     }
-    if (robloxSummary.lastSeenInJjsAt) {
+    if (robloxDisplayState.isTrackable && robloxSummary.lastSeenInJjsAt) {
       robloxLines.push(`Последний JJS online: ${formatDateTime(robloxSummary.lastSeenInJjsAt)}`);
     }
     if (robloxSummary.lastRefreshAt) {
@@ -2102,9 +2492,6 @@ function buildProfileReadModel(options = {}) {
       : "",
   };
   const activityModeBlocks = [
-    ...includeProfileBlock(synergy?.blocks?.activityMix, 2),
-    ...includeProfileBlock(synergy?.blocks?.farmProfile, 2),
-    ...includeProfileBlock(synergy?.blocks?.primeTime, 2),
     ...includeProfileBlock(synergy?.blocks?.primeTimeConfidence, 2),
   ];
   const seasonBlocks = weeklyWindowCount >= 3
@@ -2129,7 +2516,8 @@ function buildProfileReadModel(options = {}) {
   ];
   const proofGapBlock = buildProfileProofGapBlock(synergy?.progress?.proofGap);
   const compactMainStanding = mainStandings.find((entry) => entry.available);
-  const compactModeLine = activityLines.find((line) => /^Режим:/.test(line)) || "Режим откроется после JJS, чата или voice.";
+  const compactModeLine = (activityDashboard.summaryLines || []).find((line) => /JJS|Chat|Voice/.test(line))
+    || "Активность откроется после JJS, чата или voice.";
   const compactCardLines = [
     hasProfileRatingScore(profileRatingSummary.score)
       ? `🔥 Рейтинг ${profileRatingSummary.grade} · ${formatProfileRatingScore(profileRatingSummary.score)}/100`
@@ -2149,13 +2537,13 @@ function buildProfileReadModel(options = {}) {
 
   const sections = {
     overview: [
-      { title: "⚡ Главное", lines: overviewLines.slice(0, 4) },
-      { title: "🔥 Оценка профиля", lines: profileRatingLines },
+      { title: "🔥 Рейтинг профиля", lines: profileRatingLines },
+      { title: "📊 Сводка активности", lines: activityDashboard.summaryLines.slice(0, 4) },
       { title: "🎭 Мейны и места", lines: roleShowcaseLines },
       ...(synergy?.blocks?.viewerMainCore ? [synergy.blocks.viewerMainCore] : []),
     ],
     activity: [
-      { title: "📊 Итог активности", lines: activityLines.slice(0, 4) },
+      ...activityDashboard.blocks,
       ...activityModeBlocks,
       ...seasonBlocks,
     ],
@@ -2170,6 +2558,7 @@ function buildProfileReadModel(options = {}) {
       ...(proofGapBlock ? [proofGapBlock] : []),
     ],
     social: [
+      { title: "🚧 Соц-карта", lines: ["Соц-карта в разработке: связи показываются только там, где есть проверяемые сигналы."] },
       { title: "🤝 Roblox и соц", lines: robloxLines.slice(0, 5) },
       ...socialBlocks,
     ],
@@ -2189,12 +2578,28 @@ function buildProfileReadModel(options = {}) {
     heroTitle,
     heroLines,
     heroSummary,
+    identityPreview: {
+      discordAvatarUrl: targetAvatarUrl,
+      robloxAvatarUrl,
+      robloxStatus: robloxDisplayState.isTrackable ? "Roblox готов" : robloxDisplayState.readinessLabel,
+    },
     identityMediaItems,
     profileRatingSummary,
     profileRatingAxes,
+    ratingDashboard: {
+      summary: profileRatingSummary,
+      axes: profileRatingAxes,
+      lockedAxisReasons,
+    },
+    activityDashboard,
+    weeklyRatingState: {
+      weeklyWindowCount,
+      stabilityOpen: weeklyWindowCount >= 3,
+    },
     roleShowcaseLines,
     mainStandings,
     hiddenSectionReasons,
+    lockedAxisReasons,
     mandatoryLinks,
     trustBadges,
     surfaceState,

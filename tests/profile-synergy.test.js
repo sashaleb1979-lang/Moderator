@@ -587,8 +587,8 @@ test("buildProfileSynergyState calibrates viewer grades against population basel
     },
   };
 
-  const localGrades = extractViewerGrades(buildProfileSynergyState(baseOptions).blocks.viewerHero.lines[0]);
-  const strongPopulationGrades = extractViewerGrades(buildProfileSynergyState({
+  const localState = buildProfileSynergyState(baseOptions);
+  const strongPopulationState = buildProfileSynergyState({
     ...baseOptions,
     populationProfiles: [
       makePopulationProfile({ userId: "strong-1", approvedKills: 500, killTier: 5, activityScore: 95, messages7d: 70, jjsMinutes7d: 480, totalJjsMinutes: 900 }),
@@ -597,7 +597,7 @@ test("buildProfileSynergyState calibrates viewer grades against population basel
       makePopulationProfile({ userId: "strong-4", approvedKills: 300, killTier: 4, activityScore: 82, messages7d: 48, jjsMinutes7d: 300, totalJjsMinutes: 720 }),
       makePopulationProfile({ userId: "strong-5", approvedKills: 250, killTier: 4, activityScore: 76, messages7d: 40, jjsMinutes7d: 240, totalJjsMinutes: 660 }),
     ],
-  }).blocks.viewerHero.lines[0]);
+  });
   const weakPopulationState = buildProfileSynergyState({
     ...baseOptions,
     populationProfiles: [
@@ -608,12 +608,16 @@ test("buildProfileSynergyState calibrates viewer grades against population basel
       makePopulationProfile({ userId: "weak-5", approvedKills: 40, killTier: 1, activityScore: 24, messages7d: 6, jjsMinutes7d: 36, totalJjsMinutes: 60, reviewedAt: "2026-04-12T00:00:00.000Z" }),
     ],
   });
-  const weakPopulationGrades = extractViewerGrades(weakPopulationState.blocks.viewerHero.lines[0]);
 
-  assert.ok(GRADE_RANK[strongPopulationGrades.form] < GRADE_RANK[localGrades.form]);
-  assert.ok(GRADE_RANK[weakPopulationGrades.form] > GRADE_RANK[localGrades.form]);
+  assert.equal(strongPopulationState.viewerTierlist.form.source, "population_peak_85");
+  assert.equal(strongPopulationState.viewerTierlist.kills.source, "population_peak_85");
+  assert.ok(strongPopulationState.viewerTierlist.form.peakTargetRawScore > 20);
+  assert.ok(strongPopulationState.viewerTierlist.form.strongestRawScore > strongPopulationState.viewerTierlist.form.peakTargetRawScore);
+  assert.equal(localState.viewerTierlist.form.source, "local_fallback");
+  assert.equal(weakPopulationState.viewerTierlist.form.source, "population_peak_85");
+  assert.equal(weakPopulationState.viewerTierlist.form.normalizationFloor, 20);
   assert.equal(weakPopulationState.blocks.viewerLetterPlaces.title, "Оценка профиля");
-  assert.match(weakPopulationState.blocks.viewerLetterPlaces.lines.join("\n"), /Форма S\+ \(#1\/5\).* Общение S\+ \(#1\/5\).* Килы S\+ \(#1\/5\)/);
+  assert.match(weakPopulationState.blocks.viewerLetterPlaces.lines.join("\n"), /Боевая форма .*\(#1\/5\).* Общение .*\(#1\/5\).* Proof\/Kills .*\(#1\/5\)/);
   assert.match(weakPopulationState.blocks.viewerLetterPlaces.lines.join("\n"), /Оценка профиля: текущий расчёт 3\/6 .* нет данных 3/);
   assert.doesNotMatch(weakPopulationState.blocks.viewerLetterPlaces.lines.join("\n"), /самый сильный штраф веса -90%/);
 });

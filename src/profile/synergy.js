@@ -9,11 +9,13 @@ const KILL_TIER_THRESHOLDS = Object.freeze([
 
 const KILL_MILESTONES = Object.freeze([20000, 30000]);
 const MIN_POPULATION_BASELINE = 5;
+const RATING_PEAK_MULTIPLIER = 0.85;
+const RATING_FIXED_FLOOR = 20;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const VIEWER_TIERLIST_AXES = Object.freeze([
-  ["form", "Форма"],
+  ["form", "Боевая форма"],
   ["chat", "Общение"],
-  ["kills", "Килы"],
+  ["kills", "Proof/Kills"],
   ["stability", "Стабильность"],
   ["growth", "Рост"],
   ["social", "Связи"],
@@ -262,15 +264,26 @@ function buildPopulationCalibratedAxisState(rawScore = null, populationScores = 
     }, options);
   }
 
-  const percentileScore = buildPercentileScore(normalizedRawScore, samples);
-  const calibratedState = buildAxisState(percentileScore);
+  const strongestRaw = Math.max(...samples);
+  const peakTarget = strongestRaw > RATING_FIXED_FLOOR
+    ? Math.max(RATING_FIXED_FLOOR + 1, strongestRaw * RATING_PEAK_MULTIPLIER)
+    : 100;
+  const peakNormalizedScore = clampScore(
+    ((normalizedRawScore - RATING_FIXED_FLOOR) / Math.max(1, peakTarget - RATING_FIXED_FLOOR)) * 100,
+    0,
+    100
+  );
+  const calibratedState = buildAxisState(peakNormalizedScore);
   return applyAxisTrustState({
     ...calibratedState,
     rawScore: rawState.score,
     rawGrade: rawState.grade,
-    source: "population",
+    source: "population_peak_85",
     populationSize: samples.length,
     percentileScore: calibratedState.score,
+    peakTargetRawScore: peakTarget,
+    strongestRawScore: strongestRaw,
+    normalizationFloor: RATING_FIXED_FLOOR,
     place,
     confidenceState: "reliable",
     freshnessState: "fresh",

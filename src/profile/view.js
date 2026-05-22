@@ -34,8 +34,6 @@ const PROFILE_BLOCK_TITLE_LABELS = Object.freeze({
   "Лучшие периоды": "🏆 Лучшие периоды",
   "История сезона": "📜 История сезона",
   "Weekly rollups": "🗓️ Недели сезона",
-  "Activity mix": "🧭 Где живёт игрок",
-  "Farm profile": "🌾 Профиль фарма",
   "Relative component places": "📍 Места по метрикам",
   "Prime time confidence": "🕒 Устойчивость prime time",
   "Season consistency": "📏 Ровность сезона",
