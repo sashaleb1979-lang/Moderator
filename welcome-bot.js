@@ -3961,9 +3961,32 @@ function isSubmissionActive(submission) {
   return submission && submission.status === "pending" && hoursSince(submission.createdAt) <= PENDING_EXPIRE_HOURS;
 }
 
+function getLatestResolvedSubmissionTimestamp(userId, submissions = []) {
+  let latestTs = Number.NEGATIVE_INFINITY;
+
+  const profileReviewedTs = Date.parse(db.profiles?.[userId]?.lastReviewedAt || "");
+  if (Number.isFinite(profileReviewedTs)) latestTs = profileReviewedTs;
+
+  for (const submission of submissions) {
+    if (!submission || submission.status === "pending") continue;
+    const ts = Date.parse(submission.reviewedAt || submission.createdAt || "");
+    if (Number.isFinite(ts) && ts > latestTs) latestTs = ts;
+  }
+
+  return latestTs;
+}
+
 function getPendingSubmissionForUser(userId) {
-  const submissions = Object.values(db.submissions || {})
-    .filter((submission) => submission.userId === userId && isSubmissionActive(submission))
+  const userSubmissions = Object.values(db.submissions || {})
+    .filter((submission) => submission.userId === userId);
+  const latestResolvedTs = getLatestResolvedSubmissionTimestamp(userId, userSubmissions);
+
+  const submissions = userSubmissions
+    .filter((submission) => isSubmissionActive(submission))
+    .filter((submission) => {
+      const createdTs = Date.parse(submission?.createdAt || "");
+      return !Number.isFinite(latestResolvedTs) || !Number.isFinite(createdTs) || latestResolvedTs < createdTs;
+    })
     .sort((left, right) => Date.parse(right.createdAt || 0) - Date.parse(left.createdAt || 0));
   return submissions[0] || null;
 }
