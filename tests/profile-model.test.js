@@ -357,9 +357,9 @@ test("profile read-model composes derived sections, links, and verification fact
   assert.equal(readModel.heroTitle, "⚡ Главное");
   assert.ok(readModel.heroLines.length <= 4);
   assert.match(readModel.heroLines.join("\n"), /👤 Sasha .* Roblox GojoMain .* Main: Gojo/);
-  assert.match(readModel.heroLines.join("\n"), /🔥 Сила профиля .* Ур\. \d+ .* XP/);
+  assert.match(readModel.heroLines.join("\n"), /🔥 Рейтинг .* \d+\/100/);
   assert.match(readModel.heroLines.join("\n"), /🏆 Места: kills #2\/2 .* активность active .* Gojo #2\/2 \(\+81 до #1\)/);
-  assert.doesNotMatch(readModel.heroLines.join("\n"), /Буквы|Текст-тирлист|confidence|source|debuff|fresh|baseline/);
+  assert.doesNotMatch(readModel.heroLines.join("\n"), /Буквы|Текст-тирлист|confidence|source|debuff|fresh|baseline|XP|Ур\./);
   assert.ok(readModel.heroSummary);
   assert.doesNotMatch(readModel.heroSummary.lines.join("\n"), /🧪 Данные:/);
   assert.ok(Array.isArray(readModel.trustBadges));
@@ -369,11 +369,12 @@ test("profile read-model composes derived sections, links, and verification fact
   assert.ok(readModel.componentBudget.maxSectionTextDisplays > 0);
   assert.ok(Array.isArray(readModel.sectionGroups.overview));
   assert.ok(readModel.sectionGroups.overview.some((group) => group.title === "⚡ Главное"));
-  assert.ok(readModel.profileLevelState.totalXp > 0);
-  assert.ok(readModel.profileScoreSummary.totalXp > 0);
-  assert.match(readModel.profileScoreSummary.radarLine, /Радар:/);
-  assert.ok(readModel.profileScoreAxes.length >= 4);
-  assert.ok(readModel.profileScoreAxes.every((axis) => Number.isFinite(axis.axisXp) && Number.isFinite(axis.effectiveWeightPercent)));
+  assert.equal(readModel.profileLevelState, undefined);
+  assert.equal(readModel.profileLevelLines, undefined);
+  assert.ok(readModel.profileRatingSummary.score > 0);
+  assert.match(readModel.profileRatingSummary.radarLine, /Радар:/);
+  assert.ok(readModel.profileRatingAxes.length >= 4);
+  assert.ok(readModel.profileRatingAxes.every((axis) => Number.isFinite(axis.scoreContributionPercent) && Number.isFinite(axis.effectiveWeightPercent)));
   assert.equal(readModel.primaryAvatarUrl, "https://cdn.discordapp.com/avatars/user-1/profile.png");
   assert.deepEqual(readModel.identityMediaItems.map((entry) => entry.url), [
     "https://cdn.discordapp.com/avatars/user-1/profile.png",
@@ -393,15 +394,15 @@ test("profile read-model composes derived sections, links, and verification fact
   assert.match(readModel.sections.overview[0].lines.join("\n"), /Roblox: GojoMain/);
   assert.match(readModel.sections.overview[0].lines.join("\n"), /Подтверждённые kills: 120/);
   assert.equal(readModel.sections.overview[1].title, "🔥 Оценка профиля");
-  assert.match(readModel.sections.overview[1].lines.join("\n"), /Сила профиля:/);
-  assert.match(readModel.sections.overview[1].lines.join("\n"), /XP: оценка \+\d/);
-  assert.match(readModel.sections.overview[1].lines.join("\n"), /Форма .* учёт \d+% .* \+\d.* XP/);
-  assert.match(readModel.sections.overview[1].lines.join("\n"), /Килы .* учёт \d+% .* \+\d.* XP/);
+  assert.match(readModel.sections.overview[1].lines.join("\n"), /Рейтинг профиля: .* \d+\/100/);
+  assert.match(readModel.sections.overview[1].lines.join("\n"), /Учёт данных: \d+% .*▰/);
+  assert.match(readModel.sections.overview[1].lines.join("\n"), /Форма .* учёт \d+% .*[▰▱]/);
+  assert.match(readModel.sections.overview[1].lines.join("\n"), /Килы .* proof .* учёт \d+% .*[▰▱]/);
   assert.match(readModel.sections.overview[1].lines.join("\n"), /Радар: .*Килы/);
   assert.match(readModel.sections.overview[1].lines.join("\n"), /▰+▱+/);
-  assert.doesNotMatch(readModel.sections.overview[1].lines.join("\n"), /Буквы|confidence|source|debuff|fresh|baseline/);
+  assert.doesNotMatch(readModel.sections.overview[1].lines.join("\n"), /Буквы|confidence|source|debuff|fresh|baseline|XP|Ур\./);
   assert.equal(readModel.sections.overview[2].title, "🎭 Мейны и места");
-  assert.match(readModel.sections.overview[2].lines.join("\n"), /Gojo: <@&role-gojo> .* #2\/2 среди Gojo-main .* \+81 kills до #1/);
+  assert.match(readModel.sections.overview[2].lines.join("\n"), /Gojo: <@&role-gojo> .* #2\/2 среди Gojo-main .* до апа: \+81 kills до #1/);
   assert.match(readModel.sections.overview[2].lines.join("\n"), /Активность: active/);
   assert.match(readModel.sections.overview[2].lines.join("\n"), /Kill-role: tier 4 .* #2\/2 по kills/);
   assert.deepEqual(readModel.mainStandings.map((entry) => ({
@@ -414,9 +415,7 @@ test("profile read-model composes derived sections, links, and verification fact
   assert.match(readModel.sections.overview[3].lines.join("\n"), /Ядро пиков: Gojo-main/);
   assert.match(readModel.sections.overview[3].lines.join("\n"), /Серверный контур: форма B\+ .* #2 по kills .* ELO 145 \/ tier 2/);
   assert.match(readModel.sections.overview[3].lines.join("\n"), /Игровая связка: чаще всего с <@peer-1> .* Roblox-друг/);
-  assert.match(readModel.sections.overview[3].lines.join("\n"), /Гайд-контур: гайды 1\/1 по мейнам .* wiki 1\/1 по мейнам .* общие техи доступны/);
-  assert.equal(readModel.sections.overview[4].title, "📚 Мейны");
-  assert.match(readModel.sections.overview[4].lines.join("\n"), /Основные персонажи: Gojo/);
+  assert.doesNotMatch(readModel.sections.overview.map((section) => section.title).join("\n"), /📚 Мейны|Мейны и гайды/);
   assert.match(readModel.sections.progress[0].lines.join("\n"), /Место по kills: #2/);
   assert.match(readModel.sections.progress[1].lines.join("\n"), /Прирост: \+20 kills/);
   assert.match(readModel.sections.progress[2].lines.join("\n"), /1\. 100 -> 120/);
@@ -427,10 +426,11 @@ test("profile read-model composes derived sections, links, and verification fact
   assert.match(readModel.sections.progress[4].lines.join("\n"), /Последний ELO submit:/);
   assert.match(readModel.sections.progress[4].lines.join("\n"), /Скрин ELO: https:\/\/proof\/approved/);
   assert.match(readModel.sections.progress[4].lines.join("\n"), /Tierlist-заявка: есть/);
-  assert.equal(readModel.sections.progress[5].title, "Proof gap");
-  assert.match(readModel.sections.progress[5].lines.join("\n"), /Proof gap: last proof .* approved 120 kills/);
-  assert.match(readModel.sections.progress[5].lines.join("\n"), /JJS после proof: 80,3 ч .* proof сильно отстал от игры/);
-  assert.match(readModel.sections.progress[5].lines.join("\n"), /Trust: outdated .* kill-backed debuff 90%/);
+  assert.equal(readModel.sections.progress[5].title, "🧾 Proof");
+  assert.match(readModel.sections.progress[5].lines.join("\n"), /Proof отстал .* учёт kills 10%/);
+  assert.match(readModel.sections.progress[5].lines.join("\n"), /Срез: .* approved 120/);
+  assert.match(readModel.sections.progress[5].lines.join("\n"), /После proof: 80,3 ч JJS/);
+  assert.doesNotMatch(readModel.sections.progress[5].lines.join("\n"), /Trust|confidence|source|debuff/);
   assert.equal(readModel.sections.activity[0].title, "📊 Итог активности");
   assert.match(readModel.sections.activity[0].lines.join("\n"), /Статус: Roblox\/JJS трекается/);
   assert.match(readModel.sections.activity[0].lines.join("\n"), /Режим: JJS 3 ч\/7д .* 7 ч\/30д .* чат 210 msg .* voice 2,5 ч/);
@@ -470,13 +470,7 @@ test("profile read-model composes derived sections, links, and verification fact
   assert.match(readModel.sections.social[4].lines.join("\n"), /<@peer-2> • 2,3 ч вместе • 3 сесс\. • частый non-friend/);
   assert.equal(readModel.sections.social[5].title, "Скрытый круг");
   assert.match(readModel.sections.social[5].lines.join("\n"), /явных frequent non-friend пересечений пока не видно, хотя Roblox-друзья на сервере уже есть \(3\)/);
-  const mainGuideBlock = readModel.sections.social.find((section) => section.title === "📚 Мейны и гайды");
-  assert.ok(mainGuideBlock);
-  assert.match(mainGuideBlock.lines.join("\n"), /Гайды по мейнам: 1\/1/);
-  assert.match(mainGuideBlock.lines.join("\n"), /JJS wiki по мейнам: 1\/1/);
-  assert.match(mainGuideBlock.lines.join("\n"), /1\. Gojo — гайд доступен по кнопке .* JJS wiki доступна по кнопке .* роль <@&role-gojo> .* Gojo #2\/2 \(\+81 до #1\)/);
-  assert.match(mainGuideBlock.lines.join("\n"), /Основной tierlist-пик: Gojo • входит в список мейнов/);
-  assert.match(mainGuideBlock.lines.join("\n"), /Общие техи: доступны по кнопке\./);
+  assert.equal(readModel.sections.social.find((section) => section.title === "📚 Мейны и гайды"), undefined);
   const verifiedCircleBlock = readModel.sections.social.find((section) => section.title === "Проверенный круг");
   assert.ok(verifiedCircleBlock);
   assert.match(verifiedCircleBlock.lines.join("\n"), /Проверенный круг: verified\+friend\+JJS 1 .* verified friends 2 .* active 7д 2 .* JJS 7д 1/);
@@ -596,13 +590,11 @@ test("profile read-model exposes compact-card composition through the canonical 
 
   assert.equal(readModel.displayMode, "compact-card");
   assert.equal(readModel.sections.compact[0].title, "Моя карточка");
-  assert.match(readModel.sections.compact[0].lines.join("\n"), /Игрок: <@user-1> .* Сила профиля .* Ур\./);
-  assert.match(readModel.sections.compact[0].lines.join("\n"), /Roblox: GojoMain/);
-  assert.match(readModel.sections.compact[0].lines.join("\n"), /ELO: 145 \/ tier 2/);
-  assert.equal(readModel.sections.compact[1].title, "Готовность");
-  assert.equal(readModel.sections.compact[2].title, "ELO и Tierlist");
-  assert.match(readModel.sections.compact[2].lines.join("\n"), /ID ELO заявки: elo-compact-1/);
-  assert.match(readModel.sections.compact[2].lines.join("\n"), /Скрин ELO: https:\/\/proof\/compact/);
+  assert.ok(readModel.sections.compact[0].lines.length <= 4);
+  assert.match(readModel.sections.compact[0].lines.join("\n"), /🔥 Рейтинг/);
+  assert.match(readModel.sections.compact[0].lines.join("\n"), /Roblox GojoMain/);
+  assert.doesNotMatch(readModel.sections.compact[0].lines.join("\n"), /XP|Ур\.|ELO/);
+  assert.equal(readModel.sections.compact.length, 1);
 });
 
 test("profile read-model marks empty profiles without fabricating data sections", () => {
@@ -618,7 +610,8 @@ test("profile read-model marks empty profiles without fabricating data sections"
   assert.equal(readModel.isSelf, true);
   assert.equal(readModel.heroTitle, "⚡ Главное");
   assert.ok(readModel.heroLines.length <= 4);
-  assert.match(readModel.heroLines.join("\n"), /Сила профиля N\/A|Сила профиля/);
+  assert.match(readModel.heroLines.join("\n"), /Рейтинг профиля откроется/);
+  assert.doesNotMatch(readModel.heroLines.join("\n"), /XP|Ур\./);
   assert.match(readModel.sections.overview[0].lines.join("\n"), /Профиль ещё не заполнен/i);
   assert.match(readModel.sections.overview[0].lines.join("\n"), /Роли: —/);
   assert.match(readModel.sections.overview[0].lines.join("\n"), /Roblox: не привязан/i);

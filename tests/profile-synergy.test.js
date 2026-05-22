@@ -540,7 +540,7 @@ test("buildProfileSynergyState builds a viewer-first hero block and Main Core su
   assert.match(state.blocks.viewerMainCore.lines.join("\n"), /Ядро пиков: Gojo-main/);
   assert.match(state.blocks.viewerMainCore.lines.join("\n"), /Серверный контур: форма B\+ .* рост C- .* стабильность C- .* #2 по kills .* ELO 145 \/ tier 2/);
   assert.match(state.blocks.viewerMainCore.lines.join("\n"), /Игровая связка: чаще всего с <@peer-1> .* 3,5 ч вместе .* 5 сесс\. .* Roblox-друг/);
-  assert.match(state.blocks.viewerMainCore.lines.join("\n"), /Гайд-контур: гайды 1\/1 по мейнам .* wiki 1\/1 по мейнам .* общие техи доступны/);
+  assert.doesNotMatch(state.blocks.viewerMainCore.lines.join("\n"), /Гайд-контур|гайд доступен/);
 });
 
 test("buildProfileSynergyState calibrates viewer grades against population baseline", () => {
@@ -614,7 +614,8 @@ test("buildProfileSynergyState calibrates viewer grades against population basel
   assert.ok(GRADE_RANK[weakPopulationGrades.form] > GRADE_RANK[localGrades.form]);
   assert.equal(weakPopulationState.blocks.viewerLetterPlaces.title, "Оценка профиля");
   assert.match(weakPopulationState.blocks.viewerLetterPlaces.lines.join("\n"), /Форма S\+ \(#1\/5\).* Общение S\+ \(#1\/5\).* Килы S\+ \(#1\/5\)/);
-  assert.match(weakPopulationState.blocks.viewerLetterPlaces.lines.join("\n"), /Оценка профиля: текущий расчёт 3\/6 .* нет данных 3 .* самый сильный штраф веса -90%/);
+  assert.match(weakPopulationState.blocks.viewerLetterPlaces.lines.join("\n"), /Оценка профиля: текущий расчёт 3\/6 .* нет данных 3/);
+  assert.doesNotMatch(weakPopulationState.blocks.viewerLetterPlaces.lines.join("\n"), /самый сильный штраф веса -90%/);
 });
 
 test("buildProfileSynergyState exposes antiteam support points and population place", () => {

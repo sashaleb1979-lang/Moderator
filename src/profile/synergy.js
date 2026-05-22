@@ -242,7 +242,7 @@ function buildPopulationCalibratedAxisState(rawScore = null, populationScores = 
       place,
       confidenceState: "unavailable",
       freshnessState: "unavailable",
-      influenceDebuffPercent: 90,
+      influenceDebuffPercent: 0,
     });
   }
 
@@ -530,7 +530,7 @@ function buildProofGapState({
       hasReliableJjsSinceLastApproved: false,
       freshnessState: "unavailable",
       confidenceState: "unavailable",
-      influenceDebuffPercent: 90,
+      influenceDebuffPercent: 0,
       source: "proof_windows",
     };
   }
@@ -1419,31 +1419,6 @@ function buildMainCorePeerLine(robloxSummary = {}) {
   return `Игровая связка: ${parts.join(" • ")}`;
 }
 
-function buildMainCoreGuideLine({ mainCharacterLabels = [], comboLinks = [] } = {}) {
-  const mains = (Array.isArray(mainCharacterLabels) ? mainCharacterLabels : [])
-    .map((entry) => cleanString(entry, 80))
-    .filter(Boolean);
-  const links = Array.isArray(comboLinks) ? comboLinks : [];
-  const mainGuideCount = links.filter((entry) => entry?.kind === "main").length;
-  const mainWikiCount = links.filter((entry) => entry?.kind === "wiki").length;
-  const hasGeneralGuide = links.some((entry) => entry?.kind === "general");
-  const parts = [];
-
-  if (mains.length) {
-    parts.push(`гайды ${formatNumber(Math.min(mainGuideCount, mains.length))}/${formatNumber(mains.length)} по мейнам`);
-    if (mainWikiCount) {
-      parts.push(`wiki ${formatNumber(Math.min(mainWikiCount, mains.length))}/${formatNumber(mains.length)} по мейнам`);
-    }
-  }
-  if (hasGeneralGuide) {
-    parts.push("общие техи доступны");
-  } else if (mains.length) {
-    parts.push("общие техи пока не привязаны");
-  }
-
-  return parts.length ? `Гайд-контур: ${parts.join(" • ")}` : "Гайд-контур: по мейнам и общим техам ссылок пока нет.";
-}
-
 function buildViewerMainCoreBlock({
   isSelf = false,
   tierlist = null,
@@ -1453,7 +1428,6 @@ function buildViewerMainCoreBlock({
   robloxSummary = {},
   mainCharacterLabels = [],
   tierlistSummary = {},
-  comboLinks = [],
 } = {}) {
   if (isSelf || !tierlist) return null;
 
@@ -1463,7 +1437,6 @@ function buildViewerMainCoreBlock({
       buildMainCoreIdentityLine({ mainCharacterLabels, tierlistSummary }),
       buildMainCoreStatusLine({ tierlist, standing, killTier, eloSummary }),
       buildMainCorePeerLine(robloxSummary),
-      buildMainCoreGuideLine({ mainCharacterLabels, comboLinks }),
     ],
   };
 }

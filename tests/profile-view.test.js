@@ -226,16 +226,16 @@ test("profile payload renders overview, activity, rankings, roblox, and link but
   assert.equal(container.type, 17);
   assert.ok(textDisplays.some((component) => /# Профиль/.test(component.content)));
   assert.match(JSON.stringify(container), /### ⚡ Главное/);
-  assert.match(JSON.stringify(container), /🔥 Сила профиля .* Ур\. \d+ .* XP/);
+  assert.match(JSON.stringify(container), /🔥 Рейтинг .* \d+\/100/);
   assert.match(JSON.stringify(container), /Main: Gojo/);
   assert.ok(textDisplays.some((component) => /### ⚡ Главное/.test(component.content) && /Игрок: <@user-1>/.test(component.content) && /Подтверждённые kills: 120/.test(component.content)));
-  assert.ok(textDisplays.some((component) => /### 🔥 Оценка профиля/.test(component.content) && /Сила профиля:/.test(component.content) && /XP: оценка/.test(component.content) && /учёт \d+%/.test(component.content)));
-  assert.ok(textDisplays.some((component) => /### 🎭 Мейны и места/.test(component.content) && /Gojo: .*#2\/2 среди Gojo-main .* \+81 kills до #1/.test(component.content)));
+  assert.ok(textDisplays.some((component) => /### 🔥 Оценка профиля/.test(component.content) && /Рейтинг профиля:/.test(component.content) && /Учёт данных:/.test(component.content) && /учёт \d+%/.test(component.content)));
+  assert.ok(textDisplays.some((component) => /### 🎭 Мейны и места/.test(component.content) && /Gojo: .*#2\/2 среди Gojo-main .* до апа: \+81 kills до #1/.test(component.content)));
   assert.ok(textDisplays.some((component) => /### 🧩 Ядро профиля/.test(component.content) && /Ядро пиков: Gojo-main/.test(component.content) && /Серверный контур: форма .* рост .* стабильность .* #2 по kills .* ELO 145 \/ tier 2/.test(component.content) && /Игровая связка: чаще всего с <@peer-1>/.test(component.content)));
-  assert.match(JSON.stringify(container), /Гайд-контур: гайды 1\/1 по мейнам .* wiki 1\/1 по мейнам .* общие техи доступны/);
+  assert.doesNotMatch(JSON.stringify(container), /Гайд-контур|### 📚 Мейны|### 📚 Мейны и гайды|гайд доступен по кнопке/);
   assert.doesNotMatch(JSON.stringify(container), /### Ключевые факты/);
   assert.doesNotMatch(JSON.stringify(container), /### 🛡️ Готовность|### 🛡️ Готовность к вару/);
-  assert.doesNotMatch(JSON.stringify(container), /Буквы|confidence|source|debuff|Discord last seen|proof freshness|baseline|fresh/);
+  assert.doesNotMatch(JSON.stringify(container), /Буквы|confidence|source|debuff|Discord last seen|proof freshness|baseline|fresh|XP|Ур\./);
   assert.ok(textDisplays.some((component) => /### Верификация/.test(component.content) && /verified/.test(component.content)));
   assert.match(JSON.stringify(container), /https:\/\/cdn\.discordapp\.com\/avatars\/user-1\/profile\.png/);
   assert.equal(actionRows.length, 2);
@@ -656,7 +656,7 @@ test("profile payload renders enriched progress and social sections", () => {
   assert.ok(socialViewDisplays.some((component) => /### 🫂 Кто из друзей уже здесь/.test(component.content) && /1\. <@friend-1> .* Friend One .* Roblox FriendOneRb .* verified Roblox .* JJS 7д 2,6 ч .* activity active/.test(component.content) && /2\. <@friend-2> .* Friend Two .* Roblox FriendTwoRb .* verified Roblox .* 4 msg 7д/.test(component.content)));
   assert.ok(socialViewDisplays.some((component) => /### 🎮 С кем чаще всего играет/.test(component.content) && /<@peer-1> • 3,5 ч вместе • 5 сесс\. • Roblox-друг/.test(component.content)));
   assert.ok(socialViewDisplays.some((component) => /### 🕵️ Скрытый круг/.test(component.content) && /1 кандидата по частым пересечениям в JJS/.test(component.content) && /<@peer-7> .* Todo .* Roblox TodoRb .* 1,1 ч вместе .* 2 общ\. сесс\. .* verified Roblox/.test(component.content)));
-  assert.ok(socialViewDisplays.some((component) => /### 📚 Мейны и гайды/.test(component.content) && /Основные персонажи: Gojo/.test(component.content) && /Гайды по мейнам: 1\/1/.test(component.content) && /1\. Gojo — гайд доступен по кнопке .* роль <@&role-gojo> .* Gojo #2\/2 \(\+81 до #1\)/.test(component.content) && /Общие техи: доступны по кнопке\./.test(component.content)));
+  assert.ok(!socialViewDisplays.some((component) => /### 📚 Мейны и гайды|гайд доступен по кнопке|Гайды по мейнам/.test(component.content)));
   assert.match(JSON.stringify(getProfileContainer(socialPayload).container), /https:\/\/tr\.rbxcdn\.com\/gojo-avatar\.png/);
   assert.match(JSON.stringify(getProfileContainer(socialPayload).container), /https:\/\/cdn\.discordapp\.com\/oauth-avatar\.png/);
 });
@@ -671,7 +671,7 @@ test("profile payload handles empty profiles gracefully", () => {
   });
 
   const { textDisplays, actionRows } = getProfileContainer(payload);
-  assert.ok(textDisplays.some((component) => /### ⚡ Главное/.test(component.content) && /Сила профиля/.test(component.content)));
+  assert.ok(textDisplays.some((component) => /### ⚡ Главное/.test(component.content) && /Рейтинг профиля/.test(component.content)));
   assert.ok(textDisplays.some((component) => /# Твой профиль/.test(component.content)));
   assert.ok(textDisplays.some((component) => /### ⚡ Главное/.test(component.content) && /ещё не заполнен/i.test(component.content)));
   assert.ok(textDisplays.some((component) => /### 🔥 Оценка профиля/.test(component.content) && /откроется после данных/i.test(component.content)));

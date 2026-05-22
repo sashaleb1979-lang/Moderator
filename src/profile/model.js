@@ -21,15 +21,15 @@ function cleanString(value, limit = 2000) {
 const PROFILE_DISPLAY_MODES = Object.freeze(["viewer", "self", "compact-card"]);
 const DEFAULT_HIDDEN_PROFILE_ROLE_IDS = Object.freeze(["1146511958305144883"]);
 const JJS_WIKI_CHARACTERS_URL = "https://jujutsu-shenanigans.fandom.com/wiki/Characters";
-const PROFILE_LEVEL_AXES = Object.freeze(["form", "chat", "kills", "stability", "growth", "social"]);
-const PROFILE_LEVEL_CONFIDENCE_MULTIPLIERS = Object.freeze({
+const PROFILE_RATING_AXES = Object.freeze(["form", "chat", "kills", "stability", "growth", "social"]);
+const PROFILE_RATING_CONFIDENCE_MULTIPLIERS = Object.freeze({
   reliable: 1,
   partial: 0.85,
   heuristic: 0.65,
   outdated: 0.35,
   unavailable: 0,
 });
-const PROFILE_LEVEL_AXIS_LABELS = Object.freeze({
+const PROFILE_RATING_AXIS_LABELS = Object.freeze({
   form: { emoji: "🏃", label: "Форма" },
   chat: { emoji: "💬", label: "Общение" },
   kills: { emoji: "⚔️", label: "Килы" },
@@ -54,7 +54,7 @@ const PROFILE_TRUST_LABELS = Object.freeze({
 const PROFILE_SECTION_GROUPS = Object.freeze({
   overview: [
     { title: "⚡ Главное", tone: "summary", density: "compact", titles: ["⚡ Главное", "🔥 Оценка профиля"] },
-    { title: "🎭 Мейны", tone: "dossier", density: "normal", titles: ["🎭 Мейны и места", "📚 Мейны"] },
+    { title: "🎭 Мейны", tone: "dossier", density: "normal", titles: ["🎭 Мейны и места"] },
     { title: "🧩 Ядро", tone: "dossier", density: "compact", titles: ["Main Core", "🧩 Ядро профиля"] },
   ],
   activity: [
@@ -63,13 +63,13 @@ const PROFILE_SECTION_GROUPS = Object.freeze({
     { title: "🏆 Сезон", tone: "dossier", density: "normal", titles: ["Лучшие периоды", "Weekly rollups", "Season consistency", "Comeback metrics"] },
   ],
   progress: [
-    { title: "⚔️ Рост и proof", tone: "summary", density: "normal", titles: ["Практический прогресс", "🏅 Вклад", "📈 Последний рост по kills", "Proof gap"] },
+    { title: "⚔️ Рост и proof", tone: "summary", density: "normal", titles: ["Практический прогресс", "🏅 Вклад", "📈 Последний рост по kills", "Proof gap", "🧾 Proof"] },
     { title: "📜 История и рейтинги", tone: "dossier", density: "dense", titles: ["🧾 История approved ростов", "📬 Заявки и проверки", "📊 ELO и Tierlist", "Antiteam support"] },
   ],
   social: [
     { title: "✅ Проверенные связи", tone: "summary", density: "normal", titles: ["🤝 Roblox и соц", "Проверенный круг", "Roblox-друзья на сервере", "Кто из друзей уже здесь"] },
     { title: "🗺️ Социальная карта", tone: "dossier", density: "normal", titles: ["Социальная карта", "Voice + game overlap", "🎮 С кем чаще всего играет", "Скрытый круг"] },
-    { title: "🎭 Main dossier", tone: "dossier", density: "compact", titles: ["📚 Мейны и гайды", "Социальная эволюция"] },
+    { title: "🎭 Main dossier", tone: "dossier", density: "compact", titles: ["Социальная эволюция"] },
   ],
   compact: [
     { title: "⚡ Карточка", tone: "summary", density: "compact", titles: ["Карточка", "Моя карточка", "Готовность", "ELO и Tierlist", "Roblox и соц"] },
@@ -342,7 +342,7 @@ function computeKillStanding(entries = [], userId = "") {
 
 function getAxisConfidenceMultiplier(axis = {}) {
   const key = cleanString(axis?.confidenceState, 40).toLowerCase();
-  return PROFILE_LEVEL_CONFIDENCE_MULTIPLIERS[key] ?? PROFILE_LEVEL_CONFIDENCE_MULTIPLIERS.heuristic;
+  return PROFILE_RATING_CONFIDENCE_MULTIPLIERS[key] ?? PROFILE_RATING_CONFIDENCE_MULTIPLIERS.heuristic;
 }
 
 function getAxisInfluenceMultiplier(axis = {}) {
@@ -350,93 +350,53 @@ function getAxisInfluenceMultiplier(axis = {}) {
   return 1 - (debuff / 100);
 }
 
-function calculateProfileLevel(totalXp = 0) {
-  let remainingXp = Math.max(0, Math.round(Number(totalXp) || 0));
-  let level = 1;
-  let nextLevelXp = 800 + (180 * level) + Math.floor(35 * (level ** 1.35));
-
-  while (remainingXp >= nextLevelXp) {
-    remainingXp -= nextLevelXp;
-    level += 1;
-    nextLevelXp = 800 + (180 * level) + Math.floor(35 * (level ** 1.35));
-  }
-
-  return {
-    level,
-    currentLevelXp: remainingXp,
-    nextLevelXp,
-    nextLevel: level + 1,
-  };
-}
-
-function buildProfileLevelState({ tierlist = null, profile = null } = {}) {
-  const axes = PROFILE_LEVEL_AXES.map((axisName) => tierlist?.[axisName]).filter(Boolean);
-  const letterXp = Math.round(axes.reduce((sum, axis) => {
-    const score = normalizeFiniteNumber(axis?.score);
-    if (!Number.isFinite(score)) return sum;
-    return sum + (score * getAxisConfidenceMultiplier(axis) * getAxisInfluenceMultiplier(axis) * 100);
-  }, 0));
+function getProfileWeeklyWindowCount(profile = null) {
   const weeklyRollups = Array.isArray(profile?.domains?.seasonArchive?.weeklyRollups)
     ? profile.domains.seasonArchive.weeklyRollups
     : [];
-  const weeklyXp = Math.round(weeklyRollups.reduce((sum, rollup) => {
-    const score = normalizeFiniteNumber(rollup?.composite?.score);
-    if (!Number.isFinite(score)) return sum;
-    const coveragePercent = normalizeFiniteNumber(rollup?.coverage?.coveragePercent, 100);
-    const coverageMultiplier = Math.max(0, Math.min(100, coveragePercent)) / 100;
-    return sum + (score * coverageMultiplier * 35);
-  }, 0));
-  const totalXp = Math.max(0, letterXp + weeklyXp);
-  const levelState = calculateProfileLevel(totalXp);
-  const progressPercent = levelState.nextLevelXp > 0
-    ? (levelState.currentLevelXp / levelState.nextLevelXp) * 100
-    : 0;
-
-  return {
-    ...levelState,
-    totalXp,
-    letterXp,
-    weeklyXp,
-    axisCount: axes.length,
-    weeklyWindowCount: weeklyRollups.length,
-    progressPercent,
-  };
+  return weeklyRollups.length;
 }
 
-function buildXpBar(percent = 0, size = 8) {
+function buildStatBar(percent = 0, size = 8) {
   const normalizedSize = Math.max(4, Number(size) || 8);
   const filled = Math.max(0, Math.min(normalizedSize, Math.round((Math.max(0, Math.min(100, Number(percent) || 0)) / 100) * normalizedSize)));
   return `${"▰".repeat(filled)}${"▱".repeat(normalizedSize - filled)}`;
 }
 
 function buildScoreBar(score = 0, size = 5) {
-  return buildXpBar(Math.max(0, Math.min(100, Number(score) || 0)), size);
+  return buildStatBar(Math.max(0, Math.min(100, Number(score) || 0)), size);
 }
 
-function formatProfileLevelLine(levelState = {}) {
-  return [
-    `🧬 Ур. ${formatNumber(levelState.level)}`,
-    buildXpBar(levelState.progressPercent),
-    `${formatNumber(levelState.currentLevelXp)}/${formatNumber(levelState.nextLevelXp)} XP`,
-  ].join(" ");
+function formatProfileRatingScore(score = null) {
+  const amount = normalizeFiniteNumber(score);
+  return Number.isFinite(amount) ? formatNumber(Math.round(amount)) : "—";
 }
 
-function formatProfileLevelSourceLine(levelState = {}) {
-  return `📚 XP: оценка +${formatNumber(levelState.letterXp)} · сезон +${formatNumber(levelState.weeklyXp)}`;
+function hasProfileRatingScore(score = null) {
+  if (score === null || score === undefined || score === "") return false;
+  return Number.isFinite(Number(score));
 }
 
-function buildProfileLevelAxisEntries(tierlist = null) {
-  return PROFILE_LEVEL_AXES.map((axisName) => {
+function formatProfileRatingRank(summary = {}) {
+  const rank = normalizeNullableFiniteNumber(summary?.rank);
+  const total = normalizeNullableFiniteNumber(summary?.total);
+  return Number.isFinite(rank) && Number.isFinite(total) && total > 0
+    ? ` · #${formatNumber(rank)}/${formatNumber(total)}`
+    : "";
+}
+
+function buildProfileRatingAxisEntries(tierlist = null) {
+  return PROFILE_RATING_AXES.map((axisName) => {
     const axis = tierlist?.[axisName];
     const score = normalizeFiniteNumber(axis?.score);
     if (!Number.isFinite(score)) return null;
-    const meta = PROFILE_LEVEL_AXIS_LABELS[axisName] || { emoji: "▫️", label: axisName };
+    const meta = PROFILE_RATING_AXIS_LABELS[axisName] || { emoji: "▫️", label: axisName };
     const confidenceState = cleanString(axis?.confidenceState, 40) || "heuristic";
     const debuffPercent = Math.max(0, Math.min(100, normalizeFiniteNumber(axis?.influenceDebuffPercent, 0)));
     const confidenceMultiplier = getAxisConfidenceMultiplier(axis);
     const influenceMultiplier = getAxisInfluenceMultiplier(axis);
     const effectiveWeightPercent = Math.round(confidenceMultiplier * influenceMultiplier * 100);
-    const adjustedXp = Math.round(score * getAxisConfidenceMultiplier(axis) * getAxisInfluenceMultiplier(axis) * 100);
+    const scoreContributionPercent = Math.round(score * confidenceMultiplier * influenceMultiplier) / 100;
     const place = axis?.place && typeof axis.place === "object" ? axis.place : {};
     return {
       axisName,
@@ -448,8 +408,7 @@ function buildProfileLevelAxisEntries(tierlist = null) {
       confidenceMultiplier,
       influenceMultiplier,
       effectiveWeightPercent,
-      adjustedXp,
-      axisXp: adjustedXp,
+      scoreContributionPercent,
       place: {
         rank: normalizeNullableFiniteNumber(place.rank),
         total: normalizeNullableFiniteNumber(place.total),
@@ -461,6 +420,7 @@ function buildProfileLevelAxisEntries(tierlist = null) {
 }
 
 function buildProfileGrade(score = null) {
+  if (score === null || score === undefined || score === "") return "N/A";
   const amount = Number(score);
   if (!Number.isFinite(amount)) return "N/A";
   if (amount >= 97) return "S+";
@@ -480,7 +440,7 @@ function buildProfileGrade(score = null) {
 }
 
 function buildProfileScoreAxes(tierlist = null) {
-  return buildProfileLevelAxisEntries(tierlist)
+  return buildProfileRatingAxisEntries(tierlist)
     .filter((entry) => (
       Number.isFinite(Number(entry.score))
         && cleanString(entry.grade, 10)
@@ -497,54 +457,90 @@ function formatProfileAxisRank(axis = {}) {
     : "";
 }
 
-function formatProfileScoreAxisLine(axis = {}) {
-  const weight = Math.max(0, Math.min(100, normalizeFiniteNumber(axis.effectiveWeightPercent, 0)));
+function getProfileAxisSourceLabel(axis = {}) {
   const age = normalizeNullableFiniteNumber(axis.dataAgeDays);
-  const ageText = axis.isHistoricalFallback === true && Number.isFinite(age)
-    ? `данные ${formatNumber(age)}д назад · `
-    : "";
-  return `${axis.label} ${axis.grade}${formatProfileAxisRank(axis)} · ${ageText}учёт ${formatNumber(weight)}% · +${formatNumber(axis.axisXp)} XP`;
+  if (axis.isHistoricalFallback === true) {
+    return Number.isFinite(age) ? `архив ${formatNumber(age)}д` : "архив";
+  }
+  const labels = {
+    form: "live 30д",
+    chat: "чат 30д",
+    kills: "proof",
+    stability: "сезон",
+    growth: "рост",
+    social: "связи",
+  };
+  return labels[axis.axisName] || "текущий расчёт";
+}
+
+function formatProfileRatingAxisLine(axis = {}) {
+  const weight = Math.max(0, Math.min(100, normalizeFiniteNumber(axis.effectiveWeightPercent, 0)));
+  return `${axis.label} ${axis.grade}${formatProfileAxisRank(axis)} · ${getProfileAxisSourceLabel(axis)} · учёт ${formatNumber(weight)}% ${buildStatBar(weight, 5)}`;
 }
 
 function buildProfileMiniRadarLine(axes = []) {
   const items = (Array.isArray(axes) ? axes : [])
     .slice()
-    .sort((left, right) => right.axisXp - left.axisXp)
+    .sort((left, right) => right.score - left.score)
     .slice(0, 4)
     .map((axis) => `${axis.label} ${buildScoreBar(axis.score, 4)}`);
   return items.length ? `Радар: ${items.join(" · ")}` : "";
 }
 
-function buildProfileScoreSummary({ levelState = {}, axes = [] } = {}) {
+function resolveProfileRatingPlace(axes = []) {
+  const rankedAxes = (Array.isArray(axes) ? axes : [])
+    .map((axis) => ({
+      rank: normalizeNullableFiniteNumber(axis?.place?.rank),
+      total: normalizeNullableFiniteNumber(axis?.place?.total),
+    }))
+    .filter((entry) => Number.isFinite(entry.rank) && Number.isFinite(entry.total) && entry.total > 1);
+  if (!rankedAxes.length) return { rank: null, total: null };
+
+  const total = Math.max(...rankedAxes.map((entry) => entry.total));
+  const averagePercentile = rankedAxes.reduce((sum, entry) => (
+    sum + ((entry.rank - 1) / Math.max(1, entry.total - 1))
+  ), 0) / rankedAxes.length;
+
+  return {
+    rank: Math.max(1, Math.min(total, Math.round((averagePercentile * (total - 1)) + 1))),
+    total,
+  };
+}
+
+function buildProfileRatingSummary({ axes = [] } = {}) {
   const availableAxes = Array.isArray(axes) ? axes : [];
   const weightSum = availableAxes.reduce((sum, axis) => sum + Math.max(0, normalizeFiniteNumber(axis.effectiveWeightPercent, 0)), 0);
   const score = weightSum > 0
     ? availableAxes.reduce((sum, axis) => sum + (Number(axis.score) * Math.max(0, normalizeFiniteNumber(axis.effectiveWeightPercent, 0))), 0) / weightSum
     : null;
-  const grade = buildProfileGrade(score);
-  const strongestAxis = availableAxes.slice().sort((left, right) => right.axisXp - left.axisXp)[0] || null;
+  const grade = Number.isFinite(Number(score)) ? buildProfileGrade(score) : "N/A";
+  const strongestAxis = availableAxes.slice().sort((left, right) => right.score - left.score)[0] || null;
   const radarLine = buildProfileMiniRadarLine(availableAxes);
+  const hiddenAxisCount = Math.max(0, PROFILE_RATING_AXES.length - availableAxes.length);
+  const liveWeightPercent = Math.round(Math.max(0, Math.min(100, weightSum / PROFILE_RATING_AXES.length)));
+  const place = resolveProfileRatingPlace(availableAxes);
   const lines = [
-    `Сила профиля: ${grade}`,
-    formatProfileLevelLine(levelState),
-    formatProfileLevelSourceLine(levelState),
+    Number.isFinite(score)
+      ? `Рейтинг профиля: ${grade} · ${formatProfileRatingScore(score)}/100${formatProfileRatingRank(place)}`
+      : "Рейтинг профиля откроется после активности, proof и связей.",
+    availableAxes.length ? `Учёт данных: ${formatNumber(liveWeightPercent)}% ${buildStatBar(liveWeightPercent, 6)}` : "",
     radarLine,
   ].filter(Boolean);
   if (strongestAxis) {
-    lines.push(`Главный вклад: ${strongestAxis.label} +${formatNumber(strongestAxis.axisXp)} XP`);
+    lines.push(`Сильная сторона: ${strongestAxis.label} ${strongestAxis.grade} · ${formatProfileRatingScore(strongestAxis.score)}/100`);
+  }
+  if (hiddenAxisCount > 0) {
+    lines.push(`Часть рейтинга откроется после активности, proof и связей: ${formatNumber(hiddenAxisCount)}/${formatNumber(PROFILE_RATING_AXES.length)}.`);
   }
 
   return {
     grade,
     score,
-    level: levelState.level,
-    currentLevelXp: levelState.currentLevelXp,
-    nextLevelXp: levelState.nextLevelXp,
-    totalXp: levelState.totalXp,
-    letterXp: levelState.letterXp,
-    weeklyXp: levelState.weeklyXp,
-    progressPercent: levelState.progressPercent,
+    rank: place.rank,
+    total: place.total,
+    liveWeightPercent,
     axisCount: availableAxes.length,
+    hiddenAxisCount,
     strongestAxis,
     radarLine,
     lines,
@@ -585,66 +581,12 @@ function hasProfileScoreSignals({
   return false;
 }
 
-function formatLevelAxis(entry = {}) {
-  return `${entry.emoji} ${entry.label} ${entry.grade} ${buildScoreBar(entry.score)} ${formatNumber(entry.score)}`;
-}
-
-function buildProfileLevelLines({ levelState = {}, tierlist = null } = {}) {
-  const lines = [
-    formatProfileLevelLine(levelState),
-    formatProfileLevelSourceLine(levelState),
-  ];
-  const axes = buildProfileLevelAxisEntries(tierlist);
-  if (!axes.length) {
-    lines.push("Оценка профиля откроется после данных по активности, proof и связям.");
-    return lines;
-  }
-
-  const strongest = axes.slice().sort((left, right) => right.adjustedXp - left.adjustedXp)[0];
-  const weakest = axes.slice().sort((left, right) => left.score - right.score)[0];
-  const currentCount = axes.filter((entry) => entry.isHistoricalFallback !== true).length;
-  const historicalCount = axes.filter((entry) => entry.isHistoricalFallback === true).length;
-  const maxDebuff = axes.reduce((max, entry) => Math.max(max, entry.debuffPercent), 0);
-
-  lines.push(`Сильнее всего даёт XP: ${formatLevelAxis(strongest)} • +${formatNumber(strongest.adjustedXp)} XP`);
-  lines.push(`Где тоньше: ${formatLevelAxis(weakest)} • оценка ${formatNumber(weakest.score)}`);
-  lines.push(`Оси: ${axes.map((entry) => formatLevelAxis(entry)).join(" • ")}`);
-  lines.push(
-    [
-      "Учёт оценки",
-      `текущий расчёт ${formatNumber(currentCount)}/${formatNumber(axes.length)}`,
-      historicalCount ? `старые данные ${formatNumber(historicalCount)}` : "",
-      maxDebuff > 0 ? `самый сильный штраф -${formatNumber(maxDebuff)}%` : "без штрафа",
-      `недель ${formatNumber(levelState.weeklyWindowCount)}`,
-    ].filter(Boolean).join(" • ")
-  );
-  return lines;
-}
-
-function buildTierlistBadgeLine(tierlist = null) {
-  const parts = PROFILE_LEVEL_AXES
-    .map((axisName) => {
-      const axis = tierlist?.[axisName];
-      const meta = PROFILE_LEVEL_AXIS_LABELS[axisName] || { label: axisName };
-      const grade = cleanString(axis?.grade, 10);
-      if (!grade || grade === "N/A") return `${meta.label} нет базы`;
-      const debuff = normalizeFiniteNumber(axis?.influenceDebuffPercent, 0);
-      const age = normalizeNullableFiniteNumber(axis?.dataAgeDays);
-      const suffix = axis?.isHistoricalFallback === true && Number.isFinite(age)
-        ? `данные ${formatNumber(age)}д назад`
-        : "текущий расчёт";
-      const weight = debuff > 0 ? `, вес -${formatNumber(debuff)}%` : "";
-      return `${meta.label} ${grade} (${suffix}${weight})`;
-    })
-    .filter(Boolean);
-  return parts.length ? `🏷️ Оценка профиля: ${parts.join(" • ")}` : "🏷️ Оценка профиля: нет базы";
-}
-
-function buildProfileTrustBadges({ tierlist = null, levelState = {}, robloxUsability = {}, progress = null } = {}) {
-  const axes = PROFILE_LEVEL_AXES.map((axisName) => tierlist?.[axisName]).filter(Boolean);
+function buildProfileTrustBadges({ tierlist = null, weeklyWindowCount = 0, robloxUsability = {}, progress = null } = {}) {
+  const axes = PROFILE_RATING_AXES.map((axisName) => tierlist?.[axisName]).filter(Boolean);
   const reliableAxes = axes.filter((axis) => normalizeTrustState(axis?.confidenceState || axis?.freshnessState) === "reliable").length;
   const unavailableAxes = axes.filter((axis) => normalizeTrustState(axis?.confidenceState || axis?.freshnessState) === "unavailable").length;
   const proofState = progress?.proofGap?.freshnessState || progress?.proofGap?.confidenceState || "unavailable";
+  const normalizedWeeklyWindowCount = Math.max(0, normalizeFiniteNumber(weeklyWindowCount, 0));
   return [
     {
       key: "profileScore",
@@ -661,8 +603,8 @@ function buildProfileTrustBadges({ tierlist = null, levelState = {}, robloxUsabi
     {
       key: "weekly",
       label: "Weekly",
-      state: Number(levelState.weeklyWindowCount) >= 3 ? "reliable" : (Number(levelState.weeklyWindowCount) > 0 ? "partial" : "unavailable"),
-      text: Number(levelState.weeklyWindowCount) > 0 ? `${formatNumber(levelState.weeklyWindowCount)} окон` : "нет базы",
+      state: normalizedWeeklyWindowCount >= 3 ? "reliable" : (normalizedWeeklyWindowCount > 0 ? "partial" : "unavailable"),
+      text: normalizedWeeklyWindowCount > 0 ? `${formatNumber(normalizedWeeklyWindowCount)} окон` : "нет базы",
     },
     {
       key: "proof",
@@ -687,11 +629,10 @@ function buildHeroSummary({
   heroTitle = "Игровое досье",
   userId = "",
   displayName = "",
-  levelState = {},
   trustBadges = [],
   mainCharacterLabels = [],
   mainStandings = [],
-  profileScoreSummary = null,
+  profileRatingSummary = null,
   verifiedRobloxLabel = "",
   robloxSummary = {},
   robloxDisplayState = null,
@@ -707,7 +648,8 @@ function buildHeroSummary({
     .slice(0, 2)
     .join(", ") || "мейны не выбраны";
   const activityRole = cleanString(activitySummary?.appliedActivityRoleKey || activitySummary?.desiredActivityRoleKey, 80) || "роль не накоплена";
-  const killPlace = Number.isFinite(Number(standing?.rank)) && Number.isFinite(Number(standing?.totalVerified))
+  const killPlace = Number.isFinite(Number(standing?.rank)) && Number(standing.rank) > 0
+    && Number.isFinite(Number(standing?.totalVerified)) && Number(standing.totalVerified) > 0
     ? `kills #${formatNumber(standing.rank)}/${formatNumber(standing.totalVerified)}`
     : "";
   const activityPlaceText = formatPlace(activityPlace);
@@ -722,16 +664,21 @@ function buildHeroSummary({
     ? `Roblox ${verifiedRobloxLabel}`
     : (robloxDisplayState?.readinessLabel || formatRobloxReadiness(robloxSummary));
   const killText = Number.isFinite(approvedKills) ? `${formatNumber(approvedKills)} kills` : "kills ждут proof";
-  const scoreGrade = cleanString(profileScoreSummary?.grade, 10) || "N/A";
+  const scoreGrade = cleanString(profileRatingSummary?.grade, 10) || "N/A";
+  const scoreValue = formatProfileRatingScore(profileRatingSummary?.score);
+  const ratingRank = formatProfileRatingRank(profileRatingSummary);
   const warningLine = (() => {
     if (robloxDisplayState?.isLinked && !robloxDisplayState?.isTrackable) {
       return "⚠️ Roblox привязан, но JJS-активность не обновляется.";
     }
     if (proofGap && Number(proofGap.influenceDebuffPercent) >= 55) {
-      return "⚠️ Proof сильно отстал: вклад kills/роста режется.";
+      return "⚠️ Proof отстал: килы и рост учитываются слабее.";
     }
-    if (Number(profileScoreSummary?.axisCount) > 0 && Number(profileScoreSummary.axisCount) < 3) {
-      return "⚠️ Оценка станет точнее после активности, proof и связей.";
+    if (Number(profileRatingSummary?.axisCount) === 0) {
+      return "⚠️ Рейтинг откроется после активности, proof и связей.";
+    }
+    if (Number(profileRatingSummary?.axisCount) > 0 && Number(profileRatingSummary.axisCount) < 3) {
+      return "⚠️ Рейтинг станет точнее после активности, proof и связей.";
     }
     return "";
   })();
@@ -750,7 +697,9 @@ function buildHeroSummary({
     title: heroTitle,
     lines: [
       `👤 ${identityText}`,
-      `🔥 Сила профиля ${scoreGrade} · ${formatProfileLevelLine(levelState)}`,
+      hasProfileRatingScore(profileRatingSummary?.score)
+        ? `🔥 Рейтинг ${scoreGrade} · ${scoreValue}/100${ratingRank}`
+        : "🔥 Рейтинг профиля откроется после данных",
       placesText ? `🏆 Места: ${placesText}` : `🏆 ${killText} · ${activityRole}`,
       warningLine,
     ].filter(Boolean),
@@ -780,6 +729,54 @@ function formatPlace(place = {}) {
   return Number.isFinite(Number(place?.rank)) && Number.isFinite(Number(place?.total)) && Number(place.total) > 0
     ? `#${formatNumber(place.rank)}/${formatNumber(place.total)}`
     : "N/A";
+}
+
+function buildProfileProofGapBlock(proofGap = null) {
+  const state = proofGap && typeof proofGap === "object" ? proofGap : null;
+  if (!state) return null;
+
+  const debuff = Math.max(0, Math.min(90, normalizeFiniteNumber(state.influenceDebuffPercent, 0)));
+  const weight = Math.max(0, 100 - debuff);
+  const currentApprovedKills = normalizeNullableFiniteNumber(state.currentApprovedKills);
+  const latestApprovedKills = normalizeNullableFiniteNumber(state.latestApprovedKills);
+
+  if (!state.hasProof) {
+    if (!Number.isFinite(currentApprovedKills)) return null;
+    return {
+      title: "🧾 Proof",
+      lines: [
+        `Proof ждёт первый approved-срез · текущие kills ${formatNumber(currentApprovedKills)}`,
+        `Учёт kills: ${formatNumber(weight)}% ${buildStatBar(weight, 5)}`,
+      ],
+    };
+  }
+
+  const ageText = Number.isFinite(Number(state.hoursSinceLastApprovedKillsUpdate))
+    ? `${formatHours(Number(state.hoursSinceLastApprovedKillsUpdate) / 24)} д назад`
+    : "возраст proof неизвестен";
+  const verdict = debuff <= 0
+    ? "Proof нормальный"
+    : (debuff >= 55 ? "Proof отстал" : "Proof частично отстал");
+  const proofLine = [
+    state.reviewedAt ? formatDateTime(state.reviewedAt) : null,
+    ageText,
+    Number.isFinite(latestApprovedKills) ? `approved ${formatNumber(latestApprovedKills)}` : null,
+    Number.isFinite(currentApprovedKills) && Number.isFinite(latestApprovedKills) && currentApprovedKills !== latestApprovedKills
+      ? `сейчас ${formatNumber(currentApprovedKills)} (${formatSignedNumber(currentApprovedKills - latestApprovedKills)})`
+      : null,
+  ].filter(Boolean).join(" · ");
+  const jjsLine = state.hasReliableJjsSinceLastApproved && Number.isFinite(Number(state.jjsHoursSinceLastApprovedKillsUpdate))
+    ? `После proof: ${formatHours(state.jjsHoursSinceLastApprovedKillsUpdate)} ч JJS`
+    : "После proof: JJS-разрыв нельзя точно измерить";
+
+  return {
+    title: "🧾 Proof",
+    lines: [
+      `${verdict} · учёт kills ${formatNumber(weight)}% ${buildStatBar(weight, 5)}`,
+      proofLine ? `Срез: ${proofLine}` : "",
+      jjsLine,
+    ].filter(Boolean),
+  };
 }
 
 function collectPopulationActivityScores(populationProfiles = []) {
@@ -890,14 +887,17 @@ function formatMainStandingLine(standing = {}) {
   const parts = [];
   if (standing.roleMention) parts.push(standing.roleMention);
   if (standing.available) {
-    parts.push(`#${formatNumber(standing.rank)}/${formatNumber(standing.total)} среди ${label}-main`);
+    const placePower = Number(standing.total) > 0
+      ? ((Number(standing.total) - Number(standing.rank) + 1) / Number(standing.total)) * 100
+      : 0;
+    parts.push(`#${formatNumber(standing.rank)}/${formatNumber(standing.total)} среди ${label}-main ${buildStatBar(placePower, 4)}`);
     if (standing.isLeader) {
-      parts.push("лидер мейна");
+      parts.push("👑 лидер мейна");
     } else if (Number.isFinite(Number(standing.killsToNext)) && Number.isFinite(Number(standing.nextRank))) {
-      parts.push(`+${formatNumber(standing.killsToNext)} kills до #${formatNumber(standing.nextRank)}`);
+      parts.push(`до апа: +${formatNumber(standing.killsToNext)} kills до #${formatNumber(standing.nextRank)}`);
     }
   }
-  return `${label}: ${parts.length ? parts.join(" · ") : "роль/место появятся после рейтинга мейнов"}`;
+  return `${label}: ${parts.length ? parts.join(" · ") : "место откроется после рейтинга мейнов"}`;
 }
 
 function formatMainStandingShort(standing = {}) {
@@ -1206,117 +1206,6 @@ function mergeProfileLinks(guideLinks = [], wikiLinks = []) {
   }
 
   return merged;
-}
-
-function computeGuideCoverage(mainCharacterLabels = [], comboLinks = []) {
-  const mains = (Array.isArray(mainCharacterLabels) ? mainCharacterLabels : [])
-    .map((entry) => cleanString(entry, 80))
-    .filter(Boolean);
-  const coveredMainGuideKeys = new Set(
-    (Array.isArray(comboLinks) ? comboLinks : [])
-      .filter((entry) => entry?.kind === "main")
-      .map((entry) => normalizeComboLookupKey(entry?.mainLabel || entry?.label))
-      .filter(Boolean)
-  );
-  const coveredMainWikiKeys = new Set(
-    (Array.isArray(comboLinks) ? comboLinks : [])
-      .filter((entry) => entry?.kind === "wiki")
-      .map((entry) => normalizeComboLookupKey(entry?.mainLabel || entry?.label))
-      .filter(Boolean)
-  );
-
-  return {
-    mainCount: mains.length,
-    coveredMainCount: mains.filter((entry) => coveredMainGuideKeys.has(normalizeComboLookupKey(entry))).length,
-    coveredMainWikiCount: mains.filter((entry) => coveredMainWikiKeys.has(normalizeComboLookupKey(entry))).length,
-    hasGeneralGuide: (Array.isArray(comboLinks) ? comboLinks : []).some((entry) => entry?.kind === "general"),
-  };
-}
-
-function buildMainAndGuideLines({
-  mainCharacterIds = [],
-  mainCharacterLabels = [],
-  comboLinks = [],
-  characterStats = [],
-  mainStandings = [],
-  hiddenRoleIds = new Set(),
-  tierlistMainName = "",
-  accessGrantedAt = null,
-  nonGgsAccessGrantedAt = null,
-} = {}) {
-  const lines = [];
-  const mains = (Array.isArray(mainCharacterLabels) ? mainCharacterLabels : [])
-    .map((entry) => cleanString(entry, 80))
-    .filter(Boolean);
-  const mainLookup = new Set(mains.map((entry) => normalizeComboLookupKey(entry)));
-  const guideCoverage = computeGuideCoverage(mainCharacterLabels, comboLinks);
-  const mainGuideLookup = new Set(
-    (Array.isArray(comboLinks) ? comboLinks : [])
-      .filter((entry) => entry?.kind === "main")
-      .map((entry) => normalizeComboLookupKey(entry?.mainLabel || entry?.label))
-      .filter(Boolean)
-  );
-  const mainWikiLookup = new Set(
-    (Array.isArray(comboLinks) ? comboLinks : [])
-      .filter((entry) => entry?.kind === "wiki")
-      .map((entry) => normalizeComboLookupKey(entry?.mainLabel || entry?.label))
-      .filter(Boolean)
-  );
-  const normalizedStats = normalizeCharacterStats(characterStats);
-
-  if (mains.length) {
-    lines.push(`Основные персонажи: ${mains.join(", ")}`);
-    lines.push(`Гайды по мейнам: ${guideCoverage.coveredMainCount}/${mains.length}`);
-    if (guideCoverage.coveredMainWikiCount) {
-      lines.push(`JJS wiki по мейнам: ${guideCoverage.coveredMainWikiCount}/${mains.length}`);
-    }
-    for (let index = 0; index < mains.length; index += 1) {
-      const mainLabel = mains[index];
-      const mainId = Array.isArray(mainCharacterIds) ? mainCharacterIds[index] : "";
-      const stat = findCharacterStat({ id: mainId, label: mainLabel, stats: normalizedStats });
-      const guideBits = [
-        mainGuideLookup.has(normalizeComboLookupKey(mainLabel)) ? "гайд доступен по кнопке" : "гайд пока не привязан",
-      ];
-      if (mainWikiLookup.has(normalizeComboLookupKey(mainLabel))) {
-        guideBits.push("JJS wiki доступна по кнопке");
-      }
-      if (stat?.roleId && !hiddenRoleIds.has(stat.roleId)) {
-        guideBits.push(`роль <@&${stat.roleId}>`);
-      }
-      const standingForMain = (Array.isArray(mainStandings) ? mainStandings : []).find((entry) => (
-        normalizeComboLookupKey(entry?.id) === normalizeComboLookupKey(mainId)
-          || normalizeComboLookupKey(entry?.label) === normalizeComboLookupKey(mainLabel)
-      ));
-      if (standingForMain?.available) {
-        guideBits.push(formatMainStandingShort(standingForMain));
-      }
-      lines.push(`${index + 1}. ${mainLabel} — ${guideBits.join(" • ")}`);
-    }
-  } else {
-    lines.push("Мейны пока не указаны.");
-  }
-
-  const normalizedTierlistMainName = cleanString(tierlistMainName, 120);
-  if (normalizedTierlistMainName) {
-    lines.push(
-      `Основной tierlist-пик: ${normalizedTierlistMainName}${mainLookup.has(normalizeComboLookupKey(normalizedTierlistMainName)) ? " • входит в список мейнов" : ""}`
-    );
-  }
-
-  if (guideCoverage.hasGeneralGuide) {
-    lines.push("Общие техи: доступны по кнопке.");
-  } else if (mains.length) {
-    lines.push("Общие техи пока не привязаны.");
-  }
-
-  if (accessGrantedAt) {
-    lines.push(`JJS доступ: ${formatDateTime(accessGrantedAt)}`);
-  }
-  if (nonGgsAccessGrantedAt) {
-    lines.push(`Non-JJS доступ: ${formatDateTime(nonGgsAccessGrantedAt)}`);
-  }
-
-  return lines;
 }
 
 function buildOverviewStatusLines({
@@ -1792,11 +1681,8 @@ function buildProfileReadModel(options = {}) {
     isSelf: options.isSelf,
     now: options.now,
   });
-  const profileLevelState = buildProfileLevelState({
-    tierlist: synergy?.viewerTierlist,
-    profile,
-  });
-  const profileScoreAxes = hasProfileScoreSignals({
+  const weeklyWindowCount = getProfileWeeklyWindowCount(profile);
+  const profileRatingAxes = hasProfileScoreSignals({
     profile,
     approvedKills,
     activitySummary,
@@ -1804,17 +1690,15 @@ function buildProfileReadModel(options = {}) {
     voiceSummary,
     progressSummary,
   }) ? buildProfileScoreAxes(synergy?.viewerTierlist) : [];
-  const profileScoreSummary = buildProfileScoreSummary({
-    levelState: profileLevelState,
-    axes: profileScoreAxes,
+  const profileRatingSummary = buildProfileRatingSummary({
+    axes: profileRatingAxes,
   });
-  const profileScoreLines = [
-    ...profileScoreSummary.lines,
-    ...(profileScoreAxes.length
-      ? profileScoreAxes.map((entry) => formatProfileScoreAxisLine(entry))
+  const profileRatingLines = [
+    ...profileRatingSummary.lines,
+    ...(profileRatingAxes.length
+      ? profileRatingAxes.map((entry) => formatProfileRatingAxisLine(entry))
       : ["Оценка профиля откроется после данных по активности, proof и связям."]),
   ];
-  const profileLevelLines = profileScoreLines;
   const mainStandings = buildMainStandings({
     approvedEntries,
     userId,
@@ -1856,7 +1740,7 @@ function buildProfileReadModel(options = {}) {
     : defaultHeroLines;
   const trustBadges = buildProfileTrustBadges({
     tierlist: synergy?.viewerTierlist,
-    levelState: profileLevelState,
+    weeklyWindowCount,
     robloxUsability,
     progress: synergy?.progress,
   });
@@ -1864,11 +1748,10 @@ function buildProfileReadModel(options = {}) {
     heroTitle,
     userId,
     displayName,
-    levelState: profileLevelState,
     trustBadges,
     mainCharacterLabels,
     mainStandings,
-    profileScoreSummary,
+    profileRatingSummary,
     verifiedRobloxLabel,
     robloxSummary,
     robloxDisplayState,
@@ -1915,7 +1798,18 @@ function buildProfileReadModel(options = {}) {
     ? (robloxDisplayState.isTrackable ? "Статус: Roblox/JJS трекается" : "Статус: Roblox привязан, JJS не обновляется")
     : "Статус: Roblox не привязан");
   if (modeParts.length) {
+    const totalMix = [jjsHours30d, Number.isFinite(chatMessages30d) ? chatMessages30d / 30 : null, voiceHours30d]
+      .filter((entry) => Number.isFinite(Number(entry)) && Number(entry) > 0)
+      .reduce((sum, entry) => sum + Number(entry), 0);
+    const mixBar = totalMix > 0
+      ? [
+        `JJS ${buildStatBar((Number.isFinite(jjsHours30d) ? jjsHours30d : 0) / totalMix * 100, 3)}`,
+        `чат ${buildStatBar((Number.isFinite(chatMessages30d) ? chatMessages30d / 30 : 0) / totalMix * 100, 3)}`,
+        `voice ${buildStatBar((Number.isFinite(voiceHours30d) ? voiceHours30d : 0) / totalMix * 100, 3)}`,
+      ].join(" · ")
+      : "";
     activityLines.push(`Режим: ${modeParts.join(" · ")}${dominantActivity?.value >= 0 ? ` → больше ${dominantActivity.label}` : ""}`);
+    if (mixBar) activityLines.push(`Микс: ${mixBar}`);
   } else {
     activityLines.push("Режим откроется после JJS, чата или voice.");
   }
@@ -2101,20 +1995,7 @@ function buildProfileReadModel(options = {}) {
     }
   }
 
-  const mainAndGuideLines = buildMainAndGuideLines({
-    mainCharacterIds,
-    mainCharacterLabels,
-    comboLinks,
-    characterStats: options.characterStats,
-    mainStandings,
-    hiddenRoleIds,
-    tierlistMainName: tierlistSummary.mainName,
-    accessGrantedAt: profile?.accessGrantedAt,
-    nonGgsAccessGrantedAt: profile?.nonGgsAccessGrantedAt,
-  });
-
   const socialPeerLines = buildTopCoPlayPeerLines(robloxSummary.topCoPlayPeers, 3);
-  const weeklyWindowCount = normalizeFiniteNumber(profileLevelState.weeklyWindowCount, 0);
   const hiddenSectionReasons = {
     season: weeklyWindowCount >= 3
       ? ""
@@ -2152,43 +2033,32 @@ function buildProfileReadModel(options = {}) {
     ...includeProfileBlock(synergy?.blocks?.socialMap, 3),
     ...includeProfileBlock(synergy?.blocks?.voiceGameOverlap, 3),
   ];
+  const proofGapBlock = buildProfileProofGapBlock(synergy?.progress?.proofGap);
+  const compactMainStanding = mainStandings.find((entry) => entry.available);
+  const compactModeLine = activityLines.find((line) => /^Режим:/.test(line)) || "Режим откроется после JJS, чата или voice.";
   const compactCardLines = [
-    `Игрок: <@${userId}> · Сила профиля ${profileScoreSummary.grade} · Ур. ${formatNumber(profileScoreSummary.level)}`,
-    `Roblox: ${robloxOverviewLabel}`,
-    standing.rank
-      ? `Kills: #${formatNumber(standing.rank)}/${formatNumber(standing.totalVerified)} · ${Number.isFinite(approvedKills) ? formatNumber(approvedKills) : "—"}`
-      : `Kills: ${Number.isFinite(approvedKills) ? formatNumber(approvedKills) : "—"}`,
-    mainStandings.find((entry) => entry.available)
-      ? `Main: ${formatMainStandingShort(mainStandings.find((entry) => entry.available))}`
+    hasProfileRatingScore(profileRatingSummary.score)
+      ? `🔥 Рейтинг ${profileRatingSummary.grade} · ${formatProfileRatingScore(profileRatingSummary.score)}/100`
+      : `🔥 Рейтинг профиля откроется после данных`,
+    compactMainStanding
+      ? `Main: ${formatMainStandingShort(compactMainStanding)}`
       : `Мейны: ${mainCharacterLabels.length ? mainCharacterLabels.join(", ") : "—"}`,
-    Number.isFinite(Number(currentElo)) || Number.isFinite(Number(currentEloTier))
-      ? `ELO: ${[Number.isFinite(Number(currentElo)) ? formatNumber(currentElo) : "", Number.isFinite(Number(currentEloTier)) ? `tier ${formatNumber(currentEloTier)}` : ""].filter(Boolean).join(" / ")}`
-      : (eloSubmissionStatus ? `ELO: статус ${cleanString(eloSubmissionStatus, 80)}` : "ELO: —"),
+    standing.rank
+      ? `Kills #${formatNumber(standing.rank)}/${formatNumber(standing.totalVerified)} · Roblox ${robloxOverviewLabel}`
+      : `Kills ${Number.isFinite(approvedKills) ? formatNumber(approvedKills) : "—"} · Roblox ${robloxOverviewLabel}`,
+    compactModeLine,
   ];
 
   const compactSections = [
     { title: displayMode === "compact-card" && Boolean(options.isSelf) ? "Моя карточка" : "Карточка", lines: compactCardLines },
-    { title: "Готовность", lines: overviewStatusLines },
   ];
-
-  if (Number.isFinite(Number(currentElo)) || Number.isFinite(Number(currentEloTier)) || eloSubmissionStatus || tierlistSummary.hasSubmission === true || tierlistSummary.hasSubmission === false) {
-    compactSections.push({ title: "ELO и Tierlist", lines: rankingLines });
-  }
-
-  if (hasVerifiedRoblox || robloxSummary.verificationStatus) {
-    compactSections.push({
-      title: "Roblox и соц",
-      lines: robloxLines.slice(0, 6),
-    });
-  }
 
   const sections = {
     overview: [
       { title: "⚡ Главное", lines: overviewLines.slice(0, 4) },
-      { title: "🔥 Оценка профиля", lines: profileScoreLines },
+      { title: "🔥 Оценка профиля", lines: profileRatingLines },
       { title: "🎭 Мейны и места", lines: roleShowcaseLines },
       ...(synergy?.blocks?.viewerMainCore ? [synergy.blocks.viewerMainCore] : []),
-      { title: "📚 Мейны", lines: mainAndGuideLines.slice(0, 5) },
     ],
     activity: [
       { title: "📊 Итог активности", lines: activityLines.slice(0, 4) },
@@ -2203,12 +2073,11 @@ function buildProfileReadModel(options = {}) {
       { title: "📬 Заявки и проверки", lines: submissionLines },
       { title: "📊 ELO и Tierlist", lines: rankingLines },
       ...(synergy?.blocks?.antiteamSupport ? [synergy.blocks.antiteamSupport] : []),
-      ...(synergy?.blocks?.proofGap ? [synergy.blocks.proofGap] : []),
+      ...(proofGapBlock ? [proofGapBlock] : []),
     ],
     social: [
       { title: "🤝 Roblox и соц", lines: robloxLines.slice(0, 5) },
       ...socialBlocks,
-      { title: "📚 Мейны и гайды", lines: mainAndGuideLines },
     ],
     compact: compactSections,
   };
@@ -2227,10 +2096,8 @@ function buildProfileReadModel(options = {}) {
     heroLines,
     heroSummary,
     identityMediaItems,
-    profileLevelState,
-    profileLevelLines,
-    profileScoreSummary,
-    profileScoreAxes,
+    profileRatingSummary,
+    profileRatingAxes,
     roleShowcaseLines,
     mainStandings,
     hiddenSectionReasons,
