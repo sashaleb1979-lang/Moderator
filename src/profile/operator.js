@@ -196,6 +196,12 @@ function createProfileOperator(options = {}) {
       hiddenProfileRoleIds: options.hiddenProfileRoleIds,
       tierlistStatsUrl,
       characterStats,
+      robloxJobState: typeof options.getRobloxJobState === "function"
+        ? options.getRobloxJobState({ userId: normalizedTargetUserId })
+        : null,
+      robloxPlaytimePollMinutes: typeof options.getRobloxPlaytimePollMinutes === "function"
+        ? options.getRobloxPlaytimePollMinutes()
+        : null,
       profile: targetProfile,
       pendingSubmission: typeof options.getPendingSubmissionForUser === "function"
         ? options.getPendingSubmissionForUser(normalizedTargetUserId)

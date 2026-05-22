@@ -993,7 +993,17 @@ const serializedDbRunnerOptions = {
 const runSerializedDbMutation = createSerializedMutationRunner(serializedDbRunnerOptions);
 const runSerializedDbTask = createSerializedTaskRunner(serializedDbRunnerOptions);
 const robloxRuntimeState = createRobloxRuntimeState();
-const robloxPanelTelemetry = createRobloxPanelTelemetry({ now: nowIso });
+const robloxPanelTelemetry = createRobloxPanelTelemetry({
+  now: nowIso,
+  persistJobState(kind, state) {
+    db.sot ||= {};
+    db.sot.integrations ||= {};
+    db.sot.integrations.roblox ||= {};
+    db.sot.integrations.roblox.jobs ||= {};
+    db.sot.integrations.roblox.jobs[kind] = state;
+    saveDb();
+  },
+});
 let readyClient = null;
 let robloxIntervalHandles = [];
 
@@ -5617,31 +5627,54 @@ function getProfileOperator() {
     getTierlistProfile: (userId) => getDormantTierlistProfileSnapshot(db, userId),
     getTierlistStatsUrl: () => getProfileTierlistStatsUrl(),
     getCharacterStatsContext: () => liveCharacterStatsContextCache.value || null,
+    getRobloxJobState: () => db.sot?.integrations?.roblox?.jobs?.playtimeSync || null,
+    getRobloxPlaytimePollMinutes: () => getEffectiveRobloxConfig().playtimePollMinutes,
     getComboGuideState: () => db.comboGuide,
     getCharacterCatalog: () => getCharacterCatalog(),
     buildProfileRobloxBindModal: ({ initialValue = "" } = {}) => buildRobloxUsernameModal("profile_bind_roblox_modal", initialValue),
     resolveRobloxUserInput: (value) => resolveRobloxUserByIdentityInput(value),
-    writeProfileRobloxBinding: (userId, robloxUser, context = {}) => {
+    writeProfileRobloxBinding: async (userId, robloxUser, context = {}) => {
       db.profiles ||= {};
       const previousProfile = cloneJsonValue(db.profiles?.[userId]);
       const hadProfile = Boolean(db.profiles?.[userId]);
+      const pending = getPendingSubmissionForUser(userId);
+      const previousPending = pending?.id ? cloneJsonValue(pending) : null;
       const updatedAt = nowIso();
+      let bindingResult = null;
 
       try {
         const profile = getProfile(userId);
         profile.displayName ||= context.member?.displayName || context.user?.globalName || context.user?.username;
         profile.username ||= context.user?.username || "";
 
-        writeCanonicalRobloxBinding(userId, profile, robloxUser, {
+        bindingResult = writeCanonicalRobloxBinding(userId, profile, robloxUser, {
           verificationStatus: "verified",
           verifiedAt: updatedAt,
           updatedAt,
           source: context.source || "profile_button",
         });
+        if (pending?.id && bindingResult?.snapshot) {
+          pending.robloxUsername = bindingResult.snapshot.username || "";
+          pending.robloxUserId = bindingResult.snapshot.userId || "";
+          pending.robloxDisplayName = bindingResult.snapshot.displayName || "";
+        }
         saveDb();
       } catch (error) {
         restoreRecordValue(db.profiles, userId, previousProfile, hadProfile);
+        if (pending?.id) {
+          restoreRecordValue(db.submissions, pending.id, previousPending, true);
+        }
         throw error;
+      }
+
+      if (pending?.id && bindingResult?.snapshot) {
+        const reviewMessage = await fetchReviewMessage(client, pending).catch(() => null);
+        if (reviewMessage) {
+          await reviewMessage.edit({
+            embeds: [buildReviewEmbed(pending, "pending", [{ name: "Изменено", value: "Игрок обновил Roblox через профиль", inline: false }])],
+            components: [buildReviewButtons(pending.id)],
+          }).catch(() => {});
+        }
       }
     },
     logProfileRobloxBinding: ({ userId, robloxUser }) => logLine(client, `ROBLOX BIND: <@${userId}> -> ${robloxUser.name} (${robloxUser.id}) via helper/profile`),
@@ -20688,6 +20721,27 @@ client.on("interactionCreate", async (interaction) => {
           console.warn(`Roblox update log failed for ${pending.id}: ${formatRuntimeError(error)}`);
         });
         await interaction.editReply(`Roblox username подтверждён: **${robloxUser.name}** (ID ${robloxUser.id}). Pending-заявка обновлена.`);
+        return;
+      }
+
+      const previousProfile = cloneJsonValue(db.profiles?.[interaction.user.id]);
+      const hadProfile = Boolean(db.profiles?.[interaction.user.id]);
+      const profileUpdatedAt = nowIso();
+      try {
+        const profile = getProfile(interaction.user.id);
+        profile.displayName ||= interaction.member?.displayName || interaction.user?.globalName || interaction.user?.username;
+        profile.username ||= interaction.user?.username || "";
+        profile.updatedAt = profileUpdatedAt;
+        writeCanonicalRobloxBinding(interaction.user.id, profile, robloxUser, {
+          verificationStatus: "verified",
+          verifiedAt: profileUpdatedAt,
+          updatedAt: profileUpdatedAt,
+          source: "onboarding_identity",
+        });
+        saveDb();
+      } catch (error) {
+        restoreRecordValue(db.profiles, interaction.user.id, previousProfile, hadProfile);
+        await interaction.editReply(String(error?.message || error || "Roblox проверен, но не удалось сохранить его в профиль."));
         return;
       }
 

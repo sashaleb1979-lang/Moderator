@@ -2408,8 +2408,8 @@ function buildActivityMixState({ activitySummary = {}, robloxSummary = {}, voice
   const messages30d = normalizeNullableFiniteNumber(activitySummary?.messages30d);
   const jjsMinutes30d = normalizeNullableFiniteNumber(robloxSummary?.jjsMinutes30d);
   const voiceSeconds30d = normalizeNullableFiniteNumber(
-    voiceSummary?.voiceDurationSeconds30d
-      ?? activitySummary?.voiceDurationSeconds30d
+    activitySummary?.voiceDurationSeconds30d
+      ?? voiceSummary?.voiceDurationSeconds30d
       ?? (Number.isFinite(Number(activitySummary?.effectiveVoiceHours30d)) ? Number(activitySummary.effectiveVoiceHours30d) * 3600 : null)
   );
   const chatScore = Number.isFinite(messages30d) ? Math.min(1.5, Math.max(0, messages30d) / 300) : null;
@@ -3898,7 +3898,7 @@ function buildActiveVoiceShare(activitySummary = {}, voiceSummary = {}) {
   }
 
   const activeVoiceSeconds = normalizeNullableFiniteNumber(activitySummary?.activeVoiceDurationSeconds30d);
-  const voiceSeconds = normalizeNullableFiniteNumber(voiceSummary?.voiceDurationSeconds30d ?? activitySummary?.voiceDurationSeconds30d);
+  const voiceSeconds = normalizeNullableFiniteNumber(activitySummary?.voiceDurationSeconds30d ?? voiceSummary?.voiceDurationSeconds30d);
   if (Number.isFinite(voiceSeconds) && voiceSeconds > 0 && Number.isFinite(activeVoiceSeconds)) {
     return clampScore((activeVoiceSeconds / voiceSeconds) * 100);
   }
@@ -3935,9 +3935,9 @@ function buildRelativeComponentRawValues({
 } = {}) {
   const antiteamSupport = resolveAntiteamSupportSummary(supportSummary);
   return {
-    voiceHours30d: secondsToHours(voiceSummary?.voiceDurationSeconds30d),
+    voiceHours30d: secondsToHours(activitySummary?.voiceDurationSeconds30d ?? voiceSummary?.voiceDurationSeconds30d),
     activeVoiceShare30d: buildActiveVoiceShare(activitySummary, voiceSummary),
-    voiceSessions30d: normalizeNullableFiniteNumber(voiceSummary?.sessionCount30d ?? activitySummary?.voiceSessions30d),
+    voiceSessions30d: normalizeNullableFiniteNumber(activitySummary?.voiceSessions30d ?? voiceSummary?.sessionCount30d),
     discordSessions30d: normalizeNullableFiniteNumber(activitySummary?.sessions30d),
     discordMessages30d: normalizeNullableFiniteNumber(activitySummary?.messages30d),
     jjsHours30d: minutesToHours(robloxSummary?.jjsMinutes30d),
@@ -3956,7 +3956,7 @@ const RELATIVE_COMPONENT_DEFINITIONS = Object.freeze([
     key: "voiceHours30d",
     snapshotAxisKey: "voice_hours_30d",
     label: "voice hours",
-    source: "profile.summary.voice.voiceDurationSeconds30d",
+    source: "profile.summary.activity.voiceDurationSeconds30d",
     format: (value) => `${formatHours(value)} ч`,
   },
   {
@@ -3970,7 +3970,7 @@ const RELATIVE_COMPONENT_DEFINITIONS = Object.freeze([
     key: "voiceSessions30d",
     snapshotAxisKey: "voice_sessions_30d",
     label: "voice sessions",
-    source: "profile.summary.voice.sessionCount30d",
+    source: "profile.summary.activity.voiceSessions30d",
     format: (value) => formatNumber(value),
   },
   {

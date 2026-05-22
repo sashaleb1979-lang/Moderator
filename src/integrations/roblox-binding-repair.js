@@ -5,6 +5,7 @@ const { buildRobloxCleanupAuditRecord } = require("./roblox-cleanup-audit");
 const {
   applyRobloxAccountSnapshot,
   ensureSharedProfile,
+  normalizeRobloxDomainState,
 } = require("./shared-profile");
 
 const ROBLOX_CLEANUP_TRAIL_VERSION = 1;
@@ -12,6 +13,8 @@ const ROBLOX_CLEANUP_HISTORY_LIMIT = 10;
 const ROBLOX_CLEANUP_OUTCOMES = new Set([
   "sanitized",
   "repaired",
+  "restored_from_submission",
+  "reset_suspicious",
   "unresolved",
   "skipped_suspicious",
   "rebind_required",
@@ -196,7 +199,10 @@ function buildRepairSummary() {
     scannedProfiles: 0,
     profilesWithRobloxData: 0,
     safeRepairCandidateCount: 0,
+    submissionRestoreCandidateCount: 0,
     sanitizedCount: 0,
+    restoredFromSubmissionCount: 0,
+    resetSuspiciousCount: 0,
     repairedCount: 0,
     unresolvedCount: 0,
     failedRepairBatchCount: 0,
@@ -204,6 +210,75 @@ function buildRepairSummary() {
     rebindRequiredCount: 0,
     confirmOnlyCount: 0,
   };
+}
+
+function normalizeSubmissionRobloxSnapshot(submission = {}) {
+  const source = submission && typeof submission === "object" ? submission : {};
+  const normalized = normalizeRobloxDomainState({
+    username: source.robloxUsername,
+    userId: source.robloxUserId,
+    displayName: source.robloxDisplayName,
+  });
+  if (!normalized.username || !normalized.userId) return null;
+  return {
+    username: normalized.username,
+    userId: normalized.userId,
+    displayName: normalized.displayName,
+  };
+}
+
+function getSubmissionTimestamp(submission = {}) {
+  const reviewedAt = Date.parse(submission?.reviewedAt || "");
+  if (Number.isFinite(reviewedAt)) return reviewedAt;
+  const createdAt = Date.parse(submission?.createdAt || "");
+  return Number.isFinite(createdAt) ? createdAt : 0;
+}
+
+function findRecoverableRobloxSubmission(db = {}, userId = "", profile = {}) {
+  const submissions = db?.submissions && typeof db.submissions === "object" && !Array.isArray(db.submissions)
+    ? db.submissions
+    : {};
+  const normalizedUserId = cleanString(userId, 80);
+  if (!normalizedUserId) return null;
+
+  const preferredIds = [
+    profile?.domains?.roblox?.lastSubmissionId,
+    profile?.lastSubmissionId,
+  ].map((value) => cleanString(value, 80)).filter(Boolean);
+  for (const submissionId of preferredIds) {
+    const submission = submissions[submissionId];
+    if (!submission || cleanString(submission.userId, 80) !== normalizedUserId) continue;
+    const snapshot = normalizeSubmissionRobloxSnapshot(submission);
+    if (snapshot) return { submission, snapshot };
+  }
+
+  return Object.values(submissions)
+    .filter((submission) => cleanString(submission?.userId, 80) === normalizedUserId)
+    .map((submission) => ({ submission, snapshot: normalizeSubmissionRobloxSnapshot(submission) }))
+    .filter((entry) => entry.snapshot)
+    .sort((left, right) => getSubmissionTimestamp(right.submission) - getSubmissionTimestamp(left.submission))[0]
+    || null;
+}
+
+function resetSuspiciousRobloxBinding(profile = {}, options = {}) {
+  const target = profile && typeof profile === "object" ? profile : {};
+  target.domains ||= {};
+  const existing = normalizeRobloxDomainState(target.domains.roblox);
+  target.domains.roblox = normalizeRobloxDomainState({
+    username: null,
+    userId: null,
+    displayName: null,
+    avatarUrl: null,
+    profileUrl: null,
+    verificationStatus: "failed",
+    updatedAt: options.updatedAt,
+    refreshStatus: "error",
+    refreshError: "suspicious_identity_rebind_required",
+    source: options.source || "repair",
+    playtime: existing.playtime,
+    coPlay: existing.coPlay,
+  });
+  return target.domains.roblox;
 }
 
 async function applyRobloxBindingRepairPass(options = {}) {
@@ -218,6 +293,8 @@ async function applyRobloxBindingRepairPass(options = {}) {
   const markDirty = typeof options.markDirty === "function" ? options.markDirty : null;
   const persistTrail = options.persistTrail === true;
   const dryRun = options.dryRun === true;
+  const recoverFromSubmissions = options.recoverFromSubmissions === true;
+  const resetSuspiciousBindings = options.resetSuspiciousBindings === true;
   const nowIso = resolveNowIso(options);
   const source = cleanString(options.source, 80) || (dryRun ? "repair_dry_run" : "repair_apply");
 
@@ -285,6 +362,60 @@ async function applyRobloxBindingRepairPass(options = {}) {
 
     if (record.suggestedAction === "manual_review") {
       if (record.suspiciousPollution) {
+        const recoverableSubmission = recoverFromSubmissions
+          ? findRecoverableRobloxSubmission(db, userId, ensuredProfile)
+          : null;
+        if (recoverableSubmission) {
+          summary.submissionRestoreCandidateCount += 1;
+          summary.restoredFromSubmissionCount += 1;
+          if (!dryRun) {
+            const submission = recoverableSubmission.submission;
+            applyRobloxAccountSnapshot(ensuredProfile, recoverableSubmission.snapshot, {
+              verificationStatus: submission.status === "approved" ? "verified" : "pending",
+              verifiedAt: submission.status === "approved" ? submission.reviewedAt : null,
+              updatedAt: nowIso,
+              lastSubmissionId: submission.id,
+              lastReviewedAt: submission.reviewedAt,
+              reviewedBy: submission.reviewedBy,
+              source: "submission_recovery",
+            });
+            profiles[userId] = ensureSharedProfile(ensuredProfile, userId).profile;
+            if (markDirty) markDirty(userId, "binding_repaired");
+            if (persistTrail) {
+              recordRobloxCleanupOutcome(db, userId, "restored_from_submission", {
+                now: nowIso,
+                source,
+                reason,
+                robloxUsername: recoverableSubmission.snapshot.username,
+                robloxUserId: recoverableSubmission.snapshot.userId,
+              });
+            }
+          }
+          continue;
+        }
+
+        if (resetSuspiciousBindings) {
+          summary.resetSuspiciousCount += 1;
+          if (!dryRun) {
+            resetSuspiciousRobloxBinding(ensuredProfile, {
+              updatedAt: nowIso,
+              source: "rebind_required",
+            });
+            profiles[userId] = ensureSharedProfile(ensuredProfile, userId).profile;
+            if (markDirty) markDirty(userId, "binding_sanitized");
+            if (persistTrail) {
+              recordRobloxCleanupOutcome(db, userId, "reset_suspicious", {
+                now: nowIso,
+                source,
+                reason,
+                robloxUsername: record.robloxUsername,
+                robloxUserId: record.robloxUserId,
+              });
+            }
+          }
+          continue;
+        }
+
         summary.skippedSuspiciousCount += 1;
         if (persistTrail && !dryRun) {
           recordRobloxCleanupOutcome(db, userId, "skipped_suspicious", {

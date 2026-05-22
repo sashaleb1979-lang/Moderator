@@ -2,6 +2,7 @@
 
 const {
   ensureSharedProfile,
+  isSuspiciousRobloxBinding,
   resolveUsableVerifiedRobloxIdentity,
 } = require("./shared-profile");
 
@@ -44,6 +45,7 @@ function hasAnyRobloxData(roblox = {}) {
 
 function detectSuspiciousPollution(profile = {}, robloxSummary = {}, usableIdentity = null) {
   if (usableIdentity) return false;
+  if (isSuspiciousRobloxBinding(profile)) return true;
 
   const robloxUsername = normalizeComparableValue(
     robloxSummary.currentUsername ?? robloxSummary.username

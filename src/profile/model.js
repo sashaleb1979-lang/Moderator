@@ -11,6 +11,7 @@ const {
   getRobloxTrackabilityBlocker,
   getRobloxTrackabilityState,
   normalizeRobloxDomainState,
+  resolveRobloxDisplayIdentity,
   resolveUsableVerifiedRobloxIdentity,
 } = require("../integrations/shared-profile");
 
@@ -287,6 +288,63 @@ function formatJjsHoursFromMinutes(value, digits = 1) {
   return `${formatHours(hours, digits)} ч`;
 }
 
+function buildRobloxSyncHealth({ jobState = null, playtimePollMinutes = 2, now = null } = {}) {
+  const job = jobState && typeof jobState === "object" && !Array.isArray(jobState) ? jobState : null;
+  if (!job) return null;
+
+  const status = cleanString(job.status, 40).toLowerCase();
+  const summary = job.summary && typeof job.summary === "object" ? job.summary : {};
+  const pollMs = Math.max(1, Number(playtimePollMinutes) || 2) * 60 * 1000;
+  const nowMs = Number.isFinite(Number(now)) ? Number(now) : Date.parse(String(now || "")) || Date.now();
+  const lastHeartbeat = cleanString(job.lastFinishedAt || job.lastStartedAt, 80);
+  const lastHeartbeatMs = Date.parse(lastHeartbeat || "");
+  const skippedReason = cleanString(summary.skippedReason, 120);
+
+  if (skippedReason === "jjs_ids_not_configured") {
+    return {
+      state: "broken",
+      critical: true,
+      line: "JJS sync не работает: не настроены JJS place IDs.",
+    };
+  }
+  if (status === "error") {
+    return {
+      state: "broken",
+      critical: true,
+      line: `JJS sync не работает: ${cleanString(job.errorText, 120) || "последний запуск упал"}.`,
+    };
+  }
+  if (!Number.isFinite(lastHeartbeatMs)) {
+    return {
+      state: "missing",
+      critical: true,
+      line: "JJS sync ещё не запускался после перезапуска.",
+    };
+  }
+
+  const ageMs = Math.max(0, nowMs - lastHeartbeatMs);
+  if (ageMs > pollMs * 2) {
+    return {
+      state: "stale",
+      critical: true,
+      line: `JJS sync молчит ${formatHours(ageMs / (60 * 60 * 1000))} ч.`,
+    };
+  }
+  if (normalizeFiniteNumber(summary.failedBatches, 0) > 0) {
+    return {
+      state: "degraded",
+      critical: true,
+      line: `JJS sync теряет пачки Roblox: ${formatNumber(summary.failedBatches)}.`,
+    };
+  }
+
+  return {
+    state: status === "running" ? "running" : "ok",
+    critical: false,
+    line: "",
+  };
+}
+
 function normalizeMediaUrl(value, limit = 2000) {
   const text = cleanString(value, limit);
   return /^https?:\/\//i.test(text) ? text : null;
@@ -561,7 +619,8 @@ function hasProfileScoreSignals({
     || Number.isFinite(Number(activitySummary.messages7d))
     || Number.isFinite(Number(activitySummary.messages30d))
     || Number.isFinite(Number(activitySummary.sessions30d))
-    || Number.isFinite(Number(activitySummary.activeDays30d))) {
+    || Number.isFinite(Number(activitySummary.activeDays30d))
+    || Number.isFinite(Number(activitySummary.voiceDurationSeconds30d))) {
     return true;
   }
   if (Number.isFinite(Number(robloxSummary.jjsMinutes7d))
@@ -641,6 +700,7 @@ function buildHeroSummary({
   activitySummary = {},
   activityPlace = {},
   proofGap = null,
+  robloxSyncHealth = null,
 } = {}) {
   const mainLabel = (Array.isArray(mainCharacterLabels) ? mainCharacterLabels : [])
     .map((entry) => cleanString(entry, 80))
@@ -668,6 +728,9 @@ function buildHeroSummary({
   const scoreValue = formatProfileRatingScore(profileRatingSummary?.score);
   const ratingRank = formatProfileRatingRank(profileRatingSummary);
   const warningLine = (() => {
+    if (robloxSyncHealth?.critical && robloxSyncHealth?.line) {
+      return `⚠️ ${cleanString(robloxSyncHealth.line, 180)}`;
+    }
     if (robloxDisplayState?.isLinked && !robloxDisplayState?.isTrackable) {
       return "⚠️ Roblox привязан, но JJS-активность не обновляется.";
     }
@@ -1376,33 +1439,39 @@ function buildCanonicalRobloxSummary({ profile = null, summaryRoblox = {} } = {}
 
 function buildRobloxDisplayState({ profile = null, summaryRoblox = {} } = {}) {
   const canonicalSummary = buildCanonicalRobloxSummary({ profile, summaryRoblox });
+  const displayIdentity = resolveRobloxDisplayIdentity(profile || { summary: { roblox: summaryRoblox } });
+  const isSuspicious = displayIdentity.state === "suspicious";
   const trackingState = cleanString(canonicalSummary.trackingState, 40);
-  const isLinked = canonicalSummary.hasVerifiedAccount === true;
-  const isTrackable = canonicalSummary.isTrackable === true;
-  const needsRebind = isLinked && !isTrackable && ["repairable", "manual_only"].includes(trackingState);
+  const isLinked = !isSuspicious && canonicalSummary.hasVerifiedAccount === true;
+  const isTrackable = !isSuspicious && canonicalSummary.isTrackable === true;
+  const needsRebind = isSuspicious || (isLinked && !isTrackable && ["repairable", "manual_only"].includes(trackingState));
   const username = cleanString(canonicalSummary.currentUsername || canonicalSummary.username, 120);
   const userId = cleanString(canonicalSummary.userId, 80);
   const label = canonicalSummary.identityUsable === true || isTrackable
     ? (username || userId)
     : "";
-  const statusLine = isLinked
+  const statusLine = isSuspicious
+    ? "Roblox-связка: нужна перепривязка, старые данные похожи на Discord-ник"
+    : isLinked
     ? (isTrackable
       ? "Roblox-связка: подтверждена"
       : "Roblox привязан, JJS-активность не обновляется")
     : formatRobloxBindingStatusLine(profile || canonicalSummary);
-  const readinessLabel = isLinked
+  const readinessLabel = isSuspicious
+    ? "Roblox требует перепривязки"
+    : isLinked
     ? (isTrackable ? "Roblox готов" : "Roblox привязан, трекер ждёт обновления")
     : formatRobloxReadinessLabel(canonicalSummary);
-  const canShowIdentityMedia = canonicalSummary.identityUsable === true || isTrackable;
+  const canShowIdentityMedia = !isSuspicious && (canonicalSummary.identityUsable === true || isTrackable);
 
   return {
     isLinked,
     isTrackable,
     needsRebind,
-    state: trackingState || (isLinked ? "verified" : "unverified"),
-    trackingBlocker: cleanString(canonicalSummary.trackingBlocker, 80),
-    username,
-    userId,
+    state: isSuspicious ? "suspicious" : trackingState || (isLinked ? "verified" : "unverified"),
+    trackingBlocker: isSuspicious ? "suspicious_identity" : cleanString(canonicalSummary.trackingBlocker, 80),
+    username: isSuspicious ? null : username,
+    userId: isSuspicious ? null : userId,
     label,
     avatarUrl: canShowIdentityMedia ? normalizeMediaUrl(canonicalSummary.avatarUrl, 2000) : null,
     profileUrl: canShowIdentityMedia ? normalizeMediaUrl(canonicalSummary.profileUrl, 2000) : null,
@@ -1499,6 +1568,11 @@ function buildProfileReadModel(options = {}) {
   const tierlistSummary = summary.tierlist && typeof summary.tierlist === "object" ? summary.tierlist : {};
   const rawRobloxSummary = summary.roblox && typeof summary.roblox === "object" ? summary.roblox : {};
   const robloxDisplayState = buildRobloxDisplayState({ profile, summaryRoblox: rawRobloxSummary });
+  const robloxSyncHealth = buildRobloxSyncHealth({
+    jobState: options.robloxJobState,
+    playtimePollMinutes: options.robloxPlaytimePollMinutes,
+    now: options.now,
+  });
   const robloxSummary = robloxDisplayState.summary;
   const verificationSummary = summary.verification && typeof summary.verification === "object" ? summary.verification : {};
   const progressSummary = summary.progress && typeof summary.progress === "object" ? summary.progress : {};
@@ -1549,7 +1623,9 @@ function buildProfileReadModel(options = {}) {
   const hasVerifiedRoblox = robloxDisplayState.isLinked;
   const needsRobloxRebind = robloxDisplayState.needsRebind;
   const verifiedRobloxLabel = hasVerifiedRoblox ? cleanString(robloxDisplayState.label, 120) : "";
-  const robloxOverviewLabel = verifiedRobloxLabel
+  const robloxOverviewLabel = robloxDisplayState.state === "suspicious"
+    ? "нужна перепривязка"
+    : verifiedRobloxLabel
     || (hasVerifiedRoblox ? "привязан, нужно обновить" : "не привязан");
   const robloxAvatarUrl = hasVerifiedRoblox ? robloxDisplayState.avatarUrl : null;
   const robloxProfileUrl = hasVerifiedRoblox ? robloxDisplayState.profileUrl : null;
@@ -1760,6 +1836,7 @@ function buildProfileReadModel(options = {}) {
     activitySummary,
     activityPlace,
     proofGap: synergy?.progress?.proofGap,
+    robloxSyncHealth,
   });
   const heroLines = heroSummary.lines;
 
@@ -1772,9 +1849,13 @@ function buildProfileReadModel(options = {}) {
   });
 
   const activityLines = [];
-  const rawVoiceHours30d = Number.isFinite(Number(voiceSummary.voiceDurationSeconds30d))
+  const rawActivityVoiceHours30d = Number.isFinite(Number(activitySummary.voiceDurationSeconds30d))
+    ? Number(activitySummary.voiceDurationSeconds30d) / 3600
+    : null;
+  const rawVoiceMirrorHours30d = Number.isFinite(Number(voiceSummary.voiceDurationSeconds30d))
     ? Number(voiceSummary.voiceDurationSeconds30d) / 3600
     : null;
+  const rawVoiceHours30d = Number.isFinite(rawActivityVoiceHours30d) ? rawActivityVoiceHours30d : rawVoiceMirrorHours30d;
   const jjsHours30d = Number.isFinite(Number(robloxSummary.jjsMinutes30d)) ? Number(robloxSummary.jjsMinutes30d) / 60 : null;
   const chatMessages30d = normalizeNullableFiniteNumber(activitySummary.messages30d);
   const voiceHours30d = Number.isFinite(rawVoiceHours30d)
@@ -1788,15 +1869,26 @@ function buildProfileReadModel(options = {}) {
     modeParts.push(`JJS ${jjsBits.join(" · ")}`);
   }
   if (Number.isFinite(chatMessages30d)) modeParts.push(`чат ${formatNumber(chatMessages30d)} msg`);
-  if (Number.isFinite(voiceHours30d)) modeParts.push(`voice ${formatHours(voiceHours30d)} ч`);
+  if (Number.isFinite(voiceHours30d)) {
+    const effectiveVoiceHours30d = normalizeNullableFiniteNumber(activitySummary.effectiveVoiceHours30d);
+    const voiceCreditSuffix = Number.isFinite(effectiveVoiceHours30d) && Math.abs(effectiveVoiceHours30d - voiceHours30d) >= 0.2
+      ? ` · учёт ${formatHours(effectiveVoiceHours30d)} ч`
+      : "";
+    modeParts.push(`voice ${formatHours(voiceHours30d)} ч${voiceCreditSuffix}`);
+  }
   const dominantActivity = [
     { label: "JJS", value: Number.isFinite(jjsHours30d) ? jjsHours30d : -1 },
     { label: "Discord chat", value: Number.isFinite(chatMessages30d) ? chatMessages30d / 30 : -1 },
     { label: "voice", value: Number.isFinite(voiceHours30d) ? voiceHours30d : -1 },
   ].sort((left, right) => right.value - left.value)[0];
-  activityLines.push(robloxDisplayState.isLinked
-    ? (robloxDisplayState.isTrackable ? "Статус: Roblox/JJS трекается" : "Статус: Roblox привязан, JJS не обновляется")
-    : "Статус: Roblox не привязан");
+  activityLines.push(robloxDisplayState.state === "suspicious"
+    ? "Статус: Roblox требует перепривязки"
+    : robloxDisplayState.isLinked
+      ? (robloxDisplayState.isTrackable ? "Статус: Roblox/JJS трекается" : "Статус: Roblox привязан, JJS не обновляется")
+      : "Статус: Roblox не привязан");
+  if (robloxDisplayState.isTrackable && robloxSyncHealth?.critical && robloxSyncHealth?.line) {
+    activityLines.push(robloxSyncHealth.line);
+  }
   if (modeParts.length) {
     const totalMix = [jjsHours30d, Number.isFinite(chatMessages30d) ? chatMessages30d / 30 : null, voiceHours30d]
       .filter((entry) => Number.isFinite(Number(entry)) && Number(entry) > 0)
@@ -1922,6 +2014,8 @@ function buildProfileReadModel(options = {}) {
   if (hasVerifiedRoblox) {
     robloxLines.push(robloxDisplayState.statusLine);
     robloxLines.push(`Аккаунт: ${verifiedRobloxLabel || "нужно обновить привязку"}`);
+  } else if (robloxDisplayState.state === "suspicious") {
+    robloxLines.push("Roblox-связка требует перепривязки: старые данные похожи на Discord-ник.");
   } else if (robloxDisplayState.state === "repairable") {
     robloxLines.push("Roblox привязан, но нужно обновить userId.");
   } else if (robloxDisplayState.state === "manual_only") {
@@ -2110,6 +2204,7 @@ function buildProfileReadModel(options = {}) {
     mediaGalleryItems,
     robloxProfileUrl,
     robloxDisplayState,
+    robloxSyncHealth,
     selfActionState,
     sections,
     sectionGroups,

@@ -248,6 +248,9 @@ async function repairRobloxVerifiedBindings(options = {}) {
     failedBatchCount: result.failedRepairBatchCount,
     unresolvedCount: result.unresolvedCount,
     sanitizedCount: result.sanitizedCount,
+    skippedSuspiciousCount: result.skippedSuspiciousCount,
+    restoredFromSubmissionCount: result.restoredFromSubmissionCount,
+    resetSuspiciousCount: result.resetSuspiciousCount,
   };
 }
 
@@ -684,6 +687,10 @@ async function runRobloxPlaytimeSyncJob(options = {}) {
       unresolvedBindingCount: 0,
       failedRepairBatchCount: 0,
       sanitizedBindingCount: 0,
+      skippedSuspiciousBindingCount: 0,
+      restoredFromSubmissionCount: 0,
+      resetSuspiciousCount: 0,
+      staleSessionClosedCount: 0,
       skippedReason: "jjs_ids_not_configured",
     };
   }
@@ -713,8 +720,12 @@ async function runRobloxPlaytimeSyncJob(options = {}) {
       activeCoPlayPairCount: 0,
       repairedBindingCount: normalizePositiveInteger(repairSummary.repairedCount, 0),
       unresolvedBindingCount: normalizePositiveInteger(repairSummary.unresolvedCount, 0),
-      failedRepairBatchCount: normalizePositiveInteger(repairSummary.failedBatchCount, 0),
+      failedRepairBatchCount: normalizePositiveInteger(repairSummary.failedRepairBatchCount, 0),
       sanitizedBindingCount: normalizePositiveInteger(repairSummary.sanitizedCount, 0),
+      skippedSuspiciousBindingCount: normalizePositiveInteger(repairSummary.skippedSuspiciousCount, 0),
+      restoredFromSubmissionCount: normalizePositiveInteger(repairSummary.restoredFromSubmissionCount, 0),
+      resetSuspiciousCount: normalizePositiveInteger(repairSummary.resetSuspiciousCount, 0),
+      staleSessionClosedCount: 0,
       skippedReason: "no_verified_candidates",
     };
   }
@@ -748,6 +759,7 @@ async function runRobloxPlaytimeSyncJob(options = {}) {
   const opaqueInGameDiscordUserIds = new Set();
   let startedSessionCount = 0;
   let closedSessionCount = 0;
+  let staleSessionClosedCount = 0;
 
   for (const candidate of candidates) {
     if (failedRobloxUserIds.has(candidate.robloxUserId)) {
@@ -828,6 +840,8 @@ async function runRobloxPlaytimeSyncJob(options = {}) {
       markRobloxRuntimeDirty(runtimeState, candidate.discordUserId, "session_closed");
       if (activeSession) {
         closedSessionCount += 1;
+      } else if (hasPersistedSessionMarker) {
+        staleSessionClosedCount += 1;
       }
     }
   }
@@ -917,8 +931,12 @@ async function runRobloxPlaytimeSyncJob(options = {}) {
     activeCoPlayPairCount: activePairKeys.size,
     repairedBindingCount: normalizePositiveInteger(repairSummary.repairedCount, 0),
     unresolvedBindingCount: normalizePositiveInteger(repairSummary.unresolvedCount, 0),
-    failedRepairBatchCount: normalizePositiveInteger(repairSummary.failedBatchCount, 0),
+    failedRepairBatchCount: normalizePositiveInteger(repairSummary.failedRepairBatchCount, 0),
     sanitizedBindingCount: normalizePositiveInteger(repairSummary.sanitizedCount, 0),
+    skippedSuspiciousBindingCount: normalizePositiveInteger(repairSummary.skippedSuspiciousCount, 0),
+    restoredFromSubmissionCount: normalizePositiveInteger(repairSummary.restoredFromSubmissionCount, 0),
+    resetSuspiciousCount: normalizePositiveInteger(repairSummary.resetSuspiciousCount, 0),
+    staleSessionClosedCount,
   };
 }
 

@@ -94,7 +94,10 @@ test("applyRobloxBindingRepairPass repairs safe candidates and persists cleanup 
     scannedProfiles: 4,
     profilesWithRobloxData: 4,
     safeRepairCandidateCount: 1,
+    submissionRestoreCandidateCount: 0,
     sanitizedCount: 1,
+    restoredFromSubmissionCount: 0,
+    resetSuspiciousCount: 0,
     repairedCount: 1,
     unresolvedCount: 0,
     failedRepairBatchCount: 0,
@@ -153,7 +156,10 @@ test("applyRobloxBindingRepairPass keeps dry-run non-destructive while still rep
     scannedProfiles: 1,
     profilesWithRobloxData: 1,
     safeRepairCandidateCount: 1,
+    submissionRestoreCandidateCount: 0,
     sanitizedCount: 0,
+    restoredFromSubmissionCount: 0,
+    resetSuspiciousCount: 0,
     repairedCount: 0,
     unresolvedCount: 1,
     failedRepairBatchCount: 0,
@@ -164,4 +170,105 @@ test("applyRobloxBindingRepairPass keeps dry-run non-destructive while still rep
 
   assert.equal(db.profiles["repair-user"].domains.roblox.userId, undefined);
   assert.equal(getRobloxCleanupTrailEntry(db, "repair-user"), null);
+});
+
+test("applyRobloxBindingRepairPass restores suspicious bindings from proven submissions", async () => {
+  const db = {
+    profiles: {
+      "1146511958305144883": {
+        userId: "1146511958305144883",
+        username: "gno2m007",
+        displayName: "gno2m007",
+        domains: {
+          roblox: {
+            username: "gno2m007",
+            profileUrl: "https://www.roblox.com/users/1146511958305144883/profile",
+            verificationStatus: "verified",
+            playtime: {
+              totalJjsMinutes: 120,
+              jjsMinutes7d: 60,
+              jjsMinutes30d: 120,
+              sessionCount: 2,
+            },
+          },
+        },
+      },
+    },
+    submissions: {
+      sub_1: {
+        id: "sub_1",
+        userId: "1146511958305144883",
+        status: "approved",
+        reviewedAt: "2026-05-20T10:00:00.000Z",
+        reviewedBy: "mod",
+        robloxUsername: "KolhozU",
+        robloxUserId: "9843941555",
+        robloxDisplayName: "KolhozU",
+      },
+    },
+  };
+
+  const result = await applyRobloxBindingRepairPass({
+    db,
+    dryRun: false,
+    persistTrail: true,
+    recoverFromSubmissions: true,
+    resetSuspiciousBindings: true,
+    now: "2026-05-20T11:00:00.000Z",
+    source: "repair_script_apply",
+  });
+
+  assert.equal(result.submissionRestoreCandidateCount, 1);
+  assert.equal(result.restoredFromSubmissionCount, 1);
+  assert.equal(result.resetSuspiciousCount, 0);
+  assert.equal(db.profiles["1146511958305144883"].domains.roblox.username, "KolhozU");
+  assert.equal(db.profiles["1146511958305144883"].domains.roblox.userId, "9843941555");
+  assert.equal(db.profiles["1146511958305144883"].domains.roblox.verificationStatus, "verified");
+  assert.equal(db.profiles["1146511958305144883"].domains.roblox.playtime.totalJjsMinutes, 120);
+  assert.equal(getRobloxCleanupTrailEntry(db, "1146511958305144883").lastOutcome, "restored_from_submission");
+});
+
+test("applyRobloxBindingRepairPass resets unproven suspicious bindings without dropping playtime", async () => {
+  const db = {
+    profiles: {
+      suspicious: {
+        userId: "999999999999999999",
+        username: "discord-name",
+        displayName: "discord-name",
+        domains: {
+          roblox: {
+            username: "discord-name",
+            profileUrl: "https://www.roblox.com/users/999999999999999999/profile",
+            verificationStatus: "verified",
+            playtime: {
+              totalJjsMinutes: 240,
+              jjsMinutes7d: 30,
+              jjsMinutes30d: 240,
+              sessionCount: 4,
+            },
+          },
+        },
+      },
+    },
+  };
+
+  const result = await applyRobloxBindingRepairPass({
+    db,
+    dryRun: false,
+    persistTrail: true,
+    recoverFromSubmissions: true,
+    resetSuspiciousBindings: true,
+    now: "2026-05-20T11:00:00.000Z",
+    source: "repair_script_apply",
+  });
+
+  assert.equal(result.restoredFromSubmissionCount, 0);
+  assert.equal(result.resetSuspiciousCount, 1);
+  assert.equal(db.profiles.suspicious.domains.roblox.username, null);
+  assert.equal(db.profiles.suspicious.domains.roblox.userId, null);
+  assert.equal(db.profiles.suspicious.domains.roblox.profileUrl, null);
+  assert.equal(db.profiles.suspicious.domains.roblox.verificationStatus, "failed");
+  assert.equal(db.profiles.suspicious.domains.roblox.refreshError, "suspicious_identity_rebind_required");
+  assert.equal(db.profiles.suspicious.domains.roblox.playtime.totalJjsMinutes, 240);
+  assert.equal(getRobloxCleanupTrailEntry(db, "suspicious").lastOutcome, "reset_suspicious");
 });

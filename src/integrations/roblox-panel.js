@@ -64,6 +64,21 @@ function formatDateTime(value) {
   return new Date(timestamp).toLocaleString("ru-RU");
 }
 
+function getRobloxJobHeartbeatAgeMs(job = {}) {
+  const timestamp = Date.parse(job?.lastFinishedAt || job?.lastStartedAt || "");
+  if (!Number.isFinite(timestamp)) return null;
+  return Math.max(0, Date.now() - timestamp);
+}
+
+function isRobloxPlaytimeSyncOverdue(snapshot = {}) {
+  const job = snapshot.jobs?.playtimeSync || {};
+  if (cleanString(job.status, 40) === "running") return false;
+  const ageMs = getRobloxJobHeartbeatAgeMs(job);
+  if (ageMs === null) return true;
+  const pollMs = Math.max(1, normalizeNonNegativeInteger(snapshot.config?.playtimePollMinutes, 2) || 2) * 60 * 1000;
+  return ageMs > pollMs * 2;
+}
+
 function formatMinutes(value) {
   return `${normalizeNonNegativeInteger(value, 0)} мин`;
 }
@@ -132,6 +147,19 @@ function createTelemetryJobState(label) {
   };
 }
 
+function serializeTelemetryJobState(state = {}) {
+  const source = state && typeof state === "object" ? state : {};
+  return {
+    label: cleanString(source.label, 120) || null,
+    status: cleanString(source.status, 40) || "idle",
+    lastStartedAt: cleanString(source.lastStartedAt, 80) || null,
+    lastFinishedAt: cleanString(source.lastFinishedAt, 80) || null,
+    errorText: cleanString(source.errorText, 240) || null,
+    summary: source.summary && typeof source.summary === "object" ? { ...source.summary } : {},
+    runCount: normalizeNonNegativeInteger(source.runCount, 0),
+  };
+}
+
 function summarizeTelemetryResult(kind, result = {}) {
   const summary = result && typeof result === "object" ? result : {};
   if (kind === "profileRefresh") {
@@ -160,6 +188,10 @@ function summarizeTelemetryResult(kind, result = {}) {
       unresolvedBindingCount: normalizeNonNegativeInteger(summary.unresolvedBindingCount, 0),
       failedRepairBatchCount: normalizeNonNegativeInteger(summary.failedRepairBatchCount, 0),
       sanitizedBindingCount: normalizeNonNegativeInteger(summary.sanitizedBindingCount, 0),
+      skippedSuspiciousBindingCount: normalizeNonNegativeInteger(summary.skippedSuspiciousBindingCount, 0),
+      restoredFromSubmissionCount: normalizeNonNegativeInteger(summary.restoredFromSubmissionCount, 0),
+      resetSuspiciousCount: normalizeNonNegativeInteger(summary.resetSuspiciousCount, 0),
+      staleSessionClosedCount: normalizeNonNegativeInteger(summary.staleSessionClosedCount, 0),
       skippedReason: cleanString(summary.skippedReason, 80) || null,
     };
   }
@@ -175,6 +207,16 @@ function summarizeTelemetryResult(kind, result = {}) {
 }
 
 function createRobloxPanelTelemetry(options = {}) {
+  const persistJobState = typeof options.persistJobState === "function"
+    ? options.persistJobState
+    : null;
+  function persistCurrentJobState(kind, state) {
+    if (!persistJobState) return;
+    try {
+      persistJobState(kind, serializeTelemetryJobState(state));
+    } catch {}
+  }
+
   const telemetry = {
     jobs: {
       profileRefresh: createTelemetryJobState("Обновление профилей"),
@@ -199,6 +241,7 @@ function createRobloxPanelTelemetry(options = {}) {
         state.status = "running";
         state.lastStartedAt = resolveNowIso(options.now);
         state.errorText = null;
+        persistCurrentJobState(normalizedKind, state);
 
         state.pendingPromise = Promise.resolve()
           .then(() => job(...args))
@@ -208,6 +251,7 @@ function createRobloxPanelTelemetry(options = {}) {
             state.errorText = null;
             state.summary = summarizeTelemetryResult(normalizedKind, result);
             state.runCount += 1;
+            persistCurrentJobState(normalizedKind, state);
             return result;
           })
           .catch((error) => {
@@ -216,6 +260,7 @@ function createRobloxPanelTelemetry(options = {}) {
             state.errorText = truncateText(error?.message || error, 240) || "неизвестная ошибка";
             state.summary = summarizeTelemetryResult(normalizedKind, state.summary);
             state.runCount += 1;
+            persistCurrentJobState(normalizedKind, state);
             throw error;
           })
           .finally(() => {
@@ -502,6 +547,13 @@ function cloneTelemetryJobState(job = {}, runtimeState = {}) {
   };
 }
 
+function resolvePanelJobState(liveJob = {}, persistedJob = {}) {
+  const liveRunCount = normalizeNonNegativeInteger(liveJob?.runCount, 0);
+  const liveStatus = cleanString(liveJob?.status, 40);
+  if (liveStatus === "running" || liveRunCount > 0) return liveJob;
+  return persistedJob && typeof persistedJob === "object" ? { ...liveJob, ...persistedJob } : liveJob;
+}
+
 function formatRobloxListEntry(entry = {}, index = 0) {
   const label = entry.robloxUsername
     ? `${entry.displayName} -> ${entry.robloxUsername}`
@@ -625,6 +677,8 @@ function buildRobloxPanelIssues(snapshot = {}) {
 
   if (playtimeTrackingEnabled && snapshot.jobs?.playtimeSync?.status === "error") {
     issues.push(`Синк playtime упал: ${snapshot.jobs.playtimeSync.errorText}`);
+  } else if (playtimeTrackingEnabled && snapshot.config?.jjsReady && isRobloxPlaytimeSyncOverdue(snapshot)) {
+    issues.push("JJS sync не работает: не было успешного запуска дольше двух poll-интервалов.");
   } else if (playtimeTrackingEnabled && normalizeNonNegativeInteger(snapshot.jobs?.playtimeSync?.summary?.failedBatches, 0) > 0) {
     issues.push(
       `Синк playtime потерял пачки: ${snapshot.jobs.playtimeSync.summary.failedBatches} шт., пользователей с ошибкой: ${normalizeNonNegativeInteger(snapshot.jobs?.playtimeSync?.summary?.failedUserIds, 0)}.`
@@ -653,6 +707,9 @@ function getRobloxStatsPanelSnapshot({ db = {}, runtimeState = {}, telemetry = n
   const entries = collectRobloxPanelEntries(db, runtimeState, {
     showRefreshDiagnostics: metadataRefreshEnabled,
   });
+  const persistedJobs = db?.sot?.integrations?.roblox?.jobs && typeof db.sot.integrations.roblox.jobs === "object"
+    ? db.sot.integrations.roblox.jobs
+    : {};
   const verifiedEntries = entries
     .filter((entry) => entry.verificationStatus === "verified")
     .sort(compareRobloxAuthenticatedEntries);
@@ -698,9 +755,9 @@ function getRobloxStatsPanelSnapshot({ db = {}, runtimeState = {}, telemetry = n
       activeCoPlayPairs: getRuntimeActiveCoPlayPairCount(runtimeState),
     },
     jobs: {
-      profileRefresh: cloneTelemetryJobState(telemetry?.jobs?.profileRefresh, runtimeState),
-      playtimeSync: cloneTelemetryJobState(telemetry?.jobs?.playtimeSync, runtimeState),
-      runtimeFlush: cloneTelemetryJobState(telemetry?.jobs?.runtimeFlush, runtimeState),
+      profileRefresh: cloneTelemetryJobState(resolvePanelJobState(telemetry?.jobs?.profileRefresh, persistedJobs.profileRefresh), runtimeState),
+      playtimeSync: cloneTelemetryJobState(resolvePanelJobState(telemetry?.jobs?.playtimeSync, persistedJobs.playtimeSync), runtimeState),
+      runtimeFlush: cloneTelemetryJobState(resolvePanelJobState(telemetry?.jobs?.runtimeFlush, persistedJobs.runtimeFlush), runtimeState),
     },
     lists: {
       verifiedEntries,
@@ -724,6 +781,15 @@ function buildPlaytimeRepairSummaryPieces(summary = {}) {
   }
   if (normalizeNonNegativeInteger(summary?.repairedBindingCount, 0) > 0) {
     pieces.push(`починено по username ${summary.repairedBindingCount}`);
+  }
+  if (normalizeNonNegativeInteger(summary?.restoredFromSubmissionCount, 0) > 0) {
+    pieces.push(`восстановлено из заявок ${summary.restoredFromSubmissionCount}`);
+  }
+  if (normalizeNonNegativeInteger(summary?.resetSuspiciousCount, 0) > 0) {
+    pieces.push(`сброшено подозрительных ${summary.resetSuspiciousCount}`);
+  }
+  if (normalizeNonNegativeInteger(summary?.skippedSuspiciousBindingCount, 0) > 0) {
+    pieces.push(`ждут перепривязки ${summary.skippedSuspiciousBindingCount}`);
   }
   if (normalizeNonNegativeInteger(summary?.unresolvedBindingCount, 0) > 0) {
     pieces.push(`без repair осталось ${summary.unresolvedBindingCount}`);

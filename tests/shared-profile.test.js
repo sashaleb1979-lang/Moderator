@@ -12,9 +12,11 @@ const {
   SHARED_PROFILE_VERSION,
   deriveProfileMainView,
   ensureSharedProfile,
+  isSuspiciousRobloxBinding,
   normalizeIntegrationState,
   normalizeProgressDomainState,
   normalizeRobloxDomainState,
+  resolveRobloxDisplayIdentity,
   resolveUsableVerifiedRobloxIdentity,
   normalizeSeasonArchiveDomainState,
   syncSharedProfiles,
@@ -923,6 +925,30 @@ test("ensureSharedProfile does not leak Discord identity fields into Roblox doma
   assert.equal(result.profile.domains.roblox.displayName, null);
   assert.equal(result.profile.summary.roblox.hasVerifiedAccount, false);
   assert.equal(result.profile.summary.roblox.username, null);
+});
+
+test("Roblox display identity rejects suspicious Discord-id profile URLs", () => {
+  const profile = {
+    userId: "1146511958305144883",
+    username: "gno2m007",
+    displayName: "gno2m007",
+    domains: {
+      roblox: {
+        username: "gno2m007",
+        profileUrl: "https://www.roblox.com/users/1146511958305144883/profile",
+        verificationStatus: "verified",
+      },
+    },
+  };
+
+  assert.equal(isSuspiciousRobloxBinding(profile), true);
+
+  const identity = resolveRobloxDisplayIdentity(profile);
+  assert.equal(identity.state, "suspicious");
+  assert.equal(identity.isLinked, false);
+  assert.equal(identity.isTrackable, false);
+  assert.equal(identity.needsRebind, true);
+  assert.equal(identity.profileUrl, null);
 });
 
 test("ensureSharedProfile summary exposes rename, server friend, and frequent non-friend Roblox read fields", () => {
