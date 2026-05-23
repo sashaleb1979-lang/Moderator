@@ -10957,7 +10957,7 @@ function getSotReportCharacterDiagnostics(guild) {
     }
 
     const line = buildSotReportLine(
-      entry.label,
+      `${entry.label} (${entry.id})`,
       currentRoleId ? formatRoleMention(currentRoleId) : "—",
       source,
       status,

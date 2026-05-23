@@ -22,11 +22,12 @@ const SOT_REPORT_MODAL_BUILDERS = {
       new ActionRowBuilder().addComponents(
         new TextInputBuilder()
           .setCustomId("sot_character_id")
-          .setLabel("Character ID")
+          .setLabel("Character ID (black_death = Куроуроши)")
           .setStyle(TextInputStyle.Short)
           .setRequired(true)
           .setMaxLength(80)
-          .setPlaceholder("Например honored_one")
+          .setPlaceholder("black_death")
+          .setValue("black_death")
       ),
       new ActionRowBuilder().addComponents(
         new TextInputBuilder()

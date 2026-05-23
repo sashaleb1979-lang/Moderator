@@ -26,8 +26,12 @@
       }
     },
     "generatedRoles": {
-      "characters": {},
-      "characterLabels": {},
+      "characters": {
+        "black_death": "1489137271440408606"
+      },
+      "characterLabels": {
+        "black_death": "Куроуроши"
+      },
       "tiers": {}
     },
     "integrations": {
@@ -200,6 +204,11 @@
         "id": "ryu",
         "label": "Ryu",
         "roleId": ""
+      },
+      {
+        "id": "black_death",
+        "label": "Black Death",
+        "roleId": "1489137271440408606"
       }
     ],
     "presentation": {
@@ -575,7 +584,27 @@
             "Рю Ишигори"
           ],
           "nativeWriter": true
-        }
+        },
+        "wikiUrl": "https://jujutsu-shenanigans.fandom.com/wiki/Ryu"
+      },
+      "black_death": {
+        "id": "black_death",
+        "label": "Куроуроши",
+        "englishLabel": "Black Death",
+        "roleId": "1489137271440408606",
+        "source": "manual",
+        "verifiedAt": "2026-05-23T07:24:32.793Z",
+        "evidence": {
+          "aliasNames": [
+            "Куроуроши",
+            "Куроуруши",
+            "Коуроуроши",
+            "Kurourushi",
+            "Таракан"
+          ],
+          "nativeWriter": true
+        },
+        "wikiUrl": "https://jujutsu-shenanigans.fandom.com/wiki/Black_Death"
       }
     },
     "panels": {
