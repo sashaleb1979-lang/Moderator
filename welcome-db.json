@@ -27,10 +27,12 @@
     },
     "generatedRoles": {
       "characters": {
-        "black_death": "1489137271440408606"
+        "black_death": "1507635323499446382",
+        "ryu": "1500447722447044618"
       },
       "characterLabels": {
-        "black_death": "Куроуроши"
+        "black_death": "Куроуроши",
+        "ryu": "Рю"
       },
       "tiers": {}
     },
@@ -203,12 +205,12 @@
       {
         "id": "ryu",
         "label": "Ryu",
-        "roleId": ""
+        "roleId": "1500447722447044618"
       },
       {
         "id": "black_death",
-        "label": "Black Death",
-        "roleId": "1489137271440408606"
+        "label": "Куроуроши",
+        "roleId": "1507635323499446382"
       }
     ],
     "presentation": {
@@ -575,15 +577,16 @@
         "id": "ryu",
         "label": "Рю",
         "englishLabel": "Ryu",
-        "roleId": "",
-        "source": "default",
-        "verifiedAt": null,
+        "roleId": "1500447722447044618",
+        "source": "manual",
+        "verifiedAt": "2026-05-23T08:40:24.725Z",
         "evidence": {
           "aliasNames": [
             "Рю",
             "Рю Ишигори"
           ],
-          "nativeWriter": true
+          "nativeWriter": true,
+          "manualOverride": true
         },
         "wikiUrl": "https://jujutsu-shenanigans.fandom.com/wiki/Ryu"
       },
@@ -591,9 +594,9 @@
         "id": "black_death",
         "label": "Куроуроши",
         "englishLabel": "Black Death",
-        "roleId": "1489137271440408606",
+        "roleId": "1507635323499446382",
         "source": "manual",
-        "verifiedAt": "2026-05-23T07:24:32.793Z",
+        "verifiedAt": "2026-05-23T08:40:24.725Z",
         "evidence": {
           "aliasNames": [
             "Куроуроши",
@@ -602,7 +605,8 @@
             "Kurourushi",
             "Таракан"
           ],
-          "nativeWriter": true
+          "nativeWriter": true,
+          "manualOverride": true
         },
         "wikiUrl": "https://jujutsu-shenanigans.fandom.com/wiki/Black_Death"
       }
