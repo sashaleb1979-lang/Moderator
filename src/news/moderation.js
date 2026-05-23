@@ -6,6 +6,11 @@ function cleanString(value, limit = 2000) {
   return String(value || "").trim().slice(0, Math.max(0, Number(limit) || 0));
 }
 
+function parseIsoMs(value) {
+  const timeMs = Date.parse(String(value || ""));
+  return Number.isFinite(timeMs) ? timeMs : null;
+}
+
 function resolveNowIso(now) {
   if (typeof now === "function") return cleanString(now(), 80) || new Date().toISOString();
   return cleanString(now, 80) || new Date().toISOString();
@@ -41,6 +46,33 @@ function createModerationEvent({ eventType, guildId, userId, displayName, occurr
     occurredAt: cleanString(occurredAt, 80),
     reason: cleanString(reason, 500) || null,
     resolution: cleanString(resolution, 120) || null,
+  };
+}
+
+function pruneModerationEvents(moderationState = {}, { retainFromMs = null, prunedAt = null } = {}) {
+  if (!moderationState || typeof moderationState !== "object" || Array.isArray(moderationState)) {
+    return { prunedCount: 0, remainingCount: 0 };
+  }
+
+  const events = Array.isArray(moderationState.events) ? moderationState.events : [];
+  if (!Number.isFinite(retainFromMs)) {
+    moderationState.events = events;
+    return { prunedCount: 0, remainingCount: events.length };
+  }
+
+  const keptEvents = events.filter((event) => {
+    const occurredMs = parseIsoMs(event?.occurredAt);
+    if (occurredMs === null) {
+      return true;
+    }
+    return occurredMs >= retainFromMs;
+  });
+
+  moderationState.events = keptEvents;
+  moderationState.lastPrunedAt = cleanString(prunedAt, 80) || moderationState.lastPrunedAt || null;
+  return {
+    prunedCount: events.length - keptEvents.length,
+    remainingCount: keptEvents.length,
   };
 }
 
@@ -105,6 +137,7 @@ function recordGuildBanEvent({ db = {}, ban = {}, eventType = "ban_add", now, sa
 
 module.exports = {
   createModerationEvent,
+  pruneModerationEvents,
   recordGuildBanEvent,
   recordMemberRemovalEvent,
   resolveMemberDisplayName,

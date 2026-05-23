@@ -61,7 +61,8 @@ test("profile helper message payload builds one private-open button", () => {
   assert.equal(payload.components[0].toJSON().components[0].custom_id, "profile_open:requester:target");
 });
 
-test("profile rating detail payload renders transparent V8.5 blocks", () => {
+test("profile rating detail payload renders transparent V8.6 blocks", () => {
+  const longLine = "До минимального S+: нужно +1 100 kills или темп около 45/день. ".repeat(12);
   const payload = buildProfileRatingDetailPayload({
     axis: "kills",
     readModel: {
@@ -73,9 +74,9 @@ test("profile rating detail payload renders transparent V8.5 blocks", () => {
             { title: "🧮 Как считается", lines: ["approved kills rank + рост/день"] },
             { title: "📌 Входные данные", lines: ["Approved 7 200"] },
             { title: "🏔️ Пик / планка", lines: ["Цель A+: 34/день"] },
-            { title: "📉 Модификаторы", lines: ["+20% за рост"] },
-            { title: "🧾 Источники", lines: ["proof windows: 3 · recent changes: 0"] },
-            { title: "💡 До апа", lines: ["A+ откроется от +380 kills"] },
+            { title: "📉 Что влияет на оценку", lines: ["+20% за рост"] },
+            { title: "🧾 Источники", lines: ["Использованы 3 proof-снимка и 0 recent-изменений."] },
+            { title: "💡 До апа", lines: ["A+ откроется от +380 kills", longLine] },
           ],
         },
       },
@@ -88,9 +89,10 @@ test("profile rating detail payload renders transparent V8.5 blocks", () => {
   assert.match(text, /🧮 Как считается/);
   assert.match(text, /📌 Входные данные/);
   assert.match(text, /🏔️ Пик \/ планка/);
-  assert.match(text, /📉 Модификаторы/);
+  assert.match(text, /📉 Что влияет на оценку/);
   assert.match(text, /🧾 Источники/);
   assert.match(text, /💡 До апа/);
+  assert.match(text, /До минимального S\+/);
 });
 
 test("profile payload renders overview, activity, rankings, roblox, and link buttons", () => {

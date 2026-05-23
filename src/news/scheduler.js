@@ -118,7 +118,7 @@ function runDailyNewsCompileTick({ db = {}, now, saveDb, compileDailyNewsDigestF
     const result = compileDailyNewsDigestFn({
       db,
       targetDayKey: decision.dayKey,
-      now: decision.nowIso,
+      now: typeof now === "function" ? now : decision.nowIso,
       windowEndAt: resolveDailyNewsWindowEndAt(decision.dayKey, decision.publishHourMsk),
     });
     state.runtime.lastCompileStatus = "shadow_compiled";

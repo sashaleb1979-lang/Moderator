@@ -1,6 +1,13 @@
 "use strict";
 
 const { ensureNewsState } = require("./state");
+const { collectActivityDigest } = require("./activity");
+const { collectGameplayDigest } = require("./gameplay");
+const { collectKillDigest } = require("./kills");
+const { pruneModerationEvents } = require("./moderation");
+const { collectNewcomerDigest } = require("./newcomers");
+const { collectTierlistDigest } = require("./tierlist");
+const { pruneFinalizedVoiceSessions } = require("./voice");
 
 const MOSCOW_OFFSET_MS = 3 * 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -83,7 +90,7 @@ function buildMoscowWallClockMs(dayKey = "", hour = 0, minute = 0, second = 0) {
   return Number.isFinite(timeMs) ? timeMs : null;
 }
 
-function buildMoscowDayWindow({ dayKey = "", now, windowEndAt = null } = {}) {
+function buildMoscowDayWindow({ dayKey = "", now, windowEndAt = null, publishHourMsk = 21 } = {}) {
   const nowIso = resolveNowIso(now);
   const nowMs = parseIsoMs(nowIso);
   if (nowMs === null) {
@@ -91,36 +98,36 @@ function buildMoscowDayWindow({ dayKey = "", now, windowEndAt = null } = {}) {
   }
 
   const resolvedDayKey = cleanString(dayKey, 40) || resolveMoscowDayKey(nowIso);
-  const dayStartMs = createMoscowDayStartMs(resolvedDayKey);
-  if (dayStartMs === null) {
+  const issueEndMs = buildMoscowWallClockMs(resolvedDayKey, publishHourMsk);
+  if (issueEndMs === null) {
     throw new Error("targetDayKey must be a valid Moscow day key in YYYY-MM-DD format");
   }
+  const issueStartMs = issueEndMs - DAY_MS;
 
-  const dayEndMs = dayStartMs + DAY_MS;
   const requestedEndMs = windowEndAt == null ? null : parseIsoMs(windowEndAt);
   if (windowEndAt != null && requestedEndMs === null) {
     throw new Error("windowEndAt must be a valid ISO timestamp when provided");
   }
 
-  const resolvedRequestedEndMs = requestedEndMs == null ? null : Math.max(dayStartMs, Math.min(requestedEndMs, dayEndMs));
+  const resolvedRequestedEndMs = requestedEndMs == null ? null : Math.max(issueStartMs, Math.min(requestedEndMs, issueEndMs));
   const windowEndMs = resolvedRequestedEndMs == null
-    ? Math.max(dayStartMs, Math.min(nowMs, dayEndMs))
-    : Math.max(dayStartMs, Math.min(resolvedRequestedEndMs, nowMs));
+    ? Math.max(issueStartMs, Math.min(nowMs, issueEndMs))
+    : Math.max(issueStartMs, Math.min(resolvedRequestedEndMs, nowMs));
   const fixedEndApplied = resolvedRequestedEndMs != null && windowEndMs === resolvedRequestedEndMs;
 
   return {
     dayKey: resolvedDayKey,
     nowIso,
-    startAt: toIsoString(dayStartMs),
+    startAt: toIsoString(issueStartMs),
     endAt: toIsoString(windowEndMs),
     requestedEndAt: toIsoString(resolvedRequestedEndMs),
-    fullDayEndAt: toIsoString(dayEndMs),
-    startMs: dayStartMs,
+    fullDayEndAt: toIsoString(issueEndMs),
+    startMs: issueStartMs,
     endMs: windowEndMs,
     requestedEndMs: resolvedRequestedEndMs,
-    fullDayEndMs: dayEndMs,
-    isClosed: fixedEndApplied || windowEndMs >= dayEndMs,
-    mode: fixedEndApplied ? "fixed_cutoff" : windowEndMs >= dayEndMs ? "full_day" : "publish_snapshot",
+    fullDayEndMs: issueEndMs,
+    isClosed: fixedEndApplied || windowEndMs >= issueEndMs,
+    mode: fixedEndApplied ? "fixed_cutoff" : windowEndMs >= issueEndMs ? "full_day" : "publish_snapshot",
     timeZone: "Europe/Moscow",
   };
 }
@@ -500,17 +507,28 @@ function collectModerationDigest(state, window) {
   };
 }
 
-function createAuditSummary(voiceDigest, moderationDigest, auditCandidates) {
+function createAuditSummary({ voiceDigest, moderationDigest, killDigest, activityDigest, newcomerDigest, gameplayDigest, tierlistDigest }, auditCandidates) {
   return {
     rawCandidateCounts: {
       voiceSessions: voiceDigest.candidateBuckets.length,
       moderationEvents: moderationDigest.candidateBuckets.length,
+      killSubmissions: killDigest.candidateBuckets.length,
+      activityRows: activityDigest.candidateBuckets.length,
+      newcomerEvents: newcomerDigest.candidateBuckets.length,
+      gameplayPlayers: gameplayDigest.candidateBuckets.length,
+      tierlistUpdates: tierlistDigest.candidateBuckets.length,
       total: auditCandidates.length,
     },
     emittedCounts: {
       voiceVisitors: voiceDigest.visitorCount,
       publicModerationHighlights: moderationDigest.publicHighlights.length,
       staffModerationEvents: moderationDigest.staffHighlights.length,
+      publicKillUpgrades: killDigest.topUpgrades.length,
+      staffKillItems: killDigest.staffItems.length,
+      publicTopMessageAuthors: activityDigest.topMessageAuthors.length,
+      publicNewcomerHighlights: newcomerDigest.highlights.length,
+      publicGameplayPlayers: gameplayDigest.topPlayers.length,
+      publicTierlistUpdates: tierlistDigest.updates.length,
     },
     ambiguousSourceCount: auditCandidates.filter((candidate) => candidate.bucket === "ambiguous_source").length,
     bucketCounts: countAuditBuckets(auditCandidates),
@@ -525,15 +543,38 @@ function compileDailyNewsDigest({ db = {}, targetDayKey = "", now, saveDb, windo
   state.runtime.lastCompileStatus = "running";
 
   try {
-    const window = buildMoscowDayWindow({ dayKey: targetDayKey, now: compileStartedAt, windowEndAt });
+    const publishHourMsk = Number.isSafeInteger(Number(state.config?.schedule?.publishHourMsk))
+      ? Number(state.config.schedule.publishHourMsk)
+      : 21;
+    const window = buildMoscowDayWindow({
+      dayKey: targetDayKey,
+      now: compileStartedAt,
+      windowEndAt,
+      publishHourMsk,
+    });
     const voice = collectVoiceDigest(state, window);
     const moderation = collectModerationDigest(state, window);
+    const kills = collectKillDigest({ db, window, config: state.config });
+    const activity = collectActivityDigest({ db, window, config: state.config });
+    const newcomers = collectNewcomerDigest({ db, window, config: state.config });
+    const gameplay = collectGameplayDigest({ db, window, config: state.config });
+    const tierlist = collectTierlistDigest({ db, window, config: state.config });
     const auditCandidates = [
       ...voice.candidateBuckets,
       ...moderation.candidateBuckets,
+      ...kills.candidateBuckets,
+      ...activity.candidateBuckets,
+      ...newcomers.candidateBuckets,
+      ...gameplay.candidateBuckets,
+      ...tierlist.candidateBuckets,
     ];
     const coverageReasons = uniqueStrings([
       ...voice.partialReasons,
+      ...kills.partialReasons,
+      ...activity.partialReasons,
+      ...newcomers.partialReasons,
+      ...gameplay.partialReasons,
+      ...tierlist.partialReasons,
       ...(moderation.ambiguousCount > 0 ? ["ambiguous_moderation"] : []),
     ], 120);
 
@@ -551,12 +592,25 @@ function compileDailyNewsDigest({ db = {}, targetDayKey = "", now, saveDb, windo
       },
       voice,
       moderation,
+      kills,
+      activity,
+      newcomers,
+      gameplay,
+      tierlist,
       coverage: {
-        partial: voice.partial,
-        ambiguous: moderation.ambiguousCount > 0,
+        partial: voice.partial || kills.partial || activity.partial || newcomers.partial || gameplay.partial || tierlist.partial,
+        ambiguous: moderation.ambiguousCount > 0 || activity.impreciseRowCount > 0 || gameplay.ambiguousDailyBucketCount > 0,
         reasons: coverageReasons,
       },
-      audit: createAuditSummary(voice, moderation, auditCandidates),
+      audit: createAuditSummary({
+        voiceDigest: voice,
+        moderationDigest: moderation,
+        killDigest: kills,
+        activityDigest: activity,
+        newcomerDigest: newcomers,
+        gameplayDigest: gameplay,
+        tierlistDigest: tierlist,
+      }, auditCandidates),
       publicEdition: {
         voice: {
           enabled: voice.visitorCount > 0,
@@ -568,6 +622,36 @@ function compileDailyNewsDigest({ db = {}, targetDayKey = "", now, saveDb, windo
         moderation: {
           enabled: moderation.publicHighlights.length > 0,
           highlights: clone(moderation.publicHighlights),
+        },
+        kills: {
+          enabled: kills.topUpgrades.length > 0,
+          topUpgrades: clone(kills.topUpgrades),
+          upgradeCount: kills.upgradeCount,
+        },
+        activity: {
+          enabled: activity.topMessageAuthors.length > 0,
+          topMessageAuthors: clone(activity.topMessageAuthors),
+          activeUserCount: activity.activeUserCount,
+          totalMessagesCount: activity.totalMessagesCount,
+          movers: clone(activity.movers),
+        },
+        newcomers: {
+          enabled: newcomers.highlights.length > 0,
+          highlights: clone(newcomers.highlights),
+          newcomerCount: newcomers.newcomerCount,
+          verifiedCount: newcomers.verifiedCount,
+          accessGrantedCount: newcomers.accessGrantedCount,
+        },
+        gameplay: {
+          enabled: gameplay.topPlayers.length > 0,
+          topPlayers: clone(gameplay.topPlayers),
+          precisePlayerCount: gameplay.precisePlayerCount,
+          totalPreciseMinutes: gameplay.totalPreciseMinutes,
+        },
+        tierlist: {
+          enabled: tierlist.updates.length > 0,
+          updates: clone(tierlist.updates),
+          shifts: clone(tierlist.shifts),
         },
       },
       staffDigest: {
@@ -581,11 +665,56 @@ function compileDailyNewsDigest({ db = {}, targetDayKey = "", now, saveDb, windo
           ambiguousCount: moderation.ambiguousCount,
           events: clone(moderation.staffHighlights),
         },
+        kills: {
+          sourceSubmissionCount: kills.sourceSubmissionCount,
+          byStatus: clone(kills.byStatus),
+          items: clone(kills.staffItems),
+        },
+        activity: {
+          sourceRowCount: activity.sourceRowCount,
+          impreciseRowCount: activity.impreciseRowCount,
+          topMessageAuthors: clone(activity.topMessageAuthors),
+          allMessageAuthors: clone(activity.allMessageAuthors),
+          movers: clone(activity.movers),
+        },
+        newcomers: {
+          sourceEventCount: newcomers.sourceEventCount,
+          highlights: clone(newcomers.highlights),
+          joined: clone(newcomers.joined),
+          verified: clone(newcomers.verified),
+          accessGranted: clone(newcomers.accessGranted),
+        },
+        gameplay: {
+          sourcePlayerCount: gameplay.sourcePlayerCount,
+          precisePlayerCount: gameplay.precisePlayerCount,
+          ambiguousDailyBucketCount: gameplay.ambiguousDailyBucketCount,
+          topPlayers: clone(gameplay.topPlayers),
+          items: clone(gameplay.staffItems),
+        },
+        tierlist: {
+          sourceUpdateCount: tierlist.sourceUpdateCount,
+          updates: clone(tierlist.updates),
+          items: clone(tierlist.staffItems),
+          shifts: clone(tierlist.shifts),
+        },
       },
     };
 
+    const compileFinishedAt = typeof now === "function"
+      ? resolveNowIso(now)
+      : new Date().toISOString();
+
+    pruneFinalizedVoiceSessions(state.voice, {
+      retainFromMs: window.startMs,
+      prunedAt: compileFinishedAt,
+    });
+    pruneModerationEvents(state.moderation, {
+      retainFromMs: window.startMs,
+      prunedAt: compileFinishedAt,
+    });
+
     state.dailyDigests[window.dayKey] = digest;
-    state.runtime.lastCompileFinishedAt = compileStartedAt;
+    state.runtime.lastCompileFinishedAt = compileFinishedAt;
     state.runtime.lastCompiledDayKey = window.dayKey;
     state.runtime.lastCompileStatus = "compiled";
     state.runtime.lastCoverageSummary = clone(digest.coverage);

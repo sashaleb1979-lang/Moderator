@@ -71,6 +71,10 @@
 
 - News state: [src/news/state.js](src/news/state.js)
 - Daily compile owner: [src/news/compiler.js](src/news/compiler.js)
+- Daily render owner: [src/news/render.js](src/news/render.js)
+- Preview payload owner: [src/news/preview.js](src/news/preview.js)
+- Publisher owner: [src/news/publisher.js](src/news/publisher.js)
+- Operator owner: [src/news/operator.js](src/news/operator.js)
 - Shadow scheduler owner: [src/news/scheduler.js](src/news/scheduler.js)
 - Voice capture owner: [src/news/voice.js](src/news/voice.js)
 - Moderation capture owner: [src/news/moderation.js](src/news/moderation.js)
@@ -92,20 +96,31 @@ Implemented now:
 - Shadow daily scheduler tick in the shared client-ready periodic job seam.
 - Fixed Moscow publish cutoff semantics for shadow compile even when the first successful tick is later than 21:00.
 - Canonical per-candidate audit bucket trail for current voice and moderation slices.
+- Compile-only kills collector for approved kill jumps, rejected/pending/expired/superseded submission audit, and public/staff selection.
+- Compile-only activity collector for top message authors from persisted activity daily rows, with imprecise-row coverage marking.
+- Compile-only newcomers collector for guild joins, Roblox verified events and access grants from shared profiles.
+- Compile-only JJS gameplay collector for precise session/hourly playtime, with daily buckets kept staff/audit-only as ambiguous when cutoff precision is missing.
+- Compile-only tierlist update collector for submitted main updates, while real up/down shifts remain unavailable until shift history exists.
+- Compiler publicEdition/staffDigest sections now include kills, activity message leaders, newcomers, JJS gameplay and tierlist updates.
+- Audit counts now include kill submissions, activity rows, newcomer events, gameplay players and tierlist updates in the canonical bucket trail.
+- Public/staff payload renderer now turns compiled digest into edition-style Discord-ready message/embed/thread payloads with masthead, date, hero metrics, section blocks, accents, separators, emojis and coverage markers.
+- Preview helper now compiles and renders a digest without publish side effects, and records last preview metadata in news runtime.
+- Publisher owner now sends public issue, continuation thread and staff digest with duplicate-publish guard and failure recording.
+- Operator owner now supports status, preview, rerun-style preview and publish-now orchestration without owning compile/render rules.
 - Compile runtime status is separated from publish runtime status.
 - Persisted daily digest snapshots in `db.sot.news.dailyDigests`.
-- Focused tests for news state, voice capture, moderation capture and SoT integration.
+- Focused tests for news state, voice capture, moderation capture, kills, activity, newcomers, gameplay, tierlist, render/preview, publisher/operator and SoT integration.
 
 Not implemented yet:
 
 - Audit-log reconciliation for kick vs leave.
 - Timeout tracking.
-- Collector modules for kills, activity movers, newcomers, JJS/Roblox and tierlist shifts.
-- Public digest rendering.
+- Activity movers up/down and role-shift story selection.
+- Real tierlist up/down shift history beyond current submission updates.
+- Broader dropped-result audit beyond the current kills submission buckets.
 - Cover PNG renderer for daily edition.
-- Staff digest delivery/render pass beyond raw voice/moderation coverage.
-- Preview/publish operator surface.
-- Real Discord publish flow and duplicate-publish guard.
+- Runtime command/button wiring for the preview/publish operator surface.
+- Automatic scheduler-to-publisher mode and live Discord smoke before enabling public auto-publish.
 
 ## Validation Status
 
@@ -115,7 +130,7 @@ Not implemented yet:
 
 ## Recommended Next Slice
 
-1. Extend the compiler with kills, activity, newcomers, Roblox/JJS and tierlist collectors.
+1. Wire operator buttons/commands to [src/news/operator.js](src/news/operator.js) in preview/staff-safe mode first.
 2. Add timeout tracking and audit-log reconciliation for kick vs leave.
-3. Build the edition renderer and public/staff payload builders.
-4. Add preview/publish operator actions and real Discord delivery.
+3. Add activity movers and real tierlist shift history sources.
+4. Add cover PNG rendering, then scheduler-to-publisher auto mode after live smoke.

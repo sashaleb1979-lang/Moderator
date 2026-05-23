@@ -14660,7 +14660,7 @@ client.once("clientReady", async () => {
     runDailyNewsCompileTick: async () => {
       const result = await runSerializedDbTask(() => runDailyNewsCompileTick({
         db,
-        now: nowIso(),
+        now: nowIso,
         saveDb,
       }), "daily-news-shadow-compile");
       if (result?.compiled) {

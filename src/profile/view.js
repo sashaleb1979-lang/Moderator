@@ -505,8 +505,8 @@ function buildProfileRatingDetailPayload({ readModel = {}, axis = "" } = {}) {
     );
 
   container.addTextDisplayComponents(...buildSectionTextDisplays(blocks, 3900, {
-    maxDisplays: 4,
-    blockLimit: 1000,
+    maxDisplays: 8,
+    blockLimit: 1350,
   }));
 
   return {

@@ -59,6 +59,27 @@ function createDefaultNewsConfig() {
       includeBansPublic: true,
       staffIncludeActorDetails: true,
     },
+    kills: {
+      topCount: 5,
+      staffIncludeRejected: true,
+      staffIncludePending: true,
+    },
+    activity: {
+      topMessagesCount: 5,
+      includeMessageLeaderboard: true,
+    },
+    newcomers: {
+      topCount: 8,
+      includeVerifiedPublic: true,
+    },
+    gameplay: {
+      topCount: 5,
+      includeJjsLeaderboard: true,
+    },
+    tierlist: {
+      topCount: 5,
+      includeSubmissionUpdates: true,
+    },
     presentation: {
       visualMode: "edition",
       masthead: "Daily Edition",
@@ -94,6 +115,27 @@ function normalizeNewsConfig(value = {}) {
       includeLeavesPublic: normalizeBoolean(source.moderation?.includeLeavesPublic, defaults.moderation.includeLeavesPublic),
       includeBansPublic: normalizeBoolean(source.moderation?.includeBansPublic, defaults.moderation.includeBansPublic),
       staffIncludeActorDetails: normalizeBoolean(source.moderation?.staffIncludeActorDetails, defaults.moderation.staffIncludeActorDetails),
+    },
+    kills: {
+      topCount: normalizePositiveInteger(source.kills?.topCount, defaults.kills.topCount),
+      staffIncludeRejected: normalizeBoolean(source.kills?.staffIncludeRejected, defaults.kills.staffIncludeRejected),
+      staffIncludePending: normalizeBoolean(source.kills?.staffIncludePending, defaults.kills.staffIncludePending),
+    },
+    activity: {
+      topMessagesCount: normalizePositiveInteger(source.activity?.topMessagesCount, defaults.activity.topMessagesCount),
+      includeMessageLeaderboard: normalizeBoolean(source.activity?.includeMessageLeaderboard, defaults.activity.includeMessageLeaderboard),
+    },
+    newcomers: {
+      topCount: normalizePositiveInteger(source.newcomers?.topCount, defaults.newcomers.topCount),
+      includeVerifiedPublic: normalizeBoolean(source.newcomers?.includeVerifiedPublic, defaults.newcomers.includeVerifiedPublic),
+    },
+    gameplay: {
+      topCount: normalizePositiveInteger(source.gameplay?.topCount, defaults.gameplay.topCount),
+      includeJjsLeaderboard: normalizeBoolean(source.gameplay?.includeJjsLeaderboard, defaults.gameplay.includeJjsLeaderboard),
+    },
+    tierlist: {
+      topCount: normalizePositiveInteger(source.tierlist?.topCount, defaults.tierlist.topCount),
+      includeSubmissionUpdates: normalizeBoolean(source.tierlist?.includeSubmissionUpdates, defaults.tierlist.includeSubmissionUpdates),
     },
     presentation: {
       visualMode: cleanString(source.presentation?.visualMode, 40) || defaults.presentation.visualMode,

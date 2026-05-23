@@ -390,6 +390,7 @@ function computeKillStanding(entries = [], userId = "") {
   const index = ranked.findIndex((entry) => cleanString(entry?.userId, 80) === normalizedUserId);
   const currentEntry = index >= 0 ? ranked[index] : null;
   const previousEntry = index > 0 ? ranked[index - 1] : null;
+  const leaderEntry = ranked[0] || null;
   const approvedKills = Number(currentEntry?.approvedKills);
   const shareOfServerKills = Number.isFinite(approvedKills) && totalKills > 0
     ? (approvedKills / totalKills) * 100
@@ -397,6 +398,9 @@ function computeKillStanding(entries = [], userId = "") {
   const killsToNextRank = previousEntry && Number.isFinite(approvedKills)
     ? Math.max(1, Math.floor((Number(previousEntry.approvedKills) || 0) - approvedKills + 1))
     : null;
+  const killsToLeader = leaderEntry && Number.isFinite(approvedKills) && cleanString(leaderEntry?.userId, 80) !== normalizedUserId
+    ? Math.max(1, Math.floor((Number(leaderEntry.approvedKills) || 0) - approvedKills + 1))
+    : 0;
 
   return {
     rank: index >= 0 ? index + 1 : null,
@@ -404,6 +408,32 @@ function computeKillStanding(entries = [], userId = "") {
     totalKills,
     shareOfServerKills,
     killsToNextRank,
+    killsToLeader,
+    currentEntry: normalizeProfileLeaderboardEntry(currentEntry),
+    nextRankEntry: normalizeProfileLeaderboardEntry(previousEntry),
+    leaderEntry: normalizeProfileLeaderboardEntry(leaderEntry),
+  };
+}
+
+function normalizeProfileLeaderboardEntry(entry = null) {
+  if (!entry || typeof entry !== "object") return null;
+  const profile = entry?.profile && typeof entry.profile === "object" ? entry.profile : entry;
+  const summary = profile?.summary && typeof profile.summary === "object" ? profile.summary : {};
+  const displayName = cleanString(
+    entry.displayName
+    || entry.username
+    || summary.preferredDisplayName
+    || profile.displayName
+    || profile.username,
+    120
+  );
+  const userId = cleanString(entry.userId || profile.userId || profile.discordUserId || profile.id, 80);
+  const approvedKills = normalizeNullableFiniteNumber(entry.approvedKills ?? profile.approvedKills ?? summary?.onboarding?.approvedKills);
+  if (!displayName && !userId && !Number.isFinite(approvedKills)) return null;
+  return {
+    userId,
+    displayName,
+    approvedKills,
   };
 }
 
@@ -560,6 +590,142 @@ function buildPeakTarget(samples = [], multiplier = 0.8, fallbackTarget = 100) {
   return Math.max(fallback, Math.max(...values) * multiplier);
 }
 
+function getSPlusGradeTarget() {
+  return PROFILE_GRADE_TARGETS.find((entry) => entry.grade === "S+") || { grade: "S+", score: 97 };
+}
+
+function formatShortDate(value = null) {
+  const timestamp = Number.isFinite(Number(value)) ? Number(value) : Date.parse(String(value || ""));
+  if (!Number.isFinite(timestamp)) return "дата неизвестна";
+  const date = new Date(timestamp);
+  return `${String(date.getUTCDate()).padStart(2, "0")}.${String(date.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+
+function formatDateRange(fromAt = null, toAt = null) {
+  const fromLabel = formatShortDate(fromAt);
+  const toLabel = formatShortDate(toAt);
+  if (fromLabel === "дата неизвестна" && toLabel === "дата неизвестна") return "даты неизвестны";
+  if (fromLabel === "дата неизвестна") return `до ${toLabel}`;
+  if (toLabel === "дата неизвестна") return `с ${fromLabel}`;
+  return `${fromLabel} → ${toLabel}`;
+}
+
+function resolveProfileBenchmarkOwner(entry = null, fallback = "лучший профиль в выборке") {
+  if (!entry || typeof entry !== "object") {
+    return { label: fallback, hasName: false, userId: "" };
+  }
+  const normalized = normalizeProfileLeaderboardEntry(entry) || {};
+  const profile = entry?.profile && typeof entry.profile === "object" ? entry.profile : entry;
+  const summary = profile?.summary && typeof profile.summary === "object" ? profile.summary : {};
+  const displayName = cleanString(
+    normalized.displayName
+    || (entry.hasName === false || entry.ownerHasName === false ? "" : entry.label)
+    || entry.ownerLabel
+    || entry.displayName
+    || entry.username
+    || summary.preferredDisplayName
+    || profile.displayName
+    || profile.username,
+    120
+  );
+  const userId = cleanString(normalized.userId || entry.userId || profile.userId || profile.discordUserId || profile.id, 80);
+  if (displayName) return { label: displayName, hasName: true, userId };
+  if (userId) return { label: `профиль ${userId}`, hasName: true, userId };
+  return { label: fallback, hasName: false, userId: "" };
+}
+
+function formatProfileBenchmarkOwner(entry = null, valueText = "") {
+  const owner = resolveProfileBenchmarkOwner(entry);
+  const suffix = cleanString(valueText, 120);
+  return `${owner.label}${suffix ? ` · ${suffix}` : ""}${owner.hasName ? "" : ", имя не передано"}`;
+}
+
+function formatMissingAmount(current = null, target = null, unit = "") {
+  const currentValue = normalizeNullableFiniteNumber(current);
+  const targetValue = normalizeNullableFiniteNumber(target);
+  const unitLabel = cleanString(unit, 30);
+  if (!Number.isFinite(currentValue) || !Number.isFinite(targetValue)) return "не хватает данных для расчёта";
+  const gap = targetValue - currentValue;
+  const formattedGap = unitLabel === "ч" ? formatHours(Math.abs(gap)) : formatNumber(Math.ceil(Math.abs(gap)));
+  const suffix = unitLabel ? `${unitLabel === "ч" ? "" : " "}${unitLabel}` : "";
+  if (gap <= 0) return `планка уже закрыта, запас +${formattedGap}${suffix}`;
+  return `не хватает ${formattedGap}${suffix}`;
+}
+
+function formatDaysCoverageLine({ coveredDays = 0, targetDays = 6, label = "kill-days" } = {}) {
+  const covered = Math.max(0, Math.min(Number(targetDays) || 6, Math.round(normalizeFiniteNumber(coveredDays, 0))));
+  const target = Math.max(1, Math.round(normalizeFiniteNumber(targetDays, 6)));
+  const missing = Math.max(0, target - covered);
+  if (missing > 0) {
+    return `Покрыто ${formatNumber(covered)}/${formatNumber(target)} ${label}: не хватает ещё ${formatNumber(missing)} дня роста для полного учёта.`;
+  }
+  return `Покрыто ${formatNumber(covered)}/${formatNumber(target)} ${label}: штрафа за нехватку дней нет.`;
+}
+
+function formatGradePathLines({ currentScore = null, nextGrade = null, sPlusTarget = null } = {}) {
+  const score = clampRatingScore(currentScore);
+  const next = nextGrade || getNextGradeTarget(score);
+  const sPlus = sPlusTarget || getSPlusGradeTarget();
+  const lines = [];
+  lines.push(`Текущая оценка: ${buildProfileGrade(score)}, ${formatProfileRatingScore(score)}/100.`);
+  if (next) {
+    lines.push(`До следующей буквы ${next.grade}: нужно +${formatProfileRatingScore(Math.max(0, next.score - score))} очков оценки.`);
+  } else {
+    lines.push("Следующая буква уже закрыта: это минимальный S+ или выше.");
+  }
+  lines.push(`До минимального S+: нужно +${formatProfileRatingScore(Math.max(0, sPlus.score - score))} очков оценки.`);
+  return lines;
+}
+
+function formatEffectShareLine({ label = "Компонент", points = 0, totalScore = 100 } = {}) {
+  const componentPoints = normalizeFiniteNumber(points, 0);
+  const totalPoints = Math.max(0.1, normalizeFiniteNumber(totalScore, 100));
+  const share = Math.round((componentPoints / totalPoints) * 100);
+  return `${label} дал ${formatProfileRatingScore(componentPoints)} очка из ${formatProfileRatingScore(totalPoints)}: это ${formatNumber(share)}% текущей оценки.`;
+}
+
+function formatAxisWeightLine(axisName = "") {
+  const meta = PROFILE_RATING_AXIS_LABELS[axisName] || { label: cleanString(axisName, 40) || "Эта оценка" };
+  const weightPercent = Math.round((PROFILE_RATING_AXIS_WEIGHTS[axisName] || 0) * 100);
+  const totalImpact = Math.round(weightPercent / 10);
+  return `${meta.label} весит ${formatNumber(weightPercent)}% общего рейтинга: +10 очков ${meta.label} примерно дают +${formatNumber(totalImpact)} очка к общему рейтингу.`;
+}
+
+function estimateMissingUnitsForScoreGap({ scoreGap = 0, componentWeight = 1, targetValue = 1, currentValue = 0, round = "ceil" } = {}) {
+  const gap = normalizeFiniteNumber(scoreGap, 0);
+  const weight = Math.max(0.1, normalizeFiniteNumber(componentWeight, 1));
+  const target = Math.max(0.1, normalizeFiniteNumber(targetValue, 1));
+  const current = Math.max(0, normalizeFiniteNumber(currentValue, 0));
+  if (gap <= 0) return 0;
+  const missingToFull = Math.max(0, target - current);
+  const needed = Math.min(missingToFull, (gap / weight) * target);
+  if (round === "tenth") return Math.ceil(needed * 10) / 10;
+  return Math.ceil(needed);
+}
+
+function formatMinutesPerDay(hours = null) {
+  const amount = normalizeNullableFiniteNumber(hours);
+  if (!Number.isFinite(amount)) return "—";
+  return formatNumber(Math.ceil((amount * 60) / 7));
+}
+
+function formatKillWindowLine(window = {}, stateText = "учтено полностью") {
+  const from = normalizeNullableFiniteNumber(window?.from);
+  const to = normalizeNullableFiniteNumber(window?.to);
+  const delta = Number.isFinite(Number(window?.delta)) ? Number(window.delta) : (Number.isFinite(from) && Number.isFinite(to) ? to - from : null);
+  const dayCount = normalizeNullableFiniteNumber(window?.dayCount);
+  const averagePerDay = Number.isFinite(Number(window?.averagePerDay))
+    ? Number(window.averagePerDay)
+    : (Number.isFinite(delta) && Number.isFinite(dayCount) && dayCount > 0 ? delta / dayCount : null);
+  if (!Number.isFinite(from) || !Number.isFinite(to)) {
+    return `Окно ${Number.isFinite(delta) ? formatSignedNumber(delta) : "kills"} не учтено: нет двух значений kills.`;
+  }
+  if (!Number.isFinite(dayCount) || dayCount <= 0 || window?.sourceGap === true) {
+    return `Окно ${formatSignedNumber(delta)} kills не учтено: нет двух дат, нельзя понять, за сколько дней это набрано.`;
+  }
+  return `${formatDateRange(window.fromAt, window.toAt)}: ${formatNumber(from)} → ${formatNumber(to)}, ${formatSignedNumber(delta)} kills за ${formatNumber(dayCount)} дней = ${formatNumber(Math.round(averagePerDay * 10) / 10)}/день, ${stateText}.`;
+}
+
 function getRawVoiceHours(activitySummary = {}, voiceSummary = {}, period = "7d") {
   const suffix = period === "7d" ? "7d" : "30d";
   const activitySeconds = normalizeNullableFiniteNumber(activitySummary?.[`voiceDurationSeconds${suffix}`]);
@@ -605,7 +771,11 @@ function getPopulationActivityMetrics(populationProfiles = []) {
     .map((entry) => {
       const profile = entry?.profile && typeof entry.profile === "object" ? entry.profile : entry;
       const summary = profile?.summary && typeof profile.summary === "object" ? profile.summary : {};
-      return buildActivityLeagueMetrics(summary.activity || {}, summary.voice || {});
+      return {
+        ...buildActivityLeagueMetrics(summary.activity || {}, summary.voice || {}),
+        ...resolveProfileBenchmarkOwner(entry),
+        originalEntry: entry,
+      };
     });
 }
 
@@ -615,10 +785,27 @@ function getPopulationJjsHours(populationProfiles = []) {
       const profile = entry?.profile && typeof entry.profile === "object" ? entry.profile : entry;
       const summary = profile?.summary && typeof profile.summary === "object" ? profile.summary : {};
       const roblox = summary.roblox && typeof summary.roblox === "object" ? summary.roblox : {};
-      return normalizeNullableFiniteNumber(roblox.jjsMinutes7d);
+      const minutes = normalizeNullableFiniteNumber(roblox.jjsMinutes7d);
+      if (!Number.isFinite(minutes)) return null;
+      return {
+        hours: minutes / 60,
+        minutes,
+        ...resolveProfileBenchmarkOwner(entry),
+        originalEntry: entry,
+      };
     })
-    .filter((entry) => Number.isFinite(entry))
-    .map((minutes) => minutes / 60);
+    .filter((entry) => entry && Number.isFinite(entry.hours));
+}
+
+function pickTopMetricOwner(entries = [], metricKey = "value", currentEntry = null) {
+  const candidates = [
+    ...(Array.isArray(entries) ? entries : []),
+    currentEntry,
+  ]
+    .filter(Boolean)
+    .filter((entry) => Number.isFinite(Number(entry?.[metricKey])));
+  if (!candidates.length) return null;
+  return candidates.slice().sort((left, right) => Number(right[metricKey]) - Number(left[metricKey]))[0];
 }
 
 function buildRatingCardAxis({
@@ -723,15 +910,23 @@ function buildRatingCardAxis({
   };
 }
 
-function buildActivityRatingAxis({ activitySummary = {}, voiceSummary = {}, populationProfiles = [] } = {}) {
+function buildActivityRatingAxis({ activitySummary = {}, voiceSummary = {}, populationProfiles = [], currentProfileLabel = "" } = {}) {
   const current = buildActivityLeagueMetrics(activitySummary, voiceSummary);
   const population = getPopulationActivityMetrics(populationProfiles);
+  const currentOwner = {
+    ...current,
+    label: cleanString(currentProfileLabel, 120) || "этот профиль",
+    hasName: true,
+  };
   const voiceSamples = [...population.map((entry) => entry.voiceRatingHours), current.voiceRatingHours];
   const sessionSamples = [...population.map((entry) => entry.messageSessions), current.messageSessions];
   const messageSamples = [...population.map((entry) => entry.messages), current.messages];
   const topObservedVoiceHours = Math.max(0, ...voiceSamples.map((entry) => normalizeFiniteNumber(entry, 0)).filter((entry) => Number.isFinite(entry)));
   const topObservedSessions = Math.max(0, ...sessionSamples.map((entry) => normalizeFiniteNumber(entry, 0)).filter((entry) => Number.isFinite(entry)));
   const topObservedMessages = Math.max(0, ...messageSamples.map((entry) => normalizeFiniteNumber(entry, 0)).filter((entry) => Number.isFinite(entry)));
+  const topVoiceOwner = pickTopMetricOwner(population, "voiceRatingHours", currentOwner);
+  const topSessionsOwner = pickTopMetricOwner(population, "messageSessions", currentOwner);
+  const topMessagesOwner = pickTopMetricOwner(population, "messages", currentOwner);
   const voiceTarget = buildPeakTarget(voiceSamples, 0.7, 2);
   const sessionsTarget = buildPeakTarget(sessionSamples, 0.7, 5);
   const messagesTarget = buildPeakTarget(messageSamples, 0.7, 150);
@@ -770,41 +965,81 @@ function buildActivityRatingAxis({ activitySummary = {}, voiceSummary = {}, popu
   });
   const score = clampRatingScore(cappedScore);
   const next = getNextGradeTarget(score);
+  const sPlus = getSPlusGradeTarget();
   const scoreGap = next ? Math.max(0, next.score - score) : 0;
-  const voiceNeed = scoreGap > 0 ? Math.ceil((scoreGap / 45) * voiceTarget * 10) / 10 : 0;
-  const sessionNeed = scoreGap > 0 ? Math.ceil((scoreGap / 35) * sessionsTarget) : 0;
+  const sPlusGap = Math.max(0, sPlus.score - score);
+  const voiceNeed = estimateMissingUnitsForScoreGap({ scoreGap, componentWeight: 45, targetValue: voiceTarget, currentValue: current.voiceRatingHours, round: "tenth" });
+  const sessionNeed = estimateMissingUnitsForScoreGap({ scoreGap, componentWeight: 35, targetValue: sessionsTarget, currentValue: current.messageSessions });
+  const messageNeed = estimateMissingUnitsForScoreGap({ scoreGap, componentWeight: 20, targetValue: messagesTarget, currentValue: current.messages });
+  const voiceNeedForSPlus = estimateMissingUnitsForScoreGap({ scoreGap: sPlusGap, componentWeight: 45, targetValue: voiceTarget, currentValue: current.voiceRatingHours, round: "tenth" });
+  const sessionNeedForSPlus = estimateMissingUnitsForScoreGap({ scoreGap: sPlusGap, componentWeight: 35, targetValue: sessionsTarget, currentValue: current.messageSessions });
+  const messageNeedForSPlus = estimateMissingUnitsForScoreGap({ scoreGap: sPlusGap, componentWeight: 20, targetValue: messagesTarget, currentValue: current.messages });
+  const voiceGapToTarget = Math.max(0, voiceTarget - current.voiceRatingHours);
+  const sessionsGapToTarget = Math.max(0, sessionsTarget - current.messageSessions);
+  const messagesGapToTarget = Math.max(0, messagesTarget - current.messages);
+  const weakestComponent = [
+    { label: "voice", lost: Math.max(0, 45 - voiceContribution) },
+    { label: "chat-сессии", lost: Math.max(0, 35 - sessionContribution) },
+    { label: "сообщения", lost: Math.max(0, 20 - messageContribution) },
+  ].sort((left, right) => right.lost - left.lost)[0];
   const detailItems = [];
-  detailItems.push(`пик: voice ${formatHours(voiceTarget)}ч · ${formatNumber(Math.round(sessionsTarget))} сесс. · ${formatNumber(Math.round(messagesTarget))} msg`);
-  if (current.rawExtraVoiceHours > 0) detailItems.push(`raw voice -30%`);
-  if (!hasVoice && hasChat) detailItems.push("voice cap");
-  else if (hasVoice && !hasChat) detailItems.push("chat cap");
-  else if (capPenalty < -0.5) detailItems.push(hasVoice ? "chat cap" : "voice cap");
-  detailItems.push(pureModeCapApplied ? "cap сработал" : "cap off");
+  detailItems.push(`планка: voice ${formatHours(voiceTarget)}ч · ${formatNumber(Math.round(sessionsTarget))} сесс. · ${formatNumber(Math.round(messagesTarget))} msg`);
+  if (current.rawExtraVoiceHours > 0) detailItems.push("сырой voice считается слабее на 30%");
+  if (!hasVoice && hasChat) detailItems.push("нужен voice для снятия потолка");
+  else if (hasVoice && !hasChat) detailItems.push("нужен chat для снятия потолка");
+  else if (capPenalty < -0.5) detailItems.push(hasVoice ? "chat-потолок" : "voice-потолок");
+  detailItems.push(pureModeCapApplied ? "потолок 84 сработал" : "потолок не сработал");
+
+  const buildActivityBenchmarkLines = ({ metricLabel, topEntry, metricKey, currentValue, targetValue, fallbackValue, unitLabel, formatValue }) => {
+    const topValue = normalizeFiniteNumber(topEntry?.[metricKey], 0);
+    const ownerText = formatProfileBenchmarkOwner(topEntry, `${formatValue(topValue)}${unitLabel} за 7д`);
+    const baseLine = `${metricLabel}-планку задаёт ${ownerText}. Для оценки берём 70% от этого: ${formatValue(topValue * 0.7)}${unitLabel}.`;
+    const fallbackLine = targetValue > topValue * 0.7 + 0.01
+      ? `Так как 70% от топа ниже минимума, сработала запасная минимальная планка ${formatValue(fallbackValue)}${unitLabel}.`
+      : "";
+    const currentLine = `Твой ${metricLabel}: ${formatValue(currentValue)}${unitLabel}; ${formatMissingAmount(currentValue, targetValue, unitLabel)} до полной планки.`;
+    return [baseLine, fallbackLine, currentLine].filter(Boolean);
+  };
 
   const formulaLines = [
-    "voice 45% + chat-сессии 35% + msg 20%",
-    "JJS здесь не участвует",
-    "чисто chat/voice ограничены cap 84/100",
+    "Период оценки: последние 7 дней.",
+    "Activity складывается из трёх частей: voice, chat-сессии и сообщения.",
+    "Voice весит 45% оценки, chat-сессии 35%, сообщения 20%.",
+    "JJS здесь не участвует: игровое время считается отдельно в оценке JJS.",
+    "Если есть только voice или только chat, оценка не может подняться выше 84/100.",
+    formatAxisWeightLine("activity"),
   ];
   const inputLines = [
-    `Voice ${formatHours(current.voiceRatingHours)}ч · clean ${formatHours(current.cleanVoiceHours)}ч · raw extra ${formatHours(current.rawExtraVoiceHours)}ч`,
-    `Chat-сессии ${formatNumber(current.messageSessions)} · msg ${formatNumber(current.messages)}`,
+    `За 7 дней у тебя: ${formatHours(current.voiceRatingHours)}ч зачтённого voice, ${formatNumber(current.messageSessions)} chat-сессий, ${formatNumber(current.messages)} сообщений.`,
+    `Voice исходно: ${formatHours(current.rawVoiceHours)}ч. В зачёт пошло ${formatHours(current.voiceRatingHours)}ч: лишняя или сыроватая часть считается на 30% слабее.`,
+    "Chat-сессии показывают не количество сообщений, а сколько раз ты реально включался в общение.",
+    "Сообщения дают отдельные очки, но у них самый маленький вес: 20%.",
   ];
   const peakLines = [
-    `Цель: voice ${formatHours(voiceTarget)}ч · ${formatNumber(Math.round(sessionsTarget))} сессий · ${formatNumber(Math.round(messagesTarget))} msg`,
-    `Планка: top ×70%, fallback voice 2ч · 5 сессий · 150 msg`,
-    `Top сейчас: voice ${formatHours(topObservedVoiceHours)}ч · ${formatNumber(Math.round(topObservedSessions))} сессий · ${formatNumber(Math.round(topObservedMessages))} msg`,
+    "Планка берётся от лучших результатов сервера за тот же период.",
+    ...buildActivityBenchmarkLines({ metricLabel: "Voice", topEntry: topVoiceOwner, metricKey: "voiceRatingHours", currentValue: current.voiceRatingHours, targetValue: voiceTarget, fallbackValue: 2, unitLabel: "ч", formatValue: formatHours }),
+    ...buildActivityBenchmarkLines({ metricLabel: "Chat", topEntry: topSessionsOwner, metricKey: "messageSessions", currentValue: current.messageSessions, targetValue: sessionsTarget, fallbackValue: 5, unitLabel: " сессий", formatValue: (value) => formatNumber(Math.round(value)) }),
+    ...buildActivityBenchmarkLines({ metricLabel: "Msg", topEntry: topMessagesOwner, metricKey: "messages", currentValue: current.messages, targetValue: messagesTarget, fallbackValue: 150, unitLabel: " сообщений", formatValue: (value) => formatNumber(Math.round(value)) }),
   ];
   const modifierLines = [
-    `voice: ${formatNumber(Math.round(voiceScore))}% ×45 = ${formatNumber(Math.round(voiceContribution))}`,
-    `sessions: ${formatNumber(Math.round(sessionScore))}% ×35 = ${formatNumber(Math.round(sessionContribution))}`,
-    `msg: ${formatNumber(Math.round(messageScore))}% ×20 = ${formatNumber(Math.round(messageContribution))}`,
-    pureModeCapApplied ? `${formatRatingModifier(capPenalty)} за pure-mode cap` : "cap не сработал",
+    `Voice: ${formatHours(current.voiceRatingHours)}ч из ${formatHours(voiceTarget)}ч планки = ${formatNumber(Math.round(voiceScore))}% компонента, вклад ${formatProfileRatingScore(voiceContribution)} очков из 45.`,
+    `Chat-сессии: ${formatNumber(current.messageSessions)} из ${formatNumber(Math.round(sessionsTarget))} планки = ${formatNumber(Math.round(sessionScore))}% компонента, вклад ${formatProfileRatingScore(sessionContribution)} очков из 35.`,
+    `Сообщения: ${formatNumber(current.messages)} из ${formatNumber(Math.round(messagesTarget))} планки = ${formatNumber(Math.round(messageScore))}% компонента, вклад ${formatProfileRatingScore(messageContribution)} очков из 20.`,
+    `Итог до потолка: ${formatProfileRatingScore(uncappedScore)}/100. ${pureModeCapApplied ? `Потолок сработал и снял ${formatProfileRatingScore(Math.abs(capPenalty))} очков.` : "Потолок не сработал, потому что есть и voice, и chat."}`,
+    weakestComponent?.lost > 0.5 ? `Главное слабое место сейчас: ${weakestComponent.label}, там потеряно около ${formatProfileRatingScore(weakestComponent.lost)} очков Activity.` : "Все компоненты Activity близко к своим планкам.",
+    formatEffectShareLine({ label: "Voice", points: voiceContribution, totalScore: score }),
   ];
   const sourceLines = [
-    "voice: canonical activity summary",
-    "chat: sessions7d/messages7d activity windows",
-    "JJS не входит в Activity",
+    "Voice берётся из summary.activity и summary.voice за 7 дней.",
+    "Chat берётся из sessions7d и messages7d activity-окон.",
+    `Серверная выборка для планки: ${formatNumber(population.length)} профилей плюс текущий профиль.`,
+    `Текущие разрывы до полной планки: voice ${formatMissingAmount(current.voiceRatingHours, voiceTarget, "ч")}; chat ${formatMissingAmount(current.messageSessions, sessionsTarget, " сессий")}; msg ${formatMissingAmount(current.messages, messagesTarget, " сообщений")}.`,
+  ];
+  const upgradeLines = [
+    ...formatGradePathLines({ currentScore: score, nextGrade: next, sPlusTarget: sPlus }),
+    next ? `Быстрый путь до ${next.grade}: +${formatHours(voiceNeed)}ч voice или +${formatNumber(sessionNeed)} chat-сессий или +${formatNumber(messageNeed)} сообщений за 7 дней.` : "Следующая буква уже закрыта; дальше цель только удерживать S+.",
+    `До минимального S+: примерно +${formatHours(voiceNeedForSPlus)}ч voice или +${formatNumber(sessionNeedForSPlus)} chat-сессий или +${formatNumber(messageNeedForSPlus)} сообщений, если добирать одной частью.`,
+    voiceNeedForSPlus > 0 ? `Если идти через voice, это около +${formatNumber(Math.ceil((voiceNeedForSPlus * 60) / 7))} минут в день в течение недели.` : "Voice-планка для S+ по этой оси уже закрыта.",
   ];
 
   return buildRatingCardAxis({
@@ -827,6 +1062,18 @@ function buildActivityRatingAxis({ activitySummary = {}, voiceSummary = {}, popu
       voiceRawPenaltyPercent: 30,
       targetValues: { voiceHours: voiceTarget, sessions: sessionsTarget, messages: messagesTarget },
       topObservedValues: { voiceHours: topObservedVoiceHours, sessions: topObservedSessions, messages: topObservedMessages },
+      topVoiceOwner,
+      topSessionsOwner,
+      topMessagesOwner,
+      voiceGapToTarget,
+      sessionsGapToTarget,
+      messagesGapToTarget,
+      voiceNeedForNextGrade: voiceNeed,
+      sessionsNeedForNextGrade: sessionNeed,
+      messagesNeedForNextGrade: messageNeed,
+      voiceNeedForSPlus,
+      sessionsNeedForSPlus: sessionNeedForSPlus,
+      messagesNeedForSPlus: messageNeedForSPlus,
       voiceScorePercent: voiceScore,
       sessionScorePercent: sessionScore,
       messageScorePercent: messageScore,
@@ -834,14 +1081,14 @@ function buildActivityRatingAxis({ activitySummary = {}, voiceSummary = {}, popu
       sessionContributionPoints: sessionContribution,
       messageContributionPoints: messageContribution,
       pureModeCapApplied,
-      formulaLine: "voice 45% + chat-сессии 35% + сообщения 20%; чистый chat/voice capped до 84/100",
-      peakLine: `пик: voice ${formatHours(voiceTarget)}ч · ${formatNumber(Math.round(sessionsTarget))} сесс. · ${formatNumber(Math.round(messagesTarget))} msg · ${pureModeCapApplied ? "cap on" : "cap off"}`,
+      formulaLine: "voice 45% + chat-сессии 35% + сообщения 20%; чистый chat/voice ограничен до 84/100",
+      peakLine: `планка: voice ${formatHours(voiceTarget)}ч · ${formatNumber(Math.round(sessionsTarget))} сесс. · ${formatNumber(Math.round(messagesTarget))} msg · ${pureModeCapApplied ? "потолок включён" : "потолок не включён"}`,
       formulaLines,
       inputLines,
       peakLines,
       modifierLines,
       sourceLines,
-      upgradeLines: [next ? `до ${next.grade}: +${formatHours(voiceNeed)}ч voice или +${formatNumber(sessionNeed)} chat-сессии` : "S+ уже открыт"],
+      upgradeLines,
     },
   });
 }
@@ -903,8 +1150,9 @@ function buildKillChangeFromProofPair(previous = null, latest = null) {
   };
 }
 
-function buildRatingKillChanges({ profile = null, recentKillChanges = [], limit = 12 } = {}) {
-  const normalizedLimit = Math.max(6, Number(limit) || 12);
+function buildRatingKillChanges({ profile = null, recentKillChanges = [], limit = Number.POSITIVE_INFINITY } = {}) {
+  const limitNumber = Number(limit);
+  const normalizedLimit = Number.isFinite(limitNumber) ? Math.max(6, limitNumber) : Number.POSITIVE_INFINITY;
   const windows = [];
   const seen = new Set();
   const proofWindows = normalizeRatingProofWindows(profile);
@@ -992,6 +1240,19 @@ function buildRecentKillPaceState({ recentKillChanges = [], now = null } = {}) {
     remainingDays -= days;
     usedWindows.push({ ...window, usedDays: days });
   }
+  const usedWindowKeys = new Set(usedWindows.map((entry) => `${entry.from}:${entry.to}:${Number.isFinite(entry.toAt) ? entry.toAt : "na"}`));
+  const olderKillWindows = windows.filter((entry) => !usedWindowKeys.has(`${entry.from}:${entry.to}:${Number.isFinite(entry.toAt) ? entry.toAt : "na"}`));
+  const ignoredKillWindows = [
+    ...ignoredOutlierWindows.map((entry) => ({ ...entry, ignoredReason: `выше лимита ${formatNumber(PROFILE_KILLS_DAY_OUTLIER_LIMIT)}/день` })),
+    ...ignoredSourceGapWindows.map((entry) => ({ ...entry, ignoredReason: "нет двух дат" })),
+    ...ignoredNeutralWindows.map((entry) => ({ ...entry, ignoredReason: "нет роста" })),
+  ];
+  const coveredTimestamps = usedWindows
+    .flatMap((entry) => [entry.fromAt, entry.toAt])
+    .filter((entry) => Number.isFinite(Number(entry)))
+    .map(Number);
+  const firstCoveredDay = coveredTimestamps.length ? Math.min(...coveredTimestamps) : null;
+  const lastCoveredDay = coveredTimestamps.length ? Math.max(...coveredTimestamps) : null;
   const latestToAt = windows.find((entry) => Number.isFinite(entry.toAt))?.toAt ?? null;
   const dataAgeDays = Number.isFinite(latestToAt)
     ? Math.max(0, Math.floor((normalizedNow - latestToAt) / (24 * 60 * 60 * 1000)))
@@ -1016,6 +1277,15 @@ function buildRecentKillPaceState({ recentKillChanges = [], now = null } = {}) {
     ignoredSourceGapWindows,
     candidateWindows: allWindows,
     validWindows: windows,
+    olderKillWindows,
+    ignoredKillWindows,
+    allKillWindows: allWindows,
+    scoredKillWindows: usedWindows,
+    coveredKillDays: coveredDays,
+    missingKillDays: Math.max(0, 6 - coveredDays),
+    firstCoveredDay,
+    lastCoveredDay,
+    coveredDayRangeLabel: coveredTimestamps.length ? formatDateRange(firstCoveredDay, lastCoveredDay) : "нет закрытых дней с датами",
   };
 }
 
@@ -1039,7 +1309,7 @@ function buildKillsRatingAxis({ profile = null, approvedKills = null, standing =
       lockedPenaltyPercent: PROFILE_RATING_KILLS_LOCK_PENALTY_PERCENT,
     });
   }
-  const ratingKillChanges = buildRatingKillChanges({ profile, recentKillChanges, limit: 12 });
+  const ratingKillChanges = buildRatingKillChanges({ profile, recentKillChanges, limit: Number.POSITIVE_INFINITY });
   const pace = buildRecentKillPaceState({ recentKillChanges: ratingKillChanges, now });
   const proofWindowCount = normalizeRatingProofWindows(profile).length;
   const proofChangeWindowCount = ratingKillChanges.filter((entry) => entry.sourceLabel === "proof").length;
@@ -1055,12 +1325,26 @@ function buildKillsRatingAxis({ profile = null, approvedKills = null, standing =
         ...pace,
         proofWindowCount,
         recentChangeCount,
-        formulaLines: ["approved kills rank + рост/день + kills/ч JJS - покрытие - старость proof"],
-        inputLines: [`Approved ${formatNumber(approvedKillsAmount)}`, `Последние данные: ${formatNumber(pace.dataAgeDays)}д назад`],
-        peakLines: ["Ранг считается среди игроков с approved kills"],
-        modifierLines: [`-${formatNumber(PROFILE_RATING_KILLS_LOCK_PENALTY_PERCENT)}%: stale proof закрывает Kills`],
-        sourceLines: [`proof windows: ${formatNumber(proofWindowCount)} · recent changes: ${formatNumber(recentChangeCount)}`],
-        upgradeLines: ["обнови kills — окна заполнятся задним числом"],
+        formulaLines: [
+          "Kills оценивает approved kills, темп роста и эффективность относительно JJS.",
+          "Оценка роста смотрит на последние 6 kill-days.",
+          "Если последние окна старше 21 дня, Kills закрывается до нового proof.",
+          formatAxisWeightLine("kills"),
+        ],
+        inputLines: [`Approved kills: ${formatNumber(approvedKillsAmount)}.`, `Последние данные: ${formatNumber(pace.dataAgeDays)} дней назад.`],
+        peakLines: ["Верхняя планка появится после свежего approved proof."],
+        modifierLines: [`Свежесть proof: окно старше лимита, поэтому Kills получает штраф -${formatNumber(PROFILE_RATING_KILLS_LOCK_PENALTY_PERCENT)}% и закрывается.`],
+        sourceLines: buildKillsRatingSourceLines({
+          proofWindowCount,
+          recentChangeCount,
+          usedWindows: pace.usedWindows,
+          olderKillWindows: pace.olderKillWindows,
+          ignoredOutlierWindows: pace.ignoredOutlierWindows,
+          ignoredNeutralWindows: pace.ignoredNeutralWindows,
+          ignoredSourceGapWindows: pace.ignoredSourceGapWindows,
+          allKillWindows: pace.allKillWindows,
+        }),
+        upgradeLines: ["Обнови kills proof: новые окна заполнят последние 6 kill-days задним числом.", "До следующей буквы и S+ путь появится после свежего окна."],
       },
     });
   }
@@ -1088,10 +1372,26 @@ function buildKillsRatingAxis({ profile = null, approvedKills = null, standing =
   if (!Number.isFinite(pace.averageKillsPerDay)) score = Math.min(86, score);
   const finalScore = clampRatingScore(score);
   const next = getNextGradeTarget(finalScore);
+  const sPlus = getSPlusGradeTarget();
+  const sPlusScoreGap = Math.max(0, sPlus.score - finalScore);
   const nextKills = next && Number.isFinite(rankScore)
     ? Math.max(1, Math.ceil(((next.score - finalScore) / 100) * Math.max(100, approvedKillsAmount || 100)))
     : null;
+  const sPlusKills = sPlusScoreGap > 0 && Number.isFinite(rankScore)
+    ? Math.max(1, Math.ceil((sPlusScoreGap / 100) * Math.max(100, approvedKillsAmount || 100)))
+    : 0;
   const nextPaceTarget = Math.max(20, Math.ceil((pace.averageKillsPerDay || 20) + 4));
+  const sPlusPaceTarget = Math.max(nextPaceTarget, Math.ceil((pace.averageKillsPerDay || 20) + Math.max(8, sPlusScoreGap / 2)));
+  const daysToNextAtCurrentPace = Number.isFinite(pace.averageKillsPerDay) && pace.averageKillsPerDay > 0 && Number.isFinite(nextKills)
+    ? Math.ceil(nextKills / pace.averageKillsPerDay)
+    : null;
+  const daysToSPlusAtCurrentPace = Number.isFinite(pace.averageKillsPerDay) && pace.averageKillsPerDay > 0 && sPlusKills > 0
+    ? Math.ceil(sPlusKills / pace.averageKillsPerDay)
+    : null;
+  const leaderEntry = standing?.leaderEntry || null;
+  const nextRankEntry = standing?.nextRankEntry || null;
+  const killsToLeader = normalizeNullableFiniteNumber(standing?.killsToLeader);
+  const killsToNextRank = normalizeNullableFiniteNumber(standing?.killsToNextRank ?? standing?.killsToNext);
   const detailItems = [];
   if (pace.ignoredOutlierWindows?.length) {
     const outlier = pace.ignoredOutlierWindows[0];
@@ -1110,6 +1410,85 @@ function buildKillsRatingAxis({ profile = null, approvedKills = null, standing =
     Number.isFinite(pace.averageKillsPerDay) ? `${formatNumber(Math.round(pace.averageKillsPerDay * 10) / 10)}/день` : "kills/day нет",
     Number.isFinite(killsPerJjsHour) ? `${formatNumber(Math.round(killsPerJjsHour * 10) / 10)} kills/ч` : null,
   ].filter(Boolean).join(" · ");
+  const nextRankOwner = resolveProfileBenchmarkOwner(nextRankEntry, "игрок выше");
+  const leaderOwner = resolveProfileBenchmarkOwner(leaderEntry, "лидер рейтинга");
+  const nextRankLine = nextRankEntry && Number.isFinite(killsToNextRank)
+    ? `Игрок выше: ${nextRankOwner.label} — ${formatNumber(nextRankEntry.approvedKills)} kills. До него не хватает +${formatNumber(killsToNextRank)} kills.`
+    : (Number.isFinite(rank) && rank === 1 ? "Ты сейчас лидер по approved kills среди переданных игроков." : "Игрок выше не передан в модель, поэтому показываю только твоё место.");
+  const leaderLine = leaderEntry && Number.isFinite(leaderEntry.approvedKills)
+    ? (Number.isFinite(killsToLeader) && killsToLeader > 0
+      ? `Сейчас лидер: ${leaderOwner.label}, ${formatNumber(leaderEntry.approvedKills)} kills. До лидера нужно +${formatNumber(killsToLeader)} kills.`
+      : `Сейчас лидер: ${leaderOwner.label}, ${formatNumber(leaderEntry.approvedKills)} kills. Ты уже на этой планке.`)
+    : "Лидер по kills не передан в модель, поэтому показываю только твоё место и общий размер рейтинга.";
+  const coverageLine = formatDaysCoverageLine({ coveredDays: pace.coveredDays, targetDays: 6, label: "kill-days" });
+  const coveredRangeLine = pace.coveredDays > 0
+    ? `Закрытые дни: ${pace.coveredDayRangeLabel}, всего ${formatNumber(pace.coveredDays)}/6.`
+    : "Закрытых kill-days с датами пока нет.";
+  const missingCoverageLine = pace.missingKillDays > 0
+    ? `Не хватает ещё ${formatNumber(pace.missingKillDays)} дней роста. Поэтому рост считается частично${coveragePenalty > 0 ? ", а покрытие даёт штраф -20%." : "."}`
+    : "Пробелов нет: штрафа за покрытие нет.";
+  const scoreLostToCoverage = score - (score * (1 - (coveragePenalty / 100)));
+  const scoreLostToStaleness = score - (score * (1 - (stalePenalty / 100)));
+  const sourceLines = buildKillsRatingSourceLines({
+    proofWindowCount,
+    recentChangeCount,
+    usedWindows: pace.usedWindows,
+    olderKillWindows: pace.olderKillWindows,
+    ignoredOutlierWindows: pace.ignoredOutlierWindows,
+    ignoredNeutralWindows: pace.ignoredNeutralWindows,
+    ignoredSourceGapWindows: pace.ignoredSourceGapWindows,
+    allKillWindows: pace.allKillWindows,
+  });
+  const formulaLines = [
+    "Kills оценивает три вещи: сколько approved kills загружено, как быстро kills растут, и сколько kills получается на час JJS.",
+    "База оценки — твоё место среди игроков с загруженными approved kills.",
+    "Рост считается по окнам proof/recent: берём изменения kills между двумя проверками и делим на число дней.",
+    `Окна выше ${formatNumber(PROFILE_KILLS_DAY_OUTLIER_LIMIT)} kills/день показываются в разборе, но не дают очки.`,
+    "Если закрыто меньше 6 kill-days, оценка получает штраф за неполное покрытие.",
+    formatAxisWeightLine("kills"),
+  ];
+  const inputLines = [
+    `Approved kills: ${formatNumber(approvedKillsAmount)}. Это число загружено в профиль и участвует в серверном kill-рейтинге.`,
+    Number.isFinite(rank) && Number.isFinite(total) ? `Место: #${formatNumber(rank)} из ${formatNumber(total)} игроков с approved kills.` : "Место по kills не передано, поэтому база считается по самому числу kills.",
+    nextRankLine,
+    Number.isFinite(pace.averageKillsPerDay)
+      ? `Рост: ${formatNumber(Math.round(pace.averageKillsPerDay * 10) / 10)} kills/день, потому что последние засчитанные окна закрыли ${formatNumber(pace.coveredDays)} дней.`
+      : `Рост пока не считается: закрыто ${formatNumber(pace.coveredDays)}/6 kill-days, для темпа нужно минимум 4 дня.`,
+    Number.isFinite(jjsHours7d) && Number.isFinite(killsPerJjsHour)
+      ? `JJS для эффективности: ${formatHours(jjsHours7d)}ч за 7 дней. Это даёт ${formatNumber(Math.round(killsPerJjsHour * 10) / 10)} kills на час JJS.`
+      : "JJS для эффективности пока не участвует: нет отслеживаемых часов JJS за неделю.",
+    coverageLine,
+    coveredRangeLine,
+    missingCoverageLine,
+  ];
+  const peakLines = [
+    "Верхняя планка по kills — это лидер среди игроков с загруженными approved kills.",
+    leaderLine,
+    next ? `Для следующей буквы ${next.grade} сейчас нужно примерно +${formatNumber(nextKills)} kills или темп ${formatNumber(nextPaceTarget)} kills/день.` : "Следующая буква уже закрыта: Kills на уровне S+.",
+    sPlusKills > 0 ? `Для минимального S+ нужно добрать примерно +${formatNumber(sPlusKills)} kills или держать около ${formatNumber(sPlusPaceTarget)} kills/день до следующей проверки.` : "Минимальный S+ по Kills уже закрыт.",
+  ];
+  const modifierLines = [
+    Number.isFinite(rank) && Number.isFinite(total)
+      ? `Место по kills даёт базу оценки: #${formatNumber(rank)}/${formatNumber(total)} превращается примерно в ${formatProfileRatingScore(rankScore)} очков базы.`
+      : `Число kills без места в рейтинге превращается примерно в ${formatProfileRatingScore(rankScore)} очков базы.`,
+    Number.isFinite(growthModifier)
+      ? `Рост ${formatNumber(Math.round(pace.averageKillsPerDay * 10) / 10)}/день даёт ${formatRatingModifier(growthModifier)} по шкале роста.`
+      : "Рост даёт 0%: нужно минимум 4 валидных kill-day.",
+    Number.isFinite(killsPerJjsHour)
+      ? `Эффективность: ${formatNumber(Math.round(killsPerJjsHour * 10) / 10)} kills/ч JJS. По шкале эффективности это ${formatRatingModifier(efficiencyModifier)}.`
+      : "Эффективность по JJS сейчас 0%: нет связки kills/ч.",
+    `Покрытие: ${formatNumber(pace.coveredDays)}/6 kill-days${coveragePenalty > 0 ? `, штраф -${formatNumber(coveragePenalty)}%. Потеря около ${formatProfileRatingScore(scoreLostToCoverage)} очков Kills.` : ", штраф 0%."}`,
+    Number.isFinite(pace.dataAgeDays) ? `Свежесть proof: последнее окно ${formatNumber(pace.dataAgeDays)} дней назад${stalePenalty > 0 ? `, штраф -${formatNumber(stalePenalty)}%. Потеря около ${formatProfileRatingScore(scoreLostToStaleness)} очков Kills.` : ", штраф 0%."}` : "Свежесть proof не посчитана: нет дат.",
+    `Итоговый множитель: ${formatRatingModifier(totalModifier)}. Это сильно влияет на профиль, потому что Kills весит 40% общего рейтинга.`,
+  ];
+  const upgradeLines = [
+    ...formatGradePathLines({ currentScore: finalScore, nextGrade: next, sPlusTarget: sPlus }),
+    next ? `До следующей буквы ${next.grade} нужно +${formatNumber(nextKills)} kills или поднять темп до ${formatNumber(nextPaceTarget)} kills/день.` : "Следующая буква уже закрыта; задача — удержать темп и свежие proof-окна.",
+    Number.isFinite(daysToNextAtCurrentPace) ? `Если держать текущие ${formatNumber(Math.round(pace.averageKillsPerDay * 10) / 10)}/день, это примерно ${formatNumber(daysToNextAtCurrentPace)} дней до +${formatNumber(nextKills)} kills.` : "Срок до следующей буквы появится после валидного темпа роста.",
+    sPlusKills > 0 ? `До минимального S+ нужно +${formatNumber(sPlusKills)} kills или темп около ${formatNumber(sPlusPaceTarget)}/день.` : "До минимального S+ по очкам Kills уже хватает.",
+    Number.isFinite(daysToSPlusAtCurrentPace) ? `Если идти текущим темпом, это примерно ${formatNumber(daysToSPlusAtCurrentPace)} дней.` : "Срок до S+ появится после валидного темпа роста.",
+    "Самый короткий путь сейчас: регулярно обновлять proof и держать 6/6 kill-days без пробелов.",
+  ];
 
   return buildRatingCardAxis({
     axisName: "kills",
@@ -1137,94 +1516,83 @@ function buildKillsRatingAxis({ profile = null, approvedKills = null, standing =
       ignoredNeutralWindows: pace.ignoredNeutralWindows || [],
       ignoredSourceGapWindows: pace.ignoredSourceGapWindows || [],
       usedKillWindows: pace.usedWindows || [],
+      olderKillWindows: pace.olderKillWindows || [],
+      ignoredKillWindows: pace.ignoredKillWindows || [],
+      allKillWindows: pace.allKillWindows || [],
+      scoredKillWindows: pace.scoredKillWindows || [],
       candidateKillWindows: pace.candidateWindows || [],
       validKillWindows: pace.validWindows || [],
+      coveredKillDays: pace.coveredKillDays,
+      missingKillDays: pace.missingKillDays,
+      firstCoveredDay: pace.firstCoveredDay,
+      lastCoveredDay: pace.lastCoveredDay,
+      coveredDayRangeLabel: pace.coveredDayRangeLabel,
       proofWindowCount,
       proofChangeWindowCount,
       recentChangeCount,
       nextKills,
+      sPlusKills,
       nextPaceTarget,
+      sPlusPaceTarget,
+      daysToNextAtCurrentPace,
+      daysToSPlusAtCurrentPace,
+      leaderEntry,
+      nextRankEntry,
+      killsToLeader,
+      killsToNextRank,
+      scoreLostToCoverage,
+      scoreLostToStaleness,
       peakLine: `окна: ${formatNumber(pace.coveredDays)}/6 дней · ${sourceBits.length ? sourceBits.join(" + ") : "история короткая"}`,
-      formulaLines: [
-        "approved kills rank + рост/день + kills/ч JJS",
-        `рост выше ${formatNumber(PROFILE_KILLS_DAY_OUTLIER_LIMIT)}/день не даёт очки`,
-        "покрытие и старость proof режут итог",
-      ],
-      inputLines: [
-        `Approved ${formatNumber(approvedKillsAmount)}${Number.isFinite(rank) && Number.isFinite(total) ? ` · #${formatNumber(rank)}/${formatNumber(total)}` : ""}`,
-        Number.isFinite(pace.averageKillsPerDay)
-          ? `Рост ${formatNumber(Math.round(pace.averageKillsPerDay * 10) / 10)}/день · ${formatNumber(pace.coveredDays)} валидных дней`
-          : `Рост не считается · ${formatNumber(pace.coveredDays)} валидных дней из 4 нужных`,
-        Number.isFinite(jjsHours7d) && Number.isFinite(killsPerJjsHour)
-          ? `JJS ${formatHours(jjsHours7d)}ч · ${formatNumber(Math.round(killsPerJjsHour * 10) / 10)} kills/ч`
-          : "kills/ч JJS пока не считается",
-      ],
-      peakLines: [
-        "Ранг считается среди игроков с approved kills",
-        next ? `Цель ${next.grade}: +${formatNumber(nextKills)} kills или ${formatNumber(nextPaceTarget)}/день` : "S+ уже открыт",
-      ],
-      modifierLines: [
-        Number.isFinite(growthModifier) ? `${formatRatingModifier(growthModifier)} за рост` : "0% за рост: нужно минимум 4 валидных kill-day",
-        `${formatRatingModifier(efficiencyModifier)} за эффективность`,
-        coveragePenalty > 0 ? "-20% за покрытие меньше 6 дней" : "0% за покрытие",
-        stalePenalty > 0 ? `-${formatNumber(stalePenalty)}% за старость proof` : "0% за свежесть proof",
-      ],
-      sourceLines: buildKillsRatingSourceLines({
-        proofWindowCount,
-        recentChangeCount,
-        usedWindows: pace.usedWindows,
-        ignoredOutlierWindows: pace.ignoredOutlierWindows,
-        ignoredNeutralWindows: pace.ignoredNeutralWindows,
-        ignoredSourceGapWindows: pace.ignoredSourceGapWindows,
-      }),
-      upgradeLines: [next ? `${next.grade} откроется от +${formatNumber(nextKills)} kills или ${formatNumber(nextPaceTarget)}/день` : "S+ уже открыт"],
+      formulaLines,
+      inputLines,
+      peakLines,
+      modifierLines,
+      sourceLines,
+      upgradeLines,
     },
   });
-}
-
-function formatKillWindowSourceLine(window = {}, stateText = "учтено") {
-  const from = Number.isFinite(Number(window?.from)) ? Number(window.from) : null;
-  const to = Number.isFinite(Number(window?.to)) ? Number(window.to) : null;
-  const delta = Number.isFinite(Number(window?.delta)) ? Number(window.delta) : (Number.isFinite(from) && Number.isFinite(to) ? to - from : null);
-  const dayCount = Number.isFinite(Number(window?.dayCount)) ? Number(window.dayCount) : null;
-  const averagePerDay = Number.isFinite(Number(window?.averagePerDay)) ? Number(window.averagePerDay) : (Number.isFinite(delta) && Number.isFinite(dayCount) && dayCount > 0 ? delta / dayCount : null);
-  const sourceLabel = cleanString(window?.sourceLabel, 40) || (window?.source === "proofWindow" ? "proof" : "recent");
-  return [
-    Number.isFinite(from) && Number.isFinite(to) ? `${formatNumber(from)} → ${formatNumber(to)}` : "окно kills",
-    Number.isFinite(delta) ? formatSignedNumber(delta) : null,
-    Number.isFinite(dayCount) ? `${formatNumber(dayCount)}д` : "даты нет",
-    Number.isFinite(averagePerDay) ? `${formatNumber(Math.round(averagePerDay * 10) / 10)}/день` : null,
-    sourceLabel,
-    stateText,
-  ].filter(Boolean).join(" · ");
 }
 
 function buildKillsRatingSourceLines({
   proofWindowCount = 0,
   recentChangeCount = 0,
   usedWindows = [],
+  olderKillWindows = [],
   ignoredOutlierWindows = [],
   ignoredNeutralWindows = [],
   ignoredSourceGapWindows = [],
+  allKillWindows = [],
 } = {}) {
-  const lines = [`proof windows: ${formatNumber(proofWindowCount)} · recent changes: ${formatNumber(recentChangeCount)}`];
+  const lines = [`Использованы ${formatNumber(proofWindowCount)} proof-снимка и ${formatNumber(recentChangeCount)} recent-изменений.`];
   const used = Array.isArray(usedWindows) ? usedWindows : [];
+  const old = Array.isArray(olderKillWindows) ? olderKillWindows : [];
   const outliers = Array.isArray(ignoredOutlierWindows) ? ignoredOutlierWindows : [];
   const gaps = Array.isArray(ignoredSourceGapWindows) ? ignoredSourceGapWindows : [];
   const neutral = Array.isArray(ignoredNeutralWindows) ? ignoredNeutralWindows : [];
-  if (used.length) {
-    lines.push(formatKillWindowSourceLine(used[0], used[0].usedDays && used[0].usedDays < used[0].dayCount ? `учтено ${formatNumber(used[0].usedDays)}д` : "учтено"));
+  for (const window of used.slice(0, 4)) {
+    lines.push(formatKillWindowLine(window, window.usedDays && window.usedDays < window.dayCount ? `учтено ${formatNumber(window.usedDays)} дней из окна` : "учтено полностью"));
   }
-  if (outliers.length) {
-    lines.push(formatKillWindowSourceLine(outliers[0], `не учтено: выше лимита ${formatNumber(PROFILE_KILLS_DAY_OUTLIER_LIMIT)}/день`));
-  } else if (gaps.length) {
-    lines.push(formatKillWindowSourceLine(gaps[0], "не учтено: нет дат"));
-  } else if (neutral.length) {
-    lines.push(formatKillWindowSourceLine(neutral[0], "не учтено: нет роста"));
-  } else if (!used.length) {
+  for (const window of old.slice(0, 2)) {
+    lines.push(formatKillWindowLine(window, "старое окно, сохранено в истории, но не вошло в последние 6 kill-days"));
+  }
+  for (const window of outliers.slice(0, 2)) {
+    lines.push(formatKillWindowLine(window, `не учтено: выше лимита ${formatNumber(PROFILE_KILLS_DAY_OUTLIER_LIMIT)}/день`));
+  }
+  for (const window of gaps.slice(0, 2)) {
+    lines.push(formatKillWindowLine(window, "не учтено: нет двух дат"));
+  }
+  for (const window of neutral.slice(0, 2)) {
+    lines.push(formatKillWindowLine(window, "не учтено: нет роста"));
+  }
+  const shownCount = Math.min(used.length, 4) + Math.min(old.length, 2) + Math.min(outliers.length, 2) + Math.min(gaps.length, 2) + Math.min(neutral.length, 2);
+  const totalWindows = Array.isArray(allKillWindows) && allKillWindows.length ? allKillWindows.length : used.length + old.length + outliers.length + gaps.length + neutral.length;
+  if (totalWindows > shownCount) {
+    lines.push(`Ещё ${formatNumber(totalWindows - shownCount)} старых окон сохранены в истории, но не показаны здесь, чтобы блок не стал слишком длинным.`);
+  }
+  if (!used.length && !old.length && !outliers.length && !gaps.length && !neutral.length) {
     lines.push("истории окон пока нет");
   }
-  return lines.slice(0, 3);
+  return lines.slice(0, 10);
 }
 
 function getLatestWeeklyCoveragePercent(profile = null) {
@@ -1239,7 +1607,7 @@ function getLatestWeeklyCoveragePercent(profile = null) {
   return normalizeNullableFiniteNumber(latest?.coverage?.coveragePercent, null);
 }
 
-function buildJjsRatingAxis({ profile = null, robloxSummary = {}, robloxDisplayState = null, populationProfiles = [] } = {}) {
+function buildJjsRatingAxis({ profile = null, robloxSummary = {}, robloxDisplayState = null, populationProfiles = [], currentProfileLabel = "" } = {}) {
   const canTrack = robloxDisplayState?.isTrackable === true || robloxSummary?.isTrackable === true;
   const jjsHours7d = canTrack && Number.isFinite(Number(robloxSummary?.jjsMinutes7d))
     ? Number(robloxSummary.jjsMinutes7d) / 60
@@ -1252,9 +1620,16 @@ function buildJjsRatingAxis({ profile = null, robloxSummary = {}, robloxDisplayS
       lockedPenaltyPercent: PROFILE_RATING_LOCK_PENALTY_PERCENT,
     });
   }
-  const jjsPopulationHours = getPopulationJjsHours(populationProfiles);
+  const jjsPopulationEntries = getPopulationJjsHours(populationProfiles);
+  const jjsPopulationHours = jjsPopulationEntries.map((entry) => entry.hours);
   const jjsSamples = [...jjsPopulationHours, jjsHours7d];
   const topObservedHours = Math.max(0, ...jjsSamples.map((entry) => normalizeFiniteNumber(entry, 0)).filter((entry) => Number.isFinite(entry)));
+  const currentOwner = {
+    hours: jjsHours7d,
+    label: cleanString(currentProfileLabel, 120) || "этот профиль",
+    hasName: true,
+  };
+  const topObservedOwner = pickTopMetricOwner(jjsPopulationEntries, "hours", currentOwner);
   const target = buildPeakTarget(jjsSamples, 0.7, 6);
   const coveragePercent = normalizeNullableFiniteNumber(getLatestWeeklyCoveragePercent(profile), 100);
   const coverageWeight = Math.max(0.1, Math.min(1, coveragePercent / 100));
@@ -1262,13 +1637,62 @@ function buildJjsRatingAxis({ profile = null, robloxSummary = {}, robloxDisplayS
   const rawScore = normalizeRatingTarget(jjsHours7d, { floor: jjsFloor, target });
   const score = clampRatingScore(rawScore * coverageWeight);
   const next = getNextGradeTarget(score);
+  const sPlus = getSPlusGradeTarget();
   const nextHours = next
     ? Math.max(0.1, ((next.score / coverageWeight) / 100) * Math.max(0.1, target - jjsFloor) + jjsFloor - jjsHours7d)
     : 0;
+  const hoursToSPlus = Math.max(0, ((sPlus.score / coverageWeight) / 100) * Math.max(0.1, target - jjsFloor) + jjsFloor - jjsHours7d);
+  const hoursToTarget = Math.max(0, target - jjsHours7d);
+  const coverageLostPercent = Math.max(0, 100 - coveragePercent);
+  const scoreLostToCoverage = Math.max(0, rawScore - score);
+  const lastSignal = cleanString(robloxSummary?.lastRefreshAt || robloxSummary?.lastSeenInJjsAt || robloxSummary?.lastPresenceAt, 80);
+  const topOwnerLine = formatProfileBenchmarkOwner(topObservedOwner, `${formatHours(topObservedOwner?.hours || topObservedHours)}ч за 7 дней`);
+  const targetFromTop = (topObservedHours || 0) * 0.7;
   const detailItems = [];
-  detailItems.push(`пик: top ${formatHours(topObservedHours)}ч ×70%`);
-  if (coveragePercent < 100) detailItems.push(`coverage -${formatNumber(Math.round(100 - coveragePercent))}%`);
-  else detailItems.push("coverage полный");
+  detailItems.push(`планка: ${formatHours(target)}ч JJS`);
+  if (coveragePercent < 100) detailItems.push(`покрытие недели -${formatNumber(Math.round(100 - coveragePercent))}%`);
+  else detailItems.push("покрытие недели полное");
+  const formulaLines = [
+    "JJS оценивает игровое время за последние 7 дней.",
+    "Сначала часы JJS сравниваются с верхней планкой сервера.",
+    "Потом результат умножается на покрытие недели: если трекер видел не всю неделю, оценка уменьшается.",
+    "Минимальная нижняя точка — 1ч: меньше этого почти не даёт очков.",
+    formatAxisWeightLine("jjs"),
+  ];
+  const inputLines = [
+    `За 7 дней у тебя ${formatHours(jjsHours7d)}ч JJS, то есть ${formatNumber(Math.round(jjsHours7d * 60))} минут.`,
+    `Покрытие недели: ${formatPercent(coveragePercent, 0)}. Это показывает, какую часть недели трекер смог подтвердить данными.`,
+    robloxDisplayState?.readinessLabel || (canTrack ? "Roblox-связка готова, JJS можно отслеживать." : "Roblox-связка не готова."),
+    lastSignal ? `Последний JJS-сигнал: ${formatDateTime(lastSignal)}, данные считаются свежими относительно этой отметки.` : "Последний JJS-сигнал не передан в модель.",
+  ];
+  const peakLines = [
+    "Планку задаёт лучший JJS-результат в серверной выборке за 7 дней.",
+    `Сейчас топ: ${topOwnerLine}.`,
+    `Для S+ берётся 70% от топа: ${formatHours(topObservedHours)}ч × 70% = ${formatHours(targetFromTop)}ч.`,
+    target > targetFromTop + 0.01 ? `Запасная минимальная планка — ${formatHours(target)}ч. Она нужна, если в выборке мало данных.` : `Итоговая S+ планка: ${formatHours(target)}ч.`,
+    `Твоя неделя: ${formatHours(jjsHours7d)}ч. До S+ планки ${formatMissingAmount(jjsHours7d, target, "ч")} за 7 дней.`,
+  ];
+  const modifierLines = [
+    `Исходные очки по часам: ${formatHours(jjsHours7d)}ч из ${formatHours(target)}ч планки = ${formatProfileRatingScore(rawScore)}/100.`,
+    `Покрытие недели: ${formatPercent(coveragePercent, 0)}, поэтому ${formatProfileRatingScore(rawScore)} очков умножаются на ${coverageWeight.toFixed(2)}.`,
+    `Итог JJS: ${formatProfileRatingScore(score)}/100.`,
+    `Потеря из-за покрытия: примерно ${formatProfileRatingScore(scoreLostToCoverage)} очков JJS (${formatNumber(Math.round(coverageLostPercent))}% недели не подтверждено).`,
+    "JJS весит 30% общего рейтинга, поэтому эта потеря заметна, но не ломает весь профиль одна.",
+  ];
+  const sourceLines = [
+    robloxSummary?.playtimeSource ? `Источник игрового времени: ${cleanString(robloxSummary.playtimeSource, 160)}.` : "Источник игрового времени: domains.roblox.playtime / summary.roblox.",
+    "Покрытие берётся из последнего weekly rollup seasonArchive.",
+    `Серверная выборка для JJS-планки: ${formatNumber(jjsPopulationEntries.length)} профилей плюс текущий профиль.`,
+    lastSignal ? `Последний сигнал: ${formatDateTime(lastSignal)}.` : "Время последнего сигнала не передано.",
+  ];
+  const upgradeLines = [
+    ...formatGradePathLines({ currentScore: score, nextGrade: next, sPlusTarget: sPlus }),
+    next ? `До следующей буквы ${next.grade} нужно примерно +${formatHours(nextHours)}ч JJS за 7 дней.` : "Следующая буква уже закрыта; цель — удерживать S+.",
+    next ? `Это примерно +${formatMinutesPerDay(nextHours)} минут JJS в день в течение недели.` : "Минуты в день до следующей буквы сейчас не нужны.",
+    `До минимального S+ нужно примерно +${formatHours(hoursToSPlus)}ч JJS за 7 дней.`,
+    `Это примерно +${formatMinutesPerDay(hoursToSPlus)} минут JJS в день в течение недели.`,
+    hoursToTarget > 0 ? "Самый прямой путь: закрывать игровые дни равномерно, чтобы часы росли и покрытие не проседало." : "S+ планка по часам закрыта; теперь важно не потерять покрытие недели.",
+  ];
   return buildRatingCardAxis({
     axisName: "jjs",
     score,
@@ -1285,35 +1709,23 @@ function buildJjsRatingAxis({ profile = null, robloxSummary = {}, robloxDisplayS
       coveragePercent,
       coverageWeight,
       topObservedHours,
+      topObservedOwner,
       targetMultiplierPercent: 70,
       fallbackTargetHours: 6,
       rawScore,
       finalScore: score,
       nextHours,
-      peakLine: `пик: top ${formatHours(topObservedHours)}ч ×70% · coverage ${formatPercent(coveragePercent, 0)}`,
-      formulaLines: [
-        "JJS часы недели сравниваются с S+ планкой",
-        "raw score умножается на покрытие периода",
-      ],
-      inputLines: [
-        `${formatHours(jjsHours7d)}ч/7д · покрытие ${formatPercent(coveragePercent, 0)}`,
-        robloxDisplayState?.readinessLabel || (canTrack ? "Roblox готов" : "Roblox не trackable"),
-        robloxSummary?.lastRefreshAt || robloxSummary?.lastSeenInJjsAt ? "sync свежий" : "sync без свежего timestamp",
-      ],
-      peakLines: [
-        `top недели: ${formatHours(topObservedHours)}ч`,
-        `S+ планка: max(top ×70%, 6ч) = ${formatHours(target)}ч`,
-        `floor: ${formatHours(jjsFloor)}ч`,
-      ],
-      modifierLines: [
-        `raw score ${formatProfileRatingScore(rawScore)}/100`,
-        `coverage ${formatPercent(coveragePercent, 0)} → итог ${formatProfileRatingScore(score)}/100`,
-      ],
-      sourceLines: [
-        robloxSummary?.playtimeSource || "domains.roblox.playtime / summary.roblox",
-        "weekly rollup coverage",
-      ],
-      upgradeLines: [next ? `до ${next.grade}: +${formatHours(nextHours)}ч JJS` : "S+ уже открыт"],
+      hoursToSPlus,
+      hoursToTarget,
+      coverageLostPercent,
+      scoreLostToCoverage,
+      peakLine: `планка: ${formatHours(target)}ч JJS · покрытие ${formatPercent(coveragePercent, 0)}`,
+      formulaLines,
+      inputLines,
+      peakLines,
+      modifierLines,
+      sourceLines,
+      upgradeLines,
     },
   });
 }
@@ -1328,12 +1740,13 @@ function buildProfileRatingLeagues({
   standing = {},
   populationProfiles = [],
   recentKillChanges = [],
+  currentProfileLabel = "",
   now = null,
 } = {}) {
   return [
-    buildActivityRatingAxis({ activitySummary, voiceSummary, populationProfiles }),
+    buildActivityRatingAxis({ activitySummary, voiceSummary, populationProfiles, currentProfileLabel }),
     buildKillsRatingAxis({ profile, approvedKills, standing, recentKillChanges, robloxSummary, robloxDisplayState, now }),
-    buildJjsRatingAxis({ profile, robloxSummary, robloxDisplayState, populationProfiles }),
+    buildJjsRatingAxis({ profile, robloxSummary, robloxDisplayState, populationProfiles, currentProfileLabel }),
   ];
 }
 
@@ -1384,6 +1797,10 @@ function buildProfileRatingSummary({ axes = [] } = {}) {
 
 function buildRatingDetailBlocks(axis = {}) {
   const meta = PROFILE_RATING_AXIS_LABELS[axis?.axisName] || { emoji: "▫️", label: cleanString(axis?.axisName, 40) || "Оценка" };
+  const keepDetailLines = (lines = [], limit = 10) => (Array.isArray(lines) ? lines : [])
+    .map((entry) => cleanString(entry, 500))
+    .filter(Boolean)
+    .slice(0, limit);
   if (!axis || typeof axis !== "object") {
     return {
       axisName: "",
@@ -1416,12 +1833,12 @@ function buildRatingDetailBlocks(axis = {}) {
       title: `${meta.emoji} ${meta.label} · разбор оценки`,
       blocks: [
         { title: "Итог", lines: [`Закрыто · рейтинг -${formatNumber(axis.lockedPenaltyPercent)}%`, cleanString(axis.lockReason, 220) || "Нужно больше данных."] },
-        { title: "🧮 Как считается", lines: formulaLines.slice(0, 3) },
-        { title: "📌 Входные данные", lines: inputLines.slice(0, 3) },
-        { title: "🏔️ Пик / планка", lines: peakLines.slice(0, 3) },
-        { title: "📉 Модификаторы", lines: modifierLines.slice(0, 3) },
-        { title: "🧾 Источники", lines: sourceLines.slice(0, 3) },
-        { title: "💡 До апа", lines: upgradeLines.slice(0, 3) },
+        { title: "🧮 Как считается", lines: keepDetailLines(formulaLines) },
+        { title: "📌 Входные данные", lines: keepDetailLines(inputLines) },
+        { title: "🏔️ Пик / планка", lines: keepDetailLines(peakLines) },
+        { title: "📉 Что влияет на оценку", lines: keepDetailLines(modifierLines) },
+        { title: "🧾 Источники", lines: keepDetailLines(sourceLines, 12) },
+        { title: "💡 До апа", lines: keepDetailLines(upgradeLines) },
       ],
     };
   }
@@ -1440,12 +1857,12 @@ function buildRatingDetailBlocks(axis = {}) {
     title: `${meta.emoji} ${meta.label} · разбор оценки`,
     blocks: [
       { title: "Итог", lines: [headline] },
-      { title: "🧮 Как считается", lines: formulaLines.filter(Boolean).slice(0, 3) },
-      { title: "📌 Входные данные", lines: inputLines.filter(Boolean).slice(0, 3) },
-      { title: "🏔️ Пик / планка", lines: peakLines.filter(Boolean).slice(0, 3) },
-      { title: "📉 Модификаторы", lines: modifierLines.filter(Boolean).slice(0, 3) },
-      { title: "🧾 Источники", lines: sourceLines.filter(Boolean).slice(0, 3) },
-      { title: "💡 До апа", lines: upgradeLines.filter(Boolean).slice(0, 3) },
+      { title: "🧮 Как считается", lines: keepDetailLines(formulaLines) },
+      { title: "📌 Входные данные", lines: keepDetailLines(inputLines) },
+      { title: "🏔️ Пик / планка", lines: keepDetailLines(peakLines) },
+      { title: "📉 Что влияет на оценку", lines: keepDetailLines(modifierLines) },
+      { title: "🧾 Источники", lines: keepDetailLines(sourceLines, 12) },
+      { title: "💡 До апа", lines: keepDetailLines(upgradeLines) },
     ],
   };
 }
@@ -2255,7 +2672,8 @@ function summarizeRecentKillChange(change = {}) {
 }
 
 function normalizeRecentKillChanges(changes = [], fallbackChange = null, limit = 3) {
-  const normalizedLimit = Math.max(1, Number(limit) || 3);
+  const limitNumber = Number(limit);
+  const normalizedLimit = Number.isFinite(limitNumber) ? Math.max(1, limitNumber) : Number.POSITIVE_INFINITY;
   const list = [];
   const seen = new Set();
 
@@ -2269,7 +2687,17 @@ function normalizeRecentKillChanges(changes = [], fallbackChange = null, limit =
     const key = `${from}:${to}:${Number.isFinite(toAt) ? toAt : "na"}`;
     if (seen.has(key)) return;
     seen.add(key);
-    list.push({ from, to, fromAt, toAt });
+    list.push({
+      ...change,
+      from,
+      to,
+      fromAt,
+      toAt,
+      dayCount: normalizeNullableFiniteNumber(change.dayCount),
+      source: cleanString(change.source, 40),
+      sourceLabel: cleanString(change.sourceLabel, 40),
+      sourceGap: change.sourceGap === true,
+    });
   }
 
   for (const change of Array.isArray(changes) ? changes : []) {
@@ -2770,7 +3198,7 @@ function buildProfileReadModel(options = {}) {
   const populationProfiles = Array.isArray(options.populationProfiles) ? options.populationProfiles : [];
   const characterCatalog = Array.isArray(options.characterCatalog) ? options.characterCatalog : [];
   const recentKillChange = options.recentKillChange && typeof options.recentKillChange === "object" ? options.recentKillChange : null;
-  const recentKillChanges = normalizeRecentKillChanges(options.recentKillChanges, recentKillChange, 10);
+  const recentKillChanges = normalizeRecentKillChanges(options.recentKillChanges, recentKillChange, Number.POSITIVE_INFINITY);
   const hiddenRoleIds = normalizeHiddenRoleIds(options.hiddenProfileRoleIds);
   const roleMentions = filterDisplayRoleMentions(options.roleMentions, hiddenRoleIds);
   const displayMode = normalizeProfileDisplayMode(options.displayMode, { isSelf: options.isSelf });
@@ -2961,6 +3389,7 @@ function buildProfileReadModel(options = {}) {
       standing,
       populationProfiles,
       recentKillChanges,
+      currentProfileLabel: displayName,
       now: options.now,
     }) : [];
   const profileRatingSummary = buildProfileRatingSummary({

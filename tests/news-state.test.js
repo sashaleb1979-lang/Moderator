@@ -16,6 +16,11 @@ test("createDefaultNewsConfig seeds edition-first defaults for daily digest", ()
   assert.equal(config.enabled, false);
   assert.equal(config.schedule.publishHourMsk, 21);
   assert.equal(config.voice.topCount, 5);
+  assert.equal(config.kills.topCount, 5);
+  assert.equal(config.activity.topMessagesCount, 5);
+  assert.equal(config.newcomers.topCount, 8);
+  assert.equal(config.gameplay.topCount, 5);
+  assert.equal(config.tierlist.topCount, 5);
   assert.equal(config.voice.fullListFormat, "single_line");
   assert.equal(config.presentation.visualMode, "edition");
   assert.equal(config.presentation.postThreadEnabled, true);

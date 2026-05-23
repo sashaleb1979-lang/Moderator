@@ -157,22 +157,22 @@ Non-responsibilities:
 
 ### Canonical persisted state model
 
-Daily News state делится на пять частей:
+Daily News state сейчас делится на четыре верхнеуровневые persisted зоны:
 
 1. config
    Включение системы, каналы, cadence, voice display policy, moderation display policy, presentation defaults.
 
 2. raw capture state
-   Voice openSessions/finalizedSessions, moderation.events и будущие raw stores для other collectors.
+   Voice openSessions/finalizedSessions, moderation.events и будущие raw stores для других data modules.
 
 3. compiled state
    dailyDigests keyed by Moscow dayKey.
 
-4. runtime state
-   lastCompileStartedAt, lastCompileFinishedAt, lastCompiledDayKey, publish markers, audit counts, last failure, preview requests.
+4. runtime and diagnostics state
+   lastCompileStartedAt, lastCompileFinishedAt, lastCompiledDayKey, publish markers, audit counts, coverage summary, last failure, preview requests, errors.
 
-5. diagnostics state
-   errors, coverage summary, degraded notes, dropped-result evidence.
+На текущем baseline diagnostics не вынесены в отдельный top-level bucket.
+Пока не будет отдельной state migration, каноническая shape остаётся такой же, как в [src/news/state.js](src/news/state.js): diagnostics fields живут внутри runtime.
 
 ### State invariants
 
@@ -225,18 +225,18 @@ Non-responsibilities:
 - audit-log reconciliation scheduling;
 - deciding digest story importance.
 
-### Future raw capture owners
+### Current and next data-module owners
 
-Следующие зоны не должны врастать в compiler напрямую. Для них планируются отдельные owners:
+Следующие зоны не должны врастать в compiler напрямую. Для каждой зоны нужен отдельный owner, но степень готовности уже разная:
 
-- kills collector owner;
-- activity collector owner;
-- newcomers collector owner;
-- Roblox/JJS collector owner;
-- tierlist shifts collector owner;
-- dropped-result audit owner.
+- kills collector owner: уже существует как compile-only owner в [src/news/kills.js](src/news/kills.js);
+- activity collector owner: уже существует как compile-only owner в [src/news/activity.js](src/news/activity.js) и читает canonical activity state;
+- newcomers collector owner: уже существует как compile-only owner в [src/news/newcomers.js](src/news/newcomers.js) и читает shared profiles;
+- Roblox/JJS collector owner: уже существует как compile-only owner в [src/news/gameplay.js](src/news/gameplay.js), precise session/hourly buckets are public-safe, daily buckets are ambiguous staff-only;
+- tierlist collector owner: уже существует как compile-only owner в [src/news/tierlist.js](src/news/tierlist.js), но real shift history пока unavailable;
+- dropped-result audit owner: planned.
 
-Даже если часть данных временно читается напрямую из существующих систем, итоговая цель всё равно: один owner на один data module.
+Если какому-то модулю позже понадобится собственный raw capture слой, он должен появиться внутри этого module owner, а не внутри compiler.
 
 ## C. Compile Layer
 
@@ -282,13 +282,13 @@ Compiler не должен зависеть от:
 
 ### Compiler output contract
 
-Compiled daily digest обязан содержать:
+Compiled daily digest в текущем live baseline обязан содержать:
 
 1. identity
    dayKey, compiledAt, coverageWindow.
 
 2. source summaries
-   voice, moderation, kills, activity, newcomers, JJS/Roblox, tierlist, extras.
+   voice, moderation, kills, activity, newcomers, gameplay, tierlist.
 
 3. coverage truth
    partial, ambiguous, reasons.
@@ -301,6 +301,9 @@ Compiled daily digest обязан содержать:
 
 6. staff digest input
    полный staff-safe набор coverage, omissions и ambiguous/rejected items.
+
+После завершения Phase 3 и отдельного Phase 5 schema freeze этот contract может быть расширен секциями extras и более точными shift histories.
+До такого freeze renderer, publisher и operator не должны зависеть от секций, которых ещё нет в compiled truth.
 
 ### Compiler invariants
 
@@ -357,15 +360,21 @@ Non-responsibilities:
 
 ## E. Rendering Layer
 
-### Future renderer owner
+### Renderer owner
 
-Планируемый owner:
+- [src/news/render.js](src/news/render.js)
 
-- src/news/render.js или src/news/presentation.js
+Current implementation status:
+
+- renderer exists as a deterministic payload builder;
+- it consumes compiled digest only;
+- it builds public message/embed payloads, continuation thread messages, staff audit message/embed payloads and a coverSpec for a later image renderer;
+- it preserves coverage/audit honesty markers instead of reopening source decisions.
 
 Responsibilities:
 
-- cover PNG composition;
+- coverSpec composition for current preview payloads;
+- future cover PNG composition;
 - hero metrics layout;
 - public embed/message payloads;
 - staff digest payloads;
@@ -386,19 +395,40 @@ Non-responsibilities:
 - renderer must preserve honesty markers from coverage;
 - thread content is derived from compiled long-form blocks, not rebuilt ad hoc.
 
+### Preview owner
+
+- [src/news/preview.js](src/news/preview.js)
+
+Responsibilities:
+
+- compile and render a preview issue without publish side effects;
+- render an already stored compiled digest;
+- record last preview metadata in news runtime.
+
+Non-responsibilities:
+
+- Discord send transport;
+- duplicate publish guard;
+- operator button routing.
+
 ## F. Delivery Layer
 
-### Future publisher owner
+### Publisher owner
 
-Планируемый owner:
+- [src/news/publisher.js](src/news/publisher.js)
 
-- src/news/publisher.js
+Current implementation status:
+
+- publisher exists as a transport owner for already-rendered Daily News issues;
+- it sends public issue, continuation thread and staff digest;
+- it records publish result/failure into news runtime and digest metadata;
+- it has a duplicate-publish guard for already-published dayKey.
 
 Responsibilities:
 
 - resolve channels;
 - duplicate publish guard;
-- send cover + issue payload;
+- send cover/issue payload when cover attachments exist;
 - create continuation thread;
 - send staff digest;
 - write publish results into runtime/digest metadata.
@@ -418,11 +448,15 @@ Non-responsibilities:
 
 ## G. Operator Layer
 
-### Future operator owner
+### Operator owner
 
-Планируемый owner:
+- [src/news/operator.js](src/news/operator.js)
 
-- src/news/operator.js
+Current implementation status:
+
+- operator owner exists as an orchestration layer for status, preview-day, rerun-style preview and publish-now;
+- it delegates compile/render to preview owner and delivery to publisher owner;
+- it is not wired into live Discord buttons/commands yet.
 
 Responsibilities:
 
@@ -462,20 +496,21 @@ Non-responsibilities:
 - state owner: [src/news/state.js](src/news/state.js)
 - voice owner: [src/news/voice.js](src/news/voice.js)
 - moderation owner: [src/news/moderation.js](src/news/moderation.js)
+- kills collector owner: [src/news/kills.js](src/news/kills.js)
+- activity collector owner: [src/news/activity.js](src/news/activity.js)
+- newcomers collector owner: [src/news/newcomers.js](src/news/newcomers.js)
+- Roblox/JJS gameplay collector owner: [src/news/gameplay.js](src/news/gameplay.js)
+- tierlist collector owner: [src/news/tierlist.js](src/news/tierlist.js)
 - compiler owner: [src/news/compiler.js](src/news/compiler.js)
 - scheduler owner: [src/news/scheduler.js](src/news/scheduler.js)
+- renderer owner: [src/news/render.js](src/news/render.js)
+- preview owner: [src/news/preview.js](src/news/preview.js)
+- publisher owner: [src/news/publisher.js](src/news/publisher.js)
+- operator owner: [src/news/operator.js](src/news/operator.js)
 
-### Planned owners to add next
+### Owners still to add
 
-- kills collector owner
-- activity collector owner
-- newcomers collector owner
-- Roblox/JJS collector owner
-- tierlist collector owner
 - dropped-result audit owner
-- renderer owner
-- publisher owner
-- operator owner
 
 ### Forbidden ownership drift
 
@@ -550,11 +585,11 @@ Scope:
 
 Status:
 
-- частично реализовано и уже работает как foundation.
+- уже реализовано как shadow compile foundation и подключено в runtime.
 
 Remaining gaps inside the phase:
 
-- расширить compile beyond voice/moderation;
+- расширить compile beyond current voice/moderation/kills/activity baseline;
 - стабилизировать digest schema before renderer.
 
 ## Phase 3. Data Module Expansion
@@ -564,6 +599,12 @@ Goal:
 - закрыть все обязательные content blocks для V1.
 
 Subphase 3.1. Kills collector
+
+Current implementation status:
+
+- [src/news/kills.js](src/news/kills.js) exists as the compile-only kills owner.
+- It reads existing onboarding submissions and existing `collectRecentKillChanges` logic instead of changing review flow ownership.
+- It emits approved kill jumps, public top upgrades, staff submission items, and per-submission audit buckets for approved, pending, rejected, expired, superseded and invalid paths.
 
 Must deliver:
 
@@ -580,6 +621,13 @@ Constraints:
 
 Subphase 3.2. Activity collector
 
+Current implementation status:
+
+- [src/news/activity.js](src/news/activity.js) exists as the compile-only activity owner.
+- It reads `db.sot.activity.userChannelDailyStats` and emits top message authors from persisted activity rows.
+- Activity movers up/down are intentionally still unavailable in the compiled output with reason `no_daily_activity_baseline_yet` until a real baseline source exists.
+- Rows without precise first/last message timestamps are marked as imprecise coverage instead of being presented as exact.
+
 Must deliver:
 
 - top messages;
@@ -592,6 +640,12 @@ Constraints:
 - использовать existing activity domain as source, not ad hoc recomputation from random logs.
 
 Subphase 3.3. Newcomers collector
+
+Current implementation status:
+
+- [src/news/newcomers.js](src/news/newcomers.js) exists as the compile-only newcomers owner.
+- It reads shared profile activity guild join timestamps, Roblox verification timestamps and onboarding access grants.
+- It distinguishes `guild_joined`, `roblox_verified` and `access_granted` events.
 
 Must deliver:
 
@@ -606,6 +660,12 @@ Constraints:
 
 Subphase 3.4. Roblox/JJS collector
 
+Current implementation status:
+
+- [src/news/gameplay.js](src/news/gameplay.js) exists as the compile-only JJS gameplay owner.
+- It publishes only precise session-history or Moscow hourly-bucket playtime.
+- It keeps daily-bucket-only playtime staff/audit-only as `ambiguous_source` because cutoff precision is not guaranteed.
+
 Must deliver:
 
 - top JJS playtime;
@@ -618,6 +678,12 @@ Constraints:
 - avoid overclaiming game activity when source confidence is weak.
 
 Subphase 3.5. Tierlist shifts collector
+
+Current implementation status:
+
+- [src/news/tierlist.js](src/news/tierlist.js) exists as the compile-only tierlist update owner.
+- It can publish profile tierlist submissions/main updates for the day.
+- Real up/down shift history is still unavailable and remains explicitly marked as `no_tierlist_shift_history_yet`.
 
 Must deliver:
 
@@ -702,6 +768,12 @@ Goal:
 
 Subphase 6.1. Public edition builder
 
+Current implementation status:
+
+- initial payload builder exists in [src/news/render.js](src/news/render.js);
+- it produces masthead/date, story lead, hero metrics, sectioned embeds, emojis, separators, coverage labels and public thread payloads;
+- it does not publish and does not read raw sources outside the compiled digest.
+
 Must deliver:
 
 - hero block;
@@ -712,6 +784,11 @@ Must deliver:
 
 Subphase 6.2. Staff digest builder
 
+Current implementation status:
+
+- initial staff audit renderer exists in [src/news/render.js](src/news/render.js);
+- it surfaces bucket counts, rejected/pending kill submissions, activity precision diagnostics, moderation ambiguity and coverage reasons.
+
 Must deliver:
 
 - coverage diagnostics;
@@ -721,6 +798,11 @@ Must deliver:
 - runtime failures.
 
 Subphase 6.3. Cover renderer
+
+Current implementation status:
+
+- only `coverSpec` exists for future image composition;
+- no PNG generation exists yet.
 
 Must deliver:
 
@@ -746,6 +828,12 @@ Exit criteria:
 Goal:
 
 - безопасно и один раз в день публиковать итоговый выпуск.
+
+Current implementation status:
+
+- [src/news/publisher.js](src/news/publisher.js) exists and can publish an already rendered issue to public/staff channels with continuation thread support.
+- It records `lastPublishStatus`, `lastPublishedDayKey`, publish result metadata and failures in news runtime.
+- Duplicate publish guard is tested, but automatic scheduler-to-publisher mode is not wired yet.
 
 Must deliver:
 
@@ -773,6 +861,11 @@ Exit criteria:
 Goal:
 
 - дать controllable operations layer без внедрения бизнес-логики в handlers.
+
+Current implementation status:
+
+- [src/news/operator.js](src/news/operator.js) exists and supports status, preview-day, rerun-style preview and publish-now orchestration.
+- Live Discord command/button routing is still not wired, so this remains an owner API until runtime/operator wiring is added.
 
 Must deliver:
 
@@ -995,20 +1088,21 @@ Shadow mode остаётся базовым безопасным режимом,
 - [src/news/state.js](src/news/state.js)
 - [src/news/voice.js](src/news/voice.js)
 - [src/news/moderation.js](src/news/moderation.js)
+- [src/news/kills.js](src/news/kills.js)
+- [src/news/activity.js](src/news/activity.js)
+- [src/news/newcomers.js](src/news/newcomers.js)
+- [src/news/gameplay.js](src/news/gameplay.js)
+- [src/news/tierlist.js](src/news/tierlist.js)
 - [src/news/compiler.js](src/news/compiler.js)
 - [src/news/scheduler.js](src/news/scheduler.js)
+- [src/news/render.js](src/news/render.js)
+- [src/news/preview.js](src/news/preview.js)
+- [src/news/publisher.js](src/news/publisher.js)
+- [src/news/operator.js](src/news/operator.js)
 
 ### Expected next additions
 
-- src/news/kills.js
-- src/news/activity.js
-- src/news/newcomers.js
-- src/news/gameplay.js
-- src/news/tierlist.js
 - src/news/audit.js
-- src/news/render.js
-- src/news/publisher.js
-- src/news/operator.js
 
 Имена могут уточняться, но ownership boundaries менять нельзя без отдельного обоснования.
 
@@ -1016,12 +1110,12 @@ Shadow mode остаётся базовым безопасным режимом,
 
 Ниже жёсткий рекомендуемый порядок работ.
 
-1. Finish remaining collectors before any public visual polish.
+1. Keep live auto-publish disabled until operator wiring and live smoke exist.
 2. Upgrade moderation truth before claiming full moderation recap.
-3. Freeze digest schema before serious renderer work.
-4. Build preview-capable renderer before publish path.
-5. Build publisher only after renderer is stable.
-6. Build operator controls only after compile/render/publish owners already exist.
+3. Add activity movers and real tierlist shift history before claiming full V1 content coverage.
+4. Freeze digest schema before broad runtime wiring.
+5. Add cover PNG generation after payload checks stay green.
+6. Wire operator controls to the existing compile/render/publish owners.
 7. Do shadow runtime review before enabling real public delivery.
 
 ## Explicitly Deferred Until Later
@@ -1051,9 +1145,9 @@ Daily News считается действительно готовой сист
 
 Следующий этап разработки по этому документу:
 
-1. Довести collector layer до полного V1 scope.
+1. Подключить operator buttons/commands к [src/news/operator.js](src/news/operator.js) в preview/staff-safe режиме.
 2. Отдельно закрыть timeout tracking и leave-vs-kick reconciliation.
-3. После этого зафиксировать digest schema.
-4. Только затем строить renderer и publish layer.
+3. Добавить activity movers и real tierlist shift history, не подменяя их текущими submission updates.
+4. После этого зафиксировать digest schema, добавить cover PNG и только затем включать scheduler-to-publisher auto mode.
 
 Это и есть тот порядок, которому дальше нужно следовать, если цель — сделать систему эффективно и без лесного слома соседних частей репозитория.

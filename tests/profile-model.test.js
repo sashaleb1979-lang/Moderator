@@ -404,7 +404,7 @@ test("profile read-model composes derived sections, links, and verification fact
   assert.ok(readModel.ratingDetailCards.activity);
   assert.ok(readModel.ratingDetailCards.kills);
   assert.ok(readModel.ratingDetailCards.jjs);
-  assert.match(readModel.ratingDetailCards.kills.blocks.map((block) => block.title).join("\n"), /🧮 Как считается[\s\S]*📌 Входные данные[\s\S]*🏔️ Пик \/ планка[\s\S]*📉 Модификаторы[\s\S]*🧾 Источники[\s\S]*💡 До апа/);
+  assert.match(readModel.ratingDetailCards.kills.blocks.map((block) => block.title).join("\n"), /🧮 Как считается[\s\S]*📌 Входные данные[\s\S]*🏔️ Пик \/ планка[\s\S]*📉 Что влияет на оценку[\s\S]*🧾 Источники[\s\S]*💡 До апа/);
   assert.doesNotMatch(ratingText, /Боевая форма|Proof\/Kills|Стабильность|Рост|Связи|Общение|📉 Минусы|📈 Плюсы|🔎 Что нужно/);
   assert.doesNotMatch(ratingText, /Буквы|confidence|source|debuff|fresh|baseline|XP|Ур\./);
   const overviewActivity = readModel.sections.overview.find((section) => section.title === "📊 Сводка активности");
@@ -858,7 +858,7 @@ test("profile rating uses compact three leagues with activity voice caps", () =>
   assert.ok(chatActivity);
   assert.ok(chatActivity.score < 87);
   assert.doesNotMatch(chatActivity.grade, /^S/);
-  assert.match(chatActivity.detailLine, /voice cap/);
+  assert.match(chatActivity.detailLine, /нужен voice/);
 
   const combo = buildProfileReadModel({
     now: "2026-05-16T12:00:00.000Z",
@@ -882,7 +882,7 @@ test("profile rating uses compact three leagues with activity voice caps", () =>
   assert.ok(comboActivity.score >= 92);
   assert.match(comboActivity.grade, /^S/);
   assert.match(comboActivity.cardLines.join("\n"), /💡/);
-  assert.match(comboActivity.cardLines.join("\n"), /↳ пик: voice/);
+  assert.match(comboActivity.cardLines.join("\n"), /↳ планка: voice/);
 });
 
 test("profile rating applies raw voice penalty and compact detail line", () => {
@@ -907,13 +907,13 @@ test("profile rating applies raw voice penalty and compact detail line", () => {
   assert.equal(activity.rawVoiceHours, 5);
   assert.equal(activity.cleanVoiceHours, 3);
   assert.equal(Math.round(activity.voiceRatingHours * 10) / 10, 4.4);
-  assert.match(activity.detailLine, /пик: voice/);
-  assert.match(activity.detailLine, /raw voice -30%/);
+  assert.match(activity.detailLine, /планка: voice/);
+  assert.match(activity.detailLine, /сырой voice считается слабее/);
   assert.ok(activity.cardLines.length <= 5);
   const detailText = readModel.ratingDetailCards.activity.blocks.map((block) => [block.title, ...block.lines].join("\n")).join("\n");
-  assert.match(detailText, /voice 45%/);
+  assert.match(detailText, /Voice весит 45%/);
   assert.match(detailText, /JJS здесь не участвует/);
-  assert.match(detailText, /×45/);
+  assert.match(detailText, /вклад/);
 });
 
 test("profile rating caps and hides stale kills correctly", () => {
@@ -1064,15 +1064,16 @@ test("profile rating explains all three packs and uses proof windows for Kills g
       },
     },
     approvedEntries: [
-      { userId: "top", approvedKills: 7200 },
+      { userId: "top", displayName: "GojoMain", approvedKills: 7200 },
       { userId: "killer", approvedKills: 6800 },
       { userId: "other", approvedKills: 5000 },
     ],
     populationProfiles: [
       {
+        displayName: "Sasha",
         summary: {
           activity: { messages7d: 900, sessions7d: 14, voiceDurationSeconds7d: 6 * 3600, effectiveVoiceHours7d: 6 },
-          roblox: { jjsMinutes7d: 20.3 * 60 },
+          roblox: { jjsMinutes7d: 70.3 * 60 },
         },
       },
     ],
@@ -1090,24 +1091,35 @@ test("profile rating explains all three packs and uses proof windows for Kills g
   assert.equal(Math.round(kills.averageKillsPerDay), 30);
   assert.match(kills.cardLines.join("\n"), /30\/день/);
   assert.match(kills.detailLine, /proof 2/);
+  assert.equal(kills.allKillWindows.length, 2);
 
   const killsDetail = readModel.ratingDetailCards.kills.blocks.map((block) => [block.title, ...block.lines].join("\n")).join("\n");
-  assert.match(killsDetail, /proof windows: 3 · recent changes: 0/);
+  assert.match(killsDetail, /Использованы 3 proof-снимка и 0 recent-изменений/);
   assert.match(killsDetail, /6\s?620 → 6\s?800|6620 → 6800/);
   assert.match(killsDetail, /учтено/);
-  assert.doesNotMatch(killsDetail, /не хватает валидных kill-days/);
+  assert.match(killsDetail, /Игрок выше: GojoMain/);
+  assert.match(killsDetail, /Покрыто 6\/6 kill-days/);
+  assert.match(killsDetail, /До следующей буквы/);
+  assert.match(killsDetail, /До минимального S\+/);
+  assert.match(killsDetail, /старое окно/);
 
   const activityDetail = readModel.ratingDetailCards.activity.blocks.map((block) => [block.title, ...block.lines].join("\n")).join("\n");
-  assert.match(activityDetail, /voice 45%/);
+  assert.match(activityDetail, /Период оценки: последние 7 дней/);
+  assert.match(activityDetail, /Voice-планку задаёт Sasha/);
+  assert.match(activityDetail, /не хватает|планка уже закрыта/);
+  assert.match(activityDetail, /До минимального S\+/);
+  assert.match(activityDetail, /Voice весит 45%/);
   assert.match(activityDetail, /chat-сессии 35%/);
-  assert.match(activityDetail, /msg 20%/);
-  assert.match(activityDetail, /cap/);
+  assert.match(activityDetail, /сообщения 20%/);
+  assert.match(activityDetail, /[Пп]отолок/);
 
   const jjsDetail = readModel.ratingDetailCards.jjs.blocks.map((block) => [block.title, ...block.lines].join("\n")).join("\n");
-  assert.match(jjsDetail, /top недели/);
-  assert.match(jjsDetail, /top ×70%/);
-  assert.match(jjsDetail, /6ч/);
-  assert.match(jjsDetail, /coverage|покрытие/);
+  assert.match(jjsDetail, /За 7 дней/);
+  assert.match(jjsDetail, /Сейчас топ: Sasha/);
+  assert.match(jjsDetail, /не хватает .*ч/);
+  assert.match(jjsDetail, /Потеря из-за покрытия/);
+  assert.match(jjsDetail, /До минимального S\+/);
+  assert.doesNotMatch(`${activityDetail}\n${killsDetail}\n${jjsDetail}`, /benchmark|coverage|fallback|raw score|rank score/);
 });
 
 test("profile read-model surfaces stale Roblox playtime sync telemetry", () => {

@@ -457,7 +457,7 @@ test("profile operator opens rating detail buttons as separate ephemeral payload
   assert.match(detailJson, /🧮 Как считается/);
   assert.match(detailJson, /📌 Входные данные/);
   assert.match(detailJson, /🏔️ Пик \/ планка/);
-  assert.match(detailJson, /📉 Модификаторы/);
+  assert.match(detailJson, /📉 Что влияет на оценку/);
   assert.match(detailJson, /🧾 Источники/);
   assert.match(detailJson, /💡 До апа/);
 });

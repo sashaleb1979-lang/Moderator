@@ -11,6 +11,11 @@ function cleanString(value, limit = 2000) {
   return String(value || "").trim().slice(0, Math.max(0, Number(limit) || 0));
 }
 
+function parseIsoMs(value) {
+  const timeMs = Date.parse(String(value || ""));
+  return Number.isFinite(timeMs) ? timeMs : null;
+}
+
 function resolveNowIso(now) {
   if (typeof now === "function") return cleanString(now(), 80) || new Date().toISOString();
   return cleanString(now, 80) || new Date().toISOString();
@@ -76,6 +81,39 @@ function finalizeVoiceSession(session, endedAt, displayNameOverride = "") {
     moveCount: Number.isSafeInteger(Number(session?.moveCount)) ? Number(session.moveCount) : 0,
     incomplete: session?.incomplete === true,
     incompleteReason: session?.incomplete === true ? cleanString(session?.incompleteReason, 120) || "unknown" : null,
+  };
+}
+
+function pruneFinalizedVoiceSessions(voiceState = {}, { retainFromMs = null, prunedAt = null } = {}) {
+  if (!voiceState || typeof voiceState !== "object" || Array.isArray(voiceState)) {
+    return { prunedCount: 0, remainingCount: 0 };
+  }
+
+  const finalizedSessions = Array.isArray(voiceState.finalizedSessions) ? voiceState.finalizedSessions : [];
+  if (!Number.isFinite(retainFromMs)) {
+    voiceState.finalizedSessions = finalizedSessions;
+    return { prunedCount: 0, remainingCount: finalizedSessions.length };
+  }
+
+  const keptSessions = finalizedSessions.filter((session) => {
+    const endedMs = parseIsoMs(session?.endedAt);
+    if (endedMs !== null) {
+      return endedMs >= retainFromMs;
+    }
+
+    const joinedMs = parseIsoMs(session?.joinedAt);
+    if (joinedMs !== null) {
+      return joinedMs >= retainFromMs;
+    }
+
+    return true;
+  });
+
+  voiceState.finalizedSessions = keptSessions;
+  voiceState.lastPrunedAt = cleanString(prunedAt, 80) || voiceState.lastPrunedAt || null;
+  return {
+    prunedCount: finalizedSessions.length - keptSessions.length,
+    remainingCount: keptSessions.length,
   };
 }
 
@@ -191,6 +229,7 @@ function recordVoiceStateTransition({ db = {}, oldState = {}, newState = {}, now
 module.exports = {
   createOpenVoiceSession,
   finalizeVoiceSession,
+  pruneFinalizedVoiceSessions,
   recordVoiceStateTransition,
   resolveVoiceDisplayName,
 };
