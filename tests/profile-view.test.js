@@ -8,6 +8,7 @@ const {
   PROFILE_VIEWS,
   buildProfileHelperMessagePayload,
   buildProfilePayload,
+  buildProfileRatingDetailPayload,
 } = require("../src/profile/view");
 
 function shiftIsoDayKey(dayKey = "", offsetDays = 0) {
@@ -58,6 +59,38 @@ test("profile helper message payload builds one private-open button", () => {
   assert.match(payload.content, /приватно/i);
   assert.equal(payload.components.length, 1);
   assert.equal(payload.components[0].toJSON().components[0].custom_id, "profile_open:requester:target");
+});
+
+test("profile rating detail payload renders transparent V8.5 blocks", () => {
+  const payload = buildProfileRatingDetailPayload({
+    axis: "kills",
+    readModel: {
+      ratingDetailCards: {
+        kills: {
+          title: "⚔️ Kills · разбор оценки",
+          blocks: [
+            { title: "Итог", lines: ["A · 81/100 · #41/168"] },
+            { title: "🧮 Как считается", lines: ["approved kills rank + рост/день"] },
+            { title: "📌 Входные данные", lines: ["Approved 7 200"] },
+            { title: "🏔️ Пик / планка", lines: ["Цель A+: 34/день"] },
+            { title: "📉 Модификаторы", lines: ["+20% за рост"] },
+            { title: "🧾 Источники", lines: ["proof windows: 3 · recent changes: 0"] },
+            { title: "💡 До апа", lines: ["A+ откроется от +380 kills"] },
+          ],
+        },
+      },
+    },
+  });
+
+  const { textDisplays } = getProfileContainer(payload);
+  const text = textDisplays.map((component) => component.content).join("\n");
+  assert.match(text, /# ⚔️ Kills · разбор оценки/);
+  assert.match(text, /🧮 Как считается/);
+  assert.match(text, /📌 Входные данные/);
+  assert.match(text, /🏔️ Пик \/ планка/);
+  assert.match(text, /📉 Модификаторы/);
+  assert.match(text, /🧾 Источники/);
+  assert.match(text, /💡 До апа/);
 });
 
 test("profile payload renders overview, activity, rankings, roblox, and link buttons", () => {

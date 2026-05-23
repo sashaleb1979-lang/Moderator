@@ -326,9 +326,16 @@ test("handleSotReportModalOpenInteraction opens the expected manual character mo
   });
 
   assert.equal(handled, true);
-  assert.equal(interactionCalls.showModal.toJSON().custom_id, "sot_report_manual_character_modal");
-  assert.equal(interactionCalls.showModal.toJSON().title, "Ручной SoT bind персонажа");
+  const modalJson = interactionCalls.showModal.toJSON();
+  const [characterInput, roleInput] = modalJson.components.map((row) => row.components[0]);
+
+  assert.equal(modalJson.custom_id, "sot_report_manual_character_modal");
+  assert.equal(modalJson.title, "Ручной SoT bind персонажа");
   assert.deepEqual(getModalInputCustomIds(interactionCalls.showModal), ["sot_character_id", "sot_role_id"]);
+  assert.equal(characterInput.label, "Canonical Character ID");
+  assert.equal(characterInput.placeholder, "honored_one");
+  assert.equal(characterInput.value, undefined);
+  assert.equal(roleInput.label, "Role ID / mention / пусто");
 });
 
 test("handleSotReportModalOpenInteraction opens the expected channel, role, and panel modals", async () => {

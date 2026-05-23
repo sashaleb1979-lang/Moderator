@@ -439,6 +439,18 @@ Access-role и moderator-role бот сам не создаёт, потому ч
 6. Если LOG_CHANNEL_ID включён, сразу после старта проверь, нет ли `SOT_CHARACTER_ALERT[startup]` или `SOT_DRIFT_ALERT[startup]`. Это не просто шум, а сигнал, что smoke-check не пройден.
 7. Если после Verify now и Recover characters alert повторяется, deploy не считается здоровым, даже если process поднялся.
 
+Точечный runbook для Ryu и Куроуроши:
+
+1. Сначала выкати текущий main и дождись рестарта Railway с тем же BOT_DATA_DIR/DB_PATH, что использует живой бот.
+2. Открой `/onboard sotreport`, нажми Verify now, затем при необходимости Recover characters.
+3. Если binding для Ryu и Куроуроши всё ещё не сошёлся, открой Manual character и введи canonical id из `bot.config.json`.
+4. Для Ryu укажи `Character ID = ryu`, `Role ID = 1500447722447044618`.
+5. Для Куроуроши укажи `Character ID = black_death`, `Role ID = 1507635323499446382`.
+6. После обоих bind снова нажми Verify now.
+7. Затем обнови surfaces штатным путём: `Синк ролей`, `Обновить welcome`, `Обновить тир-листы`.
+8. Если у Куроуроши ещё нет emoji, загрузи server emoji с именем `jjs_black_death`, потом нажми `Залить emoji персов`: бот переиспользует emoji по имени и запишет mapping в presentation state.
+9. Не чини live bind ручной правкой `welcome-db.json`, `prod-welcome-db.json` или snapshot-файлов в репозитории. Для живого сервиса owner здесь SoT report + deploy, а не локальный JSON-снимок.
+
 Короткая расшифровка log-channel alert-ов:
 
 - `SOT_CHARACTER_ALERT[startup]` или `SOT_CHARACTER_ALERT[periodic]` — в character domain остались unresolved, ambiguous, stale-role или stale-verification проблемы.

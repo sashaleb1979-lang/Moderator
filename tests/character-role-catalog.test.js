@@ -52,6 +52,28 @@ test("buildManagedCharacterEntries prefers configured, historical, then generate
   ]);
 });
 
+test("buildManagedCharacterEntries keeps explicit configured ids for ryu and black_death", () => {
+  const result = buildManagedCharacterEntries({
+    managedCharacters: [
+      { id: "ryu", label: "Ryu", roleId: "1500447722447044618" },
+      { id: "black_death", label: "Куроуроши", roleId: "1507635323499446382" },
+    ],
+    historicalRoleIds: {
+      ryu: "stale-ryu-role",
+      black_death: "stale-black-death-role",
+    },
+    generatedRoleIds: {
+      ryu: "generated-ryu-role",
+      black_death: "generated-black-death-role",
+    },
+  });
+
+  assert.deepEqual(result, [
+    { id: "ryu", label: "Ryu", roleId: "1500447722447044618" },
+    { id: "black_death", label: "Куроуроши", roleId: "1507635323499446382" },
+  ]);
+});
+
 test("buildHistoricalManagedCharacterRoleIds restores role ids from profiles and submissions", () => {
   const result = buildHistoricalManagedCharacterRoleIds({
     managedCharacters: [

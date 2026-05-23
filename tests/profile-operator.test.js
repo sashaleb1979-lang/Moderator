@@ -454,9 +454,12 @@ test("profile operator opens rating detail buttons as separate ephemeral payload
   assert.equal(calls[1].payload.flags, MessageFlags.IsComponentsV2);
   const detailJson = JSON.stringify(calls[1].payload.components[0].toJSON());
   assert.match(detailJson, /Kills .* разбор оценки/);
-  assert.match(detailJson, /Формула/);
-  assert.match(detailJson, /Модификаторы/);
-  assert.match(detailJson, /До апа/);
+  assert.match(detailJson, /🧮 Как считается/);
+  assert.match(detailJson, /📌 Входные данные/);
+  assert.match(detailJson, /🏔️ Пик \/ планка/);
+  assert.match(detailJson, /📉 Модификаторы/);
+  assert.match(detailJson, /🧾 Источники/);
+  assert.match(detailJson, /💡 До апа/);
 });
 
 test("profile operator returns a safe fallback when profile nav payload build fails", async () => {
