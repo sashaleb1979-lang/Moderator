@@ -48,7 +48,6 @@ const {
 } = require("./src/sot/legacy-bridge/write");
 const { getCharacterAliasNames } = require("./src/sot/character-aliases");
 const {
-  applyConfiguredCharacterRoleBindings,
   buildConfiguredCharacterCatalogView,
   clearNativeCharacterRecord,
   writeNativeCharacterRecord,
@@ -1014,12 +1013,6 @@ function saveDb() {
   const result = dbStore.save(db);
   logSotDrift(db, "save");
   return result;
-}
-
-const configuredCharacterRoleBindingState = applyConfiguredCharacterRoleBindings(db, appConfig, { nowIso: () => new Date().toISOString() });
-if (configuredCharacterRoleBindingState.mutated) {
-  db.__needsSaveAfterLoad = true;
-  console.warn(`[startup] configured character role bindings repaired: written=${configuredCharacterRoleBindingState.writtenIds.join(",") || "none"} duplicatesCleared=${configuredCharacterRoleBindingState.duplicateClearedIds.join(",") || "none"}`);
 }
 
 if (db.__needsSaveAfterLoad) saveDb();
