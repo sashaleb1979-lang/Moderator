@@ -917,6 +917,29 @@ test("profile rating applies raw voice penalty and compact detail line", () => {
 });
 
 test("profile rating caps and hides stale kills correctly", () => {
+  const missingKills = buildProfileReadModel({
+    now: "2026-05-16T12:00:00.000Z",
+    guildId: "guild-1",
+    userId: "no-kills",
+    targetDisplayName: "No Kills",
+    isSelf: true,
+    profile: {
+      summary: {
+        activity: {
+          messages7d: 100,
+          sessions7d: 8,
+          voiceDurationSeconds7d: 2 * 3600,
+          effectiveVoiceHours7d: 2,
+        },
+      },
+    },
+  });
+  const missingKillsAxis = missingKills.profileRatingAxes.find((axis) => axis.axisName === "kills");
+  assert.equal(missingKillsAxis.isLocked, true);
+  assert.equal(missingKillsAxis.lockedPenaltyPercent, 40);
+  assert.match(missingKillsAxis.cardLines.join("\n"), /Нужен approved proof/);
+  assert.doesNotMatch(missingKillsAxis.cardLines.join("\n"), /Approved 0/);
+
   const noAverage = buildProfileReadModel({
     now: "2026-05-16T12:00:00.000Z",
     guildId: "guild-1",

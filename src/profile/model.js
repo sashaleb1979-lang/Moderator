@@ -848,7 +848,8 @@ function computeKillsGrowthModifierPercent(averageKillsPerDay = null) {
 }
 
 function buildKillsRatingAxis({ approvedKills = null, standing = {}, recentKillChanges = [], robloxSummary = {}, robloxDisplayState = null, now = null } = {}) {
-  if (!Number.isFinite(Number(approvedKills))) {
+  const approvedKillsAmount = normalizeNullableFiniteNumber(approvedKills);
+  if (!Number.isFinite(approvedKillsAmount)) {
     return buildRatingCardAxis({
       axisName: "kills",
       locked: true,
@@ -872,7 +873,7 @@ function buildKillsRatingAxis({ approvedKills = null, standing = {}, recentKillC
   const total = normalizeNullableFiniteNumber(standing?.totalVerified);
   const rankScore = Number.isFinite(rank) && Number.isFinite(total) && total > 1
     ? (1 - ((rank - 1) / Math.max(1, total - 1))) * 100
-    : Math.min(100, Math.log10(Math.max(1, Number(approvedKills) + 1)) * 25);
+    : Math.min(100, Math.log10(Math.max(1, approvedKillsAmount + 1)) * 25);
   const growthModifier = computeKillsGrowthModifierPercent(pace.averageKillsPerDay);
   const jjsHours7d = robloxDisplayState?.isTrackable === true && Number.isFinite(Number(robloxSummary?.jjsMinutes7d))
     ? Number(robloxSummary.jjsMinutes7d) / 60
@@ -892,7 +893,7 @@ function buildKillsRatingAxis({ approvedKills = null, standing = {}, recentKillC
   const finalScore = clampRatingScore(score);
   const next = getNextGradeTarget(finalScore);
   const nextKills = next && Number.isFinite(rankScore)
-    ? Math.max(1, Math.ceil(((next.score - finalScore) / 100) * Math.max(100, Number(approvedKills) || 100)))
+    ? Math.max(1, Math.ceil(((next.score - finalScore) / 100) * Math.max(100, approvedKillsAmount || 100)))
     : null;
   const detailItems = [];
   if (Number.isFinite(growthModifier)) detailItems.push(`рост ${formatRatingModifier(growthModifier)}`);
@@ -901,7 +902,7 @@ function buildKillsRatingAxis({ approvedKills = null, standing = {}, recentKillC
   if (stalePenalty > 0) detailItems.unshift(`просрочка -${formatNumber(stalePenalty)}%`);
   if (coveragePenalty > 0) detailItems.unshift(`покрытие -20%`);
   const values = [
-    `Approved ${formatNumber(approvedKills)}`,
+    `Approved ${formatNumber(approvedKillsAmount)}`,
     Number.isFinite(pace.averageKillsPerDay) ? `${formatNumber(Math.round(pace.averageKillsPerDay * 10) / 10)}/день` : "kills/day нет",
     Number.isFinite(killsPerJjsHour) ? `${formatNumber(Math.round(killsPerJjsHour * 10) / 10)} kills/ч` : null,
   ].filter(Boolean).join(" · ");
