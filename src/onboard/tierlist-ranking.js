@@ -11,6 +11,11 @@ function normalizeFiniteNumber(value, fallback = 0) {
   return Number.isFinite(amount) ? amount : fallback;
 }
 
+function normalizeNullableFiniteNumber(value) {
+  const amount = Number(value);
+  return Number.isFinite(amount) ? amount : null;
+}
+
 function normalizeDayTimestamp(value) {
   const timestamp = Number(value);
   if (!Number.isFinite(timestamp) || timestamp <= 0) return 0;
@@ -41,6 +46,140 @@ function topPositions(items = [], scoreFn, takePositions = 3) {
   }
 
   return positions;
+}
+
+function getProfileByUserId(profiles = {}, userId = "") {
+  const normalizedUserId = cleanString(userId, 80);
+  if (!normalizedUserId || !profiles || typeof profiles !== "object" || Array.isArray(profiles)) return null;
+  return profiles[normalizedUserId] && typeof profiles[normalizedUserId] === "object" ? profiles[normalizedUserId] : null;
+}
+
+function getProfileReviewedAt(profile = {}) {
+  return cleanString(
+    profile?.lastReviewedAt
+      ?? profile?.summary?.onboarding?.lastReviewedAt
+      ?? profile?.domains?.onboarding?.lastReviewedAt
+      ?? profile?.domains?.roblox?.lastReviewedAt,
+    120
+  );
+}
+
+function getProfileApprovedKills(profile = {}) {
+  return normalizeNullableFiniteNumber(
+    profile?.approvedKills
+      ?? profile?.summary?.onboarding?.approvedKills
+      ?? profile?.domains?.onboarding?.approvedKills
+  );
+}
+
+function getProfileLastSubmissionStatus(profile = {}) {
+  return cleanString(
+    profile?.lastSubmissionStatus
+      ?? profile?.summary?.onboarding?.lastSubmissionStatus
+      ?? profile?.domains?.onboarding?.lastSubmissionStatus,
+    40
+  );
+}
+
+function getProfileLastSubmissionId(profile = {}) {
+  return cleanString(
+    profile?.lastSubmissionId
+      ?? profile?.summary?.onboarding?.lastSubmissionId
+      ?? profile?.domains?.onboarding?.lastSubmissionId,
+    120
+  );
+}
+
+function shouldRecoverApprovedSubmissionFromProfile(submission = {}, profile = {}) {
+  const status = cleanString(submission?.status, 40);
+  if (status === "approved") return true;
+  if (status !== "pending") return false;
+
+  const profileStatus = getProfileLastSubmissionStatus(profile);
+  if (profileStatus !== "approved") return false;
+
+  const approvedKills = getProfileApprovedKills(profile);
+  const submissionKills = normalizeNullableFiniteNumber(submission?.kills);
+  if (approvedKills === null || submissionKills === null) return false;
+
+  const submissionId = cleanString(submission?.id, 120);
+  const lastSubmissionId = getProfileLastSubmissionId(profile);
+  if (submissionId && lastSubmissionId && submissionId === lastSubmissionId && submissionKills === approvedKills) {
+    return true;
+  }
+
+  const profileReviewedAt = Date.parse(getProfileReviewedAt(profile) || "") || 0;
+  const submissionCreatedAt = Date.parse(submission?.createdAt || "") || 0;
+  return profileReviewedAt > 0
+    && submissionCreatedAt > 0
+    && submissionCreatedAt <= profileReviewedAt
+    && submissionKills <= approvedKills;
+}
+
+function collectApprovedKillEvents(submissions = [], options = {}) {
+  const profiles = options?.profiles && typeof options.profiles === "object" && !Array.isArray(options.profiles)
+    ? options.profiles
+    : {};
+  const eventsByKey = new Map();
+
+  const addEvent = (event = {}) => {
+    const userId = cleanString(event.userId, 80);
+    const kills = normalizeNullableFiniteNumber(event.kills);
+    const at = Number(event.at);
+    if (!userId || kills === null || !Number.isFinite(at) || at <= 0) return;
+
+    const key = `${userId}:${Math.round(kills)}:${Math.round(at)}`;
+    if (!eventsByKey.has(key)) {
+      eventsByKey.set(key, {
+        userId,
+        kills,
+        at,
+      });
+    }
+  };
+
+  for (const submission of Array.isArray(submissions) ? submissions : []) {
+    if (!submission || typeof submission !== "object") continue;
+    const userId = cleanString(submission.userId, 80);
+    const profile = getProfileByUserId(profiles, userId);
+    if (!shouldRecoverApprovedSubmissionFromProfile(submission, profile || {})) continue;
+
+    const reviewedAt = Date.parse(submission.reviewedAt || "") || 0;
+    const recoveredProfileAt = Date.parse(getProfileReviewedAt(profile || {}) || "") || 0;
+    const createdAt = Date.parse(submission.createdAt || "") || 0;
+    const isProfileCurrentSubmission = cleanString(submission.id, 120)
+      && cleanString(submission.id, 120) === getProfileLastSubmissionId(profile || {});
+    addEvent({
+      userId,
+      kills: submission.kills,
+      at: reviewedAt || (isProfileCurrentSubmission ? recoveredProfileAt : 0) || createdAt,
+    });
+  }
+
+  for (const [userId, profile] of Object.entries(profiles)) {
+    const proofWindows = Array.isArray(profile?.domains?.progress?.proofWindows)
+      ? profile.domains.progress.proofWindows
+      : [];
+    for (const proofWindow of proofWindows) {
+      addEvent({
+        userId,
+        kills: proofWindow?.approvedKills,
+        at: Date.parse(proofWindow?.reviewedAt || "") || 0,
+      });
+    }
+
+    addEvent({
+      userId,
+      kills: getProfileApprovedKills(profile),
+      at: Date.parse(getProfileReviewedAt(profile) || "") || 0,
+    });
+  }
+
+  return [...eventsByKey.values()].sort((left, right) => {
+    if (left.at !== right.at) return left.at - right.at;
+    if (left.kills !== right.kills) return left.kills - right.kills;
+    return left.userId.localeCompare(right.userId);
+  });
 }
 
 function buildClusterRankingItems(items = [], clusterRanking = []) {
@@ -98,38 +237,32 @@ function buildCharacterFactData(items = [], clusterRanking = [], options = {}) {
   };
 }
 
-function collectRecentKillChanges(submissions = []) {
-  const approved = (Array.isArray(submissions) ? submissions : [])
-    .filter((submission) => submission && submission.status === "approved" && submission.userId && Number.isFinite(Number(submission.kills)))
-    .sort((left, right) => {
-      const leftAt = Date.parse(left.reviewedAt || left.createdAt || 0) || 0;
-      const rightAt = Date.parse(right.reviewedAt || right.createdAt || 0) || 0;
-      return leftAt - rightAt;
-    });
+function collectRecentKillChanges(submissions = [], options = {}) {
+  const approvedEvents = collectApprovedKillEvents(submissions, options);
+  const eventsByUser = new Map();
 
-  const lastByUser = new Map();
-  for (const submission of approved) {
-    const nextKills = Number(submission.kills);
-    const nextAt = Date.parse(submission.reviewedAt || submission.createdAt || 0) || 0;
-    const previous = lastByUser.get(submission.userId);
-    if (!previous) {
-      lastByUser.set(submission.userId, { prev: null, prevAt: 0, current: nextKills, currentAt: nextAt });
-      continue;
-    }
-    lastByUser.set(submission.userId, { prev: previous.current, prevAt: previous.currentAt, current: nextKills, currentAt: nextAt });
+  for (const event of approvedEvents) {
+    const items = eventsByUser.get(event.userId) || [];
+    items.push(event);
+    eventsByUser.set(event.userId, items);
   }
 
   const upgrades = [];
-  for (const [userId, record] of lastByUser) {
-    if (record.prev == null) continue;
-    if (!(record.current > record.prev)) continue;
-    upgrades.push({
-      userId,
-      from: record.prev,
-      to: record.current,
-      fromAt: record.prevAt,
-      toAt: record.currentAt,
-    });
+  for (const [userId, events] of eventsByUser) {
+    for (let index = events.length - 1; index > 0; index -= 1) {
+      const current = events[index];
+      const previous = events[index - 1];
+      if (!(current.kills > previous.kills)) continue;
+
+      upgrades.push({
+        userId,
+        from: previous.kills,
+        to: current.kills,
+        fromAt: previous.at,
+        toAt: current.at,
+      });
+      break;
+    }
   }
 
   upgrades.sort((left, right) => right.toAt - left.toAt);
@@ -141,14 +274,12 @@ function collectUserRecentKillChangeHistory(submissions = [], userId = "", optio
   const limit = Math.max(1, Number(options.limit) || 3);
   if (!normalizedUserId) return [];
 
-  const approved = (Array.isArray(submissions) ? submissions : [])
-    .filter((submission) => submission && submission.status === "approved" && cleanString(submission.userId, 80) === normalizedUserId)
-    .map((submission) => ({
-      kills: Number(submission.kills),
-      at: Date.parse(submission.reviewedAt || submission.createdAt || 0) || 0,
-    }))
-    .filter((entry) => Number.isFinite(entry.kills))
-    .sort((left, right) => left.at - right.at);
+  const approved = collectApprovedKillEvents(submissions, options)
+    .filter((event) => event.userId === normalizedUserId)
+    .map((event) => ({
+      kills: event.kills,
+      at: event.at,
+    }));
 
   if (approved.length < 2) return [];
 
@@ -207,6 +338,7 @@ function paginateRecentKillChanges(changes = [], options = {}) {
 
 module.exports = {
   buildCharacterFactData,
+  collectApprovedKillEvents,
   collectRecentKillChanges,
   collectUserRecentKillChangeHistory,
   paginateRecentKillChanges,

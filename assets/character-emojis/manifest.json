@@ -3,7 +3,7 @@
   "outputDir": "assets/character-emojis",
   "size": 128,
   "discordMaxBytes": 262144,
-  "total": 19,
+  "total": 20,
   "characters": [
     {
       "characterId": "honored_one",
@@ -156,6 +156,14 @@
       "file": "assets/character-emojis/jjs_ryu.png",
       "sourceFile": "assets/characters/ryu.png",
       "bytes": 42547
+    },
+    {
+      "characterId": "black_death",
+      "label": "Black Death",
+      "emojiName": "jjs_black_death",
+      "file": "assets/character-emojis/jjs_black_death.png",
+      "sourceFile": "assets/characters/black_death.png",
+      "bytes": 33600
     }
   ],
   "missing": [],

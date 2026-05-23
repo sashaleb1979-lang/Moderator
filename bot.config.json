@@ -213,7 +213,13 @@
       "id": "ryu",
       "label": "Ryu",
       "wikiUrl": "https://jujutsu-shenanigans.fandom.com/wiki/Ryu",
-      "roleId": ""
+      "roleId": "1500447722447044618"
+    },
+    {
+      "id": "black_death",
+      "label": "Куроуроши",
+      "wikiUrl": "https://jujutsu-shenanigans.fandom.com/wiki/Black_Death",
+      "roleId": "1507635323499446382"
     }
   ]
 }
