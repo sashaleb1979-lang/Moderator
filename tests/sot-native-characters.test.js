@@ -4,6 +4,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const {
+  applyConfiguredCharacterRoleBindings,
   buildConfiguredCharacterCatalogView,
   clearNativeCharacterRecord,
   writeNativeCharacterRecord,
@@ -181,5 +182,56 @@ test("writeNativeCharacterRecord preserves existing history entries", () => {
 
   assert.deepEqual(db.sot.characters.vessel.history, [
     { at: "2026-05-03T12:00:00.000Z", from: "configured", to: "discovered", oldValue: "role-old" },
+  ]);
+});
+
+test("applyConfiguredCharacterRoleBindings repairs stale duplicate role owners on startup", () => {
+  const db = {
+    config: {
+      generatedRoles: {
+        characters: { ryu: "role-black-death" },
+        characterLabels: { ryu: "Рю" },
+      },
+      characters: [
+        { id: "ryu", label: "Ryu", roleId: "role-black-death" },
+      ],
+    },
+    sot: {
+      sotVersion: 1,
+      characters: {
+        ryu: {
+          id: "ryu",
+          label: "Рю",
+          englishLabel: "Ryu",
+          roleId: "role-black-death",
+          source: "recovered",
+          verifiedAt: "2026-05-22T01:42:46.437Z",
+          evidence: { nativeWriter: true },
+        },
+      },
+    },
+  };
+
+  const result = applyConfiguredCharacterRoleBindings(db, {
+    characters: [
+      { id: "ryu", label: "Ryu", roleId: "" },
+      { id: "black_death", label: "Black Death", roleId: "role-black-death", wikiUrl: "https://wiki/black_death" },
+    ],
+  }, {
+    verifiedAt: "2026-05-23T08:00:00.000Z",
+  });
+
+  assert.equal(result.mutated, true);
+  assert.deepEqual(result.writtenIds, ["black_death"]);
+  assert.deepEqual(result.duplicateClearedIds, ["ryu"]);
+  assert.equal(db.sot.characters.ryu.roleId, "");
+  assert.equal(db.sot.characters.black_death.roleId, "role-black-death");
+  assert.equal(db.sot.characters.black_death.source, "configured");
+  assert.equal(db.sot.characters.black_death.wikiUrl, "https://wiki/black_death");
+  assert.deepEqual(db.config.generatedRoles.characters, { black_death: "role-black-death" });
+  assert.equal(db.config.generatedRoles.characterLabels.black_death, "Black Death");
+  assert.deepEqual(db.config.characters, [
+    { id: "ryu", label: "Ryu", roleId: "" },
+    { id: "black_death", label: "Black Death", roleId: "role-black-death" },
   ]);
 });

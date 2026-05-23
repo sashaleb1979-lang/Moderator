@@ -207,7 +207,7 @@
       },
       {
         "id": "black_death",
-        "label": "Black Death",
+        "label": "Куроуроши",
         "roleId": "1489137271440408606"
       }
     ],
@@ -590,10 +590,10 @@
       "black_death": {
         "id": "black_death",
         "label": "Куроуроши",
-        "englishLabel": "Black Death",
+        "englishLabel": "Куроуроши",
         "roleId": "1489137271440408606",
-        "source": "manual",
-        "verifiedAt": "2026-05-23T07:24:32.793Z",
+        "source": "configured",
+        "verifiedAt": "2026-05-23T08:00:00.000Z",
         "evidence": {
           "aliasNames": [
             "Куроуроши",
@@ -932,7 +932,21 @@
             "maxActiveDays": 10,
             "maxScore": 75
           }
-        ]
+        ],
+        "voiceScoring": {
+          "mode": "smart",
+          "totalDailyCapHours": 6,
+          "activeDailyCapHours": 4,
+          "recencyHalfLifeDays": 10,
+          "streamingWeight": 0.35,
+          "videoWeight": 0.15,
+          "minMeaningfulActiveSegmentSeconds": 90,
+          "toggleDebounceSeconds": 5,
+          "minEngagementRatio": 0.2,
+          "lowEngagementMultiplier": 0.55,
+          "maxStreamingToActiveRatio": 0.5,
+          "maxVideoToActiveRatio": 0.35
+        }
       },
       "watchedChannels": [],
       "globalUserSessions": [],
