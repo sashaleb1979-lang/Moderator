@@ -12,6 +12,7 @@ const {
 function createInteraction(customId, member = { userId: "mod" }) {
   const calls = {
     reply: [],
+    deferReply: [],
     deferUpdate: 0,
     editReply: [],
   };
@@ -20,10 +21,18 @@ function createInteraction(customId, member = { userId: "mod" }) {
     interaction: {
       customId,
       member,
+      deferred: false,
+      replied: false,
       async reply(payload) {
+        this.replied = true;
         calls.reply.push(payload);
       },
+      async deferReply(payload) {
+        this.deferred = true;
+        calls.deferReply.push(payload);
+      },
       async deferUpdate() {
+        this.deferred = true;
         calls.deferUpdate += 1;
       },
       async editReply(payload) {
@@ -402,7 +411,7 @@ test("handleSotReportModalSubmitInteraction rejects non-moderators before submit
 });
 
 test("handleSotReportModalSubmitInteraction validates missing canonical characters", async () => {
-  const { interaction } = createModalSubmitInteraction("sot_report_manual_character_modal", {
+  const { interaction, calls: interactionCalls } = createModalSubmitInteraction("sot_report_manual_character_modal", {
     sot_character_id: "missing",
     sot_role_id: "",
   });
@@ -414,11 +423,17 @@ test("handleSotReportModalSubmitInteraction validates missing canonical characte
   });
 
   assert.equal(handled, true);
-  assert.deepEqual(calls.error, ["Такого canonical character id нет в bot.config.json."]);
+  assert.equal(interactionCalls.deferReply.length, 1);
+  assert.deepEqual(interactionCalls.editReply, [{
+    content: "Такого canonical character id нет в bot.config.json.",
+    embeds: [],
+    components: [],
+  }]);
+  assert.deepEqual(calls.error, []);
 });
 
 test("handleSotReportModalSubmitInteraction saves a manual character override and refreshes the report", async () => {
-  const { interaction } = createModalSubmitInteraction("sot_report_manual_character_modal", {
+  const { interaction, calls: interactionCalls } = createModalSubmitInteraction("sot_report_manual_character_modal", {
     sot_character_id: "honored_one",
     sot_role_id: "role-gojo",
   });
@@ -432,6 +447,7 @@ test("handleSotReportModalSubmitInteraction saves a manual character override an
   });
 
   assert.equal(handled, true);
+  assert.equal(interactionCalls.deferReply.length, 1);
   assert.deepEqual(calls.writeCharacter, [{
     characterId: "honored_one",
     label: "Gojo Role",

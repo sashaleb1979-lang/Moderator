@@ -2,6 +2,7 @@
 
 const {
   ActionRowBuilder,
+  MessageFlags,
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
@@ -113,6 +114,42 @@ function assertFunction(value, name) {
   if (typeof value !== "function") {
     throw new TypeError(`${name} must be a function`);
   }
+}
+
+function buildPlainReplyPayload(content = "") {
+  return {
+    content: String(content || "").trim() || "Готово.",
+    embeds: [],
+    components: [],
+  };
+}
+
+function normalizeReplyPayload(payload) {
+  if (typeof payload === "string") return buildPlainReplyPayload(payload);
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return buildPlainReplyPayload(payload);
+  }
+  return payload;
+}
+
+function normalizeEditPayload(payload) {
+  const replyPayload = normalizeReplyPayload(payload);
+  const {
+    flags,
+    ephemeral,
+    fetchReply,
+    withResponse,
+    ...editPayload
+  } = replyPayload;
+  return editPayload;
+}
+
+async function replyModalError(interaction, replyError, payload) {
+  if (interaction?.deferred || interaction?.replied) {
+    await interaction.editReply(normalizeEditPayload(payload));
+    return;
+  }
+  await replyError(interaction, payload);
 }
 
 async function handleSotReportButtonInteraction({
@@ -247,6 +284,8 @@ async function handleSotReportModalSubmitInteraction({
     return true;
   }
 
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
   if (customId === "sot_report_manual_character_modal") {
     assertFunction(parseRequestedRoleId, "parseRequestedRoleId");
     assertFunction(getConfiguredManagedCharacterCatalog, "getConfiguredManagedCharacterCatalog");
@@ -266,7 +305,7 @@ async function handleSotReportModalSubmitInteraction({
     const configuredCharacter = getConfiguredManagedCharacterCatalog().find((entry) => entry.id === characterId) || null;
 
     if (!configuredCharacter) {
-      await replyError(interaction, "Такого canonical character id нет в bot.config.json.");
+      await replyModalError(interaction, replyError, "Такого canonical character id нет в bot.config.json.");
       return true;
     }
 
@@ -284,19 +323,19 @@ async function handleSotReportModalSubmitInteraction({
     } else {
       const guild = await getGuild(client).catch(() => null);
       if (!guild) {
-        await replyError(interaction, "Не удалось получить guild для проверки роли.");
+        await replyModalError(interaction, replyError, "Не удалось получить guild для проверки роли.");
         return true;
       }
 
       await guild.roles.fetch().catch(() => null);
       const role = guild.roles.cache.get(roleId) || await guild.roles.fetch(roleId).catch(() => null);
       if (!role) {
-        await replyError(interaction, "Роль не найдена на сервере.");
+        await replyModalError(interaction, replyError, "Роль не найдена на сервере.");
         return true;
       }
 
       if (getManagedCharacterRecoveryExcludedRoleIds(guild).has(role.id)) {
-        await replyError(interaction, "Эту роль нельзя привязывать как character role: она входит в служебный/access/tier pool.");
+        await replyModalError(interaction, replyError, "Эту роль нельзя привязывать как character role: она входит в служебный/access/tier pool.");
         return true;
       }
 
@@ -329,7 +368,7 @@ async function handleSotReportModalSubmitInteraction({
     const slotInfo = normalizeNativePanelSlot(interaction.fields.getTextInputValue("sot_manual_panel_slot"));
     const channelId = parseRequestedChannelId(interaction.fields.getTextInputValue("sot_manual_panel_channel"), "");
     if (!slotInfo) {
-      await replyError(interaction, "Неизвестный panel slot. Используй welcome / nonGgs / eloSubmit / eloGraphic / dashboard / summary.");
+      await replyModalError(interaction, replyError, "Неизвестный panel slot. Используй welcome / nonGgs / eloSubmit / eloGraphic / dashboard / summary.");
       return true;
     }
 
@@ -340,7 +379,7 @@ async function handleSotReportModalSubmitInteraction({
         ? `Manual SoT panel override сброшен: ${result.slotInfo.label}. Ground-truth panel section остаётся legacy-backed.`
         : `Manual SoT panel override сохранён: ${result.slotInfo.label} → ${formatChannelMention(result.channel?.id || channelId)}. Ground-truth panel section остаётся legacy-backed.`;
     } catch (error) {
-      await replyError(interaction, String(error?.message || error || "Не удалось обновить panel override."));
+      await replyModalError(interaction, replyError, String(error?.message || error || "Не удалось обновить panel override."));
       return true;
     }
 
@@ -356,11 +395,11 @@ async function handleSotReportModalSubmitInteraction({
     const slot = normalizeSotReportChannelSlot(interaction.fields.getTextInputValue("sot_channel_slot"));
     const channelId = parseRequestedChannelId(interaction.fields.getTextInputValue("sot_channel_id"), "");
     if (!slot) {
-      await replyError(interaction, "Неизвестный slot. Используй welcome / review / tierlistText / tierlistGraphic / log.");
+      await replyModalError(interaction, replyError, "Неизвестный slot. Используй welcome / review / tierlistText / tierlistGraphic / log.");
       return true;
     }
     if (!channelId) {
-      await replyError(interaction, "Некорректный Channel ID или mention канала.");
+      await replyModalError(interaction, replyError, "Некорректный Channel ID или mention канала.");
       return true;
     }
 
@@ -368,7 +407,7 @@ async function handleSotReportModalSubmitInteraction({
       const statusText = await applyGroundTruthReportChannelLink(client, slot, channelId);
       await replyWithGroundTruthSotReport(interaction, client, statusText);
     } catch (error) {
-      await replyError(interaction, String(error?.message || error || "Не удалось привязать канал."));
+      await replyModalError(interaction, replyError, String(error?.message || error || "Не удалось привязать канал."));
     }
     return true;
   }
@@ -386,7 +425,7 @@ async function handleSotReportModalSubmitInteraction({
   const slotInfo = normalizeNativeRoleSlot(interaction.fields.getTextInputValue("sot_manual_role_slot"));
   const roleId = parseRequestedRoleId(interaction.fields.getTextInputValue("sot_manual_role_id"), "");
   if (!slotInfo) {
-    await replyError(interaction, "Неизвестный role slot. Используй moderator / accessNormal / accessWartime / accessNonJjs / accessCompanion / killTier:1..5 / killMilestone:20k|30k / legacyEloTier:1..4.");
+    await replyModalError(interaction, replyError, "Неизвестный role slot. Используй moderator / accessNormal / accessWartime / accessNonJjs / accessCompanion / killTier:1..5 / killMilestone:20k|30k / legacyEloTier:1..4.");
     return true;
   }
 
@@ -398,14 +437,14 @@ async function handleSotReportModalSubmitInteraction({
   } else {
     const guild = await getGuild(client).catch(() => null);
     if (!guild) {
-      await replyError(interaction, "Не удалось получить guild для проверки роли.");
+      await replyModalError(interaction, replyError, "Не удалось получить guild для проверки роли.");
       return true;
     }
 
     await guild.roles.fetch().catch(() => null);
     const role = guild.roles.cache.get(roleId) || await guild.roles.fetch(roleId).catch(() => null);
     if (!role) {
-      await replyError(interaction, "Роль не найдена на сервере.");
+      await replyModalError(interaction, replyError, "Роль не найдена на сервере.");
       return true;
     }
 
