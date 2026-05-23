@@ -2144,7 +2144,9 @@ async function buildTierlistBoardPayload(client, options = {}) {
 async function buildTextTierlistPayloads(client, options = {}) {
   const liveContext = await getLiveCharacterStatsContext(client);
   const entries = getLiveApprovedTierlistEntries(liveContext);
-  const recentChanges = collectRecentKillChanges(Object.values(db.submissions || {}));
+  const recentChanges = collectRecentKillChanges(Object.values(db.submissions || {}), {
+    profiles: db.profiles || {},
+  });
 
   const PAGE_SIZE = 25;
   const rankPageCount = Math.max(1, Math.ceil(entries.length / PAGE_SIZE));
@@ -2542,7 +2544,9 @@ function buildRecentKillChangesEmbed(pagination = null) {
 
   const resolvedPagination = pagination && typeof pagination === "object"
     ? pagination
-    : paginateRecentKillChanges(collectRecentKillChanges(Object.values(db.submissions || {})), {
+    : paginateRecentKillChanges(collectRecentKillChanges(Object.values(db.submissions || {}), {
+      profiles: db.profiles || {},
+    }), {
       page: 0,
       pageSize: RECENT_KILL_CHANGES_PAGE_SIZE,
       maxPages: RECENT_KILL_CHANGES_MAX_PAGES,
@@ -5656,9 +5660,11 @@ function getProfileOperator() {
     getRecentKillChangesForUser: (userId) => collectUserRecentKillChangeHistory(
       Object.values(db.submissions || {}),
       userId,
-      { limit: 3 }
+      { limit: 3, profiles: db.profiles || {} }
     ),
-    getRecentKillChangeForUser: (userId) => collectRecentKillChanges(Object.values(db.submissions || {}))
+    getRecentKillChangeForUser: (userId) => collectRecentKillChanges(Object.values(db.submissions || {}), {
+      profiles: db.profiles || {},
+    })
       .find((entry) => entry.userId === String(userId || "").trim()) || null,
     getEloProfile: (userId) => getDormantEloProfileSnapshot(db, userId),
     getTierlistProfile: (userId) => getDormantTierlistProfileSnapshot(db, userId),
@@ -11819,6 +11825,14 @@ function canUseLegacyTierlistCurrentWizard(rawState, userId) {
   return !isLegacyTierlistWizardLocked(rawState, userId) || user.wizMode === "new";
 }
 
+function canResumeLegacyTierlistPointRateWizard(rawState, userId) {
+  const user = getLegacyTierlistWizardUser(rawState, userId);
+  return Array.isArray(user.wizQueue)
+    && user.wizQueue.length > 0
+    && ["new", "targeted"].includes(String(user.wizMode || "").trim())
+    && !legacyTierlistWizardDone(rawState, userId);
+}
+
 function findLegacyTierlistCharacterMainPage(liveState, characterId) {
   const index = (liveState.characters || []).findIndex((entry) => entry.id === characterId);
   if (index < 0) return 0;
@@ -17877,7 +17891,9 @@ client.on("interactionCreate", async (interaction) => {
         const liveContext = await getLiveCharacterStatsContext(client);
         const total = getLiveApprovedTierlistEntries(liveContext).length;
         const recentPageCount = paginateRecentKillChanges(
-          collectRecentKillChanges(Object.values(db.submissions || {})),
+          collectRecentKillChanges(Object.values(db.submissions || {}), {
+            profiles: db.profiles || {},
+          }),
           {
             page: 0,
             pageSize: RECENT_KILL_CHANGES_PAGE_SIZE,
@@ -18212,12 +18228,25 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
-      if (Array.isArray(user.wizQueue) && user.wizQueue.length) {
+      const pendingIds = getLegacyTierlistPendingNewCharacterIds(liveState, interaction.user.id);
+      if (pendingIds.length) {
+        startLegacyTierlistWizard(liveState, interaction.user.id, "new");
+        persistLiveLegacyTierlistState(liveState);
         await replyWithAsyncInteractionPayload(interaction, {
           loadingText: "Открываю оценку новых...",
           buildPayload: async () => ephemeralPayload(await buildLegacyTierlistWizardPayload(liveState, interaction.user.id)),
           errorText: "Не удалось открыть оценку новых.",
-          logLabel: "Legacy tierlist targeted wizard resume failed",
+          logLabel: "Legacy tierlist new wizard start failed",
+        });
+        return;
+      }
+
+      if (canResumeLegacyTierlistPointRateWizard(liveState.rawState, interaction.user.id)) {
+        await replyWithAsyncInteractionPayload(interaction, {
+          loadingText: "Открываю точечную оценку...",
+          buildPayload: async () => ephemeralPayload(await buildLegacyTierlistWizardPayload(liveState, interaction.user.id)),
+          errorText: "Не удалось открыть точечную оценку.",
+          logLabel: "Legacy tierlist point-rate wizard resume failed",
         });
         return;
       }
@@ -20237,15 +20266,8 @@ client.on("interactionCreate", async (interaction) => {
       const mainSync = await syncLegacyTierlistMainsForInteraction(client, liveState, interaction);
       if (mainSync.changed) persistLiveLegacyTierlistState(liveState);
 
-      const user = getLegacyTierlistWizardUser(liveState.rawState, interaction.user.id);
       if (!hasSubmittedLegacyTierlist(liveState.rawState, interaction.user.id)) {
         await interaction.update({ content: "Сначала отправь полный тир-лист кнопкой Начать оценку.", embeds: [], components: [], attachments: [] });
-        return;
-      }
-
-      if (Array.isArray(user.wizQueue) && user.wizQueue.length) {
-        await interaction.deferUpdate();
-        await interaction.editReply(await buildLegacyTierlistWizardPayload(liveState, interaction.user.id));
         return;
       }
 

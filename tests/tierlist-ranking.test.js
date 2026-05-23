@@ -5,6 +5,7 @@ const assert = require("node:assert/strict");
 
 const {
   buildCharacterFactData,
+  collectApprovedKillEvents,
   collectRecentKillChanges,
   collectUserRecentKillChangeHistory,
   paginateRecentKillChanges,
@@ -87,6 +88,79 @@ test("collectRecentKillChanges keeps only approved upward changes sorted by late
   assert.deepEqual(changes, [
     { userId: "u4", from: 900, to: 1600, fromAt: Date.parse("2026-05-01T00:00:00.000Z"), toAt: Date.parse("2026-05-05T00:00:00.000Z") },
     { userId: "u1", from: 1000, to: 1800, fromAt: Date.parse("2026-05-01T00:00:00.000Z"), toAt: Date.parse("2026-05-03T00:00:00.000Z") },
+  ]);
+});
+
+test("collectRecentKillChanges recovers approved history from profile-backed pending submissions", () => {
+  const changes = collectRecentKillChanges([
+    { id: "old", userId: "u1", status: "pending", kills: 6117, createdAt: "2026-05-18T04:15:42.353Z" },
+    { id: "new", userId: "u1", status: "pending", kills: 6332, createdAt: "2026-05-23T03:49:47.000Z" },
+  ], {
+    profiles: {
+      u1: {
+        approvedKills: 6332,
+        lastSubmissionStatus: "approved",
+        lastSubmissionId: "new",
+        lastReviewedAt: "2026-05-23T03:52:00.000Z",
+      },
+    },
+  });
+
+  assert.deepEqual(changes, [
+    {
+      userId: "u1",
+      from: 6117,
+      to: 6332,
+      fromAt: Date.parse("2026-05-18T04:15:42.353Z"),
+      toAt: Date.parse("2026-05-23T03:52:00.000Z"),
+    },
+  ]);
+});
+
+test("collectApprovedKillEvents does not promote active pending updates", () => {
+  const events = collectApprovedKillEvents([
+    { id: "old", userId: "u1", status: "approved", kills: 1000, reviewedAt: "2026-05-01T00:00:00.000Z" },
+    { id: "pending", userId: "u1", status: "pending", kills: 1200, createdAt: "2026-05-02T00:00:00.000Z" },
+  ], {
+    profiles: {
+      u1: {
+        approvedKills: 1000,
+        lastSubmissionStatus: "pending",
+        lastSubmissionId: "pending",
+        lastReviewedAt: "2026-05-01T00:00:00.000Z",
+      },
+    },
+  });
+
+  assert.deepEqual(events, [
+    { userId: "u1", kills: 1000, at: Date.parse("2026-05-01T00:00:00.000Z") },
+  ]);
+});
+
+test("collectRecentKillChanges can use proof-window history when submissions were lost", () => {
+  const changes = collectRecentKillChanges([], {
+    profiles: {
+      u1: {
+        domains: {
+          progress: {
+            proofWindows: [
+              { approvedKills: 4000, reviewedAt: "2026-05-10T10:00:00.000Z" },
+              { approvedKills: 4320, reviewedAt: "2026-05-18T10:00:00.000Z" },
+            ],
+          },
+        },
+      },
+    },
+  });
+
+  assert.deepEqual(changes, [
+    {
+      userId: "u1",
+      from: 4000,
+      to: 4320,
+      fromAt: Date.parse("2026-05-10T10:00:00.000Z"),
+      toAt: Date.parse("2026-05-18T10:00:00.000Z"),
+    },
   ]);
 });
 

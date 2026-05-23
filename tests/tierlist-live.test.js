@@ -247,3 +247,27 @@ test("appendLegacyTierlistCharacterToActiveWizards appends for active full/new s
   assert.deepEqual(rawState.users.lockedMain.wizQueue, ["gojo", "sukuna"]);
   assert.deepEqual(rawState.users.finished.wizQueue, ["gojo"]);
 });
+
+test("point-rate opens pending new characters before any stale full wizard queue", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "welcome-bot.js"), "utf8");
+  const rateNewBranch = source.match(/if \(interaction\.customId === "rate_new_characters"\) \{([\s\S]*?)if \(\["point_rate_page_prev", "point_rate_page_next"\]\.includes\(interaction\.customId\)\) \{/);
+  assert.ok(rateNewBranch, "rate_new_characters branch exists");
+
+  const body = rateNewBranch[1];
+  const pendingIndex = body.indexOf("const pendingIds = getLegacyTierlistPendingNewCharacterIds");
+  const resumeIndex = body.indexOf("canResumeLegacyTierlistPointRateWizard");
+  assert.ok(pendingIndex >= 0, "pending new characters are checked");
+  assert.ok(resumeIndex >= 0, "point-rate resume path is still available");
+  assert.ok(pendingIndex < resumeIndex, "new characters are opened before stale wizard resume");
+  assert.match(body, /startLegacyTierlistWizard\(liveState, interaction\.user\.id, "new"\)/);
+});
+
+test("point-rate select replaces stale queues with the explicit selected cards", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "welcome-bot.js"), "utf8");
+  const selectBranch = source.match(/if \(interaction\.customId === "point_rate_select"\) \{([\s\S]*?)if \(interaction\.customId === "panel_select_tier"\) \{/);
+  assert.ok(selectBranch, "point_rate_select branch exists");
+
+  const body = selectBranch[1];
+  assert.doesNotMatch(body, /Array\.isArray\(user\.wizQueue\)/);
+  assert.match(body, /startLegacyTierlistWizard\(liveState, interaction\.user\.id, "targeted", selectedIds\)/);
+});
