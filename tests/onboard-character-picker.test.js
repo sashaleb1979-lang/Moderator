@@ -124,7 +124,7 @@ test("current configured characters fit on one fast picker page", () => {
   }));
   const pageInfo = paginateCharacterPickerEntries(entries, 0);
 
-  assert.equal(entries.length, 19);
+  assert.equal(entries.length, 20);
   assert.equal(pageInfo.items.length, entries.length);
   assert.equal(pageInfo.hasNext, false);
 });
@@ -181,7 +181,7 @@ test("character picker payload renders one dense emoji-button panel without atta
   assert.equal(payload.components.length, 5);
   assert.equal(characterButtons.length, entries.length);
   assert.equal(rows[0].components.length, 5);
-  assert.equal(rows[3].components.length, 4);
+  assert.equal(rows[3].components.length, 5);
   assert.equal(rows[4].components.length, 2);
   assert.match(json, new RegExp(`onboard_main_toggle:${firstEntry.id}`));
   assert.match(json, /jjs_first_character/);

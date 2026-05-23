@@ -32,6 +32,7 @@
 | `disaster_plants` | `jjs_disaster_plants` | `assets/character-emojis/jjs_disaster_plants.png` | 45802 |
 | `crow_charmer` | `jjs_crow_charmer` | `assets/character-emojis/jjs_crow_charmer.png` | 41212 |
 | `ryu` | `jjs_ryu` | `assets/character-emojis/jjs_ryu.png` | 42547 |
+| `black_death` | `jjs_black_death` | `assets/character-emojis/jjs_black_death.png` | 33600 |
 
 ## Missing Source Assets
 

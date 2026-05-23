@@ -20,6 +20,7 @@ const LEGACY_CHARACTER_ROLE_ALIASES = Object.freeze({
   disaster_plants: ["Ханами"],
   crow_charmer: ["Мэй Мэй", "Мей Мей", "Мэй-Мэй", "Меи Меи"],
   ryu: ["Рю", "Рю Ишигори"],
+  black_death: ["Куроуроши", "Куроуруши", "Коуроуроши", "Kurourushi", "Таракан"],
 });
 
 function cleanString(value, limit = 200) {

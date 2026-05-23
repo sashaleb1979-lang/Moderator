@@ -2917,13 +2917,24 @@ function hasCachedCharacterRoleSnapshot() {
 }
 
 function mapSotCharacterRecordToEntry(record) {
+  const aliasNames = [
+    ...(Array.isArray(record?.evidence?.aliasNames) ? record.evidence.aliasNames : []),
+    ...getCharacterAliasNames(record?.id),
+  ]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+  const evidence = record?.evidence && typeof record.evidence === "object" && !Array.isArray(record.evidence)
+    ? { ...record.evidence }
+    : {};
+  if (aliasNames.length) evidence.aliasNames = [...new Set(aliasNames)];
+
   return {
     id: String(record?.id || "").trim(),
     label: String(record?.label || record?.englishLabel || record?.id || "").trim(),
     roleId: String(record?.roleId || record?.value || "").trim(),
     source: String(record?.source || "").trim(),
     verifiedAt: String(record?.verifiedAt || "").trim(),
-    evidence: record?.evidence,
+    evidence: Object.keys(evidence).length ? evidence : undefined,
   };
 }
 
@@ -3002,6 +3013,9 @@ function resolveCharacterSelectionFromText(input, options = {}) {
   for (const entry of entries) {
     aliases.set(normalizeCharacterId(entry.id), entry);
     aliases.set(normalizeCharacterId(entry.label), entry);
+    for (const aliasName of getManagedCharacterRoleNameCandidates(entry)) {
+      aliases.set(normalizeCharacterId(aliasName), entry);
+    }
   }
 
   const selectedEntries = [];
