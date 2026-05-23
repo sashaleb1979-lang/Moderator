@@ -22,23 +22,19 @@ function cleanString(value, limit = 2000) {
 const PROFILE_DISPLAY_MODES = Object.freeze(["viewer", "self", "compact-card"]);
 const DEFAULT_HIDDEN_PROFILE_ROLE_IDS = Object.freeze(["1146511958305144883"]);
 const JJS_WIKI_CHARACTERS_URL = "https://jujutsu-shenanigans.fandom.com/wiki/Characters";
-const PROFILE_RATING_AXES = Object.freeze(["form", "chat", "kills", "stability", "growth", "social"]);
-const PROFILE_RATING_CONFIDENCE_MULTIPLIERS = Object.freeze({
-  reliable: 1,
-  partial: 0.85,
-  heuristic: 0.65,
-  outdated: 0.35,
-  unavailable: 0,
+const PROFILE_RATING_AXES = Object.freeze(["activity", "kills", "jjs"]);
+const PROFILE_RATING_AXIS_WEIGHTS = Object.freeze({
+  activity: 0.3,
+  kills: 0.4,
+  jjs: 0.3,
 });
 const PROFILE_RATING_LOCK_PENALTY_PERCENT = 20;
+const PROFILE_RATING_KILLS_LOCK_PENALTY_PERCENT = 40;
 const PROFILE_RATING_LOCK_PENALTY_CAP_PERCENT = 80;
 const PROFILE_RATING_AXIS_LABELS = Object.freeze({
-  form: { emoji: "🔥", label: "Боевая форма" },
-  chat: { emoji: "💬", label: "Общение" },
-  kills: { emoji: "⚔️", label: "Proof/Kills" },
-  stability: { emoji: "🛡️", label: "Стабильность" },
-  growth: { emoji: "📈", label: "Рост" },
-  social: { emoji: "🤝", label: "Связи" },
+  activity: { emoji: "🟣", label: "Активность" },
+  kills: { emoji: "⚔️", label: "Kills" },
+  jjs: { emoji: "🎮", label: "JJS" },
 });
 const PROFILE_TRUST_LABELS = Object.freeze({
   reliable: "точный расчёт",
@@ -402,16 +398,6 @@ function computeKillStanding(entries = [], userId = "") {
   };
 }
 
-function getAxisConfidenceMultiplier(axis = {}) {
-  const key = cleanString(axis?.confidenceState, 40).toLowerCase();
-  return PROFILE_RATING_CONFIDENCE_MULTIPLIERS[key] ?? PROFILE_RATING_CONFIDENCE_MULTIPLIERS.heuristic;
-}
-
-function getAxisInfluenceMultiplier(axis = {}) {
-  const debuff = Math.max(0, Math.min(100, normalizeFiniteNumber(axis?.influenceDebuffPercent, 0)));
-  return 1 - (debuff / 100);
-}
-
 function getProfileWeeklyWindowCount(profile = null) {
   const weeklyRollups = Array.isArray(profile?.domains?.seasonArchive?.weeklyRollups)
     ? profile.domains.seasonArchive.weeklyRollups
@@ -466,220 +452,6 @@ function getActivityActiveDays(activitySummary = {}, period = "7d") {
   return null;
 }
 
-function getProfileProofWindows(profile = null) {
-  return Array.isArray(profile?.domains?.progress?.proofWindows)
-    ? profile.domains.progress.proofWindows
-    : [];
-}
-
-function getProfileSocialSignalCount(robloxSummary = {}, synergy = null) {
-  const topPeers = Array.isArray(robloxSummary?.topCoPlayPeers) ? robloxSummary.topCoPlayPeers : [];
-  const numericSignals = [
-    normalizeNullableFiniteNumber(robloxSummary?.serverFriendsCount),
-    normalizeNullableFiniteNumber(robloxSummary?.frequentNonFriendCount),
-    normalizeNullableFiniteNumber(robloxSummary?.nonFriendPeerCount) ? 1 : null,
-    topPeers.length,
-  ].filter((entry) => Number.isFinite(entry) && entry > 0);
-  const blockSignals = [
-    synergy?.blocks?.verifiedCircle,
-    synergy?.blocks?.socialMap,
-    synergy?.blocks?.voiceGameOverlap,
-  ].filter((block) => block && !isSparseProfileBlock(block)).length;
-  return numericSignals.reduce((sum, entry) => sum + Math.min(2, Number(entry)), 0) + blockSignals;
-}
-
-function buildMissingRequirement(label, current, required, unit = "") {
-  const normalizedCurrent = normalizeNullableFiniteNumber(current, null);
-  const normalizedRequired = normalizeNullableFiniteNumber(required, null);
-  const shortfall = Number.isFinite(normalizedCurrent) && Number.isFinite(normalizedRequired)
-    ? Math.max(0, normalizedRequired - normalizedCurrent)
-    : normalizedRequired;
-  return {
-    label,
-    current: normalizedCurrent,
-    required: normalizedRequired,
-    shortfall,
-    unit,
-  };
-}
-
-function formatMissingRequirement(requirement = {}) {
-  const amount = normalizeNullableFiniteNumber(requirement.shortfall);
-  const unit = cleanString(requirement.unit, 20);
-  const label = cleanString(requirement.label, 80);
-  if (!Number.isFinite(amount)) return cleanString(requirement.label, 80);
-  const unitSuffix = unit && !label.toLowerCase().includes(unit.toLowerCase()) ? ` ${unit}` : "";
-  const formatted = unit === "ч"
-    ? `${formatHours(amount)} ч`
-    : `${formatNumber(Math.ceil(amount))}${unitSuffix}`;
-  return `${formatted} ${label}`.trim();
-}
-
-function buildRatingGateStates({
-  profile = null,
-  activitySummary = {},
-  robloxSummary = {},
-  robloxDisplayState = null,
-  approvedKills = null,
-  progressState = {},
-  synergy = null,
-} = {}) {
-  const jjsHours7d = Number.isFinite(Number(robloxSummary?.jjsMinutes7d))
-    ? Number(robloxSummary.jjsMinutes7d) / 60
-    : null;
-  const messages7d = normalizeNullableFiniteNumber(activitySummary?.messages7d);
-  const messages30d = normalizeNullableFiniteNumber(activitySummary?.messages30d);
-  const voiceHours7d = getActivityVoiceHours(activitySummary, "7d");
-  const activeDays7d = getActivityActiveDays(activitySummary, "7d");
-  const proofWindows = getProfileProofWindows(profile);
-  const weeklyWindowCount = getProfileWeeklyWindowCount(profile);
-  const socialSignals = getProfileSocialSignalCount(robloxSummary, synergy);
-  const jjsSinceProof = normalizeNullableFiniteNumber(progressState?.jjsHoursSinceLastApprovedKillsUpdate);
-  const trackable = robloxDisplayState?.isTrackable === true || robloxSummary?.isTrackable === true;
-
-  const formByJjs = trackable && Number.isFinite(jjsHours7d) && jjsHours7d >= 3;
-  const formByNewcomer = Number.isFinite(messages7d) && messages7d >= 50
-    && Number.isFinite(voiceHours7d) && voiceHours7d >= 1
-    && Number.isFinite(activeDays7d) && activeDays7d >= 2;
-  const chatOpen = ((Number.isFinite(messages7d) && messages7d >= 25)
-    || (Number.isFinite(messages30d) && messages30d >= 100))
-    && Number.isFinite(activeDays7d) && activeDays7d >= 2;
-  const growthOpen = proofWindows.length >= 2
-    || (proofWindows.length >= 1 && trackable && Number.isFinite(jjsSinceProof) && jjsSinceProof >= 3);
-
-  const states = {
-    form: {
-      isOpen: formByJjs || formByNewcomer,
-      lockReason: trackable
-        ? "нужно больше боевой активности за неделю"
-        : "нужен JJS-трек или fallback новичка",
-      missingRequirements: formByJjs || formByNewcomer ? [] : [
-        ...(trackable ? [buildMissingRequirement("JJS за неделю", jjsHours7d, 3, "ч")] : []),
-        ...(trackable ? [] : [
-          buildMissingRequirement("msg за 7д", messages7d, 50, "msg"),
-          buildMissingRequirement("voice за 7д", voiceHours7d, 1, "ч"),
-          buildMissingRequirement("активных дня", activeDays7d, 2, "дн."),
-        ]),
-      ],
-    },
-    chat: {
-      isOpen: chatOpen,
-      lockReason: "нужно больше общения за неделю",
-      missingRequirements: chatOpen ? [] : [
-        buildMissingRequirement("msg за 7д", messages7d, 25, "msg"),
-        buildMissingRequirement("активных дня", activeDays7d, 2, "дн."),
-      ],
-    },
-    kills: {
-      isOpen: Number.isFinite(Number(approvedKills)),
-      lockReason: "нужен approved proof по kills",
-      missingRequirements: Number.isFinite(Number(approvedKills)) ? [] : [buildMissingRequirement("approved proof", 0, 1, "срез")],
-    },
-    stability: {
-      isOpen: weeklyWindowCount >= 3,
-      lockReason: `нужно ещё ${formatNumber(Math.max(0, 3 - weeklyWindowCount))} weekly окна`,
-      missingRequirements: weeklyWindowCount >= 3 ? [] : [buildMissingRequirement("weekly окна", weeklyWindowCount, 3, "окна")],
-    },
-    growth: {
-      isOpen: growthOpen,
-      lockReason: "нужно 2 proof-среза или JJS после proof",
-      missingRequirements: growthOpen ? [] : [
-        buildMissingRequirement("proof-среза", proofWindows.length, 2, "среза"),
-        buildMissingRequirement("JJS после proof", jjsSinceProof, 3, "ч"),
-      ],
-    },
-    social: {
-      isOpen: socialSignals >= 2,
-      lockReason: "соц-карта ждёт проверяемые связи",
-      missingRequirements: socialSignals >= 2 ? [] : [buildMissingRequirement("соц-сигнала", socialSignals, 2, "сигнала")],
-    },
-  };
-
-  return Object.fromEntries(Object.entries(states).map(([axisName, state]) => [axisName, {
-    axisName,
-    ...state,
-    lockedPenaltyPercent: state.isOpen ? 0 : PROFILE_RATING_LOCK_PENALTY_PERCENT,
-  }]));
-}
-
-function buildProfileAxisUpgradeHint(axisName = "", axis = {}, gateState = {}) {
-  if (axisName === "kills") {
-    const place = axis?.place && typeof axis.place === "object" ? axis.place : {};
-    if (Number(place.rank) === 1) return "лидер";
-    return "держи proof свежим";
-  }
-  if (axisName === "form") return gateState?.isOpen ? "до S: больше JJS/voice в неделю" : "";
-  if (axisName === "chat") return "до апа: больше активных дней";
-  if (axisName === "stability") return "до апа: ровные weekly окна";
-  if (axisName === "growth") return "до апа: новый proof-срез";
-  if (axisName === "social") return "до апа: больше verified связей";
-  return "";
-}
-
-function buildProfileRatingAxisEntries(tierlist = null, gateStates = {}) {
-  return PROFILE_RATING_AXES.map((axisName) => {
-    const axis = tierlist?.[axisName];
-    const score = normalizeFiniteNumber(axis?.score);
-    const meta = PROFILE_RATING_AXIS_LABELS[axisName] || { emoji: "▫️", label: axisName };
-    const gateState = gateStates?.[axisName] && typeof gateStates[axisName] === "object" ? gateStates[axisName] : {};
-    const isLocked = gateState.isOpen === false || !Number.isFinite(score);
-    if (isLocked) {
-      return {
-        axisName,
-        ...meta,
-        grade: "",
-        score: null,
-        rawScore: normalizeNullableFiniteNumber(axis?.rawScore),
-        confidenceState: "unavailable",
-        debuffPercent: 0,
-        confidenceMultiplier: 0,
-        influenceMultiplier: 0,
-        effectiveWeightPercent: 0,
-        scoreContributionPercent: 0,
-        place: { rank: null, total: null },
-        isHistoricalFallback: axis?.isHistoricalFallback === true,
-        dataAgeDays: normalizeNullableFiniteNumber(axis?.dataAgeDays),
-        isLocked: true,
-        displayState: "locked",
-        lockedPenaltyPercent: normalizeFiniteNumber(gateState.lockedPenaltyPercent, PROFILE_RATING_LOCK_PENALTY_PERCENT),
-        lockReason: cleanString(gateState.lockReason, 160) || "нужно больше данных",
-        missingRequirements: Array.isArray(gateState.missingRequirements) ? gateState.missingRequirements : [],
-      };
-    }
-    const confidenceState = cleanString(axis?.confidenceState, 40) || "heuristic";
-    const debuffPercent = Math.max(0, Math.min(100, normalizeFiniteNumber(axis?.influenceDebuffPercent, 0)));
-    const confidenceMultiplier = getAxisConfidenceMultiplier(axis);
-    const influenceMultiplier = getAxisInfluenceMultiplier(axis);
-    const effectiveWeightPercent = Math.round(confidenceMultiplier * influenceMultiplier * 100);
-    const scoreContributionPercent = Math.round(score * confidenceMultiplier * influenceMultiplier) / 100;
-    const place = axis?.place && typeof axis.place === "object" ? axis.place : {};
-    return {
-      axisName,
-      ...meta,
-      grade: cleanString(axis?.grade, 10) || "N/A",
-      score,
-      confidenceState,
-      debuffPercent,
-      confidenceMultiplier,
-      influenceMultiplier,
-      effectiveWeightPercent,
-      scoreContributionPercent,
-      place: {
-        rank: normalizeNullableFiniteNumber(place.rank),
-        total: normalizeNullableFiniteNumber(place.total),
-      },
-      isHistoricalFallback: axis?.isHistoricalFallback === true,
-      dataAgeDays: normalizeNullableFiniteNumber(axis?.dataAgeDays),
-      isLocked: false,
-      displayState: "open",
-      lockedPenaltyPercent: 0,
-      lockReason: "",
-      missingRequirements: [],
-      nextUpgradeHint: cleanString(axis?.nextUpgradeHint, 160) || buildProfileAxisUpgradeHint(axisName, axis, gateState),
-    };
-  }).filter(Boolean);
-}
-
 function buildProfileGrade(score = null) {
   if (score === null || score === undefined || score === "") return "N/A";
   const amount = Number(score);
@@ -700,67 +472,12 @@ function buildProfileGrade(score = null) {
   return "D-";
 }
 
-function buildProfileScoreAxes(tierlist = null, gateStates = {}) {
-  return buildProfileRatingAxisEntries(tierlist, gateStates)
-    .filter((entry) => (
-      entry.isLocked === true
-        || (
-          Number.isFinite(Number(entry.score))
-          && cleanString(entry.grade, 10)
-          && entry.grade !== "N/A"
-          && normalizeTrustState(entry.confidenceState, "partial") !== "unavailable"
-        )
-    ));
-}
-
 function formatProfileAxisRank(axis = {}) {
   const rank = normalizeNullableFiniteNumber(axis?.place?.rank);
   const total = normalizeNullableFiniteNumber(axis?.place?.total);
   return Number.isFinite(rank) && Number.isFinite(total) && total > 0
     ? ` #${formatNumber(rank)}/${formatNumber(total)}`
     : "";
-}
-
-function getProfileAxisSourceLabel(axis = {}) {
-  const age = normalizeNullableFiniteNumber(axis.dataAgeDays);
-  if (axis.isHistoricalFallback === true) {
-    return Number.isFinite(age) ? `архив ${formatNumber(age)}д` : "архив";
-  }
-  const labels = {
-    form: "неделя",
-    chat: "чат 7/30д",
-    kills: "proof",
-    stability: "сезон",
-    growth: "рост",
-    social: "связи",
-  };
-  return labels[axis.axisName] || "текущий расчёт";
-}
-
-function formatProfileRatingAxisLine(axis = {}) {
-  if (axis.isLocked === true) {
-    const missing = (Array.isArray(axis.missingRequirements) ? axis.missingRequirements : [])
-      .map(formatMissingRequirement)
-      .filter(Boolean)
-      .slice(0, 2)
-      .join(" · ");
-    const needText = missing || cleanString(axis.lockReason, 160) || "нужно больше данных";
-    return `${axis.label} 🔒 · ${needText} · -${formatNumber(axis.lockedPenaltyPercent || PROFILE_RATING_LOCK_PENALTY_PERCENT)}% к итогу`;
-  }
-  const weight = Math.max(0, Math.min(100, normalizeFiniteNumber(axis.effectiveWeightPercent, 0)));
-  const hint = cleanString(axis.nextUpgradeHint, 160);
-  const source = getProfileAxisSourceLabel(axis);
-  return `${axis.label} ${axis.grade}${formatProfileAxisRank(axis)} · ${source} · учёт ${formatNumber(weight)}% ${buildStatBar(weight, 5)}${hint ? ` · ${hint}` : ""}`;
-}
-
-function buildProfileMiniRadarLine(axes = []) {
-  const items = (Array.isArray(axes) ? axes : [])
-    .filter((axis) => axis?.isLocked !== true && Number.isFinite(Number(axis?.score)))
-    .slice()
-    .sort((left, right) => right.score - left.score)
-    .slice(0, 4)
-    .map((axis) => `${axis.label} ${buildScoreBar(axis.score, 4)}`);
-  return items.length ? `Радар: ${items.join(" · ")}` : "";
 }
 
 function resolveProfileRatingPlace(axes = []) {
@@ -783,13 +500,515 @@ function resolveProfileRatingPlace(axes = []) {
   };
 }
 
+const PROFILE_GRADE_TARGETS = Object.freeze([
+  { grade: "D", score: 28 },
+  { grade: "D+", score: 35 },
+  { grade: "C-", score: 42 },
+  { grade: "C", score: 48 },
+  { grade: "C+", score: 55 },
+  { grade: "B-", score: 62 },
+  { grade: "B", score: 67 },
+  { grade: "B+", score: 72 },
+  { grade: "A-", score: 77 },
+  { grade: "A", score: 82 },
+  { grade: "A+", score: 87 },
+  { grade: "S", score: 92 },
+  { grade: "S+", score: 97 },
+]);
+
+function clampRatingScore(value, min = 0, max = 100) {
+  const amount = normalizeFiniteNumber(value, min);
+  return Math.max(min, Math.min(max, Number.isFinite(amount) ? amount : min));
+}
+
+function formatRatingModifier(value = 0) {
+  const amount = Math.round(normalizeFiniteNumber(value, 0));
+  if (amount > 0) return `+${formatNumber(amount)}%`;
+  if (amount < 0) return `-${formatNumber(Math.abs(amount))}%`;
+  return "±0%";
+}
+
+function getNextGradeTarget(score = null) {
+  const amount = normalizeFiniteNumber(score);
+  if (!Number.isFinite(amount)) return PROFILE_GRADE_TARGETS[0];
+  return PROFILE_GRADE_TARGETS.find((entry) => amount < entry.score) || null;
+}
+
+function normalizeRatingTarget(value = null, { floor = 0, target = 100 } = {}) {
+  const amount = normalizeFiniteNumber(value);
+  if (!Number.isFinite(amount)) return 0;
+  const normalizedFloor = normalizeFiniteNumber(floor, 0);
+  const normalizedTarget = Math.max(normalizedFloor + 0.1, normalizeFiniteNumber(target, 100));
+  return clampRatingScore(((amount - normalizedFloor) / (normalizedTarget - normalizedFloor)) * 100);
+}
+
+function buildPeakTarget(samples = [], multiplier = 0.8, fallbackTarget = 100) {
+  const values = (Array.isArray(samples) ? samples : [])
+    .map((entry) => normalizeFiniteNumber(entry))
+    .filter((entry) => Number.isFinite(entry) && entry > 0);
+  const fallback = Math.max(0.1, normalizeFiniteNumber(fallbackTarget, 100));
+  if (!values.length) return fallback;
+  return Math.max(fallback, Math.max(...values) * multiplier);
+}
+
+function getRawVoiceHours(activitySummary = {}, voiceSummary = {}, period = "7d") {
+  const suffix = period === "7d" ? "7d" : "30d";
+  const activitySeconds = normalizeNullableFiniteNumber(activitySummary?.[`voiceDurationSeconds${suffix}`]);
+  if (Number.isFinite(activitySeconds)) return activitySeconds / 3600;
+  const voiceSeconds = normalizeNullableFiniteNumber(voiceSummary?.[`voiceDurationSeconds${suffix}`]);
+  if (Number.isFinite(voiceSeconds)) return voiceSeconds / 3600;
+  const effectiveHours = normalizeNullableFiniteNumber(activitySummary?.[`effectiveVoiceHours${suffix}`]);
+  return Number.isFinite(effectiveHours) ? effectiveHours : null;
+}
+
+function getCleanVoiceHours(activitySummary = {}, rawVoiceHours = null, period = "7d") {
+  const suffix = period === "7d" ? "7d" : "30d";
+  const direct = normalizeNullableFiniteNumber(activitySummary?.[`effectiveVoiceHours${suffix}`]);
+  if (Number.isFinite(direct)) return Math.max(0, direct);
+  const activeSignal = normalizeNullableFiniteNumber(activitySummary?.[`effectiveActiveVoiceSignalHours${suffix}`]);
+  if (Number.isFinite(activeSignal)) return Math.max(0, activeSignal);
+  if (period === "7d") {
+    const monthly = normalizeNullableFiniteNumber(activitySummary?.effectiveVoiceHours30d);
+    if (Number.isFinite(monthly) && Number.isFinite(rawVoiceHours) && monthly >= rawVoiceHours) {
+      return Math.max(0, rawVoiceHours);
+    }
+  }
+  return 0;
+}
+
+function buildActivityLeagueMetrics(activitySummary = {}, voiceSummary = {}) {
+  const rawVoiceHours = normalizeNullableFiniteNumber(getRawVoiceHours(activitySummary, voiceSummary, "7d"), 0);
+  const cleanVoiceHours = Math.min(rawVoiceHours, getCleanVoiceHours(activitySummary, rawVoiceHours, "7d"));
+  const rawExtraVoiceHours = Math.max(0, rawVoiceHours - cleanVoiceHours);
+  const voiceRatingHours = cleanVoiceHours + rawExtraVoiceHours * 0.7;
+  return {
+    rawVoiceHours,
+    cleanVoiceHours,
+    rawExtraVoiceHours,
+    voiceRatingHours,
+    messageSessions: normalizeNullableFiniteNumber(activitySummary?.sessions7d, 0),
+    messages: normalizeNullableFiniteNumber(activitySummary?.messages7d, 0),
+  };
+}
+
+function getPopulationActivityMetrics(populationProfiles = []) {
+  return (Array.isArray(populationProfiles) ? populationProfiles : [])
+    .map((entry) => {
+      const profile = entry?.profile && typeof entry.profile === "object" ? entry.profile : entry;
+      const summary = profile?.summary && typeof profile.summary === "object" ? profile.summary : {};
+      return buildActivityLeagueMetrics(summary.activity || {}, summary.voice || {});
+    });
+}
+
+function getPopulationJjsHours(populationProfiles = []) {
+  return (Array.isArray(populationProfiles) ? populationProfiles : [])
+    .map((entry) => {
+      const profile = entry?.profile && typeof entry.profile === "object" ? entry.profile : entry;
+      const summary = profile?.summary && typeof profile.summary === "object" ? profile.summary : {};
+      const roblox = summary.roblox && typeof summary.roblox === "object" ? summary.roblox : {};
+      return normalizeNullableFiniteNumber(roblox.jjsMinutes7d);
+    })
+    .filter((entry) => Number.isFinite(entry))
+    .map((minutes) => minutes / 60);
+}
+
+function buildRatingCardAxis({
+  axisName,
+  score = null,
+  rawScore = null,
+  place = {},
+  valuesLine = "",
+  totalModifierPercent = 0,
+  effectiveWeightPercent = 100,
+  primaryHintLine = "",
+  detailItems = [],
+  locked = false,
+  lockReason = "",
+  lockedPenaltyPercent = PROFILE_RATING_LOCK_PENALTY_PERCENT,
+  hiddenBecauseTooOld = false,
+  extra = {},
+} = {}) {
+  const meta = PROFILE_RATING_AXIS_LABELS[axisName] || { emoji: "▫️", label: axisName };
+  if (locked) {
+    const cardTitle = `🔒 ${meta.label} закрыт · рейтинг -${formatNumber(lockedPenaltyPercent)}%`;
+    const needLine = cleanString(lockReason, 220) || "Нужно больше данных.";
+    const hintLine = axisName === "kills"
+      ? "💡 обнови kills — недели заполнятся задним числом"
+      : axisName === "jjs"
+        ? "💡 нужен trackable Roblox/JJS playtime"
+        : "💡 добери voice + chat за неделю";
+    const cardLines = [cardTitle, needLine, hintLine].filter(Boolean).slice(0, 3);
+    return {
+      axisName,
+      ...meta,
+      grade: "",
+      score: null,
+      rawScore: normalizeNullableFiniteNumber(rawScore),
+      place: { rank: null, total: normalizeNullableFiniteNumber(place?.total) },
+      effectiveWeightPercent: 0,
+      scoreContributionPercent: 0,
+      totalModifierPercent: -Math.abs(normalizeFiniteNumber(lockedPenaltyPercent, PROFILE_RATING_LOCK_PENALTY_PERCENT)),
+      confidenceState: "unavailable",
+      isLocked: true,
+      displayState: "locked",
+      lockedPenaltyPercent,
+      lockReason: needLine,
+      hiddenBecauseTooOld,
+      cardTitle,
+      cardLines,
+      lines: cardLines.slice(1),
+      primaryHintLine: hintLine,
+      detailLine: "",
+      detailItems: [],
+      lockedLines: cardLines.slice(1),
+      ...extra,
+    };
+  }
+
+  const normalizedScore = clampRatingScore(score);
+  const grade = buildProfileGrade(normalizedScore);
+  const cardRank = formatProfileAxisRank({ place });
+  const cardTitle = `${meta.emoji} ${meta.label} ${grade} · ${formatProfileRatingScore(normalizedScore)}/100${cardRank}`;
+  const weight = Math.round(Math.max(0, Math.min(100, normalizeFiniteNumber(effectiveWeightPercent, 100))));
+  const modifierLine = `${formatRatingModifier(totalModifierPercent)} · учёт ${formatNumber(weight)}% ${buildStatBar(weight, 5)}`;
+  const hintLine = cleanString(primaryHintLine, 180);
+  const compactDetails = (Array.isArray(detailItems) ? detailItems : [])
+    .map((entry) => cleanString(entry, 120))
+    .filter(Boolean)
+    .slice(0, 2);
+  const detailLine = compactDetails.length ? `↳ ${compactDetails.join(" · ")}` : "";
+  const cardLines = [
+    cardTitle,
+    cleanString(valuesLine, 220),
+    modifierLine,
+    hintLine ? `💡 ${hintLine.replace(/^💡\s*/u, "")}` : "",
+    detailLine,
+  ].filter(Boolean).slice(0, 5);
+
+  return {
+    axisName,
+    ...meta,
+    grade,
+    score: normalizedScore,
+    rawScore: normalizeNullableFiniteNumber(rawScore, normalizedScore),
+    place: {
+      rank: normalizeNullableFiniteNumber(place?.rank),
+      total: normalizeNullableFiniteNumber(place?.total),
+    },
+    effectiveWeightPercent: weight,
+    scoreContributionPercent: Math.round(normalizedScore * (weight / 100) * 100) / 100,
+    totalModifierPercent: Math.round(normalizeFiniteNumber(totalModifierPercent, 0)),
+    confidenceState: weight >= 90 ? "reliable" : "partial",
+    isLocked: false,
+    displayState: "open",
+    lockedPenaltyPercent: 0,
+    lockReason: "",
+    cardTitle,
+    cardLines,
+    lines: cardLines.slice(1),
+    primaryHintLine: hintLine ? `💡 ${hintLine.replace(/^💡\s*/u, "")}` : "",
+    detailLine,
+    detailItems: compactDetails,
+    lockedLines: [],
+    ...extra,
+  };
+}
+
+function buildActivityRatingAxis({ activitySummary = {}, voiceSummary = {}, populationProfiles = [] } = {}) {
+  const current = buildActivityLeagueMetrics(activitySummary, voiceSummary);
+  const population = getPopulationActivityMetrics(populationProfiles);
+  const voiceTarget = buildPeakTarget([...population.map((entry) => entry.voiceRatingHours), current.voiceRatingHours], 0.7, 3);
+  const sessionsTarget = buildPeakTarget([...population.map((entry) => entry.messageSessions), current.messageSessions], 0.7, 8);
+  const messagesTarget = buildPeakTarget([...population.map((entry) => entry.messages), current.messages], 0.7, 250);
+  const hasAnySignal = current.voiceRatingHours >= 0.5 || current.messageSessions >= 2 || current.messages >= 25;
+  if (!hasAnySignal) {
+    return buildRatingCardAxis({
+      axisName: "activity",
+      locked: true,
+      lockReason: "Нужно: 0,5ч voice или 2 chat-сессии или 25 msg за неделю.",
+      lockedPenaltyPercent: PROFILE_RATING_LOCK_PENALTY_PERCENT,
+    });
+  }
+
+  const voiceScore = Math.min(100, (current.voiceRatingHours / voiceTarget) * 100);
+  const sessionScore = Math.min(100, (current.messageSessions / sessionsTarget) * 100);
+  const messageScore = Math.min(100, (current.messages / messagesTarget) * 100);
+  const uncappedScore = voiceScore * 0.5 + sessionScore * 0.3 + messageScore * 0.2;
+  const hasVoice = current.voiceRatingHours >= 0.5;
+  const hasChat = current.messageSessions >= 2 || current.messages >= 25;
+  const cappedScore = (!hasVoice || !hasChat) ? Math.min(86, uncappedScore) : uncappedScore;
+  const capPenalty = cappedScore - uncappedScore;
+  const samples = population.map((entry) => {
+    const sampleVoiceTarget = voiceTarget || 3;
+    const sampleSessionsTarget = sessionsTarget || 8;
+    const sampleMessagesTarget = messagesTarget || 250;
+    const sampleScore = Math.min(100, (entry.voiceRatingHours / sampleVoiceTarget) * 100) * 0.5
+      + Math.min(100, (entry.messageSessions / sampleSessionsTarget) * 100) * 0.3
+      + Math.min(100, (entry.messages / sampleMessagesTarget) * 100) * 0.2;
+    const sampleHasVoice = entry.voiceRatingHours >= 0.5;
+    const sampleHasChat = entry.messageSessions >= 2 || entry.messages >= 25;
+    return (!sampleHasVoice || !sampleHasChat) ? Math.min(86, sampleScore) : sampleScore;
+  });
+  const score = clampRatingScore(cappedScore);
+  const next = getNextGradeTarget(score);
+  const scoreGap = next ? Math.max(0, next.score - score) : 0;
+  const voiceNeed = scoreGap > 0 ? Math.ceil((scoreGap / 50) * voiceTarget * 10) / 10 : 0;
+  const sessionNeed = scoreGap > 0 ? Math.ceil((scoreGap / 30) * sessionsTarget) : 0;
+  const detailItems = [];
+  if (current.rawExtraVoiceHours > 0) detailItems.push(`raw voice -30%`);
+  if (!hasVoice && hasChat) detailItems.push("voice cap");
+  else if (hasVoice && !hasChat) detailItems.push("chat cap");
+  else if (capPenalty < -0.5) detailItems.push(hasVoice ? "chat cap" : "voice cap");
+  if (current.messageSessions >= 2) detailItems.push(`sessions +${formatNumber(Math.round(sessionScore * 0.3))}%`);
+  if (!detailItems.length && hasVoice && hasChat) detailItems.push("voice+chat вместе");
+
+  return buildRatingCardAxis({
+    axisName: "activity",
+    score,
+    rawScore: uncappedScore,
+    place: buildMetricPlace(score, [...samples, score]),
+    valuesLine: `Voice ${formatHours(current.voiceRatingHours)}ч · sessions ${formatNumber(current.messageSessions)} · msg ${formatNumber(current.messages)}`,
+    totalModifierPercent: capPenalty,
+    effectiveWeightPercent: 100,
+    primaryHintLine: next ? `до ${next.grade}: +${formatHours(voiceNeed)}ч voice или +${formatNumber(sessionNeed)} сессии` : "S+ уже открыт",
+    detailItems,
+    extra: {
+      cleanVoiceHours: current.cleanVoiceHours,
+      rawVoiceHours: current.rawVoiceHours,
+      voiceRatingHours: current.voiceRatingHours,
+      voiceRawPenaltyPercent: 30,
+      targetValues: { voiceHours: voiceTarget, sessions: sessionsTarget, messages: messagesTarget },
+    },
+  });
+}
+
+function buildRecentKillPaceState({ recentKillChanges = [], now = null } = {}) {
+  const nowTimestamp = Number.isFinite(Number(now)) ? Number(now) : Date.parse(String(now || ""));
+  const normalizedNow = Number.isFinite(nowTimestamp) ? nowTimestamp : Date.now();
+  const windows = (Array.isArray(recentKillChanges) ? recentKillChanges : [])
+    .map((change) => {
+      const from = normalizeNullableFiniteNumber(change?.from);
+      const to = normalizeNullableFiniteNumber(change?.to);
+      const fromAt = Number.isFinite(Number(change?.fromAt)) ? Number(change.fromAt) : Date.parse(String(change?.fromAt || ""));
+      const toAt = Number.isFinite(Number(change?.toAt)) ? Number(change.toAt) : Date.parse(String(change?.toAt || ""));
+      const dayCount = Number.isFinite(fromAt) && Number.isFinite(toAt)
+        ? Math.max(1, Math.round((toAt - fromAt) / (24 * 60 * 60 * 1000)))
+        : normalizeNullableFiniteNumber(change?.dayCount);
+      const delta = Number.isFinite(from) && Number.isFinite(to) ? Math.max(0, to - from) : normalizeNullableFiniteNumber(change?.delta);
+      if (!Number.isFinite(delta) || delta <= 0 || !Number.isFinite(dayCount) || dayCount <= 0) return null;
+      return {
+        delta,
+        dayCount,
+        averagePerDay: delta / dayCount,
+        toAt,
+      };
+    })
+    .filter(Boolean)
+    .sort((left, right) => (Number(right.toAt) || 0) - (Number(left.toAt) || 0));
+
+  let remainingDays = 6;
+  let coveredDays = 0;
+  let weightedKills = 0;
+  for (const window of windows) {
+    if (remainingDays <= 0) break;
+    const days = Math.min(remainingDays, window.dayCount);
+    weightedKills += window.averagePerDay * days;
+    coveredDays += days;
+    remainingDays -= days;
+  }
+  const latestToAt = windows.find((entry) => Number.isFinite(entry.toAt))?.toAt ?? null;
+  const dataAgeDays = Number.isFinite(latestToAt)
+    ? Math.max(0, Math.floor((normalizedNow - latestToAt) / (24 * 60 * 60 * 1000)))
+    : null;
+  let stalePenaltyPercent = 0;
+  if (Number.isFinite(dataAgeDays)) {
+    if (dataAgeDays <= 7) stalePenaltyPercent = 0;
+    else if (dataAgeDays <= 14) stalePenaltyPercent = ((dataAgeDays - 7) / 7) * 40;
+    else if (dataAgeDays <= 21) stalePenaltyPercent = 40 + ((dataAgeDays - 14) / 7) * 30;
+    else stalePenaltyPercent = 100;
+  }
+  const averageKillsPerDay = coveredDays >= 4 ? weightedKills / coveredDays : null;
+  return {
+    averageKillsPerDay,
+    coveredDays,
+    dataAgeDays,
+    stalePenaltyPercent: Math.round(stalePenaltyPercent),
+    hiddenBecauseTooOld: Number.isFinite(dataAgeDays) && dataAgeDays > 21,
+  };
+}
+
+function computeKillsGrowthModifierPercent(averageKillsPerDay = null) {
+  const pace = normalizeNullableFiniteNumber(averageKillsPerDay);
+  if (!Number.isFinite(pace)) return null;
+  if (pace <= 10) return -20;
+  if (pace <= 20) return -20 + ((pace - 10) / 10) * 20;
+  if (pace <= 30) return ((pace - 20) / 10) * 20;
+  if (pace <= 40) return 20 + ((pace - 30) / 10) * 10;
+  return 30 + ((pace - 40) * 0.3);
+}
+
+function buildKillsRatingAxis({ approvedKills = null, standing = {}, recentKillChanges = [], robloxSummary = {}, robloxDisplayState = null, now = null } = {}) {
+  if (!Number.isFinite(Number(approvedKills))) {
+    return buildRatingCardAxis({
+      axisName: "kills",
+      locked: true,
+      lockReason: "Нужен approved proof по kills.",
+      lockedPenaltyPercent: PROFILE_RATING_KILLS_LOCK_PENALTY_PERCENT,
+    });
+  }
+  const pace = buildRecentKillPaceState({ recentKillChanges, now });
+  if (pace.hiddenBecauseTooOld) {
+    return buildRatingCardAxis({
+      axisName: "kills",
+      locked: true,
+      lockReason: `Последние 6 kill-days старше 2 недель: ${formatNumber(pace.dataAgeDays)}д назад.`,
+      lockedPenaltyPercent: PROFILE_RATING_KILLS_LOCK_PENALTY_PERCENT,
+      hiddenBecauseTooOld: true,
+      extra: pace,
+    });
+  }
+
+  const rank = normalizeNullableFiniteNumber(standing?.rank);
+  const total = normalizeNullableFiniteNumber(standing?.totalVerified);
+  const rankScore = Number.isFinite(rank) && Number.isFinite(total) && total > 1
+    ? (1 - ((rank - 1) / Math.max(1, total - 1))) * 100
+    : Math.min(100, Math.log10(Math.max(1, Number(approvedKills) + 1)) * 25);
+  const growthModifier = computeKillsGrowthModifierPercent(pace.averageKillsPerDay);
+  const jjsHours7d = robloxDisplayState?.isTrackable === true && Number.isFinite(Number(robloxSummary?.jjsMinutes7d))
+    ? Number(robloxSummary.jjsMinutes7d) / 60
+    : null;
+  const killsPerJjsHour = Number.isFinite(pace.averageKillsPerDay) && Number.isFinite(jjsHours7d) && jjsHours7d > 0
+    ? (pace.averageKillsPerDay * 7) / jjsHours7d
+    : null;
+  const efficiencyModifier = Number.isFinite(killsPerJjsHour)
+    ? Math.max(-15, Math.min(15, (killsPerJjsHour - 5) * 3))
+    : 0;
+  const coveragePenalty = Number.isFinite(pace.averageKillsPerDay) && pace.coveredDays < 6 ? 20 : 0;
+  const stalePenalty = Math.min(70, Math.max(0, normalizeFiniteNumber(pace.stalePenaltyPercent, 0)));
+  const totalModifier = (Number.isFinite(growthModifier) ? growthModifier : 0) + efficiencyModifier - coveragePenalty - stalePenalty;
+  let score = rankScore * (1 + ((Number.isFinite(growthModifier) ? growthModifier : 0) / 100)) * (1 + (efficiencyModifier / 100));
+  score *= (1 - (coveragePenalty / 100)) * (1 - (stalePenalty / 100));
+  if (!Number.isFinite(pace.averageKillsPerDay)) score = Math.min(86, score);
+  const finalScore = clampRatingScore(score);
+  const next = getNextGradeTarget(finalScore);
+  const nextKills = next && Number.isFinite(rankScore)
+    ? Math.max(1, Math.ceil(((next.score - finalScore) / 100) * Math.max(100, Number(approvedKills) || 100)))
+    : null;
+  const detailItems = [];
+  if (Number.isFinite(growthModifier)) detailItems.push(`рост ${formatRatingModifier(growthModifier)}`);
+  else detailItems.push("нет kills/day: потолок A+");
+  if (Number.isFinite(killsPerJjsHour)) detailItems.push(`efficiency ${formatRatingModifier(efficiencyModifier)}`);
+  if (stalePenalty > 0) detailItems.unshift(`просрочка -${formatNumber(stalePenalty)}%`);
+  if (coveragePenalty > 0) detailItems.unshift(`покрытие -20%`);
+  const values = [
+    `Approved ${formatNumber(approvedKills)}`,
+    Number.isFinite(pace.averageKillsPerDay) ? `${formatNumber(Math.round(pace.averageKillsPerDay * 10) / 10)}/день` : "kills/day нет",
+    Number.isFinite(killsPerJjsHour) ? `${formatNumber(Math.round(killsPerJjsHour * 10) / 10)} kills/ч` : null,
+  ].filter(Boolean).join(" · ");
+
+  return buildRatingCardAxis({
+    axisName: "kills",
+    score: finalScore,
+    rawScore: rankScore,
+    place: { rank, total },
+    valuesLine: values,
+    totalModifierPercent: totalModifier,
+    effectiveWeightPercent: Math.max(0, 100 - stalePenalty - coveragePenalty),
+    primaryHintLine: next ? `до ${next.grade}: +${formatNumber(nextKills)} kills или держи ${formatNumber(Math.max(20, Math.ceil((pace.averageKillsPerDay || 20) + 4)))}/день` : "S+ уже открыт",
+    detailItems,
+    extra: {
+      averageKillsPerDay: pace.averageKillsPerDay,
+      killDayCoverage: pace.coveredDays,
+      killDataAgeDays: pace.dataAgeDays,
+      stalePenaltyPercent: stalePenalty,
+      growthModifierPercent: Number.isFinite(growthModifier) ? Math.round(growthModifier) : null,
+      jjsEfficiencyModifierPercent: Math.round(efficiencyModifier),
+      killsPerJjsHour,
+    },
+  });
+}
+
+function getLatestWeeklyCoveragePercent(profile = null) {
+  const rollups = Array.isArray(profile?.domains?.seasonArchive?.weeklyRollups)
+    ? profile.domains.seasonArchive.weeklyRollups
+    : [];
+  const latest = rollups.slice().sort((left, right) => {
+    const rightTime = Date.parse(String(right?.endDayKey || right?.weekKey || ""));
+    const leftTime = Date.parse(String(left?.endDayKey || left?.weekKey || ""));
+    return (Number.isFinite(rightTime) ? rightTime : 0) - (Number.isFinite(leftTime) ? leftTime : 0);
+  })[0];
+  return normalizeNullableFiniteNumber(latest?.coverage?.coveragePercent, null);
+}
+
+function buildJjsRatingAxis({ profile = null, robloxSummary = {}, robloxDisplayState = null, populationProfiles = [] } = {}) {
+  const canTrack = robloxDisplayState?.isTrackable === true || robloxSummary?.isTrackable === true;
+  const jjsHours7d = canTrack && Number.isFinite(Number(robloxSummary?.jjsMinutes7d))
+    ? Number(robloxSummary.jjsMinutes7d) / 60
+    : null;
+  if (!canTrack || !Number.isFinite(jjsHours7d)) {
+    return buildRatingCardAxis({
+      axisName: "jjs",
+      locked: true,
+      lockReason: canTrack ? "Нет JJS playtime за неделю." : "Roblox привязан не полностью или JJS не trackable.",
+      lockedPenaltyPercent: PROFILE_RATING_LOCK_PENALTY_PERCENT,
+    });
+  }
+  const target = buildPeakTarget([...getPopulationJjsHours(populationProfiles), jjsHours7d], 0.8, 8);
+  const coveragePercent = normalizeNullableFiniteNumber(getLatestWeeklyCoveragePercent(profile), 100);
+  const coverageWeight = Math.max(0.1, Math.min(1, coveragePercent / 100));
+  const rawScore = normalizeRatingTarget(jjsHours7d, { floor: 2, target });
+  const score = clampRatingScore(rawScore * coverageWeight);
+  const next = getNextGradeTarget(score);
+  const nextHours = next
+    ? Math.max(0.1, ((next.score / coverageWeight) / 100) * Math.max(0.1, target - 2) + 2 - jjsHours7d)
+    : 0;
+  const detailItems = [];
+  if (coveragePercent < 100) detailItems.push(`coverage -${formatNumber(Math.round(100 - coveragePercent))}%`);
+  else detailItems.push("coverage полный");
+  if (robloxSummary?.lastRefreshAt || robloxSummary?.lastSeenInJjsAt) detailItems.push("sync свежий");
+  return buildRatingCardAxis({
+    axisName: "jjs",
+    score,
+    rawScore,
+    place: buildMetricPlace(jjsHours7d, [...getPopulationJjsHours(populationProfiles), jjsHours7d]),
+    valuesLine: `${formatHours(jjsHours7d)}ч/7д · S+ от ${formatHours(target)}ч · покрытие ${formatPercent(coveragePercent, 0)}`,
+    totalModifierPercent: coveragePercent - 100,
+    effectiveWeightPercent: coveragePercent,
+    primaryHintLine: next ? `до ${next.grade}: +${formatHours(nextHours)}ч JJS` : "S+ уже открыт",
+    detailItems,
+    extra: {
+      targetHoursForSPlus: target,
+      coveragePercent,
+    },
+  });
+}
+
+function buildProfileRatingLeagues({
+  profile = null,
+  activitySummary = {},
+  voiceSummary = {},
+  robloxSummary = {},
+  robloxDisplayState = null,
+  approvedKills = null,
+  standing = {},
+  populationProfiles = [],
+  recentKillChanges = [],
+  now = null,
+} = {}) {
+  return [
+    buildActivityRatingAxis({ activitySummary, voiceSummary, populationProfiles }),
+    buildKillsRatingAxis({ approvedKills, standing, recentKillChanges, robloxSummary, robloxDisplayState, now }),
+    buildJjsRatingAxis({ profile, robloxSummary, robloxDisplayState, populationProfiles }),
+  ];
+}
+
 function buildProfileRatingSummary({ axes = [] } = {}) {
   const allAxes = Array.isArray(axes) ? axes : [];
   const availableAxes = allAxes.filter((axis) => axis?.isLocked !== true && Number.isFinite(Number(axis?.score)));
   const lockedAxes = allAxes.filter((axis) => axis?.isLocked === true);
-  const weightSum = availableAxes.reduce((sum, axis) => sum + Math.max(0, normalizeFiniteNumber(axis.effectiveWeightPercent, 0)), 0);
-  const rawScore = weightSum > 0
-    ? availableAxes.reduce((sum, axis) => sum + (Number(axis.score) * Math.max(0, normalizeFiniteNumber(axis.effectiveWeightPercent, 0))), 0) / weightSum
+  const openWeightSum = availableAxes.reduce((sum, axis) => sum + (PROFILE_RATING_AXIS_WEIGHTS[axis.axisName] || 0), 0);
+  const rawScore = openWeightSum > 0
+    ? availableAxes.reduce((sum, axis) => sum + (Number(axis.score) * (PROFILE_RATING_AXIS_WEIGHTS[axis.axisName] || 0)), 0) / openWeightSum
     : null;
   const lockedAxisPenaltyPercent = Math.min(
     PROFILE_RATING_LOCK_PENALTY_CAP_PERCENT,
@@ -800,21 +1019,16 @@ function buildProfileRatingSummary({ axes = [] } = {}) {
     : null;
   const grade = Number.isFinite(Number(score)) ? buildProfileGrade(score) : "N/A";
   const strongestAxis = availableAxes.slice().sort((left, right) => right.score - left.score)[0] || null;
-  const radarLine = buildProfileMiniRadarLine(availableAxes);
   const hiddenAxisCount = lockedAxes.length;
-  const liveWeightPercent = Math.round(Math.max(0, Math.min(100, weightSum / PROFILE_RATING_AXES.length)));
+  const liveWeightPercent = Math.round(Math.max(0, Math.min(100, openWeightSum * 100)));
   const place = resolveProfileRatingPlace(availableAxes);
   const lines = [
     Number.isFinite(score)
-      ? `Рейтинг профиля: ${grade} · ${formatProfileRatingScore(score)}/100${formatProfileRatingRank(place)}`
-      : "Рейтинг профиля откроется после активности, proof и связей.",
-    availableAxes.length ? `Открыто: ${formatNumber(availableAxes.length)}/${formatNumber(PROFILE_RATING_AXES.length)} · учёт ${formatNumber(liveWeightPercent)}% ${buildStatBar(liveWeightPercent, 6)}` : "",
-    lockedAxisPenaltyPercent > 0 ? `Закрытые категории: ${formatNumber(lockedAxes.length)} · итог -${formatNumber(lockedAxisPenaltyPercent)}%` : "",
-    radarLine,
+      ? `🔥 Рейтинг ${grade} · ${formatProfileRatingScore(score)}/100${formatProfileRatingRank(place)}`
+      : "🔥 Рейтинг профиля откроется после активности, kills и JJS.",
+    strongestAxis ? `★ Пик: ${strongestAxis.label} ${strongestAxis.grade} · ${formatRatingModifier(strongestAxis.totalModifierPercent)}` : "",
+    lockedAxisPenaltyPercent > 0 ? `Закрыто: ${lockedAxes.map((axis) => `${axis.label} -${formatNumber(axis.lockedPenaltyPercent)}%`).join(" · ")}` : "",
   ].filter(Boolean);
-  if (strongestAxis) {
-    lines.push(`Пик: ${strongestAxis.label} ${strongestAxis.grade} · ${formatProfileRatingScore(strongestAxis.score)}/100`);
-  }
 
   return {
     grade,
@@ -828,7 +1042,7 @@ function buildProfileRatingSummary({ axes = [] } = {}) {
     lockedAxisPenaltyPercent,
     hiddenAxisCount,
     strongestAxis,
-    radarLine,
+    radarLine: "",
     lines,
   };
 }
@@ -2126,15 +2340,6 @@ function buildProfileReadModel(options = {}) {
     now: options.now,
   });
   const weeklyWindowCount = getProfileWeeklyWindowCount(profile);
-  const ratingGateStates = buildRatingGateStates({
-    profile,
-    activitySummary,
-    robloxSummary,
-    robloxDisplayState,
-    approvedKills,
-    progressState: synergy?.progress,
-    synergy,
-  });
   const profileRatingAxes = hasProfileScoreSignals({
     profile,
     approvedKills,
@@ -2142,18 +2347,32 @@ function buildProfileReadModel(options = {}) {
     robloxSummary,
     voiceSummary,
     progressSummary,
-  }) ? buildProfileScoreAxes(synergy?.viewerTierlist, ratingGateStates) : [];
+  }) ? buildProfileRatingLeagues({
+      profile,
+      activitySummary,
+      voiceSummary,
+      robloxSummary,
+      robloxDisplayState,
+      approvedKills,
+      standing,
+      populationProfiles,
+      recentKillChanges,
+      now: options.now,
+    }) : [];
   const profileRatingSummary = buildProfileRatingSummary({
     axes: profileRatingAxes,
   });
   const lockedAxisReasons = Object.fromEntries(profileRatingAxes
     .filter((axis) => axis.isLocked === true)
     .map((axis) => [axis.axisName, axis.lockReason]));
-  const profileRatingLines = [
-    ...profileRatingSummary.lines,
+  const profileRatingBlocks = [
+    { title: "🔥 Рейтинг профиля", lines: profileRatingSummary.lines },
     ...(profileRatingAxes.length
-      ? profileRatingAxes.map((entry) => formatProfileRatingAxisLine(entry))
-      : ["Оценка профиля откроется после данных по активности, proof и связям."]),
+      ? profileRatingAxes.map((entry) => ({
+        title: entry.cardTitle,
+        lines: entry.lines,
+      }))
+      : [{ title: "🔒 Рейтинг закрыт", lines: ["Нужны данные по активности, kills и JJS.", "💡 начни с voice/chat, proof и Roblox/JJS playtime"] }]),
   ];
   const mainStandings = buildMainStandings({
     approvedEntries,
@@ -2469,7 +2688,7 @@ function buildProfileReadModel(options = {}) {
 
   const sections = {
     overview: [
-      { title: "🔥 Рейтинг профиля", lines: profileRatingLines },
+      ...profileRatingBlocks,
       { title: "📊 Сводка активности", lines: activityDashboard.summaryLines.slice(0, 4) },
       { title: "🎭 Мейны и места", lines: roleShowcaseLines },
     ],
@@ -2520,6 +2739,7 @@ function buildProfileReadModel(options = {}) {
     ratingDashboard: {
       summary: profileRatingSummary,
       axes: profileRatingAxes,
+      leagueCards: profileRatingAxes,
       lockedAxisReasons,
     },
     activityDashboard,
