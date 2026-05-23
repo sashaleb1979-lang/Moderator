@@ -16,6 +16,7 @@ const {
 const {
   buildProfileNavCustomId,
   buildProfileOpenCustomId,
+  buildProfileRatingDetailCustomId,
 } = require("./entry");
 const { buildProfileReadModel } = require("./model");
 
@@ -324,6 +325,21 @@ function buildProfileActionRows({ isSelf = false, selfActionState = {} } = {}) {
   ], 5);
 }
 
+function buildProfileRatingDetailRows({ requesterUserId = "", targetUserId = "", ratingAxes = [] } = {}) {
+  const axes = (Array.isArray(ratingAxes) ? ratingAxes : [])
+    .filter((axis) => axis?.axisName && axis?.label)
+    .slice(0, 3);
+  if (!axes.length) return [];
+
+  return buildButtonRows(axes.map((axis) => {
+    const emoji = axis.axisName === "activity" ? "🟣" : axis.axisName === "kills" ? "⚔️" : axis.axisName === "jjs" ? "🎮" : "▫️";
+    return new ButtonBuilder()
+      .setCustomId(buildProfileRatingDetailCustomId(requesterUserId, targetUserId, axis.axisName))
+      .setLabel(`${emoji} ${cleanString(axis.label, 60)}`)
+      .setStyle(ButtonStyle.Secondary);
+  }), 3);
+}
+
 function buildProfileHelperMessagePayload({ requesterUserId = "", targetUserId = "", isSelf = false, targetLabel = "" } = {}) {
   const label = cleanString(targetLabel, 120) || (isSelf ? "свой профиль" : `профиль <@${cleanString(targetUserId, 80)}>`);
   return {
@@ -416,6 +432,17 @@ function buildProfilePayload(options = {}) {
     ));
   }
 
+  if (displayMode !== "compact-card" && currentView === "overview") {
+    const detailRows = buildProfileRatingDetailRows({
+      requesterUserId: options.requesterUserId,
+      targetUserId: userId,
+      ratingAxes: readModel.profileRatingAxes,
+    });
+    if (detailRows.length) {
+      container.addActionRowComponents(...detailRows);
+    }
+  }
+
   if (Array.isArray(readModel.verificationLines) && readModel.verificationLines.length) {
     container.addTextDisplayComponents(
       buildTextDisplay("Верификация", readModel.verificationLines)
@@ -464,6 +491,30 @@ function buildProfilePayload(options = {}) {
   };
 }
 
+function buildProfileRatingDetailPayload({ readModel = {}, axis = "" } = {}) {
+  const normalizedAxis = normalizeNullableString(axis, 40) || "";
+  const detail = readModel?.ratingDetailCards?.[normalizedAxis] || null;
+  const title = detail?.title || "Разбор оценки";
+  const blocks = Array.isArray(detail?.blocks) && detail.blocks.length
+    ? detail.blocks
+    : [{ title: "Нет данных", lines: ["Эта оценка сейчас не собрана для профиля."] }];
+  const container = new ContainerBuilder()
+    .setAccentColor(0x1565C0)
+    .addTextDisplayComponents(
+      new TextDisplayBuilder().setContent(`# ${cleanString(title, 120)}`)
+    );
+
+  container.addTextDisplayComponents(...buildSectionTextDisplays(blocks, 3900, {
+    maxDisplays: 4,
+    blockLimit: 1000,
+  }));
+
+  return {
+    flags: MessageFlags.IsComponentsV2,
+    components: [container],
+  };
+}
+
 function buildProfileFallbackPayload({ view = "overview", message = "" } = {}) {
   const label = PROFILE_VIEW_LABELS[normalizeProfileView(view)] || "раздел";
   const text = cleanString(message, 500)
@@ -486,4 +537,5 @@ module.exports = {
   buildProfileFallbackPayload,
   buildProfileHelperMessagePayload,
   buildProfilePayload,
+  buildProfileRatingDetailPayload,
 };

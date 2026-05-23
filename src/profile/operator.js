@@ -13,12 +13,14 @@ const {
   isProfileTriggerContent,
   parseProfileNavCustomId,
   parseProfileOpenCustomId,
+  parseProfileRatingDetailCustomId,
   resolveProfileMessageTarget,
 } = require("./entry");
 const {
   buildProfileFallbackPayload,
   buildProfileHelperMessagePayload,
   buildProfilePayload,
+  buildProfileRatingDetailPayload,
 } = require("./view");
 const { buildProfileReadModel } = require("./model");
 
@@ -146,6 +148,31 @@ function createProfileOperator(options = {}) {
     view = "overview",
     displayMode = "",
   } = {}) {
+    const readModel = await buildPrivateProfileReadModel({
+      targetUserId,
+      targetUser,
+      targetMember,
+      isSelf,
+      requesterUserId,
+      displayMode,
+    });
+
+    return buildProfilePayload({
+      readModel,
+      requesterUserId,
+      view,
+      displayMode,
+    });
+  }
+
+  async function buildPrivateProfileReadModel({
+    targetUserId = "",
+    targetUser = null,
+    targetMember = null,
+    isSelf = false,
+    requesterUserId = "",
+    displayMode = "",
+  } = {}) {
     const normalizedTargetUserId = cleanString(targetUserId, 80);
     const [resolvedTargetMember, fetchedTargetUser] = await Promise.all([
       targetMember
@@ -237,12 +264,7 @@ function createProfileOperator(options = {}) {
       displayMode,
     });
 
-    return buildProfilePayload({
-      readModel,
-      requesterUserId,
-      view,
-      displayMode,
-    });
+    return readModel;
   }
 
   async function resolveProfileSlashTargetUser(interaction) {
@@ -474,6 +496,42 @@ function createProfileOperator(options = {}) {
       if (deleteSourceMessage && typeof interaction?.message?.delete === "function") {
         await interaction.message.delete().catch(() => {});
       }
+      return true;
+    }
+
+    const profileRatingDetailRequest = parseProfileRatingDetailCustomId(interaction?.customId);
+    if (profileRatingDetailRequest) {
+      if (typeof checkActorGuard === "function" && await checkActorGuard(interaction)) {
+        return true;
+      }
+
+      if (interaction?.user?.id !== profileRatingDetailRequest.requesterUserId && !hasStaffBypass(interaction?.member)) {
+        await interaction.reply({ content: "Эта кнопка не для тебя.", flags: MessageFlags.Ephemeral });
+        return true;
+      }
+
+      const access = await resolveProfileAccessForRequester({
+        requesterUserId: interaction.user.id,
+        requesterUser: interaction.user,
+        requesterMember: interaction.member,
+        targetUserId: profileRatingDetailRequest.targetUserId,
+      });
+
+      if (!access.allowed) {
+        await interaction.reply(buildProfileAccessDeniedPayload(access));
+        return true;
+      }
+
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      const readModel = await buildPrivateProfileReadModel({
+        targetUserId: profileRatingDetailRequest.targetUserId,
+        isSelf: access.isSelf,
+        requesterUserId: interaction.user.id,
+      });
+      await interaction.editReply(buildProfileRatingDetailPayload({
+        readModel,
+        axis: profileRatingDetailRequest.axis,
+      }));
       return true;
     }
 

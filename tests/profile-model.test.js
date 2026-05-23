@@ -401,16 +401,18 @@ test("profile read-model composes derived sections, links, and verification fact
   assert.match(ratingText, /🎮 JJS .* \d+\/100/);
   assert.match(ratingText, /💡 /);
   assert.match(ratingText, /↳ /);
+  assert.ok(readModel.ratingDetailCards.activity);
+  assert.ok(readModel.ratingDetailCards.kills);
+  assert.ok(readModel.ratingDetailCards.jjs);
+  assert.match(readModel.ratingDetailCards.kills.blocks.map((block) => block.title).join("\n"), /Формула|Входные данные|Модификаторы/);
   assert.doesNotMatch(ratingText, /Боевая форма|Proof\/Kills|Стабильность|Рост|Связи|Общение|📉 Минусы|📈 Плюсы|🔎 Что нужно/);
   assert.doesNotMatch(ratingText, /Буквы|confidence|source|debuff|fresh|baseline|XP|Ур\./);
   const overviewActivity = readModel.sections.overview.find((section) => section.title === "📊 Сводка активности");
   assert.ok(overviewActivity);
   assert.match(overviewActivity.lines.join("\n"), /JJS .* Roblox готов/);
   assert.match(overviewActivity.lines.join("\n"), /JJS 7 ч\/30д[\s\S]*Chat 210 msg\/30д[\s\S]*Voice 2,1 ч .* активное 2,1 ч/);
-  const overviewMains = readModel.sections.overview.find((section) => section.title === "🎭 Мейны и места");
-  assert.ok(overviewMains);
-  assert.match(overviewMains.lines.join("\n"), /Gojo <@&role-gojo> \(#2\/2 .* 38% kills мейна .* \+81 kills до #1\)/);
-  assert.doesNotMatch(overviewMains.lines.join("\n"), /Активность:|Kill-role:/);
+  assert.equal(readModel.sections.overview.find((section) => section.title === "🎭 Мейны и места"), undefined);
+  assert.match(readModel.heroLines.join("\n"), /Gojo #2\/2 .* 38% kills .* \+81 до #1/);
   assert.deepEqual(readModel.mainStandings.map((entry) => ({
     label: entry.label,
     rank: entry.rank,
@@ -420,21 +422,13 @@ test("profile read-model composes derived sections, links, and verification fact
   })), [{ label: "Gojo", rank: 2, total: 2, killsToNext: 81, mainKillSharePercent: 38 }]);
   assert.equal(readModel.sections.overview.find((section) => section.title === "Main Core"), undefined);
   assert.doesNotMatch(readModel.sections.overview.map((section) => section.title).join("\n"), /📚 Мейны|Мейны и гайды/);
-  assert.match(readModel.sections.progress[0].lines.join("\n"), /Место по kills: #2/);
-  assert.match(readModel.sections.progress[1].lines.join("\n"), /Прирост: \+20 kills/);
-  assert.match(readModel.sections.progress[2].lines.join("\n"), /1\. 100 -> 120/);
-  assert.match(readModel.sections.progress[2].lines.join("\n"), /2\. 80 -> 100/);
-  assert.match(readModel.sections.progress[3].lines.join("\n"), /Последняя проверка:/);
-  assert.match(readModel.sections.progress[4].lines.join("\n"), /Текущий рейтинг: ELO 145 \/ tier 2/);
-  assert.match(readModel.sections.progress[4].lines.join("\n"), /ID ELO заявки: elo-approved-1/);
-  assert.match(readModel.sections.progress[4].lines.join("\n"), /Последний ELO submit:/);
-  assert.match(readModel.sections.progress[4].lines.join("\n"), /Скрин ELO: https:\/\/proof\/approved/);
-  assert.match(readModel.sections.progress[4].lines.join("\n"), /Tierlist-заявка: есть/);
-  assert.equal(readModel.sections.progress[5].title, "🧾 Proof");
-  assert.match(readModel.sections.progress[5].lines.join("\n"), /Proof отстал .* учёт kills 10%/);
-  assert.match(readModel.sections.progress[5].lines.join("\n"), /Срез: .* approved 120/);
-  assert.match(readModel.sections.progress[5].lines.join("\n"), /После proof: 80,3 ч JJS/);
-  assert.doesNotMatch(readModel.sections.progress[5].lines.join("\n"), /Trust|confidence|source|debuff/);
+  assert.deepEqual(readModel.sections.progress.slice(0, 6).map((section) => section.title), ["⚔️ Сейчас", "📈 Темп", "🧾 Proof", "🗓️ Недели", "💡 До апа", "🏆 Прайм и рекорды"]);
+  assert.match(readModel.sections.progress[0].lines.join("\n"), /Kills 120 .* #2\/2 .* 37[,.]5% серверных kills/);
+  assert.match(readModel.sections.progress[1].lines.join("\n"), /Последние окна: \+20 · \+20/);
+  assert.match(readModel.sections.progress[2].lines.join("\n"), /Proof отстал .* учёт kills 10%/);
+  assert.match(readModel.sections.progress[2].lines.join("\n"), /После proof: 80,3 ч JJS/);
+  assert.match(readModel.sections.progress[4].lines.join("\n"), /Kills #1: \+81 kills|До tier/);
+  assert.doesNotMatch(readModel.sections.progress.map((section) => [section.title, ...section.lines].join("\n")).join("\n"), /ELO|elo|📊 ELO и Tierlist|Последний рост по kills|История approved ростов|Заявки и проверки|Практический прогресс/);
   assert.equal(readModel.sections.activity[0].title, "📊 Итог активности");
   assert.match(readModel.sections.activity[0].lines.join("\n"), /JJS 7 ч\/30д .* Roblox готов/);
   assert.match(readModel.sections.activity[0].lines.join("\n"), /JJS 7 ч\/30д[\s\S]*Chat 210 msg\/30д[\s\S]*Voice 2,1 ч/);
@@ -631,7 +625,7 @@ test("profile read-model marks empty profiles without fabricating data sections"
   assert.ok(emptyActivity);
   assert.match(emptyActivity.lines.join("\n"), /Roblox не привязан/i);
   assert.doesNotMatch(emptyActivity.lines.join("\n"), /JJS 0/);
-  assert.ok(readModel.sections.overview.some((section) => section.title === "🎭 Мейны и места"));
+  assert.equal(readModel.sections.overview.some((section) => section.title === "🎭 Мейны и места"), false);
   assert.equal(readModel.hiddenSectionReasons.season, "Сезон откроется после 3 недель истории (0/3).");
   assert.ok(!readModel.sections.overview.some((section) => /Готовность|War Readiness/.test(section.title)));
   assert.equal(readModel.verificationLines, null);
@@ -986,6 +980,39 @@ test("profile rating caps and hides stale kills correctly", () => {
   assert.equal(staleKills.hiddenBecauseTooOld, true);
   assert.equal(staleKills.lockedPenaltyPercent, 40);
   assert.match(staleKills.cardLines.join("\n"), /старше 2 недель/);
+
+  const outlier = buildProfileReadModel({
+    now: "2026-05-16T12:00:00.000Z",
+    guildId: "guild-1",
+    userId: "killer",
+    targetDisplayName: "Killer",
+    isSelf: true,
+    profile: { approvedKills: 3000, summary: { onboarding: { approvedKills: 3000 } } },
+    approvedEntries: [
+      { userId: "killer", approvedKills: 3000 },
+      { userId: "other", approvedKills: 2800 },
+    ],
+    recentKillChanges: [
+      {
+        userId: "killer",
+        from: 1000,
+        to: 1480,
+        fromAt: Date.parse("2026-05-14T00:00:00.000Z"),
+        toAt: Date.parse("2026-05-15T00:00:00.000Z"),
+      },
+      {
+        userId: "killer",
+        from: 2800,
+        to: 3000,
+        fromAt: Date.parse("2026-05-10T00:00:00.000Z"),
+        toAt: Date.parse("2026-05-16T00:00:00.000Z"),
+      },
+    ],
+  });
+  const outlierKills = outlier.profileRatingAxes.find((axis) => axis.axisName === "kills");
+  assert.ok(outlierKills.ignoredOutlierWindows.length > 0);
+  assert.match(outlierKills.detailLine, /480\/день не учтено/);
+  assert.match(outlier.ratingDetailCards.kills.blocks.map((block) => block.lines.join("\n")).join("\n"), /480\/день не учтено: выше лимита 400/);
 });
 
 test("profile read-model surfaces stale Roblox playtime sync telemetry", () => {
@@ -1053,10 +1080,10 @@ test("profile read-model keeps Roblox-hours line honest when proof snapshot has 
     },
   });
 
-  assert.equal(readModel.sections.progress[0].title, "Практический прогресс");
-  assert.match(readModel.sections.progress[0].lines.join("\n"), /С последнего рега: 36 ч по времени .* Roblox-часы пока ненадёжны/);
-  assert.match(readModel.sections.progress[0].lines.join("\n"), /Динамика: для устойчивого паттерна нужно хотя бы ещё одно окно роста/);
-  assert.doesNotMatch(readModel.sections.progress[0].lines.join("\n"), /Есть смысл обновить kills/);
+  assert.equal(readModel.sections.progress[0].title, "⚔️ Сейчас");
+  assert.equal(readModel.sections.progress[2].title, "🧾 Proof");
+  assert.match(readModel.sections.progress[2].lines.join("\n"), /JJS-разрыв нельзя точно измерить|JJS baseline/);
+  assert.doesNotMatch(readModel.sections.progress.map((section) => section.lines.join("\n")).join("\n"), /Есть смысл обновить kills|Практический прогресс/);
 });
 
 test("profile read-model shows a soft self reminder after enough reliable JJS hours since last approved update", () => {
@@ -1096,9 +1123,10 @@ test("profile read-model shows a soft self reminder after enough reliable JJS ho
     },
   });
 
-  assert.equal(readModel.sections.progress[0].title, "Практический прогресс");
-  assert.match(readModel.sections.progress[0].lines.join("\n"), /С последнего рега: 36 ч по времени .* 13 ч JJS/);
-  assert.match(readModel.sections.progress[0].lines.join("\n"), /CTA: После последнего рега уже 13 ч JJS .* пора обновить kills/);
+  assert.equal(readModel.sections.progress[0].title, "⚔️ Сейчас");
+  assert.equal(readModel.sections.progress[2].title, "🧾 Proof");
+  assert.match(readModel.sections.progress[2].lines.join("\n"), /После proof: 13 ч JJS|После proof: .*JJS/);
+  assert.match(readModel.sections.progress[4].lines.join("\n"), /Kills|JJS|Активность/);
 });
 
 test("profile read-model keeps unapproved onboarding state null even when proof history remains", () => {
@@ -1138,16 +1166,14 @@ test("profile read-model keeps unapproved onboarding state null even when proof 
     },
   });
 
-  const progressText = readModel.sections.progress[0].lines.join("\n");
-  const contributionBlock = readModel.sections.progress.find((section) => section.title === "🏅 Вклад");
+  const progressText = readModel.sections.progress.map((section) => section.lines.join("\n")).join("\n");
 
-  assert.ok(contributionBlock);
-  assert.match(contributionBlock.lines.join("\n"), /Подтверждённых kills пока нет/);
+  assert.equal(readModel.sections.progress.find((section) => section.title === "🏅 Вклад"), undefined);
+  assert.match(readModel.sections.progress[0].lines.join("\n"), /Kills ждут proof/);
   assert.equal(readModel.selfActionState.killsLabel, "Добавить kills");
-  assert.match(progressText, /Зарегистрированные kills пока не подтверждены\./);
-  assert.match(progressText, /С последнего рега: 36 ч по времени .* 13 ч JJS/);
+  assert.match(progressText, /Proof|13 ч JJS|approved-срез/);
   assert.doesNotMatch(progressText, /Зарегистрировано: 0 kills/);
-  assert.doesNotMatch(progressText, /До следующего tier|До milestone/);
+  assert.doesNotMatch(progressText, /До следующего tier|До milestone|🏅 Вклад/);
 });
 
 test("profile read-model prepends the self-progress block before generic progress sections", () => {
@@ -1197,10 +1223,9 @@ test("profile read-model prepends the self-progress block before generic progres
     },
   });
 
-  assert.equal(readModel.sections.progress[0].title, "Практический прогресс");
-  assert.equal(readModel.sections.progress[1].title, "🏅 Вклад");
-  assert.match(readModel.sections.progress[0].lines.join("\n"), /Сравнение окон: последний ап 60 kills\/ч .* прошлый 50 kills\/ч/);
-  assert.match(readModel.sections.progress[0].lines.join("\n"), /Средний темп за отслеженный период: 53,3 kills\/ч JJS/);
-  assert.match(readModel.sections.progress[0].lines.join("\n"), /До следующего tier: 2.?700 kills/);
-  assert.match(readModel.sections.progress[0].lines.join("\n"), /До milestone 20.?000: 15.?700 kills/);
+  assert.deepEqual(readModel.sections.progress.slice(0, 6).map((section) => section.title), ["⚔️ Сейчас", "📈 Темп", "🧾 Proof", "🗓️ Недели", "💡 До апа", "🏆 Прайм и рекорды"]);
+  assert.match(readModel.sections.progress[0].lines.join("\n"), /Kills 4.?300/);
+  assert.match(readModel.sections.progress[4].lines.join("\n"), /До tier 4: \+4.?700 kills/);
+  assert.match(readModel.sections.progress[4].lines.join("\n"), /До milestone 20k: \+15.?700 kills/);
+  assert.doesNotMatch(readModel.sections.progress.map((section) => section.title).join("\n"), /Практический прогресс|🏅 Вклад/);
 });

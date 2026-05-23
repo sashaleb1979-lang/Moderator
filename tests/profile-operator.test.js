@@ -4,7 +4,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { MessageFlags } = require("discord.js");
 
-const { buildProfileNavCustomId, buildProfileOpenCustomId } = require("../src/profile/entry");
+const { buildProfileNavCustomId, buildProfileOpenCustomId, buildProfileRatingDetailCustomId } = require("../src/profile/entry");
 const { collectUserRecentKillChangeHistory } = require("../src/onboard/tierlist-ranking");
 const { createProfileOperator } = require("../src/profile/operator");
 
@@ -202,8 +202,9 @@ test("profile operator builds private payload from injected runtime readers", as
   assert.equal(container.type, 17);
   assert.ok(container.components.some((component) => component.type === 10 && /# Профиль/.test(component.content)));
   assert.ok(container.components.some((component) => component.type === 1 && component.components.some((button) => button.custom_id === buildProfileNavCustomId("requester", "user-1", "progress"))));
-  assert.ok(container.components.some((component) => component.type === 10 && /### 🏅 Вклад/.test(component.content)));
-  assert.ok(container.components.some((component) => component.type === 10 && /### 🧾 История approved ростов/.test(component.content)));
+  assert.ok(container.components.some((component) => component.type === 10 && /### ⚔️ Сейчас/.test(component.content)));
+  assert.ok(container.components.some((component) => component.type === 10 && /### 📈 Темп/.test(component.content)));
+  assert.doesNotMatch(JSON.stringify(container), /### 🏅 Вклад|### 🧾 История approved ростов|ELO|elo/);
   assert.ok(container.components.some((component) => component.type === 1 && component.components.some((button) => button.label === "JJS Wiki: персонажи")));
   assert.ok(!container.components.some((component) => component.type === 1 && component.components.some((button) => button.label === "JJS Wiki: Gojo")));
   assert.match(JSON.stringify(container), /https:\/\/cdn\.discordapp\.com\/avatars\/user-1\/profile\.png/);
@@ -221,8 +222,8 @@ test("profile operator injects UX-only role and character stats context without 
 
   const container = payload.components[0].toJSON();
   const serialized = JSON.stringify(container);
-  assert.match(serialized, /### 🎭 Мейны и места/);
-  assert.match(serialized, /Gojo <@&role-gojo>/);
+  assert.doesNotMatch(serialized, /### 🎭 Мейны и места/);
+  assert.match(serialized, /🎭 Gojo/);
   assert.match(serialized, /JJS Wiki: персонажи/);
   assert.doesNotMatch(serialized, /Текст-тирлист и статистика|JJS Wiki: Gojo|Гайд: Gojo/);
   assert.doesNotMatch(serialized, /1146511958305144883/);
@@ -425,6 +426,37 @@ test("profile operator handles open and nav buttons through one runtime seam", a
   assert.equal(navHandled, true);
   assert.deepEqual(navCalls.map((entry) => entry.step), ["deferUpdate", "editReply"]);
   assert.equal(navCalls[1].payload.flags, MessageFlags.IsComponentsV2);
+});
+
+test("profile operator opens rating detail buttons as separate ephemeral payloads", async () => {
+  const operator = createTestOperator();
+  const calls = [];
+
+  const handled = await operator.handleProfileButtonInteraction({
+    interaction: {
+      customId: buildProfileRatingDetailCustomId("requester", "user-1", "kills"),
+      user: { id: "requester", username: "Requester" },
+      member: makeMember({
+        userId: "requester",
+        username: "Requester",
+        displayName: "Requester",
+        primaryGuild: makePrimaryGuild("TAG"),
+      }),
+      reply: async (payload) => calls.push({ step: "reply", payload }),
+      deferReply: async (payload) => calls.push({ step: "deferReply", payload }),
+      editReply: async (payload) => calls.push({ step: "editReply", payload }),
+    },
+  });
+
+  assert.equal(handled, true);
+  assert.deepEqual(calls.map((entry) => entry.step), ["deferReply", "editReply"]);
+  assert.equal(calls[0].payload.flags, MessageFlags.Ephemeral);
+  assert.equal(calls[1].payload.flags, MessageFlags.IsComponentsV2);
+  const detailJson = JSON.stringify(calls[1].payload.components[0].toJSON());
+  assert.match(detailJson, /Kills .* разбор оценки/);
+  assert.match(detailJson, /Формула/);
+  assert.match(detailJson, /Модификаторы/);
+  assert.match(detailJson, /До апа/);
 });
 
 test("profile operator returns a safe fallback when profile nav payload build fails", async () => {

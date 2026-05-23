@@ -234,7 +234,7 @@ test("profile payload renders overview, activity, rankings, roblox, and link but
   assert.ok(textDisplays.some((component) => /### ⚔️ Kills .* \d+\/100/.test(component.content) && /Approved/.test(component.content)));
   assert.ok(textDisplays.some((component) => /### 🎮 JJS .* \d+\/100/.test(component.content) && /S\+ от/.test(component.content)));
   assert.ok(textDisplays.some((component) => /### 📊 Сводка активности/.test(component.content) && /Roblox готов/.test(component.content)));
-  assert.ok(textDisplays.some((component) => /### 🎭 Мейны и места/.test(component.content) && /Gojo \(#2\/2 .* 38% kills мейна .* \+81 kills до #1\)/.test(component.content)));
+  assert.ok(!textDisplays.some((component) => /### 🎭 Мейны и места/.test(component.content)));
   assert.ok(!textDisplays.some((component) => /### 🧩 Ядро профиля/.test(component.content)));
   assert.doesNotMatch(JSON.stringify(container), /Гайд-контур|### 📚 Мейны|### 📚 Мейны и гайды|гайд доступен по кнопке/);
   assert.doesNotMatch(JSON.stringify(container), /### Ключевые факты/);
@@ -242,7 +242,7 @@ test("profile payload renders overview, activity, rankings, roblox, and link but
   assert.doesNotMatch(JSON.stringify(container), /Буквы|Боевая форма|Proof\/Kills|Стабильность|Связи|Общение|📉 Минусы|📈 Плюсы|🔎 Что нужно|confidence|source|debuff|Discord last seen|proof freshness|baseline|fresh|XP|Ур\./);
   assert.ok(textDisplays.some((component) => /### Верификация/.test(component.content) && /verified/.test(component.content)));
   assert.match(JSON.stringify(container), /https:\/\/cdn\.discordapp\.com\/avatars\/user-1\/profile\.png/);
-  assert.equal(actionRows.length, 2);
+  assert.equal(actionRows.length, 3);
   const navButtons = actionRows[0].components;
   assert.deepEqual(navButtons.map((button) => button.label), PROFILE_VIEWS.map((view) => ({
     overview: "Обзор",
@@ -251,7 +251,8 @@ test("profile payload renders overview, activity, rankings, roblox, and link but
     social: "Соц",
   })[view]));
   assert.equal(navButtons[0].disabled, true);
-  const buttons = actionRows[1].components;
+  assert.deepEqual(actionRows[1].components.map((button) => button.label), ["🟣 Активность", "⚔️ Kills", "🎮 JJS"]);
+  const buttons = actionRows[2].components;
   assert.ok(buttons.some((button) => button.label === "Roblox профиль"));
   assert.ok(buttons.some((button) => button.label === "JJS Wiki: персонажи"));
   assert.ok(buttons.length <= 2);
@@ -424,10 +425,11 @@ test("profile payload renders enriched progress and social sections", () => {
 
   const progressDisplays = getProfileContainer(progressPayload).textDisplays;
   assert.ok(progressDisplays.some((component) => /\*\*Прогресс\*\*/.test(component.content)));
-  assert.ok(progressDisplays.some((component) => /### 📈 Последний рост по kills/.test(component.content) && /Прирост: \+20 kills/.test(component.content)));
-  assert.ok(progressDisplays.some((component) => /### 🧾 История approved ростов/.test(component.content) && /1\. 100 -> 120/.test(component.content) && /2\. 80 -> 100/.test(component.content)));
-  assert.ok(progressDisplays.some((component) => /### 📬 Заявки и проверки/.test(component.content) && /Последняя проверка:/.test(component.content)));
-  assert.ok(progressDisplays.some((component) => /### 📊 ELO и Tierlist/.test(component.content) && /Текущий рейтинг: ELO 145 \/ tier 2/.test(component.content) && /Tierlist-заявка: есть/.test(component.content)));
+  assert.ok(progressDisplays.some((component) => /### ⚔️ Сейчас/.test(component.content) && /Kills 120/.test(component.content)));
+  assert.ok(progressDisplays.some((component) => /### 📈 Темп/.test(component.content) && /Последние окна: \+20 · \+20/.test(component.content)));
+  assert.ok(progressDisplays.some((component) => /### 🧾 Proof/.test(component.content)));
+  assert.ok(progressDisplays.some((component) => /### 💡 До апа/.test(component.content)));
+  assert.doesNotMatch(progressDisplays.map((component) => component.content).join("\n"), /ELO|elo|📊 ELO и Tierlist|Последний рост по kills|История approved ростов|Заявки и проверки|Практический прогресс/);
 
   const socialEvolutionPayload = buildProfilePayload({
     guildId: "guild-1",
@@ -529,7 +531,9 @@ test("profile payload renders enriched progress and social sections", () => {
 
   const selfProgressContainer = getProfileContainer(selfProgressPayload);
   const selfProgressDisplays = selfProgressContainer.textDisplays;
-  assert.ok(selfProgressDisplays.some((component) => /### 💪 Практический прогресс/.test(component.content) && /С последнего рега: 36 ч по времени .* 6 ч JJS/.test(component.content) && /Сравнение окон: последний ап 60 kills\/ч/.test(component.content) && /Динамика: темп ускорился относительно прошлого окна/.test(component.content) && /Средний темп за отслеженный период: 53,3 kills\/ч JJS/.test(component.content) && /До следующего tier: 2.?700 kills/.test(component.content) && /Фокус: темп выше прошлого окна/.test(component.content)));
+  assert.ok(selfProgressDisplays.some((component) => /### ⚔️ Сейчас/.test(component.content) && /Kills 4.?300/.test(component.content)));
+  assert.ok(selfProgressDisplays.some((component) => /### 💡 До апа/.test(component.content) && /До tier 4: \+4.?700 kills/.test(component.content)));
+  assert.doesNotMatch(selfProgressDisplays.map((component) => component.content).join("\n"), /Практический прогресс|ELO|elo/);
   assert.deepEqual(selfProgressContainer.actionRows[1].components.map((button) => button.label), [
     "⚔️ Обновить kills",
     "🎭 Сменить мейнов",

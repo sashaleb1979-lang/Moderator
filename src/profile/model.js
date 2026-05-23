@@ -14,6 +14,10 @@ const {
   resolveRobloxDisplayIdentity,
   resolveUsableVerifiedRobloxIdentity,
 } = require("../integrations/shared-profile");
+const {
+  BASE_KILL_TIER_THRESHOLDS,
+  KILL_MILESTONE_THRESHOLDS,
+} = require("../onboard/kill-tiers");
 
 function cleanString(value, limit = 2000) {
   return String(value || "").trim().slice(0, Math.max(0, Number(limit) || 0));
@@ -31,6 +35,7 @@ const PROFILE_RATING_AXIS_WEIGHTS = Object.freeze({
 const PROFILE_RATING_LOCK_PENALTY_PERCENT = 20;
 const PROFILE_RATING_KILLS_LOCK_PENALTY_PERCENT = 40;
 const PROFILE_RATING_LOCK_PENALTY_CAP_PERCENT = 80;
+const PROFILE_KILLS_DAY_OUTLIER_LIMIT = 400;
 const PROFILE_RATING_AXIS_LABELS = Object.freeze({
   activity: { emoji: "🟣", label: "Активность" },
   kills: { emoji: "⚔️", label: "Kills" },
@@ -54,7 +59,6 @@ const PROFILE_SECTION_GROUPS = Object.freeze({
   overview: [
     { title: "🔥 Рейтинг", tone: "summary", density: "compact", titles: ["🔥 Рейтинг профиля"] },
     { title: "📊 Активность", tone: "summary", density: "compact", titles: ["📊 Сводка активности"] },
-    { title: "🎭 Мейны", tone: "dossier", density: "normal", titles: ["🎭 Мейны и места"] },
     { title: "🧩 Ядро", tone: "dossier", density: "compact", titles: ["Main Core", "🧩 Ядро профиля"] },
   ],
   activity: [
@@ -63,8 +67,8 @@ const PROFILE_SECTION_GROUPS = Object.freeze({
     { title: "🏆 Сезон", tone: "dossier", density: "normal", titles: ["Лучшие периоды", "Weekly rollups", "Season consistency", "Comeback metrics", "🏆 Сезон"] },
   ],
   progress: [
-    { title: "⚔️ Рост и proof", tone: "summary", density: "normal", titles: ["Практический прогресс", "🏅 Вклад", "📈 Последний рост по kills", "Proof gap", "🧾 Proof"] },
-    { title: "📜 История и рейтинги", tone: "dossier", density: "dense", titles: ["🧾 История approved ростов", "📬 Заявки и проверки", "📊 ELO и Tierlist", "Antiteam support"] },
+    { title: "⚔️ Матч-репорт", tone: "summary", density: "compact", titles: ["⚔️ Сейчас", "📈 Темп", "🧾 Proof"] },
+    { title: "🗓️ Динамика", tone: "dossier", density: "compact", titles: ["🗓️ Недели", "💡 До апа", "🏆 Прайм и рекорды", "Antiteam support"] },
   ],
   social: [
     { title: "🚧 Статус", tone: "summary", density: "compact", titles: ["🚧 Соц-карта"] },
@@ -385,9 +389,13 @@ function computeKillStanding(entries = [], userId = "") {
   const totalKills = ranked.reduce((sum, entry) => sum + (Number(entry?.approvedKills) || 0), 0);
   const index = ranked.findIndex((entry) => cleanString(entry?.userId, 80) === normalizedUserId);
   const currentEntry = index >= 0 ? ranked[index] : null;
+  const previousEntry = index > 0 ? ranked[index - 1] : null;
   const approvedKills = Number(currentEntry?.approvedKills);
   const shareOfServerKills = Number.isFinite(approvedKills) && totalKills > 0
     ? (approvedKills / totalKills) * 100
+    : null;
+  const killsToNextRank = previousEntry && Number.isFinite(approvedKills)
+    ? Math.max(1, Math.floor((Number(previousEntry.approvedKills) || 0) - approvedKills + 1))
     : null;
 
   return {
@@ -395,6 +403,7 @@ function computeKillStanding(entries = [], userId = "") {
     totalVerified: ranked.length,
     totalKills,
     shareOfServerKills,
+    killsToNextRank,
   };
 }
 
@@ -717,9 +726,9 @@ function buildRatingCardAxis({
 function buildActivityRatingAxis({ activitySummary = {}, voiceSummary = {}, populationProfiles = [] } = {}) {
   const current = buildActivityLeagueMetrics(activitySummary, voiceSummary);
   const population = getPopulationActivityMetrics(populationProfiles);
-  const voiceTarget = buildPeakTarget([...population.map((entry) => entry.voiceRatingHours), current.voiceRatingHours], 0.7, 3);
-  const sessionsTarget = buildPeakTarget([...population.map((entry) => entry.messageSessions), current.messageSessions], 0.7, 8);
-  const messagesTarget = buildPeakTarget([...population.map((entry) => entry.messages), current.messages], 0.7, 250);
+  const voiceTarget = buildPeakTarget([...population.map((entry) => entry.voiceRatingHours), current.voiceRatingHours], 0.7, 2);
+  const sessionsTarget = buildPeakTarget([...population.map((entry) => entry.messageSessions), current.messageSessions], 0.7, 5);
+  const messagesTarget = buildPeakTarget([...population.map((entry) => entry.messages), current.messages], 0.7, 150);
   const hasAnySignal = current.voiceRatingHours >= 0.5 || current.messageSessions >= 2 || current.messages >= 25;
   if (!hasAnySignal) {
     return buildRatingCardAxis({
@@ -733,33 +742,33 @@ function buildActivityRatingAxis({ activitySummary = {}, voiceSummary = {}, popu
   const voiceScore = Math.min(100, (current.voiceRatingHours / voiceTarget) * 100);
   const sessionScore = Math.min(100, (current.messageSessions / sessionsTarget) * 100);
   const messageScore = Math.min(100, (current.messages / messagesTarget) * 100);
-  const uncappedScore = voiceScore * 0.5 + sessionScore * 0.3 + messageScore * 0.2;
+  const uncappedScore = voiceScore * 0.45 + sessionScore * 0.35 + messageScore * 0.2;
   const hasVoice = current.voiceRatingHours >= 0.5;
   const hasChat = current.messageSessions >= 2 || current.messages >= 25;
-  const cappedScore = (!hasVoice || !hasChat) ? Math.min(86, uncappedScore) : uncappedScore;
+  const cappedScore = (!hasVoice || !hasChat) ? Math.min(84, uncappedScore) : uncappedScore;
   const capPenalty = cappedScore - uncappedScore;
   const samples = population.map((entry) => {
-    const sampleVoiceTarget = voiceTarget || 3;
-    const sampleSessionsTarget = sessionsTarget || 8;
-    const sampleMessagesTarget = messagesTarget || 250;
-    const sampleScore = Math.min(100, (entry.voiceRatingHours / sampleVoiceTarget) * 100) * 0.5
-      + Math.min(100, (entry.messageSessions / sampleSessionsTarget) * 100) * 0.3
+    const sampleVoiceTarget = voiceTarget || 2;
+    const sampleSessionsTarget = sessionsTarget || 5;
+    const sampleMessagesTarget = messagesTarget || 150;
+    const sampleScore = Math.min(100, (entry.voiceRatingHours / sampleVoiceTarget) * 100) * 0.45
+      + Math.min(100, (entry.messageSessions / sampleSessionsTarget) * 100) * 0.35
       + Math.min(100, (entry.messages / sampleMessagesTarget) * 100) * 0.2;
     const sampleHasVoice = entry.voiceRatingHours >= 0.5;
     const sampleHasChat = entry.messageSessions >= 2 || entry.messages >= 25;
-    return (!sampleHasVoice || !sampleHasChat) ? Math.min(86, sampleScore) : sampleScore;
+    return (!sampleHasVoice || !sampleHasChat) ? Math.min(84, sampleScore) : sampleScore;
   });
   const score = clampRatingScore(cappedScore);
   const next = getNextGradeTarget(score);
   const scoreGap = next ? Math.max(0, next.score - score) : 0;
-  const voiceNeed = scoreGap > 0 ? Math.ceil((scoreGap / 50) * voiceTarget * 10) / 10 : 0;
-  const sessionNeed = scoreGap > 0 ? Math.ceil((scoreGap / 30) * sessionsTarget) : 0;
+  const voiceNeed = scoreGap > 0 ? Math.ceil((scoreGap / 45) * voiceTarget * 10) / 10 : 0;
+  const sessionNeed = scoreGap > 0 ? Math.ceil((scoreGap / 35) * sessionsTarget) : 0;
   const detailItems = [];
   if (current.rawExtraVoiceHours > 0) detailItems.push(`raw voice -30%`);
   if (!hasVoice && hasChat) detailItems.push("voice cap");
   else if (hasVoice && !hasChat) detailItems.push("chat cap");
   else if (capPenalty < -0.5) detailItems.push(hasVoice ? "chat cap" : "voice cap");
-  if (current.messageSessions >= 2) detailItems.push(`sessions +${formatNumber(Math.round(sessionScore * 0.3))}%`);
+  if (current.messageSessions >= 2) detailItems.push(`sessions +${formatNumber(Math.round(sessionScore * 0.35))}%`);
   if (!detailItems.length && hasVoice && hasChat) detailItems.push("voice+chat вместе");
 
   return buildRatingCardAxis({
@@ -767,17 +776,21 @@ function buildActivityRatingAxis({ activitySummary = {}, voiceSummary = {}, popu
     score,
     rawScore: uncappedScore,
     place: buildMetricPlace(score, [...samples, score]),
-    valuesLine: `Voice ${formatHours(current.voiceRatingHours)}ч · sessions ${formatNumber(current.messageSessions)} · msg ${formatNumber(current.messages)}`,
+    valuesLine: `Voice ${formatHours(current.voiceRatingHours)}ч · chat-сессии ${formatNumber(current.messageSessions)} · msg ${formatNumber(current.messages)}`,
     totalModifierPercent: capPenalty,
     effectiveWeightPercent: 100,
-    primaryHintLine: next ? `до ${next.grade}: +${formatHours(voiceNeed)}ч voice или +${formatNumber(sessionNeed)} сессии` : "S+ уже открыт",
+    primaryHintLine: next ? `до ${next.grade}: +${formatHours(voiceNeed)}ч voice или +${formatNumber(sessionNeed)} chat-сессии` : "S+ уже открыт",
     detailItems,
     extra: {
       cleanVoiceHours: current.cleanVoiceHours,
       rawVoiceHours: current.rawVoiceHours,
+      rawExtraVoiceHours: current.rawExtraVoiceHours,
       voiceRatingHours: current.voiceRatingHours,
+      messageSessions: current.messageSessions,
+      messages: current.messages,
       voiceRawPenaltyPercent: 30,
       targetValues: { voiceHours: voiceTarget, sessions: sessionsTarget, messages: messagesTarget },
+      formulaLine: "voice 45% + chat-сессии 35% + сообщения 20%; чистый chat/voice capped до 84/100",
     },
   });
 }
@@ -785,7 +798,7 @@ function buildActivityRatingAxis({ activitySummary = {}, voiceSummary = {}, popu
 function buildRecentKillPaceState({ recentKillChanges = [], now = null } = {}) {
   const nowTimestamp = Number.isFinite(Number(now)) ? Number(now) : Date.parse(String(now || ""));
   const normalizedNow = Number.isFinite(nowTimestamp) ? nowTimestamp : Date.now();
-  const windows = (Array.isArray(recentKillChanges) ? recentKillChanges : [])
+  const allWindows = (Array.isArray(recentKillChanges) ? recentKillChanges : [])
     .map((change) => {
       const from = normalizeNullableFiniteNumber(change?.from);
       const to = normalizeNullableFiniteNumber(change?.to);
@@ -805,16 +818,20 @@ function buildRecentKillPaceState({ recentKillChanges = [], now = null } = {}) {
     })
     .filter(Boolean)
     .sort((left, right) => (Number(right.toAt) || 0) - (Number(left.toAt) || 0));
+  const ignoredOutlierWindows = allWindows.filter((entry) => entry.averagePerDay > PROFILE_KILLS_DAY_OUTLIER_LIMIT);
+  const windows = allWindows.filter((entry) => entry.averagePerDay <= PROFILE_KILLS_DAY_OUTLIER_LIMIT);
 
   let remainingDays = 6;
   let coveredDays = 0;
   let weightedKills = 0;
+  const usedWindows = [];
   for (const window of windows) {
     if (remainingDays <= 0) break;
     const days = Math.min(remainingDays, window.dayCount);
     weightedKills += window.averagePerDay * days;
     coveredDays += days;
     remainingDays -= days;
+    usedWindows.push({ ...window, usedDays: days });
   }
   const latestToAt = windows.find((entry) => Number.isFinite(entry.toAt))?.toAt ?? null;
   const dataAgeDays = Number.isFinite(latestToAt)
@@ -834,6 +851,8 @@ function buildRecentKillPaceState({ recentKillChanges = [], now = null } = {}) {
     dataAgeDays,
     stalePenaltyPercent: Math.round(stalePenaltyPercent),
     hiddenBecauseTooOld: Number.isFinite(dataAgeDays) && dataAgeDays > 21,
+    usedWindows,
+    ignoredOutlierWindows,
   };
 }
 
@@ -896,6 +915,10 @@ function buildKillsRatingAxis({ approvedKills = null, standing = {}, recentKillC
     ? Math.max(1, Math.ceil(((next.score - finalScore) / 100) * Math.max(100, approvedKillsAmount || 100)))
     : null;
   const detailItems = [];
+  if (pace.ignoredOutlierWindows?.length) {
+    const outlier = pace.ignoredOutlierWindows[0];
+    detailItems.push(`${formatNumber(Math.round(outlier.averagePerDay))}/день не учтено`);
+  }
   if (Number.isFinite(growthModifier)) detailItems.push(`рост ${formatRatingModifier(growthModifier)}`);
   else detailItems.push("нет kills/day: потолок A+");
   if (Number.isFinite(killsPerJjsHour)) detailItems.push(`efficiency ${formatRatingModifier(efficiencyModifier)}`);
@@ -925,6 +948,8 @@ function buildKillsRatingAxis({ approvedKills = null, standing = {}, recentKillC
       growthModifierPercent: Number.isFinite(growthModifier) ? Math.round(growthModifier) : null,
       jjsEfficiencyModifierPercent: Math.round(efficiencyModifier),
       killsPerJjsHour,
+      ignoredOutlierWindows: pace.ignoredOutlierWindows || [],
+      usedKillWindows: pace.usedWindows || [],
     },
   });
 }
@@ -954,14 +979,15 @@ function buildJjsRatingAxis({ profile = null, robloxSummary = {}, robloxDisplayS
       lockedPenaltyPercent: PROFILE_RATING_LOCK_PENALTY_PERCENT,
     });
   }
-  const target = buildPeakTarget([...getPopulationJjsHours(populationProfiles), jjsHours7d], 0.8, 8);
+  const target = buildPeakTarget([...getPopulationJjsHours(populationProfiles), jjsHours7d], 0.7, 6);
   const coveragePercent = normalizeNullableFiniteNumber(getLatestWeeklyCoveragePercent(profile), 100);
   const coverageWeight = Math.max(0.1, Math.min(1, coveragePercent / 100));
-  const rawScore = normalizeRatingTarget(jjsHours7d, { floor: 2, target });
+  const jjsFloor = 1;
+  const rawScore = normalizeRatingTarget(jjsHours7d, { floor: jjsFloor, target });
   const score = clampRatingScore(rawScore * coverageWeight);
   const next = getNextGradeTarget(score);
   const nextHours = next
-    ? Math.max(0.1, ((next.score / coverageWeight) / 100) * Math.max(0.1, target - 2) + 2 - jjsHours7d)
+    ? Math.max(0.1, ((next.score / coverageWeight) / 100) * Math.max(0.1, target - jjsFloor) + jjsFloor - jjsHours7d)
     : 0;
   const detailItems = [];
   if (coveragePercent < 100) detailItems.push(`coverage -${formatNumber(Math.round(100 - coveragePercent))}%`);
@@ -979,6 +1005,7 @@ function buildJjsRatingAxis({ profile = null, robloxSummary = {}, robloxDisplayS
     detailItems,
     extra: {
       targetHoursForSPlus: target,
+      floorHours: jjsFloor,
       coveragePercent,
     },
   });
@@ -1046,6 +1073,105 @@ function buildProfileRatingSummary({ axes = [] } = {}) {
     radarLine: "",
     lines,
   };
+}
+
+function buildRatingDetailBlocks(axis = {}) {
+  const meta = PROFILE_RATING_AXIS_LABELS[axis?.axisName] || { emoji: "▫️", label: cleanString(axis?.axisName, 40) || "Оценка" };
+  if (!axis || typeof axis !== "object") {
+    return {
+      axisName: "",
+      title: "Разбор оценки",
+      blocks: [{ title: "Нет данных", lines: ["Эта оценка сейчас не найдена в профиле."] }],
+    };
+  }
+
+  if (axis.isLocked) {
+    return {
+      axisName: axis.axisName,
+      title: `${meta.emoji} ${meta.label} · разбор оценки`,
+      blocks: [
+        {
+          title: "Итог",
+          lines: [
+            `Закрыто · рейтинг -${formatNumber(axis.lockedPenaltyPercent)}%`,
+            cleanString(axis.lockReason, 220) || "Нужно больше данных.",
+          ],
+        },
+        {
+          title: "Что сделать",
+          lines: [cleanString(axis.primaryHintLine, 220) || "💡 добери данные и обнови профиль."],
+        },
+      ],
+    };
+  }
+
+  const rankLine = formatProfileAxisRank(axis).trim();
+  const headline = `${axis.grade} · ${formatProfileRatingScore(axis.score)}/100${rankLine ? ` · ${rankLine}` : ""}`;
+  let formulaLines = [];
+  let inputLines = [];
+  let modifierLines = [];
+
+  if (axis.axisName === "activity") {
+    const targets = axis.targetValues || {};
+    formulaLines = ["voice 45% + chat-сессии 35% + сообщения 20%; чистый chat/voice capped до 84/100"];
+    inputLines = [
+      `Voice зачёт: ${formatHours(axis.voiceRatingHours)} ч`,
+      `Raw voice: ${formatHours(axis.rawVoiceHours)} ч · clean ${formatHours(axis.cleanVoiceHours)} ч`,
+      `Chat-сессии: ${formatNumber(axis.messageSessions ?? 0)} · msg ${formatNumber(axis.messages ?? 0)}`,
+      `Планки: ${formatHours(targets.voiceHours)}ч voice · ${formatNumber(targets.sessions)} сессий · ${formatNumber(targets.messages)} msg`,
+    ];
+    modifierLines = [
+      axis.rawExtraVoiceHours > 0 ? `-${formatNumber(axis.voiceRawPenaltyPercent || 30)}% на raw-only voice` : "0% raw voice penalty",
+      axis.totalModifierPercent < 0 ? `${formatRatingModifier(axis.totalModifierPercent)} за pure-mode cap` : "0% за cap",
+      `Учёт: ${formatNumber(axis.effectiveWeightPercent)}%`,
+    ];
+  } else if (axis.axisName === "kills") {
+    const ignored = Array.isArray(axis.ignoredOutlierWindows) ? axis.ignoredOutlierWindows : [];
+    formulaLines = ["место по kills + рост/день + kills/ч JJS - покрытие - старость proof"];
+    inputLines = [
+      axis.cardLines?.[1] || "",
+      Number.isFinite(axis.averageKillsPerDay) ? `Рост: ${formatNumber(Math.round(axis.averageKillsPerDay * 10) / 10)}/день за ${formatNumber(axis.killDayCoverage)} валидных дней` : `Рост: нет ${formatNumber(Math.max(0, 4 - normalizeFiniteNumber(axis.killDayCoverage, 0)))} валидных дней до расчёта`,
+      Number.isFinite(axis.killsPerJjsHour) ? `${formatNumber(Math.round(axis.killsPerJjsHour * 10) / 10)} kills/ч JJS` : "kills/ч JJS пока не считается",
+      ignored.length ? `${formatNumber(Math.round(ignored[0].averagePerDay))}/день не учтено: выше лимита ${formatNumber(PROFILE_KILLS_DAY_OUTLIER_LIMIT)}` : "",
+    ].filter(Boolean);
+    modifierLines = [
+      Number.isFinite(axis.growthModifierPercent) ? `${formatRatingModifier(axis.growthModifierPercent)} за рост` : "0% за рост: не хватает валидных kill-days",
+      `${formatRatingModifier(axis.jjsEfficiencyModifierPercent)} за эффективность`,
+      axis.killDayCoverage < 6 && Number.isFinite(axis.averageKillsPerDay) ? "-20% за покрытие меньше 6 дней" : "0% за покрытие",
+      axis.stalePenaltyPercent > 0 ? `-${formatNumber(axis.stalePenaltyPercent)}% за старые данные` : "0% за свежесть proof",
+    ];
+  } else if (axis.axisName === "jjs") {
+    formulaLines = ["JJS-часы за неделю относительно верхней планки; покрытие недели режет учёт"];
+    inputLines = [
+      axis.cardLines?.[1] || "",
+      `S+ планка: ${formatHours(axis.targetHoursForSPlus)} ч`,
+      `Нижняя база: ${formatHours(axis.floorHours)} ч`,
+      `Покрытие: ${formatPercent(axis.coveragePercent, 0)}`,
+    ];
+    modifierLines = [
+      `${formatRatingModifier(axis.totalModifierPercent)} за покрытие`,
+      `Учёт: ${formatNumber(axis.effectiveWeightPercent)}%`,
+      axis.detailLine ? axis.detailLine.replace(/^↳\s*/u, "") : "sync-детали не накоплены",
+    ];
+  }
+
+  return {
+    axisName: axis.axisName,
+    title: `${meta.emoji} ${meta.label} · разбор оценки`,
+    blocks: [
+      { title: "Итог", lines: [headline] },
+      { title: "Формула", lines: formulaLines },
+      { title: "Входные данные", lines: inputLines.filter(Boolean) },
+      { title: "Модификаторы", lines: modifierLines.filter(Boolean) },
+      { title: "До апа", lines: [cleanString(axis.primaryHintLine, 220) || "S+ уже открыт"] },
+    ],
+  };
+}
+
+function buildRatingDetailCards(axes = []) {
+  return Object.fromEntries((Array.isArray(axes) ? axes : [])
+    .filter((axis) => axis?.axisName)
+    .map((axis) => [axis.axisName, buildRatingDetailBlocks(axis)]));
 }
 
 function hasProfileScoreSignals({
@@ -1272,6 +1398,191 @@ function buildProfileProofGapBlock(proofGap = null) {
   };
 }
 
+function getNextKillTierTargetLine(approvedKills = null) {
+  const kills = normalizeNullableFiniteNumber(approvedKills);
+  if (!Number.isFinite(kills)) return "До tier: нужен approved proof";
+  for (const tier of Object.keys(BASE_KILL_TIER_THRESHOLDS).map(Number).sort((a, b) => a - b)) {
+    const target = normalizeNullableFiniteNumber(BASE_KILL_TIER_THRESHOLDS[tier]);
+    if (Number.isFinite(target) && kills < target) {
+      return `До tier ${formatNumber(tier)}: +${formatNumber(Math.ceil(target - kills))} kills`;
+    }
+  }
+  return "Kill tier: максимум открыт";
+}
+
+function getNextKillMilestoneTargetLine(approvedKills = null) {
+  const kills = normalizeNullableFiniteNumber(approvedKills);
+  if (!Number.isFinite(kills)) return "";
+  for (const [milestone, target] of Object.entries(KILL_MILESTONE_THRESHOLDS).sort((a, b) => Number(a[1]) - Number(b[1]))) {
+    if (kills < target) {
+      return `До milestone ${milestone}: +${formatNumber(Math.ceil(target - kills))} kills`;
+    }
+  }
+  return "Kill milestones: максимум открыт";
+}
+
+function buildProgressCurrentLines({ approvedKills = null, standing = {} } = {}) {
+  const lines = [];
+  const kills = normalizeNullableFiniteNumber(approvedKills);
+  const rank = normalizeNullableFiniteNumber(standing?.rank);
+  const total = normalizeNullableFiniteNumber(standing?.totalVerified);
+  const share = normalizeNullableFiniteNumber(standing?.shareOfServerKills);
+  const nextKills = normalizeNullableFiniteNumber(standing?.killsToNextRank ?? standing?.killsToNext);
+  lines.push([
+    Number.isFinite(kills) ? `Kills ${formatNumber(kills)}` : "Kills ждут proof",
+    Number.isFinite(rank) && Number.isFinite(total) ? `#${formatNumber(rank)}/${formatNumber(total)}` : null,
+    Number.isFinite(share) ? `${formatPercent(share, 1)} серверных kills` : null,
+  ].filter(Boolean).join(" · "));
+  if (Number.isFinite(nextKills) && Number.isFinite(rank) && rank > 1) {
+    lines.push(`До #${formatNumber(rank - 1)}: +${formatNumber(nextKills)} kills`);
+  } else if (Number.isFinite(rank) && rank === 1) {
+    lines.push("Место по kills: лидер");
+  } else {
+    lines.push("Место по kills откроется после общего рейтинга.");
+  }
+  lines.push(getNextKillTierTargetLine(kills));
+  return lines.slice(0, 3);
+}
+
+function buildProgressPaceLines(killsAxis = null, recentKillChanges = []) {
+  if (!killsAxis || killsAxis.isLocked) {
+    return [
+      killsAxis?.lockReason || "Темп откроется после approved proof.",
+      "Нужно минимум 4 валидных kill-day.",
+    ];
+  }
+  const deltas = (Array.isArray(recentKillChanges) ? recentKillChanges : [])
+    .map((entry) => {
+      const from = normalizeNullableFiniteNumber(entry?.from);
+      const to = normalizeNullableFiniteNumber(entry?.to);
+      return Number.isFinite(from) && Number.isFinite(to) && to > from ? to - from : null;
+    })
+    .filter((entry) => Number.isFinite(entry) && entry > 0)
+    .slice(0, 3);
+  const lines = [
+    Number.isFinite(killsAxis.averageKillsPerDay)
+      ? `${formatNumber(Math.round(killsAxis.averageKillsPerDay * 10) / 10)}/день · ${formatNumber(killsAxis.killDayCoverage)} валидных дней · ${formatRatingModifier(killsAxis.growthModifierPercent)} к Kills`
+      : `${formatNumber(killsAxis.killDayCoverage || 0)} валидных дней · рост не участвует`,
+    deltas.length ? `Последние окна: ${deltas.map((entry) => formatSignedNumber(entry)).join(" · ")}` : "Последние окна: история proof ещё короткая",
+  ];
+  const ignored = Array.isArray(killsAxis.ignoredOutlierWindows) ? killsAxis.ignoredOutlierWindows : [];
+  if (ignored.length) {
+    lines.push(`${formatNumber(Math.round(ignored[0].averagePerDay))}/день не учтено: выше лимита ${formatNumber(PROFILE_KILLS_DAY_OUTLIER_LIMIT)}`);
+  } else if (killsAxis.stalePenaltyPercent > 0) {
+    lines.push(`Старость данных: -${formatNumber(killsAxis.stalePenaltyPercent)}%`);
+  } else if (Number.isFinite(killsAxis.averageKillsPerDay)) {
+    lines.push("Outlier выше 400/день не найден.");
+  }
+  return lines.slice(0, 3);
+}
+
+function buildProgressProofLines({ proofGapBlock = null, latestSubmission = null, pendingSubmission = null } = {}) {
+  if (proofGapBlock?.lines?.length) return proofGapBlock.lines.slice(0, 3);
+  if (pendingSubmission) {
+    return [
+      `Proof ждёт проверки · ${formatNumber(pendingSubmission.kills)} kills`,
+      pendingSubmission.createdAt ? `Отправлен: ${formatDateTime(pendingSubmission.createdAt)}` : "Дата заявки неизвестна",
+    ];
+  }
+  if (latestSubmission?.reviewedAt) {
+    return [
+      "Proof нормальный · учёт kills 100%",
+      `Последняя проверка: ${formatDateTime(latestSubmission.reviewedAt)}`,
+    ];
+  }
+  return ["Proof откроется после первого approved-среза."];
+}
+
+function buildProgressWeeklyLines(profile = null) {
+  const rollups = Array.isArray(profile?.domains?.seasonArchive?.weeklyRollups)
+    ? profile.domains.seasonArchive.weeklyRollups
+    : [];
+  if (!rollups.length) {
+    return ["Неделя откроется после 7 дней покрытия · сейчас 0/7"];
+  }
+  return rollups.slice().sort((left, right) => {
+    const rightTime = Date.parse(String(right?.endDayKey || right?.weekKey || ""));
+    const leftTime = Date.parse(String(left?.endDayKey || left?.weekKey || ""));
+    return (Number.isFinite(rightTime) ? rightTime : 0) - (Number.isFinite(leftTime) ? leftTime : 0);
+  }).slice(0, 4).map((rollup) => {
+    const weekKey = cleanString(rollup?.weekKey, 40) || "Неделя";
+    const grade = cleanString(rollup?.composite?.grade, 10) || "—";
+    const killsDelta = normalizeNullableFiniteNumber(rollup?.totals?.approvedKillsDelta);
+    const jjsMinutes = normalizeNullableFiniteNumber(rollup?.totals?.jjsMinutes);
+    const coverage = normalizeNullableFiniteNumber(rollup?.coverage?.coveragePercent);
+    if (Number.isFinite(coverage) && coverage < 50) {
+      return `${weekKey} закрыта · покрытие ${formatPercent(coverage, 0)}`;
+    }
+    return [
+      `${weekKey} ${grade}`,
+      Number.isFinite(killsDelta) ? `${formatSignedNumber(killsDelta)} kills` : null,
+      Number.isFinite(jjsMinutes) ? `${formatJjsHoursFromMinutes(jjsMinutes)} JJS` : null,
+      Number.isFinite(coverage) ? `покрытие ${formatPercent(coverage, 0)}` : null,
+    ].filter(Boolean).join(" · ");
+  });
+}
+
+function buildUpgradeHintLines(profileRatingAxes = [], approvedKills = null, standing = {}) {
+  const axes = Array.isArray(profileRatingAxes) ? profileRatingAxes : [];
+  const lines = [];
+  const rank = normalizeNullableFiniteNumber(standing?.rank);
+  const nextKills = normalizeNullableFiniteNumber(standing?.killsToNextRank ?? standing?.killsToNext);
+  if (Number.isFinite(rank) && rank > 1 && Number.isFinite(nextKills)) {
+    lines.push(`Kills #${formatNumber(rank - 1)}: +${formatNumber(nextKills)} kills`);
+  }
+  const tierLine = getNextKillTierTargetLine(approvedKills);
+  if (tierLine && !/максимум/.test(tierLine)) lines.push(tierLine);
+  const milestone = getNextKillMilestoneTargetLine(approvedKills);
+  if (milestone && !/максимум/.test(milestone)) lines.push(milestone);
+  lines.push(...axes
+    .filter((axis) => axis?.axisName && axis?.primaryHintLine)
+    .map((axis) => `${axis.label}: ${axis.primaryHintLine.replace(/^💡\s*/u, "")}`));
+  return lines.slice(0, 4);
+}
+
+function buildPrimeRecordLines({ profile = null, synergy = null } = {}) {
+  const weeklyRollups = Array.isArray(profile?.domains?.seasonArchive?.weeklyRollups)
+    ? profile.domains.seasonArchive.weeklyRollups
+    : [];
+  const bestWeek = weeklyRollups.slice().sort((left, right) => (
+    normalizeFiniteNumber(right?.composite?.score, 0) - normalizeFiniteNumber(left?.composite?.score, 0)
+  ))[0];
+  const lines = [];
+  if (bestWeek) {
+    lines.push(`Лучшая неделя: ${cleanString(bestWeek.weekKey, 40) || "—"} · ${cleanString(bestWeek?.composite?.grade, 10) || "—"}`);
+  }
+  const bestPeriodsLine = synergy?.blocks?.bestPeriods?.lines?.[0] ? cleanString(synergy.blocks.bestPeriods.lines[0], 220) : "";
+  if (bestPeriodsLine) lines.push(bestPeriodsLine);
+  const primeLine = synergy?.blocks?.primeTime?.lines?.[0] ? cleanString(synergy.blocks.primeTime.lines[0], 220) : "";
+  if (primeLine) lines.push(primeLine);
+  if (!lines.length) lines.push("Прайм и рекорды откроются после недельной истории и JJS hourly buckets.");
+  return lines.slice(0, 3);
+}
+
+function buildProgressDashboard({
+  profile = null,
+  approvedKills = null,
+  standing = {},
+  profileRatingAxes = [],
+  recentKillChanges = [],
+  latestSubmission = null,
+  pendingSubmission = null,
+  proofGapBlock = null,
+  synergy = null,
+} = {}) {
+  const killsAxis = (Array.isArray(profileRatingAxes) ? profileRatingAxes : []).find((axis) => axis?.axisName === "kills") || null;
+  return {
+    blocks: [
+      { title: "⚔️ Сейчас", lines: buildProgressCurrentLines({ approvedKills, standing }) },
+      { title: "📈 Темп", lines: buildProgressPaceLines(killsAxis, recentKillChanges) },
+      { title: "🧾 Proof", lines: buildProgressProofLines({ proofGapBlock, latestSubmission, pendingSubmission }) },
+      { title: "🗓️ Недели", lines: buildProgressWeeklyLines(profile) },
+      { title: "💡 До апа", lines: buildUpgradeHintLines(profileRatingAxes, approvedKills, standing) },
+      { title: "🏆 Прайм и рекорды", lines: buildPrimeRecordLines({ profile, synergy }) },
+    ],
+  };
+}
+
 function getSupportAntiteamSummary(supportSummary = {}) {
   const antiteam = supportSummary?.antiteam && typeof supportSummary.antiteam === "object"
     ? supportSummary.antiteam
@@ -1314,15 +1625,20 @@ function buildActivityQualityPercent(activitySummary = {}) {
 
 function buildActivityMixMeter({ jjsHours30d = null, messages30d = null, voiceHours30d = null } = {}) {
   const chatProxy = Number.isFinite(messages30d) ? messages30d / 30 : null;
-  const total = [jjsHours30d, chatProxy, voiceHours30d]
+  const values = [
+    { label: "JJS", value: jjsHours30d },
+    { label: "Chat", value: chatProxy },
+    { label: "Voice", value: voiceHours30d },
+  ];
+  const total = values
+    .map((entry) => entry.value)
     .filter((entry) => Number.isFinite(entry) && entry > 0)
     .reduce((sum, entry) => sum + entry, 0);
-  if (total <= 0) return "";
-  return [
-    `JJS ${buildStatBar((Number.isFinite(jjsHours30d) ? jjsHours30d : 0) / total * 100, 4)}`,
-    `Chat ${buildStatBar((Number.isFinite(chatProxy) ? chatProxy : 0) / total * 100, 4)}`,
-    `Voice ${buildStatBar((Number.isFinite(voiceHours30d) ? voiceHours30d : 0) / total * 100, 4)}`,
-  ].join(" · ");
+  if (total <= 0) return "нет сигнала";
+  return values
+    .filter((entry) => Number.isFinite(entry.value) && entry.value > 0)
+    .map((entry) => `${entry.label} ${buildStatBar((entry.value / total) * 100, 4)}`)
+    .join(" · ");
 }
 
 function buildActivityDashboard({
@@ -1367,11 +1683,11 @@ function buildActivityDashboard({
     : (robloxDisplayState?.state === "suspicious" ? "Roblox требует перепривязки" : "Roblox не привязан");
 
   const summaryLines = [
-    `JJS ${Number.isFinite(Number(robloxSummary?.jjsMinutes30d)) && canShowJjs ? `${formatJjsHoursFromMinutes(robloxSummary.jjsMinutes30d)}/30д` : "—"} ${buildStatBar(Number.isFinite(jjsHours30d) ? Math.min(100, (jjsHours30d / 20) * 100) : 0, 5)} · ${statusLine}`,
+    `JJS ${Number.isFinite(Number(robloxSummary?.jjsMinutes30d)) && canShowJjs ? `${formatJjsHoursFromMinutes(robloxSummary.jjsMinutes30d)}/30д ${buildStatBar(Math.min(100, (jjsHours30d / 20) * 100), 5)}` : "—"} · ${statusLine}`,
     robloxDisplayState?.isTrackable && robloxSyncHealth?.critical && robloxSyncHealth?.line
       ? robloxSyncHealth.line
       : "",
-    `Chat ${formatActivityMetric(messages30d)} msg/30д ${buildStatBar(Number.isFinite(messages30d) ? Math.min(100, (messages30d / 1000) * 100) : 0, 5)}${Number.isFinite(activeDays30d) ? ` · ${formatNumber(activeDays30d)}/30 активных дней` : ""}`,
+    `Chat ${formatActivityMetric(messages30d)} msg/30д${Number.isFinite(messages30d) ? ` ${buildStatBar(Math.min(100, (messages30d / 1000) * 100), 5)}` : ""}${Number.isFinite(activeDays30d) ? ` · ${formatNumber(activeDays30d)}/30 активных дней` : ""}`,
     `Voice ${Number.isFinite(rawVoiceHours30d) ? `${formatHours(rawVoiceHours30d)} ч` : "—"}${Number.isFinite(effectiveVoiceHours30d) ? ` · активное ${formatHours(effectiveVoiceHours30d)} ч` : ""}${Number.isFinite(activeVoiceQuality) ? ` · качество ${formatPercent(activeVoiceQuality, 0)} ${buildStatBar(activeVoiceQuality, 5)}` : ""}`,
     [
       activityRole ? `роль ${activityRole}` : null,
@@ -2363,6 +2679,7 @@ function buildProfileReadModel(options = {}) {
   const profileRatingSummary = buildProfileRatingSummary({
     axes: profileRatingAxes,
   });
+  const ratingDetailCards = buildRatingDetailCards(profileRatingAxes);
   const lockedAxisReasons = Object.fromEntries(profileRatingAxes
     .filter((axis) => axis.isLocked === true)
     .map((axis) => [axis.axisName, axis.lockReason]));
@@ -2667,6 +2984,17 @@ function buildProfileReadModel(options = {}) {
     ...includeProfileBlock(synergy?.blocks?.voiceGameOverlap, 3),
   ];
   const proofGapBlock = buildProfileProofGapBlock(synergy?.progress?.proofGap);
+  const progressDashboard = buildProgressDashboard({
+    profile,
+    approvedKills,
+    standing,
+    profileRatingAxes,
+    recentKillChanges,
+    latestSubmission,
+    pendingSubmission,
+    proofGapBlock,
+    synergy,
+  });
   const compactMainStanding = mainStandings.find((entry) => entry.available);
   const compactModeLine = (activityDashboard.summaryLines || []).find((line) => /JJS|Chat|Voice/.test(line))
     || "Активность откроется после JJS, чата или voice.";
@@ -2691,7 +3019,6 @@ function buildProfileReadModel(options = {}) {
     overview: [
       ...profileRatingBlocks,
       { title: "📊 Сводка активности", lines: activityDashboard.summaryLines.slice(0, 4) },
-      { title: "🎭 Мейны и места", lines: roleShowcaseLines },
     ],
     activity: [
       ...activityDashboard.blocks,
@@ -2699,14 +3026,8 @@ function buildProfileReadModel(options = {}) {
       ...seasonBlocks,
     ],
     progress: [
-      ...(synergy?.blocks?.selfProgress ? [synergy.blocks.selfProgress] : []),
-      { title: "🏅 Вклад", lines: contributionLines },
-      { title: "📈 Последний рост по kills", lines: progressHistoryLines },
-      { title: "🧾 История approved ростов", lines: progressTimelineLines },
-      { title: "📬 Заявки и проверки", lines: submissionLines },
-      { title: "📊 ELO и Tierlist", lines: rankingLines },
+      ...progressDashboard.blocks,
       ...(synergy?.blocks?.antiteamSupport ? [synergy.blocks.antiteamSupport] : []),
-      ...(proofGapBlock ? [proofGapBlock] : []),
     ],
     social: [
       { title: "🚧 Соц-карта", lines: ["Соц-карта в разработке: связи показываются только там, где есть проверяемые сигналы."] },
@@ -2737,13 +3058,16 @@ function buildProfileReadModel(options = {}) {
     identityMediaItems,
     profileRatingSummary,
     profileRatingAxes,
+    ratingDetailCards,
     ratingDashboard: {
       summary: profileRatingSummary,
       axes: profileRatingAxes,
       leagueCards: profileRatingAxes,
+      detailCards: ratingDetailCards,
       lockedAxisReasons,
     },
     activityDashboard,
+    progressDashboard,
     weeklyRatingState: {
       weeklyWindowCount,
       stabilityOpen: weeklyWindowCount >= 3,

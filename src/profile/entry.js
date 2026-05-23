@@ -3,6 +3,7 @@
 const PROFILE_TRIGGER_KEYWORD = "профиль";
 const PROFILE_OPEN_BUTTON_PREFIX = "profile_open:";
 const PROFILE_NAV_BUTTON_PREFIX = "profile_nav:";
+const PROFILE_RATING_DETAIL_BUTTON_PREFIX = "profile_rating_detail:";
 const PROFILE_TARGET_RESOLUTION_REASONS = Object.freeze({
   AMBIGUOUS_MENTION: "ambiguous_mention",
 });
@@ -105,16 +106,41 @@ function parseProfileNavCustomId(value = "") {
   };
 }
 
+function buildProfileRatingDetailCustomId(requesterUserId = "", targetUserId = "", axis = "") {
+  return `${PROFILE_RATING_DETAIL_BUTTON_PREFIX}${cleanString(requesterUserId, 80)}:${cleanString(targetUserId, 80)}:${cleanString(axis, 40)}`;
+}
+
+function parseProfileRatingDetailCustomId(value = "") {
+  const normalized = cleanString(value, 200);
+  if (!normalized.startsWith(PROFILE_RATING_DETAIL_BUTTON_PREFIX)) return null;
+
+  const raw = normalized.slice(PROFILE_RATING_DETAIL_BUTTON_PREFIX.length);
+  const [requesterUserId, targetUserId, axis] = raw.split(":");
+  const normalizedRequesterUserId = cleanString(requesterUserId, 80);
+  const normalizedTargetUserId = cleanString(targetUserId, 80);
+  const normalizedAxis = cleanString(axis, 40);
+  if (!normalizedRequesterUserId || !normalizedTargetUserId || !normalizedAxis) return null;
+
+  return {
+    requesterUserId: normalizedRequesterUserId,
+    targetUserId: normalizedTargetUserId,
+    axis: normalizedAxis,
+  };
+}
+
 module.exports = {
   PROFILE_NAV_BUTTON_PREFIX,
   PROFILE_OPEN_BUTTON_PREFIX,
+  PROFILE_RATING_DETAIL_BUTTON_PREFIX,
   PROFILE_TARGET_RESOLUTION_REASONS,
   PROFILE_TRIGGER_KEYWORD,
   buildProfileNavCustomId,
   buildProfileOpenCustomId,
+  buildProfileRatingDetailCustomId,
   isProfileTriggerContent,
   normalizeProfileTriggerText,
   parseProfileNavCustomId,
   parseProfileOpenCustomId,
+  parseProfileRatingDetailCustomId,
   resolveProfileMessageTarget,
 };
