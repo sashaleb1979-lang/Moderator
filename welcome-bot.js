@@ -156,6 +156,8 @@ const {
   resumeActivityRuntime,
 } = require("./src/activity/runtime");
 const { ensureActivityState } = require("./src/activity/state");
+const { ensureNewsState } = require("./src/news/state");
+const { runDailyNewsCompileTick } = require("./src/news/scheduler");
 const { recordVoiceStateTransition } = require("./src/news/voice");
 const {
   recordGuildBanEvent,
@@ -14627,7 +14629,19 @@ client.once("clientReady", async () => {
     runProfileSeasonArchiveSnapshot: runScheduledProfileSeasonArchiveSnapshot,
     runProfilePopulationSnapshot: runScheduledProfilePopulationSnapshot,
     runVerificationDeadlineSweep: (currentClient) => runVerificationDeadlineSweep(currentClient),
+    runDailyNewsCompileTick: async () => {
+      const result = await runSerializedDbTask(() => runDailyNewsCompileTick({
+        db,
+        now: nowIso(),
+        saveDb,
+      }), "daily-news-shadow-compile");
+      if (result?.compiled) {
+        console.log(`[daily-news] shadow compiled ${result.dayKey}`);
+      }
+      return result;
+    },
     getResolvedIntegrationSourcePath,
+    news: ensureNewsState(db).config,
     roblox: getEffectiveRobloxConfig(),
     verification: getVerificationIntegrationState(),
   });

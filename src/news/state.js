@@ -123,6 +123,7 @@ function createEmptyNewsState() {
       lastCompileStartedAt: null,
       lastCompileFinishedAt: null,
       lastCompiledDayKey: null,
+      lastCompileStatus: null,
       lastPublishedDayKey: null,
       lastPublishStatus: null,
       lastFailure: null,
@@ -169,6 +170,7 @@ function normalizeNewsState(value = {}) {
     lastCompileStartedAt: normalizeNullableString(source.runtime?.lastCompileStartedAt, 80),
     lastCompileFinishedAt: normalizeNullableString(source.runtime?.lastCompileFinishedAt, 80),
     lastCompiledDayKey: normalizeNullableString(source.runtime?.lastCompiledDayKey, 40),
+    lastCompileStatus: normalizeNullableString(source.runtime?.lastCompileStatus, 80),
     lastPublishedDayKey: normalizeNullableString(source.runtime?.lastPublishedDayKey, 40),
     lastPublishStatus: normalizeNullableString(source.runtime?.lastPublishStatus, 80),
     lastFailure: source.runtime?.lastFailure && typeof source.runtime.lastFailure === "object" && !Array.isArray(source.runtime.lastFailure)

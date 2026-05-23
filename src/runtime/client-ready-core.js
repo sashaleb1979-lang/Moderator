@@ -123,6 +123,7 @@ function buildClientReadyPeriodicJobs(options = {}) {
     runAutoResendTick,
     refreshLegacyTierlistSummaryMessage,
     runVerificationDeadlineSweep,
+    runDailyNewsCompileTick = null,
     runRobloxProfileRefreshJob,
     flushActivityRuntime,
     runDailyActivityRoleSync,
@@ -139,6 +140,7 @@ function buildClientReadyPeriodicJobs(options = {}) {
     profileSeasonArchiveHours = 0,
     profilePopulationSnapshotHours = 0,
     now = null,
+    news = {},
     roblox = {},
     verification = {},
   } = options;
@@ -150,6 +152,9 @@ function buildClientReadyPeriodicJobs(options = {}) {
   }
   if (runVerificationDeadlineSweep != null) {
     assertFunction(runVerificationDeadlineSweep, "runVerificationDeadlineSweep");
+  }
+  if (runDailyNewsCompileTick != null) {
+    assertFunction(runDailyNewsCompileTick, "runDailyNewsCompileTick");
   }
   if (flushActivityRuntime != null) {
     assertFunction(flushActivityRuntime, "flushActivityRuntime");
@@ -240,6 +245,16 @@ function buildClientReadyPeriodicJobs(options = {}) {
       run: runVerificationDeadlineSweep,
       intervalMs: Math.max(5, Number(verification?.reportSweepMinutes) || 60) * 60 * 1000,
       errorLabel: "Verification deadline sweep failed",
+    });
+  }
+
+  if (typeof runDailyNewsCompileTick === "function") {
+    periodicJobs.push({
+      key: "news.dailyCompile",
+      run: runDailyNewsCompileTick,
+      intervalMs: Math.max(1, Number(news?.schedule?.tickMinutes) || 5) * 60 * 1000,
+      initialDelayMs: 0,
+      errorLabel: "Daily news compile tick failed",
     });
   }
 

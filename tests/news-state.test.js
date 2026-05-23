@@ -28,6 +28,7 @@ test("createEmptyNewsState seeds raw capture and runtime scaffolds", () => {
   assert.deepEqual(state.voice.finalizedSessions, []);
   assert.deepEqual(state.moderation.events, []);
   assert.equal(state.runtime.lastCompiledDayKey, null);
+  assert.equal(state.runtime.lastCompileStatus, null);
   assert.deepEqual(state.runtime.errors, []);
 });
 
@@ -65,6 +66,7 @@ test("normalizeNewsState normalizes config and preserves captured runtime slices
     },
     runtime: {
       lastCompiledDayKey: "2026-05-14",
+      lastCompileStatus: " shadow_compiled ",
       lastVoiceCaptureAt: "2026-05-14T20:59:00.000Z",
       errors: [{ scope: "voice", reason: "gap" }],
     },
@@ -83,6 +85,7 @@ test("normalizeNewsState normalizes config and preserves captured runtime slices
   assert.equal(state.voice.finalizedSessions[0].displayName, "Alpha");
   assert.equal(state.moderation.events[0].eventType, "ban");
   assert.equal(state.runtime.lastCompiledDayKey, "2026-05-14");
+  assert.equal(state.runtime.lastCompileStatus, "shadow_compiled");
   assert.equal(state.runtime.lastVoiceCaptureAt, "2026-05-14T20:59:00.000Z");
   assert.deepEqual(state.runtime.errors, [{ scope: "voice", reason: "gap" }]);
 });

@@ -360,6 +360,29 @@ test("buildClientReadyPeriodicJobs adds verification deadline sweep only when ve
   assert.equal(periodicJobs.find((job) => job.errorLabel === "Verification deadline sweep failed").intervalMs, 1800000);
 });
 
+test("buildClientReadyPeriodicJobs adds a daily news compile tick with startup-safe defaults", () => {
+  const periodicJobs = buildClientReadyPeriodicJobs({
+    runAutoResendTick() {},
+    async refreshLegacyTierlistSummaryMessage() {},
+    runDailyNewsCompileTick() {},
+    news: {
+      enabled: false,
+      schedule: {
+        tickMinutes: 7,
+      },
+    },
+  });
+
+  const newsJob = periodicJobs.find((job) => job.errorLabel === "Daily news compile tick failed");
+  assert.deepEqual(newsJob, {
+    key: "news.dailyCompile",
+    run: newsJob.run,
+    intervalMs: 420000,
+    initialDelayMs: 0,
+    errorLabel: "Daily news compile tick failed",
+  });
+});
+
 test("runClientReadyCore preserves startup order for the core prelude", async () => {
   const calls = [];
   const client = { id: "client" };

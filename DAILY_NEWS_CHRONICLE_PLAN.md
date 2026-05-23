@@ -70,6 +70,8 @@
 ## State Ownership
 
 - News state: [src/news/state.js](src/news/state.js)
+- Daily compile owner: [src/news/compiler.js](src/news/compiler.js)
+- Shadow scheduler owner: [src/news/scheduler.js](src/news/scheduler.js)
 - Voice capture owner: [src/news/voice.js](src/news/voice.js)
 - Moderation capture owner: [src/news/moderation.js](src/news/moderation.js)
 - SoT normalization seam: [src/sot/schema.js](src/sot/schema.js)
@@ -86,19 +88,24 @@ Implemented now:
 - Voice session open/move/leave tracking.
 - Recovered incomplete voice leaves when the bot missed the open session.
 - Raw moderation capture for member removal, ban add, ban remove.
+- Moscow day-window compiler for voice and moderation daily digests.
+- Shadow daily scheduler tick in the shared client-ready periodic job seam.
+- Fixed Moscow publish cutoff semantics for shadow compile even when the first successful tick is later than 21:00.
+- Canonical per-candidate audit bucket trail for current voice and moderation slices.
+- Compile runtime status is separated from publish runtime status.
+- Persisted daily digest snapshots in `db.sot.news.dailyDigests`.
 - Focused tests for news state, voice capture, moderation capture and SoT integration.
 
 Not implemented yet:
 
-- Daily compile pipeline.
-- Fixed-time scheduler.
-- Moscow day-window compiler.
 - Audit-log reconciliation for kick vs leave.
 - Timeout tracking.
+- Collector modules for kills, activity movers, newcomers, JJS/Roblox and tierlist shifts.
 - Public digest rendering.
 - Cover PNG renderer for daily edition.
-- Staff digest compiler.
+- Staff digest delivery/render pass beyond raw voice/moderation coverage.
 - Preview/publish operator surface.
+- Real Discord publish flow and duplicate-publish guard.
 
 ## Validation Status
 
@@ -108,7 +115,7 @@ Not implemented yet:
 
 ## Recommended Next Slice
 
-1. Add fixed-time daily news scheduler and shadow compile loop.
-2. Add Moscow day-window compiler with voice and moderation collectors.
-3. Add timeout tracking and audit-log reconciliation for kick vs leave.
-4. Build the edition renderer and public/staff payload builders.
+1. Extend the compiler with kills, activity, newcomers, Roblox/JJS and tierlist collectors.
+2. Add timeout tracking and audit-log reconciliation for kick vs leave.
+3. Build the edition renderer and public/staff payload builders.
+4. Add preview/publish operator actions and real Discord delivery.
