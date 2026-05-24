@@ -183,6 +183,7 @@ function summarizeRobloxCleanupAudit(db = {}, options = {}) {
     suspiciousPollution: 0,
     refreshError: 0,
     usableWithoutAntiteamConfirmation: 0,
+    restoredButNeedsRebind: 0,
     safeRepairCandidates: 0,
     manualReviewCandidates: 0,
     rebindRequiredCandidates: 0,
@@ -191,6 +192,7 @@ function summarizeRobloxCleanupAudit(db = {}, options = {}) {
     byPrimaryCohort: {},
     suspiciousPollution: [],
     usableWithoutAntiteamConfirmation: [],
+    restoredButNeedsRebind: [],
     safeRepairCandidates: [],
     manualReviewCandidates: [],
     rebindRequiredCandidates: [],
@@ -200,6 +202,9 @@ function summarizeRobloxCleanupAudit(db = {}, options = {}) {
   for (const [userId, rawProfile] of Object.entries(profiles)) {
     const record = buildRobloxCleanupAuditRecord(rawProfile, userId, { robloxConfirmations });
     const sample = buildRecordSample(record);
+    const cleanupEntry = db?.sot?.integrations?.roblox?.cleanup?.byDiscordUserId?.[userId] || null;
+    const restoredByCleanup = ["restored_from_submission", "restored_from_cleanup_trail"].includes(cleanString(cleanupEntry?.lastOutcome, 80));
+    const restoredButNeedsRebind = restoredByCleanup && ["manual_review", "rebind_required"].includes(record.suggestedAction);
 
     counts.totalProfiles += 1;
     if (record.hasAnyRobloxData) counts.profilesWithRobloxData += 1;
@@ -213,6 +218,7 @@ function summarizeRobloxCleanupAudit(db = {}, options = {}) {
     if (record.suspiciousPollution) counts.suspiciousPollution += 1;
     if (record.refreshError) counts.refreshError += 1;
     if (record.usableWithoutAntiteamConfirmation) counts.usableWithoutAntiteamConfirmation += 1;
+    if (restoredButNeedsRebind) counts.restoredButNeedsRebind += 1;
     if (record.suggestedAction === "safe_repair") counts.safeRepairCandidates += 1;
     if (record.suggestedAction === "manual_review") counts.manualReviewCandidates += 1;
     if (record.suggestedAction === "rebind_required") counts.rebindRequiredCandidates += 1;
@@ -223,6 +229,13 @@ function summarizeRobloxCleanupAudit(db = {}, options = {}) {
     }
     if (record.usableWithoutAntiteamConfirmation) {
       pushSample(samples, "usableWithoutAntiteamConfirmation", sample, sampleLimit);
+    }
+    if (restoredButNeedsRebind) {
+      pushSample(samples, "restoredButNeedsRebind", {
+        ...sample,
+        cleanupOutcome: cleanString(cleanupEntry?.lastOutcome, 80),
+        cleanupSource: cleanString(cleanupEntry?.lastSource, 80),
+      }, sampleLimit);
     }
     if (record.suggestedAction === "safe_repair") {
       pushSample(samples, "safeRepairCandidates", sample, sampleLimit);

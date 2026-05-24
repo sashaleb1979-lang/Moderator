@@ -951,6 +951,38 @@ test("Roblox display identity rejects suspicious Discord-id profile URLs", () =>
   assert.equal(identity.profileUrl, null);
 });
 
+test("Roblox display identity keeps current valid Roblox user id despite old Discord-like history", () => {
+  const profile = {
+    userId: "1146511958305144883",
+    username: "gno2m007",
+    displayName: "gno2m007",
+    domains: {
+      roblox: {
+        username: "KolhozU",
+        displayName: "KolhozU",
+        userId: "9843941555",
+        profileUrl: "https://www.roblox.com/users/9843941555/profile",
+        verificationStatus: "verified",
+        verifiedAt: "2026-05-21T00:25:54.766Z",
+        usernameHistory: [
+          { name: "KolhozU" },
+          { name: "gno2m007", lastSeenAt: "2026-05-22T09:12:39.135Z" },
+        ],
+      },
+    },
+  };
+
+  assert.equal(isSuspiciousRobloxBinding(profile), false);
+
+  const identity = resolveRobloxDisplayIdentity(profile);
+  assert.equal(identity.state, "trackable");
+  assert.equal(identity.isLinked, true);
+  assert.equal(identity.isTrackable, true);
+  assert.equal(identity.needsRebind, false);
+  assert.equal(identity.userId, "9843941555");
+  assert.equal(identity.username, "KolhozU");
+});
+
 test("ensureSharedProfile summary exposes rename, server friend, and frequent non-friend Roblox read fields", () => {
   const result = ensureSharedProfile({
     userId: "300",

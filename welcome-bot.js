@@ -545,6 +545,8 @@ const DATA_ROOT = resolveDataRoot();
 const DISCORD_TOKEN = String(process.env.DISCORD_TOKEN || "").trim();
 const GUILD_ID = String(process.env.GUILD_ID || "").trim();
 const DB_PATH = resolvePathFromBase(DATA_ROOT, process.env.DB_PATH || "welcome-db.json");
+const ROBLOX_STARTUP_AUDIT_DISCORD_USER_ID = String(process.env.ROBLOX_STARTUP_AUDIT_DISCORD_USER_ID || "1146511958305144883").trim();
+const ROBLOX_STARTUP_AUDIT_ROBLOX_USER_ID = String(process.env.ROBLOX_STARTUP_AUDIT_ROBLOX_USER_ID || "9843941555").trim();
 const CONFIG_PATH = resolvePathFromBase(PROJECT_ROOT, process.env.CONFIG_PATH || "./bot.config.json");
 const CHARACTERS_ASSET_DIR = resolvePathFromBase(PROJECT_ROOT, "./assets/characters");
 const DEFAULT_REMINDER_POSTER_PATH = resolvePathFromBase(PROJECT_ROOT, "./assets/missing-tierlist-poster.svg");
@@ -1029,6 +1031,44 @@ if (db.__needsSaveAfterLoad) saveDb();
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+function findProfileByRobloxUserId(currentDb = db, robloxUserId = "") {
+  const targetRobloxUserId = String(robloxUserId || "").trim();
+  if (!targetRobloxUserId) return null;
+  for (const [discordUserId, profile] of Object.entries(currentDb?.profiles || {})) {
+    const roblox = profile?.domains?.roblox || {};
+    const summary = profile?.summary?.roblox || {};
+    if (String(roblox.userId || summary.userId || "").trim() === targetRobloxUserId) {
+      return { discordUserId, profile, roblox, summary };
+    }
+  }
+  return null;
+}
+
+function buildRobloxStartupAuditLine(currentDb = db) {
+  const profileCount = Object.keys(currentDb?.profiles || {}).length;
+  const directProfile = ROBLOX_STARTUP_AUDIT_DISCORD_USER_ID
+    ? currentDb?.profiles?.[ROBLOX_STARTUP_AUDIT_DISCORD_USER_ID] || null
+    : null;
+  const match = directProfile
+    ? {
+      discordUserId: ROBLOX_STARTUP_AUDIT_DISCORD_USER_ID,
+      profile: directProfile,
+      roblox: directProfile?.domains?.roblox || {},
+      summary: directProfile?.summary?.roblox || {},
+    }
+    : findProfileByRobloxUserId(currentDb, ROBLOX_STARTUP_AUDIT_ROBLOX_USER_ID);
+  const roblox = match?.roblox || {};
+  const summary = match?.summary || {};
+  const robloxUserId = String(roblox.userId || summary.userId || "").trim() || "missing";
+  const robloxUsername = String(roblox.username || summary.currentUsername || summary.username || "").trim() || "missing";
+  const status = String(roblox.verificationStatus || summary.verificationStatus || "").trim() || "missing";
+  const tracking = String(summary.trackingState || "").trim() || "unknown";
+  const blocker = String(summary.trackingBlocker || "").trim() || "unknown";
+  const refreshError = String(roblox.refreshError || summary.refreshError || "").trim() || "none";
+
+  return `[roblox][startup-audit] profiles=${profileCount} discord=${match?.discordUserId || "missing"} robloxUserId=${robloxUserId} username=${robloxUsername} status=${status} tracking=${tracking} blocker=${blocker} refreshError=${refreshError}`;
 }
 
 const runScheduledRobloxProfileRefreshJob = robloxPanelTelemetry.wrapJob("profile_refresh", robloxJobCoordinator.createRunner("profile_refresh", () => runRobloxProfileRefreshJobCore({
@@ -14466,6 +14506,7 @@ client.once("clientReady", async () => {
   console.log(`Logged in as ${client.user.tag}`);
   console.log(`Data root: ${DATA_ROOT}`);
   console.log(`DB path: ${DB_PATH}`);
+  console.log(buildRobloxStartupAuditLine(db));
   let generated = {
     characterRoles: 0,
     resolvedCharacters: 0,

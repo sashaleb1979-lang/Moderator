@@ -78,12 +78,19 @@ test("applyRobloxBindingRepairPass repairs safe candidates and persists cleanup 
     now: "2026-05-20T11:00:00.000Z",
     source: "repair_script_apply",
     fetchUsersByUsernames: async (usernames) => {
-      assert.deepEqual(usernames, ["repairablerb"]);
-      return [{
-        userId: 101,
-        username: "RepairableRb",
-        displayName: "Repair Display",
-      }];
+      assert.deepEqual(usernames, ["repairablerb", "discord-clone"]);
+      return [
+        {
+          userId: 101,
+          username: "RepairableRb",
+          displayName: "Repair Display",
+        },
+        {
+          userId: 202,
+          username: "discord-clone",
+          displayName: "Roblox Clone",
+        },
+      ];
     },
     markDirty(userId, reason) {
       dirtyCalls.push(`${userId}:${reason}`);
@@ -93,24 +100,29 @@ test("applyRobloxBindingRepairPass repairs safe candidates and persists cleanup 
   assert.deepEqual(result, {
     scannedProfiles: 4,
     profilesWithRobloxData: 4,
-    safeRepairCandidateCount: 1,
+    safeRepairCandidateCount: 2,
+    cleanupTrailRestoreCandidateCount: 0,
     submissionRestoreCandidateCount: 0,
     sanitizedCount: 1,
+    restoredFromCleanupTrailCount: 0,
     restoredFromSubmissionCount: 0,
     resetSuspiciousCount: 0,
-    repairedCount: 1,
+    repairedCount: 2,
     unresolvedCount: 0,
     failedRepairBatchCount: 0,
-    skippedSuspiciousCount: 1,
+    skippedSuspiciousCount: 0,
     rebindRequiredCount: 1,
     confirmOnlyCount: 1,
   });
 
   assert.equal(db.profiles["repair-user"].domains.roblox.userId, "101");
   assert.equal(db.profiles["repair-user"].domains.roblox.displayName, "Repair Display");
+  assert.equal(db.profiles["suspicious-user"].domains.roblox.userId, "202");
+  assert.equal(db.profiles["suspicious-user"].domains.roblox.verificationStatus, "verified");
   assert.deepEqual(dirtyCalls, [
     "repair-user:binding_sanitized",
     "repair-user:binding_repaired",
+    "suspicious-user:binding_repaired",
   ]);
 
   const repairEntry = getRobloxCleanupTrailEntry(db, "repair-user");
@@ -118,7 +130,7 @@ test("applyRobloxBindingRepairPass repairs safe candidates and persists cleanup 
   assert.equal(repairEntry.lastReason, "invalid_user_id");
   assert.deepEqual(repairEntry.history.map((entry) => entry.outcome), ["repaired", "sanitized"]);
 
-  assert.equal(getRobloxCleanupTrailEntry(db, "suspicious-user").lastOutcome, "skipped_suspicious");
+  assert.equal(getRobloxCleanupTrailEntry(db, "suspicious-user").lastOutcome, "repaired");
   assert.equal(getRobloxCleanupTrailEntry(db, "manual-user").lastOutcome, "rebind_required");
   assert.equal(getRobloxCleanupTrailEntry(db, "usable-user").lastOutcome, "confirm_only");
 });
@@ -156,8 +168,10 @@ test("applyRobloxBindingRepairPass keeps dry-run non-destructive while still rep
     scannedProfiles: 1,
     profilesWithRobloxData: 1,
     safeRepairCandidateCount: 1,
+    cleanupTrailRestoreCandidateCount: 0,
     submissionRestoreCandidateCount: 0,
     sanitizedCount: 0,
+    restoredFromCleanupTrailCount: 0,
     restoredFromSubmissionCount: 0,
     resetSuspiciousCount: 0,
     repairedCount: 0,
@@ -214,6 +228,7 @@ test("applyRobloxBindingRepairPass restores suspicious bindings from proven subm
     persistTrail: true,
     recoverFromSubmissions: true,
     resetSuspiciousBindings: true,
+    allowDestructiveSuspiciousReset: true,
     now: "2026-05-20T11:00:00.000Z",
     source: "repair_script_apply",
   });
@@ -226,6 +241,83 @@ test("applyRobloxBindingRepairPass restores suspicious bindings from proven subm
   assert.equal(db.profiles["1146511958305144883"].domains.roblox.verificationStatus, "verified");
   assert.equal(db.profiles["1146511958305144883"].domains.roblox.playtime.totalJjsMinutes, 120);
   assert.equal(getRobloxCleanupTrailEntry(db, "1146511958305144883").lastOutcome, "restored_from_submission");
+});
+
+test("applyRobloxBindingRepairPass restores reset cleanup trail entries through Roblox lookup", async () => {
+  const db = {
+    profiles: {
+      "1146511958305144883": {
+        userId: "1146511958305144883",
+        username: "gno2m007",
+        displayName: "gno2m007",
+        domains: {
+          roblox: {
+            username: null,
+            userId: null,
+            verificationStatus: "failed",
+            refreshStatus: "error",
+            refreshError: "suspicious_identity_rebind_required",
+            playtime: {
+              totalJjsMinutes: 1434,
+              jjsMinutes7d: 1134,
+              jjsMinutes30d: 1434,
+              sessionCount: 54,
+            },
+          },
+        },
+      },
+    },
+    sot: {
+      integrations: {
+        roblox: {
+          cleanup: {
+            version: 1,
+            lastRunAt: "2026-05-22T09:12:39.135Z",
+            byDiscordUserId: {
+              "1146511958305144883": {
+                userId: "1146511958305144883",
+                lastEvaluatedAt: "2026-05-22T09:12:39.135Z",
+                lastOutcome: "reset_suspicious",
+                lastReason: "suspicious_identity",
+                lastSource: "repair_script_apply",
+                robloxUsername: "KolhozU",
+                robloxUserId: null,
+                history: [],
+              },
+            },
+          },
+        },
+      },
+    },
+  };
+
+  const result = await applyRobloxBindingRepairPass({
+    db,
+    dryRun: false,
+    persistTrail: true,
+    recoverFromSubmissions: true,
+    now: "2026-05-23T10:00:00.000Z",
+    source: "repair_script_apply",
+    fetchUsersByUsernames: async (usernames) => {
+      assert.deepEqual(usernames, ["kolhozu"]);
+      return [{
+        userId: 9843941555,
+        username: "KolhozU",
+        displayName: "KolhozU",
+        profileUrl: "https://www.roblox.com/users/9843941555/profile",
+      }];
+    },
+  });
+
+  assert.equal(result.cleanupTrailRestoreCandidateCount, 1);
+  assert.equal(result.restoredFromCleanupTrailCount, 1);
+  assert.equal(result.repairedCount, 1);
+  assert.equal(db.profiles["1146511958305144883"].domains.roblox.username, "KolhozU");
+  assert.equal(db.profiles["1146511958305144883"].domains.roblox.userId, "9843941555");
+  assert.equal(db.profiles["1146511958305144883"].domains.roblox.verificationStatus, "verified");
+  assert.equal(db.profiles["1146511958305144883"].domains.roblox.refreshError, null);
+  assert.equal(db.profiles["1146511958305144883"].domains.roblox.playtime.totalJjsMinutes, 1434);
+  assert.equal(getRobloxCleanupTrailEntry(db, "1146511958305144883").lastOutcome, "restored_from_cleanup_trail");
 });
 
 test("applyRobloxBindingRepairPass resets unproven suspicious bindings without dropping playtime", async () => {
@@ -258,6 +350,7 @@ test("applyRobloxBindingRepairPass resets unproven suspicious bindings without d
     persistTrail: true,
     recoverFromSubmissions: true,
     resetSuspiciousBindings: true,
+    allowDestructiveSuspiciousReset: true,
     now: "2026-05-20T11:00:00.000Z",
     source: "repair_script_apply",
   });

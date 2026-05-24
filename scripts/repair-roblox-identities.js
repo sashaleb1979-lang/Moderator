@@ -12,6 +12,7 @@ const { applyRobloxBindingRepairPass } = require("../src/integrations/roblox-bin
 function parseArgs(argv = []) {
   const args = Array.isArray(argv) ? argv : [];
   const write = args.includes("--write");
+  const destructiveSuspiciousReset = args.includes("--destructive-suspicious-reset");
   const dbArgIndex = args.indexOf("--db");
   const dbPath = dbArgIndex >= 0 && args[dbArgIndex + 1]
     ? path.resolve(args[dbArgIndex + 1])
@@ -19,6 +20,7 @@ function parseArgs(argv = []) {
 
   return {
     write,
+    destructiveSuspiciousReset,
     dbPath,
   };
 }
@@ -59,7 +61,8 @@ async function main() {
     persistTrail: options.write === true,
     source: options.write === true ? "repair_script_apply" : "repair_script_dry_run",
     recoverFromSubmissions: true,
-    resetSuspiciousBindings: true,
+    resetSuspiciousBindings: options.destructiveSuspiciousReset === true,
+    allowDestructiveSuspiciousReset: options.destructiveSuspiciousReset === true,
     fetchUsersByUsernames: robloxApiClient.fetchUsersByUsernames.bind(robloxApiClient),
   });
 
@@ -71,6 +74,7 @@ async function main() {
     dbPath,
     backupPath,
     write: options.write,
+    destructiveSuspiciousReset: options.destructiveSuspiciousReset,
     ...result,
   }, null, 2));
 }

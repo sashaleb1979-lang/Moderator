@@ -799,6 +799,58 @@ test("profile read-model flags suspicious old Roblox bindings instead of showing
   assert.doesNotMatch(readModel.heroLines.join("\n"), /Roblox gno2m007/);
 });
 
+test("profile read-model keeps valid current Roblox binding even with old Discord-like history", () => {
+  const readModel = buildProfileReadModel({
+    now: "2026-05-23T12:00:00.000Z",
+    guildId: "guild-1",
+    userId: "1146511958305144883",
+    targetDisplayName: "gno2m007",
+    isSelf: true,
+    profile: {
+      userId: "1146511958305144883",
+      username: "gno2m007",
+      displayName: "gno2m007",
+      domains: {
+        roblox: {
+          username: "KolhozU",
+          displayName: "KolhozU",
+          userId: "9843941555",
+          profileUrl: "https://www.roblox.com/users/9843941555/profile",
+          verificationStatus: "verified",
+          verifiedAt: "2026-05-21T00:25:54.766Z",
+          usernameHistory: [
+            { name: "KolhozU" },
+            { name: "gno2m007", lastSeenAt: "2026-05-22T09:12:39.135Z" },
+          ],
+        },
+      },
+      summary: {
+        preferredDisplayName: "gno2m007",
+        roblox: {
+          hasVerifiedAccount: true,
+          isTrackable: true,
+          trackingState: "trackable",
+          trackingBlocker: "none",
+          currentUsername: "KolhozU",
+          userId: "9843941555",
+          profileUrl: "https://www.roblox.com/users/9843941555/profile",
+          verificationStatus: "verified",
+        },
+      },
+    },
+  });
+
+  assert.equal(readModel.robloxDisplayState.state, "trackable");
+  assert.equal(readModel.robloxDisplayState.isLinked, true);
+  assert.equal(readModel.robloxDisplayState.isTrackable, true);
+  assert.equal(readModel.robloxDisplayState.needsRebind, false);
+  assert.equal(readModel.robloxDisplayState.readinessLabel, "Roblox готов");
+  assert.equal(readModel.robloxProfileUrl, "https://www.roblox.com/users/9843941555/profile");
+  const overview = readModel.sections.overview.find((section) => section.title === "📊 Сводка активности").lines.join("\n");
+  assert.match(overview, /Roblox готов|Roblox связан/);
+  assert.doesNotMatch(overview, /Roblox требует перепривязки/);
+});
+
 test("profile read-model activity uses canonical activity voice before social voice mirror", () => {
   const readModel = buildProfileReadModel({
     now: "2026-05-16T12:00:00.000Z",

@@ -14,6 +14,7 @@ const ROBLOX_CLEANUP_OUTCOMES = new Set([
   "sanitized",
   "repaired",
   "restored_from_submission",
+  "restored_from_cleanup_trail",
   "reset_suspicious",
   "unresolved",
   "skipped_suspicious",
@@ -199,8 +200,10 @@ function buildRepairSummary() {
     scannedProfiles: 0,
     profilesWithRobloxData: 0,
     safeRepairCandidateCount: 0,
+    cleanupTrailRestoreCandidateCount: 0,
     submissionRestoreCandidateCount: 0,
     sanitizedCount: 0,
+    restoredFromCleanupTrailCount: 0,
     restoredFromSubmissionCount: 0,
     resetSuspiciousCount: 0,
     repairedCount: 0,
@@ -210,6 +213,16 @@ function buildRepairSummary() {
     rebindRequiredCount: 0,
     confirmOnlyCount: 0,
   };
+}
+
+function addUsernameRepairCandidate(candidatesByUsername, candidate = {}) {
+  const usernameKey = cleanString(candidate.record?.robloxUsername || candidate.robloxUsername, 120).toLowerCase();
+  if (!usernameKey) return false;
+  if (!candidatesByUsername.has(usernameKey)) {
+    candidatesByUsername.set(usernameKey, []);
+  }
+  candidatesByUsername.get(usernameKey).push(candidate);
+  return true;
 }
 
 function normalizeSubmissionRobloxSnapshot(submission = {}) {
@@ -281,6 +294,46 @@ function resetSuspiciousRobloxBinding(profile = {}, options = {}) {
   return target.domains.roblox;
 }
 
+function findCleanupTrailRestoreCandidates(db = {}, profiles = {}, candidatesByUsername = new Map(), existingUserIds = new Set(), options = {}) {
+  const cleanupEntries = ensureRobloxCleanupTrailState(db).byDiscordUserId;
+  let count = 0;
+
+  for (const [userId, entry] of Object.entries(cleanupEntries)) {
+    const normalizedUserId = cleanString(userId, 80);
+    const robloxUsername = cleanString(entry?.robloxUsername, 120);
+    if (!normalizedUserId || !robloxUsername || existingUserIds.has(normalizedUserId)) continue;
+    if (entry?.lastOutcome !== "reset_suspicious") continue;
+
+    const rawProfile = profiles[normalizedUserId];
+    if (!rawProfile || typeof rawProfile !== "object" || Array.isArray(rawProfile)) continue;
+    const ensuredProfile = ensureSharedProfile(rawProfile, normalizedUserId).profile;
+    const roblox = ensuredProfile?.domains?.roblox || {};
+    if (roblox.verificationStatus === "verified" && roblox.userId) continue;
+
+    const added = addUsernameRepairCandidate(candidatesByUsername, {
+      userId: normalizedUserId,
+      profile: ensuredProfile,
+      record: {
+        robloxUsername,
+        robloxUserId: cleanString(entry?.robloxUserId, 40),
+      },
+      reason: "cleanup_trail_reset_suspicious",
+      restoreSource: "cleanup_trail",
+      verificationStatus: "verified",
+      verifiedAt: entry.lastEvaluatedAt,
+    });
+    if (added) {
+      if (options.dryRun !== true) {
+        profiles[normalizedUserId] = ensuredProfile;
+      }
+      existingUserIds.add(normalizedUserId);
+      count += 1;
+    }
+  }
+
+  return count;
+}
+
 async function applyRobloxBindingRepairPass(options = {}) {
   const db = options.db && typeof options.db === "object" ? options.db : null;
   const profiles = db?.profiles && typeof db.profiles === "object" && !Array.isArray(db.profiles)
@@ -295,6 +348,7 @@ async function applyRobloxBindingRepairPass(options = {}) {
   const dryRun = options.dryRun === true;
   const recoverFromSubmissions = options.recoverFromSubmissions === true;
   const resetSuspiciousBindings = options.resetSuspiciousBindings === true;
+  const allowDestructiveSuspiciousReset = options.allowDestructiveSuspiciousReset === true;
   const nowIso = resolveNowIso(options);
   const source = cleanString(options.source, 80) || (dryRun ? "repair_dry_run" : "repair_apply");
 
@@ -313,6 +367,17 @@ async function applyRobloxBindingRepairPass(options = {}) {
       : {};
   const summary = buildRepairSummary();
   const candidatesByUsername = new Map();
+  const candidateUserIds = new Set();
+
+  if (db && profiles) {
+    summary.cleanupTrailRestoreCandidateCount += findCleanupTrailRestoreCandidates(
+      db,
+      profiles,
+      candidatesByUsername,
+      candidateUserIds,
+      { dryRun }
+    );
+  }
 
   for (const [userId, rawProfile] of Object.entries(profiles)) {
     const ensuredProfile = ensureSharedProfile(rawProfile, userId).profile;
@@ -343,19 +408,21 @@ async function applyRobloxBindingRepairPass(options = {}) {
       }
     }
 
+    if (candidateUserIds.has(userId)) {
+      continue;
+    }
+
     if (record.suggestedAction === "safe_repair") {
       summary.safeRepairCandidateCount += 1;
-      const usernameKey = cleanString(record.robloxUsername, 120).toLowerCase();
-      if (usernameKey) {
-        if (!candidatesByUsername.has(usernameKey)) {
-          candidatesByUsername.set(usernameKey, []);
-        }
-        candidatesByUsername.get(usernameKey).push({
-          userId,
-          profile: ensuredProfile,
-          record,
-          reason,
-        });
+      const added = addUsernameRepairCandidate(candidatesByUsername, {
+        userId,
+        profile: ensuredProfile,
+        record,
+        reason,
+        restoreSource: "safe_repair",
+      });
+      if (added) {
+        candidateUserIds.add(userId);
       }
       continue;
     }
@@ -394,7 +461,24 @@ async function applyRobloxBindingRepairPass(options = {}) {
           continue;
         }
 
-        if (resetSuspiciousBindings) {
+        if (fetchUsersByUsernames || !allowDestructiveSuspiciousReset) {
+          const added = addUsernameRepairCandidate(candidatesByUsername, {
+            userId,
+            profile: ensuredProfile,
+            record,
+            reason,
+            restoreSource: "suspicious_lookup",
+            verificationStatus: ensuredProfile?.domains?.roblox?.verificationStatus,
+            verifiedAt: ensuredProfile?.domains?.roblox?.verifiedAt,
+          });
+          if (added) {
+            summary.safeRepairCandidateCount += 1;
+            candidateUserIds.add(userId);
+            continue;
+          }
+        }
+
+        if (resetSuspiciousBindings && allowDestructiveSuspiciousReset) {
           summary.resetSuspiciousCount += 1;
           if (!dryRun) {
             resetSuspiciousRobloxBinding(ensuredProfile, {
@@ -508,22 +592,25 @@ async function applyRobloxBindingRepairPass(options = {}) {
           summary.repairedCount += 1;
           if (!dryRun) {
             applyRobloxAccountSnapshot(candidate.profile, match, {
-              verificationStatus: candidate.profile?.domains?.roblox?.verificationStatus,
-              verifiedAt: candidate.profile?.domains?.roblox?.verifiedAt,
+              verificationStatus: candidate.verificationStatus || candidate.profile?.domains?.roblox?.verificationStatus,
+              verifiedAt: candidate.verifiedAt || candidate.profile?.domains?.roblox?.verifiedAt,
               updatedAt: nowIso,
               lastSubmissionId: candidate.profile?.domains?.roblox?.lastSubmissionId,
               lastReviewedAt: candidate.profile?.domains?.roblox?.lastReviewedAt,
               reviewedBy: candidate.profile?.domains?.roblox?.reviewedBy,
-              source: candidate.profile?.domains?.roblox?.source,
+              source: candidate.restoreSource === "cleanup_trail" ? "cleanup_trail_recovery" : candidate.profile?.domains?.roblox?.source,
               lastRefreshAt: candidate.profile?.domains?.roblox?.lastRefreshAt,
-              refreshStatus: candidate.profile?.domains?.roblox?.refreshStatus,
-              refreshError: candidate.profile?.domains?.roblox?.refreshError,
+              refreshStatus: candidate.restoreSource === "cleanup_trail" ? null : candidate.profile?.domains?.roblox?.refreshStatus,
+              refreshError: candidate.restoreSource === "cleanup_trail" ? null : candidate.profile?.domains?.roblox?.refreshError,
             });
             profiles[candidate.userId] = ensureSharedProfile(candidate.profile, candidate.userId).profile;
             if (markDirty) markDirty(candidate.userId, "binding_repaired");
           }
+          if (candidate.restoreSource === "cleanup_trail") {
+            summary.restoredFromCleanupTrailCount += 1;
+          }
           if (persistTrail && !dryRun) {
-            recordRobloxCleanupOutcome(db, candidate.userId, "repaired", {
+            recordRobloxCleanupOutcome(db, candidate.userId, candidate.restoreSource === "cleanup_trail" ? "restored_from_cleanup_trail" : "repaired", {
               now: nowIso,
               source,
               reason: candidate.reason,
