@@ -18,6 +18,7 @@ test("createDefaultNewsConfig seeds edition-first defaults for daily digest", ()
   assert.equal(config.voice.topCount, 5);
   assert.equal(config.kills.topCount, 5);
   assert.equal(config.activity.topMessagesCount, 5);
+  assert.equal(config.activity.topMoversCount, 3);
   assert.equal(config.newcomers.topCount, 8);
   assert.equal(config.gameplay.topCount, 5);
   assert.equal(config.tierlist.topCount, 5);
@@ -32,6 +33,7 @@ test("createEmptyNewsState seeds raw capture and runtime scaffolds", () => {
   assert.deepEqual(state.voice.openSessions, {});
   assert.deepEqual(state.voice.finalizedSessions, []);
   assert.deepEqual(state.moderation.events, []);
+  assert.deepEqual(state.history.daySnapshots, {});
   assert.equal(state.runtime.lastCompiledDayKey, null);
   assert.equal(state.runtime.lastCompileStatus, null);
   assert.deepEqual(state.runtime.errors, []);
@@ -53,6 +55,9 @@ test("normalizeNewsState normalizes config and preserves captured runtime slices
         topCount: 10,
         fullListFormat: " line ",
       },
+      activity: {
+        topMoversCount: 5,
+      },
       presentation: {
         visualMode: " magazine ",
         accentColor: "#abc123",
@@ -69,6 +74,13 @@ test("normalizeNewsState normalizes config and preserves captured runtime slices
     moderation: {
       events: [{ userId: "user_2", eventType: "ban" }],
     },
+    history: {
+      daySnapshots: {
+        "2026-05-13": {
+          user_1: { activityScore: 41 },
+        },
+      },
+    },
     runtime: {
       lastCompiledDayKey: "2026-05-14",
       lastCompileStatus: " shadow_compiled ",
@@ -83,12 +95,14 @@ test("normalizeNewsState normalizes config and preserves captured runtime slices
   assert.equal(state.config.channels.publicChannelId, "public-news");
   assert.equal(state.config.voice.topCount, 10);
   assert.equal(state.config.voice.fullListFormat, "line");
+  assert.equal(state.config.activity.topMoversCount, 5);
   assert.equal(state.config.presentation.visualMode, "magazine");
   assert.equal(state.config.presentation.accentColor, "#ABC123");
   assert.equal(state.config.presentation.accentColorAlt, "#5DA9E9");
   assert.equal(state.voice.openSessions.user_1.channelId, "voice-1");
   assert.equal(state.voice.finalizedSessions[0].displayName, "Alpha");
   assert.equal(state.moderation.events[0].eventType, "ban");
+  assert.equal(state.history.daySnapshots["2026-05-13"].user_1.activityScore, 41);
   assert.equal(state.runtime.lastCompiledDayKey, "2026-05-14");
   assert.equal(state.runtime.lastCompileStatus, "shadow_compiled");
   assert.equal(state.runtime.lastVoiceCaptureAt, "2026-05-14T20:59:00.000Z");

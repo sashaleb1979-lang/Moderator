@@ -1,4 +1,10 @@
 "use strict";
+ЦФ
+const {
+  buildDailyNewsProfileHistorySnapshot,
+  getDailyNewsHistorySnapshot,
+  shiftMoscowDayKey,
+} = require("./history");
 
 function cleanString(value, limit = 2000) {
   return String(value || "").trim().slice(0, Math.max(0, Number(limit) || 0));
@@ -81,6 +87,75 @@ function compareMessageLeaders(left, right) {
   return right.messagesCount - left.messagesCount
     || right.weightedMessagesCount - left.weightedMessagesCount
     || compareText(left.displayName, right.displayName);
+}
+
+function compareActivityMovers(left, right) {
+  return Math.abs(right.delta) - Math.abs(left.delta)
+    || right.toScore - left.toScore
+    || compareText(left.displayName, right.displayName);
+}
+
+function collectActivityMovers({ db = {}, window = {}, config = {} } = {}) {
+  const dayKey = cleanString(window.dayKey, 40);
+  const baselineDayKey = shiftMoscowDayKey(dayKey, -1);
+  const previousSnapshot = getDailyNewsHistorySnapshot(db, baselineDayKey);
+  if (!baselineDayKey || !previousSnapshot || !Object.keys(previousSnapshot).length) {
+    return {
+      available: false,
+      reason: "no_daily_activity_baseline_yet",
+      baselineDayKey: baselineDayKey || null,
+      comparedUserCount: 0,
+      changedUserCount: 0,
+      up: [],
+      down: [],
+    };
+  }
+
+  const currentSnapshot = getDailyNewsHistorySnapshot(db, dayKey) || buildDailyNewsProfileHistorySnapshot({ db });
+  const userIds = uniqueStrings([
+    ...Object.keys(previousSnapshot),
+    ...Object.keys(currentSnapshot || {}),
+  ], 80);
+  const movers = [];
+  let comparedUserCount = 0;
+
+  for (const userId of userIds) {
+    const previous = previousSnapshot?.[userId];
+    const current = currentSnapshot?.[userId];
+    const previousScore = Number(previous?.activityScore);
+    const currentScore = Number(current?.activityScore);
+    if (!Number.isFinite(previousScore) || !Number.isFinite(currentScore)) continue;
+
+    comparedUserCount += 1;
+    const delta = currentScore - previousScore;
+    if (delta === 0) continue;
+    const previousRoleKey = cleanString(previous?.appliedActivityRoleKey, 80) || null;
+    const currentRoleKey = cleanString(current?.appliedActivityRoleKey, 80) || null;
+    movers.push({
+      userId,
+      displayName: cleanString(current?.displayName, 120) || cleanString(previous?.displayName, 120) || userId,
+      delta,
+      fromScore: previousScore,
+      toScore: currentScore,
+      fromAppliedRoleKey: previousRoleKey,
+      toAppliedRoleKey: currentRoleKey,
+      roleChanged: previousRoleKey !== currentRoleKey,
+    });
+  }
+
+  const topMoversCount = Math.max(1, Number(config?.activity?.topMoversCount) || 3);
+  const rising = movers.filter((entry) => entry.delta > 0).sort(compareActivityMovers).slice(0, topMoversCount);
+  const falling = movers.filter((entry) => entry.delta < 0).sort(compareActivityMovers).slice(0, topMoversCount);
+
+  return {
+    available: true,
+    reason: null,
+    baselineDayKey,
+    comparedUserCount,
+    changedUserCount: movers.length,
+    up: rising,
+    down: falling,
+  };
 }
 
 function collectActivityDigest({ db = {}, window = {}, config = {} } = {}) {
@@ -195,6 +270,7 @@ function collectActivityDigest({ db = {}, window = {}, config = {} } = {}) {
   });
 
   const partialReasons = impreciseRowCount > 0 ? ["activity_rows_without_precise_timestamps"] : [];
+  const movers = collectActivityMovers({ db, window, config });
   return {
     sourceRowCount: rowCandidates.length,
     activeUserCount: authors.length,
@@ -202,10 +278,7 @@ function collectActivityDigest({ db = {}, window = {}, config = {} } = {}) {
     totalWeightedMessagesCount: Number(authors.reduce((sum, entry) => sum + entry.weightedMessagesCount, 0).toFixed(2)),
     topMessageAuthors,
     allMessageAuthors: authors,
-    movers: {
-      available: false,
-      reason: "no_daily_activity_baseline_yet",
-    },
+    movers,
     impreciseRowCount,
     partial: partialReasons.length > 0,
     partialReasons,

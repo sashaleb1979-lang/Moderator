@@ -9,6 +9,11 @@ function cleanString(value, limit = 2000) {
   return String(value || "").trim().slice(0, Math.max(0, Number(limit) || 0));
 }
 
+function parseIsoMs(value) {
+  const timeMs = Date.parse(String(value || ""));
+  return Number.isFinite(timeMs) ? timeMs : null;
+}
+
 function clone(value) {
   if (value === undefined) return undefined;
   return JSON.parse(JSON.stringify(value));
@@ -192,6 +197,25 @@ function renderActivityLines(authors = [], limit = 5) {
   });
 }
 
+function renderActivityMoverLines(movers = {}, limitPerDirection = 1) {
+  if (movers?.available !== true) return [];
+  const lines = [];
+  const rising = (Array.isArray(movers.up) ? movers.up : []).slice(0, limitPerDirection);
+  const falling = (Array.isArray(movers.down) ? movers.down : []).slice(0, limitPerDirection);
+
+  for (const entry of rising) {
+    const roleLine = entry.roleChanged ? ` · role ${entry.fromAppliedRoleKey || "—"} → ${entry.toAppliedRoleKey || "—"}` : "";
+    lines.push(`↗ **${entry.displayName}** · ${formatSignedNumber(entry.delta)} activity (${formatNumber(entry.fromScore)} → ${formatNumber(entry.toScore)})${roleLine}`);
+  }
+
+  for (const entry of falling) {
+    const roleLine = entry.roleChanged ? ` · role ${entry.fromAppliedRoleKey || "—"} → ${entry.toAppliedRoleKey || "—"}` : "";
+    lines.push(`↘ **${entry.displayName}** · ${formatSignedNumber(entry.delta)} activity (${formatNumber(entry.fromScore)} → ${formatNumber(entry.toScore)})${roleLine}`);
+  }
+
+  return lines;
+}
+
 function renderGameplayLines(players = [], limit = 5) {
   const items = (Array.isArray(players) ? players : []).slice(0, limit);
   if (!items.length) return ["— точного публичного JJS топа пока нет"];
@@ -216,6 +240,24 @@ function renderTierlistLines(updates = [], limit = 5) {
   const items = (Array.isArray(updates) ? updates : []).slice(0, limit);
   if (!items.length) return ["— подтверждённых tierlist updates нет"];
   return items.map((entry) => `🧩 **${entry.displayName}** · main: **${entry.mainName || "unknown"}** · x${entry.influenceMultiplier || 1}`);
+}
+
+function renderTierlistShiftLines(shifts = {}, limit = 2) {
+  if (shifts?.available !== true) return [];
+  const items = (Array.isArray(shifts.items) ? shifts.items : []).slice(0, limit);
+  if (!items.length) return [];
+
+  return items.map((entry) => {
+    const parts = [];
+    if (entry.mainChanged) {
+      parts.push(`${entry.fromMainName || "—"} → ${entry.toMainName || "—"}`);
+    }
+    if (Number(entry.influenceDelta) !== 0) {
+      const icon = Number(entry.influenceDelta) > 0 ? "📈" : "📉";
+      parts.push(`${icon} x${formatNumber(entry.fromInfluenceMultiplier)} → x${formatNumber(entry.toInfluenceMultiplier)}`);
+    }
+    return `↔ **${entry.displayName}** · ${parts.join(" · ")}`;
+  });
 }
 
 function renderVoiceLines(visitors = [], limit = 5) {
@@ -277,6 +319,8 @@ function buildPublicEmbed(digest = {}, config = {}) {
   const maxMessages = Math.max(1, topMessages, digest.publicEdition?.activity?.totalMessagesCount || 1);
   const topVoiceSeconds = getTopVoiceVisitor(digest)?.totalDurationSeconds || 0;
   const maxVoiceSeconds = Math.max(1, topVoiceSeconds);
+  const activityMoverLines = renderActivityMoverLines(digest.publicEdition?.activity?.movers, 1);
+  const tierlistShiftLines = renderTierlistShiftLines(digest.publicEdition?.tierlist?.shifts, 2);
 
   return {
     title: `🗞️ ${cleanString(config.presentation?.masthead, 120) || "Daily Edition"} · ${formatMoscowDate(digest.dayKey)}`,
@@ -295,6 +339,7 @@ function buildPublicEmbed(digest = {}, config = {}) {
       createEmbedField("💬 Activity · топ сообщений", [
         makeBar("chat", topMessages, maxMessages),
         ...renderActivityLines(digest.publicEdition?.activity?.topMessageAuthors, 5),
+        ...activityMoverLines,
       ]),
       createEmbedField("🎮 JJS · топ игры", renderGameplayLines(digest.publicEdition?.gameplay?.topPlayers, 5)),
       createEmbedField("🆕 New · входы и верификации", renderNewcomerLines(digest.publicEdition?.newcomers?.highlights, 6)),
@@ -305,6 +350,7 @@ function buildPublicEmbed(digest = {}, config = {}) {
       createEmbedField("🛡️ Moderation · highlights", renderModerationLines(digest.publicEdition?.moderation?.highlights, 5)),
       createEmbedField("🧩 Tierlist · updates", [
         ...renderTierlistLines(digest.publicEdition?.tierlist?.updates, 5),
+        ...tierlistShiftLines,
         digest.publicEdition?.tierlist?.shifts?.available === false ? `↳ shifts: ${digest.publicEdition.tierlist.shifts.reason}` : null,
       ].filter(Boolean)),
       createEmbedField("📡 Coverage", renderCoverageLines(digest)),
@@ -391,6 +437,71 @@ function renderKillStaffLines(items = [], limit = 8) {
   return list.map((entry) => `${entry.bucket === "rejected" ? "🔴" : entry.bucket === "pending_review" ? "🟡" : "⚪"} **${entry.displayName}** · ${entry.status} · ${formatNumber(entry.kills)} kills · ${entry.bucketDetail || entry.bucket}`);
 }
 
+function compareAuditWatchlistEntries(left = {}, right = {}) {
+  const leftMs = parseIsoMs(left.occurredAt);
+  const rightMs = parseIsoMs(right.occurredAt);
+  if (leftMs !== null && rightMs !== null && leftMs !== rightMs) {
+    return leftMs - rightMs;
+  }
+  if (leftMs !== null && rightMs === null) return -1;
+  if (leftMs === null && rightMs !== null) return 1;
+  return cleanString(left.module, 40).localeCompare(cleanString(right.module, 40), undefined, { sensitivity: "base" })
+    || cleanString(left.displayName, 120).localeCompare(cleanString(right.displayName, 120), undefined, { sensitivity: "base" });
+}
+
+function isWatchlistAuditCandidate(candidate = {}) {
+  const module = cleanString(candidate.module, 40);
+  const bucket = cleanString(candidate.bucket, 80);
+  if (!module || !bucket || module === "kills") return false;
+  if (bucket === "published_staff") return module === "moderation";
+  return [
+    "pending_review",
+    "rejected",
+    "expired",
+    "superseded",
+    "ambiguous_source",
+    "invalid_source",
+    "orphaned",
+  ].includes(bucket);
+}
+
+function renderAuditWatchlistLines(candidates = [], limit = 8) {
+  const bucketMeta = {
+    published_staff: { icon: "🔵", label: "staff-only" },
+    pending_review: { icon: "🟡", label: "pending" },
+    rejected: { icon: "🔴", label: "rejected" },
+    expired: { icon: "⌛", label: "expired" },
+    superseded: { icon: "♻️", label: "superseded" },
+    ambiguous_source: { icon: "⚠️", label: "ambiguous" },
+    invalid_source: { icon: "⛔", label: "invalid" },
+    orphaned: { icon: "🧩", label: "orphaned" },
+  };
+  const moduleLabels = {
+    voice: "voice",
+    moderation: "moderation",
+    activity: "activity",
+    newcomers: "newcomers",
+    gameplay: "jjs",
+    tierlist: "tierlist",
+  };
+  const hiddenDetails = new Set(["staff_digest_only"]);
+  const list = (Array.isArray(candidates) ? candidates : [])
+    .filter(isWatchlistAuditCandidate)
+    .sort(compareAuditWatchlistEntries)
+    .slice(0, limit);
+  if (!list.length) return ["— вне kills сейчас нет cross-module blind spots с non-public trail"];
+
+  return list.map((candidate) => {
+    const bucket = cleanString(candidate.bucket, 80);
+    const meta = bucketMeta[bucket] || { icon: "⚪", label: bucket || "unknown" };
+    const detail = cleanString(candidate.detail, 200);
+    const detailText = detail && !hiddenDetails.has(detail) ? ` · ${detail}` : "";
+    const displayName = cleanString(candidate.displayName, 120) || cleanString(candidate.userId, 80) || "unknown";
+    const moduleLabel = moduleLabels[cleanString(candidate.module, 40)] || cleanString(candidate.module, 40) || "unknown";
+    return `${meta.icon} **${displayName}** · ${moduleLabel} · ${meta.label}${detailText}`;
+  });
+}
+
 function buildStaffEmbed(digest = {}, config = {}) {
   const accentColor = normalizeHexColor(config.presentation?.accentColorAlt, DEFAULT_ALT_COLOR);
   const bucketCounts = digest.audit?.bucketCounts || {};
@@ -407,10 +518,13 @@ function buildStaffEmbed(digest = {}, config = {}) {
     fields: [
       createEmbedField("📊 Bucket trail", renderBucketLines(bucketCounts), true),
       createEmbedField("⚔️ Kills staff trail", renderKillStaffLines(digest.staffDigest?.kills?.items, 8), false),
+      createEmbedField("👀 Audit watchlist", renderAuditWatchlistLines(digest.audit?.candidates, 8), false),
       createEmbedField("💬 Activity diagnostics", [
         `rows: **${formatNumber(digest.staffDigest?.activity?.sourceRowCount || 0)}**`,
         `imprecise rows: **${formatNumber(digest.staffDigest?.activity?.impreciseRowCount || 0)}**`,
-        `movers: **${digest.staffDigest?.activity?.movers?.reason || "available"}**`,
+        digest.staffDigest?.activity?.movers?.available === true
+          ? `movers: **${formatNumber(digest.staffDigest.activity.movers.changedUserCount || 0)}** changed / **${formatNumber(digest.staffDigest.activity.movers.comparedUserCount || 0)}** compared`
+          : `movers: **${digest.staffDigest?.activity?.movers?.reason || "available"}**`,
       ], true),
       createEmbedField("🎮 JJS diagnostics", [
         `players: **${formatNumber(digest.staffDigest?.gameplay?.sourcePlayerCount || 0)}**`,
@@ -424,7 +538,9 @@ function buildStaffEmbed(digest = {}, config = {}) {
       ], true),
       createEmbedField("🧩 Tierlist diagnostics", [
         `updates: **${formatNumber(digest.staffDigest?.tierlist?.sourceUpdateCount || 0)}**`,
-        `shifts: **${digest.staffDigest?.tierlist?.shifts?.reason || "available"}**`,
+        digest.staffDigest?.tierlist?.shifts?.available === true
+          ? `shifts: **${formatNumber(digest.staffDigest.tierlist.shifts.totalShiftCount || 0)}** historical changes`
+          : `shifts: **${digest.staffDigest?.tierlist?.shifts?.reason || "available"}**`,
       ], true),
       createEmbedField("🛡️ Moderation diagnostics", [
         `events: **${formatNumber(digest.staffDigest?.moderation?.totalCount || 0)}**`,

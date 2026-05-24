@@ -625,7 +625,7 @@ Current implementation status:
 
 - [src/news/activity.js](src/news/activity.js) exists as the compile-only activity owner.
 - It reads `db.sot.activity.userChannelDailyStats` and emits top message authors from persisted activity rows.
-- Activity movers up/down are intentionally still unavailable in the compiled output with reason `no_daily_activity_baseline_yet` until a real baseline source exists.
+- It now also derives day-over-day activity movers from news-owned Moscow-day snapshots stored in `db.sot.news.history.daySnapshots`.
 - Rows without precise first/last message timestamps are marked as imprecise coverage instead of being presented as exact.
 
 Must deliver:
@@ -683,7 +683,7 @@ Current implementation status:
 
 - [src/news/tierlist.js](src/news/tierlist.js) exists as the compile-only tierlist update owner.
 - It can publish profile tierlist submissions/main updates for the day.
-- Real up/down shift history is still unavailable and remains explicitly marked as `no_tierlist_shift_history_yet`.
+- It now derives day-over-day tierlist focus/influence shifts from news-owned Moscow-day snapshots instead of reusing only same-day submissions.
 
 Must deliver:
 
@@ -719,6 +719,12 @@ Phase 3 exit criteria:
 Goal:
 
 - убрать ложную точность и одновременно сузить ambiguity там, где это возможно.
+
+Current implementation status:
+
+- timeout apply/remove capture now exists in [src/news/moderation.js](src/news/moderation.js) and is wired from `guildMemberUpdate` in [welcome-bot.js](welcome-bot.js);
+- member removal capture now does a best-effort immediate `AuditLogEvent.MemberKick` lookup before falling back to `leave_or_kick_ambiguous`;
+- delayed retry/reconciliation now exists in the shadow compile path: [welcome-bot.js](welcome-bot.js) prefetches pending kick audit matches and [src/news/moderation.js](src/news/moderation.js) applies them through the scheduler `beforeCompile` hook; unresolved cases still degrade explicitly to ambiguity.
 
 Must deliver:
 
@@ -787,7 +793,7 @@ Subphase 6.2. Staff digest builder
 Current implementation status:
 
 - initial staff audit renderer exists in [src/news/render.js](src/news/render.js);
-- it surfaces bucket counts, rejected/pending kill submissions, activity precision diagnostics, moderation ambiguity and coverage reasons.
+- it now surfaces bucket counts, rejected/pending kill submissions, a cross-module non-public watchlist, activity precision diagnostics, moderation ambiguity and coverage reasons.
 
 Must deliver:
 
@@ -801,8 +807,9 @@ Subphase 6.3. Cover renderer
 
 Current implementation status:
 
-- only `coverSpec` exists for future image composition;
-- no PNG generation exists yet.
+- `coverSpec` now feeds a dedicated PNG cover renderer in [src/news/cover.js](src/news/cover.js);
+- publisher attaches the rendered cover to the public Daily News issue;
+- operator preview now also ships the generated binary cover attachment alongside the preview payloads.
 
 Must deliver:
 
@@ -865,7 +872,9 @@ Goal:
 Current implementation status:
 
 - [src/news/operator.js](src/news/operator.js) exists and supports status, preview-day, rerun-style preview and publish-now orchestration.
-- Live Discord command/button routing is still not wired, so this remains an owner API until runtime/operator wiring is added.
+- Preview/rerun paths stay read-only by default; manual publish now explicitly captures the current Moscow-day history snapshot before delivery so operator-driven publish does not skip the next day's movers/shifts baseline.
+- Live moderator-panel button/modal routing now exists in [welcome-bot.js](welcome-bot.js) for overview, preview today, preview exact day, rerun day and manual publish.
+- Dedicated slash-command surface is still not wired.
 
 Must deliver:
 
@@ -1110,13 +1119,11 @@ Shadow mode остаётся базовым безопасным режимом,
 
 Ниже жёсткий рекомендуемый порядок работ.
 
-1. Keep live auto-publish disabled until operator wiring and live smoke exist.
-2. Upgrade moderation truth before claiming full moderation recap.
-3. Add activity movers and real tierlist shift history before claiming full V1 content coverage.
-4. Freeze digest schema before broad runtime wiring.
-5. Add cover PNG generation after payload checks stay green.
-6. Wire operator controls to the existing compile/render/publish owners.
-7. Do shadow runtime review before enabling real public delivery.
+1. Keep live auto-publish disabled until live smoke exists.
+2. Do shadow/runtime review on the now-wired operator surface before enabling real public delivery.
+3. Only broaden dropped-result audit if live review still shows blind spots outside the current watchlist and module trails.
+4. Freeze digest schema before any further broad runtime wiring.
+5. Add slash-command parity only if the moderator panel surface proves insufficient.
 
 ## Explicitly Deferred Until Later
 
@@ -1145,9 +1152,8 @@ Daily News считается действительно готовой сист
 
 Следующий этап разработки по этому документу:
 
-1. Подключить operator buttons/commands к [src/news/operator.js](src/news/operator.js) в preview/staff-safe режиме.
-2. Отдельно закрыть timeout tracking и leave-vs-kick reconciliation.
-3. Добавить activity movers и real tierlist shift history, не подменяя их текущими submission updates.
-4. После этого зафиксировать digest schema, добавить cover PNG и только затем включать scheduler-to-publisher auto mode.
+1. Сделать live smoke и shadow review на реальных каналах, чтобы проверить, хватает ли текущего cross-module watchlist и history-backed movers/shifts без новых collector/source changes.
+2. Только если live review покажет ещё blind spots, расширять dropped-result audit дальше.
+3. Только затем принимать решение по auto-publish и slash-command parity.
 
 Это и есть тот порядок, которому дальше нужно следовать, если цель — сделать систему эффективно и без лесного слома соседних частей репозитория.

@@ -328,6 +328,93 @@ test("compileDailyNewsDigest keeps ambiguous removals staff-only and publishes c
   assert.equal(result.digest.audit.bucketCounts.ambiguous_source, 1);
 });
 
+test("compileDailyNewsDigest publishes kick-confirmed member removals", () => {
+  const db = {
+    sot: {
+      news: {
+        voice: {
+          openSessions: {},
+          finalizedSessions: [],
+        },
+        moderation: {
+          events: [
+            {
+              eventType: "member_remove",
+              guildId: "guild-1",
+              userId: "user-15",
+              displayName: "KickZeta",
+              occurredAt: "2026-05-14T16:30:00.000Z",
+              resolution: "kick_confirmed",
+              reason: "kick by ModAlpha",
+            },
+          ],
+        },
+      },
+    },
+  };
+
+  const result = compileDailyNewsDigest({
+    db,
+    targetDayKey: "2026-05-14",
+    now: "2026-05-14T18:00:00.000Z",
+  });
+
+  assert.equal(result.digest.moderation.totalCount, 1);
+  assert.equal(result.digest.moderation.ambiguousCount, 0);
+  assert.deepEqual(result.digest.moderation.publicHighlights.map((entry) => entry.displayName), ["KickZeta"]);
+  assert.equal(result.digest.staffDigest.moderation.events[0].bucket, "published_public");
+  assert.equal(result.digest.coverage.ambiguous, false);
+});
+
+test("compileDailyNewsDigest publishes confirmed timeout events", () => {
+  const db = {
+    sot: {
+      news: {
+        voice: { openSessions: {}, finalizedSessions: [] },
+        moderation: {
+          events: [
+            {
+              eventType: "timeout_add",
+              guildId: "guild-1",
+              userId: "user-13",
+              displayName: "TimeoutDelta",
+              occurredAt: "2026-05-14T13:00:00.000Z",
+              resolution: "timeout_confirmed",
+            },
+            {
+              eventType: "timeout_remove",
+              guildId: "guild-1",
+              userId: "user-14",
+              displayName: "TimeoutEcho",
+              occurredAt: "2026-05-14T14:00:00.000Z",
+              resolution: "timeout_removed_confirmed",
+            },
+          ],
+        },
+      },
+    },
+  };
+
+  const result = compileDailyNewsDigest({
+    db,
+    targetDayKey: "2026-05-14",
+    now: "2026-05-14T18:00:00.000Z",
+  });
+
+  assert.equal(result.digest.moderation.totalCount, 2);
+  assert.equal(result.digest.moderation.byType.timeout_add, 1);
+  assert.equal(result.digest.moderation.byType.timeout_remove, 1);
+  assert.deepEqual(result.digest.moderation.publicHighlights.map((entry) => entry.displayName), [
+    "TimeoutDelta",
+    "TimeoutEcho",
+  ]);
+  assert.deepEqual(result.digest.staffDigest.moderation.events.map((entry) => entry.bucket), [
+    "published_public",
+    "published_public",
+  ]);
+  assert.equal(result.digest.coverage.ambiguous, false);
+});
+
 test("compileDailyNewsDigest includes kill upgrades and activity message leaders", () => {
   const db = {
     profiles: {
@@ -468,4 +555,89 @@ test("compileDailyNewsDigest prunes raw voice and moderation entries older than 
   assert.deepEqual(db.sot.news.moderation.events.map((entry) => entry.userId), ["user-keep-mod"]);
   assert.equal(db.sot.news.voice.lastPrunedAt, "2026-05-14T20:40:02.000Z");
   assert.equal(db.sot.news.moderation.lastPrunedAt, "2026-05-14T20:40:02.000Z");
+});
+
+test("compileDailyNewsDigest derives movers and shifts from previous news day snapshots and can persist the current boundary snapshot", () => {
+  const db = {
+    profiles: {
+      "user-1": {
+        displayName: "Prime",
+        domains: {
+          activity: {
+            activityScore: 58,
+            appliedActivityRoleKey: "active",
+          },
+          tierlist: {
+            mainId: "char-sukuna",
+            mainName: "Sukuna",
+            influenceMultiplier: 1.4,
+            submittedAt: "2026-05-14T12:00:00.000Z",
+          },
+        },
+      },
+      "user-2": {
+        displayName: "Echo",
+        domains: {
+          activity: {
+            activityScore: 31,
+            appliedActivityRoleKey: "warm",
+          },
+          tierlist: {
+            mainId: "char-gojo",
+            mainName: "Gojo",
+            influenceMultiplier: 1.5,
+          },
+        },
+      },
+    },
+    sot: {
+      news: {
+        voice: { openSessions: {}, finalizedSessions: [] },
+        moderation: { events: [] },
+        history: {
+          daySnapshots: {
+            "2026-05-13": {
+              "user-1": {
+                displayName: "Prime",
+                activityScore: 40,
+                appliedActivityRoleKey: "warm",
+                tierlistMainId: "char-gojo",
+                tierlistMainName: "Gojo",
+                tierlistInfluenceMultiplier: 1,
+              },
+              "user-2": {
+                displayName: "Echo",
+                activityScore: 45,
+                appliedActivityRoleKey: "active",
+                tierlistMainId: "char-gojo",
+                tierlistMainName: "Gojo",
+                tierlistInfluenceMultiplier: 1,
+              },
+            },
+          },
+        },
+      },
+      activity: {
+        userChannelDailyStats: [],
+      },
+    },
+  };
+
+  const result = compileDailyNewsDigest({
+    db,
+    targetDayKey: "2026-05-14",
+    now: "2026-05-14T18:00:00.000Z",
+    historySnapshotMode: "capture_if_current_day",
+  });
+
+  assert.equal(result.digest.publicEdition.activity.movers.available, true);
+  assert.deepEqual(result.digest.publicEdition.activity.movers.up.map((entry) => [entry.userId, entry.delta]), [["user-1", 18]]);
+  assert.deepEqual(result.digest.publicEdition.activity.movers.down.map((entry) => [entry.userId, entry.delta]), [["user-2", -14]]);
+  assert.equal(result.digest.publicEdition.tierlist.shifts.available, true);
+  assert.deepEqual(result.digest.publicEdition.tierlist.shifts.items.map((entry) => [entry.userId, entry.mainChanged, entry.influenceDelta]), [
+    ["user-1", true, 0.4],
+    ["user-2", false, 0.5],
+  ]);
+  assert.equal(db.sot.news.history.daySnapshots["2026-05-14"]["user-1"].activityScore, 58);
+  assert.equal(db.sot.news.history.daySnapshots["2026-05-14"]["user-1"].tierlistMainName, "Sukuna");
 });

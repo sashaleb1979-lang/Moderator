@@ -57,6 +57,7 @@ test("compileDailyNewsPreview compiles stores and renders a preview issue", () =
   assert.match(result.issue.publicMessage.content, /Preview Desk/);
   assert.equal(db.sot.news.runtime.lastPreviewRequest.status, "rendered");
   assert.equal(db.sot.news.runtime.lastPreviewRequest.dayKey, "2026-05-14");
+  assert.deepEqual(db.sot.news.history.daySnapshots, {});
   assert.equal(saveCount, 1);
 
   const stored = renderStoredDailyNewsPreview({ db, dayKey: "2026-05-14" });
@@ -68,4 +69,32 @@ test("renderStoredDailyNewsPreview reports missing digests clearly", () => {
     () => renderStoredDailyNewsPreview({ db: { sot: { news: {} } }, dayKey: "2026-05-14" }),
     /daily news digest not found for preview/
   );
+});
+
+test("compileDailyNewsPreview can opt into current-day history snapshot capture when explicitly requested", () => {
+  const db = {
+    profiles: {
+      "user-1": {
+        displayName: "Alpha",
+        domains: {
+          activity: {
+            activityScore: 44,
+            appliedActivityRoleKey: "active",
+          },
+        },
+      },
+    },
+    sot: {
+      news: {},
+    },
+  };
+
+  compileDailyNewsPreview({
+    db,
+    targetDayKey: "2026-05-14",
+    now: "2026-05-14T18:00:00.000Z",
+    historySnapshotMode: "capture_if_current_day",
+  });
+
+  assert.equal(db.sot.news.history.daySnapshots["2026-05-14"]["user-1"].activityScore, 44);
 });

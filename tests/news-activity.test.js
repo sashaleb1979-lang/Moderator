@@ -7,6 +7,7 @@ const { collectActivityDigest } = require("../src/news/activity");
 
 function buildWindow() {
   return {
+    dayKey: "2026-05-14",
     startMs: Date.parse("2026-05-13T21:00:00.000Z"),
     endMs: Date.parse("2026-05-14T18:00:00.000Z"),
   };
@@ -90,5 +91,86 @@ test("collectActivityDigest builds top message authors from persisted daily rows
     ["user-1", "suppressed_by_threshold"],
     ["user-2", "published_public"],
     ["user-3", "ambiguous_source"],
+  ]);
+  assert.equal(digest.movers.available, false);
+  assert.equal(digest.movers.reason, "no_daily_activity_baseline_yet");
+});
+
+test("collectActivityDigest derives daily activity movers from news-owned day snapshots", () => {
+  const db = {
+    profiles: {
+      "user-1": {
+        displayName: "Alpha",
+        domains: {
+          activity: {
+            activityScore: 58,
+            appliedActivityRoleKey: "active",
+          },
+        },
+      },
+      "user-2": {
+        displayName: "Beta",
+        domains: {
+          activity: {
+            activityScore: 31,
+            appliedActivityRoleKey: "warm",
+          },
+        },
+      },
+      "user-3": {
+        displayName: "Gamma",
+        domains: {
+          activity: {
+            activityScore: 12,
+            appliedActivityRoleKey: "cold",
+          },
+        },
+      },
+    },
+    sot: {
+      activity: {
+        userChannelDailyStats: [],
+      },
+      news: {
+        history: {
+          daySnapshots: {
+            "2026-05-13": {
+              "user-1": {
+                displayName: "Alpha",
+                activityScore: 40,
+                appliedActivityRoleKey: "warm",
+              },
+              "user-2": {
+                displayName: "Beta",
+                activityScore: 45,
+                appliedActivityRoleKey: "active",
+              },
+              "user-3": {
+                displayName: "Gamma",
+                activityScore: 12,
+                appliedActivityRoleKey: "cold",
+              },
+            },
+          },
+        },
+      },
+    },
+  };
+
+  const digest = collectActivityDigest({
+    db,
+    window: buildWindow(),
+    config: { activity: { topMoversCount: 1 } },
+  });
+
+  assert.equal(digest.movers.available, true);
+  assert.equal(digest.movers.baselineDayKey, "2026-05-13");
+  assert.equal(digest.movers.comparedUserCount, 3);
+  assert.equal(digest.movers.changedUserCount, 2);
+  assert.deepEqual(digest.movers.up.map((entry) => [entry.userId, entry.delta, entry.roleChanged]), [
+    ["user-1", 18, true],
+  ]);
+  assert.deepEqual(digest.movers.down.map((entry) => [entry.userId, entry.delta, entry.roleChanged]), [
+    ["user-2", -14, true],
   ]);
 });

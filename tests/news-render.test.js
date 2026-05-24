@@ -10,10 +10,28 @@ const { ensureNewsState } = require("../src/news/state");
 function buildNewsDb() {
   return {
     profiles: {
-      "user-1": { displayName: "Prime" },
+      "user-1": {
+        displayName: "Prime",
+        domains: {
+          activity: {
+            activityScore: 58,
+            appliedActivityRoleKey: "active",
+          },
+          tierlist: {
+            mainId: "char-sukuna",
+            mainName: "Sukuna",
+            influenceMultiplier: 1.4,
+            submittedAt: "2026-05-14T12:00:00.000Z",
+          },
+        },
+      },
       "user-2": {
         displayName: "Echo",
         domains: {
+          activity: {
+            activityScore: 31,
+            appliedActivityRoleKey: "warm",
+          },
           roblox: {
             playtime: {
               sessionHistory: [
@@ -24,9 +42,22 @@ function buildNewsDb() {
               ],
             },
           },
+          tierlist: {
+            mainId: "char-gojo",
+            mainName: "Gojo",
+            influenceMultiplier: 1.5,
+          },
         },
       },
-      "user-3": { displayName: "Nova" },
+      "user-3": {
+        displayName: "Nova",
+        domains: {
+          activity: {
+            activityScore: 12,
+            appliedActivityRoleKey: "cold",
+          },
+        },
+      },
       "user-4": { displayName: "Shadow" },
     },
     submissions: {
@@ -98,11 +129,41 @@ function buildNewsDb() {
             includeFullList: true,
             publishFullListInThread: true,
           },
+          activity: {
+            topMoversCount: 2,
+          },
           presentation: {
             masthead: "Moderator Chronicle",
             accentColor: "#E6B450",
             accentColorAlt: "#5DA9E9",
             backgroundColor: "#101418",
+          },
+        },
+        history: {
+          daySnapshots: {
+            "2026-05-13": {
+              "user-1": {
+                displayName: "Prime",
+                activityScore: 40,
+                appliedActivityRoleKey: "warm",
+                tierlistMainId: "char-gojo",
+                tierlistMainName: "Gojo",
+                tierlistInfluenceMultiplier: 1,
+              },
+              "user-2": {
+                displayName: "Echo",
+                activityScore: 45,
+                appliedActivityRoleKey: "active",
+                tierlistMainId: "char-gojo",
+                tierlistMainName: "Gojo",
+                tierlistInfluenceMultiplier: 1,
+              },
+              "user-3": {
+                displayName: "Nova",
+                activityScore: 12,
+                appliedActivityRoleKey: "cold",
+              },
+            },
           },
         },
         voice: {
@@ -191,9 +252,12 @@ test("renderDailyNewsIssue builds edition-style public payload from compiled dig
   ]);
   assert.match(embed.fields[0].value, /Prime/);
   assert.match(embed.fields[1].value, /Echo/);
+  assert.match(embed.fields[1].value, /Prime/);
+  assert.match(embed.fields[1].value, /\+18 activity/);
   assert.match(embed.fields[2].value, /Echo/);
   assert.match(embed.fields[4].value, /Echo/);
   assert.match(embed.fields[5].value, /Shadow/);
+  assert.match(embed.fields[6].value, /Gojo → Sukuna/);
   assert.match(embed.fields[7].value, /activity_rows_without_precise_timestamps/);
 
   assert.ok(issue.publicThreadMessages.some((message) => {
@@ -220,11 +284,19 @@ test("renderDailyNewsIssue keeps rejected pending and ambiguous evidence in staf
   assert.match(killTrail.value, /\*\*Echo\*\* · rejected · 500 kills · bad screenshot/);
   assert.match(killTrail.value, /\*\*Nova\*\* · pending · 220 kills · pending_kill_review/);
 
+  const watchlist = staffEmbed.fields.find((field) => field.name === "👀 Audit watchlist");
+  assert.match(watchlist.value, /\*\*Nova\*\* · moderation · ambiguous · leave_ambiguous/);
+  assert.match(watchlist.value, /\*\*Nova\*\* · activity · ambiguous · activity_daily_row_without_precise_timestamp/);
+
   const activityDiagnostics = staffEmbed.fields.find((field) => field.name === "💬 Activity diagnostics");
   assert.match(activityDiagnostics.value, /imprecise rows: \*\*1\*\*/);
+  assert.match(activityDiagnostics.value, /changed \/ \*\*3\*\* compared|\*\*2\*\* changed/);
 
   const moderationDiagnostics = staffEmbed.fields.find((field) => field.name === "🛡️ Moderation diagnostics");
   assert.match(moderationDiagnostics.value, /ambiguous: \*\*1\*\*/);
+
+  const tierlistDiagnostics = staffEmbed.fields.find((field) => field.name === "🧩 Tierlist diagnostics");
+  assert.match(tierlistDiagnostics.value, /historical changes/);
 });
 
 test("renderDailyNewsIssue degrades gracefully when the digest has no public highlights", () => {

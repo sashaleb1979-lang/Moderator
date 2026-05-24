@@ -3,6 +3,12 @@
 const { ensureNewsState } = require("./state");
 const { collectActivityDigest } = require("./activity");
 const { collectGameplayDigest } = require("./gameplay");
+const {
+  buildDailyNewsProfileHistorySnapshot,
+  getDailyNewsHistorySnapshot,
+  shouldCaptureDailyNewsHistorySnapshot,
+  writeDailyNewsHistorySnapshot,
+} = require("./history");
 const { collectKillDigest } = require("./kills");
 const { pruneModerationEvents } = require("./moderation");
 const { collectNewcomerDigest } = require("./newcomers");
@@ -536,7 +542,7 @@ function createAuditSummary({ voiceDigest, moderationDigest, killDigest, activit
   };
 }
 
-function compileDailyNewsDigest({ db = {}, targetDayKey = "", now, saveDb, windowEndAt = null } = {}) {
+function compileDailyNewsDigest({ db = {}, targetDayKey = "", now, saveDb, windowEndAt = null, historySnapshotMode = "none" } = {}) {
   const state = ensureNewsState(db);
   const compileStartedAt = resolveNowIso(now);
   state.runtime.lastCompileStartedAt = compileStartedAt;
@@ -720,6 +726,19 @@ function compileDailyNewsDigest({ db = {}, targetDayKey = "", now, saveDb, windo
     state.runtime.lastCoverageSummary = clone(digest.coverage);
     state.runtime.lastAuditCounts = clone(digest.audit);
     state.runtime.lastFailure = null;
+
+    if (
+      historySnapshotMode === "capture_if_current_day"
+      && shouldCaptureDailyNewsHistorySnapshot({ dayKey: window.dayKey, now: compileStartedAt })
+      && !getDailyNewsHistorySnapshot(db, window.dayKey)
+    ) {
+      writeDailyNewsHistorySnapshot({
+        state,
+        dayKey: window.dayKey,
+        snapshot: buildDailyNewsProfileHistorySnapshot({ db }),
+        now: compileFinishedAt,
+      });
+    }
 
     if (typeof saveDb === "function") {
       saveDb();

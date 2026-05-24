@@ -66,6 +66,7 @@ function createDefaultNewsConfig() {
     },
     activity: {
       topMessagesCount: 5,
+      topMoversCount: 3,
       includeMessageLeaderboard: true,
     },
     newcomers: {
@@ -123,6 +124,7 @@ function normalizeNewsConfig(value = {}) {
     },
     activity: {
       topMessagesCount: normalizePositiveInteger(source.activity?.topMessagesCount, defaults.activity.topMessagesCount),
+      topMoversCount: normalizePositiveInteger(source.activity?.topMoversCount, defaults.activity.topMoversCount),
       includeMessageLeaderboard: normalizeBoolean(source.activity?.includeMessageLeaderboard, defaults.activity.includeMessageLeaderboard),
     },
     newcomers: {
@@ -158,6 +160,10 @@ function createEmptyNewsState() {
     },
     moderation: {
       events: [],
+      lastPrunedAt: null,
+    },
+    history: {
+      daySnapshots: {},
       lastPrunedAt: null,
     },
     dailyDigests: {},
@@ -202,6 +208,14 @@ function normalizeNewsState(value = {}) {
     ...(source.moderation && typeof source.moderation === "object" && !Array.isArray(source.moderation) ? clone(source.moderation) : {}),
     events: Array.isArray(source.moderation?.events) ? clone(source.moderation.events) : [],
     lastPrunedAt: normalizeNullableString(source.moderation?.lastPrunedAt, 80),
+  };
+  next.history = {
+    ...defaults.history,
+    ...(source.history && typeof source.history === "object" && !Array.isArray(source.history) ? clone(source.history) : {}),
+    daySnapshots: source.history?.daySnapshots && typeof source.history.daySnapshots === "object" && !Array.isArray(source.history.daySnapshots)
+      ? clone(source.history.daySnapshots)
+      : {},
+    lastPrunedAt: normalizeNullableString(source.history?.lastPrunedAt, 80),
   };
   next.dailyDigests = source.dailyDigests && typeof source.dailyDigests === "object" && !Array.isArray(source.dailyDigests)
     ? clone(source.dailyDigests)

@@ -158,10 +158,18 @@ const {
 const { ensureActivityState } = require("./src/activity/state");
 const { ensureNewsState } = require("./src/news/state");
 const { runDailyNewsCompileTick } = require("./src/news/scheduler");
+const {
+  handleDailyNewsPanelButtonInteraction,
+  handleDailyNewsPanelModalSubmitInteraction,
+} = require("./src/news/operator");
 const { recordVoiceStateTransition } = require("./src/news/voice");
 const {
+  collectPendingMemberRemovalEvents,
+  createMemberRemovalReconciliationId,
+  reconcileMemberRemovalEvents,
   recordGuildBanEvent,
   recordMemberRemovalEvent,
+  recordMemberTimeoutEvent,
 } = require("./src/news/moderation");
 const {
   addAutonomyGuardIsolatedUserId,
@@ -10660,7 +10668,8 @@ async function buildModeratorPanelPayload(client, statusText = "", includeFlags 
         new ButtonBuilder()
           .setCustomId(BOT_HELPER_PANEL_CONFIG_BUTTON_ID)
           .setLabel("Bot helper")
-          .setStyle(ButtonStyle.Secondary)
+          .setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("panel_open_daily_news").setLabel("Daily News").setStyle(ButtonStyle.Secondary)
       ),
       new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId("panel_add_character").setLabel("Добавить персонажа").setStyle(ButtonStyle.Success),
@@ -14450,6 +14459,7 @@ const VERIFICATION_OAUTH_STATE_EXPIRE_MS = 10 * 60 * 1000;
 const VERIFICATION_ROLE_MUTATION_IGNORE_MS = 30 * 1000;
 const AUTONOMY_GUARD_ROLE_MUTATION_IGNORE_MS = 30 * 1000;
 const AUTONOMY_GUARD_AUDIT_LOG_LOOKBACK_MS = 30 * 1000;
+const DAILY_NEWS_KICK_AUDIT_MATCH_TOLERANCE_MS = 10 * 60 * 1000;
 const AUTONOMY_GUARD_MESSAGE_DELETE_CLAIM_MS = 30 * 1000;
 
 client.once("clientReady", async () => {
@@ -14658,10 +14668,19 @@ client.once("clientReady", async () => {
     runProfilePopulationSnapshot: runScheduledProfilePopulationSnapshot,
     runVerificationDeadlineSweep: (currentClient) => runVerificationDeadlineSweep(currentClient),
     runDailyNewsCompileTick: async () => {
+      const nowValue = nowIso();
+      const pendingRemovalResolutions = await resolveDailyNewsPendingMemberRemovalResolutions(client, nowValue).catch((error) => {
+        console.warn("Daily news delayed member-remove reconciliation failed:", error?.message || error);
+        return {};
+      });
       const result = await runSerializedDbTask(() => runDailyNewsCompileTick({
         db,
-        now: nowIso,
+        now: nowValue,
         saveDb,
+        beforeCompile: () => reconcileMemberRemovalEvents({
+          db,
+          resolutionsByEventId: pendingRemovalResolutions,
+        }),
       }), "daily-news-shadow-compile");
       if (result?.compiled) {
         console.log(`[daily-news] shadow compiled ${result.dayKey}`);
@@ -14703,6 +14722,15 @@ client.once("clientReady", async () => {
 
 client.on("guildMemberUpdate", async (oldMember, newMember) => {
   if (newMember.guild.id !== GUILD_ID) return;
+
+  runSerializedDbTask(() => recordMemberTimeoutEvent({
+    db,
+    oldMember,
+    newMember,
+    now: nowIso(),
+  }), "daily-news-timeout-capture").catch((error) => {
+    console.error("Daily news timeout ingest failed:", error?.message || error);
+  });
 
   try {
     const result = await syncLegacyTierlistInfluenceForMember(client, newMember);
@@ -17397,6 +17425,19 @@ client.on("interactionCreate", async (interaction) => {
       }),
       saveDb,
       runSerialized: runSerializedDbTask,
+    })) {
+      return;
+    }
+
+    if (await handleDailyNewsPanelButtonInteraction({
+      interaction,
+      client,
+      db,
+      isModerator,
+      replyNoPermission: () => interaction.reply(ephemeralPayload({ content: "Нет прав." })),
+      buildBackPayload: async () => buildModeratorPanelPayloadSafe(client, "", false),
+      saveDb,
+      now: nowIso(),
     })) {
       return;
     }
@@ -20905,6 +20946,22 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
+    if (await runInteractionHandlerSafely(
+      interaction,
+      "Daily News panel modal interaction failed",
+      "Не удалось обработать Daily News-форму",
+      () => handleDailyNewsPanelModalSubmitInteraction({
+        interaction,
+        db,
+        isModerator,
+        replyNoPermission: (currentInteraction) => currentInteraction.reply(ephemeralPayload({ content: "Нет прав." })),
+        saveDb,
+        now: nowIso(),
+      })
+    )) {
+      return;
+    }
+
     // ── Combo guide edit modal ──
     if (interaction.customId?.startsWith("combo_edit_message:")) {
       if (await replyIfAutonomyGuardBlockedActor(interaction)) {
@@ -22532,14 +22589,99 @@ client.on("voiceStateUpdate", async (oldState, newState) => {
   });
 });
 
+function matchesDailyNewsKickAuditEntry(entry, candidate = {}) {
+  const targetUserId = String(entry?.target?.id || "").trim();
+  const userId = String(candidate.userId || "").trim();
+  if (!targetUserId || !userId || targetUserId !== userId) {
+    return false;
+  }
+
+  const occurredMs = Date.parse(String(candidate.occurredAt || ""));
+  if (!Number.isFinite(occurredMs) || !Number.isFinite(entry?.createdTimestamp)) {
+    return true;
+  }
+
+  return Math.abs(entry.createdTimestamp - occurredMs) <= DAILY_NEWS_KICK_AUDIT_MATCH_TOLERANCE_MS;
+}
+
+function buildDailyNewsKickResolution(entry) {
+  const actorText = String(entry?.executor?.tag || entry?.executor?.username || entry?.executor?.id || "").trim();
+  return {
+    resolution: "kick_confirmed",
+    reason: actorText ? `kick by ${actorText}` : "kick audit match",
+  };
+}
+
+async function resolveDailyNewsMemberRemovalResolution({ member = null, guild = null, userId = "", occurredAt = "" } = {}) {
+  const resolvedGuild = guild || member?.guild;
+  const normalizedUserId = String(userId || member?.id || member?.user?.id || "").trim();
+  if (!resolvedGuild || !normalizedUserId || typeof resolvedGuild.fetchAuditLogs !== "function") {
+    return null;
+  }
+
+  const auditLogs = await resolvedGuild.fetchAuditLogs({ type: AuditLogEvent.MemberKick, limit: 6 }).catch(() => null);
+  if (!auditLogs?.entries?.size) {
+    return null;
+  }
+
+  for (const entry of auditLogs.entries.values()) {
+    if (!entry) continue;
+    if (!matchesDailyNewsKickAuditEntry(entry, { userId: normalizedUserId, occurredAt })) {
+      continue;
+    }
+
+    return buildDailyNewsKickResolution(entry);
+  }
+
+  return null;
+}
+
+async function resolveDailyNewsPendingMemberRemovalResolutions(currentClient, now = null) {
+  const pendingEvents = collectPendingMemberRemovalEvents({ db, now });
+  if (!pendingEvents.length) {
+    return {};
+  }
+
+  const guild = await getGuild(currentClient).catch(() => null);
+  if (!guild || typeof guild.fetchAuditLogs !== "function") {
+    return {};
+  }
+
+  const auditLogs = await guild.fetchAuditLogs({
+    type: AuditLogEvent.MemberKick,
+    limit: Math.max(6, pendingEvents.length * 3),
+  }).catch(() => null);
+  if (!auditLogs?.entries?.size) {
+    return {};
+  }
+
+  const entries = [...auditLogs.entries.values()];
+  const resolutionsByEventId = {};
+  for (const candidate of pendingEvents) {
+    const matchedEntry = entries.find((entry) => matchesDailyNewsKickAuditEntry(entry, candidate));
+    if (!matchedEntry) continue;
+    resolutionsByEventId[candidate.reconciliationId || createMemberRemovalReconciliationId(candidate)] = buildDailyNewsKickResolution(matchedEntry);
+  }
+
+  return resolutionsByEventId;
+}
+
 client.on("guildMemberRemove", async (member) => {
   const guildId = String(member?.guild?.id || "").trim();
   if (guildId !== GUILD_ID) return;
 
+  const occurredAt = nowIso();
+
+  const resolvedRemoval = await resolveDailyNewsMemberRemovalResolution({ member, occurredAt }).catch((error) => {
+    console.warn("Daily news member-remove audit lookup failed:", error?.message || error);
+    return null;
+  });
+
   runSerializedDbTask(() => recordMemberRemovalEvent({
     db,
     member,
-    now: nowIso(),
+    resolveRemovalResolution: () => resolvedRemoval,
+    now: occurredAt,
   }), "daily-news-member-remove-capture").catch((error) => {
     console.error("Daily news member-remove ingest failed:", error?.message || error);
   });

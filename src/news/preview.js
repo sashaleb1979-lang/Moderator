@@ -8,8 +8,15 @@ function cleanString(value, limit = 2000) {
   return String(value || "").trim().slice(0, Math.max(0, Number(limit) || 0));
 }
 
-function compileDailyNewsPreview({ db = {}, targetDayKey = "", now, windowEndAt = null, saveDb } = {}) {
-  const compileResult = compileDailyNewsDigest({ db, targetDayKey, now, windowEndAt });
+function compileDailyNewsPreview({
+  db = {},
+  targetDayKey = "",
+  now,
+  windowEndAt = null,
+  saveDb,
+  historySnapshotMode = "none",
+} = {}) {
+  const compileResult = compileDailyNewsDigest({ db, targetDayKey, now, windowEndAt, historySnapshotMode });
   const state = ensureNewsState(db);
   const issue = renderDailyNewsIssue({ digest: compileResult.digest, config: state.config });
   state.runtime.lastPreviewRequest = {

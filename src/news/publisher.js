@@ -1,10 +1,16 @@
 "use strict";
 
+const { buildDailyNewsCoverAttachment } = require("./cover");
 const { renderDailyNewsIssue } = require("./render");
 const { ensureNewsState } = require("./state");
 
 function cleanString(value, limit = 2000) {
   return String(value || "").trim().slice(0, Math.max(0, Number(limit) || 0));
+}
+
+function clone(value) {
+  if (value === undefined) return undefined;
+  return JSON.parse(JSON.stringify(value));
 }
 
 function resolveNowIso(now) {
@@ -92,13 +98,25 @@ async function publishDailyNewsIssue({
 
   try {
     const resolvedIssue = issue || renderDailyNewsIssue({ digest: resolvedDigest, config: state.config });
+    const publicPayload = clone(resolvedIssue.publicMessage) || {};
+    const coverAttachment = await buildDailyNewsCoverAttachment(resolvedIssue);
+    publicPayload.files = [...(Array.isArray(publicPayload.files) ? publicPayload.files : []), coverAttachment];
+    publicPayload.embeds = (Array.isArray(publicPayload.embeds) ? publicPayload.embeds : []).map((embed, index) => {
+      if (index !== 0 || !embed || typeof embed !== "object" || Array.isArray(embed)) {
+        return embed;
+      }
+      return {
+        ...embed,
+        image: { url: `attachment://${coverAttachment.name}` },
+      };
+    });
     const resolvedPublicChannel = await resolveChannel({
       client,
       channel: publicChannel,
       channelId: state.config?.channels?.publicChannelId,
       label: "public Daily News",
     });
-    const publicMessage = await resolvedPublicChannel.send(resolvedIssue.publicMessage);
+    const publicMessage = await resolvedPublicChannel.send(publicPayload);
     const { thread, sentThreadMessages } = await sendThreadMessages(publicMessage, resolvedIssue, state);
 
     let staffMessage = null;
@@ -119,6 +137,7 @@ async function publishDailyNewsIssue({
       publishedAt: publishFinishedAt,
       publicChannelId: cleanString(resolvedPublicChannel.id, 80) || state.config?.channels?.publicChannelId || null,
       publicMessageId: cleanString(publicMessage?.id, 80) || null,
+      coverFileName: coverAttachment.name,
       threadId: cleanString(thread?.id, 80) || null,
       threadMessageCount: sentThreadMessages.length,
       staffChannelId: cleanString(staffChannel?.id, 80) || staffChannelId || null,

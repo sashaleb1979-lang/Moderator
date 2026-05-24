@@ -99,7 +99,7 @@ function shouldRunDailyNewsCompileTick({ db = {}, now } = {}) {
   };
 }
 
-function runDailyNewsCompileTick({ db = {}, now, saveDb, compileDailyNewsDigestFn = compileDailyNewsDigest } = {}) {
+function runDailyNewsCompileTick({ db = {}, now, saveDb, beforeCompile = null, compileDailyNewsDigestFn = compileDailyNewsDigest } = {}) {
   const state = ensureNewsState(db);
   const decision = shouldRunDailyNewsCompileTick({ db, now });
 
@@ -115,11 +115,20 @@ function runDailyNewsCompileTick({ db = {}, now, saveDb, compileDailyNewsDigestF
   }
 
   try {
+    if (typeof beforeCompile === "function") {
+      beforeCompile({
+        db,
+        dayKey: decision.dayKey,
+        publishHourMsk: decision.publishHourMsk,
+        nowIso: decision.nowIso,
+      });
+    }
     const result = compileDailyNewsDigestFn({
       db,
       targetDayKey: decision.dayKey,
       now: typeof now === "function" ? now : decision.nowIso,
       windowEndAt: resolveDailyNewsWindowEndAt(decision.dayKey, decision.publishHourMsk),
+      historySnapshotMode: "capture_if_current_day",
     });
     state.runtime.lastCompileStatus = "shadow_compiled";
     if (typeof saveDb === "function") {

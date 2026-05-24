@@ -74,11 +74,14 @@ test("publishDailyNewsIssue sends public thread and staff payload once per day",
 
   assert.equal(published.published, true);
   assert.equal(publicChannel.sent.length, 1);
+  assert.equal(publicChannel.sent[0].payload.files[0].name, "daily-news-2026-05-14.png");
+  assert.equal(publicChannel.sent[0].payload.embeds[0].image.url, "attachment://daily-news-2026-05-14.png");
   assert.equal(publicChannel.sent[0].threadMessages.length, 1);
   assert.equal(staffChannel.sent.length, 1);
   assert.equal(db.sot.news.runtime.lastPublishStatus, "published");
   assert.equal(db.sot.news.runtime.lastPublishedDayKey, "2026-05-14");
   assert.equal(db.sot.news.runtime.lastPublishResult.publicMessageId, "public-message-1");
+  assert.equal(db.sot.news.runtime.lastPublishResult.coverFileName, "daily-news-2026-05-14.png");
   assert.equal(saveCount, 1);
 
   const duplicate = await publishDailyNewsIssue({ db, digest: result.digest, publicChannel, staffChannel });
