@@ -46,6 +46,7 @@ const ROBLOX_RUNTIME_DIRTY_REASONS = new Set([
   "coplay_updated",
 ]);
 const ROBLOX_SESSION_HISTORY_LIMIT = 120;
+const ROBLOX_PRESENCE_BATCH_SIZE = 50;
 
 function normalizeRuntimeDiscordUserId(value = "") {
   return String(value || "").trim().slice(0, 80);
@@ -487,7 +488,7 @@ async function runRobloxPlaytimeCycle(options = {}) {
   const handleFailedBatch = options.handleFailedBatch || null;
   const logError = typeof options.logError === "function" ? options.logError : () => {};
   const candidateUserIds = normalizeCandidateUserIds(options.userIds);
-  const batchSize = normalizePositiveInteger(options.batchSize, 100);
+  const batchSize = normalizePositiveInteger(options.batchSize, ROBLOX_PRESENCE_BATCH_SIZE);
 
   assertFunction(fetchPresenceBatch, "fetchPresenceBatch");
   if (processPresenceBatch != null) {

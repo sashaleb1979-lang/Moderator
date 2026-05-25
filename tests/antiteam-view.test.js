@@ -1,5 +1,7 @@
 "use strict";
 
+const fs = require("node:fs");
+const path = require("node:path");
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { MessageFlags } = require("discord.js");
@@ -26,6 +28,18 @@ const {
   buildTicketTitle,
   ticketButtonId,
 } = require("../src/antiteam/view");
+
+test("every antiteam custom id exposed by the view has an operator route", () => {
+  const operatorSource = fs.readFileSync(path.join(__dirname, "..", "src", "antiteam", "operator.js"), "utf8");
+
+  for (const key of Object.keys(ANTITEAM_CUSTOM_IDS)) {
+    assert.match(
+      operatorSource,
+      new RegExp(`ANTITEAM_CUSTOM_IDS\\.${key}\\b`),
+      `missing operator route for ANTITEAM_CUSTOM_IDS.${key}`
+    );
+  }
+});
 const { normalizeAntiteamState } = require("../src/antiteam/state");
 const { getSupportProgressModel } = require("../src/antiteam/support-progress");
 

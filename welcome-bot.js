@@ -14495,6 +14495,7 @@ const autonomyGuardRoleMutationIgnores = new Map();
 const autonomyGuardProtectedRoleMutationIgnores = new Map();
 const autonomyGuardMessageDeleteAuditClaims = new Map();
 let verificationCallbackServer = null;
+let antiteamRuntimeReady = false;
 const VERIFICATION_OAUTH_STATE_EXPIRE_MS = 10 * 60 * 1000;
 const VERIFICATION_ROLE_MUTATION_IGNORE_MS = 30 * 1000;
 const AUTONOMY_GUARD_ROLE_MUTATION_IGNORE_MS = 30 * 1000;
@@ -14668,6 +14669,19 @@ client.once("clientReady", async () => {
     console.error("Autonomy target startup reconcile failed:", error?.message || error);
   }
 
+  await getAntiteamOperator().refreshStartPanel().then((result) => {
+    if (result?.edited) {
+      console.log("[antiteam][startup] start panel refreshed");
+    } else if (result?.message) {
+      console.log("[antiteam][startup] start panel republished");
+    } else {
+      console.log(`[antiteam][startup] start panel refresh skipped: ${result?.reason || "unknown"}`);
+    }
+  }).catch((error) => {
+    console.error("Antiteam startup panel refresh failed:", error?.message || error);
+  });
+
+  antiteamRuntimeReady = true;
   console.log("Welcome onboarding bot is ready");
   readyClient = client;
 
@@ -15403,6 +15417,14 @@ client.on("messageCreate", async (message) => {
 client.on("interactionCreate", async (interaction) => {
   const customId = String(interaction.customId || "");
   if (customId.startsWith("at:")) {
+    if (!antiteamRuntimeReady) {
+      await interaction.reply?.(ephemeralPayload({
+        content: "Бот ещё поднимает панели и роли. Попробуй ещё раз через пару секунд.",
+      })).catch((error) => {
+        console.warn(`Antiteam startup guard reply failed (${customId}): ${formatRuntimeError(error)}`);
+      });
+      return;
+    }
     const antiteamMethod = interaction.isButton?.()
       ? "handleButtonInteraction"
       : interaction.isStringSelectMenu?.()

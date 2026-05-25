@@ -3007,13 +3007,16 @@ function buildCanonicalRobloxSummary({ profile = null, summaryRoblox = {} } = {}
   const linkedCandidate = identityCandidates.find(isRobloxCandidateLinked) || null;
   const identity = usableIdentity || linkedCandidate || normalizedDomain || normalizedSummary || legacy || {};
   const domainPlaytime = rawDomain?.playtime && typeof rawDomain.playtime === "object" ? rawDomain.playtime : {};
-  const trackingState = cleanString(summaryRoblox?.trackingState, 40)
-    || (linkedCandidate ? getRobloxTrackabilityState(linkedCandidate) : getRobloxTrackabilityState(identity));
-  const trackingBlocker = cleanString(summaryRoblox?.trackingBlocker, 80)
-    || getRobloxTrackabilityBlocker(linkedCandidate || identity, trackingState);
   const username = firstCleanString([usableIdentity?.username, identity.username, summaryRoblox.currentUsername, summaryRoblox.username], 120);
   const displayName = firstCleanString([usableIdentity?.displayName, identity.displayName, summaryRoblox.currentDisplayName, summaryRoblox.displayName], 120);
   const userId = firstCleanString([usableIdentity?.userId, identity.userId, summaryRoblox.userId], 80);
+  const derivedTrackingState = linkedCandidate ? getRobloxTrackabilityState(linkedCandidate) : getRobloxTrackabilityState(identity);
+  const trackingState = usableIdentity && userId
+    ? "trackable"
+    : cleanString(summaryRoblox?.trackingState, 40) || derivedTrackingState;
+  const trackingBlocker = usableIdentity && userId
+    ? "none"
+    : cleanString(summaryRoblox?.trackingBlocker, 80) || getRobloxTrackabilityBlocker(linkedCandidate || identity, trackingState);
   const builtProfileUrl = /^\d+$/.test(userId) ? buildRobloxProfileUrl(userId) : "";
   const profileUrl = normalizeMediaUrl(firstCleanString([
     usableIdentity?.profileUrl,

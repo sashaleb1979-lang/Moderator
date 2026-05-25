@@ -141,6 +141,23 @@ test("runRobloxPlaytimeCycle normalizes candidate ids before batching", async ()
   });
 });
 
+test("runRobloxPlaytimeCycle defaults presence polling to safe 50 user batches", async () => {
+  const batches = [];
+  const userIds = Array.from({ length: 70 }, (_, index) => index + 1);
+
+  const result = await runRobloxPlaytimeCycle({
+    userIds,
+    async fetchPresenceBatch(batchUserIds) {
+      batches.push(batchUserIds);
+      return [];
+    },
+  });
+
+  assert.equal(result.totalCandidates, 70);
+  assert.equal(result.totalBatches, 2);
+  assert.deepEqual(batches.map((batch) => batch.length), [50, 20]);
+});
+
 test("runRobloxProfileRefreshJob refreshes verified Roblox profiles and keeps username history current", async () => {
   const db = {
     profiles: {

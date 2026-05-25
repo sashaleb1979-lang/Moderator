@@ -174,22 +174,34 @@ function summarizeRobloxCleanupAudit(db = {}, options = {}) {
     totalProfiles: 0,
     profilesWithRobloxData: 0,
     usableVerified: 0,
+    verifiedTrackable: 0,
+    verifiedWithRefreshError: 0,
     repairableVerified: 0,
     manualOnlyVerified: 0,
     pending: 0,
+    restoredPending: 0,
     failed: 0,
+    failedEmpty: 0,
     unverified: 0,
     noBinding: 0,
     suspiciousPollution: 0,
     refreshError: 0,
     usableWithoutAntiteamConfirmation: 0,
     restoredButNeedsRebind: 0,
+    uiRebindMismatchCandidates: 0,
     safeRepairCandidates: 0,
     manualReviewCandidates: 0,
     rebindRequiredCandidates: 0,
+    needsManualRebind: 0,
   };
   const samples = {
     byPrimaryCohort: {},
+    verified_trackable: [],
+    verified_with_refresh_error: [],
+    restored_pending: [],
+    failed_empty: [],
+    needs_manual_rebind: [],
+    ui_rebind_mismatch_candidates: [],
     suspiciousPollution: [],
     usableWithoutAntiteamConfirmation: [],
     restoredButNeedsRebind: [],
@@ -205,25 +217,64 @@ function summarizeRobloxCleanupAudit(db = {}, options = {}) {
     const cleanupEntry = db?.sot?.integrations?.roblox?.cleanup?.byDiscordUserId?.[userId] || null;
     const restoredByCleanup = ["restored_from_submission", "restored_from_cleanup_trail"].includes(cleanString(cleanupEntry?.lastOutcome, 80));
     const restoredButNeedsRebind = restoredByCleanup && ["manual_review", "rebind_required"].includes(record.suggestedAction);
+    const restoredPending = restoredByCleanup && record.primaryCohort === "pending";
+    const failedEmpty = record.primaryCohort === "failed" && !record.robloxUsername && !record.robloxUserId;
+    const needsManualRebind = ["manual_review", "rebind_required"].includes(record.suggestedAction);
+    const uiRebindMismatchCandidate = Boolean(
+      record.usableIdentity
+      && (
+        record.refreshError
+        || record.trackingState !== "trackable"
+        || (record.trackingBlocker && record.trackingBlocker !== "none")
+      )
+    );
 
     counts.totalProfiles += 1;
     if (record.hasAnyRobloxData) counts.profilesWithRobloxData += 1;
     if (record.primaryCohort === "usable_verified") counts.usableVerified += 1;
+    if (record.primaryCohort === "usable_verified" && record.trackingState === "trackable") counts.verifiedTrackable += 1;
+    if (record.primaryCohort === "usable_verified" && record.refreshError) counts.verifiedWithRefreshError += 1;
     if (record.primaryCohort === "repairable_verified") counts.repairableVerified += 1;
     if (record.primaryCohort === "manual_only_verified") counts.manualOnlyVerified += 1;
     if (record.primaryCohort === "pending") counts.pending += 1;
+    if (restoredPending) counts.restoredPending += 1;
     if (record.primaryCohort === "failed") counts.failed += 1;
+    if (failedEmpty) counts.failedEmpty += 1;
     if (record.primaryCohort === "unverified") counts.unverified += 1;
     if (record.primaryCohort === "no_binding") counts.noBinding += 1;
     if (record.suspiciousPollution) counts.suspiciousPollution += 1;
     if (record.refreshError) counts.refreshError += 1;
     if (record.usableWithoutAntiteamConfirmation) counts.usableWithoutAntiteamConfirmation += 1;
     if (restoredButNeedsRebind) counts.restoredButNeedsRebind += 1;
+    if (uiRebindMismatchCandidate) counts.uiRebindMismatchCandidates += 1;
     if (record.suggestedAction === "safe_repair") counts.safeRepairCandidates += 1;
     if (record.suggestedAction === "manual_review") counts.manualReviewCandidates += 1;
     if (record.suggestedAction === "rebind_required") counts.rebindRequiredCandidates += 1;
+    if (needsManualRebind) counts.needsManualRebind += 1;
 
     pushSample(samples.byPrimaryCohort, record.primaryCohort, sample, sampleLimit);
+    if (record.primaryCohort === "usable_verified" && record.trackingState === "trackable") {
+      pushSample(samples, "verified_trackable", sample, sampleLimit);
+    }
+    if (record.primaryCohort === "usable_verified" && record.refreshError) {
+      pushSample(samples, "verified_with_refresh_error", sample, sampleLimit);
+    }
+    if (restoredPending) {
+      pushSample(samples, "restored_pending", {
+        ...sample,
+        cleanupOutcome: cleanString(cleanupEntry?.lastOutcome, 80),
+        cleanupSource: cleanString(cleanupEntry?.lastSource, 80),
+      }, sampleLimit);
+    }
+    if (failedEmpty) {
+      pushSample(samples, "failed_empty", sample, sampleLimit);
+    }
+    if (needsManualRebind) {
+      pushSample(samples, "needs_manual_rebind", sample, sampleLimit);
+    }
+    if (uiRebindMismatchCandidate) {
+      pushSample(samples, "ui_rebind_mismatch_candidates", sample, sampleLimit);
+    }
     if (record.suspiciousPollution) {
       pushSample(samples, "suspiciousPollution", sample, sampleLimit);
     }
