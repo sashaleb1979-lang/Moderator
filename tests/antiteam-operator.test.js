@@ -31,12 +31,14 @@ function createModalInteraction(
     },
     async deferReply(payload) {
       calls.push(["deferReply", payload]);
+      this.deferred = true;
     },
     async editReply(payload) {
       calls.push(["editReply", payload]);
     },
     async reply(payload) {
       calls.push(["reply", payload]);
+      this.replied = true;
     },
   };
 }
@@ -51,21 +53,26 @@ function createButtonInteraction(customId, user = { id: "helper-1", username: "H
     isButton: () => true,
     async reply(payload) {
       calls.push(["reply", payload]);
+      this.replied = true;
     },
     async update(payload) {
       calls.push(["update", payload]);
+      this.replied = true;
     },
     async deferUpdate() {
       calls.push(["deferUpdate"]);
+      this.deferred = true;
     },
     async deferReply(payload) {
       calls.push(["deferReply", payload]);
+      this.deferred = true;
     },
     async editReply(payload) {
       calls.push(["editReply", payload]);
     },
     async showModal(payload) {
       calls.push(["showModal", payload]);
+      this.replied = true;
     },
   };
 }
@@ -80,12 +87,15 @@ function createSelectInteraction(customId, values = [], user = { id: "user-1", u
     isStringSelectMenu: () => true,
     async reply(payload) {
       calls.push(["reply", payload]);
+      this.replied = true;
     },
     async update(payload) {
       calls.push(["update", payload]);
+      this.replied = true;
     },
     async deferUpdate() {
       calls.push(["deferUpdate"]);
+      this.deferred = true;
     },
     async editReply(payload) {
       calls.push(["editReply", payload]);
@@ -111,15 +121,18 @@ function createSlashInteraction(subcommand, {
     },
     async reply(payload) {
       calls.push(["reply", payload]);
+      this.replied = true;
     },
     async deferReply(payload) {
       calls.push(["deferReply", payload]);
+      this.deferred = true;
     },
     async editReply(payload) {
       calls.push(["editReply", payload]);
     },
     async showModal(payload) {
       calls.push(["showModal", payload]);
+      this.replied = true;
     },
   };
 }
@@ -252,8 +265,8 @@ test("start panel submit button shows a small Roblox panel when profile has no R
   const interaction = createButtonInteraction(ANTITEAM_CUSTOM_IDS.open, { id: "user-1", username: "User" });
 
   assert.equal(await operator.handleButtonInteraction(interaction), true);
-  assert.equal(interaction.calls[0][0], "reply");
-  assert.match(JSON.stringify(interaction.calls[0][1].components[0].toJSON()), /Внести ник/);
+  assert.deepEqual(interaction.calls.map((call) => call[0]), ["deferReply", "editReply"]);
+  assert.match(JSON.stringify(interaction.calls[1][1].components[0].toJSON()), /Внести ник/);
 
   const request = createButtonInteraction(ANTITEAM_CUSTOM_IDS.requestRobloxNick, { id: "user-1", username: "User" });
   assert.equal(await operator.handleButtonInteraction(request), true);
@@ -280,8 +293,8 @@ test("start panel submit button ignores Roblox records without verified trust ma
 
   assert.equal(await operator.handleButtonInteraction(interaction), true);
 
-  assert.equal(interaction.calls[0][0], "reply");
-  assert.match(JSON.stringify(interaction.calls[0][1].components[0].toJSON()), /Roblox ник/);
+  assert.deepEqual(interaction.calls.map((call) => call[0]), ["deferReply", "editReply"]);
+  assert.match(JSON.stringify(interaction.calls[1][1].components[0].toJSON()), /Roblox ник/);
 });
 
 test("start panel accepts legacy verified Roblox records with verifiedAt fallback", async () => {
@@ -301,8 +314,8 @@ test("start panel accepts legacy verified Roblox records with verifiedAt fallbac
 
   assert.equal(await operator.handleButtonInteraction(interaction), true);
 
-  assert.equal(interaction.calls[0][0], "reply");
-  assert.match(JSON.stringify(interaction.calls[0][1].components[0].toJSON()), /Подтверди Roblox/);
+  assert.deepEqual(interaction.calls.map((call) => call[0]), ["deferReply", "editReply"]);
+  assert.match(JSON.stringify(interaction.calls[1][1].components[0].toJSON()), /Подтверди Roblox/);
 });
 
 test("start panel ignores legacy verified Roblox records with invalid Roblox user id", async () => {
@@ -322,9 +335,9 @@ test("start panel ignores legacy verified Roblox records with invalid Roblox use
 
   assert.equal(await operator.handleButtonInteraction(interaction), true);
 
-  assert.equal(interaction.calls[0][0], "reply");
-  assert.match(JSON.stringify(interaction.calls[0][1].components[0].toJSON()), /Roblox ник/);
-  assert.match(JSON.stringify(interaction.calls[0][1].components[0].toJSON()), /нет валидного Roblox userId/);
+  assert.deepEqual(interaction.calls.map((call) => call[0]), ["deferReply", "editReply"]);
+  assert.match(JSON.stringify(interaction.calls[1][1].components[0].toJSON()), /Roblox ник/);
+  assert.match(JSON.stringify(interaction.calls[1][1].components[0].toJSON()), /нет валидного Roblox userId/);
 });
 
 test("start panel rejects failed Roblox records even with stale verified markers", async () => {
@@ -348,8 +361,8 @@ test("start panel rejects failed Roblox records even with stale verified markers
 
   assert.equal(await operator.handleButtonInteraction(interaction), true);
 
-  assert.equal(interaction.calls[0][0], "reply");
-  assert.match(JSON.stringify(interaction.calls[0][1].components[0].toJSON()), /Roblox ник/);
+  assert.deepEqual(interaction.calls.map((call) => call[0]), ["deferReply", "editReply"]);
+  assert.match(JSON.stringify(interaction.calls[1][1].components[0].toJSON()), /Roblox ник/);
 });
 
 test("start panel asks to confirm verified Roblox once, then reuses it", async () => {
@@ -378,8 +391,8 @@ test("start panel asks to confirm verified Roblox once, then reuses it", async (
 
   assert.equal(await operator.handleButtonInteraction(interaction), true);
 
-  assert.equal(interaction.calls[0][0], "reply");
-  assert.match(JSON.stringify(interaction.calls[0][1].components[0].toJSON()), /Подтверди Roblox/);
+  assert.deepEqual(interaction.calls.map((call) => call[0]), ["deferReply", "editReply"]);
+  assert.match(JSON.stringify(interaction.calls[1][1].components[0].toJSON()), /Подтверди Roblox/);
   assert.equal(db.sot.antiteam.drafts["user-1"], undefined);
 
   const confirm = createButtonInteraction(ANTITEAM_CUSTOM_IDS.confirmRoblox, { id: "user-1", username: "User" });
@@ -1514,6 +1527,29 @@ test("draft cancel clears a live draft and confirms cancellation", async () => {
   assert.equal(interaction.calls.at(-1)[1].content, "Заявка антитима отменена.");
 });
 
+test("draft cancel does not reply again when the interaction is already deferred", async () => {
+  const db = {};
+  setAntiteamDraft(db, "user-1", {
+    userTag: "User",
+    roblox: { userId: "101", username: "Anchor" },
+    description: "Нужна помощь.",
+  }, { now: "2026-05-16T10:00:00.000Z" });
+  const errors = [];
+  const operator = createAntiteamOperator({
+    db,
+    saveDb() {},
+    logError: (...args) => errors.push(args.join(" ")),
+  });
+  const interaction = createButtonInteraction(ANTITEAM_CUSTOM_IDS.cancelDraft, { id: "user-1", username: "User" });
+  interaction.deferred = true;
+
+  assert.equal(await operator.handleButtonInteraction(interaction), true);
+
+  assert.deepEqual(interaction.calls.map((call) => call[0]), ["editReply"]);
+  assert.equal(db.sot.antiteam.drafts["user-1"], undefined);
+  assert.doesNotMatch(errors.join("\n"), /already been sent or deferred/i);
+});
+
 test("draft cancel fails gracefully when the draft already expired", async () => {
   const db = {};
   const operator = createAntiteamOperator({
@@ -1612,15 +1648,15 @@ test("draft toggle and select update the setup panel immediately", async () => {
 
   const toggle = createButtonInteraction(ANTITEAM_CUSTOM_IDS.toggleDirect, { id: "user-1", username: "User" });
   assert.equal(await operator.handleButtonInteraction(toggle), true);
-  assert.deepEqual(toggle.calls.map((call) => call[0]), ["update"]);
+  assert.deepEqual(toggle.calls.map((call) => call[0]), ["deferUpdate", "editReply"]);
 
   const select = createSelectInteraction(ANTITEAM_CUSTOM_IDS.countSelect, ["4-10"]);
   assert.equal(await operator.handleSelectMenuInteraction(select), true);
-  assert.deepEqual(select.calls.map((call) => call[0]), ["update"]);
+  assert.deepEqual(select.calls.map((call) => call[0]), ["deferUpdate", "editReply"]);
   assert.equal(db.sot.antiteam.drafts["user-1"].count, "4-10");
 });
 
-test("draft toggle updates the message before serialized persistence finishes", async () => {
+test("draft toggle acknowledges before serialized persistence finishes", async () => {
   const db = {};
   setAntiteamDraft(db, "user-1", {
     userTag: "User",
@@ -1650,9 +1686,10 @@ test("draft toggle updates the message before serialized persistence finishes", 
   const pending = operator.handleButtonInteraction(toggle);
   const callsBeforePersist = await persistEntered;
 
-  assert.deepEqual(callsBeforePersist, ["update"]);
+  assert.deepEqual(callsBeforePersist, ["deferUpdate"]);
   releasePersist();
   assert.equal(await pending, true);
+  assert.deepEqual(toggle.calls.map((call) => call[0]), ["deferUpdate", "editReply"]);
   assert.equal(db.sot.antiteam.drafts["user-1"].directJoinEnabled, true);
 });
 
@@ -1668,18 +1705,14 @@ test("description modal updates the same setup message when update is available"
     saveDb() {},
   });
   const interaction = createModalInteraction("at:desc:modal", { description: "Бить A/B у центра." });
-  interaction.update = async (payload) => {
-    interaction.calls.push(["update", payload]);
-  };
-
   assert.equal(await operator.handleModalSubmitInteraction(interaction), true);
 
   assert.equal(db.sot.antiteam.drafts["user-1"].description, "Бить A/B у центра.");
-  assert.deepEqual(interaction.calls.map((call) => call[0]), ["update"]);
-  assert.match(JSON.stringify(interaction.calls[0][1].components[0].toJSON()), /Бить A\/B у центра/);
+  assert.deepEqual(interaction.calls.map((call) => call[0]), ["deferReply", "editReply"]);
+  assert.match(JSON.stringify(interaction.calls[1][1].components[0].toJSON()), /Бить A\/B у центра/);
 });
 
-test("description modal falls back to an ephemeral panel when update is rejected", async () => {
+test("description modal keeps saved text when the interaction expired before ack", async () => {
   const db = {};
   setAntiteamDraft(db, "user-1", {
     userTag: "User",
@@ -1693,18 +1726,16 @@ test("description modal falls back to an ephemeral panel when update is rejected
     logError: (...args) => errors.push(args.join(" ")),
   });
   const interaction = createModalInteraction("at:desc:modal", { description: "Бить C/D у моста." });
-  interaction.update = async () => {
-    interaction.calls.push(["update"]);
+  interaction.deferReply = async () => {
+    interaction.calls.push(["deferReply"]);
     throw new Error("Unknown interaction");
   };
 
   assert.equal(await operator.handleModalSubmitInteraction(interaction), true);
 
   assert.equal(db.sot.antiteam.drafts["user-1"].description, "Бить C/D у моста.");
-  assert.deepEqual(interaction.calls.map((call) => call[0]), ["update", "deferReply", "editReply"]);
-  assert.equal(interaction.calls[1][1].flags, MessageFlags.Ephemeral);
-  assert.match(JSON.stringify(interaction.calls[2][1].components[0].toJSON()), /Бить C\/D у моста/);
-  assert.match(errors.join("\n"), /draft modal update failed/i);
+  assert.deepEqual(interaction.calls.map((call) => call[0]), ["deferReply"]);
+  assert.match(errors.join("\n"), /expired_before_ack/i);
 });
 
 test("moderator stats controls delete one helper and clear the aggregate table", async () => {

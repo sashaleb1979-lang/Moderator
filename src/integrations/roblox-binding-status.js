@@ -33,10 +33,12 @@ function resolveReasonFromSummary(summaryValue = {}) {
   const summary = summaryValue && typeof summaryValue === "object" ? summaryValue : {};
   const trackingState = cleanString(summary.trackingState, 40).toLowerCase();
   const username = cleanString(summary.currentUsername || summary.username, 120);
-  const userId = cleanString(summary.userId, 40);
+  const userId = normalizeRobloxPlatformUserId(summary.userId);
+  const verificationStatus = cleanString(summary.verificationStatus, 40).toLowerCase();
   const usable = summary.isTrackable === true
     || trackingState === "trackable"
-    || (!trackingState && summary.hasVerifiedAccount === true && Boolean(username) && Boolean(userId));
+    || (verificationStatus === "verified" && Boolean(username) && Boolean(userId))
+    || (summary.hasVerifiedAccount === true && Boolean(username) && Boolean(userId));
 
   if (usable) {
     return { code: "usable", usable: true };
@@ -55,7 +57,6 @@ function resolveReasonFromSummary(summaryValue = {}) {
     return { code: "failed_verification", usable: false };
   }
 
-  const verificationStatus = cleanString(summary.verificationStatus, 40).toLowerCase();
   if (verificationStatus === "pending") return { code: "pending_verification", usable: false };
   if (verificationStatus === "failed") return { code: "failed_verification", usable: false };
   if (verificationStatus === "verified") return { code: "missing_account", usable: false };

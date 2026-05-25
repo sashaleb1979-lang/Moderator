@@ -54,3 +54,19 @@ test("roblox binding status helper flags suspicious Discord-like Roblox identity
     "Старая Roblox-связка выглядит недостоверной и не будет переиспользована. Укажи аккаунт заново."
   );
 });
+
+test("roblox binding status treats verified valid userId as usable despite stale tracking diagnostics", () => {
+  const staleSummary = {
+    hasVerifiedAccount: true,
+    isTrackable: false,
+    trackingState: "repairable",
+    trackingBlocker: "invalid_user_id",
+    verificationStatus: "verified",
+    currentUsername: "KolhozU",
+    userId: "9843941555",
+    refreshError: "old refresh failed",
+  };
+
+  assert.deepEqual(resolveRobloxBindingReason(staleSummary), { code: "usable", usable: true });
+  assert.equal(formatRobloxReadinessLabel(staleSummary), "Roblox связан");
+});

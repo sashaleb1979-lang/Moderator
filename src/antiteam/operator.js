@@ -20,7 +20,6 @@ const {
   incrementHelperStats,
   markRobloxConfirmed,
   matchRobloxFriendsToDiscordProfiles,
-  normalizeAntiteamDraft,
   normalizeAntiteamPingMode,
   recordAntiteamHelper,
   setAntiteamDraft,
@@ -65,6 +64,8 @@ const {
 function noop() {}
 
 const ANTITEAM_TRANSIENT_PING_DELETE_MS = 250;
+const ANTITEAM_UNKNOWN_INTERACTION_CODES = new Set([10062]);
+const ANTITEAM_ALREADY_ACK_CODES = new Set([40060]);
 
 function normalizeUsernameInput(value) {
   const username = cleanString(value, 40);
@@ -245,6 +246,189 @@ function createAntiteamOperator(options = {}) {
     const result = await Promise.resolve().then(mutate);
     if (shouldSave && typeof options.saveDb === "function") options.saveDb();
     return result;
+  }
+
+  function getInteractionType(interaction = {}) {
+    if (interaction?.isButton?.()) return "button";
+    if (interaction?.isStringSelectMenu?.()) return "select";
+    if (interaction?.isModalSubmit?.()) return "modal";
+    if (interaction?.isChatInputCommand?.()) return "command";
+    return "unknown";
+  }
+
+  function getInteractionErrorCode(error = {}) {
+    return Number(error?.code || error?.rawError?.code || error?.status || 0) || 0;
+  }
+
+  function isUnknownInteractionError(error = {}) {
+    const code = getInteractionErrorCode(error);
+    const message = cleanString(error?.message || error?.rawError?.message, 240).toLowerCase();
+    return ANTITEAM_UNKNOWN_INTERACTION_CODES.has(code) || message.includes("unknown interaction");
+  }
+
+  function isAlreadyAcknowledgedError(error = {}) {
+    const code = getInteractionErrorCode(error);
+    const message = cleanString(error?.message || error?.rawError?.message, 240).toLowerCase();
+    return ANTITEAM_ALREADY_ACK_CODES.has(code) || message.includes("already been sent or deferred");
+  }
+
+  function markInteractionAcknowledged(interaction = {}, kind = "deferred") {
+    if (!interaction || typeof interaction !== "object") return;
+    try {
+      if (kind === "replied") interaction.replied = true;
+      else interaction.deferred = true;
+    } catch {
+      // discord.js exposes these as readonly in production; tests use plain objects.
+    }
+  }
+
+  function isInteractionAcknowledged(interaction = {}) {
+    return interaction?.deferred === true || interaction?.replied === true;
+  }
+
+  function logInteraction(interaction, outcome, extra = {}) {
+    const customId = cleanString(interaction?.customId || interaction?.commandName, 120) || "unknown";
+    const type = getInteractionType(interaction);
+    const userId = cleanString(interaction?.user?.id, 80) || "unknown";
+    const parts = [
+      `[antiteam][interaction] customId=${customId}`,
+      `type=${type}`,
+      `user=${userId}`,
+      `outcome=${cleanString(outcome, 80) || "unknown"}`,
+    ];
+    if (extra.acknowledgedAtMs != null) parts.push(`ackMs=${Number(extra.acknowledgedAtMs) || 0}`);
+    if (extra.error) {
+      const code = getInteractionErrorCode(extra.error);
+      if (code) parts.push(`code=${code}`);
+      parts.push(`error=${cleanString(extra.error?.message || extra.error, 180)}`);
+    }
+    logError(parts.join(" "));
+  }
+
+  async function safeDeferReply(interaction, payload = { flags: MessageFlags.Ephemeral }) {
+    if (isInteractionAcknowledged(interaction)) {
+      logInteraction(interaction, "already_acknowledged");
+      return { ok: true, alreadyAcknowledged: true };
+    }
+    const startedAt = Date.now();
+    try {
+      await interaction.deferReply(payload);
+      markInteractionAcknowledged(interaction);
+      logInteraction(interaction, "ack_ok", { acknowledgedAtMs: Date.now() - startedAt });
+      return { ok: true };
+    } catch (error) {
+      if (isUnknownInteractionError(error)) {
+        logInteraction(interaction, "expired_before_ack", { error });
+        return { ok: false, expired: true, error };
+      }
+      if (isAlreadyAcknowledgedError(error)) {
+        logInteraction(interaction, "already_acknowledged", { error });
+        markInteractionAcknowledged(interaction);
+        return { ok: true, alreadyAcknowledged: true };
+      }
+      logInteraction(interaction, "ack_failed", { error });
+      throw error;
+    }
+  }
+
+  async function safeDeferUpdate(interaction) {
+    if (isInteractionAcknowledged(interaction)) {
+      logInteraction(interaction, "already_acknowledged");
+      return { ok: true, alreadyAcknowledged: true };
+    }
+    const startedAt = Date.now();
+    try {
+      await interaction.deferUpdate();
+      markInteractionAcknowledged(interaction);
+      logInteraction(interaction, "ack_ok", { acknowledgedAtMs: Date.now() - startedAt });
+      return { ok: true };
+    } catch (error) {
+      if (isUnknownInteractionError(error)) {
+        logInteraction(interaction, "expired_before_ack", { error });
+        return { ok: false, expired: true, error };
+      }
+      if (isAlreadyAcknowledgedError(error)) {
+        logInteraction(interaction, "already_acknowledged", { error });
+        markInteractionAcknowledged(interaction);
+        return { ok: true, alreadyAcknowledged: true };
+      }
+      logInteraction(interaction, "ack_failed", { error });
+      throw error;
+    }
+  }
+
+  async function safeReply(interaction, payload) {
+    try {
+      if (isInteractionAcknowledged(interaction)) {
+        if (typeof interaction.editReply === "function") {
+          await interaction.editReply(payload);
+          return true;
+        }
+        if (typeof interaction.followUp === "function") {
+          await interaction.followUp(payload);
+          return true;
+        }
+        return false;
+      }
+      await interaction.reply(payload);
+      markInteractionAcknowledged(interaction, "replied");
+      return true;
+    } catch (error) {
+      if (isUnknownInteractionError(error) || isAlreadyAcknowledgedError(error)) {
+        logInteraction(interaction, isUnknownInteractionError(error) ? "expired_before_ack" : "already_acknowledged", { error });
+        return false;
+      }
+      throw error;
+    }
+  }
+
+  async function safeEditReply(interaction, payload) {
+    try {
+      await interaction.editReply(payload);
+      return true;
+    } catch (error) {
+      if (isUnknownInteractionError(error) || isAlreadyAcknowledgedError(error)) {
+        logInteraction(interaction, isUnknownInteractionError(error) ? "expired_before_ack" : "already_acknowledged", { error });
+        return false;
+      }
+      throw error;
+    }
+  }
+
+  async function safeUpdate(interaction, payload) {
+    if (isInteractionAcknowledged(interaction)) {
+      return safeEditReply(interaction, payload);
+    }
+    try {
+      await interaction.update(payload);
+      markInteractionAcknowledged(interaction, "replied");
+      return true;
+    } catch (error) {
+      if (isUnknownInteractionError(error) || isAlreadyAcknowledgedError(error)) {
+        logInteraction(interaction, isUnknownInteractionError(error) ? "expired_before_ack" : "already_acknowledged", { error });
+        return false;
+      }
+      throw error;
+    }
+  }
+
+  async function safeShowModal(interaction, modal) {
+    if (isInteractionAcknowledged(interaction)) {
+      logInteraction(interaction, "already_acknowledged");
+      return false;
+    }
+    try {
+      await interaction.showModal(modal);
+      markInteractionAcknowledged(interaction, "replied");
+      logInteraction(interaction, "ack_ok");
+      return true;
+    } catch (error) {
+      if (isUnknownInteractionError(error) || isAlreadyAcknowledgedError(error)) {
+        logInteraction(interaction, isUnknownInteractionError(error) ? "expired_before_ack" : "already_acknowledged", { error });
+        return false;
+      }
+      throw error;
+    }
   }
 
   function isModerator(member = null) {
@@ -486,6 +670,12 @@ function createAntiteamOperator(options = {}) {
     if (!message?.edit) return { edited: false, reason: "message-not-found" };
     await message.edit(buildStartPanelPayload(config));
     return { edited: true, message };
+  }
+
+  async function refreshStartPanel() {
+    const edited = await editPublishedStartPanel();
+    if (edited.edited || edited.reason !== "message-not-found") return edited;
+    return publishStartPanel("Стартовая панель антитима восстановлена после старта.");
   }
 
   function isConcreteRobloxGameId(gameId = "") {
@@ -902,33 +1092,27 @@ function createAntiteamOperator(options = {}) {
     return null;
   }
 
-  function buildOptimisticDraft(draft = {}, patch = {}, userId = "") {
-    return normalizeAntiteamDraft({
-      ...draft,
-      ...patch,
-      userId: cleanString(draft.userId || userId, 80),
-    }, getConfig());
-  }
-
   async function handleStartPanelOpenInteraction(interaction) {
     if (!interaction?.isButton?.()) return false;
+    const ack = await safeDeferReply(interaction, { flags: MessageFlags.Ephemeral });
     const storedRoblox = getStoredRobloxSnapshot(interaction.user.id);
     if (storedRoblox) {
       const confirmation = getRobloxConfirmation(db, interaction.user.id);
       if (confirmation?.robloxUserId !== storedRoblox.userId) {
-        await interaction.reply(buildRobloxConfirmPayload(storedRoblox));
+        if (ack.ok) await safeEditReply(interaction, buildRobloxConfirmPayload(storedRoblox));
         return true;
       }
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       return await openTicketDraftWithRoblox(interaction, storedRoblox, "standard", {
         response: "editReply",
         statusText: `Roblox взят из твоего профиля: ${storedRoblox.username}.`,
       });
     }
     const rawProfile = typeof options.getProfile === "function" ? options.getProfile(interaction.user.id) : db.profiles?.[interaction.user.id];
-    await interaction.reply(buildRobloxMissingPayload({
-      reasonText: getRobloxBindingRecoveryText(rawProfile, { audience: "antiteam" }),
-    }));
+    if (ack.ok) {
+      await safeEditReply(interaction, buildRobloxMissingPayload({
+        reasonText: getRobloxBindingRecoveryText(rawProfile, { audience: "antiteam" }),
+      }));
+    }
     return true;
   }
 
@@ -947,9 +1131,9 @@ function createAntiteamOperator(options = {}) {
     }, { now: nowIso() }));
     const payload = buildTicketSetupPayload(draft, getConfig(), statusText || `Roblox готов: ${draft.roblox.username}.`);
     if (response === "editReply") {
-      await interaction.editReply(payload);
+      await safeEditReply(interaction, payload);
     } else {
-      await interaction.reply(payload);
+      await safeReply(interaction, payload);
     }
     return true;
   }
@@ -1088,7 +1272,8 @@ function createAntiteamOperator(options = {}) {
     }
 
     if (id === ANTITEAM_CUSTOM_IDS.progress) {
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      const ack = await safeDeferReply(interaction, { flags: MessageFlags.Ephemeral });
+      if (!ack.ok) return true;
       try {
         const helperStats = getState().stats?.helpers?.[interaction.user.id] || {};
         const points = Number(helperStats.confirmedArrived) || 0;
@@ -1103,30 +1288,31 @@ function createAntiteamOperator(options = {}) {
           displayName: getUserTag(interaction.user),
         });
         const attachmentName = "antiteam-support-progress.png";
-        await interaction.editReply({
+        await safeEditReply(interaction, {
           ...buildSupportProgressPayload(model, { attachmentName }),
           files: [new AttachmentBuilder(image, { name: attachmentName })],
         });
       } catch (error) {
         logError("Antiteam support progress render failed:", error?.message || error);
-        await interaction.editReply({ content: "Не удалось собрать PNG прогресса. Попробуй ещё раз чуть позже.", components: [] });
+        await safeEditReply(interaction, { content: "Не удалось собрать PNG прогресса. Попробуй ещё раз чуть позже.", components: [] });
       }
       return true;
     }
 
     if (id === ANTITEAM_CUSTOM_IDS.guide) {
-      await interaction.reply(buildStartGuidePayload(getConfig()));
+      await safeReply(interaction, buildStartGuidePayload(getConfig()));
       return true;
     }
 
     if (id === ANTITEAM_CUSTOM_IDS.joinBattalion) {
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      const ack = await safeDeferReply(interaction, { flags: MessageFlags.Ephemeral });
+      if (!ack.ok) return true;
       let result = null;
       try {
         result = await grantBattalionRole(interaction.user.id, "antiteam battalion self-join");
       } catch (error) {
         logError("Antiteam battalion self-join failed:", error?.message || error);
-        await interaction.editReply({ content: "Не смог выдать роль батальёна. Проверь права бота и роль в настройках.", components: [] });
+        await safeEditReply(interaction, { content: "Не смог выдать роль батальёна. Проверь права бота и роль в настройках.", components: [] });
         return true;
       }
       const message = result?.skipped === "missing-role"
@@ -1136,23 +1322,24 @@ function createAntiteamOperator(options = {}) {
           : result?.skipped === "already-has-role"
             ? "Ты уже в батальоне."
             : "Готово, выдал роль батальёна.";
-      await interaction.editReply({ content: message, components: [] });
+      await safeEditReply(interaction, { content: message, components: [] });
       return true;
     }
 
     if (id === ANTITEAM_CUSTOM_IDS.requestRobloxNick || id === ANTITEAM_CUSTOM_IDS.changeRoblox) {
-      await interaction.showModal(buildRobloxUsernameModal({ customId: "at:roblox" }));
+      await safeShowModal(interaction, buildRobloxUsernameModal({ customId: "at:roblox" }));
       return true;
     }
 
     if (id === ANTITEAM_CUSTOM_IDS.confirmRoblox) {
       const storedRoblox = getStoredRobloxSnapshot(interaction.user.id);
       if (!storedRoblox) {
-        await interaction.reply({ content: "Roblox в профиле больше не найден. Внеси ник вручную.", flags: MessageFlags.Ephemeral });
+        await safeReply(interaction, { content: "Roblox в профиле больше не найден. Внеси ник вручную.", flags: MessageFlags.Ephemeral });
         return true;
       }
-      await interaction.deferUpdate();
+      const ack = await safeDeferUpdate(interaction);
       await persist("antiteam-roblox-confirm", () => markRobloxConfirmed(db, interaction.user.id, storedRoblox.userId, { now: nowIso() }));
+      if (!ack.ok) return true;
       return await openTicketDraftWithRoblox(interaction, storedRoblox, "standard", {
         response: "editReply",
         statusText: `Roblox подтверждён: ${storedRoblox.username}.`,
@@ -1164,7 +1351,7 @@ function createAntiteamOperator(options = {}) {
         await replyNoPermission(interaction);
         return true;
       }
-      await interaction.showModal(buildConfigModal(getConfig()));
+      await safeShowModal(interaction, buildConfigModal(getConfig()));
       return true;
     }
 
@@ -1173,7 +1360,7 @@ function createAntiteamOperator(options = {}) {
         await replyNoPermission(interaction);
         return true;
       }
-      await interaction.showModal(buildPingConfigModal(getConfig()));
+      await safeShowModal(interaction, buildPingConfigModal(getConfig()));
       return true;
     }
 
@@ -1182,7 +1369,7 @@ function createAntiteamOperator(options = {}) {
         await replyNoPermission(interaction);
         return true;
       }
-      await interaction.showModal(buildPanelTextModal(getConfig()));
+      await safeShowModal(interaction, buildPanelTextModal(getConfig()));
       return true;
     }
 
@@ -1191,7 +1378,7 @@ function createAntiteamOperator(options = {}) {
         await replyNoPermission(interaction);
         return true;
       }
-      await interaction.showModal(buildAdvancedConfigModal(getConfig()));
+      await safeShowModal(interaction, buildAdvancedConfigModal(getConfig()));
       return true;
     }
 
@@ -1200,12 +1387,12 @@ function createAntiteamOperator(options = {}) {
         await replyNoPermission(interaction);
         return true;
       }
-      await interaction.deferUpdate();
+      const ack = await safeDeferUpdate(interaction);
       try {
         const result = await publishStartPanel();
-        await interaction.editReply(buildModeratorPanelPayload(getState(), result.statusText));
+        if (ack.ok) await safeEditReply(interaction, buildModeratorPanelPayload(getState(), result.statusText));
       } catch (error) {
-        await interaction.editReply(buildModeratorPanelPayload(getState(), `Ошибка: ${error?.message || error}`));
+        if (ack.ok) await safeEditReply(interaction, buildModeratorPanelPayload(getState(), `Ошибка: ${error?.message || error}`));
       }
       return true;
     }
@@ -1215,7 +1402,7 @@ function createAntiteamOperator(options = {}) {
         await replyNoPermission(interaction);
         return true;
       }
-      await interaction.update(buildModeratorPanelPayload(getState()));
+      await safeUpdate(interaction, buildModeratorPanelPayload(getState()));
       return true;
     }
 
@@ -1224,7 +1411,7 @@ function createAntiteamOperator(options = {}) {
         await replyNoPermission(interaction);
         return true;
       }
-      await interaction.update(buildHelperStatsPayload(getState()));
+      await safeUpdate(interaction, buildHelperStatsPayload(getState()));
       return true;
     }
 
@@ -1233,7 +1420,7 @@ function createAntiteamOperator(options = {}) {
         await replyNoPermission(interaction);
         return true;
       }
-      await interaction.update(buildHelperStatsPayload(getState(), 0, "", { confirmClear: true }));
+      await safeUpdate(interaction, buildHelperStatsPayload(getState(), 0, "", { confirmClear: true }));
       return true;
     }
 
@@ -1242,9 +1429,9 @@ function createAntiteamOperator(options = {}) {
         await replyNoPermission(interaction);
         return true;
       }
-      await interaction.deferUpdate();
+      const ack = await safeDeferUpdate(interaction);
       const count = await persist("antiteam-helper-stats-clear", () => clearHelperStats(db));
-      await interaction.editReply(buildHelperStatsPayload(getState(), 0, `Очищено записей: **${count}**.`));
+      if (ack.ok) await safeEditReply(interaction, buildHelperStatsPayload(getState(), 0, `Очищено записей: **${count}**.`));
       return true;
     }
 
@@ -1253,7 +1440,7 @@ function createAntiteamOperator(options = {}) {
         await replyNoPermission(interaction);
         return true;
       }
-      await interaction.showModal(buildHelperRewardRolesModal(getConfig()));
+      await safeShowModal(interaction, buildHelperRewardRolesModal(getConfig()));
       return true;
     }
 
@@ -1262,9 +1449,9 @@ function createAntiteamOperator(options = {}) {
         await replyNoPermission(interaction);
         return true;
       }
-      await interaction.deferUpdate();
+      const ack = await safeDeferUpdate(interaction);
       const result = await syncHelperRewardRoles();
-      await interaction.editReply(buildHelperStatsPayload(
+      if (ack.ok) await safeEditReply(interaction, buildHelperStatsPayload(
         getState(),
         0,
         `Роли проверены: пользователей с порогами **${result.users}**, успешных выдач/проверок **${result.roles}**.`
@@ -1281,14 +1468,14 @@ function createAntiteamOperator(options = {}) {
       const action = statsParts[2];
       if (action === "page") {
         const raw = statsParts[3] || "0";
-        await interaction.update(buildHelperStatsPayload(getState(), Number.parseInt(raw, 10) || 0));
+        await safeUpdate(interaction, buildHelperStatsPayload(getState(), Number.parseInt(raw, 10) || 0));
         return true;
       }
       const helperId = statsParts[3] || "";
       const pageRaw = statsParts[4] || "0";
-      await interaction.deferUpdate();
+      const ack = await safeDeferUpdate(interaction);
       const deleted = await persist("antiteam-helper-stats-delete", () => deleteHelperStats(db, helperId));
-      await interaction.editReply(buildHelperStatsPayload(
+      if (ack.ok) await safeEditReply(interaction, buildHelperStatsPayload(
         getState(),
         Number.parseInt(pageRaw, 10) || 0,
         deleted ? `Удалена статистика <@${helperId}>.` : "Запись уже не найдена."
@@ -1299,19 +1486,19 @@ function createAntiteamOperator(options = {}) {
     if (id === ANTITEAM_CUSTOM_IDS.toggleDirect || id === ANTITEAM_CUSTOM_IDS.togglePhoto) {
       const draft = getAntiteamDraft(db, interaction.user.id);
       if (!draft) {
-        await interaction.reply({ content: "Черновик истёк. Начни заново.", flags: MessageFlags.Ephemeral });
+        await safeReply(interaction, { content: "Черновик истёк. Начни заново.", flags: MessageFlags.Ephemeral });
         return true;
       }
+      const ack = await safeDeferUpdate(interaction);
       const patch = id === ANTITEAM_CUSTOM_IDS.toggleDirect
         ? { directJoinEnabled: !draft.directJoinEnabled }
         : { photoWanted: !draft.photoWanted };
-      const optimisticDraft = buildOptimisticDraft(draft, patch, interaction.user.id);
-      await interaction.update(buildTicketSetupPayload(optimisticDraft, getConfig()));
       try {
-        await persist("antiteam-draft-toggle", () => setAntiteamDraft(db, interaction.user.id, patch, { now: nowIso() }));
+        const updated = await persist("antiteam-draft-toggle", () => setAntiteamDraft(db, interaction.user.id, patch, { now: nowIso() }));
+        if (ack.ok) await safeEditReply(interaction, buildTicketSetupPayload(updated, getConfig()));
       } catch (error) {
         const fallbackDraft = getAntiteamDraft(db, interaction.user.id) || draft;
-        await interaction.editReply(buildTicketSetupPayload(fallbackDraft, getConfig(), `Ошибка: ${error?.message || error}`)).catch(() => {});
+        if (ack.ok) await safeEditReply(interaction, buildTicketSetupPayload(fallbackDraft, getConfig(), `Ошибка: ${error?.message || error}`));
       }
       return true;
     }
@@ -1319,40 +1506,42 @@ function createAntiteamOperator(options = {}) {
     if (id === ANTITEAM_CUSTOM_IDS.editDescription) {
       const draft = getAntiteamDraft(db, interaction.user.id);
       if (!draft) {
-        await interaction.reply({ content: "Черновик истёк. Начни заново.", flags: MessageFlags.Ephemeral });
+        await safeReply(interaction, { content: "Черновик истёк. Начни заново.", flags: MessageFlags.Ephemeral });
         return true;
       }
-      await interaction.showModal(buildDescriptionModal(draft));
+      await safeShowModal(interaction, buildDescriptionModal(draft));
       return true;
     }
 
     if (id === ANTITEAM_CUSTOM_IDS.cancelDraft) {
       const draft = getAntiteamDraft(db, interaction.user.id);
       if (!draft) {
-        await interaction.reply({ content: "Черновик истёк. Начни заново.", flags: MessageFlags.Ephemeral });
+        await safeReply(interaction, { content: "Черновик истёк. Начни заново.", flags: MessageFlags.Ephemeral });
         return true;
       }
-      await interaction.deferUpdate();
+      const ack = await safeDeferUpdate(interaction);
       await persist("antiteam-draft-cancel", () => {
         clearAntiteamDraft(db, interaction.user.id);
         return { mutated: true };
       });
-      await interaction.editReply({
-        content: "Заявка антитима отменена.",
-        components: [],
-        flags: MessageFlags.Ephemeral,
-      }).catch(async () => interaction.reply({ content: "Заявка антитима отменена.", flags: MessageFlags.Ephemeral }));
+      if (ack.ok) {
+        await safeEditReply(interaction, {
+          content: "Заявка антитима отменена.",
+          components: [],
+          flags: MessageFlags.Ephemeral,
+        });
+      }
       return true;
     }
 
     if (id === ANTITEAM_CUSTOM_IDS.submitDraft || id === ANTITEAM_CUSTOM_IDS.submitWithoutPhoto) {
-      await interaction.deferUpdate();
+      const ack = await safeDeferUpdate(interaction);
       try {
         const result = await publishTicketFromDraft(interaction.user.id, { skipPhoto: id === ANTITEAM_CUSTOM_IDS.submitWithoutPhoto });
         if (result.needsPhoto) {
-          await interaction.editReply(buildPhotoRequestPayload(result.draft));
-        } else {
-          await interaction.editReply({
+          if (ack.ok) await safeEditReply(interaction, buildPhotoRequestPayload(result.draft));
+        } else if (ack.ok) {
+          await safeEditReply(interaction, {
             content: `Заявка опубликована: ${result.ticket ? `\`${result.ticket.id}\`` : "готово"}.`,
             components: [],
             flags: MessageFlags.Ephemeral,
@@ -1360,10 +1549,12 @@ function createAntiteamOperator(options = {}) {
         }
       } catch (error) {
         const draft = getAntiteamDraft(db, interaction.user.id);
-        if (draft) {
-          await interaction.editReply(buildTicketSetupPayload(draft, getConfig(), `Ошибка: ${error?.message || error}`));
-        } else {
-          await interaction.editReply({ content: `Ошибка: ${error?.message || error}`, components: [], flags: MessageFlags.Ephemeral });
+        if (ack.ok) {
+          if (draft) {
+            await safeEditReply(interaction, buildTicketSetupPayload(draft, getConfig(), `Ошибка: ${error?.message || error}`));
+          } else {
+            await safeEditReply(interaction, { content: `Ошибка: ${error?.message || error}`, components: [], flags: MessageFlags.Ephemeral });
+          }
         }
       }
       return true;
@@ -1380,38 +1571,38 @@ function createAntiteamOperator(options = {}) {
 
     if (action === "toggle_direct") {
       if (!ticket || ticket.status !== "open") {
-        await interaction.reply({ content: "Эта миссия уже закрыта или не найдена.", flags: MessageFlags.Ephemeral });
+        await safeReply(interaction, { content: "Эта миссия уже закрыта или не найдена.", flags: MessageFlags.Ephemeral });
         return true;
       }
       if (!canCloseTicket(interaction, ticket)) {
         await replyNoPermission(interaction);
         return true;
       }
-      await interaction.deferUpdate();
+      const ack = await safeDeferUpdate(interaction);
       const updated = await persist("antiteam-ticket-toggle-direct", () => updateAntiteamTicket(db, ticket.id, (current) => {
         current.directJoinEnabled = !current.directJoinEnabled;
         current.updatedAt = nowIso();
         current.lastActivityAt = nowIso();
         return current;
       }));
-      await interaction.editReply(buildThreadPanelPayload(updated, getConfig())).catch(() => {});
+      if (ack.ok) await safeEditReply(interaction, buildThreadPanelPayload(updated, getConfig()));
       await syncTicketMessages(updated).catch(() => {});
       return true;
     }
 
     if (action === "friend_request_sent") {
       if (!ticket || ticket.status !== "open") {
-        await interaction.reply({ content: "Эта миссия уже закрыта или не найдена.", flags: MessageFlags.Ephemeral });
+        await safeReply(interaction, { content: "Эта миссия уже закрыта или не найдена.", flags: MessageFlags.Ephemeral });
         return true;
       }
       const helper = ticket.helpers?.[interaction.user.id];
       if (!helper) {
-        await interaction.reply({ content: "Сначала нажми «Помочь», чтобы бот записал тебя в миссию.", flags: MessageFlags.Ephemeral });
+        await safeReply(interaction, { content: "Сначала нажми «Помочь», чтобы бот записал тебя в миссию.", flags: MessageFlags.Ephemeral });
         return true;
       }
-      await interaction.deferUpdate();
+      const ack = await safeDeferUpdate(interaction);
       if (helper.friendRequestNotifiedAt) {
-        await interaction.editReply(buildHelpReplyPayload({
+        if (ack.ok) await safeEditReply(interaction, buildHelpReplyPayload({
           ticket,
           linkKind: "friend_request",
           directJoinUrl: await resolveDirectJoinUrl(ticket),
@@ -1419,7 +1610,7 @@ function createAntiteamOperator(options = {}) {
           friendRequestsUrl: getConfig().roblox.friendRequestsUrl,
           helperRobloxKnown: Boolean(helper.robloxUserId),
           friendRequestNotified: true,
-        })).catch(() => {});
+        }));
         return true;
       }
       const updated = await persist("antiteam-friend-request-sent", () => updateAntiteamTicket(db, ticket.id, (current) => {
@@ -1431,7 +1622,7 @@ function createAntiteamOperator(options = {}) {
         return current;
       }));
       await notifyTicketAuthorForFriendRequest(updated, updated.helpers[interaction.user.id]).catch(() => false);
-      await interaction.editReply(buildHelpReplyPayload({
+      if (ack.ok) await safeEditReply(interaction, buildHelpReplyPayload({
         ticket: updated,
         linkKind: "friend_request",
         directJoinUrl: await resolveDirectJoinUrl(updated),
@@ -1439,22 +1630,22 @@ function createAntiteamOperator(options = {}) {
         friendRequestsUrl: getConfig().roblox.friendRequestsUrl,
         helperRobloxKnown: Boolean(updated.helpers?.[interaction.user.id]?.robloxUserId),
         friendRequestNotified: true,
-      })).catch(() => {});
+      }));
       return true;
     }
 
     if (action === "report") {
       if (!ticket) {
-        await interaction.reply({ content: "Миссия не найдена.", flags: MessageFlags.Ephemeral });
+        await safeReply(interaction, { content: "Миссия не найдена.", flags: MessageFlags.Ephemeral });
         return true;
       }
-      await interaction.showModal(buildReportModal(ticketId));
+      await safeShowModal(interaction, buildReportModal(ticketId));
       return true;
     }
 
     if (action === "escalate") {
       if (!ticket || ticket.kind === "clan" || ticket.status !== "open") {
-        await interaction.reply({ content: "Повысить эту миссию нельзя.", flags: MessageFlags.Ephemeral });
+        await safeReply(interaction, { content: "Повысить эту миссию нельзя.", flags: MessageFlags.Ephemeral });
         return true;
       }
       if (!canManageTicket(interaction, ticket)) {
@@ -1463,23 +1654,23 @@ function createAntiteamOperator(options = {}) {
       }
       const nextLevel = getNextEscalationLevel(ticket.level);
       if (!nextLevel) {
-        await interaction.reply({ content: "Опасность уже на максимуме.", flags: MessageFlags.Ephemeral });
+        await safeReply(interaction, { content: "Опасность уже на максимуме.", flags: MessageFlags.Ephemeral });
         return true;
       }
-      await interaction.showModal(buildEscalateModal(ticketId, nextLevel));
+      await safeShowModal(interaction, buildEscalateModal(ticketId, nextLevel));
       return true;
     }
 
     if (action === "close") {
       if (!ticket || ticket.status !== "open") {
-        await interaction.reply({ content: "Миссия уже закрыта или не найдена.", flags: MessageFlags.Ephemeral });
+        await safeReply(interaction, { content: "Миссия уже закрыта или не найдена.", flags: MessageFlags.Ephemeral });
         return true;
       }
       if (!canCloseTicket(interaction, ticket)) {
         await replyNoPermission(interaction);
         return true;
       }
-      await interaction.reply(buildCloseReviewPayload(ticket));
+      await safeReply(interaction, buildCloseReviewPayload(ticket));
       return true;
     }
 
@@ -1488,7 +1679,7 @@ function createAntiteamOperator(options = {}) {
         await replyNoPermission(interaction);
         return true;
       }
-      await interaction.update(buildCloseReviewPayload(ticket, Number.parseInt(extra, 10) || 0));
+      await safeUpdate(interaction, buildCloseReviewPayload(ticket, Number.parseInt(extra, 10) || 0));
       return true;
     }
 
@@ -1500,7 +1691,7 @@ function createAntiteamOperator(options = {}) {
       const [helperId, pageRaw = "0"] = extra.split(":");
       const current = ticket.helpers?.[helperId];
       if (!current) {
-        await interaction.reply({ content: "Helper не найден в этой миссии.", flags: MessageFlags.Ephemeral });
+        await safeReply(interaction, { content: "Helper не найден в этой миссии.", flags: MessageFlags.Ephemeral });
         return true;
       }
       const page = Number.parseInt(pageRaw, 10) || 0;
@@ -1516,7 +1707,7 @@ function createAntiteamOperator(options = {}) {
           },
         },
       };
-      await interaction.update(buildCloseReviewPayload(optimisticTicket, page));
+      await safeUpdate(interaction, buildCloseReviewPayload(optimisticTicket, page));
       await persist("antiteam-arrival-toggle", () => setTicketHelperArrival(db, ticket.id, helperId, arrived, { now: nowIso() }));
       return true;
     }
@@ -1526,7 +1717,7 @@ function createAntiteamOperator(options = {}) {
         await replyNoPermission(interaction);
         return true;
       }
-      await interaction.showModal(buildCloseSummaryModal(ticketId));
+      await safeShowModal(interaction, buildCloseSummaryModal(ticketId));
       return true;
     }
 
@@ -1537,7 +1728,7 @@ function createAntiteamOperator(options = {}) {
     if (!interaction?.isStringSelectMenu?.() || !cleanString(interaction.customId, 100).startsWith("at:")) return false;
     const draft = getAntiteamDraft(db, interaction.user.id);
     if (!draft) {
-      await interaction.reply({ content: "Черновик истёк. Начни заново.", flags: MessageFlags.Ephemeral });
+      await safeReply(interaction, { content: "Черновик истёк. Начни заново.", flags: MessageFlags.Ephemeral });
       return true;
     }
     const value = Array.isArray(interaction.values) ? interaction.values[0] : "";
@@ -1551,23 +1742,23 @@ function createAntiteamOperator(options = {}) {
     } else {
       return false;
     }
-    const optimisticDraft = buildOptimisticDraft(draft, patch, interaction.user.id);
-    await interaction.update(buildTicketSetupPayload(optimisticDraft, getConfig()));
+    const ack = await safeDeferUpdate(interaction);
     try {
-      await persist("antiteam-draft-select", () => setAntiteamDraft(db, interaction.user.id, patch, { now: nowIso() }));
+      const updated = await persist("antiteam-draft-select", () => setAntiteamDraft(db, interaction.user.id, patch, { now: nowIso() }));
+      if (ack.ok) await safeEditReply(interaction, buildTicketSetupPayload(updated, getConfig()));
     } catch (error) {
       const fallbackDraft = getAntiteamDraft(db, interaction.user.id) || draft;
-      await interaction.editReply(buildTicketSetupPayload(fallbackDraft, getConfig(), `Ошибка: ${error?.message || error}`)).catch(() => {});
+      if (ack.ok) await safeEditReply(interaction, buildTicketSetupPayload(fallbackDraft, getConfig(), `Ошибка: ${error?.message || error}`));
     }
     return true;
   }
 
   async function handleRobloxModal(interaction, kind = "standard") {
     const username = normalizeUsernameInput(interaction.fields.getTextInputValue("roblox_username"));
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    const ack = await safeDeferReply(interaction, { flags: MessageFlags.Ephemeral });
     const robloxUser = await fetchRobloxUserByUsername(username);
     if (!robloxUser?.userId && !robloxUser?.id) {
-      await interaction.editReply("Такой Roblox ник не найден через Roblox API.");
+      if (ack.ok) await safeEditReply(interaction, "Такой Roblox ник не найден через Roblox API.");
       return true;
     }
 
@@ -1597,31 +1788,6 @@ function createAntiteamOperator(options = {}) {
     });
   }
 
-  async function replyWithDraftModalPayload(interaction, payload) {
-    if (typeof interaction.update === "function") {
-      try {
-        await interaction.update(payload);
-        return;
-      } catch (error) {
-        logError("Antiteam draft modal update failed:", error?.message || error);
-      }
-    }
-
-    if (typeof interaction.deferReply === "function" && typeof interaction.editReply === "function") {
-      try {
-        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-        await interaction.editReply(payload);
-        return;
-      } catch (error) {
-        logError("Antiteam draft modal defer/edit fallback failed:", error?.message || error);
-      }
-    }
-
-    if (typeof interaction.reply === "function") {
-      await interaction.reply(payload);
-    }
-  }
-
   async function handleModalSubmitInteraction(interaction) {
     if (!interaction?.isModalSubmit?.() || !cleanString(interaction.customId, 100).startsWith("at:")) return false;
     const id = interaction.customId;
@@ -1630,15 +1796,16 @@ function createAntiteamOperator(options = {}) {
     if (id === "at:clan_roblox") return handleRobloxModal(interaction, "clan");
 
     if (id === "at:desc:modal") {
+      const ack = await safeDeferReply(interaction, { flags: MessageFlags.Ephemeral });
       const draft = getAntiteamDraft(db, interaction.user.id);
       if (!draft) {
-        await interaction.reply({ content: "Черновик истёк. Начни заново.", flags: MessageFlags.Ephemeral });
+        if (ack.ok) await safeEditReply(interaction, { content: "Черновик истёк. Начни заново.", components: [] });
         return true;
       }
       const description = interaction.fields.getTextInputValue("description");
       const updated = await persist("antiteam-draft-description", () => setAntiteamDraft(db, interaction.user.id, { description }, { now: nowIso() }));
       const payload = buildTicketSetupPayload(updated, getConfig(), "Описание обновлено.");
-      await replyWithDraftModalPayload(interaction, payload);
+      if (ack.ok) await safeEditReply(interaction, payload);
       return true;
     }
 
@@ -1945,6 +2112,7 @@ function createAntiteamOperator(options = {}) {
     handleSlashCommand,
     isModerator,
     publishStartPanel,
+    refreshStartPanel,
     sweepIdleTickets,
   };
 }

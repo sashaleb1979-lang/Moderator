@@ -107,6 +107,18 @@ test("summarizeRobloxCleanupAudit groups repair, review, confirmation and rebind
           },
         },
       },
+      "failed-empty-user": {
+        userId: "failed-empty-user",
+        username: "failed-empty-discord",
+        displayName: "Failed Empty User",
+        domains: {
+          roblox: {
+            verificationStatus: "failed",
+            refreshStatus: "error",
+            refreshError: "suspicious_identity_rebind_required",
+          },
+        },
+      },
       "plain-user": {
         userId: "plain-user",
         username: "plain-discord",
@@ -123,31 +135,51 @@ test("summarizeRobloxCleanupAudit groups repair, review, confirmation and rebind
           },
         },
       },
+      integrations: {
+        roblox: {
+          cleanup: {
+            byDiscordUserId: {
+              "pending-user": {
+                lastOutcome: "restored_from_submission",
+                lastSource: "repair_script_apply",
+              },
+            },
+          },
+        },
+      },
     },
   }, {
     sampleLimit: 2,
   });
 
-  assert.equal(summary.counts.totalProfiles, 6);
-  assert.equal(summary.counts.profilesWithRobloxData, 5);
+  assert.equal(summary.counts.totalProfiles, 7);
+  assert.equal(summary.counts.profilesWithRobloxData, 6);
   assert.equal(summary.counts.usableVerified, 1);
+  assert.equal(summary.counts.verifiedTrackable, 1);
   assert.equal(summary.counts.repairableVerified, 2);
   assert.equal(summary.counts.manualOnlyVerified, 1);
   assert.equal(summary.counts.pending, 1);
-  assert.equal(summary.counts.failed, 0);
+  assert.equal(summary.counts.restoredPending, 1);
+  assert.equal(summary.counts.failed, 1);
+  assert.equal(summary.counts.failedEmpty, 1);
   assert.equal(summary.counts.unverified, 0);
   assert.equal(summary.counts.noBinding, 1);
   assert.equal(summary.counts.suspiciousPollution, 1);
-  assert.equal(summary.counts.refreshError, 1);
+  assert.equal(summary.counts.refreshError, 2);
   assert.equal(summary.counts.usableWithoutAntiteamConfirmation, 1);
   assert.equal(summary.counts.safeRepairCandidates, 1);
   assert.equal(summary.counts.manualReviewCandidates, 2);
-  assert.equal(summary.counts.rebindRequiredCandidates, 1);
+  assert.equal(summary.counts.rebindRequiredCandidates, 2);
+  assert.equal(summary.counts.needsManualRebind, 4);
 
   assert.deepEqual(summary.samples.byPrimaryCohort.usable_verified.map((entry) => entry.userId), ["usable-user"]);
+  assert.deepEqual(summary.samples.verified_trackable.map((entry) => entry.userId), ["usable-user"]);
+  assert.deepEqual(summary.samples.restored_pending.map((entry) => entry.userId), ["pending-user"]);
+  assert.deepEqual(summary.samples.failed_empty.map((entry) => entry.userId), ["failed-empty-user"]);
+  assert.deepEqual(summary.samples.needs_manual_rebind.map((entry) => entry.userId), ["suspicious-user", "manual-user"]);
   assert.deepEqual(summary.samples.safeRepairCandidates.map((entry) => entry.userId), ["repair-user"]);
   assert.deepEqual(summary.samples.manualReviewCandidates.map((entry) => entry.userId), ["suspicious-user", "manual-user"]);
-  assert.deepEqual(summary.samples.rebindRequiredCandidates.map((entry) => entry.userId), ["pending-user"]);
+  assert.deepEqual(summary.samples.rebindRequiredCandidates.map((entry) => entry.userId), ["pending-user", "failed-empty-user"]);
   assert.deepEqual(summary.samples.suspiciousPollution.map((entry) => entry.userId), ["suspicious-user"]);
   assert.deepEqual(summary.samples.usableWithoutAntiteamConfirmation.map((entry) => entry.userId), ["usable-user"]);
 });
