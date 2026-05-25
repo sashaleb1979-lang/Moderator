@@ -1597,6 +1597,31 @@ function createAntiteamOperator(options = {}) {
     });
   }
 
+  async function replyWithDraftModalPayload(interaction, payload) {
+    if (typeof interaction.update === "function") {
+      try {
+        await interaction.update(payload);
+        return;
+      } catch (error) {
+        logError("Antiteam draft modal update failed:", error?.message || error);
+      }
+    }
+
+    if (typeof interaction.deferReply === "function" && typeof interaction.editReply === "function") {
+      try {
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+        await interaction.editReply(payload);
+        return;
+      } catch (error) {
+        logError("Antiteam draft modal defer/edit fallback failed:", error?.message || error);
+      }
+    }
+
+    if (typeof interaction.reply === "function") {
+      await interaction.reply(payload);
+    }
+  }
+
   async function handleModalSubmitInteraction(interaction) {
     if (!interaction?.isModalSubmit?.() || !cleanString(interaction.customId, 100).startsWith("at:")) return false;
     const id = interaction.customId;
@@ -1613,11 +1638,7 @@ function createAntiteamOperator(options = {}) {
       const description = interaction.fields.getTextInputValue("description");
       const updated = await persist("antiteam-draft-description", () => setAntiteamDraft(db, interaction.user.id, { description }, { now: nowIso() }));
       const payload = buildTicketSetupPayload(updated, getConfig(), "Описание обновлено.");
-      if (typeof interaction.update === "function") {
-        await interaction.update(payload);
-      } else {
-        await interaction.reply(payload);
-      }
+      await replyWithDraftModalPayload(interaction, payload);
       return true;
     }
 

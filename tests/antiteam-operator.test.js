@@ -1679,6 +1679,34 @@ test("description modal updates the same setup message when update is available"
   assert.match(JSON.stringify(interaction.calls[0][1].components[0].toJSON()), /Бить A\/B у центра/);
 });
 
+test("description modal falls back to an ephemeral panel when update is rejected", async () => {
+  const db = {};
+  setAntiteamDraft(db, "user-1", {
+    userTag: "User",
+    roblox: { userId: "101", username: "Anchor" },
+  }, { now: "2026-05-16T10:00:00.000Z" });
+  const errors = [];
+  const operator = createAntiteamOperator({
+    db,
+    now: () => "2026-05-16T10:01:00.000Z",
+    saveDb() {},
+    logError: (...args) => errors.push(args.join(" ")),
+  });
+  const interaction = createModalInteraction("at:desc:modal", { description: "Бить C/D у моста." });
+  interaction.update = async () => {
+    interaction.calls.push(["update"]);
+    throw new Error("Unknown interaction");
+  };
+
+  assert.equal(await operator.handleModalSubmitInteraction(interaction), true);
+
+  assert.equal(db.sot.antiteam.drafts["user-1"].description, "Бить C/D у моста.");
+  assert.deepEqual(interaction.calls.map((call) => call[0]), ["update", "deferReply", "editReply"]);
+  assert.equal(interaction.calls[1][1].flags, MessageFlags.Ephemeral);
+  assert.match(JSON.stringify(interaction.calls[2][1].components[0].toJSON()), /Бить C\/D у моста/);
+  assert.match(errors.join("\n"), /draft modal update failed/i);
+});
+
 test("moderator stats controls delete one helper and clear the aggregate table", async () => {
   const db = {};
   const state = ensureAntiteamState(db).state;
