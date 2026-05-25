@@ -18,6 +18,10 @@ function resolveNowIso(now) {
   return cleanString(now, 80) || new Date().toISOString();
 }
 
+function normalizePublishMode(value) {
+  return cleanString(value, 40) === "staff_only" ? "staff_only" : "public";
+}
+
 async function resolveChannel({ client, channel, channelId, label }) {
   if (channel) return channel;
   const normalizedChannelId = cleanString(channelId, 80);
@@ -72,17 +76,19 @@ async function publishDailyNewsIssue({
   client = null,
   publicChannel = null,
   staffChannel = null,
+  publishMode = "public",
   force = false,
   now,
   saveDb,
 } = {}) {
   const state = ensureNewsState(db);
   const publishStartedAt = resolveNowIso(now);
+  const normalizedPublishMode = normalizePublishMode(publishMode);
   const resolvedDigest = resolveDigest({ db, digest, dayKey });
   const resolvedDayKey = cleanString(resolvedDigest.dayKey || dayKey, 40);
   if (!resolvedDayKey) throw new Error("daily news dayKey is required for publish");
 
-  if (!force && state.runtime.lastPublishedDayKey === resolvedDayKey && state.runtime.lastPublishStatus === "published") {
+  if (normalizedPublishMode === "public" && !force && state.runtime.lastPublishedDayKey === resolvedDayKey && state.runtime.lastPublishStatus === "published") {
     return {
       published: false,
       skipped: true,
@@ -110,42 +116,67 @@ async function publishDailyNewsIssue({
         image: { url: `attachment://${coverAttachment.name}` },
       };
     });
-    const resolvedPublicChannel = await resolveChannel({
-      client,
-      channel: publicChannel,
-      channelId: state.config?.channels?.publicChannelId,
-      label: "public Daily News",
-    });
-    const publicMessage = await resolvedPublicChannel.send(publicPayload);
-    const { thread, sentThreadMessages } = await sendThreadMessages(publicMessage, resolvedIssue, state);
-
+    let resolvedPublicChannel = null;
+    let resolvedStaffChannel = null;
+    let deliveryChannel = null;
+    let deliveryMessage = null;
+    let thread = null;
+    let sentThreadMessages = [];
     let staffMessage = null;
     const staffChannelId = cleanString(state.config?.channels?.staffChannelId, 80);
-    if (staffChannel || staffChannelId) {
-      const resolvedStaffChannel = await resolveChannel({
+    if (normalizedPublishMode === "staff_only") {
+      resolvedStaffChannel = await resolveChannel({
         client,
         channel: staffChannel,
         channelId: staffChannelId,
         label: "staff Daily News",
       });
+      deliveryChannel = resolvedStaffChannel;
+      deliveryMessage = await resolvedStaffChannel.send(publicPayload);
+      ({ thread, sentThreadMessages } = await sendThreadMessages(deliveryMessage, resolvedIssue, state));
       staffMessage = await resolvedStaffChannel.send(resolvedIssue.staffMessage);
+    } else {
+      resolvedPublicChannel = await resolveChannel({
+        client,
+        channel: publicChannel,
+        channelId: state.config?.channels?.publicChannelId,
+        label: "public Daily News",
+      });
+      deliveryChannel = resolvedPublicChannel;
+      deliveryMessage = await resolvedPublicChannel.send(publicPayload);
+      ({ thread, sentThreadMessages } = await sendThreadMessages(deliveryMessage, resolvedIssue, state));
+
+      if (staffChannel || staffChannelId) {
+        resolvedStaffChannel = await resolveChannel({
+          client,
+          channel: staffChannel,
+          channelId: staffChannelId,
+          label: "staff Daily News",
+        });
+        staffMessage = await resolvedStaffChannel.send(resolvedIssue.staffMessage);
+      }
     }
 
     const publishFinishedAt = resolveNowIso(now);
     const result = {
       dayKey: resolvedDayKey,
       publishedAt: publishFinishedAt,
-      publicChannelId: cleanString(resolvedPublicChannel.id, 80) || state.config?.channels?.publicChannelId || null,
-      publicMessageId: cleanString(publicMessage?.id, 80) || null,
+      publishMode: normalizedPublishMode,
+      deliveryChannelId: cleanString(deliveryChannel?.id, 80) || null,
+      deliveryMessageId: cleanString(deliveryMessage?.id, 80) || null,
+      publicChannelId: normalizedPublishMode === "public"
+        ? cleanString(resolvedPublicChannel?.id, 80) || state.config?.channels?.publicChannelId || null
+        : null,
+      publicMessageId: normalizedPublishMode === "public" ? cleanString(deliveryMessage?.id, 80) || null : null,
       coverFileName: coverAttachment.name,
       threadId: cleanString(thread?.id, 80) || null,
       threadMessageCount: sentThreadMessages.length,
-      staffChannelId: cleanString(staffChannel?.id, 80) || staffChannelId || null,
+      staffChannelId: cleanString(resolvedStaffChannel?.id, 80) || cleanString(staffChannel?.id, 80) || staffChannelId || null,
       staffMessageId: cleanString(staffMessage?.id, 80) || null,
     };
 
     state.runtime.lastPublishedDayKey = resolvedDayKey;
-    state.runtime.lastPublishStatus = "published";
+    state.runtime.lastPublishStatus = normalizedPublishMode === "staff_only" ? "staff_published" : "published";
     state.runtime.lastPublishFinishedAt = publishFinishedAt;
     state.runtime.lastPublishResult = result;
     state.runtime.lastFailure = null;
@@ -159,6 +190,7 @@ async function publishDailyNewsIssue({
     return {
       published: true,
       skipped: false,
+      publishMode: normalizedPublishMode,
       dayKey: resolvedDayKey,
       result,
       issue: resolvedIssue,

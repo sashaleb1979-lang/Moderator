@@ -21,6 +21,7 @@ const DAILY_NEWS_OPERATOR_ACTIONS = Object.freeze({
   PREVIEW_DAY: "preview_day",
   RERUN_DAY: "rerun_day",
   PUBLISH_NOW: "publish_now",
+  PUBLISH_STAFF_ONLY: "publish_staff_only",
 });
 
 const DAILY_NEWS_PANEL_OPEN_ID = "panel_open_daily_news";
@@ -29,6 +30,7 @@ const DAILY_NEWS_PANEL_PREVIEW_TODAY_ID = "daily_news_panel_preview_today";
 const DAILY_NEWS_PANEL_PREVIEW_DAY_ID = "daily_news_panel_preview_day";
 const DAILY_NEWS_PANEL_RERUN_DAY_ID = "daily_news_panel_rerun_day";
 const DAILY_NEWS_PANEL_PUBLISH_NOW_ID = "daily_news_panel_publish_now";
+const DAILY_NEWS_PANEL_PUBLISH_STAFF_ONLY_ID = "daily_news_panel_publish_staff_only";
 const DAILY_NEWS_PANEL_BACK_ID = "daily_news_panel_back";
 const DAILY_NEWS_PANEL_PREVIEW_DAY_MODAL_ID = "daily_news_panel_preview_day_modal";
 const DAILY_NEWS_PANEL_RERUN_DAY_MODAL_ID = "daily_news_panel_rerun_day_modal";
@@ -41,6 +43,7 @@ const DAILY_NEWS_PANEL_BUTTON_IDS = Object.freeze([
   DAILY_NEWS_PANEL_PREVIEW_DAY_ID,
   DAILY_NEWS_PANEL_RERUN_DAY_ID,
   DAILY_NEWS_PANEL_PUBLISH_NOW_ID,
+  DAILY_NEWS_PANEL_PUBLISH_STAFF_ONLY_ID,
   DAILY_NEWS_PANEL_BACK_ID,
 ]);
 
@@ -144,6 +147,8 @@ function formatCompileStatusLabel(status) {
 
 function formatPublishStatusLabel(status) {
   switch (cleanString(status, 80)) {
+    case "staff_published":
+      return "отправлено только в staff";
     case "published":
       return "опубликовано";
     case "running":
@@ -155,8 +160,20 @@ function formatPublishStatusLabel(status) {
   }
 }
 
+function formatPublishModeLabel(mode) {
+  switch (cleanString(mode, 40)) {
+    case "staff_only":
+      return "staff-only smoke";
+    case "public":
+      return "public";
+    default:
+      return "—";
+  }
+}
+
 function buildDailyNewsPanelRows(state = {}) {
   const publicChannelId = cleanString(state.config?.channels?.publicChannelId, 80);
+  const staffChannelId = cleanString(state.config?.channels?.staffChannelId, 80);
   return [
     new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId(DAILY_NEWS_PANEL_REFRESH_ID).setLabel("Обзор").setStyle(ButtonStyle.Primary),
@@ -170,6 +187,11 @@ function buildDailyNewsPanelRows(state = {}) {
         .setDisabled(!publicChannelId)
     ),
     new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(DAILY_NEWS_PANEL_PUBLISH_STAFF_ONLY_ID)
+        .setLabel("Staff-only smoke")
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(!staffChannelId),
       new ButtonBuilder().setCustomId(DAILY_NEWS_PANEL_BACK_ID).setLabel("Назад").setStyle(ButtonStyle.Secondary)
     ),
   ];
@@ -196,6 +218,7 @@ function buildDailyNewsOperatorPanelPayload({ db = {}, statusText = "", includeF
   const state = ensureNewsState(db);
   const coverage = state.runtime.lastCoverageSummary || {};
   const audit = state.runtime.lastAuditCounts || {};
+  const publishResult = state.runtime.lastPublishResult || {};
 
   const embed = new EmbedBuilder()
     .setColor(normalizeHexColor(state.config?.presentation?.accentColor, 0xD6A441))
@@ -224,6 +247,9 @@ function buildDailyNewsOperatorPanelPayload({ db = {}, statusText = "", includeF
           `Статус: **${formatPublishStatusLabel(state.runtime.lastPublishStatus)}**`,
           `Day: **${cleanString(state.runtime.lastPublishedDayKey, 40) || "—"}**`,
           `Финиш: **${formatDateTime(state.runtime.lastPublishFinishedAt)}**`,
+          `Режим: **${formatPublishModeLabel(publishResult.publishMode)}**`,
+          `Delivery msg: **${cleanString(publishResult.deliveryMessageId, 80) || "—"}**`,
+          `Audit msg: **${cleanString(publishResult.staffMessageId, 80) || "—"}**`,
         ].join("\n"),
         inline: true,
       },
@@ -402,7 +428,7 @@ async function runDailyNewsOperatorAction({
     };
   }
 
-  if (normalizedAction === DAILY_NEWS_OPERATOR_ACTIONS.PUBLISH_NOW) {
+  if (normalizedAction === DAILY_NEWS_OPERATOR_ACTIONS.PUBLISH_NOW || normalizedAction === DAILY_NEWS_OPERATOR_ACTIONS.PUBLISH_STAFF_ONLY) {
     const preview = compileDailyNewsPreview({
       db,
       targetDayKey: dayKey,
@@ -418,6 +444,7 @@ async function runDailyNewsOperatorAction({
       client,
       publicChannel,
       staffChannel,
+      publishMode: normalizedAction === DAILY_NEWS_OPERATOR_ACTIONS.PUBLISH_STAFF_ONLY ? "staff_only" : "public",
       force,
       now,
       saveDb,
@@ -525,7 +552,7 @@ async function handleDailyNewsPanelButtonInteraction(options = {}) {
     });
   }
 
-  if (customId === DAILY_NEWS_PANEL_PUBLISH_NOW_ID) {
+  if (customId === DAILY_NEWS_PANEL_PUBLISH_NOW_ID || customId === DAILY_NEWS_PANEL_PUBLISH_STAFF_ONLY_ID) {
     return runDailyNewsOperatorInteractionAction({
       interaction,
       replyError: options.replyError,
@@ -535,15 +562,21 @@ async function handleDailyNewsPanelButtonInteraction(options = {}) {
         await interaction.deferUpdate();
         const result = await runDailyNewsOperatorAction({
           db: options.db,
-          action: DAILY_NEWS_OPERATOR_ACTIONS.PUBLISH_NOW,
+          action: customId === DAILY_NEWS_PANEL_PUBLISH_STAFF_ONLY_ID
+            ? DAILY_NEWS_OPERATOR_ACTIONS.PUBLISH_STAFF_ONLY
+            : DAILY_NEWS_OPERATOR_ACTIONS.PUBLISH_NOW,
           now: options.now,
           client: options.client,
+          publicChannel: options.publicChannel,
+          staffChannel: options.staffChannel,
           force: options.force === true,
           saveDb: options.saveDb,
         });
         const statusText = result.publish?.skipped
           ? `Публикация пропущена: **${cleanString(result.publish.reason, 80) || "already_published"}**.`
-          : `Выпуск **${result.dayKey}** опубликован. Public message: **${cleanString(result.publish?.result?.publicMessageId, 80) || "—"}**.`;
+          : result.publish?.result?.publishMode === "staff_only"
+            ? `Staff-only smoke для **${result.dayKey}** отправлен. Smoke message: **${cleanString(result.publish?.result?.deliveryMessageId, 80) || "—"}** · audit: **${cleanString(result.publish?.result?.staffMessageId, 80) || "—"}**.`
+            : `Выпуск **${result.dayKey}** опубликован. Public message: **${cleanString(result.publish?.result?.publicMessageId, 80) || "—"}**.`;
         await interaction.editReply(buildDailyNewsOperatorPanelPayload({
           db: options.db,
           statusText,
@@ -612,6 +645,7 @@ module.exports = {
   DAILY_NEWS_PANEL_MODAL_IDS,
   DAILY_NEWS_PANEL_OPEN_ID,
   DAILY_NEWS_PANEL_PUBLISH_NOW_ID,
+  DAILY_NEWS_PANEL_PUBLISH_STAFF_ONLY_ID,
   DAILY_NEWS_PANEL_REFRESH_ID,
   DAILY_NEWS_PANEL_RERUN_DAY_ID,
   DAILY_NEWS_PANEL_RERUN_DAY_MODAL_ID,

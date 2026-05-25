@@ -119,3 +119,61 @@ test("publishDailyNewsIssue records failure without marking publish success", as
   assert.equal(db.sot.news.runtime.lastPublishedDayKey, null);
   assert.equal(db.sot.news.runtime.lastFailure.stage, "publish_daily_news_issue");
 });
+
+test("publishDailyNewsIssue can deliver a staff-only smoke issue without marking the day as publicly published", async () => {
+  let saveCount = 0;
+  const db = {
+    profiles: {},
+    sot: {
+      news: {
+        config: {
+          channels: { staffChannelId: "staff" },
+          voice: { includeFullList: true, publishFullListInThread: true },
+          presentation: { postThreadEnabled: true },
+        },
+        voice: {
+          finalizedSessions: [
+            { userId: "user-1", displayName: "VoiceOne", joinedAt: "2026-05-14T10:00:00.000Z", endedAt: "2026-05-14T10:30:00.000Z" },
+          ],
+        },
+      },
+    },
+  };
+  const state = ensureNewsState(db);
+  const result = compileDailyNewsDigest({ db, targetDayKey: "2026-05-14", now: "2026-05-14T18:00:00.000Z" });
+  const issue = renderDailyNewsIssue({ digest: result.digest, config: state.config });
+  const staffChannel = createFakeChannel("staff");
+
+  const published = await publishDailyNewsIssue({
+    db,
+    digest: result.digest,
+    issue,
+    staffChannel,
+    publishMode: "staff_only",
+    now: "2026-05-14T18:05:00.000Z",
+    saveDb: () => { saveCount += 1; },
+  });
+
+  assert.equal(published.published, true);
+  assert.equal(published.publishMode, "staff_only");
+  assert.equal(staffChannel.sent.length, 2);
+  assert.equal(staffChannel.sent[0].payload.files[0].name, "daily-news-2026-05-14.png");
+  assert.equal(staffChannel.sent[0].threadMessages.length, 1);
+  assert.equal(db.sot.news.runtime.lastPublishStatus, "staff_published");
+  assert.equal(db.sot.news.runtime.lastPublishedDayKey, "2026-05-14");
+  assert.equal(db.sot.news.runtime.lastPublishResult.publishMode, "staff_only");
+  assert.equal(db.sot.news.runtime.lastPublishResult.publicMessageId, null);
+  assert.equal(db.sot.news.runtime.lastPublishResult.deliveryMessageId, "staff-message-1");
+  assert.equal(db.sot.news.runtime.lastPublishResult.staffMessageId, "staff-message-2");
+  assert.equal(saveCount, 1);
+
+  const rerun = await publishDailyNewsIssue({
+    db,
+    digest: result.digest,
+    issue,
+    staffChannel,
+    publishMode: "staff_only",
+  });
+  assert.equal(rerun.published, true);
+  assert.equal(staffChannel.sent.length, 4);
+});

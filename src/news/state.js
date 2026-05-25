@@ -32,9 +32,37 @@ function normalizePositiveInteger(value, fallback) {
   return Number.isSafeInteger(amount) && amount > 0 ? amount : fallback;
 }
 
+function normalizeOptionalNonNegativeInteger(value) {
+  const amount = Number(value);
+  return Number.isSafeInteger(amount) && amount >= 0 ? amount : null;
+}
+
 function normalizeHexColor(value, fallback) {
   const text = cleanString(value, 16).toUpperCase();
   return /^#[0-9A-F]{6}$/.test(text) ? text : fallback;
+}
+
+function normalizePublishResult(value = null) {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : null;
+  if (!source) return null;
+
+  const publishMode = cleanString(source.publishMode, 40);
+  const result = {
+    dayKey: normalizeNullableString(source.dayKey, 40),
+    publishedAt: normalizeNullableString(source.publishedAt, 80),
+    publishMode: publishMode === "public" || publishMode === "staff_only" ? publishMode : null,
+    deliveryChannelId: normalizeNullableString(source.deliveryChannelId, 80),
+    deliveryMessageId: normalizeNullableString(source.deliveryMessageId, 80),
+    publicChannelId: normalizeNullableString(source.publicChannelId, 80),
+    publicMessageId: normalizeNullableString(source.publicMessageId, 80),
+    coverFileName: normalizeNullableString(source.coverFileName, 120),
+    threadId: normalizeNullableString(source.threadId, 80),
+    threadMessageCount: normalizeOptionalNonNegativeInteger(source.threadMessageCount),
+    staffChannelId: normalizeNullableString(source.staffChannelId, 80),
+    staffMessageId: normalizeNullableString(source.staffMessageId, 80),
+  };
+
+  return Object.values(result).some((entry) => entry !== null) ? result : null;
 }
 
 function createDefaultNewsConfig() {
@@ -171,9 +199,12 @@ function createEmptyNewsState() {
       lastCompileStartedAt: null,
       lastCompileFinishedAt: null,
       lastCompiledDayKey: null,
+      lastPublishStartedAt: null,
+      lastPublishFinishedAt: null,
       lastCompileStatus: null,
       lastPublishedDayKey: null,
       lastPublishStatus: null,
+      lastPublishResult: null,
       lastFailure: null,
       lastAuditCounts: null,
       lastCoverageSummary: null,
@@ -227,8 +258,11 @@ function normalizeNewsState(value = {}) {
     lastCompileFinishedAt: normalizeNullableString(source.runtime?.lastCompileFinishedAt, 80),
     lastCompiledDayKey: normalizeNullableString(source.runtime?.lastCompiledDayKey, 40),
     lastCompileStatus: normalizeNullableString(source.runtime?.lastCompileStatus, 80),
+    lastPublishStartedAt: normalizeNullableString(source.runtime?.lastPublishStartedAt, 80),
+    lastPublishFinishedAt: normalizeNullableString(source.runtime?.lastPublishFinishedAt, 80),
     lastPublishedDayKey: normalizeNullableString(source.runtime?.lastPublishedDayKey, 40),
     lastPublishStatus: normalizeNullableString(source.runtime?.lastPublishStatus, 80),
+    lastPublishResult: normalizePublishResult(source.runtime?.lastPublishResult),
     lastFailure: source.runtime?.lastFailure && typeof source.runtime.lastFailure === "object" && !Array.isArray(source.runtime.lastFailure)
       ? clone(source.runtime.lastFailure)
       : null,
@@ -274,5 +308,6 @@ module.exports = {
   createEmptyNewsState,
   ensureNewsState,
   normalizeNewsConfig,
+  normalizePublishResult,
   normalizeNewsState,
 };

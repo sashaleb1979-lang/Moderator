@@ -107,9 +107,9 @@ Implemented now:
 - Public/staff payload renderer now turns compiled digest into edition-style Discord-ready message/embed/thread payloads with masthead, date, hero metrics, section blocks, accents, separators, emojis and coverage markers.
 - Cover PNG renderer now builds a graphical Daily News attachment from `coverSpec`, and publisher attaches it to the public issue message.
 - Preview helper now compiles and renders a digest without publish side effects by default, records last preview metadata in news runtime, and only writes the current-day history baseline when manual publish explicitly opts into capture mode.
-- Publisher owner now sends public issue, continuation thread and staff digest with duplicate-publish guard and failure recording.
-- Operator owner now supports status, preview, rerun-style preview and publish-now orchestration without owning compile/render rules.
-- Moderator panel now has live Daily News button/modal routing for overview, preview today, preview exact day, rerun day and manual publish.
+- Publisher owner now sends public issue, continuation thread and staff digest with duplicate-publish guard and failure recording, and can also deliver a staff-only smoke issue without marking the day as publicly published.
+- Operator owner now supports status, preview, rerun-style preview, publish-now and staff-only smoke orchestration without owning compile/render rules.
+- Moderator panel now has live Daily News button/modal routing for overview, preview today, preview exact day, rerun day, public manual publish and staff-only smoke publish.
 - Compile runtime status is separated from publish runtime status.
 - Persisted daily digest snapshots in `db.sot.news.dailyDigests`.
 - Focused tests for news state, voice capture, moderation capture, kills, activity, newcomers, gameplay, tierlist, render/preview, publisher/operator and SoT integration.
@@ -128,6 +128,6 @@ Not implemented yet:
 
 ## Recommended Next Slice
 
-1. Run live smoke and shadow review to confirm the current cross-module audit watchlist plus history-backed movers/shifts are enough on real channels.
+1. Run live smoke and shadow review using the new staff-only smoke path to confirm the current cross-module audit watchlist plus history-backed movers/shifts are enough on real channels.
 2. Keep auto-publish disabled until live smoke confirms publish/operator flow on real channels.
 3. Only then decide whether any remaining audit blind spot needs a new owner/source instead of another render-only expansion.

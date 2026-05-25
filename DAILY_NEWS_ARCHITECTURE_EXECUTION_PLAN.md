@@ -871,9 +871,9 @@ Goal:
 
 Current implementation status:
 
-- [src/news/operator.js](src/news/operator.js) exists and supports status, preview-day, rerun-style preview and publish-now orchestration.
+- [src/news/operator.js](src/news/operator.js) exists and supports status, preview-day, rerun-style preview, publish-now and staff-only smoke orchestration.
 - Preview/rerun paths stay read-only by default; manual publish now explicitly captures the current Moscow-day history snapshot before delivery so operator-driven publish does not skip the next day's movers/shifts baseline.
-- Live moderator-panel button/modal routing now exists in [welcome-bot.js](welcome-bot.js) for overview, preview today, preview exact day, rerun day and manual publish.
+- Live moderator-panel button/modal routing now exists in [welcome-bot.js](welcome-bot.js) for overview, preview today, preview exact day, rerun day, manual publish and staff-only smoke publish.
 - Dedicated slash-command surface is still not wired.
 
 Must deliver:
@@ -914,6 +914,10 @@ Recommended rollout order:
 2. preview-only operator mode;
 3. staff-only publish;
 4. public publish with duplicate guard enabled.
+
+Current rollout note:
+
+- step 3 now has a code path in operator/publisher owners; what remains is the live Discord smoke itself, not the basic delivery seam.
 
 Exit criteria:
 
