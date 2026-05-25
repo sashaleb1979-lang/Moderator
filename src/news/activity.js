@@ -1,5 +1,4 @@
 "use strict";
-ЦФ
 const {
   buildDailyNewsProfileHistorySnapshot,
   getDailyNewsHistorySnapshot,
