@@ -417,7 +417,19 @@ async function runDailyNewsOperatorAction({
   }
 
   if (normalizedAction === DAILY_NEWS_OPERATOR_ACTIONS.PREVIEW_TODAY || normalizedAction === DAILY_NEWS_OPERATOR_ACTIONS.PREVIEW_DAY || normalizedAction === DAILY_NEWS_OPERATOR_ACTIONS.RERUN_DAY) {
-    const result = compileDailyNewsPreview({ db, targetDayKey: dayKey, now, windowEndAt, saveDb });
+    let result = null;
+    if (normalizedAction === DAILY_NEWS_OPERATOR_ACTIONS.RERUN_DAY) {
+      try {
+        result = renderStoredDailyNewsPreview({ db, dayKey, now, saveDb });
+      } catch (error) {
+        if (cleanString(error?.message, 200) !== "daily news digest not found for preview") {
+          throw error;
+        }
+      }
+    }
+    if (!result) {
+      result = compileDailyNewsPreview({ db, targetDayKey: dayKey, now, windowEndAt, saveDb });
+    }
     return {
       action: normalizedAction,
       dayKey: result.dayKey,

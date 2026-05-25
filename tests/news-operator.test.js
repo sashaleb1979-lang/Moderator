@@ -3,6 +3,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
+const { compileDailyNewsDigest } = require("../src/news/compiler");
 const {
   DAILY_NEWS_OPERATOR_ACTIONS,
   DAILY_NEWS_PANEL_OPEN_ID,
@@ -309,4 +310,79 @@ test("handleDailyNewsPanelModalSubmitInteraction previews an exact day ephemeral
   assert.match(interaction.edits[0].content, /Preview · public issue · 2026-05-14/);
   assert.equal(interaction.followUps[0].files[0].name, "daily-news-2026-05-14.png");
   assert.ok(interaction.followUps.length >= 2);
+});
+
+test("runDailyNewsOperatorAction rerun uses the stored digest when it already exists", async () => {
+  const db = {
+    profiles: {
+      "user-1": { displayName: "Stored Alpha" },
+      "user-2": { displayName: "Live Beta" },
+    },
+    submissions: {
+      base: {
+        id: "base",
+        userId: "user-1",
+        displayName: "Stored Alpha",
+        kills: 10,
+        status: "approved",
+        createdAt: "2026-05-14T09:00:00.000Z",
+        reviewedAt: "2026-05-14T10:00:00.000Z",
+      },
+      storedJump: {
+        id: "storedJump",
+        userId: "user-1",
+        displayName: "Stored Alpha",
+        kills: 50,
+        status: "approved",
+        createdAt: "2026-05-14T11:00:00.000Z",
+        reviewedAt: "2026-05-14T12:00:00.000Z",
+      },
+    },
+    sot: {
+      news: {
+        config: {
+          presentation: { masthead: "Ops Desk" },
+        },
+      },
+    },
+  };
+
+  compileDailyNewsDigest({
+    db,
+    targetDayKey: "2026-05-14",
+    now: "2026-05-14T18:00:00.000Z",
+    windowEndAt: "2026-05-14T18:00:00.000Z",
+  });
+
+  db.submissions = {
+    base: {
+      id: "base",
+      userId: "user-2",
+      displayName: "Live Beta",
+      kills: 5,
+      status: "approved",
+      createdAt: "2026-05-14T09:00:00.000Z",
+      reviewedAt: "2026-05-14T10:00:00.000Z",
+    },
+    liveJump: {
+      id: "liveJump",
+      userId: "user-2",
+      displayName: "Live Beta",
+      kills: 105,
+      status: "approved",
+      createdAt: "2026-05-14T11:00:00.000Z",
+      reviewedAt: "2026-05-14T12:00:00.000Z",
+    },
+  };
+
+  const result = await runDailyNewsOperatorAction({
+    db,
+    action: DAILY_NEWS_OPERATOR_ACTIONS.RERUN_DAY,
+    dayKey: "2026-05-14",
+    now: "2026-05-15T08:00:00.000Z",
+  });
+
+  assert.equal(result.digest.publicEdition.kills.topUpgrades[0].displayName, "Stored Alpha");
+  assert.equal(db.sot.news.runtime.lastPreviewRequest.dayKey, "2026-05-14");
+  assert.equal(db.sot.news.runtime.lastPreviewRequest.status, "stored_rendered");
 });
