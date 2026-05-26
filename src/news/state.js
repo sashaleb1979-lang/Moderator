@@ -37,6 +37,18 @@ function normalizeOptionalNonNegativeInteger(value) {
   return Number.isSafeInteger(amount) && amount >= 0 ? amount : null;
 }
 
+function normalizeStringList(items = [], limit = 8, itemLimit = 300) {
+  const source = Array.isArray(items) ? items : [];
+  const normalized = [];
+  for (const item of source) {
+    const text = cleanString(item, itemLimit);
+    if (!text) continue;
+    normalized.push(text);
+    if (normalized.length >= limit) break;
+  }
+  return normalized.length ? normalized : null;
+}
+
 function normalizeHexColor(value, fallback) {
   const text = cleanString(value, 16).toUpperCase();
   return /^#[0-9A-F]{6}$/.test(text) ? text : fallback;
@@ -60,6 +72,8 @@ function normalizePublishResult(value = null) {
     threadMessageCount: normalizeOptionalNonNegativeInteger(source.threadMessageCount),
     staffChannelId: normalizeNullableString(source.staffChannelId, 80),
     staffMessageId: normalizeNullableString(source.staffMessageId, 80),
+    warningCount: normalizeOptionalNonNegativeInteger(source.warningCount),
+    warnings: normalizeStringList(source.warnings, 8, 300),
   };
 
   return Object.values(result).some((entry) => entry !== null) ? result : null;
@@ -71,6 +85,9 @@ function createDefaultNewsConfig() {
     schedule: {
       publishHourMsk: 21,
       tickMinutes: 5,
+    },
+    publish: {
+      autoPublishEnabled: false,
     },
     channels: {
       publicChannelId: "",
@@ -129,6 +146,9 @@ function normalizeNewsConfig(value = {}) {
     schedule: {
       publishHourMsk: normalizeIntegerInRange(source.schedule?.publishHourMsk, defaults.schedule.publishHourMsk, 0, 23),
       tickMinutes: normalizePositiveInteger(source.schedule?.tickMinutes, defaults.schedule.tickMinutes),
+    },
+    publish: {
+      autoPublishEnabled: normalizeBoolean(source.publish?.autoPublishEnabled, defaults.publish.autoPublishEnabled),
     },
     channels: {
       publicChannelId: cleanString(source.channels?.publicChannelId, 80),

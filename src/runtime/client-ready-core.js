@@ -123,7 +123,7 @@ function buildClientReadyPeriodicJobs(options = {}) {
     runAutoResendTick,
     refreshLegacyTierlistSummaryMessage,
     runVerificationDeadlineSweep,
-    runDailyNewsCompileTick = null,
+    runDailyNewsReleaseTick = null,
     runRobloxProfileRefreshJob,
     flushActivityRuntime,
     runDailyActivityRoleSync,
@@ -153,8 +153,8 @@ function buildClientReadyPeriodicJobs(options = {}) {
   if (runVerificationDeadlineSweep != null) {
     assertFunction(runVerificationDeadlineSweep, "runVerificationDeadlineSweep");
   }
-  if (runDailyNewsCompileTick != null) {
-    assertFunction(runDailyNewsCompileTick, "runDailyNewsCompileTick");
+  if (runDailyNewsReleaseTick != null) {
+    assertFunction(runDailyNewsReleaseTick, "runDailyNewsReleaseTick");
   }
   if (flushActivityRuntime != null) {
     assertFunction(flushActivityRuntime, "flushActivityRuntime");
@@ -248,13 +248,13 @@ function buildClientReadyPeriodicJobs(options = {}) {
     });
   }
 
-  if (typeof runDailyNewsCompileTick === "function") {
+  if (typeof runDailyNewsReleaseTick === "function") {
     periodicJobs.push({
-      key: "news.dailyCompile",
-      run: runDailyNewsCompileTick,
+      key: "news.dailyRelease",
+      run: runDailyNewsReleaseTick,
       intervalMs: Math.max(1, Number(news?.schedule?.tickMinutes) || 5) * 60 * 1000,
       initialDelayMs: 0,
-      errorLabel: "Daily news compile tick failed",
+      errorLabel: "Daily news release tick failed",
     });
   }
 

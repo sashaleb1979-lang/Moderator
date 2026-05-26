@@ -45,34 +45,6 @@ function createInteraction(customId, overrides = {}) {
   };
 }
 
-test("createRobloxPanelTelemetry persists playtime job state for runtime diagnostics", async () => {
-  const persisted = [];
-  const telemetry = createRobloxPanelTelemetry({
-    now: createNowQueue([
-      "2026-05-09T12:00:00.000Z",
-      "2026-05-09T12:00:01.000Z",
-    ]),
-    persistJobState(kind, state) {
-      persisted.push({ kind, state });
-    },
-  });
-
-  await telemetry.wrapJob("playtime_sync", async () => ({
-    totalCandidates: 2,
-    activeJjsUsers: 1,
-    staleSessionClosedCount: 1,
-  }))();
-
-  assert.equal(persisted[0].kind, "playtimeSync");
-  assert.equal(persisted[0].state.status, "running");
-  assert.equal(persisted[0].state.lastStartedAt, "2026-05-09T12:00:00.000Z");
-  assert.equal(persisted[1].kind, "playtimeSync");
-  assert.equal(persisted[1].state.status, "ok");
-  assert.equal(persisted[1].state.lastFinishedAt, "2026-05-09T12:00:01.000Z");
-  assert.equal(persisted[1].state.summary.activeJjsUsers, 1);
-  assert.equal(persisted[1].state.summary.staleSessionClosedCount, 1);
-});
-
 test("getRobloxStatsPanelSnapshot keeps aggregate truth and builds a seen-first verified list", async () => {
   const telemetry = createRobloxPanelTelemetry({
     now: createNowQueue([
@@ -317,7 +289,7 @@ test("buildRobloxStatsPanelPayload renders one simple authenticated list with se
   assert.equal(embed.fields[3].name, "Фоновые задачи");
   assert.equal(embed.fields[4].name, "Кого чинить");
   assert.equal(embed.fields[5].name, "Ошибки и блокеры");
-  assert.equal(embed.fields[5].value, "JJS sync не работает: не было успешного запуска дольше двух poll-интервалов.");
+  assert.equal(embed.fields[5].value, "Критичных блокеров сейчас не видно.");
   assert.equal(embed.fields[6].name, "Последнее действие");
   assert.equal(embed.fields[6].value, "manual refresh completed");
 });

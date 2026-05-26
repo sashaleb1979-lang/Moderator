@@ -360,11 +360,11 @@ test("buildClientReadyPeriodicJobs adds verification deadline sweep only when ve
   assert.equal(periodicJobs.find((job) => job.errorLabel === "Verification deadline sweep failed").intervalMs, 1800000);
 });
 
-test("buildClientReadyPeriodicJobs adds a daily news compile tick with startup-safe defaults", () => {
+test("buildClientReadyPeriodicJobs adds a daily news release tick with startup-safe defaults", () => {
   const periodicJobs = buildClientReadyPeriodicJobs({
     runAutoResendTick() {},
     async refreshLegacyTierlistSummaryMessage() {},
-    runDailyNewsCompileTick() {},
+    runDailyNewsReleaseTick() {},
     news: {
       enabled: false,
       schedule: {
@@ -373,13 +373,13 @@ test("buildClientReadyPeriodicJobs adds a daily news compile tick with startup-s
     },
   });
 
-  const newsJob = periodicJobs.find((job) => job.errorLabel === "Daily news compile tick failed");
+  const newsJob = periodicJobs.find((job) => job.errorLabel === "Daily news release tick failed");
   assert.deepEqual(newsJob, {
-    key: "news.dailyCompile",
+    key: "news.dailyRelease",
     run: newsJob.run,
     intervalMs: 420000,
     initialDelayMs: 0,
-    errorLabel: "Daily news compile tick failed",
+    errorLabel: "Daily news release tick failed",
   });
 });
 

@@ -157,7 +157,7 @@ const {
 } = require("./src/activity/runtime");
 const { ensureActivityState } = require("./src/activity/state");
 const { ensureNewsState } = require("./src/news/state");
-const { runDailyNewsCompileTick } = require("./src/news/scheduler");
+const { runDailyNewsReleaseTick } = require("./src/news/scheduler");
 const {
   handleDailyNewsPanelButtonInteraction,
   handleDailyNewsPanelModalSubmitInteraction,
@@ -14722,23 +14722,27 @@ client.once("clientReady", async () => {
     runProfileSeasonArchiveSnapshot: runScheduledProfileSeasonArchiveSnapshot,
     runProfilePopulationSnapshot: runScheduledProfilePopulationSnapshot,
     runVerificationDeadlineSweep: (currentClient) => runVerificationDeadlineSweep(currentClient),
-    runDailyNewsCompileTick: async () => {
+    runDailyNewsReleaseTick: async () => {
       const nowValue = nowIso();
       const pendingRemovalResolutions = await resolveDailyNewsPendingMemberRemovalResolutions(client, nowValue).catch((error) => {
         console.warn("Daily news delayed member-remove reconciliation failed:", error?.message || error);
         return {};
       });
-      const result = await runSerializedDbTask(() => runDailyNewsCompileTick({
+      const result = await runSerializedDbTask(() => runDailyNewsReleaseTick({
         db,
         now: nowValue,
         saveDb,
+        client,
         beforeCompile: () => reconcileMemberRemovalEvents({
           db,
           resolutionsByEventId: pendingRemovalResolutions,
         }),
-      }), "daily-news-shadow-compile");
+      }), "daily-news-release-tick");
       if (result?.compiled) {
         console.log(`[daily-news] shadow compiled ${result.dayKey}`);
+      }
+      if (result?.publish?.published) {
+        console.log(`[daily-news] auto-published ${result.dayKey}`);
       }
       return result;
     },
@@ -21018,6 +21022,8 @@ client.on("interactionCreate", async (interaction) => {
         db,
         isModerator,
         replyNoPermission: (currentInteraction) => currentInteraction.reply(ephemeralPayload({ content: "Нет прав." })),
+        parseRequestedChannelId,
+        resolveRequestedChannelId: (value, fallbackChannelId = "") => resolveRequestedChannelIdFromGuild(client, value, fallbackChannelId),
         saveDb,
         now: nowIso(),
       })

@@ -15,6 +15,7 @@ test("createDefaultNewsConfig seeds edition-first defaults for daily digest", ()
 
   assert.equal(config.enabled, false);
   assert.equal(config.schedule.publishHourMsk, 21);
+  assert.equal(config.publish.autoPublishEnabled, false);
   assert.equal(config.voice.topCount, 5);
   assert.equal(config.kills.topCount, 5);
   assert.equal(config.activity.topMessagesCount, 5);
@@ -49,6 +50,9 @@ test("normalizeNewsState normalizes config and preserves captured runtime slices
       schedule: {
         publishHourMsk: 25,
         tickMinutes: 0,
+      },
+      publish: {
+        autoPublishEnabled: true,
       },
       channels: {
         publicChannelId: " public-news ",
@@ -111,6 +115,7 @@ test("normalizeNewsState normalizes config and preserves captured runtime slices
   assert.equal(state.config.enabled, true);
   assert.equal(state.config.schedule.publishHourMsk, 21);
   assert.equal(state.config.schedule.tickMinutes, 5);
+  assert.equal(state.config.publish.autoPublishEnabled, true);
   assert.equal(state.config.channels.publicChannelId, "public-news");
   assert.equal(state.config.voice.topCount, 10);
   assert.equal(state.config.voice.fullListFormat, "line");
@@ -139,6 +144,8 @@ test("normalizeNewsState normalizes config and preserves captured runtime slices
     threadMessageCount: 2,
     staffChannelId: "staff",
     staffMessageId: "audit-1",
+    warningCount: null,
+    warnings: null,
   });
   assert.equal(state.runtime.lastVoiceCaptureAt, "2026-05-14T20:59:00.000Z");
   assert.deepEqual(state.runtime.errors, [{ scope: "voice", reason: "gap" }]);

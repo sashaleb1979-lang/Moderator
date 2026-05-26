@@ -177,3 +177,60 @@ test("publishDailyNewsIssue can deliver a staff-only smoke issue without marking
   assert.equal(rerun.published, true);
   assert.equal(staffChannel.sent.length, 4);
 });
+
+test("publishDailyNewsIssue does not duplicate the public release when staff audit delivery fails", async () => {
+  const db = {
+    profiles: {},
+    sot: {
+      news: {
+        config: {
+          channels: { publicChannelId: "public", staffChannelId: "staff" },
+          voice: { includeFullList: true, publishFullListInThread: false },
+          presentation: { postThreadEnabled: false },
+        },
+        voice: {
+          finalizedSessions: [
+            { userId: "user-1", displayName: "VoiceOne", joinedAt: "2026-05-14T10:00:00.000Z", endedAt: "2026-05-14T10:30:00.000Z" },
+          ],
+        },
+      },
+    },
+  };
+  const state = ensureNewsState(db);
+  const result = compileDailyNewsDigest({ db, targetDayKey: "2026-05-14", now: "2026-05-14T18:00:00.000Z" });
+  const issue = renderDailyNewsIssue({ digest: result.digest, config: state.config });
+  const publicChannel = createFakeChannel("public");
+  const failingStaffChannel = {
+    id: "staff",
+    async send() {
+      throw new Error("staff send failed");
+    },
+  };
+
+  const published = await publishDailyNewsIssue({
+    db,
+    digest: result.digest,
+    issue,
+    publicChannel,
+    staffChannel: failingStaffChannel,
+    now: "2026-05-14T18:05:00.000Z",
+  });
+
+  assert.equal(published.published, true);
+  assert.equal(db.sot.news.runtime.lastPublishStatus, "published");
+  assert.equal(db.sot.news.runtime.lastPublishedDayKey, "2026-05-14");
+  assert.equal(publicChannel.sent.length, 1);
+  assert.equal(published.result.warningCount, 1);
+  assert.match(published.result.warnings[0], /audit message delivery failed: staff send failed/i);
+
+  const duplicate = await publishDailyNewsIssue({
+    db,
+    digest: result.digest,
+    publicChannel,
+    staffChannel: failingStaffChannel,
+  });
+
+  assert.equal(duplicate.skipped, true);
+  assert.equal(duplicate.reason, "already_published");
+  assert.equal(publicChannel.sent.length, 1);
+});

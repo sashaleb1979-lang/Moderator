@@ -22,6 +22,16 @@ function normalizePublishMode(value) {
   return cleanString(value, 40) === "staff_only" ? "staff_only" : "public";
 }
 
+async function runOptionalPublishStep(runStep, warnings, label, fallbackValue) {
+  try {
+    return await runStep();
+  } catch (error) {
+    const warningText = cleanString(error?.message, 300) || "unknown_error";
+    warnings.push(`${cleanString(label, 120) || "publish warning"}: ${warningText}`);
+    return fallbackValue;
+  }
+}
+
 async function resolveChannel({ client, channel, channelId, label }) {
   if (channel) return channel;
   const normalizedChannelId = cleanString(channelId, 80);
@@ -123,6 +133,7 @@ async function publishDailyNewsIssue({
     let thread = null;
     let sentThreadMessages = [];
     let staffMessage = null;
+    const warnings = [];
     const staffChannelId = cleanString(state.config?.channels?.staffChannelId, 80);
     if (normalizedPublishMode === "staff_only") {
       resolvedStaffChannel = await resolveChannel({
@@ -133,8 +144,18 @@ async function publishDailyNewsIssue({
       });
       deliveryChannel = resolvedStaffChannel;
       deliveryMessage = await resolvedStaffChannel.send(publicPayload);
-      ({ thread, sentThreadMessages } = await sendThreadMessages(deliveryMessage, resolvedIssue, state));
-      staffMessage = await resolvedStaffChannel.send(resolvedIssue.staffMessage);
+      ({ thread, sentThreadMessages } = await runOptionalPublishStep(
+        () => sendThreadMessages(deliveryMessage, resolvedIssue, state),
+        warnings,
+        "Daily News thread delivery failed",
+        { thread: null, sentThreadMessages: [] }
+      ));
+      staffMessage = await runOptionalPublishStep(
+        () => resolvedStaffChannel.send(resolvedIssue.staffMessage),
+        warnings,
+        "Daily News audit message delivery failed",
+        null
+      );
     } else {
       resolvedPublicChannel = await resolveChannel({
         client,
@@ -144,7 +165,12 @@ async function publishDailyNewsIssue({
       });
       deliveryChannel = resolvedPublicChannel;
       deliveryMessage = await resolvedPublicChannel.send(publicPayload);
-      ({ thread, sentThreadMessages } = await sendThreadMessages(deliveryMessage, resolvedIssue, state));
+      ({ thread, sentThreadMessages } = await runOptionalPublishStep(
+        () => sendThreadMessages(deliveryMessage, resolvedIssue, state),
+        warnings,
+        "Daily News thread delivery failed",
+        { thread: null, sentThreadMessages: [] }
+      ));
 
       if (staffChannel || staffChannelId) {
         resolvedStaffChannel = await resolveChannel({
@@ -153,7 +179,12 @@ async function publishDailyNewsIssue({
           channelId: staffChannelId,
           label: "staff Daily News",
         });
-        staffMessage = await resolvedStaffChannel.send(resolvedIssue.staffMessage);
+        staffMessage = await runOptionalPublishStep(
+          () => resolvedStaffChannel.send(resolvedIssue.staffMessage),
+          warnings,
+          "Daily News audit message delivery failed",
+          null
+        );
       }
     }
 
@@ -173,6 +204,8 @@ async function publishDailyNewsIssue({
       threadMessageCount: sentThreadMessages.length,
       staffChannelId: cleanString(resolvedStaffChannel?.id, 80) || cleanString(staffChannel?.id, 80) || staffChannelId || null,
       staffMessageId: cleanString(staffMessage?.id, 80) || null,
+      warningCount: warnings.length || null,
+      warnings: warnings.length ? warnings : null,
     };
 
     state.runtime.lastPublishedDayKey = resolvedDayKey;

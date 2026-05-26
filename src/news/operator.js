@@ -13,7 +13,7 @@ const {
 const { buildDailyNewsCoverAttachment } = require("./cover");
 const { compileDailyNewsPreview, renderStoredDailyNewsPreview } = require("./preview");
 const { publishDailyNewsIssue } = require("./publisher");
-const { ensureNewsState } = require("./state");
+const { ensureNewsState, normalizeNewsConfig } = require("./state");
 
 const DAILY_NEWS_OPERATOR_ACTIONS = Object.freeze({
   STATUS: "status",
@@ -31,10 +31,17 @@ const DAILY_NEWS_PANEL_PREVIEW_DAY_ID = "daily_news_panel_preview_day";
 const DAILY_NEWS_PANEL_RERUN_DAY_ID = "daily_news_panel_rerun_day";
 const DAILY_NEWS_PANEL_PUBLISH_NOW_ID = "daily_news_panel_publish_now";
 const DAILY_NEWS_PANEL_PUBLISH_STAFF_ONLY_ID = "daily_news_panel_publish_staff_only";
+const DAILY_NEWS_PANEL_CONFIG_INFRA_ID = "daily_news_panel_config_infra";
 const DAILY_NEWS_PANEL_BACK_ID = "daily_news_panel_back";
+const DAILY_NEWS_PANEL_CONFIG_INFRA_MODAL_ID = "daily_news_panel_config_infra_modal";
 const DAILY_NEWS_PANEL_PREVIEW_DAY_MODAL_ID = "daily_news_panel_preview_day_modal";
 const DAILY_NEWS_PANEL_RERUN_DAY_MODAL_ID = "daily_news_panel_rerun_day_modal";
 const DAILY_NEWS_PANEL_DAY_KEY_INPUT_ID = "day_key";
+const DAILY_NEWS_PANEL_ENABLED_INPUT_ID = "daily_news_enabled";
+const DAILY_NEWS_PANEL_AUTO_PUBLISH_INPUT_ID = "daily_news_auto_publish";
+const DAILY_NEWS_PANEL_PUBLIC_CHANNEL_INPUT_ID = "daily_news_public_channel";
+const DAILY_NEWS_PANEL_STAFF_CHANNEL_INPUT_ID = "daily_news_staff_channel";
+const DAILY_NEWS_PANEL_PUBLISH_HOUR_INPUT_ID = "daily_news_publish_hour_msk";
 
 const DAILY_NEWS_PANEL_BUTTON_IDS = Object.freeze([
   DAILY_NEWS_PANEL_OPEN_ID,
@@ -44,10 +51,12 @@ const DAILY_NEWS_PANEL_BUTTON_IDS = Object.freeze([
   DAILY_NEWS_PANEL_RERUN_DAY_ID,
   DAILY_NEWS_PANEL_PUBLISH_NOW_ID,
   DAILY_NEWS_PANEL_PUBLISH_STAFF_ONLY_ID,
+  DAILY_NEWS_PANEL_CONFIG_INFRA_ID,
   DAILY_NEWS_PANEL_BACK_ID,
 ]);
 
 const DAILY_NEWS_PANEL_MODAL_IDS = Object.freeze([
+  DAILY_NEWS_PANEL_CONFIG_INFRA_MODAL_ID,
   DAILY_NEWS_PANEL_PREVIEW_DAY_MODAL_ID,
   DAILY_NEWS_PANEL_RERUN_DAY_MODAL_ID,
 ]);
@@ -75,6 +84,36 @@ function formatChannelMention(channelId) {
 function normalizeDayKey(value) {
   const text = cleanString(value, 40);
   return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : "";
+}
+
+function normalizeModalValue(value, fallback = "", limit = 4000) {
+  const text = cleanString(value, limit);
+  return text || cleanString(fallback, limit);
+}
+
+function parseRequestedChannelId(value, fallbackChannelId = "") {
+  const text = cleanString(value, 120);
+  if (!text) return cleanString(fallbackChannelId, 80);
+
+  const mentionMatch = text.match(/^<#(\d+)>$/);
+  const candidate = mentionMatch ? mentionMatch[1] : text.replace(/\s+/g, "");
+  return /^\d{5,25}$/.test(candidate) ? candidate : "";
+}
+
+function parseBooleanInput(value, fallback = null) {
+  const text = cleanString(value, 40).toLowerCase();
+  if (!text) return fallback;
+  if (["1", "true", "yes", "y", "on", "да", "д"].includes(text)) return true;
+  if (["0", "false", "no", "n", "off", "нет", "н"].includes(text)) return false;
+  return null;
+}
+
+function parsePublishHourInput(value, fallback = 21) {
+  const text = cleanString(value, 40);
+  if (!text) return Number.isSafeInteger(Number(fallback)) ? Number(fallback) : 21;
+  const hour = Number.parseInt(text, 10);
+  if (!Number.isSafeInteger(hour) || hour < 0 || hour > 23) return null;
+  return hour;
 }
 
 function withEphemeralFlag(payload, includeFlags = true) {
@@ -171,6 +210,41 @@ function formatPublishModeLabel(mode) {
   }
 }
 
+function collectDailyNewsAutoPublishBlockers(config = {}) {
+  if (config?.publish?.autoPublishEnabled !== true) {
+    return [];
+  }
+
+  const blockers = [];
+  if (config?.enabled !== true) {
+    blockers.push("включённый Shadow compile tick");
+  }
+  if (!cleanString(config?.channels?.publicChannelId, 80)) {
+    blockers.push("привязанный Public channel");
+  }
+  return blockers;
+}
+
+function formatReleaseModeLabel(config = {}) {
+  if (config?.publish?.autoPublishEnabled !== true) {
+    return "manual-only";
+  }
+  return collectDailyNewsAutoPublishBlockers(config).length ? "auto-publish blocked" : "auto-publish";
+}
+
+function formatReleaseModeSummary(config = {}) {
+  if (config?.publish?.autoPublishEnabled !== true) {
+    return "Scheduler делает только shadow compile; live publish запускается кнопкой «Опубликовать».";
+  }
+
+  const blockers = collectDailyNewsAutoPublishBlockers(config);
+  if (blockers.length) {
+    return `Auto-publish заблокирован: нужен ${blockers.join(", ")}.`;
+  }
+
+  return "Scheduler делает shadow compile и может отправлять public выпуск автоматически после cutoff.";
+}
+
 function buildDailyNewsPanelRows(state = {}) {
   const publicChannelId = cleanString(state.config?.channels?.publicChannelId, 80);
   const staffChannelId = cleanString(state.config?.channels?.staffChannelId, 80);
@@ -192,6 +266,7 @@ function buildDailyNewsPanelRows(state = {}) {
         .setLabel("Staff-only smoke")
         .setStyle(ButtonStyle.Secondary)
         .setDisabled(!staffChannelId),
+      new ButtonBuilder().setCustomId(DAILY_NEWS_PANEL_CONFIG_INFRA_ID).setLabel("Настроить").setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId(DAILY_NEWS_PANEL_BACK_ID).setLabel("Назад").setStyle(ButtonStyle.Secondary)
     ),
   ];
@@ -219,6 +294,7 @@ function buildDailyNewsOperatorPanelPayload({ db = {}, statusText = "", includeF
   const coverage = state.runtime.lastCoverageSummary || {};
   const audit = state.runtime.lastAuditCounts || {};
   const publishResult = state.runtime.lastPublishResult || {};
+  const publishWarnings = Array.isArray(publishResult.warnings) ? publishResult.warnings : [];
 
   const embed = new EmbedBuilder()
     .setColor(normalizeHexColor(state.config?.presentation?.accentColor, 0xD6A441))
@@ -226,10 +302,10 @@ function buildDailyNewsOperatorPanelPayload({ db = {}, statusText = "", includeF
     .setDescription([
       `Мастхед: **${cleanString(state.config?.presentation?.masthead, 120) || "Daily Edition"}**`,
       `Ежедневный тик: **${state.config?.enabled ? "включён" : "выключен"}** · ${Number(state.config?.schedule?.publishHourMsk) || 21}:00 МСК`,
-      "Режим выпуска: **manual-only**",
+      `Режим выпуска: **${formatReleaseModeLabel(state.config)}**`,
       `Public: ${formatChannelMention(state.config?.channels?.publicChannelId)}`,
       `Staff: ${formatChannelMention(state.config?.channels?.staffChannelId)}`,
-      "Scheduler делает только shadow compile; live publish запускается кнопкой «Опубликовать».",
+      formatReleaseModeSummary(state.config),
     ].join("\n"))
     .addFields(
       {
@@ -250,6 +326,8 @@ function buildDailyNewsOperatorPanelPayload({ db = {}, statusText = "", includeF
           `Режим: **${formatPublishModeLabel(publishResult.publishMode)}**`,
           `Delivery msg: **${cleanString(publishResult.deliveryMessageId, 80) || "—"}**`,
           `Audit msg: **${cleanString(publishResult.staffMessageId, 80) || "—"}**`,
+          `Warnings: **${Number(publishResult.warningCount) || 0}**`,
+          publishWarnings.length ? `Последний warning: ${cleanString(publishWarnings[0], 220)}` : null,
         ].join("\n"),
         inline: true,
       },
@@ -288,6 +366,64 @@ function buildDailyNewsOperatorPanelPayload({ db = {}, statusText = "", includeF
     embeds: [embed],
     components: buildDailyNewsPanelRows(state),
   }, includeFlags);
+}
+
+function buildDailyNewsInfraConfigModal(config = {}) {
+  return new ModalBuilder()
+    .setCustomId(DAILY_NEWS_PANEL_CONFIG_INFRA_MODAL_ID)
+    .setTitle("Daily News настройки")
+    .addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId(DAILY_NEWS_PANEL_ENABLED_INPUT_ID)
+          .setLabel("Shadow compile включён? (да/нет)")
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+          .setMaxLength(10)
+          .setValue(config.enabled === true ? "да" : "нет")
+          .setPlaceholder("да")
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId(DAILY_NEWS_PANEL_AUTO_PUBLISH_INPUT_ID)
+          .setLabel("Автопубликация включена? (да/нет)")
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+          .setMaxLength(10)
+          .setValue(config.publish?.autoPublishEnabled === true ? "да" : "нет")
+          .setPlaceholder("нет")
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId(DAILY_NEWS_PANEL_PUBLIC_CHANNEL_INPUT_ID)
+          .setLabel("Public канал: ID или mention")
+          .setStyle(TextInputStyle.Short)
+          .setRequired(false)
+          .setMaxLength(120)
+          .setValue(normalizeModalValue(config.channels?.publicChannelId, ""))
+          .setPlaceholder("например, <#123...>")
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId(DAILY_NEWS_PANEL_STAFF_CHANNEL_INPUT_ID)
+          .setLabel("Staff канал: ID или mention")
+          .setStyle(TextInputStyle.Short)
+          .setRequired(false)
+          .setMaxLength(120)
+          .setValue(normalizeModalValue(config.channels?.staffChannelId, ""))
+          .setPlaceholder("например, <#123...>")
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId(DAILY_NEWS_PANEL_PUBLISH_HOUR_INPUT_ID)
+          .setLabel("Publish hour МСК (0-23)")
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+          .setMaxLength(2)
+          .setValue(String(Number(config.schedule?.publishHourMsk) || 21))
+          .setPlaceholder("21")
+      )
+    );
 }
 
 function buildDayKeyModal(action = DAILY_NEWS_OPERATOR_ACTIONS.PREVIEW_DAY) {
@@ -524,6 +660,18 @@ async function handleDailyNewsPanelButtonInteraction(options = {}) {
     });
   }
 
+  if (customId === DAILY_NEWS_PANEL_CONFIG_INFRA_ID) {
+    return runDailyNewsOperatorInteractionAction({
+      interaction,
+      replyError: options.replyError,
+      customId,
+      errorPrefix: "Не удалось открыть настройки Daily News",
+      action: async () => {
+        await interaction.showModal(buildDailyNewsInfraConfigModal(ensureNewsState(options.db).config || {}));
+      },
+    });
+  }
+
   if (customId === DAILY_NEWS_PANEL_PREVIEW_DAY_ID || customId === DAILY_NEWS_PANEL_RERUN_DAY_ID) {
     return runDailyNewsOperatorInteractionAction({
       interaction,
@@ -620,6 +768,110 @@ async function handleDailyNewsPanelModalSubmitInteraction(options = {}) {
     return true;
   }
 
+  if (customId === DAILY_NEWS_PANEL_CONFIG_INFRA_MODAL_ID) {
+    return runDailyNewsOperatorInteractionAction({
+      interaction,
+      replyError: options.replyError,
+      customId,
+      errorPrefix: "Не удалось сохранить настройки Daily News",
+      action: async () => {
+        if (typeof interaction.deferReply === "function") {
+          await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+        }
+
+        const state = ensureNewsState(options.db);
+        const enabledRaw = interaction.fields.getTextInputValue(DAILY_NEWS_PANEL_ENABLED_INPUT_ID);
+        const autoPublishRaw = interaction.fields.getTextInputValue(DAILY_NEWS_PANEL_AUTO_PUBLISH_INPUT_ID);
+        const publicChannelRaw = interaction.fields.getTextInputValue(DAILY_NEWS_PANEL_PUBLIC_CHANNEL_INPUT_ID);
+        const staffChannelRaw = interaction.fields.getTextInputValue(DAILY_NEWS_PANEL_STAFF_CHANNEL_INPUT_ID);
+        const publishHourRaw = interaction.fields.getTextInputValue(DAILY_NEWS_PANEL_PUBLISH_HOUR_INPUT_ID);
+
+        const enabled = parseBooleanInput(enabledRaw, state.config?.enabled === true);
+        const autoPublishEnabled = parseBooleanInput(autoPublishRaw, state.config?.publish?.autoPublishEnabled === true);
+        if (enabled === null) {
+          await interaction.editReply({ content: "Shadow compile должно быть yes/no, true/false или да/нет." });
+          return;
+        }
+        if (autoPublishEnabled === null) {
+          await interaction.editReply({ content: "Автопубликация должна быть yes/no, true/false или да/нет." });
+          return;
+        }
+
+        const resolveRequestedChannelId = typeof options.resolveRequestedChannelId === "function"
+          ? options.resolveRequestedChannelId
+          : async (value, fallbackChannelId = "") => {
+            if (typeof options.parseRequestedChannelId === "function") {
+              return options.parseRequestedChannelId(value, fallbackChannelId);
+            }
+            return parseRequestedChannelId(value, fallbackChannelId);
+          };
+
+        const publicChannelId = await Promise.resolve(resolveRequestedChannelId(publicChannelRaw, ""));
+        const staffChannelId = await Promise.resolve(resolveRequestedChannelId(staffChannelRaw, ""));
+        if (cleanString(publicChannelRaw, 120) && !publicChannelId) {
+          await interaction.editReply({ content: "Public канал должен быть Channel ID, <#...> или точным именем канала." });
+          return;
+        }
+        if (cleanString(staffChannelRaw, 120) && !staffChannelId) {
+          await interaction.editReply({ content: "Staff канал должен быть Channel ID, <#...> или точным именем канала." });
+          return;
+        }
+
+        const publishHourMsk = parsePublishHourInput(publishHourRaw, state.config?.schedule?.publishHourMsk);
+        if (publishHourMsk === null) {
+          await interaction.editReply({ content: "Publish hour МСК должен быть числом от 0 до 23." });
+          return;
+        }
+
+        const nextConfig = normalizeNewsConfig({
+          ...state.config,
+          enabled,
+          publish: {
+            ...state.config?.publish,
+            autoPublishEnabled,
+          },
+          schedule: {
+            ...state.config?.schedule,
+            publishHourMsk,
+          },
+          channels: {
+            ...state.config?.channels,
+            publicChannelId,
+            staffChannelId,
+          },
+        });
+
+        const autoPublishBlockers = collectDailyNewsAutoPublishBlockers(nextConfig);
+        if (autoPublishBlockers.length) {
+          await interaction.editReply({ content: `Автопубликация требует: ${autoPublishBlockers.join(", ")}.` });
+          return;
+        }
+
+        state.config = nextConfig;
+
+        if (typeof options.saveDb === "function") {
+          options.saveDb();
+        }
+
+        const savedTargets = [];
+        if (publicChannelId) savedTargets.push(`public ${formatChannelMention(publicChannelId)}`);
+        if (staffChannelId) savedTargets.push(`staff ${formatChannelMention(staffChannelId)}`);
+        const statusText = [
+          `Настройки Daily News сохранены. Tick: **${enabled ? "включён" : "выключен"}**.`,
+          `Режим выпуска: **${formatReleaseModeLabel(state.config)}**.`,
+          `Publish hour: **${publishHourMsk}:00 МСК**.`,
+          savedTargets.length ? `Каналы: ${savedTargets.join(" · ")}.` : "Каналы не привязаны.",
+        ].join(" ");
+
+        await interaction.editReply(buildDailyNewsOperatorPanelPayload({
+          db: options.db,
+          statusText,
+          includeFlags: false,
+        }));
+      },
+    });
+  }
+
   const dayKey = normalizeDayKey(interaction?.fields?.getTextInputValue?.(DAILY_NEWS_PANEL_DAY_KEY_INPUT_ID));
   if (!dayKey) {
     await replyDailyNewsOperatorError(interaction, options.replyError, "Day key должен быть в формате YYYY-MM-DD.");
@@ -654,6 +906,8 @@ module.exports = {
   DAILY_NEWS_OPERATOR_ACTIONS,
   DAILY_NEWS_PANEL_BACK_ID,
   DAILY_NEWS_PANEL_BUTTON_IDS,
+  DAILY_NEWS_PANEL_CONFIG_INFRA_ID,
+  DAILY_NEWS_PANEL_CONFIG_INFRA_MODAL_ID,
   DAILY_NEWS_PANEL_MODAL_IDS,
   DAILY_NEWS_PANEL_OPEN_ID,
   DAILY_NEWS_PANEL_PUBLISH_NOW_ID,

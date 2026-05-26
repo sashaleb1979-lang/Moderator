@@ -1,6 +1,7 @@
 "use strict";
 
 const { compileDailyNewsDigest, resolveMoscowDayKey } = require("./compiler");
+const { publishDailyNewsIssue } = require("./publisher");
 const { ensureNewsState } = require("./state");
 
 const MOSCOW_OFFSET_MS = 3 * 60 * 60 * 1000;
@@ -99,30 +100,54 @@ function shouldRunDailyNewsCompileTick({ db = {}, now } = {}) {
   };
 }
 
-function runDailyNewsCompileTick({ db = {}, now, saveDb, beforeCompile = null, compileDailyNewsDigestFn = compileDailyNewsDigest } = {}) {
-  const state = ensureNewsState(db);
-  const decision = shouldRunDailyNewsCompileTick({ db, now });
+function buildSkippedCompileResult(decision = {}) {
+  return {
+    compiled: false,
+    skipped: true,
+    reason: decision.reason || null,
+    dayKey: decision.dayKey || null,
+    publishHourMsk: decision.publishHourMsk,
+    nowIso: decision.nowIso || null,
+    mode: "shadow",
+    digest: null,
+  };
+}
 
-  if (!decision.shouldRun) {
-    return {
-      compiled: false,
-      skipped: true,
-      reason: decision.reason,
-      dayKey: decision.dayKey,
-      publishHourMsk: decision.publishHourMsk,
-      nowIso: decision.nowIso,
-    };
+async function persistDb(saveDb) {
+  if (typeof saveDb === "function") {
+    await Promise.resolve(saveDb());
   }
+}
+
+async function runBeforeCompileHook({ beforeCompile = null, db = {}, decision = {} } = {}) {
+  if (typeof beforeCompile !== "function") return null;
+  return Promise.resolve(beforeCompile({
+    db,
+    dayKey: decision.dayKey,
+    publishHourMsk: decision.publishHourMsk,
+    nowIso: decision.nowIso,
+  }));
+}
+
+function shouldRecompileAfterBeforeCompile(beforeCompileResult = null) {
+  if (beforeCompileResult === true) return true;
+  if (!beforeCompileResult || typeof beforeCompileResult !== "object") return false;
+  return beforeCompileResult.shouldRecompile === true
+    || beforeCompileResult.stateChanged === true
+    || Number(beforeCompileResult.updatedCount) > 0
+    || Number(beforeCompileResult.changedCount) > 0;
+}
+
+async function executeDailyNewsCompile({
+  db = {},
+  now,
+  saveDb,
+  decision = {},
+  compileDailyNewsDigestFn = compileDailyNewsDigest,
+} = {}) {
+  const state = ensureNewsState(db);
 
   try {
-    if (typeof beforeCompile === "function") {
-      beforeCompile({
-        db,
-        dayKey: decision.dayKey,
-        publishHourMsk: decision.publishHourMsk,
-        nowIso: decision.nowIso,
-      });
-    }
     const result = compileDailyNewsDigestFn({
       db,
       targetDayKey: decision.dayKey,
@@ -131,9 +156,7 @@ function runDailyNewsCompileTick({ db = {}, now, saveDb, beforeCompile = null, c
       historySnapshotMode: "capture_if_current_day",
     });
     state.runtime.lastCompileStatus = "shadow_compiled";
-    if (typeof saveDb === "function") {
-      saveDb();
-    }
+    await persistDb(saveDb);
     return {
       compiled: true,
       skipped: false,
@@ -145,16 +168,119 @@ function runDailyNewsCompileTick({ db = {}, now, saveDb, beforeCompile = null, c
       digest: result?.digest || null,
     };
   } catch (error) {
-    if (typeof saveDb === "function") {
-      saveDb();
-    }
+    await persistDb(saveDb);
     throw error;
   }
+}
+
+async function runDailyNewsCompileTick({ db = {}, now, saveDb, beforeCompile = null, compileDailyNewsDigestFn = compileDailyNewsDigest } = {}) {
+  const decision = shouldRunDailyNewsCompileTick({ db, now });
+
+  if (!decision.shouldRun) {
+    return buildSkippedCompileResult(decision);
+  }
+
+  await runBeforeCompileHook({ beforeCompile, db, decision });
+  return executeDailyNewsCompile({
+    db,
+    now,
+    saveDb,
+    decision,
+    compileDailyNewsDigestFn,
+  });
+}
+
+async function runDailyNewsReleaseTick({
+  db = {},
+  now,
+  saveDb,
+  beforeCompile = null,
+  compileDailyNewsDigestFn = compileDailyNewsDigest,
+  publishDailyNewsIssueFn = publishDailyNewsIssue,
+  client = null,
+  publicChannel = null,
+  staffChannel = null,
+  force = false,
+} = {}) {
+  const state = ensureNewsState(db);
+  const decision = shouldRunDailyNewsCompileTick({ db, now });
+
+  let compileResult = buildSkippedCompileResult(decision);
+  let beforeCompileResult = null;
+
+  if (decision.shouldRun || decision.reason === "already_compiled") {
+    beforeCompileResult = await runBeforeCompileHook({ beforeCompile, db, decision });
+  }
+
+  if (decision.shouldRun || (decision.reason === "already_compiled" && shouldRecompileAfterBeforeCompile(beforeCompileResult))) {
+    compileResult = await executeDailyNewsCompile({
+      db,
+      now,
+      saveDb,
+      decision,
+      compileDailyNewsDigestFn,
+    });
+  } else if (decision.reason !== "already_compiled") {
+    return {
+      ...compileResult,
+      published: false,
+      publishSkipped: true,
+      publishReason: "compile_not_ready",
+      releaseMode: state.config?.publish?.autoPublishEnabled === true ? "auto_publish" : "manual_only",
+      publish: null,
+    };
+  }
+
+  if (state.config?.publish?.autoPublishEnabled !== true) {
+    return {
+      ...compileResult,
+      published: false,
+      publishSkipped: true,
+      publishReason: "auto_publish_disabled",
+      releaseMode: "manual_only",
+      publish: null,
+    };
+  }
+
+  const publicChannelId = cleanString(state.config?.channels?.publicChannelId, 80);
+  if (!publicChannel && !publicChannelId) {
+    return {
+      ...compileResult,
+      published: false,
+      publishSkipped: true,
+      publishReason: "missing_public_channel",
+      releaseMode: "auto_publish",
+      publish: null,
+    };
+  }
+
+  const publish = await publishDailyNewsIssueFn({
+    db,
+    digest: compileResult.digest,
+    dayKey: compileResult.dayKey || decision.dayKey,
+    client,
+    publicChannel,
+    staffChannel,
+    publishMode: "public",
+    force,
+    now,
+    saveDb,
+  });
+
+  return {
+    ...compileResult,
+    published: publish.published === true,
+    publishSkipped: publish.skipped === true,
+    publishReason: cleanString(publish.reason, 80) || null,
+    releaseMode: "auto_publish",
+    publish,
+  };
 }
 
 module.exports = {
   resolveDailyNewsWindowEndAt,
   resolveMoscowWallClock,
   runDailyNewsCompileTick,
+  runDailyNewsReleaseTick,
   shouldRunDailyNewsCompileTick,
 };
