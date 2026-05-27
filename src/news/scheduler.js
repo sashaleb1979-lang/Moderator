@@ -119,6 +119,123 @@ async function persistDb(saveDb) {
   }
 }
 
+async function runHistoricalReleaseQueueTick({
+  db = {},
+  now,
+  saveDb,
+  compileDailyNewsDigestFn = compileDailyNewsDigest,
+  publishDailyNewsIssueFn = publishDailyNewsIssue,
+  client = null,
+  publicChannel = null,
+  staffChannel = null,
+} = {}) {
+  const state = ensureNewsState(db);
+  const queue = state.runtime?.releaseQueue;
+  const dayKeys = Array.isArray(queue?.dayKeys) ? queue.dayKeys : [];
+  if (queue?.active !== true || !dayKeys.length) {
+    return null;
+  }
+
+  const dayKey = cleanString(dayKeys[0], 40);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dayKey)) {
+    queue.dayKeys = dayKeys.slice(1);
+    if (!queue.dayKeys.length) {
+      queue.active = false;
+    }
+    await persistDb(saveDb);
+    return {
+      compiled: false,
+      skipped: true,
+      reason: "invalid_queue_day",
+      dayKey: null,
+      publishHourMsk: null,
+      nowIso: resolveNowIso(now),
+      mode: "history_queue",
+      digest: null,
+      published: false,
+      publishSkipped: true,
+      publishReason: "invalid_queue_day",
+      releaseMode: "history_queue",
+      publish: null,
+      queueRemainingCount: queue.dayKeys.length,
+    };
+  }
+
+  const publicChannelId = cleanString(state.config?.channels?.publicChannelId, 80);
+  if (!publicChannel && !publicChannelId) {
+    return {
+      compiled: false,
+      skipped: true,
+      reason: "queue_waiting_public_channel",
+      dayKey,
+      publishHourMsk: null,
+      nowIso: resolveNowIso(now),
+      mode: "history_queue",
+      digest: state.dailyDigests?.[dayKey] || null,
+      published: false,
+      publishSkipped: true,
+      publishReason: "missing_public_channel",
+      releaseMode: "history_queue",
+      publish: null,
+      queueRemainingCount: queue.dayKeys.length,
+    };
+  }
+
+  let digest = state.dailyDigests?.[dayKey] || null;
+  let compiled = false;
+  if (!digest) {
+    const compileResult = compileDailyNewsDigestFn({
+      db,
+      targetDayKey: dayKey,
+      now,
+      historySnapshotMode: "capture_if_current_day",
+    });
+    digest = compileResult?.digest || null;
+    compiled = true;
+    await persistDb(saveDb);
+  }
+
+  const publish = await publishDailyNewsIssueFn({
+    db,
+    digest,
+    dayKey,
+    client,
+    publicChannel,
+    staffChannel,
+    publishMode: "public",
+    force: true,
+    now,
+    saveDb,
+  });
+
+  if (publish.published === true) {
+    queue.dayKeys = dayKeys.slice(1);
+    queue.lastReleasedDayKey = dayKey;
+    queue.lastReleasedAt = resolveNowIso(now);
+    if (!queue.dayKeys.length) {
+      queue.active = false;
+    }
+    await persistDb(saveDb);
+  }
+
+  return {
+    compiled,
+    skipped: false,
+    reason: null,
+    dayKey,
+    publishHourMsk: null,
+    nowIso: resolveNowIso(now),
+    mode: "history_queue",
+    digest,
+    published: publish.published === true,
+    publishSkipped: publish.skipped === true,
+    publishReason: cleanString(publish.reason, 80) || null,
+    releaseMode: "history_queue",
+    publish,
+    queueRemainingCount: Array.isArray(queue.dayKeys) ? queue.dayKeys.length : 0,
+  };
+}
+
 async function runBeforeCompileHook({ beforeCompile = null, db = {}, decision = {} } = {}) {
   if (typeof beforeCompile !== "function") return null;
   return Promise.resolve(beforeCompile({
@@ -203,6 +320,19 @@ async function runDailyNewsReleaseTick({
   force = false,
 } = {}) {
   const state = ensureNewsState(db);
+  const historyQueueResult = await runHistoricalReleaseQueueTick({
+    db,
+    now,
+    saveDb,
+    compileDailyNewsDigestFn,
+    publishDailyNewsIssueFn,
+    client,
+    publicChannel,
+    staffChannel,
+  });
+  if (historyQueueResult) {
+    return historyQueueResult;
+  }
   const decision = shouldRunDailyNewsCompileTick({ db, now });
 
   let compileResult = buildSkippedCompileResult(decision);

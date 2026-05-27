@@ -1,0 +1,3 @@
+- Historical Daily News batch release lives in src/news/state.js runtime.releaseQueue, src/news/operator.js controls, and src/news/scheduler.js queue tick handling.
+- Manual public publish paths in the operator intentionally force republish for the selected day; scheduler auto-publish keeps normal duplicate guard for the current day.
+- runDailyNewsReleaseTick processes active historical queue items before regular daily auto-publish and does not depend on config.enabled or autoPublishEnabled.

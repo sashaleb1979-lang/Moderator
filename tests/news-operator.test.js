@@ -9,10 +9,15 @@ const {
   DAILY_NEWS_PANEL_CONFIG_INFRA_ID,
   DAILY_NEWS_PANEL_CONFIG_INFRA_MODAL_ID,
   DAILY_NEWS_PANEL_OPEN_ID,
+  DAILY_NEWS_PANEL_PREPARE_RANGE_MODAL_ID,
   DAILY_NEWS_PANEL_PREVIEW_DAY_ID,
   DAILY_NEWS_PANEL_PREVIEW_DAY_MODAL_ID,
+  DAILY_NEWS_PANEL_PUBLISH_DAY_ID,
+  DAILY_NEWS_PANEL_PUBLISH_DAY_MODAL_ID,
   DAILY_NEWS_PANEL_PUBLISH_STAFF_ONLY_ID,
   DAILY_NEWS_PANEL_PREVIEW_TODAY_ID,
+  DAILY_NEWS_PANEL_START_RELEASE_QUEUE_ID,
+  DAILY_NEWS_PANEL_STOP_RELEASE_QUEUE_ID,
   buildDailyNewsOperatorPanelPayload,
   buildDailyNewsStatusPayload,
   handleDailyNewsPanelButtonInteraction,
@@ -117,8 +122,9 @@ test("runDailyNewsOperatorAction previews and reports status", async () => {
   assert.match(preview.payload.content, /Ops Desk/);
 
   const status = buildDailyNewsStatusPayload(db);
-  assert.match(status.content, /compile: \*\*готово для preview\*\*/);
-  assert.match(status.content, /publish: \*\*не опубликовано\*\*/);
+  assert.match(status.content, /сборка: \*\*готово для preview\*\*/);
+  assert.match(status.content, /публикация: \*\*не опубликовано\*\*/);
+  assert.match(status.content, /очередь: \*\*на паузе\*\*/);
 });
 
 test("runDailyNewsOperatorAction publishes through publisher owner", async () => {
@@ -150,7 +156,72 @@ test("runDailyNewsOperatorAction publishes through publisher owner", async () =>
   assert.equal(publicChannel.sent.length, 1);
   assert.equal(db.sot.news.runtime.lastPublishStatus, "published");
   assert.equal(db.sot.news.history.daySnapshots["2026-05-14"]["user-1"].activityScore, 44);
-  assert.match(result.payload.content, /publish: \*\*опубликовано\*\*/);
+  assert.match(result.payload.content, /публикация: \*\*опубликовано\*\*/);
+});
+
+test("runDailyNewsOperatorAction allows repeated manual public publish for the same day", async () => {
+  const publicChannel = createFakeChannel("public");
+  const db = {
+    profiles: {},
+    sot: { news: { config: { channels: { publicChannelId: "public" } } } },
+  };
+
+  await runDailyNewsOperatorAction({
+    db,
+    action: DAILY_NEWS_OPERATOR_ACTIONS.PUBLISH_NOW,
+    dayKey: "2026-05-14",
+    now: "2026-05-14T18:00:00.000Z",
+    publicChannel,
+  });
+
+  const second = await runDailyNewsOperatorAction({
+    db,
+    action: DAILY_NEWS_OPERATOR_ACTIONS.PUBLISH_NOW,
+    dayKey: "2026-05-14",
+    now: "2026-05-14T18:05:00.000Z",
+    publicChannel,
+  });
+
+  assert.equal(second.publish.published, true);
+  assert.equal(second.republished, true);
+  assert.equal(publicChannel.sent.length, 2);
+});
+
+test("runDailyNewsOperatorAction marks manual publish as repeated for an older day with stored public publish metadata", async () => {
+  const publicChannel = createFakeChannel("public");
+  const db = {
+    profiles: {},
+    sot: {
+      news: {
+        config: { channels: { publicChannelId: "public" } },
+        dailyDigests: {
+          "2026-05-14": {
+            dayKey: "2026-05-14",
+            publish: {
+              publishMode: "public",
+              publicMessageId: "public-old",
+            },
+          },
+        },
+        runtime: {
+          lastPublishedDayKey: "2026-05-20",
+          lastPublishStatus: "published",
+        },
+      },
+    },
+  };
+
+  const result = await runDailyNewsOperatorAction({
+    db,
+    action: DAILY_NEWS_OPERATOR_ACTIONS.PUBLISH_DAY,
+    dayKey: "2026-05-14",
+    now: "2026-05-21T18:00:00.000Z",
+    publicChannel,
+  });
+
+  assert.equal(result.publish.published, true);
+  assert.equal(result.republished, true);
+  assert.equal(publicChannel.sent.length, 1);
 });
 
 test("runDailyNewsOperatorAction can send a staff-only smoke publish", async () => {
@@ -186,7 +257,7 @@ test("runDailyNewsOperatorAction can send a staff-only smoke publish", async () 
   assert.equal(db.sot.news.runtime.lastPublishResult.deliveryMessageId, "staff-1");
   assert.equal(db.sot.news.runtime.lastPublishResult.staffMessageId, "staff-2");
   assert.equal(db.sot.news.history.daySnapshots["2026-05-14"]["user-1"].activityScore, 44);
-  assert.match(result.payload.content, /publish: \*\*отправлено только в staff\*\*/);
+  assert.match(result.payload.content, /публикация: \*\*отправлено только в staff\*\*/);
 });
 
 test("buildDailyNewsOperatorPanelPayload shows runtime summary and disables publish without public channel", () => {
@@ -195,15 +266,16 @@ test("buildDailyNewsOperatorPanelPayload shows runtime summary and disables publ
     includeFlags: false,
   });
 
-  assert.equal(payload.embeds[0].data.title, "Daily News Operator");
+  assert.equal(payload.embeds[0].data.title, "Оператор Daily News");
   assert.match(payload.embeds[0].data.description, /Ops Desk/);
   assert.match(payload.embeds[0].data.description, /Ежедневный тик: \*\*выключен\*\*/);
-  assert.match(payload.embeds[0].data.description, /Режим выпуска: \*\*manual-only\*\*/);
+  assert.match(payload.embeds[0].data.description, /Режим выпуска: \*\*ручной\*\*/);
+  assert.match(payload.embeds[0].data.description, /Очередь исторических выпусков: \*\*на паузе\*\*/);
   assert.match(payload.embeds[0].data.fields[0].value, /Статус: \*\*не запускалась\*\*/);
   assert.match(payload.embeds[0].data.fields[1].value, /Статус: \*\*не опубликовано\*\*/);
   assert.equal(payload.components[0].components[4].data.disabled, true);
   assert.equal(payload.components[1].components[0].data.disabled, true);
-  assert.equal(payload.components[1].components[1].data.custom_id, DAILY_NEWS_PANEL_CONFIG_INFRA_ID);
+  assert.equal(payload.components[2].components[0].data.custom_id, DAILY_NEWS_PANEL_CONFIG_INFRA_ID);
 });
 
 test("buildDailyNewsOperatorPanelPayload shows persisted publish delivery summary after reopen", () => {
@@ -230,10 +302,10 @@ test("buildDailyNewsOperatorPanelPayload shows persisted publish delivery summar
     includeFlags: false,
   });
 
-  assert.match(payload.embeds[0].data.fields[1].value, /Режим: \*\*staff-only smoke\*\*/);
-  assert.match(payload.embeds[0].data.fields[1].value, /Delivery msg: \*\*staff-1\*\*/);
-  assert.match(payload.embeds[0].data.fields[1].value, /Audit msg: \*\*staff-2\*\*/);
-  assert.match(payload.embeds[0].data.fields[1].value, /Warnings: \*\*0\*\*/);
+  assert.match(payload.embeds[0].data.fields[1].value, /Режим: \*\*только staff\*\*/);
+  assert.match(payload.embeds[0].data.fields[1].value, /Сообщение: \*\*staff-1\*\*/);
+  assert.match(payload.embeds[0].data.fields[1].value, /Аудит: \*\*staff-2\*\*/);
+  assert.match(payload.embeds[0].data.fields[1].value, /Предупреждения: \*\*0\*\*/);
 });
 
 test("buildDailyNewsOperatorPanelPayload shows blocked auto-publish state for invalid legacy config", () => {
@@ -252,8 +324,8 @@ test("buildDailyNewsOperatorPanelPayload shows blocked auto-publish state for in
     includeFlags: false,
   });
 
-  assert.match(payload.embeds[0].data.description, /Режим выпуска: \*\*auto-publish blocked\*\*/);
-  assert.match(payload.embeds[0].data.description, /Auto-publish заблокирован/);
+  assert.match(payload.embeds[0].data.description, /Режим выпуска: \*\*автовыпуск заблокирован\*\*/);
+  assert.match(payload.embeds[0].data.description, /Автовыпуск заблокирован/);
 });
 
 test("handleDailyNewsPanelButtonInteraction opens panel previews today and exact-day modal", async () => {
@@ -273,7 +345,7 @@ test("handleDailyNewsPanelButtonInteraction opens panel previews today and exact
     replyNoPermission: async () => {},
     buildBackPayload: async () => ({ content: "back" }),
   });
-  assert.equal(openInteraction.updatedPayload.embeds[0].data.title, "Daily News Operator");
+  assert.equal(openInteraction.updatedPayload.embeds[0].data.title, "Оператор Daily News");
 
   await handleDailyNewsPanelButtonInteraction({
     interaction: previewInteraction,
@@ -286,7 +358,7 @@ test("handleDailyNewsPanelButtonInteraction opens panel previews today and exact
   assert.ok(previewInteraction.followUps.length >= 3);
   assert.match(previewInteraction.followUps[0].content, /Preview · public issue/);
   assert.equal(previewInteraction.followUps[1].files[0].name, "daily-news-2026-05-14.png");
-  assert.equal(previewInteraction.edits[0].embeds[0].data.title, "Daily News Operator");
+  assert.equal(previewInteraction.edits[0].embeds[0].data.title, "Оператор Daily News");
 
   await handleDailyNewsPanelButtonInteraction({
     interaction: dayModalInteraction,
@@ -303,6 +375,19 @@ test("handleDailyNewsPanelButtonInteraction opens panel previews today and exact
     replyNoPermission: async () => {},
   });
   assert.equal(configInteraction.shownModal.toJSON().custom_id, DAILY_NEWS_PANEL_CONFIG_INFRA_MODAL_ID);
+});
+
+test("handleDailyNewsPanelButtonInteraction opens publish-day modal", async () => {
+  const interaction = createButtonInteraction(DAILY_NEWS_PANEL_PUBLISH_DAY_ID);
+
+  await handleDailyNewsPanelButtonInteraction({
+    interaction,
+    db: { sot: { news: { config: { channels: { publicChannelId: "public" } } } } },
+    isModerator: () => true,
+    replyNoPermission: async () => {},
+  });
+
+  assert.equal(interaction.shownModal.toJSON().custom_id, DAILY_NEWS_PANEL_PUBLISH_DAY_MODAL_ID);
 });
 
 test("handleDailyNewsPanelButtonInteraction can run staff-only smoke publish", async () => {
@@ -347,6 +432,28 @@ test("handleDailyNewsPanelModalSubmitInteraction previews an exact day ephemeral
   assert.ok(interaction.followUps.length >= 2);
 });
 
+test("handleDailyNewsPanelModalSubmitInteraction publishes an exact day manually", async () => {
+  const interaction = createModalInteraction(DAILY_NEWS_PANEL_PUBLISH_DAY_MODAL_ID, "2026-05-14");
+  const publicChannel = createFakeChannel("public");
+  const db = {
+    profiles: {},
+    sot: { news: { config: { channels: { publicChannelId: "public" }, presentation: { masthead: "Ops Desk" } } } },
+  };
+
+  await handleDailyNewsPanelModalSubmitInteraction({
+    interaction,
+    db,
+    publicChannel,
+    isModerator: () => true,
+    replyNoPermission: async () => {},
+    now: "2026-05-14T18:00:00.000Z",
+  });
+
+  assert.equal(interaction.deferred, true);
+  assert.equal(publicChannel.sent.length, 1);
+  assert.match(interaction.edits[0].embeds[0].data.fields.at(-1).value, /опубликован вручную/);
+});
+
 test("handleDailyNewsPanelModalSubmitInteraction saves infra config and refreshes the panel", async () => {
   const interaction = createModalInteraction(DAILY_NEWS_PANEL_CONFIG_INFRA_MODAL_ID, {
     daily_news_enabled: "да",
@@ -378,7 +485,7 @@ test("handleDailyNewsPanelModalSubmitInteraction saves infra config and refreshe
   assert.equal(db.sot.news.config.channels.publicChannelId, "123456789012345678");
   assert.equal(db.sot.news.config.channels.staffChannelId, "234567890123456789");
   assert.equal(db.sot.news.config.schedule.publishHourMsk, 22);
-  assert.match(interaction.edits[0].embeds[0].data.description, /Режим выпуска: \*\*auto-publish\*\*/);
+  assert.match(interaction.edits[0].embeds[0].data.description, /Режим выпуска: \*\*автовыпуск\*\*/);
   assert.match(interaction.edits[0].embeds[0].data.fields.at(-1).value, /Настройки Daily News сохранены/);
 });
 
@@ -409,6 +516,70 @@ test("handleDailyNewsPanelModalSubmitInteraction resolves exact channel names th
   assert.equal(db.sot.news.config.channels.staffChannelId, "234567890123456789");
   assert.equal(db.sot.news.config.publish.autoPublishEnabled, false);
   assert.match(interaction.edits[0].embeds[0].data.fields.at(-1).value, /Настройки Daily News сохранены/);
+});
+
+test("handleDailyNewsPanelModalSubmitInteraction prepares a historical range and seeds the release queue", async () => {
+  const interaction = createModalInteraction(DAILY_NEWS_PANEL_PREPARE_RANGE_MODAL_ID, {
+    range_start_day_key: "2026-05-20",
+    range_end_day_key: "2026-05-22",
+  });
+  const db = { sot: { news: { config: {} } } };
+
+  await handleDailyNewsPanelModalSubmitInteraction({
+    interaction,
+    db,
+    isModerator: () => true,
+    replyNoPermission: async () => {},
+    now: "2026-05-23T10:00:00.000Z",
+  });
+
+  assert.equal(interaction.deferred, true);
+  assert.deepEqual(db.sot.news.runtime.releaseQueue.dayKeys, ["2026-05-20", "2026-05-21", "2026-05-22"]);
+  assert.equal(db.sot.news.runtime.releaseQueue.active, false);
+  assert.ok(db.sot.news.dailyDigests["2026-05-20"]);
+  assert.match(interaction.edits[0].embeds[0].data.fields.at(-1).value, /Подготовлен диапазон/);
+});
+
+test("handleDailyNewsPanelButtonInteraction starts and stops the historical release queue", async () => {
+  const startInteraction = createButtonInteraction(DAILY_NEWS_PANEL_START_RELEASE_QUEUE_ID);
+  const stopInteraction = createButtonInteraction(DAILY_NEWS_PANEL_STOP_RELEASE_QUEUE_ID);
+  const db = {
+    sot: {
+      news: {
+        config: { channels: { publicChannelId: "public" } },
+        runtime: {
+          releaseQueue: {
+            active: false,
+            dayKeys: ["2026-05-20", "2026-05-21"],
+          },
+        },
+      },
+    },
+  };
+
+  await handleDailyNewsPanelButtonInteraction({
+    interaction: startInteraction,
+    db,
+    isModerator: () => true,
+    replyNoPermission: async () => {},
+    now: "2026-05-23T10:00:00.000Z",
+  });
+
+  assert.equal(startInteraction.deferred, true);
+  assert.equal(db.sot.news.runtime.releaseQueue.active, true);
+  assert.match(startInteraction.edits[0].embeds[0].data.fields.at(-1).value, /Историческая очередь запущена/);
+
+  await handleDailyNewsPanelButtonInteraction({
+    interaction: stopInteraction,
+    db,
+    isModerator: () => true,
+    replyNoPermission: async () => {},
+    now: "2026-05-23T10:01:00.000Z",
+  });
+
+  assert.equal(stopInteraction.deferred, true);
+  assert.equal(db.sot.news.runtime.releaseQueue.active, false);
+  assert.match(stopInteraction.edits[0].embeds[0].data.fields.at(-1).value, /Историческая очередь остановлена/);
 });
 
 test("handleDailyNewsPanelModalSubmitInteraction rejects auto-publish without required tick and public channel", async () => {

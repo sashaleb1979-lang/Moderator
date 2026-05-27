@@ -233,37 +233,37 @@ test("renderDailyNewsIssue builds edition-style public payload from compiled dig
   assert.equal(issue.coverSpec.accentColor, "#E6B450");
   assert.match(issue.publicMessage.content, /🗞️ Moderator Chronicle · 14\.05\.2026/);
   assert.match(issue.publicMessage.content, /━━━━━━━━/);
-  assert.match(issue.publicMessage.content, /⚔️ kill jumps/);
+  assert.match(issue.publicMessage.content, /⚔️ резкие апы/);
   assert.deepEqual(issue.publicMessage.allowedMentions, { parse: [] });
 
   const embed = issue.publicMessage.embeds[0];
   assert.equal(embed.color, 0xE6B450);
   assert.match(embed.description, /Акценты дня/);
-  assert.match(embed.description, /⚠️ partial \+ ambiguous/);
+  assert.match(embed.description, /⚠️ частично \+ неоднозначно/);
   assert.deepEqual(embed.fields.map((field) => field.name), [
-    "⚔️ Kills · резкие апы",
-    "💬 Activity · топ сообщений",
+    "⚔️ Киллы · резкие апы",
+    "💬 Активность · топ сообщений",
     "🎮 JJS · топ игры",
-    "🆕 New · входы и верификации",
+    "🆕 Новички · входы и верификации",
     "🎙️ Voice · лидеры эфира",
-    "🛡️ Moderation · highlights",
-    "🧩 Tierlist · updates",
-    "📡 Coverage",
+    "🛡️ Модерация · highlights",
+    "🧩 Тирлист · обновления",
+    "📡 Покрытие",
   ]);
-  assert.match(embed.fields[0].value, /Prime/);
-  assert.match(embed.fields[1].value, /Echo/);
-  assert.match(embed.fields[1].value, /Prime/);
-  assert.match(embed.fields[1].value, /\+18 activity/);
-  assert.match(embed.fields[2].value, /Echo/);
-  assert.match(embed.fields[4].value, /Echo/);
-  assert.match(embed.fields[5].value, /Shadow/);
+  assert.match(embed.fields[0].value, /@Prime/);
+  assert.match(embed.fields[1].value, /@Echo/);
+  assert.match(embed.fields[1].value, /@Prime/);
+  assert.match(embed.fields[1].value, /\+18 активности/);
+  assert.match(embed.fields[2].value, /@Echo/);
+  assert.match(embed.fields[4].value, /@Echo/);
+  assert.match(embed.fields[5].value, /@Shadow/);
   assert.match(embed.fields[6].value, /Gojo → Sukuna/);
   assert.match(embed.fields[7].value, /activity_rows_without_precise_timestamps/);
 
   assert.ok(issue.publicThreadMessages.some((message) => {
     return /Полный voice список/.test(message.content)
-      && /Echo/.test(message.content)
-      && /Nova/.test(message.content);
+      && /@Echo/.test(message.content)
+      && /@Nova/.test(message.content);
   }));
 });
 
@@ -273,7 +273,7 @@ test("renderDailyNewsIssue keeps rejected pending and ambiguous evidence in staf
   const staffEmbed = issue.staffMessage.embeds[0];
 
   assert.match(issue.staffMessage.content, /🧾 Staff Audit/);
-  assert.match(issue.staffMessage.content, /⚠️ partial \+ ambiguous/);
+  assert.match(issue.staffMessage.content, /⚠️ частично \+ неоднозначно/);
 
   const bucketField = staffEmbed.fields.find((field) => field.name === "📊 Bucket trail");
   assert.match(bucketField.value, /🔴 rejected: \*\*1\*\*/);
@@ -281,12 +281,12 @@ test("renderDailyNewsIssue keeps rejected pending and ambiguous evidence in staf
   assert.match(bucketField.value, /⚠️ ambiguous: \*\*2\*\*/);
 
   const killTrail = staffEmbed.fields.find((field) => field.name === "⚔️ Kills staff trail");
-  assert.match(killTrail.value, /\*\*Echo\*\* · rejected · 500 kills · bad screenshot/);
-  assert.match(killTrail.value, /\*\*Nova\*\* · pending · 220 kills · pending_kill_review/);
+  assert.match(killTrail.value, /\*\*@Echo\*\* · rejected · 500 kills · bad screenshot/);
+  assert.match(killTrail.value, /\*\*@Nova\*\* · pending · 220 kills · pending_kill_review/);
 
   const watchlist = staffEmbed.fields.find((field) => field.name === "👀 Audit watchlist");
-  assert.match(watchlist.value, /\*\*Nova\*\* · moderation · ambiguous · leave_ambiguous/);
-  assert.match(watchlist.value, /\*\*Nova\*\* · activity · ambiguous · activity_daily_row_without_precise_timestamp/);
+  assert.match(watchlist.value, /\*\*@Nova\*\* · модерация · ambiguous · leave_ambiguous/);
+  assert.match(watchlist.value, /\*\*@Nova\*\* · активность · ambiguous · activity_daily_row_without_precise_timestamp/);
 
   const activityDiagnostics = staffEmbed.fields.find((field) => field.name === "💬 Activity diagnostics");
   assert.match(activityDiagnostics.value, /imprecise rows: \*\*1\*\*/);
@@ -327,7 +327,7 @@ test("renderDailyNewsIssue degrades gracefully when the digest has no public hig
 
   assert.match(issue.publicMessage.content, /Daily Edition · 15\.05\.2026/);
   assert.match(issue.publicMessage.embeds[0].description, /День прошёл спокойно/);
-  assert.match(issue.publicMessage.embeds[0].fields[0].value, /без approved kill jump/);
+  assert.match(issue.publicMessage.embeds[0].fields[0].value, /без подтверждённых резких апов/);
   assert.equal(issue.publicThreadMessages.length, 0);
   assert.equal(issue.diagnostics.hasPublicHighlights, false);
 });
@@ -378,7 +378,7 @@ test("renderDailyNewsIssue keeps imprecise activity rows out of public thread", 
   const issue = renderDailyNewsIssue({ digest });
   const publicThreadText = issue.publicThreadMessages.map((message) => message.content).join("\n");
 
-  assert.match(publicThreadText, /Расширенный chat leaderboard/);
+  assert.match(publicThreadText, /Расширенный чат-лидерборд/);
   assert.match(publicThreadText, /Safe6/);
   assert.doesNotMatch(publicThreadText, /StaffOnlyImprecise/);
   assert.match(issue.staffMessage.embeds[0].fields.find((field) => field.name === "💬 Activity diagnostics").value, /imprecise rows: \*\*1\*\*/);

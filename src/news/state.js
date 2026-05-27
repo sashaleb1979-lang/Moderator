@@ -49,6 +49,20 @@ function normalizeStringList(items = [], limit = 8, itemLimit = 300) {
   return normalized.length ? normalized : null;
 }
 
+function normalizeDayKeyList(items = [], limit = 120) {
+  const source = Array.isArray(items) ? items : [];
+  const normalized = [];
+  const seen = new Set();
+  for (const item of source) {
+    const dayKey = cleanString(item, 40);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dayKey) || seen.has(dayKey)) continue;
+    seen.add(dayKey);
+    normalized.push(dayKey);
+    if (normalized.length >= limit) break;
+  }
+  return normalized;
+}
+
 function normalizeHexColor(value, fallback) {
   const text = cleanString(value, 16).toUpperCase();
   return /^#[0-9A-F]{6}$/.test(text) ? text : fallback;
@@ -77,6 +91,20 @@ function normalizePublishResult(value = null) {
   };
 
   return Object.values(result).some((entry) => entry !== null) ? result : null;
+}
+
+function normalizeReleaseQueue(value = null) {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const dayKeys = normalizeDayKeyList(source.dayKeys, 120);
+  return {
+    active: dayKeys.length > 0 ? normalizeBoolean(source.active, false) : false,
+    dayKeys,
+    lastPreparedAt: normalizeNullableString(source.lastPreparedAt, 80),
+    lastPreparedRangeStartDayKey: normalizeNullableString(source.lastPreparedRangeStartDayKey, 40),
+    lastPreparedRangeEndDayKey: normalizeNullableString(source.lastPreparedRangeEndDayKey, 40),
+    lastReleasedDayKey: normalizeNullableString(source.lastReleasedDayKey, 40),
+    lastReleasedAt: normalizeNullableString(source.lastReleasedAt, 80),
+  };
 }
 
 function createDefaultNewsConfig() {
@@ -231,6 +259,15 @@ function createEmptyNewsState() {
       lastPreviewRequest: null,
       lastVoiceCaptureAt: null,
       lastModerationCaptureAt: null,
+      releaseQueue: {
+        active: false,
+        dayKeys: [],
+        lastPreparedAt: null,
+        lastPreparedRangeStartDayKey: null,
+        lastPreparedRangeEndDayKey: null,
+        lastReleasedDayKey: null,
+        lastReleasedAt: null,
+      },
       errors: [],
     },
   };
@@ -297,6 +334,7 @@ function normalizeNewsState(value = {}) {
       : null,
     lastVoiceCaptureAt: normalizeNullableString(source.runtime?.lastVoiceCaptureAt, 80),
     lastModerationCaptureAt: normalizeNullableString(source.runtime?.lastModerationCaptureAt, 80),
+    releaseQueue: normalizeReleaseQueue(source.runtime?.releaseQueue),
     errors: Array.isArray(source.runtime?.errors) ? clone(source.runtime.errors) : [],
   };
 

@@ -40,6 +40,15 @@ test("createEmptyNewsState seeds raw capture and runtime scaffolds", () => {
   assert.equal(state.runtime.lastPublishStartedAt, null);
   assert.equal(state.runtime.lastPublishFinishedAt, null);
   assert.equal(state.runtime.lastPublishResult, null);
+  assert.deepEqual(state.runtime.releaseQueue, {
+    active: false,
+    dayKeys: [],
+    lastPreparedAt: null,
+    lastPreparedRangeStartDayKey: null,
+    lastPreparedRangeEndDayKey: null,
+    lastReleasedDayKey: null,
+    lastReleasedAt: null,
+  });
   assert.deepEqual(state.runtime.errors, []);
 });
 
@@ -107,6 +116,15 @@ test("normalizeNewsState normalizes config and preserves captured runtime slices
         staffChannelId: " staff ",
         staffMessageId: " audit-1 ",
       },
+      releaseQueue: {
+        active: true,
+        dayKeys: [" 2026-05-10 ", "2026-05-10", "2026-05-11", "oops"],
+        lastPreparedAt: "2026-05-14T19:00:00.000Z",
+        lastPreparedRangeStartDayKey: "2026-05-10",
+        lastPreparedRangeEndDayKey: "2026-05-11",
+        lastReleasedDayKey: "2026-05-10",
+        lastReleasedAt: "2026-05-14T21:05:00.000Z",
+      },
       lastVoiceCaptureAt: "2026-05-14T20:59:00.000Z",
       errors: [{ scope: "voice", reason: "gap" }],
     },
@@ -147,6 +165,15 @@ test("normalizeNewsState normalizes config and preserves captured runtime slices
     warningCount: null,
     warnings: null,
   });
+  assert.deepEqual(state.runtime.releaseQueue, {
+    active: true,
+    dayKeys: ["2026-05-10", "2026-05-11"],
+    lastPreparedAt: "2026-05-14T19:00:00.000Z",
+    lastPreparedRangeStartDayKey: "2026-05-10",
+    lastPreparedRangeEndDayKey: "2026-05-11",
+    lastReleasedDayKey: "2026-05-10",
+    lastReleasedAt: "2026-05-14T21:05:00.000Z",
+  });
   assert.equal(state.runtime.lastVoiceCaptureAt, "2026-05-14T20:59:00.000Z");
   assert.deepEqual(state.runtime.errors, [{ scope: "voice", reason: "gap" }]);
 });
@@ -169,4 +196,20 @@ test("ensureNewsState normalizes and memoizes db.sot.news", () => {
 
   assert.equal(first, second);
   assert.equal(db.sot.news.config.channels.publicChannelId, "daily-public");
+});
+
+test("normalizeNewsState forces an empty historical release queue into paused mode", () => {
+  const state = normalizeNewsState({
+    runtime: {
+      releaseQueue: {
+        active: true,
+        dayKeys: [],
+        lastPreparedAt: "2026-05-26T20:00:00.000Z",
+      },
+    },
+  });
+
+  assert.equal(state.runtime.releaseQueue.active, false);
+  assert.deepEqual(state.runtime.releaseQueue.dayKeys, []);
+  assert.equal(state.runtime.releaseQueue.lastPreparedAt, "2026-05-26T20:00:00.000Z");
 });

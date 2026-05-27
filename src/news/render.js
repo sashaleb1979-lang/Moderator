@@ -14,6 +14,10 @@ function parseIsoMs(value) {
   return Number.isFinite(timeMs) ? timeMs : null;
 }
 
+function isDiscordUserId(value) {
+  return /^\d{5,25}$/.test(cleanString(value, 80));
+}
+
 function clone(value) {
   if (value === undefined) return undefined;
   return JSON.parse(JSON.stringify(value));
@@ -108,10 +112,19 @@ function makeBar(label = "", value = 0, maxValue = 1, filled = "█", empty = "�
 }
 
 function getCoverageLabel(digest = {}) {
-  if (digest.coverage?.partial && digest.coverage?.ambiguous) return "⚠️ partial + ambiguous";
-  if (digest.coverage?.partial) return "⚠️ partial coverage";
-  if (digest.coverage?.ambiguous) return "⚠️ ambiguous sources";
-  return "✅ coverage clean";
+  if (digest.coverage?.partial && digest.coverage?.ambiguous) return "⚠️ частично + неоднозначно";
+  if (digest.coverage?.partial) return "⚠️ частичное покрытие";
+  if (digest.coverage?.ambiguous) return "⚠️ неоднозначные источники";
+  return "✅ покрытие чистое";
+}
+
+function formatParticipant(entry = {}, fallbackName = "неизвестно") {
+  const displayName = cleanString(entry?.displayName, 120) || cleanString(fallbackName, 120) || "неизвестно";
+  const userId = cleanString(entry?.userId, 80);
+  if (isDiscordUserId(userId)) {
+    return `<@${userId}> · ${displayName}`;
+  }
+  return `@${displayName}`;
 }
 
 function getTopKillUpgrade(digest = {}) {
@@ -141,27 +154,27 @@ function getTopGameplayPlayer(digest = {}) {
 function buildStoryLine(digest = {}) {
   const kill = getTopKillUpgrade(digest);
   if (kill) {
-    return `⚔️ Главный рывок дня: **${kill.displayName}** поднял kills на ${formatSignedNumber(kill.delta)} (${formatNumber(kill.from)} → ${formatNumber(kill.to)}).`;
+    return `⚔️ Главный рывок дня: **${formatParticipant(kill)}** поднял киллы на ${formatSignedNumber(kill.delta)} (${formatNumber(kill.from)} → ${formatNumber(kill.to)}).`;
   }
 
   const activity = getTopMessageAuthor(digest);
   if (activity) {
-    return `💬 Самый громкий чат-день у **${activity.displayName}**: ${formatNumber(activity.messagesCount)} сообщений.`;
+    return `💬 Самый громкий чат-день у **${formatParticipant(activity)}**: ${formatNumber(activity.messagesCount)} сообщений.`;
   }
 
   const gameplay = getTopGameplayPlayer(digest);
   if (gameplay) {
-    return `🎮 Главный JJS гринд дня у **${gameplay.displayName}**: ${formatDuration(gameplay.minutes * 60)} в игре.`;
+    return `🎮 Главный JJS-гринд дня у **${formatParticipant(gameplay)}**: ${formatDuration(gameplay.minutes * 60)} в игре.`;
   }
 
   const voice = getTopVoiceVisitor(digest);
   if (voice) {
-    return `🎙️ Voice держал **${voice.displayName}**: ${formatDuration(voice.totalDurationSeconds)} за день.`;
+    return `🎙️ Главный голосовой эфир держал **${formatParticipant(voice)}**: ${formatDuration(voice.totalDurationSeconds)} за день.`;
   }
 
   const moderation = digest.publicEdition?.moderation?.highlights?.[0] || null;
   if (moderation) {
-    return `🛡️ Важное moderation-событие: **${moderation.displayName}** · ${moderation.resolution || moderation.eventType}.`;
+    return `🛡️ Важное модерационное событие: **${formatParticipant(moderation)}** · ${moderation.resolution || moderation.eventType}.`;
   }
 
   return "✨ День прошёл спокойно: критичных публичных highlights не набралось, но audit всё равно сохранён.";
@@ -169,21 +182,21 @@ function buildStoryLine(digest = {}) {
 
 function buildHeroMetrics(digest = {}) {
   return [
-    `⚔️ kill jumps: **${formatNumber(digest.publicEdition?.kills?.upgradeCount || 0)}**`,
-    `💬 messages: **${formatNumber(digest.publicEdition?.activity?.totalMessagesCount || 0)}**`,
-    `🎮 JJS players: **${formatNumber(digest.publicEdition?.gameplay?.precisePlayerCount || 0)}**`,
-    `🆕 newcomers: **${formatNumber(digest.publicEdition?.newcomers?.newcomerCount || 0)}**`,
-    `🎙️ voice visitors: **${formatNumber(digest.publicEdition?.voice?.visitorCount || 0)}**`,
-    `🛡️ mod events: **${formatNumber(digest.moderation?.totalCount || 0)}**`,
+    `⚔️ резкие апы: **${formatNumber(digest.publicEdition?.kills?.upgradeCount || 0)}**`,
+    `💬 сообщения: **${formatNumber(digest.publicEdition?.activity?.totalMessagesCount || 0)}**`,
+    `🎮 JJS-игроки: **${formatNumber(digest.publicEdition?.gameplay?.precisePlayerCount || 0)}**`,
+    `🆕 новички: **${formatNumber(digest.publicEdition?.newcomers?.newcomerCount || 0)}**`,
+    `🎙️ voice-участники: **${formatNumber(digest.publicEdition?.voice?.visitorCount || 0)}**`,
+    `🛡️ mod-события: **${formatNumber(digest.moderation?.totalCount || 0)}**`,
   ];
 }
 
 function renderKillLines(upgrades = [], limit = 5) {
   const items = (Array.isArray(upgrades) ? upgrades : []).slice(0, limit);
-  if (!items.length) return ["— сегодня без approved kill jump в публичном топе"];
+  if (!items.length) return ["— сегодня без подтверждённых резких апов в публичном топе"];
   return items.map((entry, index) => {
     const medal = MEDALS[index] || `${index + 1}.`;
-    return `${medal} **${entry.displayName}** · ${formatSignedNumber(entry.delta)} kills · ${formatNumber(entry.from)} → ${formatNumber(entry.to)}`;
+    return `${medal} **${formatParticipant(entry)}** · ${formatSignedNumber(entry.delta)} киллов · ${formatNumber(entry.from)} → ${formatNumber(entry.to)}`;
   });
 }
 
@@ -193,7 +206,7 @@ function renderActivityLines(authors = [], limit = 5) {
   return items.map((entry, index) => {
     const medal = MEDALS[index] || `${index + 1}.`;
     const sessions = Number(entry.sessionsCount || 0) > 0 ? ` · ${formatNumber(entry.sessionsCount)} сесс.` : "";
-    return `${medal} **${entry.displayName}** · ${formatNumber(entry.messagesCount)} msg${sessions}`;
+    return `${medal} **${formatParticipant(entry)}** · ${formatNumber(entry.messagesCount)} сообщ.${sessions}`;
   });
 }
 
@@ -204,13 +217,13 @@ function renderActivityMoverLines(movers = {}, limitPerDirection = 1) {
   const falling = (Array.isArray(movers.down) ? movers.down : []).slice(0, limitPerDirection);
 
   for (const entry of rising) {
-    const roleLine = entry.roleChanged ? ` · role ${entry.fromAppliedRoleKey || "—"} → ${entry.toAppliedRoleKey || "—"}` : "";
-    lines.push(`↗ **${entry.displayName}** · ${formatSignedNumber(entry.delta)} activity (${formatNumber(entry.fromScore)} → ${formatNumber(entry.toScore)})${roleLine}`);
+    const roleLine = entry.roleChanged ? ` · роль ${entry.fromAppliedRoleKey || "—"} → ${entry.toAppliedRoleKey || "—"}` : "";
+    lines.push(`↗ **${formatParticipant(entry)}** · ${formatSignedNumber(entry.delta)} активности (${formatNumber(entry.fromScore)} → ${formatNumber(entry.toScore)})${roleLine}`);
   }
 
   for (const entry of falling) {
-    const roleLine = entry.roleChanged ? ` · role ${entry.fromAppliedRoleKey || "—"} → ${entry.toAppliedRoleKey || "—"}` : "";
-    lines.push(`↘ **${entry.displayName}** · ${formatSignedNumber(entry.delta)} activity (${formatNumber(entry.fromScore)} → ${formatNumber(entry.toScore)})${roleLine}`);
+    const roleLine = entry.roleChanged ? ` · роль ${entry.fromAppliedRoleKey || "—"} → ${entry.toAppliedRoleKey || "—"}` : "";
+    lines.push(`↘ **${formatParticipant(entry)}** · ${formatSignedNumber(entry.delta)} активности (${formatNumber(entry.fromScore)} → ${formatNumber(entry.toScore)})${roleLine}`);
   }
 
   return lines;
@@ -221,8 +234,8 @@ function renderGameplayLines(players = [], limit = 5) {
   if (!items.length) return ["— точного публичного JJS топа пока нет"];
   return items.map((entry, index) => {
     const medal = MEDALS[index] || `${index + 1}.`;
-    const source = entry.sourceType === "roblox_session_history" ? "sessions" : "hourly";
-    return `${medal} **${entry.displayName}** · ${formatDuration(entry.minutes * 60)} JJS · ${source}`;
+    const source = entry.sourceType === "roblox_session_history" ? "сессии" : "почасовой учёт";
+    return `${medal} **${formatParticipant(entry)}** · ${formatDuration(entry.minutes * 60)} JJS · ${source}`;
   });
 }
 
@@ -231,15 +244,15 @@ function renderNewcomerLines(events = [], limit = 6) {
   if (!items.length) return ["— новых публичных входов/верификаций нет"];
   return items.map((entry) => {
     const icon = entry.eventType === "guild_joined" ? "🆕" : entry.eventType === "roblox_verified" ? "✅" : "🔓";
-    const label = entry.eventType === "guild_joined" ? "зашёл" : entry.eventType === "roblox_verified" ? "Roblox verified" : "получил доступ";
-    return `${icon} **${entry.displayName}** · ${label}`;
+    const label = entry.eventType === "guild_joined" ? "зашёл" : entry.eventType === "roblox_verified" ? "подтвердил Roblox" : "получил доступ";
+    return `${icon} **${formatParticipant(entry)}** · ${label}`;
   });
 }
 
 function renderTierlistLines(updates = [], limit = 5) {
   const items = (Array.isArray(updates) ? updates : []).slice(0, limit);
   if (!items.length) return ["— подтверждённых tierlist updates нет"];
-  return items.map((entry) => `🧩 **${entry.displayName}** · main: **${entry.mainName || "unknown"}** · x${entry.influenceMultiplier || 1}`);
+  return items.map((entry) => `🧩 **${formatParticipant(entry)}** · мейн: **${entry.mainName || "неизвестно"}** · x${entry.influenceMultiplier || 1}`);
 }
 
 function renderTierlistShiftLines(shifts = {}, limit = 2) {
@@ -256,7 +269,7 @@ function renderTierlistShiftLines(shifts = {}, limit = 2) {
       const icon = Number(entry.influenceDelta) > 0 ? "📈" : "📉";
       parts.push(`${icon} x${formatNumber(entry.fromInfluenceMultiplier)} → x${formatNumber(entry.toInfluenceMultiplier)}`);
     }
-    return `↔ **${entry.displayName}** · ${parts.join(" · ")}`;
+    return `↔ **${formatParticipant(entry)}** · ${parts.join(" · ")}`;
   });
 }
 
@@ -265,17 +278,17 @@ function renderVoiceLines(visitors = [], limit = 5) {
   if (!items.length) return ["— voice сегодня не зафиксирован"];
   return items.map((entry, index) => {
     const medal = MEDALS[index] || `${index + 1}.`;
-    const moves = Number(entry.moveCount || 0) > 0 ? ` · moves ${formatNumber(entry.moveCount)}` : "";
-    return `${medal} **${entry.displayName}** · ${formatDuration(entry.totalDurationSeconds)}${moves}`;
+    const moves = Number(entry.moveCount || 0) > 0 ? ` · переходы ${formatNumber(entry.moveCount)}` : "";
+    return `${medal} **${formatParticipant(entry)}** · ${formatDuration(entry.totalDurationSeconds)}${moves}`;
   });
 }
 
 function renderModerationLines(events = [], limit = 5) {
   const items = (Array.isArray(events) ? events : []).slice(0, limit);
-  if (!items.length) return ["— публичных moderation highlights нет"];
+  if (!items.length) return ["— публичных модерационных highlights нет"];
   return items.map((entry) => {
     const icon = entry.eventType === "ban_add" ? "🔨" : entry.eventType === "ban_remove" ? "🕊️" : "🛡️";
-    return `${icon} **${entry.displayName}** · ${entry.resolution || entry.eventType}`;
+    return `${icon} **${formatParticipant(entry)}** · ${entry.resolution || entry.eventType}`;
   });
 }
 
@@ -284,7 +297,7 @@ function renderCoverageLines(digest = {}) {
   if (!reasons.length) return ["✅ Все текущие источники прошли без partial/ambiguous markers."];
   return [
     `${getCoverageLabel(digest)} · ${reasons.join(", ")}`,
-    "Подробности ушли в staff audit, публичный выпуск не притворяется точнее источников.",
+    "Подробности ушли в staff-аудит, публичный выпуск не притворяется точнее источников.",
   ];
 }
 
@@ -295,18 +308,18 @@ function buildCoverSpec(digest = {}, config = {}) {
   return {
     visualMode: cleanString(presentation.visualMode, 40) || "edition",
     masthead: cleanString(presentation.masthead, 120) || "Daily Edition",
-    title: `Daily Issue · ${formatMoscowDate(digest.dayKey)}`,
+    title: `Выпуск дня · ${formatMoscowDate(digest.dayKey)}`,
     subtitle: buildStoryLine(digest).replace(/\*\*/g, ""),
     accentColor,
     accentColorAlt,
     backgroundColor: cleanString(presentation.backgroundColor, 16) || "#101418",
     metrics: [
-      { label: "Kill jumps", value: digest.publicEdition?.kills?.upgradeCount || 0, icon: "⚔️" },
-      { label: "Messages", value: digest.publicEdition?.activity?.totalMessagesCount || 0, icon: "💬" },
+      { label: "Апы", value: digest.publicEdition?.kills?.upgradeCount || 0, icon: "⚔️" },
+      { label: "Сообщ.", value: digest.publicEdition?.activity?.totalMessagesCount || 0, icon: "💬" },
       { label: "JJS", value: digest.publicEdition?.gameplay?.precisePlayerCount || 0, icon: "🎮" },
-      { label: "New", value: digest.publicEdition?.newcomers?.newcomerCount || 0, icon: "🆕" },
+      { label: "Новые", value: digest.publicEdition?.newcomers?.newcomerCount || 0, icon: "🆕" },
       { label: "Voice", value: digest.publicEdition?.voice?.visitorCount || 0, icon: "🎙️" },
-      { label: "Audit", value: digest.audit?.rawCandidateCounts?.total || 0, icon: "🧾" },
+      { label: "Аудит", value: digest.audit?.rawCandidateCounts?.total || 0, icon: "🧾" },
     ],
   };
 }
@@ -331,32 +344,32 @@ function buildPublicEmbed(digest = {}, config = {}) {
       "**Акценты дня**",
       ...metrics,
       `🕘 окно: **${formatMoscowWindow(digest.coverageWindow)}**`,
-      `📡 status: **${getCoverageLabel(digest)}**`,
+      `📡 статус: **${getCoverageLabel(digest)}**`,
     ], 4096),
     color: accentColor || altColor,
     fields: [
-      createEmbedField("⚔️ Kills · резкие апы", renderKillLines(digest.publicEdition?.kills?.topUpgrades, 5)),
-      createEmbedField("💬 Activity · топ сообщений", [
-        makeBar("chat", topMessages, maxMessages),
+      createEmbedField("⚔️ Киллы · резкие апы", renderKillLines(digest.publicEdition?.kills?.topUpgrades, 5)),
+      createEmbedField("💬 Активность · топ сообщений", [
+        makeBar("чат", topMessages, maxMessages),
         ...renderActivityLines(digest.publicEdition?.activity?.topMessageAuthors, 5),
         ...activityMoverLines,
       ]),
       createEmbedField("🎮 JJS · топ игры", renderGameplayLines(digest.publicEdition?.gameplay?.topPlayers, 5)),
-      createEmbedField("🆕 New · входы и верификации", renderNewcomerLines(digest.publicEdition?.newcomers?.highlights, 6)),
+      createEmbedField("🆕 Новички · входы и верификации", renderNewcomerLines(digest.publicEdition?.newcomers?.highlights, 6)),
       createEmbedField("🎙️ Voice · лидеры эфира", [
         makeBar("voice", topVoiceSeconds, maxVoiceSeconds),
         ...renderVoiceLines(digest.publicEdition?.voice?.topVisitors, 5),
       ]),
-      createEmbedField("🛡️ Moderation · highlights", renderModerationLines(digest.publicEdition?.moderation?.highlights, 5)),
-      createEmbedField("🧩 Tierlist · updates", [
+      createEmbedField("🛡️ Модерация · highlights", renderModerationLines(digest.publicEdition?.moderation?.highlights, 5)),
+      createEmbedField("🧩 Тирлист · обновления", [
         ...renderTierlistLines(digest.publicEdition?.tierlist?.updates, 5),
         ...tierlistShiftLines,
         digest.publicEdition?.tierlist?.shifts?.available === false ? `↳ shifts: ${digest.publicEdition.tierlist.shifts.reason}` : null,
       ].filter(Boolean)),
-      createEmbedField("📡 Coverage", renderCoverageLines(digest)),
+      createEmbedField("📡 Покрытие", renderCoverageLines(digest)),
     ],
     footer: {
-      text: `Daily News · ${digest.coverageWindow?.timeZone || "Europe/Moscow"} · ${getCoverageLabel(digest)}`,
+      text: `Дайджест дня · ${digest.coverageWindow?.timeZone || "Europe/Moscow"} · ${getCoverageLabel(digest)}`,
     },
     timestamp: cleanString(digest.compiledAt, 80) || undefined,
   };
@@ -365,7 +378,9 @@ function buildPublicEmbed(digest = {}, config = {}) {
 function buildPublicThreadMessages(digest = {}) {
   const messages = [];
   const shouldPublishVoiceThread = digest.publicEdition?.voice?.publishFullListInThread === true;
-  const voiceLine = cleanString(digest.publicEdition?.voice?.allVisitorsLine, 3800);
+  const voiceVisitors = Array.isArray(digest.voice?.visitors) ? digest.voice.visitors : [];
+  const voiceLine = cleanString(voiceVisitors.map((entry) => formatParticipant(entry)).join(", "), 3800)
+    || cleanString(digest.publicEdition?.voice?.allVisitorsLine, 3800);
   if (shouldPublishVoiceThread && voiceLine) {
     messages.push({
       content: trimLines([
@@ -380,7 +395,7 @@ function buildPublicThreadMessages(digest = {}) {
   if (allUpgrades.length > 5) {
     messages.push({
       content: trimLines([
-        `⚔️ **Все approved kill jumps · ${formatMoscowDate(digest.dayKey)}**`,
+        `⚔️ **Все подтверждённые резкие апы · ${formatMoscowDate(digest.dayKey)}**`,
         SECTION_SEPARATOR,
         ...renderKillLines(allUpgrades, 20),
       ], 3900),
@@ -392,7 +407,7 @@ function buildPublicThreadMessages(digest = {}) {
   if (publicActivityAuthors.length > 5) {
     messages.push({
       content: trimLines([
-        `💬 **Расширенный chat leaderboard · ${formatMoscowDate(digest.dayKey)}**`,
+        `💬 **Расширенный чат-лидерборд · ${formatMoscowDate(digest.dayKey)}**`,
         SECTION_SEPARATOR,
         ...renderActivityLines(publicActivityAuthors, 20),
       ], 3900),
@@ -403,7 +418,7 @@ function buildPublicThreadMessages(digest = {}) {
   if (gameplayItems.length > 5) {
     messages.push({
       content: trimLines([
-        `🎮 **Расширенный JJS leaderboard · ${formatMoscowDate(digest.dayKey)}**`,
+        `🎮 **Расширенный JJS-лидерборд · ${formatMoscowDate(digest.dayKey)}**`,
         SECTION_SEPARATOR,
         ...renderGameplayLines(gameplayItems, 20),
       ], 3900),
@@ -417,7 +432,7 @@ function renderBucketLines(bucketCounts = {}) {
   const order = [
     ["published_public", "🟢 public"],
     ["published_staff", "🔵 staff"],
-    ["suppressed_by_threshold", "⚪ suppressed"],
+    ["suppressed_by_threshold", "⚪ скрыто"],
     ["pending_review", "🟡 pending"],
     ["rejected", "🔴 rejected"],
     ["expired", "⌛ expired"],
@@ -433,8 +448,8 @@ function renderKillStaffLines(items = [], limit = 8) {
   const list = (Array.isArray(items) ? items : [])
     .filter((entry) => entry.bucket !== "published_public")
     .slice(0, limit);
-  if (!list.length) return ["— нет staff-only kill submissions в этом окне"];
-  return list.map((entry) => `${entry.bucket === "rejected" ? "🔴" : entry.bucket === "pending_review" ? "🟡" : "⚪"} **${entry.displayName}** · ${entry.status} · ${formatNumber(entry.kills)} kills · ${entry.bucketDetail || entry.bucket}`);
+  if (!list.length) return ["— в этом окне нет staff-only kill submissions"];
+  return list.map((entry) => `${entry.bucket === "rejected" ? "🔴" : entry.bucket === "pending_review" ? "🟡" : "⚪"} **${formatParticipant(entry)}** · ${entry.status} · ${formatNumber(entry.kills)} kills · ${entry.bucketDetail || entry.bucket}`);
 }
 
 function compareAuditWatchlistEntries(left = {}, right = {}) {
@@ -478,25 +493,25 @@ function renderAuditWatchlistLines(candidates = [], limit = 8) {
   };
   const moduleLabels = {
     voice: "voice",
-    moderation: "moderation",
-    activity: "activity",
-    newcomers: "newcomers",
+    moderation: "модерация",
+    activity: "активность",
+    newcomers: "новички",
     gameplay: "jjs",
-    tierlist: "tierlist",
+    tierlist: "тирлист",
   };
   const hiddenDetails = new Set(["staff_digest_only"]);
   const list = (Array.isArray(candidates) ? candidates : [])
     .filter(isWatchlistAuditCandidate)
     .sort(compareAuditWatchlistEntries)
     .slice(0, limit);
-  if (!list.length) return ["— вне kills сейчас нет cross-module blind spots с non-public trail"];
+  if (!list.length) return ["— вне kills сейчас нет заметных слепых зон по непубличным источникам"];
 
   return list.map((candidate) => {
     const bucket = cleanString(candidate.bucket, 80);
     const meta = bucketMeta[bucket] || { icon: "⚪", label: bucket || "unknown" };
     const detail = cleanString(candidate.detail, 200);
     const detailText = detail && !hiddenDetails.has(detail) ? ` · ${detail}` : "";
-    const displayName = cleanString(candidate.displayName, 120) || cleanString(candidate.userId, 80) || "unknown";
+    const displayName = formatParticipant(candidate, cleanString(candidate.userId, 80) || "неизвестно");
     const moduleLabel = moduleLabels[cleanString(candidate.module, 40)] || cleanString(candidate.module, 40) || "unknown";
     return `${meta.icon} **${displayName}** · ${moduleLabel} · ${meta.label}${detailText}`;
   });
@@ -508,9 +523,9 @@ function buildStaffEmbed(digest = {}, config = {}) {
   return {
     title: `🧾 Staff Audit · ${formatMoscowDate(digest.dayKey)}`,
     description: trimLines([
-      `Compiled: **${cleanString(digest.compiledAt, 80) || "—"}**`,
-      `Window: **${formatMoscowWindow(digest.coverageWindow)}**`,
-      `Status: **${getCoverageLabel(digest)}**`,
+      `Собрано: **${cleanString(digest.compiledAt, 80) || "—"}**`,
+      `Окно: **${formatMoscowWindow(digest.coverageWindow)}**`,
+      `Статус: **${getCoverageLabel(digest)}**`,
       SECTION_SEPARATOR,
       buildStoryLine(digest),
     ], 4096),
@@ -549,7 +564,7 @@ function buildStaffEmbed(digest = {}, config = {}) {
       createEmbedField("📡 Coverage reasons", renderCoverageLines(digest), false),
     ],
     footer: {
-      text: `Raw candidates: ${formatNumber(digest.audit?.rawCandidateCounts?.total || 0)} · Staff digest is derived from the same compiled truth`,
+      text: `Raw candidates: ${formatNumber(digest.audit?.rawCandidateCounts?.total || 0)} · Staff digest строится из того же собранного digest`,
     },
     timestamp: cleanString(digest.compiledAt, 80) || undefined,
   };
