@@ -848,7 +848,7 @@ test("onboard mode state normalizes persisted values and exposes readable labels
   });
 });
 
-test("resolveGrantedAccessRoleId keeps the normal access role for returning members during wartime", () => {
+test("resolveGrantedAccessRoleId keeps the existing access role for returning members", () => {
   assert.equal(resolveGrantedAccessRoleId({
     mode: ONBOARD_ACCESS_MODES.WARTIME,
     normalAccessRoleId: "base-role",
@@ -861,6 +861,13 @@ test("resolveGrantedAccessRoleId keeps the normal access role for returning memb
     normalAccessRoleId: "base-role",
     wartimeAccessRoleId: "wartime-role",
     heldRoleIds: ["other-role"],
+  }), "wartime-role");
+
+  assert.equal(resolveGrantedAccessRoleId({
+    mode: ONBOARD_ACCESS_MODES.NORMAL,
+    normalAccessRoleId: "base-role",
+    wartimeAccessRoleId: "wartime-role",
+    heldRoleIds: ["wartime-role"],
   }), "wartime-role");
 
   assert.equal(resolveGrantedAccessRoleId({

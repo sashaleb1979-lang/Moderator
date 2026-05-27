@@ -64,10 +64,14 @@ function resolveGrantedAccessRoleId({
   const wartimeRoleId = cleanRoleId(wartimeAccessRoleId);
   const heldRoleIdSet = normalizeHeldRoleIds(heldRoleIds);
 
+  if (normalRoleId && heldRoleIdSet.has(normalRoleId)) {
+    return normalRoleId;
+  }
+  if (wartimeRoleId && heldRoleIdSet.has(wartimeRoleId)) {
+    return wartimeRoleId;
+  }
+
   if (normalizedMode === ONBOARD_ACCESS_MODES.WARTIME) {
-    if (normalRoleId && heldRoleIdSet.has(normalRoleId)) {
-      return normalRoleId;
-    }
     return wartimeRoleId || normalRoleId;
   }
 
