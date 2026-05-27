@@ -284,6 +284,15 @@ const {
 } = require("./src/integrations/elo-role-sync");
 const { createProfileOperator } = require("./src/profile/operator");
 const {
+  PROFILE_SUBMIT_ACTIONS,
+  PROFILE_SUBMIT_CANCEL_CUSTOM_ID,
+  PROFILE_SUBMIT_CAPTURE_TTL_MS,
+  buildProfileEloSubmitCapturePayload,
+  buildProfileKillsSubmitCapturePayload,
+  buildProfileSubmitCancelledPayload,
+  createProfileSubmitCaptureStore,
+} = require("./src/profile/submit-capture");
+const {
   appendProofWindowSnapshot,
   captureProfilePopulationSnapshot,
   captureSeasonArchiveSnapshots,
@@ -622,6 +631,7 @@ let guildCache = null;
 const mainDrafts = new Map();
 const submitSessions = new Map();
 const mainsPickerSessions = new Map();
+const profileSubmitCaptures = createProfileSubmitCaptureStore();
 const legacyEloSubmitSessions = new Map();
 const legacyEloManualModsetSessions = new Map();
 const nonGgsCaptchaSessions = new Map();
@@ -3425,6 +3435,25 @@ async function completeMainSelection(interaction, selectedEntries, options = {})
   });
   clearMainDraft(interaction.user.id);
   clearMainsPickerSession(interaction.user.id);
+  const activeProfileSubmitCapture = profileSubmitCaptures.get(interaction.user.id);
+  if (activeProfileSubmitCapture?.action === PROFILE_SUBMIT_ACTIONS.KILLS) {
+    const payload = buildProfileKillsCapturePayloadForUser(interaction.user.id, {
+      channelId: activeProfileSubmitCapture.channelId,
+      mainCharacterIds: appliedEntries.map((entry) => entry.id),
+      noticeText: "Мейны сохранены. Теперь следующее твоё сообщение в выбранном чате должно быть заявкой.",
+    });
+    payload.attachments = [];
+    if (responseMethod === "update") {
+      if (usedDeferredUpdate) {
+        await interaction.editReply(payload);
+        return;
+      }
+      await interaction.update(payload);
+      return;
+    }
+    await interaction.reply(payload);
+    return;
+  }
   if (responseMethod === "update") {
     const payload = buildSubmitStepPayload(interaction.user.id, {
       includeEphemeralFlag: false,
@@ -4110,6 +4139,82 @@ function getSubmitSession(userId) {
 
 function clearSubmitSession(userId) {
   submitSessions.delete(userId);
+}
+
+function logProfileSubmitCapture(event, details = {}) {
+  const parts = [`[profile-submit] event=${String(event || "unknown").trim() || "unknown"}`];
+  for (const [key, value] of Object.entries(details || {})) {
+    const text = String(value ?? "").trim();
+    if (text) parts.push(`${key}=${text.slice(0, 180)}`);
+  }
+  console.log(parts.join(" "));
+}
+
+function isProfileSubmitSourceInteraction(interaction = {}) {
+  const ids = new Set(getMessageComponentCustomIds(interaction?.message));
+  return ids.has("profile_bind_roblox")
+    || ids.has("elo_submit_card")
+    || ids.has(BOT_HELPER_PANEL_ACTION_IDS.roblox);
+}
+
+function startProfileSubmitCapture(userId, options = {}) {
+  const session = profileSubmitCaptures.start(userId, {
+    action: options.action,
+    channelId: options.channelId,
+    source: options.source,
+    sourceMessageId: options.sourceMessageId,
+    interactionId: options.interactionId,
+    mainCharacterIds: options.mainCharacterIds,
+  });
+  if (session) {
+    logProfileSubmitCapture("profile_submit_start", {
+      user: session.userId,
+      action: session.action,
+      channel: session.channelId,
+      source: session.source,
+    });
+  }
+  return session;
+}
+
+function clearProfileSubmitCapture(userId, reason = "cleared") {
+  const session = profileSubmitCaptures.clear(userId);
+  if (session) {
+    logProfileSubmitCapture(reason, {
+      user: session.userId,
+      action: session.action,
+      channel: session.channelId,
+    });
+  }
+  return session;
+}
+
+function getActiveProfileSubmitCaptureForMessage(message = {}) {
+  const session = profileSubmitCaptures.peek(message?.author?.id);
+  if (!session) return null;
+  if (Date.now() >= Number(session.expiresAtMs || 0)) {
+    clearProfileSubmitCapture(message.author.id, "profile_submit_expired");
+    return null;
+  }
+  if (String(session.channelId || "") !== String(message.channelId || "")) {
+    return null;
+  }
+  return session;
+}
+
+function buildProfileKillsCapturePayloadForUser(userId, options = {}) {
+  const mainCharacterIds = Array.isArray(options.mainCharacterIds) && options.mainCharacterIds.length
+    ? options.mainCharacterIds
+    : getSubmitSession(userId)?.mainCharacterIds || [];
+  const selectedLabels = getSelectedCharacterEntries(mainCharacterIds)
+    .map((entry) => formatCharacterLabelWithEmoji(entry))
+    .filter(Boolean)
+    .join(", ");
+  return buildProfileKillsSubmitCapturePayload({
+    channelText: formatChannelMention(options.channelId) || "этот чат",
+    mainsText: selectedLabels,
+    noticeText: options.noticeText,
+  });
 }
 
 function getValidatedLiveMainCharacterIds(characterIds = []) {
@@ -13718,7 +13823,7 @@ function setLegacyEloManualModsetSession(userId, value) {
 function getLegacyEloSubmitSession(userId) {
   const session = legacyEloSubmitSessions.get(userId);
   if (!session) return null;
-  if (Date.now() - Number(session.createdAt || 0) > SUBMIT_SESSION_EXPIRE_MS) {
+  if (Date.now() - Number(session.createdAt || 0) > PROFILE_SUBMIT_CAPTURE_TTL_MS) {
     legacyEloSubmitSessions.delete(userId);
     return null;
   }
@@ -15049,6 +15154,241 @@ client.on("messageDeleteBulk", async (messages) => {
   }
 });
 
+async function handleProfileEloSubmitCaptureMessage(message, session) {
+  const legacyEloState = getLiveLegacyEloState();
+  if (!legacyEloState.ok) {
+    clearProfileSubmitCapture(message.author.id, "profile_submit_cancel");
+    await replyAndDelete(message, `Не удалось открыть legacy ELO базу: ${legacyEloState.error}`, 16000);
+    await message.delete().catch(() => {});
+    return true;
+  }
+
+  const pending = getPendingLegacyEloSubmissionForUser(legacyEloState.rawDb, message.author.id);
+  if (pending) {
+    clearProfileSubmitCapture(message.author.id, "profile_submit_cancel");
+    await replyAndDelete(message, "У тебя уже есть ELO-заявка на проверке. Дождись решения модера.");
+    await message.delete().catch(() => {});
+    return true;
+  }
+
+  const attachment = [...message.attachments.values()].find((item) => isImageAttachment(item));
+  const rawText = String(message.content || "").trim();
+  const messageError = getLegacyEloSubmitMessageError({
+    rawText,
+    hasImageAttachment: Boolean(attachment),
+  });
+  if (messageError) {
+    logProfileSubmitCapture("profile_submit_invalid_message", {
+      user: message.author.id,
+      action: session.action,
+      channel: session.channelId,
+      reason: "invalid_elo_payload",
+    });
+    await replyAndDelete(message, messageError);
+    await message.delete().catch(() => {});
+    return true;
+  }
+
+  const blockReason = getLegacyEloSubmitEligibilityError(legacyEloState.rawDb, message.author.id, rawText);
+  if (blockReason) {
+    clearProfileSubmitCapture(message.author.id, "profile_submit_cancel");
+    await replyAndDelete(message, blockReason, 16000);
+    await message.delete().catch(() => {});
+    return true;
+  }
+
+  try {
+    await createPendingLegacyEloSubmissionFromUrl(client, legacyEloState, {
+      user: message.author,
+      member: message.member,
+      rawText,
+      screenshotUrl: attachment.url,
+      messageUrl: message.url,
+    });
+    clearProfileSubmitCapture(message.author.id, "profile_submit_created");
+    await replyAndDelete(message, "ELO заявка отправлена на проверку модерам. ELO-роль обновится после review.");
+    await logLine(client, `ELO SUBMIT: <@${message.author.id}> raw=${rawText} via profile capture`);
+  } catch (error) {
+    await replyAndDelete(message, String(error?.message || error || "Не удалось отправить ELO заявку."), 16000);
+  }
+
+  await message.delete().catch(() => {});
+  return true;
+}
+
+async function handleProfileKillsSubmitCaptureMessage(message, session) {
+  let submitSession = getSubmitSession(message.author.id);
+  if (!submitSession?.mainCharacterIds?.length && Array.isArray(session.mainCharacterIds) && session.mainCharacterIds.length) {
+    setSubmitSession(message.author.id, { mainCharacterIds: session.mainCharacterIds });
+    submitSession = getSubmitSession(message.author.id);
+  }
+
+  if (!submitSession?.mainCharacterIds?.length) {
+    clearProfileSubmitCapture(message.author.id, "profile_submit_cancel");
+    await replyAndDelete(message, "Сессия выбора мейнов истекла. Открой профиль и нажми «Подать kills» заново.");
+    await message.delete().catch(() => {});
+    return true;
+  }
+
+  const pending = getPendingSubmissionForUser(message.author.id);
+  if (pending) {
+    clearProfileSubmitCapture(message.author.id, "profile_submit_cancel");
+    clearSubmitSession(message.author.id);
+    await replyAndDelete(message, "У тебя уже есть заявка на проверке. Дождись решения модератора.");
+    await message.delete().catch(() => {});
+    return true;
+  }
+
+  const attachment = [...message.attachments.values()].find((item) => isImageAttachment(item));
+  if (!attachment) {
+    logProfileSubmitCapture("profile_submit_invalid_message", {
+      user: message.author.id,
+      action: session.action,
+      channel: session.channelId,
+      reason: "missing_image",
+    });
+    await replyAndDelete(message, "В одной заявке должны быть и kills в тексте, и скрин во вложении. Отправь одно сообщение с числом kills и приложи картинку.");
+    await message.delete().catch(() => {});
+    return true;
+  }
+
+  const killsResult = resolveEffectiveSubmittedKills(message.content, submitSession?.suggestedKills);
+  const { effectiveKills } = killsResult;
+  if (effectiveKills === null) {
+    logProfileSubmitCapture("profile_submit_invalid_message", {
+      user: message.author.id,
+      action: session.action,
+      channel: session.channelId,
+      reason: killsResult.reason || "invalid_kills",
+    });
+    await replyAndDelete(
+      message,
+      killsResult.reason === "ambiguous"
+        ? "Не понял число kills. Укажи в тексте только одно число, например `3120`, и приложи скрин в этом же сообщении."
+        : "В тексте заявки нужно указать точное число kills, например `3120` или `3120 kills`, и приложить скрин в этом же сообщении."
+    );
+    await message.delete().catch(() => {});
+    return true;
+  }
+
+  const currentAccessGrantMode = getCurrentOnboardAccessGrantMode();
+  const requiresRobloxBeforeReview = currentAccessGrantMode !== ONBOARD_ACCESS_GRANT_MODES.AFTER_SUBMIT;
+  const hasRobloxIdentity = Boolean(submitSession.robloxUsername && submitSession.robloxUserId);
+
+  if (requiresRobloxBeforeReview && !hasRobloxIdentity) {
+    setSubmitSession(message.author.id, {
+      ...submitSession,
+      pendingKills: effectiveKills,
+      pendingScreenshotUrl: attachment.url,
+      pendingScreenshotName: attachment.name || "",
+    });
+    clearProfileSubmitCapture(message.author.id, "profile_submit_created");
+    await replyAndDelete(
+      message,
+      "Kills и скрин приняты. Теперь нажми кнопку Roblox в профиле или helper-панели и укажи Roblox username — без этого заявка не уйдёт модераторам.",
+      18000
+    );
+    await message.delete().catch(() => {});
+    return true;
+  }
+
+  const accessRoleIds = getAccessGrantRollbackRoleIds();
+  const previousProfile = cloneJsonValue(db.profiles?.[message.author.id]);
+  const hadProfile = Boolean(db.profiles?.[message.author.id]);
+  const hadCooldown = Object.prototype.hasOwnProperty.call(db.cooldowns || {}, message.author.id);
+  const previousCooldown = hadCooldown ? db.cooldowns[message.author.id] : undefined;
+  const accessMember = await fetchMember(client, message.author.id);
+  const previousAccessRoleIds = getRolePoolSnapshot(accessMember, accessRoleIds);
+  const existingProfile = db.profiles?.[message.author.id] || null;
+  const isKillsUpdate = hasTrackedProfileKills(existingProfile);
+  let submission = null;
+
+  try {
+    if (currentAccessGrantMode === ONBOARD_ACCESS_GRANT_MODES.AFTER_SUBMIT) {
+      await maybeGrantAccessRoleAtStage(client, message.author.id, ONBOARD_ACCESS_GRANT_MODES.AFTER_SUBMIT, "profile kills application submitted");
+    }
+
+    submission = await createPendingSubmissionFromAttachment(client, {
+      user: message.author,
+      member: message.member,
+      mainCharacterIds: submitSession.mainCharacterIds,
+      kills: effectiveKills,
+      robloxUsername: submitSession.robloxUsername,
+      robloxUserId: submitSession.robloxUserId,
+      robloxDisplayName: submitSession.robloxDisplayName,
+      screenshotUrl: attachment.url,
+    });
+
+    if (currentAccessGrantMode === ONBOARD_ACCESS_GRANT_MODES.AFTER_REVIEW_POST) {
+      await maybeGrantAccessRoleAtStage(client, message.author.id, ONBOARD_ACCESS_GRANT_MODES.AFTER_REVIEW_POST, "profile kills application moved to moderator review");
+      saveDb();
+    }
+  } catch (error) {
+    if (submission?.id) {
+      delete db.submissions[submission.id];
+      restoreRecordValue(db.profiles, message.author.id, previousProfile, hadProfile);
+      restoreRecordValue(db.cooldowns, message.author.id, previousCooldown, hadCooldown);
+      saveDb();
+      await deleteTrackedMessage(
+        client,
+        submission.reviewChannelId,
+        submission.reviewMessageId,
+        `review-сообщение ${submission.id}`
+      ).catch((deleteError) => {
+        console.warn(`Profile submit rollback message cleanup failed for ${submission.id}: ${formatRuntimeError(deleteError)}`);
+      });
+    } else {
+      restoreRecordValue(db.profiles, message.author.id, previousProfile, hadProfile);
+      restoreRecordValue(db.cooldowns, message.author.id, previousCooldown, hadCooldown);
+    }
+
+    await restoreRolePoolSnapshot(
+      client,
+      message.author.id,
+      accessRoleIds,
+      previousAccessRoleIds,
+      "profile submit rollback"
+    ).catch((restoreError) => {
+      console.error(`Profile submit access-role rollback failed for ${message.author.id}: ${formatRuntimeError(restoreError)}`);
+    });
+
+    await replyAndDelete(message, String(error?.message || error || "Не удалось отправить заявку."), 16000);
+    await message.delete().catch(() => {});
+    return true;
+  }
+
+  clearProfileSubmitCapture(message.author.id, "profile_submit_created");
+  clearSubmitSession(message.author.id);
+  await replyAndDelete(
+    message,
+    isKillsUpdate
+      ? "Обновление kills отправлено модераторам. Текущие kills и tier изменятся после проверки."
+      : currentAccessGrantMode === ONBOARD_ACCESS_GRANT_MODES.AFTER_APPROVE
+        ? "Заявка отправлена модераторам. Стартовая роль будет выдана после approve модератора, kill-tier прилетит после проверки."
+        : "Заявка отправлена модераторам. Kill-tier прилетит после проверки."
+  );
+
+  await logLine(client, `SUBMIT: <@${message.author.id}> kills ${effectiveKills} mains=${submitSession.mainCharacterIds.join(",")} via profile capture`).catch((error) => {
+    console.warn(`Profile submit log failed for ${message.author.id}: ${formatRuntimeError(error)}`);
+  });
+
+  await message.delete().catch(() => {});
+  return true;
+}
+
+async function handleProfileSubmitCaptureMessage(message) {
+  const session = getActiveProfileSubmitCaptureForMessage(message);
+  if (!session) return false;
+
+  if (session.action === PROFILE_SUBMIT_ACTIONS.ELO) {
+    return handleProfileEloSubmitCaptureMessage(message, session);
+  }
+  if (session.action === PROFILE_SUBMIT_ACTIONS.KILLS) {
+    return handleProfileKillsSubmitCaptureMessage(message, session);
+  }
+  return false;
+}
+
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
   if (message.guildId !== GUILD_ID) return;
@@ -15067,6 +15407,13 @@ client.on("messageCreate", async (message) => {
 
   if (await getAntiteamOperator().handlePhotoMessage(message).catch((error) => {
     console.error("Antiteam photo flow failed:", error?.message || error);
+    return false;
+  })) {
+    return;
+  }
+
+  if (await handleProfileSubmitCaptureMessage(message).catch((error) => {
+    console.error("Profile submit capture failed:", error?.message || error);
     return false;
   })) {
     return;
@@ -19396,6 +19743,26 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
+      if (isProfileSubmitSourceInteraction(interaction)) {
+        const blockReason = getLegacyEloSubmitEligibilityError(liveState.rawDb, interaction.user.id);
+        if (blockReason) {
+          await interaction.reply(ephemeralPayload({ content: blockReason }));
+          return;
+        }
+
+        startProfileSubmitCapture(interaction.user.id, {
+          action: PROFILE_SUBMIT_ACTIONS.ELO,
+          channelId: interaction.channelId,
+          source: "profile_elo_button",
+          sourceMessageId: interaction.message?.id,
+          interactionId: interaction.id,
+        });
+        await interaction.reply(buildProfileEloSubmitCapturePayload({
+          channelText: formatChannelMention(interaction.channelId) || "этот чат",
+        }));
+        return;
+      }
+
       const session = getLegacyEloSubmitSession(interaction.user.id);
       const submitPanel = getLegacyEloSubmitPanelState(liveState.rawDb);
       const targetChannelId = resolveLegacyEloSubmitTargetChannelId({
@@ -19423,6 +19790,7 @@ client.on("interactionCreate", async (interaction) => {
 
     if (interaction.customId === "elo_submit_cancel") {
       clearLegacyEloSubmitSession(interaction.user.id);
+      clearProfileSubmitCapture(interaction.user.id, "profile_submit_cancel");
       await interaction.reply(ephemeralPayload({ content: "Ок. Шаг отправки ELO отменён." }));
       return;
     }
@@ -19809,6 +20177,7 @@ client.on("interactionCreate", async (interaction) => {
           hasSubmitSession: Boolean(session),
           hasMainDraft: Boolean(draft?.characterIds?.length),
         });
+        const profileScopedBegin = isProfileSubmitSourceInteraction(interaction);
 
         if (beginRoute.type === ONBOARD_BEGIN_ROUTES.REQUIRED_ROBLOX) {
           await interaction.reply(buildRobloxUsernameStepPayload(interaction.user.id, {
@@ -19845,6 +20214,24 @@ client.on("interactionCreate", async (interaction) => {
             setSubmitSession(interaction.user.id, accessResumeSession);
           }
 
+          if (profileScopedBegin) {
+            const activeSession = getSubmitSession(interaction.user.id);
+            startProfileSubmitCapture(interaction.user.id, {
+              action: PROFILE_SUBMIT_ACTIONS.KILLS,
+              channelId: interaction.channelId,
+              source: "profile_kills_button",
+              sourceMessageId: interaction.message?.id,
+              interactionId: interaction.id,
+              mainCharacterIds: activeSession?.mainCharacterIds,
+            });
+            await interaction.reply(buildProfileKillsCapturePayloadForUser(interaction.user.id, {
+              channelId: interaction.channelId,
+              mainCharacterIds: activeSession?.mainCharacterIds,
+              noticeText: "Ты уже на шаге подачи kills. Следующее твоё сообщение в этом чате должно быть заявкой.",
+            }));
+            return;
+          }
+
           const welcomeChannelId = getResolvedChannelId("welcome");
           if (!welcomeChannelId) {
             await interaction.reply(ephemeralPayload({
@@ -19863,12 +20250,37 @@ client.on("interactionCreate", async (interaction) => {
         if (beginRoute.type === ONBOARD_BEGIN_ROUTES.DRAFT) {
           setSubmitSession(interaction.user.id, { mainCharacterIds: draft.characterIds });
           clearMainDraft(interaction.user.id);
+          if (profileScopedBegin) {
+            startProfileSubmitCapture(interaction.user.id, {
+              action: PROFILE_SUBMIT_ACTIONS.KILLS,
+              channelId: interaction.channelId,
+              source: "profile_kills_button",
+              sourceMessageId: interaction.message?.id,
+              interactionId: interaction.id,
+              mainCharacterIds: draft.characterIds,
+            });
+            await interaction.reply(buildProfileKillsCapturePayloadForUser(interaction.user.id, {
+              channelId: interaction.channelId,
+              mainCharacterIds: draft.characterIds,
+              noticeText: "Мейны из черновика сохранены. Следующее твоё сообщение в этом чате должно быть заявкой.",
+            }));
+            return;
+          }
           await interaction.reply(buildSubmitStepPayload(interaction.user.id, {
             canManageRobloxIdentity: hasAdministratorAccess(interaction.member),
           }));
           return;
         }
 
+        if (profileScopedBegin) {
+          startProfileSubmitCapture(interaction.user.id, {
+            action: PROFILE_SUBMIT_ACTIONS.KILLS,
+            channelId: interaction.channelId,
+            source: "profile_kills_button",
+            sourceMessageId: interaction.message?.id,
+            interactionId: interaction.id,
+          });
+        }
         await openCharacterPicker(interaction, "full");
       } catch (error) {
         console.error("onboard_begin failed:", error?.message || error);
@@ -20029,10 +20441,22 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
+    if (interaction.customId === PROFILE_SUBMIT_CANCEL_CUSTOM_ID) {
+      const session = clearProfileSubmitCapture(interaction.user.id, "profile_submit_cancel");
+      if (session?.action === PROFILE_SUBMIT_ACTIONS.KILLS) {
+        clearSubmitSession(interaction.user.id);
+      }
+      const payload = buildProfileSubmitCancelledPayload(session?.action || "");
+      delete payload.flags;
+      await interaction.update(payload);
+      return;
+    }
+
     if (interaction.customId === "onboard_cancel") {
       clearMainsPickerSession(interaction.user.id);
       clearMainDraft(interaction.user.id);
       clearSubmitSession(interaction.user.id);
+      clearProfileSubmitCapture(interaction.user.id, "profile_submit_cancel");
       await interaction.update({ content: "Ок. Процесс отменён.", embeds: [], components: [], attachments: [] });
       return;
     }
