@@ -11,6 +11,7 @@ const {
   importHistoricalActivity,
   importHistoricalActivityFromWatchedChannels,
   runActivityRoleSyncFromSnapshots,
+  runActivityMemberJoinRoleSync,
   runDailyActivityRoleSync,
   setManualActivityUserStatus,
 } = require("../src/activity/operator");
@@ -1547,6 +1548,67 @@ test("buildActivityRoleAssignmentPlan keeps join_age_unknown newcomer-safe-off",
   assert.equal(plan.desiredRoleId, null);
   assert.deepEqual(plan.addRoleIds, []);
   assert.deepEqual(plan.removeRoleIds, ["role-newcomer"]);
+});
+
+test("runActivityMemberJoinRoleSync gives returning members the scored role instead of newcomer", async () => {
+  const db = {
+    profiles: {
+      returning: {
+        userId: "returning",
+        domains: {
+          activity: {
+            appliedActivityRoleKey: "newcomer",
+            lastObservedGuildJoinAt: "2026-05-01T12:00:00.000Z",
+            guildJoinCount: 1,
+          },
+        },
+      },
+    },
+  };
+
+  updateActivityConfig(db, {
+    activityRoleIds: {
+      newcomer: "role-newcomer",
+      dead: "role-dead",
+    },
+  });
+
+  const roleChanges = [];
+  const result = await runActivityMemberJoinRoleSync({
+    db,
+    userId: "returning",
+    memberRoleIds: ["role-newcomer"],
+    memberActivityMeta: {
+      joinedAt: "2026-05-09T12:00:00.000Z",
+      returningMember: true,
+      priorServerTrace: {
+        returningMember: true,
+        sourceType: "profile.presence",
+        evidenceCount: 1,
+      },
+    },
+    async applyRoleChanges(change) {
+      roleChanges.push(change);
+      return true;
+    },
+    now: "2026-05-09T12:01:00.000Z",
+  });
+
+  assert.equal(result.rebuiltUserCount, 1);
+  assert.equal(result.roleAssignment.appliedCount, 1);
+  assert.deepEqual(roleChanges, [
+    {
+      userId: "returning",
+      desiredRoleKey: "dead",
+      desiredRoleId: "role-dead",
+      addRoleIds: ["role-dead"],
+      removeRoleIds: ["role-newcomer"],
+    },
+  ]);
+  assert.equal(db.profiles.returning.domains.activity.returningMember, true);
+  assert.equal(db.profiles.returning.domains.activity.roleEligibleForActivityRole, true);
+  assert.equal(db.profiles.returning.domains.activity.desiredActivityRoleKey, "dead");
+  assert.equal(db.profiles.returning.domains.activity.appliedActivityRoleKey, "dead");
 });
 
 test("runDailyActivityRoleSync rebuilds snapshots with member age metadata and applies boosted roles", async () => {

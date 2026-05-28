@@ -75,6 +75,18 @@ test("start panel is Components V2 and exposes submit button", () => {
   assert.match(payloadJson(payload), new RegExp(ANTITEAM_CUSTOM_IDS.open.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 });
 
+test("start panel exposes edit-test ping roles when configured", () => {
+  const payload = buildStartPanelPayload({
+    battalionRoleId: "role-1",
+    pingMode: "edit_roles",
+    editPingRoleIds: ["role-2", "role-3"],
+  });
+  const json = payloadJson(payload);
+
+  assert.match(json, /Пингуются те, кто в <@&role-1>/);
+  assert.match(json, /edit-test: <@&role-2>, <@&role-3>/);
+});
+
 test("support progress payload renders personal level card attachment", () => {
   const zero = getSupportProgressModel(0);
   const middle = getSupportProgressModel(7);
@@ -508,7 +520,7 @@ test("photo request copy allows several images in one message", () => {
 
 test("moderator panel renders setup controls", () => {
   const state = normalizeAntiteamState({
-    config: { channelId: "channel-1", battalionRoleId: "role-1" },
+    config: { channelId: "channel-1", battalionRoleId: "role-1", pingMode: "edit_roles", editPingRoleIds: ["role-2"] },
     tickets: { t1: { id: "t1", status: "open" } },
   });
   const payload = buildModeratorPanelPayload(state);
@@ -521,6 +533,8 @@ test("moderator panel renders setup controls", () => {
   assert.match(json, /Пинг-система/);
   assert.match(json, /Roblox\/тайминги/);
   assert.match(json, /Автозакрытие миссии/);
+  assert.match(json, /buffer-edit роли <@&role-2>/);
+  assert.match(json, /Edit-test роли: <@&role-2>/);
   assert.match(json, /Статистика помощи/);
 });
 
@@ -559,18 +573,22 @@ test("helper reply exposes friend-request action only after help path needs it",
   assert.match(unknownHelper, /"disabled":true/);
 });
 
-test("ping config modal exposes the three ping systems", () => {
+test("ping config modal exposes the four ping systems", () => {
   const modal = buildPingConfigModal({
-    pingMode: "custom_role",
+    pingMode: "edit_roles",
     extraPingRoleId: "role-2",
     battalionPingRoleIds: ["role-3", "role-4"],
+    editPingRoleIds: ["role-5", "role-6"],
   });
   const json = JSON.stringify(modal.toJSON());
 
-  assert.match(json, /battalion \/ role \/ everyone/);
+  assert.match(json, /battalion \/ role \/ everyone \/ edit/);
+  assert.match(json, /"value":"edit"/);
   assert.match(json, /role-2/);
   assert.match(json, /Доп\. роли базового пинга/);
   assert.match(json, /role-3\\nrole-4/);
+  assert.match(json, /Edit-test роли/);
+  assert.match(json, /role-5\\nrole-6/);
 });
 
 test("helper stats payload supports per-helper delete and full clear confirmation", () => {

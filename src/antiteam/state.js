@@ -39,7 +39,7 @@ const ANTITEAM_COUNTS = Object.freeze({
 
 const ANTITEAM_TICKET_KINDS = Object.freeze(["standard", "clan"]);
 const ANTITEAM_TICKET_STATUSES = Object.freeze(["draft", "photo_pending", "open", "closed", "cancelled"]);
-const ANTITEAM_PING_MODES = Object.freeze(["battalion", "custom_role", "everyone"]);
+const ANTITEAM_PING_MODES = Object.freeze(["battalion", "custom_role", "everyone", "edit_roles"]);
 const DISCORD_THREAD_AUTO_ARCHIVE_MINUTES = Object.freeze([60, 1440, 4320, 10080]);
 const ANTITEAM_HELPER_REWARD_THRESHOLDS = Object.freeze([1, 5, 10, 20, 50]);
 
@@ -125,6 +125,7 @@ function normalizeAntiteamPingMode(value, fallback = "battalion") {
   const normalizedFallback = ANTITEAM_PING_MODES.includes(fallback) ? fallback : "battalion";
   const normalized = cleanString(value, 40).toLowerCase().replace(/[\s-]+/g, "_");
   if (normalized === "role" || normalized === "custom" || normalized === "custom_ping") return "custom_role";
+  if (["edit", "edit_role", "edit_ping", "probe", "test", "buffer", "тест", "буфер"].includes(normalized)) return "edit_roles";
   return ANTITEAM_PING_MODES.includes(normalized) ? normalized : normalizedFallback;
 }
 
@@ -197,6 +198,11 @@ function createDefaultAntiteamConfig(value = {}) {
     battalionRoleId: cleanString(source.battalionRoleId, 80),
     battalionPingRoleIds: normalizeUniqueStringArray(
       source.battalionPingRoleIds ?? source.basePingRoleIds ?? source.extraBattalionPingRoleIds,
+      25,
+      80
+    ),
+    editPingRoleIds: normalizeUniqueStringArray(
+      source.editPingRoleIds ?? source.bufferPingRoleIds ?? source.probePingRoleIds,
       25,
       80
     ),

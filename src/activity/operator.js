@@ -275,6 +275,10 @@ const ACTIVITY_PANEL_BUTTON_IDS = Object.freeze([
       roleEligibilityStatus = null,
       roleEligibleForActivityRole = false,
     } = {}) {
+      if (activity.returningMember === true) {
+        return false;
+      }
+
       if (isFirstActivityRankRoleKey(desiredRoleKey)) {
         return false;
       }
@@ -2609,6 +2613,92 @@ async function applyInitialActivityRoleAssignments({
   return execute();
 }
 
+async function runActivityMemberJoinRoleSync({
+  db = {},
+  userId = "",
+  memberRoleIds,
+  memberActivityMeta,
+  resolveMemberRoleIds,
+  resolveMemberActivityMeta,
+  applyRoleChanges,
+  now,
+  saveDb,
+  runSerialized,
+} = {}) {
+  const execute = async () => {
+    const syncedAt = resolveNowIso(now);
+    const normalizedUserId = cleanString(userId, 80);
+    if (!normalizedUserId) {
+      return {
+        syncedAt,
+        userId: "",
+        rebuiltUserCount: 0,
+        roleAssignment: {
+          appliedAt: syncedAt,
+          appliedCount: 0,
+          skippedCount: 1,
+          appliedUserIds: [],
+          skippedUserIds: [],
+          skippedReasons: { "": "missing_user_id" },
+        },
+      };
+    }
+
+    const hasInlineMemberRoleIds = Array.isArray(memberRoleIds);
+    const normalizedMemberRoleIds = hasInlineMemberRoleIds
+      ? normalizeStringArray(memberRoleIds, 5000)
+      : [];
+    const hasInlineMemberActivityMeta = memberActivityMeta
+      && typeof memberActivityMeta === "object"
+      && !Array.isArray(memberActivityMeta);
+    const rebuildResult = await rebuildActivitySnapshots({
+      db,
+      userIds: [normalizedUserId],
+      now: syncedAt,
+      resolveMemberActivityMeta: hasInlineMemberActivityMeta
+        ? () => clone(memberActivityMeta)
+        : resolveMemberActivityMeta,
+    });
+    const roleAssignment = await applyInitialActivityRoleAssignments({
+      db,
+      userIds: [normalizedUserId],
+      resolveMemberRoleIds: hasInlineMemberRoleIds
+        ? () => normalizedMemberRoleIds
+        : resolveMemberRoleIds,
+      applyRoleChanges,
+      now: syncedAt,
+    });
+
+    const state = ensureActivityState(db);
+    state.runtime.lastMemberJoinRoleSyncAt = syncedAt;
+    state.runtime.lastMemberJoinRoleSyncStats = {
+      userId: normalizedUserId,
+      rebuiltUserCount: rebuildResult.rebuiltUserCount,
+      appliedCount: roleAssignment.appliedCount,
+      skippedCount: roleAssignment.skippedCount,
+      skipReasonCounts: summarizeActivitySkipReasonCounts(roleAssignment.skippedReasons),
+      syncMode: "member_join",
+    };
+    db.sot.activity = state;
+    if (typeof saveDb === "function") {
+      saveDb();
+    }
+
+    return {
+      syncedAt,
+      userId: normalizedUserId,
+      rebuiltUserCount: rebuildResult.rebuiltUserCount,
+      rebuiltUsers: rebuildResult.rebuiltUsers,
+      roleAssignment,
+    };
+  };
+
+  if (typeof runSerialized === "function") {
+    return runSerialized(execute, "activity-member-join-role-sync");
+  }
+  return execute();
+}
+
 function normalizeHistoricalImportEntry(entry = {}) {
   const source = entry && typeof entry === "object" ? entry : {};
   const guildId = cleanString(source.guildId, 80);
@@ -3711,6 +3801,7 @@ module.exports = {
   importHistoricalActivity,
   importHistoricalActivityFromWatchedChannels,
   runActivityRoleSyncFromSnapshots,
+  runActivityMemberJoinRoleSync,
   runDailyActivityRoleSync,
   setManualActivityUserStatus,
 };

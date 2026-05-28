@@ -760,6 +760,29 @@ test("rebuildActivityUserSnapshot gates very new members and applies a temporary
   assert.equal(decayedSnapshot.activityScoreMultiplier, 1.1125);
   assert.equal(decayedSnapshot.activityScore, 23);
   assert.equal(decayedSnapshot.roleEligibilityStatus, "boosted_new_member");
+
+  const returningSnapshot = rebuildActivityUserSnapshot({
+    db,
+    userId: "user-1",
+    now: "2026-05-09T12:00:00.000Z",
+    memberActivityMeta: {
+      joinedAt: "2026-05-08T12:00:00.000Z",
+      returningMember: true,
+      priorServerTrace: {
+        returningMember: true,
+        sourceType: "profile.presence",
+        evidenceCount: 1,
+      },
+    },
+  });
+  assert.equal(returningSnapshot.baseActivityScore, 21);
+  assert.equal(returningSnapshot.activityScoreMultiplier, 1);
+  assert.equal(returningSnapshot.activityScore, 21);
+  assert.equal(returningSnapshot.roleEligibilityStatus, "eligible");
+  assert.equal(returningSnapshot.roleEligibleForActivityRole, true);
+  assert.equal(returningSnapshot.desiredActivityRoleKey, "weak");
+  assert.equal(returningSnapshot.returningMember, true);
+  assert.equal(returningSnapshot.guildJoinCount, 2);
 });
 
 test("rebuildActivitySnapshots preserves rebuilt snapshot index on db.sot.activity", async () => {

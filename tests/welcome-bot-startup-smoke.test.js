@@ -98,6 +98,161 @@ test("welcome-bot startup smoke completes clientReady without missing import reg
   );
 });
 
+test("welcome-bot guildMemberAdd runs returning activity sync before newcomer can stick", () => {
+  const repoRoot = path.join(__dirname, "..");
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "welcome-bot-rejoin-activity-smoke-"));
+  fs.writeFileSync(path.join(tempDir, "welcome-db.json"), JSON.stringify({
+    profiles: {
+      "returning-user": {
+        userId: "returning-user",
+        domains: {
+          activity: {
+            appliedActivityRoleKey: "newcomer",
+            lastObservedGuildJoinAt: "2026-05-01T12:00:00.000Z",
+            guildJoinCount: 1,
+          },
+        },
+      },
+    },
+    sot: {
+      activity: {
+        config: {
+          activityRoleIds: {
+            newcomer: "role-newcomer",
+            dead: "role-dead",
+          },
+        },
+        watchedChannels: [],
+        globalUserSessions: [],
+        globalVoiceSessions: [],
+        userChannelDailyStats: [],
+        userVoiceDailyStats: [],
+        userSnapshots: {},
+        calibrationRuns: [],
+        ops: { moderationAuditLog: [] },
+        runtime: { openSessions: {}, openVoiceSessions: {}, dirtyUsers: [] },
+      },
+    },
+  }, null, 2));
+
+  const script = String.raw`
+    process.env.DISCORD_TOKEN = "smoke-token";
+    process.env.GUILD_ID = "123";
+    process.env.BOT_DATA_DIR = ${JSON.stringify(tempDir)};
+    process.env.DB_PATH = "welcome-db.json";
+
+    const calls = [];
+    const discord = require("discord.js");
+    const originalEmit = discord.Client.prototype.emit;
+
+    discord.Client.prototype.login = function login() {
+      const roleCache = new Map([
+        ["123", { id: "123", name: "@everyone" }],
+        ["role-newcomer", { id: "role-newcomer", name: "newcomer" }],
+      ]);
+      const member = {
+        id: "returning-user",
+        displayName: "Returning User",
+        joinedAt: new Date("2026-05-28T10:00:00.000Z"),
+        user: {
+          id: "returning-user",
+          bot: false,
+          tag: "Returning#0001",
+          username: "Returning",
+        },
+        roles: {
+          cache: roleCache,
+          async remove(roleIds, reason) {
+            calls.push(["remove", roleIds, reason]);
+            for (const roleId of Array.isArray(roleIds) ? roleIds : [roleIds]) {
+              roleCache.delete(roleId);
+            }
+          },
+          async add(roleIds, reason) {
+            calls.push(["add", roleIds, reason]);
+            for (const roleId of Array.isArray(roleIds) ? roleIds : [roleIds]) {
+              roleCache.set(roleId, { id: roleId, name: roleId });
+            }
+          },
+        },
+        send: async () => {},
+      };
+      const guild = {
+        id: "123",
+        name: "smoke-guild",
+        commands: { set: async (commands) => commands },
+        channels: {
+          fetch: async () => null,
+          cache: new Map(),
+        },
+        members: {
+          cache: new Map([["returning-user", member]]),
+          fetch: async (userId) => userId === "returning-user" ? member : null,
+        },
+        roles: {
+          fetch: async () => ({ cache: new Map(), filter: () => new Map() }),
+          create: async () => ({ id: "role-created", name: "stub-role" }),
+          cache: {
+            filter: () => new Map(),
+            get: () => null,
+            keys: () => [],
+            values: () => [],
+          },
+        },
+      };
+      member.guild = guild;
+      this.user = { id: "1", tag: "Smoke#0001" };
+      this.guilds = { fetch: async () => guild };
+      this.channels = { cache: new Map(), fetch: async () => null };
+      this.destroy = () => {};
+
+      setImmediate(() => originalEmit.call(this, "guildMemberAdd", member));
+      setTimeout(() => {
+        const rendered = JSON.stringify(calls);
+        const addedDead = calls.some((entry) => entry[0] === "add" && String(entry[1]).includes("role-dead"));
+        const addedNewcomer = calls.some((entry) => entry[0] === "add" && String(entry[1]).includes("role-newcomer"));
+        const removedNewcomer = calls.some((entry) => entry[0] === "remove" && String(entry[1]).includes("role-newcomer"));
+        if (!addedDead || !removedNewcomer || addedNewcomer) {
+          console.error("unexpected activity role calls:", rendered);
+          process.exit(1);
+        }
+        console.log("activity-rejoin-smoke-ok", rendered);
+        process.exit(0);
+      }, 1200);
+      return Promise.resolve("smoke-login");
+    };
+
+    require("./welcome-bot.js");
+  `;
+
+  const result = spawnSync(process.execPath, ["-e", script], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    timeout: 15000,
+  });
+
+  try {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  } catch {
+    // Best effort cleanup for Windows temp files held briefly by the child process.
+  }
+
+  if (result.error) {
+    throw result.error;
+  }
+
+  assert.equal(
+    result.status,
+    0,
+    `activity rejoin smoke failed\nstdout:\n${result.stdout || ""}\nstderr:\n${result.stderr || ""}`
+  );
+  assert.match(
+    result.stdout || "",
+    /activity-rejoin-smoke-ok/,
+    `expected activity rejoin smoke marker\nstdout:\n${result.stdout || ""}\nstderr:\n${result.stderr || ""}`
+  );
+});
+
 test("welcome-bot modal smoke covers SoT Activity and bot-helper submit wiring", () => {
   const repoRoot = path.join(__dirname, "..");
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "welcome-bot-modal-smoke-"));

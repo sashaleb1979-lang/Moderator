@@ -119,11 +119,17 @@ function formatAntiteamPingMode(config = createDefaultAntiteamConfig()) {
   const basePing = formatRoleMentionList(getBattalionPingRoleIds(normalized), "батальён не настроен");
   if (mode === "everyone") return `${basePing} + автоудаляемый @everyone`;
   if (mode === "custom_role") return `${basePing} + автоудаляемая роль ${formatRoleMention(normalized.extraPingRoleId)}`;
+  if (mode === "edit_roles") return `${basePing} + buffer-edit роли ${formatRoleMentionList(normalized.editPingRoleIds)}`;
   return basePing;
 }
 
 function formatStartPanelPingLine(config = createDefaultAntiteamConfig()) {
-  const basePing = formatRoleMentionList(getBattalionPingRoleIds(config), "батальён пока не настроен");
+  const normalized = createDefaultAntiteamConfig(config);
+  const basePing = formatRoleMentionList(getBattalionPingRoleIds(normalized), "батальён пока не настроен");
+  const mode = normalizeAntiteamPingMode(normalized.pingMode, "battalion");
+  if (mode === "edit_roles") {
+    return `Пингуются те, кто в ${basePing}; edit-test: ${formatRoleMentionList(normalized.editPingRoleIds)}`;
+  }
   return `Пингуются те, кто в ${basePing}`;
 }
 
@@ -431,6 +437,7 @@ function buildModeratorPanelPayload(state = {}, statusText = "") {
       `Батальён: ${formatRoleMention(config.battalionRoleId)}`,
       `Доп. роли базового пинга: ${formatRoleMentionList(config.battalionPingRoleIds)}`,
       `Тихая роль: ${formatRoleMention(config.extraPingRoleId)}`,
+      `Edit-test роли: ${formatRoleMentionList(config.editPingRoleIds)}`,
       `Глава батальона: ${formatRoleMention(config.battalionLeadRoleId)}`,
       `Уполномоченные на клан-вар: ${formatRoleMention(config.clanCallerRoleId)}`,
     ]))
@@ -718,7 +725,11 @@ function buildConfigModal(config = createDefaultAntiteamConfig()) {
 
 function buildPingConfigModal(config = createDefaultAntiteamConfig()) {
   const normalized = createDefaultAntiteamConfig(config);
-  const modeValue = normalized.pingMode === "custom_role" ? "role" : normalized.pingMode;
+  const modeValue = normalized.pingMode === "custom_role"
+    ? "role"
+    : normalized.pingMode === "edit_roles"
+      ? "edit"
+      : normalized.pingMode;
   return new ModalBuilder()
     .setCustomId("at:ping:config_modal")
     .setTitle("Пинг антитима")
@@ -726,8 +737,8 @@ function buildPingConfigModal(config = createDefaultAntiteamConfig()) {
       new ActionRowBuilder().addComponents(
         new TextInputBuilder()
           .setCustomId("ping_mode")
-          .setLabel("Режим: battalion / role / everyone")
-          .setPlaceholder("battalion, role или everyone")
+          .setLabel("Режим: battalion / role / everyone / edit")
+          .setPlaceholder("battalion, role, everyone или edit")
           .setStyle(TextInputStyle.Short)
           .setRequired(false)
           .setMaxLength(40)
@@ -752,6 +763,16 @@ function buildPingConfigModal(config = createDefaultAntiteamConfig()) {
           .setRequired(false)
           .setMaxLength(1000)
           .setValue((normalized.battalionPingRoleIds || []).join("\n").slice(0, 1000))
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId("edit_ping_role_ids")
+          .setLabel("Edit-test роли")
+          .setPlaceholder("по одной роли/id на строку; ожидаемо около 5")
+          .setStyle(TextInputStyle.Paragraph)
+          .setRequired(false)
+          .setMaxLength(1000)
+          .setValue((normalized.editPingRoleIds || []).join("\n").slice(0, 1000))
       )
     );
 }

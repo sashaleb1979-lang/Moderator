@@ -64,6 +64,7 @@ const {
 function noop() {}
 
 const ANTITEAM_TRANSIENT_PING_DELETE_MS = 250;
+const ANTITEAM_EDIT_PING_DELETE_MS = 5000;
 const ANTITEAM_UNKNOWN_INTERACTION_CODES = new Set([10062]);
 const ANTITEAM_ALREADY_ACK_CODES = new Set([40060]);
 
@@ -140,6 +141,7 @@ function parsePingModeInput(value, fallback = "battalion") {
   if (["1", "bat", "battalion", "батальон", "батальён"].includes(normalized)) return "battalion";
   if (["2", "role", "custom", "custom_role", "роль", "кастом", "кастомная_роль"].includes(normalized)) return "custom_role";
   if (["3", "everyone", "@everyone", "all", "everyone_ping", "эвериван", "эвриван"].includes(normalized)) return "everyone";
+  if (["4", "edit", "edit_roles", "edit_role", "edit_ping", "probe", "test", "buffer", "тест", "буфер"].includes(normalized)) return "edit_roles";
   return normalizeAntiteamPingMode(normalized, fallback);
 }
 
@@ -192,6 +194,13 @@ function getTicketPingRoleIds(ticket = {}, config = createDefaultAntiteamConfig(
     config.battalionRoleId,
     ...(Array.isArray(config.battalionPingRoleIds) ? config.battalionPingRoleIds : []),
   ]
+    .map((roleId) => cleanString(roleId, 80))
+    .filter(Boolean)
+    .filter((roleId, index, roleIds) => roleIds.indexOf(roleId) === index);
+}
+
+function getEditPingRoleIds(config = createDefaultAntiteamConfig()) {
+  return createDefaultAntiteamConfig(config).editPingRoleIds
     .map((roleId) => cleanString(roleId, 80))
     .filter(Boolean)
     .filter((roleId, index, roleIds) => roleIds.indexOf(roleId) === index);
@@ -467,14 +476,37 @@ function createAntiteamOperator(options = {}) {
     return null;
   }
 
-  function scheduleTransientPingDelete(message = null) {
+  function scheduleTransientPingDelete(message = null, delayMs = ANTITEAM_TRANSIENT_PING_DELETE_MS) {
     if (typeof message?.delete !== "function") return;
     const timer = scheduleTimeout(() => {
       Promise.resolve(message.delete()).catch((error) => {
         logError("Antiteam transient ping cleanup failed:", error?.message || error);
       });
-    }, ANTITEAM_TRANSIENT_PING_DELETE_MS);
+    }, delayMs);
     if (timer && typeof timer.unref === "function") timer.unref();
+  }
+
+  async function sendEditPingMessage(thread, ticket = {}, config = createDefaultAntiteamConfig()) {
+    if (ticket.kind === "clan") return null;
+    const mode = normalizeAntiteamPingMode(config.pingMode, "battalion");
+    if (mode !== "edit_roles") return null;
+    const roleIds = getEditPingRoleIds(config);
+    if (!roleIds.length || !thread?.send) return null;
+
+    const bufferMessage = await thread.send({
+      content: ".",
+      allowedMentions: { parse: [] },
+    });
+    try {
+      if (typeof bufferMessage?.edit !== "function") return bufferMessage;
+      await bufferMessage.edit({
+        content: roleIds.map((roleId) => `<@&${roleId}>`).join(" "),
+        allowedMentions: { roles: roleIds },
+      });
+      return bufferMessage;
+    } finally {
+      scheduleTransientPingDelete(bufferMessage, ANTITEAM_EDIT_PING_DELETE_MS);
+    }
   }
 
   async function sendTicketPingMessages(thread, ticket = {}, config = createDefaultAntiteamConfig()) {
@@ -485,6 +517,13 @@ function createAntiteamOperator(options = {}) {
         content: pingRoleIds.map((roleId) => `<@&${roleId}>`).join(" "),
         allowedMentions: { roles: pingRoleIds },
       }).catch(() => null);
+    }
+
+    if (thread && normalizeAntiteamPingMode(config.pingMode, "battalion") === "edit_roles") {
+      await sendEditPingMessage(thread, ticket, config).catch((error) => {
+        logError("Antiteam edit ping failed:", error?.message || error);
+        return null;
+      });
     }
 
     const extraPayload = buildExtraPingPayload(ticket, config);
@@ -572,35 +611,73 @@ function createAntiteamOperator(options = {}) {
     return { granted: true, roleId: normalizedRoleId };
   }
 
+  async function removeConfiguredRole(userId, roleId, reason = "antiteam role cleanup") {
+    const normalizedRoleId = cleanString(roleId, 80);
+    if (!normalizedRoleId) return { skipped: "missing-role" };
+    if (typeof options.removeRole === "function") {
+      const result = await options.removeRole(userId, normalizedRoleId, reason);
+      return result || { removed: true, roleId: normalizedRoleId };
+    }
+    const member = typeof options.fetchMember === "function" ? await options.fetchMember(userId).catch(() => null) : null;
+    if (!member?.roles?.remove) return { skipped: "missing-member" };
+    if (member.roles.cache?.has?.(normalizedRoleId) === false) return { skipped: "member-missing-role" };
+    await member.roles.remove(normalizedRoleId, reason);
+    return { removed: true, roleId: normalizedRoleId };
+  }
+
   async function grantBattalionRole(userId, reason = "antiteam participant") {
     const roleId = cleanString(getConfig().battalionRoleId, 80);
     if (!roleId) return { skipped: "missing-role" };
     return grantConfiguredRole(userId, roleId, reason);
   }
 
-  function getHelperRewardRoleIds(stats = {}, config = getConfig()) {
-    const points = Number(stats?.confirmedArrived) || 0;
-    if (points <= 0) return [];
+  function getConfiguredHelperRewardRoleIds(config = getConfig()) {
     const roleIds = [];
     for (const threshold of ANTITEAM_HELPER_REWARD_THRESHOLDS) {
-      if (points < threshold) continue;
       const roleId = cleanString(config.helperRewardRoles?.[String(threshold)], 80);
       if (roleId) roleIds.push(roleId);
     }
     return [...new Set(roleIds)];
   }
 
+  function getHelperRewardRoleIds(stats = {}, config = getConfig()) {
+    const points = Number(stats?.confirmedArrived) || 0;
+    if (points <= 0) return [];
+    let desiredRoleId = "";
+    for (const threshold of ANTITEAM_HELPER_REWARD_THRESHOLDS) {
+      if (points < threshold) continue;
+      const roleId = cleanString(config.helperRewardRoles?.[String(threshold)], 80);
+      if (roleId) desiredRoleId = roleId;
+    }
+    return desiredRoleId ? [desiredRoleId] : [];
+  }
+
   async function grantHelperRewardRoles(userId, stats = {}, reason = "antiteam helper reward") {
     const roleIds = getHelperRewardRoleIds(stats);
+    const staleRoleIds = roleIds.length
+      ? getConfiguredHelperRewardRoleIds().filter((roleId) => !roleIds.includes(roleId))
+      : [];
     let granted = 0;
+    let removed = 0;
+    let desiredRoleReady = roleIds.length === 0;
     for (const roleId of roleIds) {
       const result = await grantConfiguredRole(userId, roleId, reason).catch((error) => {
         logError(`Antiteam helper reward role failed [${userId}/${roleId}]:`, error?.message || error);
         return null;
       });
+      if (result && (result.skipped === "already-has-role" || !result.skipped)) desiredRoleReady = true;
       if (result && !result.skipped) granted += 1;
     }
-    return { users: roleIds.length ? 1 : 0, roles: granted };
+    if (desiredRoleReady) {
+      for (const roleId of staleRoleIds) {
+        const result = await removeConfiguredRole(userId, roleId, reason).catch((error) => {
+          logError(`Antiteam helper reward role cleanup failed [${userId}/${roleId}]:`, error?.message || error);
+          return null;
+        });
+        if (result && !result.skipped) removed += 1;
+      }
+    }
+    return { users: roleIds.length ? 1 : 0, roles: granted, removed };
   }
 
   async function syncHelperRewardRoles(userIds = null) {
@@ -608,14 +685,16 @@ function createAntiteamOperator(options = {}) {
     const ids = Array.isArray(userIds) ? userIds : Object.keys(helpers);
     let users = 0;
     let roles = 0;
+    let removed = 0;
     for (const userId of ids) {
       const stats = helpers[userId];
       if (!stats) continue;
       const result = await grantHelperRewardRoles(userId, stats, "antiteam helper reward sync");
       users += result.users;
       roles += result.roles;
+      removed += result.removed || 0;
     }
-    return { users, roles };
+    return { users, roles, removed };
   }
 
   async function collectFriendEligibleDiscordIds(draft = {}) {
@@ -1454,7 +1533,7 @@ function createAntiteamOperator(options = {}) {
       if (ack.ok) await safeEditReply(interaction, buildHelperStatsPayload(
         getState(),
         0,
-        `Роли проверены: пользователей с порогами **${result.users}**, успешных выдач/проверок **${result.roles}**.`
+        `Роли проверены: пользователей с порогами **${result.users}**, успешных выдач/проверок **${result.roles}**, снятий старых ролей **${result.removed}**.`
       ));
       return true;
     }
@@ -1847,6 +1926,7 @@ function createAntiteamOperator(options = {}) {
         pingMode: parsePingModeInput(interaction.fields.getTextInputValue("ping_mode"), previous.pingMode),
         extraPingRoleId: parseEntityId(interaction.fields.getTextInputValue("extra_ping_role_id")),
         battalionPingRoleIds: parseEntityIdList(interaction.fields.getTextInputValue("battalion_ping_role_ids")),
+        editPingRoleIds: parseEntityIdList(interaction.fields.getTextInputValue("edit_ping_role_ids")),
       });
       await persist("antiteam-ping-config", () => {
         const state = getState();

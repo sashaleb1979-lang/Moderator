@@ -25,6 +25,19 @@ function normalizeIsoTimestamp(value, fallback = null) {
   return Number.isFinite(date.getTime()) ? date.toISOString() : fallback;
 }
 
+function parseIsoMs(value) {
+  const timestamp = Date.parse(String(value || ""));
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function getEarliestIsoTimestamp(values = []) {
+  const timestamps = values
+    .map((value) => normalizeIsoTimestamp(value, null))
+    .filter(Boolean)
+    .sort();
+  return timestamps[0] || null;
+}
+
 function getDateKey(value) {
   const iso = normalizeIsoTimestamp(value, null);
   return iso ? iso.slice(0, 10) : "";
@@ -44,7 +57,191 @@ function resolveMemberJoinContext(memberActivityMeta = {}, existingActivity = {}
   );
 }
 
-function resolveActivityRoleTiming({ currentTime, joinedAt, config = {} }) {
+function normalizePriorServerTrace(value = {}) {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  return {
+    returningMember: source.returningMember === true,
+    sourceType: cleanString(source.sourceType, 120) || null,
+    detail: cleanString(source.detail, 300) || null,
+    occurredAt: normalizeIsoTimestamp(source.occurredAt ?? source.traceAt, null),
+    evidenceCount: Math.max(0, Number(source.evidenceCount) || 0),
+  };
+}
+
+function collectPriorServerTraceCandidates({ db = {}, userId = "", joinedAt = null } = {}) {
+  const normalizedUserId = cleanString(userId, 80);
+  if (!normalizedUserId) return [];
+
+  const joinedAtMs = parseIsoMs(joinedAt);
+  const candidates = [];
+  const addCandidate = (sourceType, occurredAt, detail = "") => {
+    const normalizedOccurredAt = normalizeIsoTimestamp(occurredAt, null);
+    if (!normalizedOccurredAt) return;
+    const occurredAtMs = parseIsoMs(normalizedOccurredAt);
+    if (joinedAtMs !== null && occurredAtMs !== null && occurredAtMs >= joinedAtMs) return;
+    candidates.push({
+      sourceType,
+      detail: cleanString(detail, 300) || null,
+      occurredAt: normalizedOccurredAt,
+    });
+  };
+  const addActivityCandidates = (activity = {}, sourcePrefix = "activity") => {
+    if (!activity || typeof activity !== "object" || Array.isArray(activity)) return;
+    addCandidate(`${sourcePrefix}.firstObservedGuildJoinAt`, activity.firstObservedGuildJoinAt);
+    addCandidate(`${sourcePrefix}.previousGuildJoinAt`, activity.previousGuildJoinAt);
+    addCandidate(`${sourcePrefix}.lastObservedGuildJoinAt`, activity.lastObservedGuildJoinAt);
+    addCandidate(`${sourcePrefix}.guildJoinedAt`, activity.guildJoinedAt);
+    addCandidate(`${sourcePrefix}.lastGuildLeaveAt`, activity.lastGuildLeaveAt);
+    addCandidate(`${sourcePrefix}.firstActivityRoleGrantedAt`, activity.firstActivityRoleGrantedAt);
+    addCandidate(`${sourcePrefix}.lastRoleAppliedAt`, activity.lastRoleAppliedAt, activity.appliedActivityRoleKey);
+    addCandidate(`${sourcePrefix}.lastSeenAt`, activity.lastSeenAt);
+    addCandidate(`${sourcePrefix}.recalculatedAt`, activity.recalculatedAt);
+  };
+
+  const profile = db.profiles?.[normalizedUserId];
+  if (profile && typeof profile === "object" && !Array.isArray(profile)) {
+    addCandidate("profile.onboarding.accessGrantedAt", profile.domains?.onboarding?.accessGrantedAt || profile.accessGrantedAt);
+    addCandidate("profile.onboarding.nonGgsAccessGrantedAt", profile.domains?.onboarding?.nonGgsAccessGrantedAt || profile.nonGgsAccessGrantedAt);
+    addCandidate("profile.onboarding.updatedAt", profile.domains?.onboarding?.updatedAt || profile.updatedAt);
+    addCandidate("profile.onboarding.lastReviewedAt", profile.domains?.onboarding?.lastReviewedAt || profile.lastReviewedAt);
+    addCandidate("profile.roblox.verifiedAt", profile.domains?.roblox?.verifiedAt || profile.summary?.roblox?.verifiedAt || profile.verifiedAt);
+    addCandidate("profile.verification.verifiedAt", profile.domains?.verification?.verifiedAt || profile.summary?.verification?.verifiedAt);
+    addActivityCandidates(profile.domains?.activity || profile.activity || profile.summary?.activity, "profile.activity");
+  }
+
+  const state = db.sot?.activity && typeof db.sot.activity === "object" && !Array.isArray(db.sot.activity)
+    ? db.sot.activity
+    : {};
+  addActivityCandidates(state.userSnapshots?.[normalizedUserId], "activity.snapshot");
+
+  for (const session of Array.isArray(state.globalUserSessions) ? state.globalUserSessions : []) {
+    if (cleanString(session?.userId, 80) !== normalizedUserId) continue;
+    addCandidate("activity.globalUserSessions.startedAt", session.startedAt);
+    addCandidate("activity.globalUserSessions.endedAt", session.endedAt);
+  }
+  for (const row of Array.isArray(state.userChannelDailyStats) ? state.userChannelDailyStats : []) {
+    if (cleanString(row?.userId, 80) !== normalizedUserId) continue;
+    addCandidate("activity.userChannelDailyStats.firstMessageAt", row.firstMessageAt);
+    addCandidate("activity.userChannelDailyStats.lastMessageAt", row.lastMessageAt);
+  }
+  for (const session of Array.isArray(state.globalVoiceSessions) ? state.globalVoiceSessions : []) {
+    if (cleanString(session?.userId, 80) !== normalizedUserId) continue;
+    addCandidate("activity.globalVoiceSessions.joinedAt", session.joinedAt);
+    addCandidate("activity.globalVoiceSessions.endedAt", session.endedAt);
+  }
+  for (const row of Array.isArray(state.userVoiceDailyStats) ? state.userVoiceDailyStats : []) {
+    if (cleanString(row?.userId, 80) !== normalizedUserId) continue;
+    addCandidate("activity.userVoiceDailyStats.firstJoinedAt", row.firstJoinedAt);
+    addCandidate("activity.userVoiceDailyStats.lastLeftAt", row.lastLeftAt);
+  }
+
+  const moderationEvents = Array.isArray(db.sot?.news?.moderation?.events)
+    ? db.sot.news.moderation.events
+    : [];
+  for (const event of moderationEvents) {
+    if (cleanString(event?.eventType, 80) !== "member_remove") continue;
+    if (cleanString(event?.userId, 80) !== normalizedUserId) continue;
+    addCandidate("news.moderation.member_remove", event.occurredAt, event.resolution);
+  }
+
+  return candidates.sort((left, right) => String(right.occurredAt).localeCompare(String(left.occurredAt)));
+}
+
+function resolveActivityPriorServerTrace({
+  db = {},
+  userId = "",
+  joinedAt = null,
+  includeProfilePresence = false,
+} = {}) {
+  const normalizedUserId = cleanString(userId, 80);
+  if (!normalizedUserId) {
+    return {
+      returningMember: false,
+      sourceType: null,
+      detail: null,
+      occurredAt: null,
+      evidenceCount: 0,
+    };
+  }
+
+  const candidates = collectPriorServerTraceCandidates({ db, userId: normalizedUserId, joinedAt });
+  if (candidates.length) {
+    return {
+      returningMember: true,
+      ...candidates[0],
+      evidenceCount: candidates.length,
+    };
+  }
+
+  const hasProfile = Boolean(
+    includeProfilePresence
+    && db.profiles?.[normalizedUserId]
+    && typeof db.profiles[normalizedUserId] === "object"
+    && !Array.isArray(db.profiles[normalizedUserId])
+  );
+  if (hasProfile) {
+    return {
+      returningMember: true,
+      sourceType: "profile.presence",
+      detail: "profile existed before current guildMemberAdd handling",
+      occurredAt: null,
+      evidenceCount: 1,
+    };
+  }
+
+  return {
+    returningMember: false,
+    sourceType: null,
+    detail: null,
+    occurredAt: null,
+    evidenceCount: 0,
+  };
+}
+
+function resolveActivityMembershipFields({ existingActivity = {}, memberActivityMeta = {}, guildJoinedAt = null } = {}) {
+  const currentGuildJoinedAt = normalizeIsoTimestamp(guildJoinedAt, null);
+  const explicitPriorTrace = normalizePriorServerTrace(memberActivityMeta?.priorServerTrace);
+  const returningMember = memberActivityMeta?.returningMember === true
+    || explicitPriorTrace.returningMember === true
+    || existingActivity.returningMember === true;
+  const explicitLastObservedGuildJoinAt = normalizeIsoTimestamp(existingActivity.lastObservedGuildJoinAt, null);
+  const previousObservedGuildJoinAt = explicitLastObservedGuildJoinAt
+    || normalizeIsoTimestamp(existingActivity.guildJoinedAt, null);
+  const previousGuildJoinAt = currentGuildJoinedAt
+    && previousObservedGuildJoinAt
+    && previousObservedGuildJoinAt !== currentGuildJoinedAt
+    ? previousObservedGuildJoinAt
+    : normalizeIsoTimestamp(existingActivity.previousGuildJoinAt, explicitPriorTrace.occurredAt);
+  const existingGuildJoinCount = Math.max(0, Number(existingActivity.guildJoinCount) || 0);
+  let guildJoinCount = existingGuildJoinCount;
+
+  if (currentGuildJoinedAt) {
+    if (!explicitLastObservedGuildJoinAt) {
+      guildJoinCount = Math.max(guildJoinCount, returningMember ? 2 : 1);
+    } else if (explicitLastObservedGuildJoinAt !== currentGuildJoinedAt) {
+      guildJoinCount = Math.max(guildJoinCount + 1, returningMember ? 2 : 1);
+    } else {
+      guildJoinCount = Math.max(guildJoinCount, returningMember ? 2 : 1);
+    }
+  }
+
+  return {
+    returningMember,
+    firstObservedGuildJoinAt: getEarliestIsoTimestamp([
+      existingActivity.firstObservedGuildJoinAt,
+      previousGuildJoinAt,
+      previousObservedGuildJoinAt,
+      currentGuildJoinedAt,
+      explicitPriorTrace.occurredAt,
+    ]),
+    lastObservedGuildJoinAt: currentGuildJoinedAt || explicitLastObservedGuildJoinAt || null,
+    previousGuildJoinAt: previousGuildJoinAt || null,
+    guildJoinCount: guildJoinCount || null,
+    lastGuildLeaveAt: normalizeIsoTimestamp(memberActivityMeta?.lastGuildLeaveAt, normalizeIsoTimestamp(existingActivity.lastGuildLeaveAt, null)),
+  };
+}
+
+function resolveActivityRoleTiming({ currentTime, joinedAt, config = {}, returningMember = false }) {
   const roleEligibilityMinMemberDays = Math.max(0, Number(config.roleEligibilityMinMemberDays) || 3);
   const roleBoostEndMemberDays = Math.max(
     roleEligibilityMinMemberDays,
@@ -65,6 +262,16 @@ function resolveActivityRoleTiming({ currentTime, joinedAt, config = {} }) {
   const currentTimeMs = Date.parse(currentTime);
   const joinedAtMs = Date.parse(joinedAt);
   const daysSinceGuildJoin = Math.max(0, (currentTimeMs - joinedAtMs) / DAY_MS);
+
+  if (returningMember) {
+    return {
+      guildJoinedAt: joinedAt,
+      daysSinceGuildJoin: Number(daysSinceGuildJoin.toFixed(2)),
+      roleEligibilityStatus: "eligible",
+      roleEligibleForActivityRole: true,
+      activityScoreMultiplier: 1,
+    };
+  }
 
   if (daysSinceGuildJoin < roleEligibilityMinMemberDays) {
     return {
@@ -1203,10 +1410,16 @@ function rebuildActivityUserSnapshot({ db = {}, userId = "", now, memberActivity
     Math.min(getActivityScoreCap(effectiveActiveDays30d, config), Math.min(100, uncappedScore))
   );
   const guildJoinedAt = resolveMemberJoinContext(memberActivityMeta, existingActivity);
+  const membershipFields = resolveActivityMembershipFields({
+    existingActivity,
+    memberActivityMeta,
+    guildJoinedAt,
+  });
   const roleTiming = resolveActivityRoleTiming({
     currentTime,
     joinedAt: guildJoinedAt,
     config,
+    returningMember: membershipFields.returningMember,
   });
   const activityScore = roleTiming.roleEligibleForActivityRole
     ? Math.round(Math.min(100, baseActivityScore * roleTiming.activityScoreMultiplier))
@@ -1255,6 +1468,7 @@ function rebuildActivityUserSnapshot({ db = {}, userId = "", now, memberActivity
     effectiveActiveDays30d,
     daysAbsent,
     guildJoinedAt: roleTiming.guildJoinedAt,
+    ...membershipFields,
     daysSinceGuildJoin: roleTiming.daysSinceGuildJoin,
     lastSeenAt,
     roleEligibilityStatus: roleTiming.roleEligibilityStatus,
@@ -1292,6 +1506,90 @@ function mirrorActivitySnapshotToProfile(db, userId, snapshot) {
 
   db.profiles[userId] = ensureSharedProfile(nextProfile, userId).profile;
   return db.profiles[userId];
+}
+
+function resolveMemberUserId(member = {}, fallback = "") {
+  return cleanString(member?.id || member?.user?.id || fallback, 80);
+}
+
+function resolveMemberJoinedAt(member = {}) {
+  if (member?.joinedAt instanceof Date && Number.isFinite(member.joinedAt.getTime())) {
+    return member.joinedAt.toISOString();
+  }
+  return normalizeIsoTimestamp(member?.joinedAt, null);
+}
+
+function recordActivityMemberLeave({ db = {}, member = {}, userId = "", now, saveDb, runSerialized } = {}) {
+  const execute = () => {
+    const leftAt = getActivityRuntimeNow({ now });
+    const normalizedUserId = resolveMemberUserId(member, userId);
+    if (!normalizedUserId) {
+      return {
+        captured: false,
+        stateChanged: false,
+        reason: "missing_user_id",
+      };
+    }
+
+    const state = ensureActivityState(db);
+    db.profiles ||= {};
+    const currentProfile = db.profiles[normalizedUserId] && typeof db.profiles[normalizedUserId] === "object"
+      ? db.profiles[normalizedUserId]
+      : { userId: normalizedUserId };
+    const currentActivity = {
+      ...(state.userSnapshots?.[normalizedUserId] && typeof state.userSnapshots[normalizedUserId] === "object"
+        ? state.userSnapshots[normalizedUserId]
+        : {}),
+      ...(currentProfile.domains?.activity && typeof currentProfile.domains.activity === "object"
+        ? currentProfile.domains.activity
+        : {}),
+    };
+    const joinedAt = resolveMemberJoinedAt(member);
+    const nextActivity = {
+      ...clone(currentActivity),
+      lastGuildLeaveAt: leftAt,
+      lastObservedGuildJoinAt: normalizeIsoTimestamp(currentActivity.lastObservedGuildJoinAt, joinedAt),
+      firstObservedGuildJoinAt: normalizeIsoTimestamp(
+        currentActivity.firstObservedGuildJoinAt,
+        normalizeIsoTimestamp(currentActivity.guildJoinedAt, joinedAt)
+      ),
+      guildJoinCount: Math.max(1, Number(currentActivity.guildJoinCount) || (joinedAt ? 1 : 0)) || null,
+    };
+
+    const nextProfile = clone(currentProfile);
+    nextProfile.domains ||= {};
+    nextProfile.domains.activity = nextActivity;
+    db.profiles[normalizedUserId] = ensureSharedProfile(nextProfile, normalizedUserId).profile;
+
+    state.userSnapshots ||= {};
+    if (state.userSnapshots[normalizedUserId] && typeof state.userSnapshots[normalizedUserId] === "object") {
+      state.userSnapshots[normalizedUserId] = {
+        ...state.userSnapshots[normalizedUserId],
+        lastGuildLeaveAt: leftAt,
+        lastObservedGuildJoinAt: nextActivity.lastObservedGuildJoinAt,
+        firstObservedGuildJoinAt: nextActivity.firstObservedGuildJoinAt,
+        guildJoinCount: nextActivity.guildJoinCount,
+      };
+    }
+
+    db.sot.activity = state;
+    if (typeof saveDb === "function") {
+      saveDb();
+    }
+
+    return {
+      captured: true,
+      stateChanged: true,
+      action: "activity_member_leave",
+      userId: normalizedUserId,
+      leftAt,
+    };
+  };
+
+  if (typeof runSerialized === "function") {
+    return runSerialized(execute, "activity-member-leave");
+  }
+  return execute();
 }
 
 function recordActivityVoiceState({ db = {}, oldState = {}, newState = {}, now } = {}) {
@@ -1731,7 +2029,9 @@ module.exports = {
   promotePersistedActivityMirrorsToSnapshots,
   rebuildActivitySnapshots,
   rebuildActivityUserSnapshot,
+  recordActivityMemberLeave,
   recordActivityMessage,
   recordActivityVoiceState,
+  resolveActivityPriorServerTrace,
   resumeActivityRuntime,
 };

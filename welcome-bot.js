@@ -147,13 +147,16 @@ const {
   handleActivityPanelButtonInteraction,
   handleActivityPanelModalSubmitInteraction,
   runActivityRoleSyncFromSnapshots,
+  runActivityMemberJoinRoleSync,
   runDailyActivityRoleSync,
   setManualActivityUserStatus,
 } = require("./src/activity/operator");
 const {
   flushActivityRuntime,
+  recordActivityMemberLeave,
   recordActivityMessage,
   recordActivityVoiceState,
+  resolveActivityPriorServerTrace,
   resumeActivityRuntime,
 } = require("./src/activity/runtime");
 const { ensureActivityState } = require("./src/activity/state");
@@ -5250,11 +5253,23 @@ async function resolveActivityMemberRoleIds(client, userId, guildHint = null) {
 }
 
 async function resolveActivityMemberMeta(client, userId, guildHint = null) {
+  const normalizedUserId = String(userId || "").trim();
   const member = await getActivityGuildMember(client, userId, guildHint);
   const joinedAt = member?.joinedAt instanceof Date && Number.isFinite(member.joinedAt.getTime())
     ? member.joinedAt.toISOString()
     : null;
-  return joinedAt ? { joinedAt } : null;
+  const priorServerTrace = resolveActivityPriorServerTrace({
+    db,
+    userId: normalizedUserId,
+    joinedAt,
+    includeProfilePresence: true,
+  });
+  if (!joinedAt && !priorServerTrace.returningMember) return null;
+  return {
+    joinedAt,
+    returningMember: priorServerTrace.returningMember,
+    priorServerTrace,
+  };
 }
 
 async function listCurrentActivityVoiceStates(client, guildHint = null) {
@@ -15459,6 +15474,28 @@ client.on("guildMemberAdd", async (member) => {
     return;
   }
 
+  try {
+    const memberActivityMeta = await resolveActivityMemberMeta(client, member.id, member.guild);
+    await runActivityMemberJoinRoleSync({
+      db,
+      userId: member.id,
+      memberRoleIds: [...member.roles.cache.keys()],
+      memberActivityMeta,
+      applyRoleChanges: ({ userId, addRoleIds, removeRoleIds }) => applyActivityMemberRoleChanges(client, {
+        userId,
+        addRoleIds,
+        removeRoleIds,
+        guildHint: member.guild,
+        reason: "activity member join role sync",
+      }),
+      now: nowIso(),
+      saveDb,
+      runSerialized: runSerializedDbTask,
+    });
+  } catch (error) {
+    console.error("Activity member-add role sync failed:", error?.message || error);
+  }
+
   const nonJjsUi = getNonJjsUiConfig();
   const welcomeChannelId = getResolvedChannelId("welcome");
   const text = [
@@ -23667,6 +23704,15 @@ client.on("guildMemberRemove", async (member) => {
   if (guildId !== GUILD_ID) return;
 
   const occurredAt = nowIso();
+
+  runSerializedDbTask(() => recordActivityMemberLeave({
+    db,
+    member,
+    now: occurredAt,
+    saveDb,
+  }), "activity-member-remove-capture").catch((error) => {
+    console.error("Activity member-remove capture failed:", error?.message || error);
+  });
 
   const resolvedRemoval = await resolveDailyNewsMemberRemovalResolution({ member, occurredAt }).catch((error) => {
     console.warn("Daily news member-remove audit lookup failed:", error?.message || error);

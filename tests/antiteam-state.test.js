@@ -13,6 +13,7 @@ const {
   incrementHelperStats,
   markRobloxConfirmed,
   matchRobloxFriendsToDiscordProfiles,
+  normalizeAntiteamPingMode,
   recordAntiteamHelper,
   setAntiteamDraft,
 } = require("../src/antiteam/state");
@@ -24,6 +25,7 @@ test("antiteam state normalizes config, drafts, tickets and helper stats", () =>
         config: {
           battalionRoleId: "battalion-role",
           battalionPingRoleIds: ["extra-ping-1", "", "extra-ping-1", "extra-ping-2"],
+          editPingRoleIds: ["edit-ping-1", "", "edit-ping-1", "edit-ping-2"],
           battalionLeadRoleId: "lead-role",
           pingMode: "role",
           extraPingRoleId: "extra-role",
@@ -50,6 +52,7 @@ test("antiteam state normalizes config, drafts, tickets and helper stats", () =>
   assert.equal(state.config.clanPingRoles.find((role) => role.key === "battalion").roleId, "battalion-role");
   assert.equal(state.config.clanPingRoles.find((role) => role.key === "battalion_lead").roleId, "lead-role");
   assert.deepEqual(state.config.battalionPingRoleIds, ["extra-ping-1", "extra-ping-2"]);
+  assert.deepEqual(state.config.editPingRoleIds, ["edit-ping-1", "edit-ping-2"]);
   assert.equal(state.config.pingMode, "custom_role");
   assert.equal(state.config.extraPingRoleId, "extra-role");
   assert.equal(state.config.panel.title, "Custom");
@@ -61,6 +64,14 @@ test("antiteam state normalizes config, drafts, tickets and helper stats", () =>
   assert.equal(state.config.helperRewardRoles["20"], "");
   assert.deepEqual(state.tickets, {});
   assert.deepEqual(state.stats.helpers, {});
+});
+
+test("antiteam ping mode normalizes edit-role aliases", () => {
+  assert.equal(normalizeAntiteamPingMode("edit"), "edit_roles");
+  assert.equal(normalizeAntiteamPingMode("buffer"), "edit_roles");
+  assert.equal(normalizeAntiteamPingMode("probe"), "edit_roles");
+  assert.equal(normalizeAntiteamPingMode("тест"), "edit_roles");
+  assert.equal(normalizeAntiteamPingMode("unknown", "everyone"), "everyone");
 });
 
 test("antiteam ticket lifecycle records helpers and closes mission", () => {
