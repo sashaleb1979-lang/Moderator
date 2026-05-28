@@ -3339,7 +3339,7 @@ async function handleActivityPanelButtonInteraction({
     await interaction.editReply(buildActivityPanelPayload({
       db,
       view: "runtime",
-      statusText: `Полный пересчёт завершён. Пересобрано ${Number(result?.rebuiltUserCount || 0)}, роли применены ${Number(result?.roleAssignment?.appliedCount || 0)}, пропущено ${Number(result?.roleAssignment?.skippedCount || 0)}.`,
+      statusText: `Полный пересчёт завершён. Пересобрано ${Number(result?.rebuiltUserCount || 0)}, роли применены ${Number(result?.roleAssignment?.appliedCount || 0)}, пропущено ${Number(result?.roleAssignment?.skippedCount || 0)}.${result?.accessCompanionSummary ? ` ${result.accessCompanionSummary}` : ""}`,
     }));
     return true;
   }
@@ -3368,7 +3368,7 @@ async function handleActivityPanelButtonInteraction({
     await interaction.editReply(buildActivityPanelPayload({
       db,
       view: "roles",
-      statusText: `Выдача ролей по готовым данным завершена. Применено ${Number(result?.roleAssignment?.appliedCount || 0)}, пропущено ${Number(result?.roleAssignment?.skippedCount || 0)}. Score не пересчитывался.`,
+      statusText: `Выдача ролей по готовым данным завершена. Применено ${Number(result?.roleAssignment?.appliedCount || 0)}, пропущено ${Number(result?.roleAssignment?.skippedCount || 0)}. Score не пересчитывался.${result?.accessCompanionSummary ? ` ${result.accessCompanionSummary}` : ""}`,
     }));
     return true;
   }
