@@ -5262,7 +5262,6 @@ async function resolveActivityMemberMeta(client, userId, guildHint = null) {
     db,
     userId: normalizedUserId,
     joinedAt,
-    includeProfilePresence: true,
   });
   if (!joinedAt && !priorServerTrace.returningMember) return null;
   return {

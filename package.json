@@ -8,6 +8,7 @@
     "start": "node welcome-bot.js",
     "audit:roblox-identities": "node scripts/audit-roblox-identities.js",
     "prepare:character-emojis": "node scripts/prepare-character-emojis.js",
+    "repair:activity-newcomers": "node scripts/repair-activity-newcomers.js",
     "repair:roblox-identities": "node scripts/repair-roblox-identities.js",
     "test": "node scripts/run-tests.js",
     "snapshot:db": "node scripts/snapshot-db.js"

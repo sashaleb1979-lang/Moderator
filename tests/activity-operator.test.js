@@ -10,6 +10,7 @@ const {
   getActivityUserInspection,
   importHistoricalActivity,
   importHistoricalActivityFromWatchedChannels,
+  repairFreshNewcomerActivityRoles,
   runActivityRoleSyncFromSnapshots,
   runActivityMemberJoinRoleSync,
   runDailyActivityRoleSync,
@@ -1583,7 +1584,8 @@ test("runActivityMemberJoinRoleSync gives returning members the scored role inst
       returningMember: true,
       priorServerTrace: {
         returningMember: true,
-        sourceType: "profile.presence",
+        sourceType: "profile.activity.lastGuildLeaveAt",
+        occurredAt: "2026-05-08T12:00:00.000Z",
         evidenceCount: 1,
       },
     },
@@ -1608,6 +1610,142 @@ test("runActivityMemberJoinRoleSync gives returning members the scored role inst
   assert.equal(db.profiles.returning.domains.activity.returningMember, true);
   assert.equal(db.profiles.returning.domains.activity.roleEligibleForActivityRole, true);
   assert.equal(db.profiles.returning.domains.activity.desiredActivityRoleKey, "dead");
+  assert.equal(db.profiles.returning.domains.activity.appliedActivityRoleKey, "dead");
+});
+
+test("runActivityMemberJoinRoleSync keeps fresh profile-only members in newcomer", async () => {
+  const db = {
+    profiles: {
+      fresh: {
+        userId: "fresh",
+        domains: {
+          activity: {
+            returningMember: true,
+            appliedActivityRoleKey: "dead",
+            firstObservedGuildJoinAt: "2026-05-09T12:00:00.000Z",
+            lastObservedGuildJoinAt: "2026-05-09T12:00:00.000Z",
+            guildJoinCount: 2,
+          },
+        },
+      },
+    },
+  };
+
+  updateActivityConfig(db, {
+    activityRoleIds: {
+      newcomer: "role-newcomer",
+      dead: "role-dead",
+    },
+  });
+
+  const roleChanges = [];
+  const result = await runActivityMemberJoinRoleSync({
+    db,
+    userId: "fresh",
+    memberRoleIds: ["role-dead"],
+    memberActivityMeta: {
+      joinedAt: "2026-05-09T12:00:00.000Z",
+      returningMember: true,
+      priorServerTrace: {
+        returningMember: true,
+        sourceType: "profile.presence",
+        evidenceCount: 1,
+      },
+    },
+    async applyRoleChanges(change) {
+      roleChanges.push(change);
+      return true;
+    },
+    now: "2026-05-09T12:01:00.000Z",
+  });
+
+  assert.equal(result.rebuiltUserCount, 1);
+  assert.equal(result.roleAssignment.appliedCount, 1);
+  assert.deepEqual(roleChanges, [
+    {
+      userId: "fresh",
+      desiredRoleKey: "newcomer",
+      desiredRoleId: "role-newcomer",
+      addRoleIds: ["role-newcomer"],
+      removeRoleIds: ["role-dead"],
+    },
+  ]);
+  assert.equal(db.profiles.fresh.domains.activity.returningMember, false);
+  assert.equal(db.profiles.fresh.domains.activity.guildJoinCount, 1);
+  assert.equal(db.profiles.fresh.domains.activity.roleEligibilityStatus, "gated_new_member");
+  assert.equal(db.profiles.fresh.domains.activity.appliedActivityRoleKey, "newcomer");
+});
+
+test("repairFreshNewcomerActivityRoles restores newcomer only for fresh members", async () => {
+  const db = {
+    profiles: {
+      fresh: {
+        userId: "fresh",
+        domains: {
+          activity: {
+            returningMember: true,
+            appliedActivityRoleKey: "dead",
+            firstObservedGuildJoinAt: "2026-05-09T12:00:00.000Z",
+            lastObservedGuildJoinAt: "2026-05-09T12:00:00.000Z",
+            guildJoinCount: 2,
+          },
+        },
+      },
+      returning: {
+        userId: "returning",
+        domains: {
+          activity: {
+            lastGuildLeaveAt: "2026-05-08T12:00:00.000Z",
+            lastObservedGuildJoinAt: "2026-05-01T12:00:00.000Z",
+            appliedActivityRoleKey: "dead",
+          },
+        },
+      },
+    },
+  };
+
+  updateActivityConfig(db, {
+    activityRoleIds: {
+      newcomer: "role-newcomer",
+      dead: "role-dead",
+    },
+  });
+
+  const roleChanges = [];
+  const result = await repairFreshNewcomerActivityRoles({
+    db,
+    members: [
+      {
+        userId: "fresh",
+        joinedAt: "2026-05-09T12:00:00.000Z",
+        roleIds: ["role-dead"],
+      },
+      {
+        userId: "returning",
+        joinedAt: "2026-05-09T12:00:00.000Z",
+        roleIds: ["role-dead"],
+      },
+    ],
+    async applyRoleChanges(change) {
+      roleChanges.push(change);
+      return true;
+    },
+    now: "2026-05-09T12:01:00.000Z",
+  });
+
+  assert.deepEqual(result.targetUserIds, ["fresh"]);
+  assert.equal(result.skippedReasons.returning, "real_returning_member");
+  assert.deepEqual(roleChanges, [
+    {
+      userId: "fresh",
+      desiredRoleKey: "newcomer",
+      desiredRoleId: "role-newcomer",
+      addRoleIds: ["role-newcomer"],
+      removeRoleIds: ["role-dead"],
+    },
+  ]);
+  assert.equal(db.profiles.fresh.domains.activity.returningMember, false);
+  assert.equal(db.profiles.fresh.domains.activity.appliedActivityRoleKey, "newcomer");
   assert.equal(db.profiles.returning.domains.activity.appliedActivityRoleKey, "dead");
 });
 

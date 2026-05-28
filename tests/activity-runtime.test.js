@@ -770,7 +770,8 @@ test("rebuildActivityUserSnapshot gates very new members and applies a temporary
       returningMember: true,
       priorServerTrace: {
         returningMember: true,
-        sourceType: "profile.presence",
+        sourceType: "news.moderation.member_remove",
+        occurredAt: "2026-05-07T12:00:00.000Z",
         evidenceCount: 1,
       },
     },
@@ -783,6 +784,46 @@ test("rebuildActivityUserSnapshot gates very new members and applies a temporary
   assert.equal(returningSnapshot.desiredActivityRoleKey, "weak");
   assert.equal(returningSnapshot.returningMember, true);
   assert.equal(returningSnapshot.guildJoinCount, 2);
+});
+
+test("rebuildActivityUserSnapshot does not trust profile presence or stale returning flags for fresh joins", () => {
+  const db = {
+    profiles: {
+      fresh: {
+        userId: "fresh",
+        domains: {
+          activity: {
+            returningMember: true,
+            firstObservedGuildJoinAt: "2026-05-08T12:00:00.000Z",
+            lastObservedGuildJoinAt: "2026-05-08T12:00:00.000Z",
+            guildJoinCount: 2,
+            appliedActivityRoleKey: "dead",
+          },
+        },
+      },
+    },
+  };
+
+  const snapshot = rebuildActivityUserSnapshot({
+    db,
+    userId: "fresh",
+    now: "2026-05-09T12:00:00.000Z",
+    memberActivityMeta: {
+      joinedAt: "2026-05-08T12:00:00.000Z",
+      returningMember: true,
+      priorServerTrace: {
+        returningMember: true,
+        sourceType: "profile.presence",
+        evidenceCount: 1,
+      },
+    },
+  });
+
+  assert.equal(snapshot.returningMember, false);
+  assert.equal(snapshot.guildJoinCount, 1);
+  assert.equal(snapshot.roleEligibilityStatus, "gated_new_member");
+  assert.equal(snapshot.roleEligibleForActivityRole, false);
+  assert.equal(snapshot.desiredActivityRoleKey, null);
 });
 
 test("rebuildActivitySnapshots preserves rebuilt snapshot index on db.sot.activity", async () => {

@@ -16,6 +16,7 @@ const {
   promotePersistedActivityMirrorsToSnapshots,
   rebuildActivitySnapshots,
   recordActivityMessage,
+  resolveActivityPriorServerTrace,
 } = require("./runtime");
 const {
   ACTIVITY_CHANNEL_TYPES,
@@ -2699,6 +2700,159 @@ async function runActivityMemberJoinRoleSync({
   return execute();
 }
 
+function normalizeActivityRepairMemberRecord(member = {}) {
+  const source = member && typeof member === "object" && !Array.isArray(member) ? member : {};
+  const userId = cleanString(source.userId || source.id || source.user?.id, 80);
+  const joinedAt = source.joinedAt instanceof Date && Number.isFinite(source.joinedAt.getTime())
+    ? source.joinedAt.toISOString()
+    : normalizeIsoTimestamp(source.joinedAt, null);
+  const roleIds = Array.isArray(source.roleIds)
+    ? normalizeStringArray(source.roleIds, 5000)
+    : normalizeStringArray([...source.roles?.cache?.keys?.() || []], 5000);
+  return {
+    userId,
+    joinedAt,
+    roleIds,
+    bot: source.bot === true || source.user?.bot === true,
+  };
+}
+
+function getMemberAgeDays(joinedAt, now) {
+  const joinedAtMs = Date.parse(String(joinedAt || ""));
+  const nowMs = Date.parse(String(now || ""));
+  if (!Number.isFinite(joinedAtMs) || !Number.isFinite(nowMs)) return null;
+  return Math.max(0, (nowMs - joinedAtMs) / (24 * 60 * 60 * 1000));
+}
+
+async function repairFreshNewcomerActivityRoles({
+  db = {},
+  members = [],
+  applyRoleChanges,
+  now,
+  dryRun = false,
+  saveDb,
+  runSerialized,
+} = {}) {
+  const execute = async () => {
+    const repairedAt = resolveNowIso(now);
+    const state = ensureActivityState(db);
+    const config = state.config || {};
+    const newcomerRoleMaxMemberDays = Math.max(
+      0,
+      Number(config.newcomerRoleMaxMemberDays ?? config.roleBoostEndMemberDays ?? 7) || 0
+    );
+    const normalizedMembers = Array.isArray(members)
+      ? members.map(normalizeActivityRepairMemberRecord).filter((member) => member.userId)
+      : [];
+    const repairTargets = [];
+    const skippedReasons = {};
+    const priorTraces = {};
+
+    for (const member of normalizedMembers) {
+      if (member.bot) {
+        skippedReasons[member.userId] = "bot_member";
+        continue;
+      }
+      if (!member.joinedAt) {
+        skippedReasons[member.userId] = "missing_joined_at";
+        continue;
+      }
+      const daysSinceJoin = getMemberAgeDays(member.joinedAt, repairedAt);
+      if (daysSinceJoin === null) {
+        skippedReasons[member.userId] = "invalid_joined_at";
+        continue;
+      }
+      if (daysSinceJoin >= newcomerRoleMaxMemberDays) {
+        skippedReasons[member.userId] = "outside_newcomer_window";
+        continue;
+      }
+
+      const priorTrace = resolveActivityPriorServerTrace({
+        db,
+        userId: member.userId,
+        joinedAt: member.joinedAt,
+      });
+      if (priorTrace.returningMember) {
+        skippedReasons[member.userId] = "real_returning_member";
+        priorTraces[member.userId] = priorTrace;
+        continue;
+      }
+
+      repairTargets.push(member);
+      priorTraces[member.userId] = priorTrace;
+    }
+
+    const repairTargetUserIds = repairTargets.map((member) => member.userId);
+    const memberByUserId = new Map(repairTargets.map((member) => [member.userId, member]));
+    const rebuildResult = await rebuildActivitySnapshots({
+      db,
+      userIds: repairTargetUserIds,
+      now: repairedAt,
+      resolveMemberActivityMeta: (targetUserId) => {
+        const member = memberByUserId.get(targetUserId);
+        return member
+          ? {
+            joinedAt: member.joinedAt,
+            returningMember: false,
+            priorServerTrace: priorTraces[targetUserId] || { returningMember: false },
+          }
+          : null;
+      },
+    });
+
+    const plannedRoleChanges = [];
+    const roleAssignment = await applyInitialActivityRoleAssignments({
+      db,
+      userIds: repairTargetUserIds,
+      resolveMemberRoleIds: (targetUserId) => memberByUserId.get(targetUserId)?.roleIds || [],
+      applyRoleChanges: async (change) => {
+        plannedRoleChanges.push(clone(change));
+        if (dryRun) return true;
+        if (typeof applyRoleChanges !== "function") return false;
+        return Promise.resolve(applyRoleChanges(change));
+      },
+      now: repairedAt,
+    });
+
+    const nextState = ensureActivityState(db);
+    nextState.runtime.lastFreshNewcomerRepairAt = repairedAt;
+    nextState.runtime.lastFreshNewcomerRepairStats = {
+      inspectedCount: normalizedMembers.length,
+      targetUserCount: repairTargetUserIds.length,
+      rebuiltUserCount: rebuildResult.rebuiltUserCount,
+      appliedCount: roleAssignment.appliedCount,
+      skippedCount: roleAssignment.skippedCount,
+      dryRun: dryRun === true,
+      skipReasonCounts: summarizeActivitySkipReasonCounts({
+        ...skippedReasons,
+        ...roleAssignment.skippedReasons,
+      }),
+    };
+    db.sot.activity = nextState;
+    if (!dryRun && typeof saveDb === "function") {
+      saveDb();
+    }
+
+    return {
+      repairedAt,
+      dryRun: dryRun === true,
+      inspectedCount: normalizedMembers.length,
+      targetUserCount: repairTargetUserIds.length,
+      targetUserIds: repairTargetUserIds,
+      skippedReasons,
+      priorTraces,
+      rebuiltUserCount: rebuildResult.rebuiltUserCount,
+      roleAssignment,
+      plannedRoleChanges,
+    };
+  };
+
+  if (typeof runSerialized === "function") {
+    return runSerialized(execute, "activity-fresh-newcomer-repair");
+  }
+  return execute();
+}
+
 function normalizeHistoricalImportEntry(entry = {}) {
   const source = entry && typeof entry === "object" ? entry : {};
   const guildId = cleanString(source.guildId, 80);
@@ -3800,6 +3954,7 @@ module.exports = {
   handleActivityPanelModalSubmitInteraction,
   importHistoricalActivity,
   importHistoricalActivityFromWatchedChannels,
+  repairFreshNewcomerActivityRoles,
   runActivityRoleSyncFromSnapshots,
   runActivityMemberJoinRoleSync,
   runDailyActivityRoleSync,

@@ -109,6 +109,7 @@ test("welcome-bot guildMemberAdd runs returning activity sync before newcomer ca
           activity: {
             appliedActivityRoleKey: "newcomer",
             lastObservedGuildJoinAt: "2026-05-01T12:00:00.000Z",
+            lastGuildLeaveAt: "2026-05-27T10:00:00.000Z",
             guildJoinCount: 1,
           },
         },

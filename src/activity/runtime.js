@@ -68,6 +68,25 @@ function normalizePriorServerTrace(value = {}) {
   };
 }
 
+function isTimestampBeforeJoinedAt(value, joinedAt) {
+  const valueMs = parseIsoMs(value);
+  if (valueMs === null) return false;
+  const joinedAtMs = parseIsoMs(joinedAt);
+  return joinedAtMs === null ? true : valueMs < joinedAtMs;
+}
+
+function normalizeVerifiedPriorServerTrace(value = {}, joinedAt = null) {
+  const trace = normalizePriorServerTrace(value);
+  if (!trace.returningMember) return trace;
+  if (trace.sourceType === "profile.presence") {
+    return { ...trace, returningMember: false };
+  }
+  if (!isTimestampBeforeJoinedAt(trace.occurredAt, joinedAt)) {
+    return { ...trace, returningMember: false };
+  }
+  return trace;
+}
+
 function collectPriorServerTraceCandidates({ db = {}, userId = "", joinedAt = null } = {}) {
   const normalizedUserId = cleanString(userId, 80);
   if (!normalizedUserId) return [];
@@ -151,7 +170,6 @@ function resolveActivityPriorServerTrace({
   db = {},
   userId = "",
   joinedAt = null,
-  includeProfilePresence = false,
 } = {}) {
   const normalizedUserId = cleanString(userId, 80);
   if (!normalizedUserId) {
@@ -173,22 +191,6 @@ function resolveActivityPriorServerTrace({
     };
   }
 
-  const hasProfile = Boolean(
-    includeProfilePresence
-    && db.profiles?.[normalizedUserId]
-    && typeof db.profiles[normalizedUserId] === "object"
-    && !Array.isArray(db.profiles[normalizedUserId])
-  );
-  if (hasProfile) {
-    return {
-      returningMember: true,
-      sourceType: "profile.presence",
-      detail: "profile existed before current guildMemberAdd handling",
-      occurredAt: null,
-      evidenceCount: 1,
-    };
-  }
-
   return {
     returningMember: false,
     sourceType: null,
@@ -198,27 +200,71 @@ function resolveActivityPriorServerTrace({
   };
 }
 
+function resolveExistingActivityPriorTrace(existingActivity = {}, joinedAt = null) {
+  const activity = existingActivity && typeof existingActivity === "object" && !Array.isArray(existingActivity)
+    ? existingActivity
+    : {};
+  const candidates = [
+    ["activity.previousGuildJoinAt", activity.previousGuildJoinAt],
+    ["activity.lastGuildLeaveAt", activity.lastGuildLeaveAt],
+    ["activity.lastObservedGuildJoinAt", activity.lastObservedGuildJoinAt],
+    ["activity.guildJoinedAt", activity.guildJoinedAt],
+    ["activity.firstObservedGuildJoinAt", activity.firstObservedGuildJoinAt],
+    ["activity.firstActivityRoleGrantedAt", activity.firstActivityRoleGrantedAt],
+    ["activity.lastRoleAppliedAt", activity.lastRoleAppliedAt],
+    ["activity.lastSeenAt", activity.lastSeenAt],
+    ["activity.recalculatedAt", activity.recalculatedAt],
+  ]
+    .map(([sourceType, occurredAt]) => ({
+      sourceType,
+      occurredAt: normalizeIsoTimestamp(occurredAt, null),
+    }))
+    .filter((candidate) => isTimestampBeforeJoinedAt(candidate.occurredAt, joinedAt))
+    .sort((left, right) => String(right.occurredAt).localeCompare(String(left.occurredAt)));
+
+  if (!candidates.length) {
+    return {
+      returningMember: false,
+      sourceType: null,
+      detail: null,
+      occurredAt: null,
+      evidenceCount: 0,
+    };
+  }
+
+  return {
+    returningMember: true,
+    ...candidates[0],
+    detail: null,
+    evidenceCount: candidates.length,
+  };
+}
+
 function resolveActivityMembershipFields({ existingActivity = {}, memberActivityMeta = {}, guildJoinedAt = null } = {}) {
   const currentGuildJoinedAt = normalizeIsoTimestamp(guildJoinedAt, null);
-  const explicitPriorTrace = normalizePriorServerTrace(memberActivityMeta?.priorServerTrace);
-  const returningMember = memberActivityMeta?.returningMember === true
-    || explicitPriorTrace.returningMember === true
-    || existingActivity.returningMember === true;
+  const explicitPriorTrace = normalizeVerifiedPriorServerTrace(memberActivityMeta?.priorServerTrace, currentGuildJoinedAt);
+  const existingPriorTrace = resolveExistingActivityPriorTrace(existingActivity, currentGuildJoinedAt);
+  const returningMember = explicitPriorTrace.returningMember === true
+    || existingPriorTrace.returningMember === true;
   const explicitLastObservedGuildJoinAt = normalizeIsoTimestamp(existingActivity.lastObservedGuildJoinAt, null);
   const previousObservedGuildJoinAt = explicitLastObservedGuildJoinAt
     || normalizeIsoTimestamp(existingActivity.guildJoinedAt, null);
+  const explicitPreviousGuildJoinAt = normalizeIsoTimestamp(existingActivity.previousGuildJoinAt, null);
   const previousGuildJoinAt = currentGuildJoinedAt
     && previousObservedGuildJoinAt
     && previousObservedGuildJoinAt !== currentGuildJoinedAt
+    && isTimestampBeforeJoinedAt(previousObservedGuildJoinAt, currentGuildJoinedAt)
     ? previousObservedGuildJoinAt
-    : normalizeIsoTimestamp(existingActivity.previousGuildJoinAt, explicitPriorTrace.occurredAt);
+    : isTimestampBeforeJoinedAt(explicitPreviousGuildJoinAt, currentGuildJoinedAt)
+      ? explicitPreviousGuildJoinAt
+      : null;
   const existingGuildJoinCount = Math.max(0, Number(existingActivity.guildJoinCount) || 0);
   let guildJoinCount = existingGuildJoinCount;
 
   if (currentGuildJoinedAt) {
-    if (!explicitLastObservedGuildJoinAt) {
-      guildJoinCount = Math.max(guildJoinCount, returningMember ? 2 : 1);
-    } else if (explicitLastObservedGuildJoinAt !== currentGuildJoinedAt) {
+    if (!returningMember) {
+      guildJoinCount = 1;
+    } else if (explicitLastObservedGuildJoinAt && explicitLastObservedGuildJoinAt !== currentGuildJoinedAt) {
       guildJoinCount = Math.max(guildJoinCount + 1, returningMember ? 2 : 1);
     } else {
       guildJoinCount = Math.max(guildJoinCount, returningMember ? 2 : 1);
@@ -233,6 +279,7 @@ function resolveActivityMembershipFields({ existingActivity = {}, memberActivity
       previousObservedGuildJoinAt,
       currentGuildJoinedAt,
       explicitPriorTrace.occurredAt,
+      existingPriorTrace.occurredAt,
     ]),
     lastObservedGuildJoinAt: currentGuildJoinedAt || explicitLastObservedGuildJoinAt || null,
     previousGuildJoinAt: previousGuildJoinAt || null,
