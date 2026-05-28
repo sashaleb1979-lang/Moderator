@@ -2,6 +2,8 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
 
 const {
   filterEntriesByAllowedUserIds,
@@ -32,4 +34,13 @@ test("filterEntriesByAllowedUserIds keeps only tracked live users", () => {
       { userId: "gamma", approvedKills: 3000 },
     ]
   );
+});
+
+test("live tierlist refresh does not trust a non-empty partial member cache", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "welcome-bot.js"), "utf8");
+  const match = source.match(/async function getLiveCharacterStatsContext\(client, options = \{\}\) \{([\s\S]*?)function chunkTextLines/);
+
+  assert.ok(match, "getLiveCharacterStatsContext exists");
+  assert.match(match[1], /await guild\.members\.fetch\(\)/);
+  assert.doesNotMatch(match[1], /guild\.members\.cache\.size\s*<\s*2/);
 });

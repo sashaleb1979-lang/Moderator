@@ -228,7 +228,7 @@ test("presentation normalization preserves character emoji config", () => {
 
 test("change mains route reopens picker with reply instead of rewriting the source panel", () => {
   const source = fs.readFileSync(path.join(__dirname, "..", "welcome-bot.js"), "utf8");
-  const changeMainsBranch = /if \(interaction\.customId === "onboard_change_mains"\) \{[\s\S]*?await openCharacterPicker\(interaction, "full", "reply"\);/;
+  const changeMainsBranch = /if \(interaction\.customId === "onboard_change_mains"\) \{[\s\S]*?await openCharacterPicker\(interaction, isProfileSubmitSourceInteraction\(interaction\) \? "quick" : "full", "reply"\);/;
   const legacyUpdateBranch = /if \(interaction\.customId === "onboard_change_mains"\) \{[\s\S]*?await openCharacterPicker\(interaction, "full", "update"\);/;
 
   assert.match(source, changeMainsBranch);

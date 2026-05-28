@@ -1901,9 +1901,11 @@ async function getLiveCharacterStatsContext(client, options = {}) {
       throw new Error("Не удалось получить сервер для статистики ролей персонажей.");
     }
 
-    // Use cache first; only force-fetch if cache looks empty (cold start).
-    if (guild.members.cache.size < 2) {
-      try { await guild.members.fetch(); } catch (error) { console.warn("guild.members.fetch failed:", error?.message || error); }
+    const cachedMemberCount = guild.members.cache.size;
+    try {
+      await guild.members.fetch();
+    } catch (error) {
+      console.warn(`[tierlist-live] guild.members.fetch failed; using cached ${cachedMemberCount} members: ${error?.message || error}`);
     }
 
     const characterEntries = getCharacterEntries().filter((entry) => isLiveCharacterEntry(entry));
@@ -3104,12 +3106,17 @@ function resolveCharacterSelectionFromText(input, options = {}) {
   return { entries: selectedEntries, error: "" };
 }
 
-async function replyWithCharacterPicker(interaction, mode = "full", method = "reply") {
+async function replyWithCharacterPicker(interaction, mode = "full", method = "reply", options = {}) {
   const picker = setMainsPickerSession(interaction.user.id, {
     mode,
     query: "",
     page: 0,
     selectedIds: getInitialMainsPickerSelectedIds(interaction.user.id),
+    afterSelectionProfileSubmitAction: options.afterSelectionProfileSubmitAction,
+    afterSelectionProfileSubmitSource: options.afterSelectionProfileSubmitSource,
+    afterSelectionProfileSubmitChannelId: options.afterSelectionProfileSubmitChannelId,
+    afterSelectionProfileSubmitSourceMessageId: options.afterSelectionProfileSubmitSourceMessageId,
+    afterSelectionProfileSubmitInteractionId: options.afterSelectionProfileSubmitInteractionId,
   });
   const payload = await buildMainsPickerPayload(interaction.user.id, {
     picker,
@@ -3299,9 +3306,9 @@ async function fallbackToManualMainSelection(interaction, mode = "full", error =
   await interaction.showModal(buildManualMainSelectionModal(mode));
 }
 
-async function openCharacterPicker(interaction, mode = "full", method = "reply") {
+async function openCharacterPicker(interaction, mode = "full", method = "reply", options = {}) {
   try {
-    await replyWithCharacterPicker(interaction, mode, method);
+    await replyWithCharacterPicker(interaction, mode, method, options);
   } catch (error) {
     try {
       await fallbackToManualMainSelection(interaction, mode, error);
@@ -3317,6 +3324,7 @@ async function completeMainSelection(interaction, selectedEntries, options = {})
   const isQuickSelection = options.mode === "quick";
   const responseMethod = options.responseMethod === "update" ? "update" : "reply";
   const selectedIds = selectedEntries.map((entry) => entry.id);
+  const pickerSession = options.picker || getMainsPickerSession(interaction.user.id);
   let usedDeferredUpdate = false;
 
   const sendSelectionError = async (message) => {
@@ -3435,7 +3443,17 @@ async function completeMainSelection(interaction, selectedEntries, options = {})
   });
   clearMainDraft(interaction.user.id);
   clearMainsPickerSession(interaction.user.id);
-  const activeProfileSubmitCapture = profileSubmitCaptures.get(interaction.user.id);
+  let activeProfileSubmitCapture = profileSubmitCaptures.get(interaction.user.id);
+  if (!activeProfileSubmitCapture && pickerSession?.afterSelectionProfileSubmitAction === PROFILE_SUBMIT_ACTIONS.KILLS) {
+    activeProfileSubmitCapture = startProfileSubmitCapture(interaction.user.id, {
+      action: PROFILE_SUBMIT_ACTIONS.KILLS,
+      channelId: pickerSession.afterSelectionProfileSubmitChannelId || interaction.channelId,
+      source: pickerSession.afterSelectionProfileSubmitSource,
+      sourceMessageId: pickerSession.afterSelectionProfileSubmitSourceMessageId,
+      interactionId: pickerSession.afterSelectionProfileSubmitInteractionId,
+      mainCharacterIds: appliedEntries.map((entry) => entry.id),
+    });
+  }
   if (activeProfileSubmitCapture?.action === PROFILE_SUBMIT_ACTIONS.KILLS) {
     const payload = buildProfileKillsCapturePayloadForUser(interaction.user.id, {
       channelId: activeProfileSubmitCapture.channelId,
@@ -4152,9 +4170,15 @@ function logProfileSubmitCapture(event, details = {}) {
 
 function isProfileSubmitSourceInteraction(interaction = {}) {
   const ids = new Set(getMessageComponentCustomIds(interaction?.message));
+  const isBotHelperPanel = getBotHelperPanelRequiredCustomIds().every((customId) => ids.has(customId));
   return ids.has("profile_bind_roblox")
     || ids.has("elo_submit_card")
-    || ids.has(BOT_HELPER_PANEL_ACTION_IDS.roblox);
+    || isBotHelperPanel;
+}
+
+function isBotHelperPanelSourceInteraction(interaction = {}) {
+  const ids = new Set(getMessageComponentCustomIds(interaction?.message));
+  return getBotHelperPanelRequiredCustomIds().every((customId) => ids.has(customId));
 }
 
 function startProfileSubmitCapture(userId, options = {}) {
@@ -4376,6 +4400,13 @@ function normalizeMainsPickerState(rawValue = {}) {
       .map((value) => String(value || "").trim())
       .filter(Boolean)
   )].slice(0, 2);
+  const afterSelectionProfileSubmitAction = Object.values(PROFILE_SUBMIT_ACTIONS).includes(rawValue?.afterSelectionProfileSubmitAction)
+    ? rawValue.afterSelectionProfileSubmitAction
+    : "";
+  const afterSelectionProfileSubmitSource = String(rawValue?.afterSelectionProfileSubmitSource || "").trim().slice(0, 80);
+  const afterSelectionProfileSubmitChannelId = String(rawValue?.afterSelectionProfileSubmitChannelId || "").trim().slice(0, 80);
+  const afterSelectionProfileSubmitSourceMessageId = String(rawValue?.afterSelectionProfileSubmitSourceMessageId || "").trim().slice(0, 80);
+  const afterSelectionProfileSubmitInteractionId = String(rawValue?.afterSelectionProfileSubmitInteractionId || "").trim().slice(0, 80);
 
   return {
     mode,
@@ -4383,6 +4414,11 @@ function normalizeMainsPickerState(rawValue = {}) {
     page,
     selectedIds,
     statusText,
+    afterSelectionProfileSubmitAction,
+    afterSelectionProfileSubmitSource,
+    afterSelectionProfileSubmitChannelId,
+    afterSelectionProfileSubmitSourceMessageId,
+    afterSelectionProfileSubmitInteractionId,
   };
 }
 
@@ -8809,9 +8845,7 @@ async function refreshBotHelperPanel(client, options = {}) {
 
   let message = null;
 
-  if (!options.forceRecreate) {
-    message = await resolveBotHelperPanelManagedMessage(client, channel, state);
-  }
+  message = await resolveBotHelperPanelManagedMessage(client, channel, state);
 
   if (message && (options.bump || options.forceRecreate)) {
     await deleteManagedChannelMessage(client, channel.id, message.id);
@@ -17625,67 +17659,73 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
+      const applyGraphicPanelMutation = async (mutate, successText = "") => {
+        await interaction.deferUpdate();
+        try {
+          await applyUiMutation(client, "graphic", mutate);
+          await interaction.editReply(buildGraphicPanelPayload(successText, false));
+        } catch (error) {
+          await interaction.editReply(buildGraphicPanelPayload(
+            `Не удалось обновить PNG panel: ${formatRuntimeError(error)}`,
+            false
+          ));
+        }
+      };
+
       // Size adjustment buttons
       if (interaction.customId === "graphic_panel_icon_minus" || interaction.customId === "graphic_panel_icon_plus") {
         const delta = interaction.customId.endsWith("plus") ? 12 : -12;
-        await applyUiMutation(client, "graphic", () => {
+        await applyGraphicPanelMutation(() => {
           const image = getGraphicTierlistConfig().image;
           image.icon = Math.max(64, Math.min(256, (image.icon || 112) + delta));
-        });
-        await interaction.update(buildGraphicPanelPayload());
+        }, "Размер иконок PNG обновлён.");
         return;
       }
 
       if (interaction.customId === "graphic_panel_w_minus" || interaction.customId === "graphic_panel_w_plus") {
         const delta = interaction.customId.endsWith("plus") ? 200 : -200;
-        await applyUiMutation(client, "graphic", () => {
+        await applyGraphicPanelMutation(() => {
           const image = getGraphicTierlistConfig().image;
           image.width = Math.max(1200, Math.min(4096, (image.width || 2000) + delta));
-        });
-        await interaction.update(buildGraphicPanelPayload());
+        }, "Ширина PNG обновлена.");
         return;
       }
 
       if (interaction.customId === "graphic_panel_h_minus" || interaction.customId === "graphic_panel_h_plus") {
         const delta = interaction.customId.endsWith("plus") ? 120 : -120;
-        await applyUiMutation(client, "graphic", () => {
+        await applyGraphicPanelMutation(() => {
           const image = getGraphicTierlistConfig().image;
           image.height = Math.max(700, Math.min(2160, (image.height || 1200) + delta));
-        });
-        await interaction.update(buildGraphicPanelPayload());
+        }, "Высота PNG обновлена.");
         return;
       }
 
       if (interaction.customId === "graphic_panel_reset_img") {
-        await applyUiMutation(client, "graphic", () => {
+        await applyGraphicPanelMutation(() => {
           getGraphicTierlistConfig().image = { width: null, height: null, icon: null };
-        });
-        await interaction.update(buildGraphicPanelPayload());
+        }, "Размеры PNG сброшены.");
         return;
       }
 
       if (interaction.customId === "graphic_panel_reset_color") {
-        await applyUiMutation(client, "graphic", () => {
+        await applyGraphicPanelMutation(() => {
           const colors = getGraphicTierlistConfig().colors;
           if (colors) delete colors[selectedTier];
-        });
-        await interaction.update(buildGraphicPanelPayload());
+        }, `Цвет тира ${selectedTier} сброшен.`);
         return;
       }
 
       if (interaction.customId === "graphic_panel_reset_colors") {
-        await applyUiMutation(client, "graphic", () => {
+        await applyGraphicPanelMutation(() => {
           getGraphicTierlistConfig().colors = {};
-        });
-        await interaction.update(buildGraphicPanelPayload());
+        }, "Цвета тиров сброшены.");
         return;
       }
 
       if (interaction.customId === "graphic_panel_outline_clear") {
-        await applyUiMutation(client, "graphic", () => {
+        await applyGraphicPanelMutation(() => {
           getGraphicTierlistConfig().outline = { roleId: "", roleIds: [], color: "#ffffff", rules: [] };
-        });
-        await interaction.update(buildGraphicPanelPayload("Обводка PNG по ролям очищена.", false));
+        }, "Обводка PNG по ролям очищена.");
         return;
       }
 
@@ -19753,7 +19793,7 @@ client.on("interactionCreate", async (interaction) => {
         startProfileSubmitCapture(interaction.user.id, {
           action: PROFILE_SUBMIT_ACTIONS.ELO,
           channelId: interaction.channelId,
-          source: "profile_elo_button",
+          source: isBotHelperPanelSourceInteraction(interaction) ? "bot_helper_elo_button" : "profile_elo_button",
           sourceMessageId: interaction.message?.id,
           interactionId: interaction.id,
         });
@@ -20219,7 +20259,7 @@ client.on("interactionCreate", async (interaction) => {
             startProfileSubmitCapture(interaction.user.id, {
               action: PROFILE_SUBMIT_ACTIONS.KILLS,
               channelId: interaction.channelId,
-              source: "profile_kills_button",
+              source: isBotHelperPanelSourceInteraction(interaction) ? "bot_helper_kills_button" : "profile_kills_button",
               sourceMessageId: interaction.message?.id,
               interactionId: interaction.id,
               mainCharacterIds: activeSession?.mainCharacterIds,
@@ -20254,7 +20294,7 @@ client.on("interactionCreate", async (interaction) => {
             startProfileSubmitCapture(interaction.user.id, {
               action: PROFILE_SUBMIT_ACTIONS.KILLS,
               channelId: interaction.channelId,
-              source: "profile_kills_button",
+              source: isBotHelperPanelSourceInteraction(interaction) ? "bot_helper_kills_button" : "profile_kills_button",
               sourceMessageId: interaction.message?.id,
               interactionId: interaction.id,
               mainCharacterIds: draft.characterIds,
@@ -20273,13 +20313,14 @@ client.on("interactionCreate", async (interaction) => {
         }
 
         if (profileScopedBegin) {
-          startProfileSubmitCapture(interaction.user.id, {
-            action: PROFILE_SUBMIT_ACTIONS.KILLS,
-            channelId: interaction.channelId,
-            source: "profile_kills_button",
-            sourceMessageId: interaction.message?.id,
-            interactionId: interaction.id,
+          await openCharacterPicker(interaction, "full", "reply", {
+            afterSelectionProfileSubmitAction: PROFILE_SUBMIT_ACTIONS.KILLS,
+            afterSelectionProfileSubmitChannelId: interaction.channelId,
+            afterSelectionProfileSubmitSource: isBotHelperPanelSourceInteraction(interaction) ? "bot_helper_kills_button" : "profile_kills_button",
+            afterSelectionProfileSubmitSourceMessageId: interaction.message?.id,
+            afterSelectionProfileSubmitInteractionId: interaction.id,
           });
+          return;
         }
         await openCharacterPicker(interaction, "full");
       } catch (error) {
@@ -20307,7 +20348,7 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
-      await openCharacterPicker(interaction, "full", "reply");
+      await openCharacterPicker(interaction, isProfileSubmitSourceInteraction(interaction) ? "quick" : "full", "reply");
       return;
     }
 

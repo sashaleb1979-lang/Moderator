@@ -18,6 +18,11 @@ const {
   getBotHelperPanelRequiredCustomIds,
 } = require("../src/onboard/bot-helper-panel");
 
+const fs = require("node:fs");
+const path = require("node:path");
+
+const welcomeBotSource = fs.readFileSync(path.join(__dirname, "..", "welcome-bot.js"), "utf8");
+
 test("bot helper panel payload renders the four MVP actions", () => {
   const payload = buildBotHelperPanelPayload();
 
@@ -117,4 +122,18 @@ test("bot helper resend disposition waits for both activity below and the 12-hou
   });
   assert.equal(noActivity.hasActivityBelow, false);
   assert.equal(noActivity.needsResend, false);
+});
+
+test("bot helper force resend resolves and deletes the managed message before sending a new one", () => {
+  const functionStart = welcomeBotSource.indexOf("async function refreshBotHelperPanel");
+  const functionEnd = welcomeBotSource.indexOf("async function repostBotHelperPanelToChannel", functionStart);
+  const body = welcomeBotSource.slice(functionStart, functionEnd);
+
+  assert.ok(functionStart > 0, "refreshBotHelperPanel must exist");
+  assert.doesNotMatch(body, /if \(!options\.forceRecreate\)\s*{\s*message = await resolveBotHelperPanelManagedMessage/);
+  assert.ok(
+    body.indexOf("message = await resolveBotHelperPanelManagedMessage(client, channel, state);")
+      < body.indexOf("if (message && (options.bump || options.forceRecreate))"),
+    "force resend should resolve the old managed message before delete/send"
+  );
 });
