@@ -199,11 +199,16 @@ const {
   resolveGrantedAccessRoleId,
 } = require("./src/onboard/access-mode");
 const {
-  DEFAULT_ACCESS_COMPANION_ACTIVITY_ROLE_KEYS,
   collectAccessCompanionCandidateUserIds,
-  normalizeAccessCompanionActivityRoleKeys,
-  resolveAccessCompanionRoleState,
+  collectAccessCompanionSourceRoleIds,
+  hasAnyAccessCompanionSourceRole,
+  shouldGrantAccessCompanionRole,
 } = require("./src/onboard/access-companion");
+const {
+  DEFAULT_RESIDENT_CHAT_ACTIVITY_ROLE_KEYS,
+  normalizeResidentChatActivityRoleKeys,
+  resolveResidentChatAccessRoleState,
+} = require("./src/onboard/resident-chat-access");
 const {
   ONBOARD_ACCESS_GRANT_MODES,
   createOnboardAccessGrantState,
@@ -707,6 +712,7 @@ function buildRuntimeConfig(fileConfig = {}) {
         envText("NON_GGS_ACCESS_ROLE_ID", fileConfig?.roles?.nonJjsAccessRoleId || fileConfig?.roles?.nonGgsAccessRoleId || "")
       ),
       accessCompanionRoleId: envText("ACCESS_COMPANION_ROLE_ID", fileConfig?.roles?.accessCompanionRoleId || ""),
+      residentChatAccessRoleId: envText("RESIDENT_CHAT_ACCESS_ROLE_ID", fileConfig?.roles?.residentChatAccessRoleId || ""),
       killTierRoleIds: {
         1: envText("TIER_ROLE_1_ID", fileConfig?.roles?.killTierRoleIds?.["1"] || ""),
         2: envText("TIER_ROLE_2_ID", fileConfig?.roles?.killTierRoleIds?.["2"] || ""),
@@ -6314,44 +6320,84 @@ function getNonJjsAccessRoleId() {
 }
 
 function getCountedAccessRoleIds() {
-  return [...new Set([
-    getNormalAccessRoleId(),
-    getWartimeAccessRoleId(),
-    getNonJjsAccessRoleId(),
-  ].filter(Boolean))];
+  return collectAccessCompanionSourceRoleIds({
+    normalAccessRoleId: getNormalAccessRoleId(),
+    wartimeAccessRoleId: getWartimeAccessRoleId(),
+    nonJjsAccessRoleId: getNonJjsAccessRoleId(),
+  });
 }
 
 function getVerifyAccessRoleId() {
   return getSotRole("verifyAccess", { db, appConfig })?.value || "";
 }
 
+function repairMistakenAccessCompanionPanelOverride() {
+  const record = db?.sot?.roles?.accessCompanion;
+  const evidence = record && typeof record.evidence === "object" && !Array.isArray(record.evidence)
+    ? record.evidence
+    : {};
+  const roleId = String(record?.value || "").trim();
+  if (!roleId || evidence.onboardingPanel !== true) return false;
+
+  db.config ||= {};
+  const legacyConfig = db.config.accessCompanion && typeof db.config.accessCompanion === "object" && !Array.isArray(db.config.accessCompanion)
+    ? db.config.accessCompanion
+    : {};
+  const source = db.config.residentChatAccess && typeof db.config.residentChatAccess === "object" && !Array.isArray(db.config.residentChatAccess)
+    ? db.config.residentChatAccess
+    : {};
+
+  db.config.residentChatAccess = {
+    enabled: typeof source.enabled === "boolean" ? source.enabled : legacyConfig.enabled === true,
+    roleId: String(source.roleId || roleId).trim(),
+    eligibleActivityRoleKeys: normalizeResidentChatActivityRoleKeys(
+      source.eligibleActivityRoleKeys || legacyConfig.eligibleActivityRoleKeys,
+      DEFAULT_RESIDENT_CHAT_ACTIVITY_ROLE_KEYS
+    ),
+  };
+  clearNativeRoleRecord(db, { slot: "accessCompanion" });
+  saveDb();
+  console.warn(`Repaired mistaken onboarding-panel accessCompanion override; moved ${roleId} to residentChatAccess.roleId and restored configured accessCompanion fallback.`);
+  return true;
+}
+
 function getAccessCompanionRoleId() {
+  repairMistakenAccessCompanionPanelOverride();
   return getSotRole("accessCompanion", { db, appConfig })?.value || "";
 }
 
-function getAccessCompanionConfig() {
+function getResidentChatAccessConfig() {
+  repairMistakenAccessCompanionPanelOverride();
   db.config ||= {};
-  const source = db.config.accessCompanion && typeof db.config.accessCompanion === "object" && !Array.isArray(db.config.accessCompanion)
+  const legacyConfig = db.config.accessCompanion && typeof db.config.accessCompanion === "object" && !Array.isArray(db.config.accessCompanion)
     ? db.config.accessCompanion
     : {};
+  const source = db.config.residentChatAccess && typeof db.config.residentChatAccess === "object" && !Array.isArray(db.config.residentChatAccess)
+    ? db.config.residentChatAccess
+    : {};
   const normalized = {
-    enabled: source.enabled === true,
-    eligibleActivityRoleKeys: normalizeAccessCompanionActivityRoleKeys(
-      source.eligibleActivityRoleKeys,
-      DEFAULT_ACCESS_COMPANION_ACTIVITY_ROLE_KEYS
+    enabled: typeof source.enabled === "boolean" ? source.enabled : legacyConfig.enabled === true,
+    roleId: String(source.roleId || appConfig?.roles?.residentChatAccessRoleId || "").trim(),
+    eligibleActivityRoleKeys: normalizeResidentChatActivityRoleKeys(
+      source.eligibleActivityRoleKeys || legacyConfig.eligibleActivityRoleKeys,
+      DEFAULT_RESIDENT_CHAT_ACTIVITY_ROLE_KEYS
     ),
   };
-  db.config.accessCompanion = normalized;
+  db.config.residentChatAccess = normalized;
   return normalized;
 }
 
-function getAccessCompanionEligibleActivityRoleKeys() {
-  return getAccessCompanionConfig().eligibleActivityRoleKeys;
+function getResidentChatAccessRoleId() {
+  return getResidentChatAccessConfig().roleId;
 }
 
-function getAccessCompanionEligibleActivityRoleIds() {
+function getResidentChatEligibleActivityRoleKeys() {
+  return getResidentChatAccessConfig().eligibleActivityRoleKeys;
+}
+
+function getResidentChatEligibleActivityRoleIds() {
   const activityRoleIds = ensureActivityState(db).config?.activityRoleIds || {};
-  return getAccessCompanionEligibleActivityRoleKeys()
+  return getResidentChatEligibleActivityRoleKeys()
     .map((roleKey) => String(activityRoleIds?.[roleKey] || "").trim())
     .filter(Boolean);
 }
@@ -7347,6 +7393,7 @@ async function completeVerificationApprovedAccess(client, userId, accessMode = "
     }
 
     await ensureAccessCompanionRoleForMemberBestEffort(member, reason, "verification access release");
+    await ensureResidentChatAccessRoleForMemberBestEffort(member, reason, "verification access release");
   } catch (error) {
     await restoreRolePoolSnapshot(client, userId, rolePoolIds, snapshot, `${reason} rollback`);
     throw new Error(`Не удалось выпустить ${userId} из verification: ${formatRuntimeError(error)}`);
@@ -7681,64 +7728,42 @@ async function restoreRolePoolSnapshot(client, userId, roleIds, previousRoleIds,
   return true;
 }
 
+function memberHasAnyCountedAccessRole(member) {
+  if (!member?.roles?.cache) return false;
+  return hasAnyAccessCompanionSourceRole({
+    heldRoleIds: [...member.roles.cache.keys()],
+    sourceRoleIds: getCountedAccessRoleIds(),
+  });
+}
+
 async function ensureAccessCompanionRoleForMember(member, reason = "access companion sync") {
-  const companionConfig = getAccessCompanionConfig();
   const companionRoleId = getAccessCompanionRoleId();
   const heldRoleIds = member?.roles?.cache ? [...member.roles.cache.keys()] : [];
-  const state = resolveAccessCompanionRoleState({
-    enabled: companionConfig.enabled,
-    companionRoleId,
-    heldRoleIds,
-    normalAccessRoleId: getNormalAccessRoleId(),
-    wartimeAccessRoleId: getWartimeAccessRoleId(),
-    eligibleActivityRoleIds: getAccessCompanionEligibleActivityRoleIds(),
-  });
-  const alreadyHad = state.eligible && state.hasCompanionRole;
+  const eligible = memberHasAnyCountedAccessRole(member);
+  const alreadyHad = Boolean(companionRoleId && member?.roles?.cache?.has?.(companionRoleId));
 
   if (!member?.roles?.cache) {
     return {
       configured: Boolean(companionRoleId),
-      enabled: companionConfig.enabled,
       eligible: false,
       alreadyHad: false,
       granted: false,
-      removed: false,
-      skipReason: "missing_member",
       missingMember: true,
       member: null,
       companionRoleId,
     };
   }
 
-  if (state.shouldRemove) {
-    try {
-      await member.roles.remove(companionRoleId, reason);
-    } catch (error) {
-      throw new Error(`Не удалось снять доп. access-роль ${companionRoleId} у пользователя ${member.id}: ${formatRuntimeError(error)}`);
-    }
+  if (!shouldGrantAccessCompanionRole({
+    companionRoleId,
+    heldRoleIds,
+    sourceRoleIds: getCountedAccessRoleIds(),
+  })) {
     return {
-      configured: state.configured,
-      enabled: state.enabled,
-      eligible: false,
-      alreadyHad: false,
-      granted: false,
-      removed: true,
-      skipReason: state.skipReason,
-      missingMember: false,
-      member,
-      companionRoleId,
-    };
-  }
-
-  if (!state.shouldGrant) {
-    return {
-      configured: state.configured,
-      enabled: state.enabled,
-      eligible: state.eligible,
+      configured: Boolean(companionRoleId),
+      eligible,
       alreadyHad,
       granted: false,
-      removed: false,
-      skipReason: state.skipReason,
       missingMember: false,
       member,
       companionRoleId,
@@ -7753,12 +7778,9 @@ async function ensureAccessCompanionRoleForMember(member, reason = "access compa
 
   return {
     configured: true,
-    enabled: true,
     eligible: true,
     alreadyHad: false,
     granted: true,
-    removed: false,
-    skipReason: "",
     missingMember: false,
     member,
     companionRoleId,
@@ -7770,12 +7792,9 @@ async function ensureAccessCompanionRoleForUser(client, userId, reason = "access
   if (!member) {
     return {
       configured: Boolean(getAccessCompanionRoleId()),
-      enabled: getAccessCompanionConfig().enabled,
       eligible: false,
       alreadyHad: false,
       granted: false,
-      removed: false,
-      skipReason: "missing_member",
       missingMember: true,
       member: null,
       companionRoleId: getAccessCompanionRoleId(),
@@ -7794,15 +7813,139 @@ async function ensureAccessCompanionRoleForMemberBestEffort(member, reason = "ac
     );
     return {
       configured: Boolean(getAccessCompanionRoleId()),
-      enabled: getAccessCompanionConfig().enabled,
-      eligible: false,
+      eligible: memberHasAnyCountedAccessRole(member),
       alreadyHad: Boolean(getAccessCompanionRoleId() && member?.roles?.cache?.has?.(getAccessCompanionRoleId())),
+      granted: false,
+      missingMember: !member?.roles?.cache,
+      member: member || null,
+      companionRoleId: getAccessCompanionRoleId(),
+      failed: true,
+    };
+  }
+}
+
+async function ensureResidentChatAccessRoleForMember(member, reason = "resident chat access sync") {
+  const residentConfig = getResidentChatAccessConfig();
+  const residentRoleId = getResidentChatAccessRoleId();
+  const heldRoleIds = member?.roles?.cache ? [...member.roles.cache.keys()] : [];
+  const state = resolveResidentChatAccessRoleState({
+    enabled: residentConfig.enabled,
+    residentRoleId,
+    heldRoleIds,
+    normalAccessRoleId: getNormalAccessRoleId(),
+    wartimeAccessRoleId: getWartimeAccessRoleId(),
+    eligibleActivityRoleIds: getResidentChatEligibleActivityRoleIds(),
+  });
+  const alreadyHad = state.eligible && state.hasResidentRole;
+
+  if (!member?.roles?.cache) {
+    return {
+      configured: Boolean(residentRoleId),
+      enabled: residentConfig.enabled,
+      eligible: false,
+      alreadyHad: false,
+      granted: false,
+      removed: false,
+      skipReason: "missing_member",
+      missingMember: true,
+      member: null,
+      residentRoleId,
+    };
+  }
+
+  if (state.shouldRemove) {
+    try {
+      await member.roles.remove(residentRoleId, reason);
+    } catch (error) {
+      throw new Error(`Не удалось снять роль чата постояльцев ${residentRoleId} у пользователя ${member.id}: ${formatRuntimeError(error)}`);
+    }
+    return {
+      configured: state.configured,
+      enabled: state.enabled,
+      eligible: false,
+      alreadyHad: false,
+      granted: false,
+      removed: true,
+      skipReason: state.skipReason,
+      missingMember: false,
+      member,
+      residentRoleId,
+    };
+  }
+
+  if (!state.shouldGrant) {
+    return {
+      configured: state.configured,
+      enabled: state.enabled,
+      eligible: state.eligible,
+      alreadyHad,
+      granted: false,
+      removed: false,
+      skipReason: state.skipReason,
+      missingMember: false,
+      member,
+      residentRoleId,
+    };
+  }
+
+  try {
+    await member.roles.add(residentRoleId, reason);
+  } catch (error) {
+    throw new Error(`Не удалось выдать роль чата постояльцев ${residentRoleId} пользователю ${member.id}: ${formatRuntimeError(error)}`);
+  }
+
+  return {
+    configured: true,
+    enabled: true,
+    eligible: true,
+    alreadyHad: false,
+    granted: true,
+    removed: false,
+    skipReason: "",
+    missingMember: false,
+    member,
+    residentRoleId,
+  };
+}
+
+async function ensureResidentChatAccessRoleForUser(client, userId, reason = "resident chat access sync") {
+  const member = await fetchMember(client, userId);
+  if (!member) {
+    return {
+      configured: Boolean(getResidentChatAccessRoleId()),
+      enabled: getResidentChatAccessConfig().enabled,
+      eligible: false,
+      alreadyHad: false,
+      granted: false,
+      removed: false,
+      skipReason: "missing_member",
+      missingMember: true,
+      member: null,
+      residentRoleId: getResidentChatAccessRoleId(),
+    };
+  }
+
+  return ensureResidentChatAccessRoleForMember(member, reason);
+}
+
+async function ensureResidentChatAccessRoleForMemberBestEffort(member, reason = "resident chat access sync", contextLabel = "access grant") {
+  try {
+    return await ensureResidentChatAccessRoleForMember(member, reason);
+  } catch (error) {
+    console.warn(
+      `Resident chat access role sync skipped during ${contextLabel} for ${String(member?.id || "unknown").trim() || "unknown"}: ${formatRuntimeError(error)}`
+    );
+    return {
+      configured: Boolean(getResidentChatAccessRoleId()),
+      enabled: getResidentChatAccessConfig().enabled,
+      eligible: false,
+      alreadyHad: Boolean(getResidentChatAccessRoleId() && member?.roles?.cache?.has?.(getResidentChatAccessRoleId())),
       granted: false,
       removed: false,
       skipReason: "failed",
       missingMember: !member?.roles?.cache,
       member: member || null,
-      companionRoleId: getAccessCompanionRoleId(),
+      residentRoleId: getResidentChatAccessRoleId(),
       failed: true,
     };
   }
@@ -7943,6 +8086,7 @@ async function grantAccessRole(client, userId, reason = "welcome application sub
     }
 
     await ensureAccessCompanionRoleForMemberBestEffort(member, reason, "managed access grant");
+    await ensureResidentChatAccessRoleForMemberBestEffort(member, reason, "managed access grant");
   } catch (error) {
     await restoreRolePoolSnapshot(client, userId, rollbackRoleIds, snapshot, `${reason} rollback`);
     throw error;
@@ -7980,6 +8124,7 @@ async function grantNonGgsAccessRole(client, userId, reason = "non-JJS captcha p
     }
 
     await ensureAccessCompanionRoleForMemberBestEffort(member, reason, "non-JJS access grant");
+    await ensureResidentChatAccessRoleForMemberBestEffort(member, reason, "non-JJS access grant");
   } catch (error) {
     await restoreRolePoolSnapshot(client, userId, rollbackRoleIds, snapshot, `${reason} rollback`);
     throw error;
@@ -10783,10 +10928,10 @@ async function buildModeratorPanelPayload(client, statusText = "", includeFlags 
   const currentMode = onboardModeState.mode;
   const accessGrantState = getOnboardAccessGrantState();
   const currentAccessGrantMode = accessGrantState.mode;
-  const accessCompanionConfig = getAccessCompanionConfig();
-  const accessCompanionRoleId = getAccessCompanionRoleId();
-  const accessCompanionActivityRoleIds = getAccessCompanionEligibleActivityRoleIds();
-  const accessCompanionActivityText = accessCompanionConfig.eligibleActivityRoleKeys
+  const residentChatConfig = getResidentChatAccessConfig();
+  const residentChatRoleId = getResidentChatAccessRoleId();
+  const residentChatActivityRoleIds = getResidentChatEligibleActivityRoleIds();
+  const residentChatActivityText = residentChatConfig.eligibleActivityRoleKeys
     .map((roleKey) => `${roleKey}: ${formatRoleMention(ensureActivityState(db).config?.activityRoleIds?.[roleKey])}`)
     .join(", ");
   const wartimeValidationError = getOnboardModeValidationError(ONBOARD_ACCESS_MODES.WARTIME);
@@ -10843,11 +10988,11 @@ async function buildModeratorPanelPayload(client, statusText = "", includeFlags 
       {
         name: "Чат постояльцев",
         value: [
-          `Система: **${accessCompanionConfig.enabled ? "ON" : "OFF"}**`,
-          `Роль чата: ${formatRoleMention(accessCompanionRoleId)}`,
-          `Условие: ${formatRoleMention(getNormalAccessRoleId())} + activity ${accessCompanionActivityText || "—"}`,
+          `Система: **${residentChatConfig.enabled ? "ON" : "OFF"}**`,
+          `Роль чата: ${formatRoleMention(residentChatRoleId)}`,
+          `Условие: ${formatRoleMention(getNormalAccessRoleId())} + activity ${residentChatActivityText || "—"}`,
           `Блокировка: ${formatRoleMention(getWartimeAccessRoleId())} снимает/не выдаёт роль чата.`,
-          accessCompanionActivityRoleIds.length ? "Activity-роли настроены." : "Activity-роли core/stable/active пока не настроены.",
+          residentChatActivityRoleIds.length ? "Activity-роли настроены." : "Activity-роли core/stable/active пока не настроены.",
         ].join("\n"),
         inline: false,
       },
@@ -10905,8 +11050,8 @@ async function buildModeratorPanelPayload(client, statusText = "", includeFlags 
           .setDisabled(currentMode === ONBOARD_ACCESS_MODES.APOCALYPSE),
         new ButtonBuilder()
           .setCustomId("panel_access_companion_toggle")
-          .setLabel(accessCompanionConfig.enabled ? "Постояльцы OFF" : "Постояльцы ON")
-          .setStyle(accessCompanionConfig.enabled ? ButtonStyle.Danger : ButtonStyle.Success),
+          .setLabel(residentChatConfig.enabled ? "Постояльцы OFF" : "Постояльцы ON")
+          .setStyle(residentChatConfig.enabled ? ButtonStyle.Danger : ButtonStyle.Success),
         new ButtonBuilder()
           .setCustomId("panel_access_companion_role")
           .setLabel("Роль постояльцев")
@@ -14443,24 +14588,16 @@ async function syncApprovedTierRoles(client, targetUserId = null) {
 }
 
 function createAccessCompanionSyncSummary() {
-  const config = getAccessCompanionConfig();
   return {
     configured: Boolean(getAccessCompanionRoleId()),
-    enabled: config.enabled,
     companionRoleId: getAccessCompanionRoleId(),
-    eligibleActivityRoleKeys: [...config.eligibleActivityRoleKeys],
     fallbackUsed: false,
     scanned: 0,
     eligible: 0,
     granted: 0,
-    removed: 0,
     alreadyHad: 0,
     missingMembers: 0,
-    skippedDisabled: 0,
-    skippedWartime: 0,
-    skippedNoNormalAccess: 0,
-    skippedNoActivityRole: 0,
-    skippedNotConfigured: 0,
+    skippedWithoutAccess: 0,
     skippedBots: 0,
     failed: 0,
   };
@@ -14468,22 +14605,16 @@ function createAccessCompanionSyncSummary() {
 
 function formatAccessCompanionSyncSummary(result = {}) {
   if (result?.configured !== true) {
-    return "Чат постояльцев: роль не настроена.";
+    return "Доп. access-роль не настроена.";
   }
 
   const fallbackNote = result?.fallbackUsed ? " Fallback targeted scan used." : "";
-  const modeText = result?.enabled === true ? "ON" : "OFF";
-  return `Чат постояльцев ${modeText}: eligible ${Number(result.eligible || 0)}, granted ${Number(result.granted || 0)}, removed ${Number(result.removed || 0)}, already had ${Number(result.alreadyHad || 0)}, wartime skipped ${Number(result.skippedWartime || 0)}, failed ${Number(result.failed || 0)}.${fallbackNote}`;
+  return `Доп. access-роль: eligible ${result.eligible}, granted ${result.granted}, already had ${result.alreadyHad}.${fallbackNote}`;
 }
 
 function collectAccessCompanionFallbackUserIds(guild) {
   const sourceRoleMemberIds = [];
-  for (const roleId of [
-    getNormalAccessRoleId(),
-    getWartimeAccessRoleId(),
-    getAccessCompanionRoleId(),
-    ...getAccessCompanionEligibleActivityRoleIds(),
-  ].filter(Boolean)) {
+  for (const roleId of getCountedAccessRoleIds()) {
     const role = guild?.roles?.cache?.get(roleId);
     if (!role?.members?.size) continue;
     sourceRoleMemberIds.push(...role.members.keys());
@@ -14537,55 +14668,21 @@ async function syncAccessCompanionRoles(client, options = {}) {
   const reason = String(options?.reason || "access companion sync").trim() || "access companion sync";
   const result = createAccessCompanionSyncSummary();
 
-  const applyGrantResultToSummary = (grantResult = {}) => {
-    if (grantResult.missingMember) {
-      result.missingMembers += 1;
-      return;
-    }
-    if (grantResult.member?.user?.bot) {
-      result.skippedBots += 1;
-      return;
-    }
-    if (grantResult.eligible) {
-      result.eligible += 1;
-    } else {
-      switch (grantResult.skipReason) {
-        case "disabled":
-          result.skippedDisabled += 1;
-          break;
-        case "wartime_access":
-          result.skippedWartime += 1;
-          break;
-        case "no_normal_access":
-          result.skippedNoNormalAccess += 1;
-          break;
-        case "no_activity_role":
-          result.skippedNoActivityRole += 1;
-          break;
-        case "companion_not_configured":
-          result.skippedNotConfigured += 1;
-          break;
-        default:
-          break;
-      }
-    }
-    if (grantResult.alreadyHad) result.alreadyHad += 1;
-    if (grantResult.granted) result.granted += 1;
-    if (grantResult.removed) result.removed += 1;
-  };
-
-  if (!result.configured) {
+  if (!result.configured || getCountedAccessRoleIds().length === 0) {
     return result;
   }
 
   if (targetUserId) {
     result.scanned = 1;
-    try {
-      applyGrantResultToSummary(await ensureAccessCompanionRoleForUser(client, targetUserId, reason));
-    } catch (error) {
-      result.failed = 1;
-      console.warn(`Access companion targeted sync failed for ${targetUserId}: ${formatRuntimeError(error)}`);
+    const grantResult = await ensureAccessCompanionRoleForUser(client, targetUserId, reason);
+    if (grantResult.missingMember) {
+      result.missingMembers = 1;
+      return result;
     }
+    if (grantResult.eligible) result.eligible = 1;
+    else result.skippedWithoutAccess = 1;
+    if (grantResult.alreadyHad) result.alreadyHad = 1;
+    if (grantResult.granted) result.granted = 1;
     return result;
   }
 
@@ -14613,11 +14710,159 @@ async function syncAccessCompanionRoles(client, options = {}) {
       continue;
     }
 
+    const grantResult = await ensureAccessCompanionRoleForMember(member, reason);
+    if (grantResult.eligible) result.eligible += 1;
+    else {
+      result.skippedWithoutAccess += 1;
+      continue;
+    }
+    if (grantResult.alreadyHad) result.alreadyHad += 1;
+    if (grantResult.granted) result.granted += 1;
+  }
+
+  return result;
+}
+
+function createResidentChatAccessSyncSummary() {
+  const config = getResidentChatAccessConfig();
+  return {
+    configured: Boolean(getResidentChatAccessRoleId()),
+    enabled: config.enabled,
+    residentRoleId: getResidentChatAccessRoleId(),
+    eligibleActivityRoleKeys: [...config.eligibleActivityRoleKeys],
+    fallbackUsed: false,
+    scanned: 0,
+    eligible: 0,
+    granted: 0,
+    removed: 0,
+    alreadyHad: 0,
+    missingMembers: 0,
+    skippedDisabled: 0,
+    skippedWartime: 0,
+    skippedNoNormalAccess: 0,
+    skippedNoActivityRole: 0,
+    skippedNotConfigured: 0,
+    skippedBots: 0,
+    failed: 0,
+  };
+}
+
+function formatResidentChatAccessSyncSummary(result = {}) {
+  if (result?.configured !== true) {
+    return "Чат постояльцев: роль не настроена.";
+  }
+
+  const fallbackNote = result?.fallbackUsed ? " Fallback targeted scan used." : "";
+  const modeText = result?.enabled === true ? "ON" : "OFF";
+  return `Чат постояльцев ${modeText}: eligible ${Number(result.eligible || 0)}, granted ${Number(result.granted || 0)}, removed ${Number(result.removed || 0)}, already had ${Number(result.alreadyHad || 0)}, wartime skipped ${Number(result.skippedWartime || 0)}, failed ${Number(result.failed || 0)}.${fallbackNote}`;
+}
+
+function collectResidentChatAccessFallbackUserIds(guild) {
+  const sourceRoleMemberIds = [];
+  for (const roleId of [
+    getNormalAccessRoleId(),
+    getWartimeAccessRoleId(),
+    getResidentChatAccessRoleId(),
+    ...getResidentChatEligibleActivityRoleIds(),
+  ].filter(Boolean)) {
+    const role = guild?.roles?.cache?.get(roleId);
+    if (!role?.members?.size) continue;
+    sourceRoleMemberIds.push(...role.members.keys());
+  }
+
+  return collectAccessCompanionCandidateUserIds({
+    sourceRoleMemberIds,
+    cachedMemberIds: guild?.members?.cache ? [...guild.members.cache.keys()] : [],
+    profileUserIds: Object.keys(db.profiles || {}),
+  });
+}
+
+async function syncResidentChatAccessRoles(client, options = {}) {
+  const targetUserId = String(options?.targetUserId || "").trim();
+  const reason = String(options?.reason || "resident chat access sync").trim() || "resident chat access sync";
+  const result = createResidentChatAccessSyncSummary();
+
+  const applyGrantResultToSummary = (grantResult = {}) => {
+    if (grantResult.missingMember) {
+      result.missingMembers += 1;
+      return;
+    }
+    if (grantResult.member?.user?.bot) {
+      result.skippedBots += 1;
+      return;
+    }
+    if (grantResult.eligible) {
+      result.eligible += 1;
+    } else {
+      switch (grantResult.skipReason) {
+        case "disabled":
+          result.skippedDisabled += 1;
+          break;
+        case "wartime_access":
+          result.skippedWartime += 1;
+          break;
+        case "no_normal_access":
+          result.skippedNoNormalAccess += 1;
+          break;
+        case "no_activity_role":
+          result.skippedNoActivityRole += 1;
+          break;
+        case "resident_role_not_configured":
+          result.skippedNotConfigured += 1;
+          break;
+        default:
+          break;
+      }
+    }
+    if (grantResult.alreadyHad) result.alreadyHad += 1;
+    if (grantResult.granted) result.granted += 1;
+    if (grantResult.removed) result.removed += 1;
+  };
+
+  if (!result.configured) {
+    return result;
+  }
+
+  if (targetUserId) {
+    result.scanned = 1;
     try {
-      applyGrantResultToSummary(await ensureAccessCompanionRoleForMember(member, reason));
+      applyGrantResultToSummary(await ensureResidentChatAccessRoleForUser(client, targetUserId, reason));
+    } catch (error) {
+      result.failed = 1;
+      console.warn(`Resident chat access targeted sync failed for ${targetUserId}: ${formatRuntimeError(error)}`);
+    }
+    return result;
+  }
+
+  const guild = await getGuild(client).catch(() => null);
+  if (!guild) {
+    throw new Error("Не удалось получить guild для синхронизации роли чата постояльцев.");
+  }
+
+  let members = await guild.members.fetch().catch(() => null);
+  if (!members) {
+    await guild.roles.fetch().catch(() => null);
+    const fallbackUserIds = collectResidentChatAccessFallbackUserIds(guild);
+    if (!fallbackUserIds.length) {
+      result.fallbackUsed = true;
+      return result;
+    }
+    members = await fetchAccessCompanionFallbackMembers(guild, fallbackUserIds);
+    result.fallbackUsed = true;
+  }
+
+  for (const member of members.values()) {
+    result.scanned += 1;
+    if (member.user?.bot) {
+      result.skippedBots += 1;
+      continue;
+    }
+
+    try {
+      applyGrantResultToSummary(await ensureResidentChatAccessRoleForMember(member, reason));
     } catch (error) {
       result.failed += 1;
-      console.warn(`Access companion sync failed for ${member.id}: ${formatRuntimeError(error)}`);
+      console.warn(`Resident chat access sync failed for ${member.id}: ${formatRuntimeError(error)}`);
     }
   }
 
@@ -14794,7 +15039,11 @@ client.once("clientReady", async () => {
       }),
       registerGuildCommands,
       syncApprovedTierRoles,
-      syncAccessCompanionRoles: (currentClient) => syncAccessCompanionRoles(currentClient, { reason: "startup access companion sync" }),
+      syncAccessCompanionRoles: async (currentClient) => {
+        const result = await syncAccessCompanionRoles(currentClient, { reason: "startup access companion sync" });
+        await syncResidentChatAccessRoles(currentClient, { reason: "startup resident chat access sync" });
+        return result;
+      },
       refreshWelcomePanel,
       refreshAllTierlists,
       resumeActivityRuntime: () => resumeActivityRuntime({
@@ -14978,11 +15227,11 @@ client.once("clientReady", async () => {
           reason: "activity daily role sync",
         }),
       });
-      const companion = await syncAccessCompanionRoles(client, { reason: "activity daily companion sync" });
-      console.log(`${formatActivityDailyRoleSyncLogLine(result)} ${formatAccessCompanionSyncSummary(companion)}`);
+      const residentChat = await syncResidentChatAccessRoles(client, { reason: "activity daily resident chat sync" });
+      console.log(`${formatActivityDailyRoleSyncLogLine(result)} ${formatResidentChatAccessSyncSummary(residentChat)}`);
       return {
         ...result,
-        accessCompanion: companion,
+        residentChat,
       };
     },
     activityRoleSyncHours: ensureActivityState(db).config?.autoRoleSyncHours,
@@ -17994,20 +18243,20 @@ client.on("interactionCreate", async (interaction) => {
       }),
       runRebuildMetrics: async (args) => {
         const result = await runDailyActivityRoleSync(args);
-        const companion = await syncAccessCompanionRoles(client, { reason: `activity panel full sync by ${interaction.user?.tag || interaction.user?.id || "unknown"}` });
+        const residentChat = await syncResidentChatAccessRoles(client, { reason: `activity panel full sync by ${interaction.user?.tag || interaction.user?.id || "unknown"}` });
         return {
           ...result,
-          accessCompanion: companion,
-          accessCompanionSummary: formatAccessCompanionSyncSummary(companion),
+          residentChat,
+          accessCompanionSummary: formatResidentChatAccessSyncSummary(residentChat),
         };
       },
       runSyncRoles: async (args) => {
         const result = await runActivityRoleSyncFromSnapshots(args);
-        const companion = await syncAccessCompanionRoles(client, { reason: `activity panel roles-only sync by ${interaction.user?.tag || interaction.user?.id || "unknown"}` });
+        const residentChat = await syncResidentChatAccessRoles(client, { reason: `activity panel roles-only sync by ${interaction.user?.tag || interaction.user?.id || "unknown"}` });
         return {
           ...result,
-          accessCompanion: companion,
-          accessCompanionSummary: formatAccessCompanionSyncSummary(companion),
+          residentChat,
+          accessCompanionSummary: formatResidentChatAccessSyncSummary(residentChat),
         };
       },
       fetchChannel: async (channelId) => {
@@ -18182,7 +18431,7 @@ client.on("interactionCreate", async (interaction) => {
           .setRequired(false)
           .setMaxLength(80)
           .setPlaceholder("<@&123456789012345678>")
-          .setValue(String(getAccessCompanionRoleId() || "").slice(0, 80))
+          .setValue(String(getResidentChatAccessRoleId() || "").slice(0, 80))
       ));
       await interaction.showModal(modal);
       return;
@@ -20210,16 +20459,17 @@ client.on("interactionCreate", async (interaction) => {
         await maybeLogSotCharacterHealthAlert(client, "panel-sync-roles");
         const synced = await syncApprovedTierRoles(client);
         const companion = await syncAccessCompanionRoles(client, { reason: `panel sync roles by ${interaction.user.tag}` });
-        statusText = `Роли пересинхронизированы. Tier-профилей: ${synced}. Персонажи: resolved ${managed.resolvedCharacters}, recovered ${managed.recoveredCharacters}, ambiguous ${managed.ambiguousCharacters}, unresolved ${managed.unresolvedCharacters}. ${formatAccessCompanionSyncSummary(companion)}`;
+        const residentChat = await syncResidentChatAccessRoles(client, { reason: `panel resident chat sync by ${interaction.user.tag}` });
+        statusText = `Роли пересинхронизированы. Tier-профилей: ${synced}. Персонажи: resolved ${managed.resolvedCharacters}, recovered ${managed.recoveredCharacters}, ambiguous ${managed.ambiguousCharacters}, unresolved ${managed.unresolvedCharacters}. ${formatAccessCompanionSyncSummary(companion)} ${formatResidentChatAccessSyncSummary(residentChat)}`;
       } else if (interaction.customId === "panel_sync_access_companion") {
-        const companion = await syncAccessCompanionRoles(client, { reason: `panel companion sync by ${interaction.user.tag}` });
-        statusText = formatAccessCompanionSyncSummary(companion);
+        const residentChat = await syncResidentChatAccessRoles(client, { reason: `panel resident chat sync by ${interaction.user.tag}` });
+        statusText = formatResidentChatAccessSyncSummary(residentChat);
       } else if (interaction.customId === "panel_access_companion_toggle") {
-        const state = getAccessCompanionConfig();
+        const state = getResidentChatAccessConfig();
         state.enabled = !state.enabled;
         saveDb();
-        const companion = await syncAccessCompanionRoles(client, { reason: `panel companion ${state.enabled ? "enable" : "disable"} by ${interaction.user.tag}` });
-        statusText = `Чат постояльцев ${state.enabled ? "включён" : "выключен"}. ${formatAccessCompanionSyncSummary(companion)}`;
+        const residentChat = await syncResidentChatAccessRoles(client, { reason: `panel resident chat ${state.enabled ? "enable" : "disable"} by ${interaction.user.tag}` });
+        statusText = `Чат постояльцев ${state.enabled ? "включён" : "выключен"}. ${formatResidentChatAccessSyncSummary(residentChat)}`;
       } else if (interaction.customId === "panel_sync_character_emojis") {
         const result = await syncCharacterEmojiAssets(client, interaction.user.tag);
         statusText = formatCharacterEmojiSyncSummary(result);
@@ -22210,22 +22460,14 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
-      if (roleId) {
-        writeNativeRoleRecord(db, {
-          slot: "accessCompanion",
-          roleId,
-          verifiedAt: nowIso(),
-          evidence: { onboardingPanel: true },
-        });
-      } else {
-        clearNativeRoleRecord(db, { slot: "accessCompanion" });
-      }
+      const state = getResidentChatAccessConfig();
+      state.roleId = roleId;
       saveDb();
 
-      const companion = await syncAccessCompanionRoles(client, { reason: `panel companion role update by ${interaction.user.tag}` });
+      const residentChat = await syncResidentChatAccessRoles(client, { reason: `panel resident chat role update by ${interaction.user.tag}` });
       const statusText = roleId
-        ? `Роль чата постояльцев сохранена: ${formatRoleMention(roleId)}. ${formatAccessCompanionSyncSummary(companion)}`
-        : `Manual override роли чата постояльцев очищен. ${formatAccessCompanionSyncSummary(companion)}`;
+        ? `Роль чата постояльцев сохранена: ${formatRoleMention(roleId)}. ${formatResidentChatAccessSyncSummary(residentChat)}`
+        : `Роль чата постояльцев очищена; будет использоваться RESIDENT_CHAT_ACCESS_ROLE_ID, если он задан. ${formatResidentChatAccessSyncSummary(residentChat)}`;
       await interaction.editReply(await buildModeratorPanelPayload(client, statusText, false));
       return;
     }
