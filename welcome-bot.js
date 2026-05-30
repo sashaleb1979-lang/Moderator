@@ -6526,7 +6526,19 @@ async function sendMissingTierlistReminder(client) {
 async function fetchMember(client, userId) {
   const guild = await getGuild(client);
   if (!guild) return null;
-  return guild.members.fetch(userId).catch(() => null);
+  const normalizedUserId = String(userId || "").trim();
+  if (!normalizedUserId) return null;
+  const cachedMember = guild.members?.cache?.get(normalizedUserId) || null;
+  if (cachedMember) return cachedMember;
+
+  try {
+    return await guild.members.fetch(normalizedUserId);
+  } catch (error) {
+    const retryAfterMs = parseGuildMemberFetchRetryAfterMs(error);
+    if (retryAfterMs <= 0) return null;
+    await new Promise((resolve) => setTimeout(resolve, Math.min(retryAfterMs, 30 * 1000)));
+    return guild.members?.cache?.get(normalizedUserId) || await guild.members.fetch(normalizedUserId).catch(() => null);
+  }
 }
 
 async function syncProfileNamesFromDiscord(client) {
