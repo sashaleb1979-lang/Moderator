@@ -370,7 +370,7 @@ test("helper and profile kills buttons arm the shared submit flow", () => {
           };
         }
 
-        function makeKillsMessage(label, user, member, rawText) {
+        function makeKillsMessage(label, user, member, rawText, targetChannel = helperChannel) {
           const attachment = { url: "https://example.com/" + label + ".png", name: label + ".png", contentType: "image/png" };
           return {
             id: label + "-message",
@@ -379,9 +379,9 @@ test("helper and profile kills buttons arm the shared submit flow", () => {
             member,
             guild,
             guildId: "123",
-            channel: helperChannel,
-            channelId: helperChannel.id,
-            url: "https://discord.com/channels/123/" + helperChannel.id + "/" + label + "-message",
+            channel: targetChannel,
+            channelId: targetChannel.id,
+            url: "https://discord.com/channels/123/" + targetChannel.id + "/" + label + "-message",
             createdAt: new Date("2026-05-30T00:01:00.000Z"),
             createdTimestamp: Date.parse("2026-05-30T00:01:00.000Z"),
             attachments: new discord.Collection([["att-1", attachment]]),
@@ -394,7 +394,7 @@ test("helper and profile kills buttons arm the shared submit flow", () => {
             reference: null,
             reply: async (payload) => {
               pushEvent(label, "reply", payload);
-              return createReplyMessage(label, helperChannel);
+              return createReplyMessage(label, targetChannel);
             },
             delete: async () => {
               pushEvent(label, "delete", "ok");
@@ -419,9 +419,12 @@ test("helper and profile kills buttons arm the shared submit flow", () => {
               return;
             }
 
+            const profilePrivateChannel = { ...helperChannel, id: "profile-ephemeral", name: "profile-ephemeral" };
             const profilePrivateMessage = {
               id: "profile-private-message",
-              channelId: helperChannel.id,
+              channelId: profilePrivateChannel.id,
+              channel: profilePrivateChannel,
+              components: [{ components: [{ customId: "profile_bind_roblox" }, { customId: "elo_submit_open" }] }],
               delete: async () => true,
             };
 
@@ -503,7 +506,7 @@ test("helper and profile kills buttons arm the shared submit flow", () => {
             }, 650);
 
             setTimeout(() => {
-              originalEmit.call(this, "messageCreate", makeKillsMessage("profile_kills", profileUser, profileMember, "4150"));
+              originalEmit.call(this, "messageCreate", makeKillsMessage("profile_kills", profileUser, profileMember, "4150", profilePrivateChannel));
             }, 820);
           }, 250);
 
@@ -516,7 +519,7 @@ test("helper and profile kills buttons arm the shared submit flow", () => {
             if (!events.some((entry) => entry[0] === "profile_open" && entry[1] === "editReply" && /# Твой профиль/.test(entry[2]))) {
               failures.push("profile self-open did not render the private self profile payload");
             }
-            if (!events.some((entry) => entry[0] === "profile_begin" && entry[1] === "reply" && /<#223456789012345678>/.test(entry[2]))) {
+            if (!events.some((entry) => entry[0] === "profile_begin" && entry[1] === "reply" && /<#profile-ephemeral>/.test(entry[2]))) {
               failures.push("profile begin did not keep kills intake scoped to the current channel");
             }
             if (!events.some((entry) => entry[0] === "profile_kills" && entry[1] === "reply" && /Заявка принята\. Обрабатываю/.test(entry[2]))) {
@@ -802,7 +805,7 @@ test("helper and profile elo buttons arm the shared elo flow", () => {
           };
         }
 
-        function makeEloMessage(label, user, member, rawText) {
+        function makeEloMessage(label, user, member, rawText, targetChannel = helperChannel) {
           const attachment = { url: "https://example.com/" + label + ".png", name: label + ".png", contentType: "image/png" };
           return {
             id: label + "-message",
@@ -811,9 +814,9 @@ test("helper and profile elo buttons arm the shared elo flow", () => {
             member,
             guild,
             guildId: "123",
-            channel: helperChannel,
-            channelId: helperChannel.id,
-            url: "https://discord.com/channels/123/" + helperChannel.id + "/" + label + "-message",
+            channel: targetChannel,
+            channelId: targetChannel.id,
+            url: "https://discord.com/channels/123/" + targetChannel.id + "/" + label + "-message",
             createdAt: new Date("2026-05-30T00:01:00.000Z"),
             createdTimestamp: Date.parse("2026-05-30T00:01:00.000Z"),
             attachments: new discord.Collection([["att-1", attachment]]),
@@ -826,7 +829,7 @@ test("helper and profile elo buttons arm the shared elo flow", () => {
             reference: null,
             reply: async (payload) => {
               pushEvent(label, "reply", payload);
-              return createReplyMessage(label, helperChannel);
+              return createReplyMessage(label, targetChannel);
             },
             delete: async () => {
               pushEvent(label, "delete", "ok");
@@ -851,9 +854,12 @@ test("helper and profile elo buttons arm the shared elo flow", () => {
               return;
             }
 
+            const profilePrivateChannel = { ...helperChannel, id: "profile-ephemeral", name: "profile-ephemeral" };
             const profilePrivateMessage = {
               id: "profile-elo-private-message",
-              channelId: helperChannel.id,
+              channelId: profilePrivateChannel.id,
+              channel: profilePrivateChannel,
+              components: [{ components: [{ customId: "profile_bind_roblox" }, { customId: "elo_submit_open" }] }],
               delete: async () => true,
             };
 
@@ -913,7 +919,7 @@ test("helper and profile elo buttons arm the shared elo flow", () => {
             }, 500);
 
             setTimeout(() => {
-              originalEmit.call(this, "messageCreate", makeEloMessage("profile_elo", profileUser, profileMember, "88 elo"));
+              originalEmit.call(this, "messageCreate", makeEloMessage("profile_elo", profileUser, profileMember, "88 elo", profilePrivateChannel));
             }, 680);
           }, 250);
 
