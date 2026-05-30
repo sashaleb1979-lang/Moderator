@@ -64,7 +64,10 @@ const {
 function noop() {}
 
 const ANTITEAM_TRANSIENT_PING_DELETE_MS = 250;
+const ANTITEAM_SUPPORT_PROGRESS_CACHE_MAX = 100;
+const ANTITEAM_SUPPORT_PROGRESS_CACHE_TTL_MS = 5 * 60 * 1000;
 const ANTITEAM_EDIT_PING_DELETE_MS = 5000;
+const ANTITEAM_ROLE_GRANT_RETRY_DELAYS_MS = [2000, 10000, 30000];
 const ANTITEAM_UNKNOWN_INTERACTION_CODES = new Set([10062]);
 const ANTITEAM_ALREADY_ACK_CODES = new Set([40060]);
 
@@ -228,8 +231,13 @@ function createAntiteamOperator(options = {}) {
   if (!db || typeof db !== "object") throw new TypeError("db is required");
 
   const nowIso = typeof options.now === "function" ? options.now : () => new Date().toISOString();
+  const nowMs = typeof options.nowMs === "function" ? options.nowMs : () => Date.now();
   const logError = typeof options.logError === "function" ? options.logError : noop;
   const scheduleTimeout = typeof options.setTimeout === "function" ? options.setTimeout : setTimeout;
+  const supportProgressCache = new Map();
+  const supportProgressInFlight = new Map();
+  let submitPanelResendInFlight = null;
+  let submitPanelResendQueued = false;
 
   function getState() {
     return ensureAntiteamState(db).state;
@@ -241,6 +249,107 @@ function createAntiteamOperator(options = {}) {
 
   function getRobloxRuntimeState() {
     return typeof options.getRobloxRuntimeState === "function" ? options.getRobloxRuntimeState() : null;
+  }
+
+  function writeDraft(userId, patch = {}) {
+    return setAntiteamDraft(db, userId, patch, { now: nowIso() });
+  }
+
+  function runDetached(task, onError = noop, { delayMs = 0 } = {}) {
+    const run = () => {
+      Promise.resolve()
+        .then(task)
+        .catch(onError);
+    };
+    if (Number(delayMs) > 0) {
+      const timer = scheduleTimeout(run, Math.max(0, Number(delayMs) || 0));
+      if (timer && typeof timer.unref === "function") timer.unref();
+      return;
+    }
+    run();
+  }
+
+  function emitAntiteamLatency(event, fields = {}) {
+    const parts = Object.entries(fields)
+      .map(([key, value]) => {
+        if (value == null || value === "") return "";
+        if (typeof value === "number") return `${key}=${Math.max(0, Math.round(value))}`;
+        return `${key}=${cleanString(String(value), 120)}`;
+      })
+      .filter(Boolean);
+    const line = `[antiteam][latency] event=${cleanString(event, 80) || "unknown"}${parts.length ? ` ${parts.join(" ")}` : ""}`;
+    if (typeof options.logLine === "function") {
+      runDetached(() => options.logLine(line), noop);
+      return;
+    }
+    logError(line);
+  }
+
+  function buildSupportProgressCacheKey(userId = "", displayName = "", stats = {}) {
+    return JSON.stringify({
+      userId: cleanString(userId, 80),
+      displayName: cleanString(displayName, 120),
+      responded: Number(stats?.responded) || 0,
+      linkGranted: Number(stats?.linkGranted) || 0,
+      confirmedArrived: Number(stats?.confirmedArrived) || 0,
+      lastHelpedAt: cleanString(stats?.lastHelpedAt, 80),
+    });
+  }
+
+  function pruneSupportProgressCache() {
+    const currentTime = nowMs();
+    for (const [cacheKey, entry] of supportProgressCache.entries()) {
+      if (!entry || entry.expiresAt <= currentTime) {
+        supportProgressCache.delete(cacheKey);
+      }
+    }
+    while (supportProgressCache.size > ANTITEAM_SUPPORT_PROGRESS_CACHE_MAX) {
+      const oldestKey = supportProgressCache.keys().next().value;
+      if (!oldestKey) break;
+      supportProgressCache.delete(oldestKey);
+    }
+  }
+
+  function getCachedSupportProgressCard(cacheKey = "") {
+    if (!cacheKey) return null;
+    const entry = supportProgressCache.get(cacheKey);
+    if (!entry) return null;
+    if (entry.expiresAt <= nowMs()) {
+      supportProgressCache.delete(cacheKey);
+      return null;
+    }
+    return entry.image;
+  }
+
+  function setCachedSupportProgressCard(cacheKey = "", image = null) {
+    if (!cacheKey || !image) return;
+    pruneSupportProgressCache();
+    supportProgressCache.set(cacheKey, {
+      image,
+      expiresAt: nowMs() + ANTITEAM_SUPPORT_PROGRESS_CACHE_TTL_MS,
+    });
+  }
+
+  async function getOrRenderSupportProgressCard(cacheKey = "", render = async () => null) {
+    const cachedImage = getCachedSupportProgressCard(cacheKey);
+    if (cachedImage) return { image: cachedImage, cache: "hit" };
+
+    const sharedRender = supportProgressInFlight.get(cacheKey);
+    if (sharedRender) {
+      return { image: await sharedRender, cache: "shared" };
+    }
+
+    const renderPromise = Promise.resolve()
+      .then(render)
+      .then((image) => {
+        setCachedSupportProgressCard(cacheKey, image);
+        return image;
+      })
+      .finally(() => {
+        supportProgressInFlight.delete(cacheKey);
+      });
+    supportProgressInFlight.set(cacheKey, renderPromise);
+    return { image: await renderPromise, cache: "miss" };
   }
 
   async function persist(label, mutate, { shouldSave = true } = {}) {
@@ -631,6 +740,63 @@ function createAntiteamOperator(options = {}) {
     return grantConfiguredRole(userId, roleId, reason);
   }
 
+  function shouldRetryBattalionRoleGrant(result = null, error = null) {
+    if (error) return true;
+    const hasRoleGrantTransport = typeof options.grantRole === "function" || typeof options.fetchMember === "function";
+    if (!hasRoleGrantTransport) return false;
+    const skipped = cleanString(result?.skipped, 80);
+    return skipped === "missing-member" || skipped === "missing-member-or-role";
+  }
+
+  function ensureBattalionRoleGrantedEventually(ticket = {}) {
+    const ticketId = cleanString(ticket?.id, 80) || "unknown";
+    const userId = cleanString(ticket?.createdBy, 80);
+    if (!userId) return;
+
+    const attemptGrant = async (attemptIndex = 0) => {
+      const startedAt = nowMs();
+      let roleResult = null;
+      let roleError = null;
+      try {
+        roleResult = await grantBattalionRole(userId, "antiteam request created");
+      } catch (error) {
+        roleError = error;
+      }
+
+      const outcome = roleResult?.granted ? "granted" : roleResult?.skipped || (roleError ? "error" : "failed");
+      emitAntiteamLatency("submit_role_grant", {
+        ticketId,
+        attempt: attemptIndex + 1,
+        durationMs: nowMs() - startedAt,
+        outcome,
+      });
+
+      if (roleResult?.granted || roleResult?.skipped === "already-has-role") return;
+
+      const retryDelayMs = ANTITEAM_ROLE_GRANT_RETRY_DELAYS_MS[attemptIndex];
+      if (Number.isFinite(retryDelayMs) && shouldRetryBattalionRoleGrant(roleResult, roleError)) {
+        logError(
+          `Antiteam battalion role grant retry scheduled [${ticketId}/${userId}] attempt ${attemptIndex + 1}:`,
+          roleError?.message || roleResult?.skipped || "unknown"
+        );
+        runDetached(() => attemptGrant(attemptIndex + 1), noop, { delayMs: retryDelayMs });
+        return;
+      }
+
+      if (roleError) {
+        logError(`Antiteam battalion role grant failed [${ticketId}/${userId}] attempt ${attemptIndex + 1}:`, roleError?.message || roleError);
+        return;
+      }
+      if (roleResult?.skipped) {
+        logError(`Antiteam battalion role grant incomplete [${ticketId}/${userId}] attempt ${attemptIndex + 1}: ${roleResult.skipped}`);
+        return;
+      }
+      logError(`Antiteam battalion role grant failed [${ticketId}/${userId}] attempt ${attemptIndex + 1}: unknown`);
+    };
+
+    runDetached(() => attemptGrant(0), noop);
+  }
+
   function getConfiguredHelperRewardRoleIds(config = getConfig()) {
     const roleIds = [];
     for (const threshold of ANTITEAM_HELPER_REWARD_THRESHOLDS) {
@@ -739,6 +905,27 @@ function createAntiteamOperator(options = {}) {
       return { mutated: true };
     });
     return { message, statusText: statusText || `Стартовая панель опубликована в <#${channel.id}>.` };
+  }
+
+  async function resendStartPanelAfterSubmit() {
+    if (submitPanelResendInFlight) {
+      submitPanelResendQueued = true;
+      return submitPanelResendInFlight;
+    }
+
+    submitPanelResendInFlight = (async () => {
+      let result = null;
+      do {
+        submitPanelResendQueued = false;
+        result = await publishStartPanel();
+      } while (submitPanelResendQueued);
+      return result;
+    })().finally(() => {
+      submitPanelResendInFlight = null;
+      submitPanelResendQueued = false;
+    });
+
+    return submitPanelResendInFlight;
   }
 
   async function editPublishedStartPanel() {
@@ -866,27 +1053,49 @@ function createAntiteamOperator(options = {}) {
     await Promise.all([publicMessageSync, threadSync]);
   }
 
-  async function publishTicketFromDraft(userId, { skipPhoto = false } = {}) {
+  function getDraftPublishError(draft = {}) {
+    if (!cleanString(draft.description, 900)) {
+      return draft.kind === "clan"
+        ? "Для ФАЙТ С КЛАНОМ нужно описание врагов и ситуации."
+        : "Описание обязательно: укажи, кто тимится, кого бить, ники/kills или ситуацию любым понятным способом.";
+    }
+    return "";
+  }
+
+  async function requestDraftPhoto(userId) {
+    const channelId = getConfig().channelId;
+    await persist("antiteam-photo-request", () => {
+      const state = getState();
+      state.photoRequests[userId] = { userId, channelId, createdAt: nowIso() };
+      return { mutated: true };
+    });
+    return { needsPhoto: true, draft: getAntiteamDraft(db, userId) };
+  }
+
+  async function beginTicketPublish(userId, { skipPhoto = false } = {}) {
     const draft = getAntiteamDraft(db, userId);
     if (!draft) throw new Error("Черновик антитима истёк. Начни заново.");
-    if (!cleanString(draft.description, 900)) {
-      throw new Error(draft.kind === "clan"
-        ? "Для ФАЙТ С КЛАНОМ нужно описание врагов и ситуации."
-        : "Описание обязательно: укажи, кто тимится, кого бить, ники/kills или ситуацию любым понятным способом.");
-    }
+
+    const draftError = getDraftPublishError(draft);
+    if (draftError) throw new Error(draftError);
+
     if (draft.photoWanted && !draft.photo && !skipPhoto) {
-      const channelId = getConfig().channelId;
-      await persist("antiteam-photo-request", () => {
-        const state = getState();
-        state.photoRequests[userId] = { userId, channelId, createdAt: nowIso() };
-        return { mutated: true };
-      });
-      return { needsPhoto: true, draft: getAntiteamDraft(db, userId) };
+      return requestDraftPhoto(userId);
     }
 
-    const state = getState();
-    const config = state.config;
+    const config = getConfig();
     if (!config.channelId) throw new Error("Канал антитима не настроен.");
+
+    const ticket = await persist("antiteam-ticket-create", () => createAntiteamTicketFromDraft(db, draft, {
+      now: nowIso(),
+      friendEligibleDiscordUserIds: [],
+    }));
+    return { draft, ticket };
+  }
+
+  async function finalizeTicketPublish(ticket, draft) {
+    const finalizeStartedAt = nowMs();
+    const config = getConfig();
     const channel = await fetchTextChannel(config.channelId);
     if (!channel?.isTextBased?.()) throw new Error("Канал антитима не найден или не текстовый.");
     const channelType = Number(channel.type);
@@ -894,60 +1103,102 @@ function createAntiteamOperator(options = {}) {
       throw new Error("Канал антитима должен быть обычным текстовым каналом, чтобы миссии создавали Public Thread.");
     }
 
-    const friendEligibleDiscordUserIds = await collectFriendEligibleDiscordIds(draft);
-    const ticket = await persist("antiteam-ticket-create", () => createAntiteamTicketFromDraft(db, draft, {
-      now: nowIso(),
-      friendEligibleDiscordUserIds,
+    const friendEligibleStartedAt = nowMs();
+    const friendEligibleDiscordUserIdsPromise = collectFriendEligibleDiscordIds(draft);
+    const publicPayload = buildTicketPublicPayload(ticket, config, {
+      attachPhoto: Boolean(ticket.photos?.length || ticket.photo?.url),
+    });
+    const publicSendStartedAt = nowMs();
+    const publicMessage = await channel.send(publicPayload);
+    const publicSendMs = nowMs() - publicSendStartedAt;
+    // Discord creates a public thread when a thread starts from a public channel message.
+    const threadStartStartedAt = nowMs();
+    const thread = typeof publicMessage.startThread === "function"
+      ? await publicMessage.startThread({
+        name: buildThreadName(ticket).slice(0, 100),
+        autoArchiveDuration: Math.max(60, Math.min(10080, Number(config.missionAutoArchiveMinutes) || 60)),
+      })
+      : null;
+    const threadStartMs = nowMs() - threadStartStartedAt;
+    const threadPanelStartedAt = nowMs();
+    const threadPanel = thread
+      ? await thread.send(buildThreadPanelPayload(ticket, config)).catch(() => null)
+      : null;
+    const threadPanelMs = nowMs() - threadPanelStartedAt;
+    const pingStartedAt = nowMs();
+    const pingMessage = thread ? await sendTicketPingMessages(thread, ticket, config) : null;
+    const pingMs = nowMs() - pingStartedAt;
+    const friendEligibleDiscordUserIds = await friendEligibleDiscordUserIdsPromise;
+    const friendEligibleMs = nowMs() - friendEligibleStartedAt;
+
+    const refsPersistStartedAt = nowMs();
+    const updatedTicket = await persist("antiteam-ticket-message-refs", () => updateAntiteamTicket(db, ticket.id, (current) => {
+      current.friendEligibleDiscordUserIds = friendEligibleDiscordUserIds;
+      current.message = {
+        guildId: cleanString(thread?.guildId || publicMessage.guildId || channel.guildId, 80),
+        channelId: channel.id,
+        messageId: publicMessage.id,
+        threadId: thread?.id || "",
+        threadPanelMessageId: threadPanel?.id || "",
+        pingMessageId: pingMessage?.id || "",
+        photoAttachmentName: publicPayload.files?.[0]?.name || "",
+        photoAttachmentNames: (publicPayload.files || []).map((file) => file.name).filter(Boolean),
+      };
+      current.updatedAt = nowIso();
+      return current;
     }));
+    const refsPersistMs = nowMs() - refsPersistStartedAt;
 
+    const publicEditStartedAt = nowMs();
+    if (typeof publicMessage.edit === "function") {
+      await publicMessage.edit(buildTicketPublicPayload(updatedTicket, config)).catch(() => {});
+    }
+    const publicEditMs = nowMs() - publicEditStartedAt;
+
+    ensureBattalionRoleGrantedEventually(ticket);
+    runDetached(async () => {
+      const panelResendStartedAt = nowMs();
+      const panelResult = await resendStartPanelAfterSubmit();
+      emitAntiteamLatency("submit_panel_resend", {
+        ticketId: ticket.id,
+        durationMs: nowMs() - panelResendStartedAt,
+        outcome: panelResult?.message ? "published" : panelResult?.reason || "unknown",
+      });
+    }, (error) => {
+      logError("Antiteam panel resend failed:", error?.message || error);
+    });
+    emitAntiteamLatency("submit_finalize", {
+      ticketId: ticket.id,
+      publicSendMs,
+      threadStartMs,
+      threadPanelMs,
+      pingMs,
+      friendScanMs: friendEligibleMs,
+      refsPersistMs,
+      publicEditMs,
+      totalMs: nowMs() - finalizeStartedAt,
+      roleGrant: "detached",
+      panelResend: "detached",
+    });
+    return { ticket: updatedTicket, publicMessage, thread };
+  }
+
+  async function rollbackTicketPublish(userId, ticket, draft) {
+    await persist("antiteam-ticket-publish-rollback", () => {
+      const current = getState();
+      delete current.tickets[ticket.id];
+      current.drafts[userId] = draft;
+      return { mutated: true };
+    });
+  }
+
+  async function publishTicketFromDraft(userId, { skipPhoto = false } = {}) {
+    const started = await beginTicketPublish(userId, { skipPhoto });
+    if (started?.needsPhoto) return started;
     try {
-      const publicPayload = buildTicketPublicPayload(ticket, config, {
-        attachPhoto: Boolean(ticket.photos?.length || ticket.photo?.url),
-      });
-      const publicMessage = await channel.send(publicPayload);
-      // Discord creates a public thread when a thread starts from a public channel message.
-      const thread = typeof publicMessage.startThread === "function"
-        ? await publicMessage.startThread({
-          name: buildThreadName(ticket).slice(0, 100),
-          autoArchiveDuration: Math.max(60, Math.min(10080, Number(config.missionAutoArchiveMinutes) || 60)),
-        })
-        : null;
-      const pingMessage = thread ? await sendTicketPingMessages(thread, ticket, config) : null;
-      const threadPanel = thread
-        ? await thread.send(buildThreadPanelPayload(ticket, config)).catch(() => null)
-        : null;
-
-      const updatedTicket = await persist("antiteam-ticket-message-refs", () => updateAntiteamTicket(db, ticket.id, (current) => {
-        current.message = {
-          guildId: cleanString(thread?.guildId || publicMessage.guildId || channel.guildId, 80),
-          channelId: channel.id,
-          messageId: publicMessage.id,
-          threadId: thread?.id || "",
-          threadPanelMessageId: threadPanel?.id || "",
-          pingMessageId: pingMessage?.id || "",
-          photoAttachmentName: publicPayload.files?.[0]?.name || "",
-          photoAttachmentNames: (publicPayload.files || []).map((file) => file.name).filter(Boolean),
-        };
-        current.updatedAt = nowIso();
-        return current;
-      }));
-
-      if (typeof publicMessage.edit === "function") {
-        await publicMessage.edit(buildTicketPublicPayload(updatedTicket, config)).catch(() => {});
-      }
-
-      await grantBattalionRole(ticket.createdBy, "antiteam request created").catch(() => null);
-      await publishStartPanel().catch((error) => {
-        logError("Antiteam panel resend failed:", error?.message || error);
-      });
-      return { ticket: updatedTicket, publicMessage, thread };
+      return await finalizeTicketPublish(started.ticket, started.draft);
     } catch (error) {
-      await persist("antiteam-ticket-publish-rollback", () => {
-        const current = getState();
-        delete current.tickets[ticket.id];
-        current.drafts[userId] = draft;
-        return { mutated: true };
-      });
+      await rollbackTicketPublish(userId, started.ticket, started.draft);
       throw error;
     }
   }
@@ -1196,8 +1447,7 @@ function createAntiteamOperator(options = {}) {
   }
 
   async function openTicketDraftWithRoblox(interaction, robloxUser, kind = "standard", { response = "reply", statusText = "", anchorUser = null } = {}) {
-    if (kind !== "clan") await grantBattalionRole(interaction.user.id, "antiteam roblox ready").catch(() => null);
-    const draft = await persist("antiteam-draft-roblox", () => setAntiteamDraft(db, interaction.user.id, {
+    const draft = writeDraft(interaction.user.id, {
       kind,
       userTag: getUserTag(interaction.user),
       anchorUserId: kind === "clan" ? cleanString(anchorUser?.id, 80) : "",
@@ -1207,13 +1457,14 @@ function createAntiteamOperator(options = {}) {
       count: "2-4",
       directJoinEnabled: false,
       photoWanted: false,
-    }, { now: nowIso() }));
+    });
     const payload = buildTicketSetupPayload(draft, getConfig(), statusText || `Roblox готов: ${draft.roblox.username}.`);
     if (response === "editReply") {
       await safeEditReply(interaction, payload);
     } else {
       await safeReply(interaction, payload);
     }
+    if (kind !== "clan") await grantBattalionRole(interaction.user.id, "antiteam roblox ready").catch(() => null);
     return true;
   }
 
@@ -1357,19 +1608,30 @@ function createAntiteamOperator(options = {}) {
         const helperStats = getState().stats?.helpers?.[interaction.user.id] || {};
         const points = Number(helperStats.confirmedArrived) || 0;
         const model = getSupportProgressModel(points);
+        const displayName = getUserTag(interaction.user);
+        const cacheKey = buildSupportProgressCacheKey(interaction.user.id, displayName, helperStats);
+        const progressStartedAt = nowMs();
         const renderCard = typeof options.renderSupportProgressCard === "function"
           ? options.renderSupportProgressCard
           : renderSupportProgressCard;
-        const image = await renderCard({
-          model,
-          points,
-          stats: helperStats,
-          displayName: getUserTag(interaction.user),
+        const { image, cache } = await getOrRenderSupportProgressCard(cacheKey, async () => {
+          return await renderCard({
+            model,
+            points,
+            stats: helperStats,
+            displayName,
+          });
         });
         const attachmentName = "antiteam-support-progress.png";
         await safeEditReply(interaction, {
           ...buildSupportProgressPayload(model, { attachmentName }),
           files: [new AttachmentBuilder(image, { name: attachmentName })],
+        });
+        emitAntiteamLatency("progress_card", {
+          userId: interaction.user.id,
+          points,
+          cache,
+          totalMs: nowMs() - progressStartedAt,
         });
       } catch (error) {
         logError("Antiteam support progress render failed:", error?.message || error);
@@ -1573,7 +1835,7 @@ function createAntiteamOperator(options = {}) {
         ? { directJoinEnabled: !draft.directJoinEnabled }
         : { photoWanted: !draft.photoWanted };
       try {
-        const updated = await persist("antiteam-draft-toggle", () => setAntiteamDraft(db, interaction.user.id, patch, { now: nowIso() }));
+        const updated = writeDraft(interaction.user.id, patch);
         if (ack.ok) await safeEditReply(interaction, buildTicketSetupPayload(updated, getConfig()));
       } catch (error) {
         const fallbackDraft = getAntiteamDraft(db, interaction.user.id) || draft;
@@ -1615,18 +1877,32 @@ function createAntiteamOperator(options = {}) {
 
     if (id === ANTITEAM_CUSTOM_IDS.submitDraft || id === ANTITEAM_CUSTOM_IDS.submitWithoutPhoto) {
       const ack = await safeDeferUpdate(interaction);
+      let started = null;
       try {
-        const result = await publishTicketFromDraft(interaction.user.id, { skipPhoto: id === ANTITEAM_CUSTOM_IDS.submitWithoutPhoto });
-        if (result.needsPhoto) {
-          if (ack.ok) await safeEditReply(interaction, buildPhotoRequestPayload(result.draft));
-        } else if (ack.ok) {
-          await safeEditReply(interaction, {
-            content: `Заявка опубликована: ${result.ticket ? `\`${result.ticket.id}\`` : "готово"}.`,
-            components: [],
-            flags: MessageFlags.Ephemeral,
-          });
+        started = await beginTicketPublish(interaction.user.id, { skipPhoto: id === ANTITEAM_CUSTOM_IDS.submitWithoutPhoto });
+        if (started.needsPhoto) {
+          if (ack.ok) await safeEditReply(interaction, buildPhotoRequestPayload(started.draft));
+        } else {
+          if (ack.ok) {
+            await safeEditReply(interaction, {
+              content: `Заявка принята: ${started.ticket ? `\`${started.ticket.id}\`` : "готово"}. Публикую...`,
+              components: [],
+              flags: MessageFlags.Ephemeral,
+            });
+          }
+          const result = await finalizeTicketPublish(started.ticket, started.draft);
+          if (ack.ok) {
+            await safeEditReply(interaction, {
+              content: `Заявка опубликована: ${result.ticket ? `\`${result.ticket.id}\`` : "готово"}.`,
+              components: [],
+              flags: MessageFlags.Ephemeral,
+            });
+          }
         }
       } catch (error) {
+        if (started?.ticket && started?.draft) {
+          await rollbackTicketPublish(interaction.user.id, started.ticket, started.draft).catch(() => {});
+        }
         const draft = getAntiteamDraft(db, interaction.user.id);
         if (ack.ok) {
           if (draft) {
@@ -1823,7 +2099,7 @@ function createAntiteamOperator(options = {}) {
     }
     const ack = await safeDeferUpdate(interaction);
     try {
-      const updated = await persist("antiteam-draft-select", () => setAntiteamDraft(db, interaction.user.id, patch, { now: nowIso() }));
+      const updated = writeDraft(interaction.user.id, patch);
       if (ack.ok) await safeEditReply(interaction, buildTicketSetupPayload(updated, getConfig()));
     } catch (error) {
       const fallbackDraft = getAntiteamDraft(db, interaction.user.id) || draft;
@@ -1882,7 +2158,7 @@ function createAntiteamOperator(options = {}) {
         return true;
       }
       const description = interaction.fields.getTextInputValue("description");
-      const updated = await persist("antiteam-draft-description", () => setAntiteamDraft(db, interaction.user.id, { description }, { now: nowIso() }));
+      const updated = writeDraft(interaction.user.id, { description });
       const payload = buildTicketSetupPayload(updated, getConfig(), "Описание обновлено.");
       if (ack.ok) await safeEditReply(interaction, payload);
       return true;

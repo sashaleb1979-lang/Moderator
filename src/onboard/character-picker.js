@@ -47,14 +47,23 @@ function paginateCharacterPickerEntries(entries = [], rawPage = 0, pageSize = CH
   };
 }
 
+function normalizeCharacterPickerSelectedIds(selectedIds = [], entries = null, options = {}) {
+  const max = Math.max(1, Number(options.max) || 2);
+  const allowedIds = Array.isArray(entries)
+    ? new Set(entries.map((entry) => cleanString(entry?.id, 120)).filter(Boolean))
+    : null;
+
+  return [...new Set(
+    (Array.isArray(selectedIds) ? selectedIds : [])
+      .map((value) => cleanString(value, 120))
+      .filter((value) => value && (!allowedIds || allowedIds.has(value)))
+  )].slice(0, max);
+}
+
 function toggleCharacterPickerSelection(selectedIds = [], characterId = "", options = {}) {
   const max = Math.max(1, Number(options.max) || 2);
   const id = cleanString(characterId, 120);
-  const current = [...new Set(
-    (Array.isArray(selectedIds) ? selectedIds : [])
-      .map((value) => cleanString(value, 120))
-      .filter(Boolean)
-  )].slice(0, max);
+  const current = normalizeCharacterPickerSelectedIds(selectedIds, options.entries, { max });
   if (!id) return { selectedIds: current, blocked: true, reason: "unknown-character" };
   if (current.includes(id)) {
     return { selectedIds: current.filter((value) => value !== id), blocked: false, reason: "removed" };
@@ -157,7 +166,8 @@ function buildCharacterPickerPayload(options = {}) {
   const entries = Array.isArray(options.entries) ? options.entries : [];
   const picker = options.picker || {};
   const characterEmojis = options.characterEmojis && typeof options.characterEmojis === "object" ? options.characterEmojis : {};
-  const selectedIds = Array.isArray(picker.selectedIds) ? picker.selectedIds : [];
+  const selectedIds = normalizeCharacterPickerSelectedIds(picker.selectedIds, entries);
+  const normalizedPicker = { ...picker, selectedIds };
 
   if (!picker || !Array.isArray(picker.selectedIds)) {
     return buildCharacterPickerStatusPayload("Сессия выбора мейнов истекла. Нажми кнопку заново.", options);
@@ -186,8 +196,8 @@ function buildCharacterPickerPayload(options = {}) {
   const payload = {
     embeds: [embed],
     components: [
-      ...buildCharacterButtonRows(picker, pageInfo, characterEmojis),
-      buildCharacterPickerControlRow(picker, pageInfo),
+      ...buildCharacterButtonRows(normalizedPicker, pageInfo, characterEmojis),
+      buildCharacterPickerControlRow(normalizedPicker, pageInfo),
     ],
   };
   if (options.forUpdate) payload.attachments = [];
@@ -200,6 +210,7 @@ module.exports = {
   CHARACTER_PICKER_ROWS,
   buildCharacterPickerPayload,
   buildCharacterPickerStatusPayload,
+  normalizeCharacterPickerSelectedIds,
   paginateCharacterPickerEntries,
   toggleCharacterPickerSelection,
 };

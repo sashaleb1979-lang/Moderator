@@ -29,9 +29,15 @@ test("resident chat role modal writes separate resident config and does not touc
 });
 
 test("role sync and activity sync include resident chat reconciliation", () => {
-  assert.match(welcomeBotSource, /panel_sync_roles[\s\S]*?syncAccessCompanionRoles\(client/);
+  assert.match(
+    welcomeBotSource,
+    /panel_sync_roles[\s\S]*?syncAccessCompanionRoles\(client/
+  );
   assert.match(welcomeBotSource, /panel_sync_roles[\s\S]*?syncResidentChatAccessRoles\(client/);
   assert.match(welcomeBotSource, /runSyncRoles: async \(args\) => \{[\s\S]*?runActivityRoleSyncFromSnapshots\(args\)[\s\S]*?syncResidentChatAccessRoles\(client/);
   assert.match(welcomeBotSource, /runDailyActivityRoleSync: async \(\) => \{[\s\S]*?syncResidentChatAccessRoles\(client/);
+});
+
+test("activity operator still exposes access companion diagnostics in the inspection surface", () => {
   assert.match(activityOperatorSource, /accessCompanionSummary/);
 });

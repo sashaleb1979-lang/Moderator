@@ -17,6 +17,7 @@ const {
 const {
   CHARACTER_PICKER_PAGE_SIZE,
   buildCharacterPickerPayload,
+  normalizeCharacterPickerSelectedIds,
   paginateCharacterPickerEntries,
   toggleCharacterPickerSelection,
 } = require("../src/onboard/character-picker");
@@ -157,6 +158,27 @@ test("character picker toggle selects up to two mains and blocks the third", () 
   assert.deepEqual(removed.selectedIds, ["vessel"]);
 });
 
+test("character picker ignores stale hidden mains before applying the two-slot limit", () => {
+  const entries = [
+    { id: "honored_one", label: "Honored One" },
+    { id: "vessel", label: "Vessel" },
+  ];
+
+  assert.deepEqual(
+    normalizeCharacterPickerSelectedIds(["legacy_hidden_main", "honored_one"], entries),
+    ["honored_one"]
+  );
+
+  const result = toggleCharacterPickerSelection(["legacy_hidden_main", "honored_one"], "vessel", {
+    max: 2,
+    entries,
+  });
+
+  assert.equal(result.blocked, false);
+  assert.equal(result.reason, "added");
+  assert.deepEqual(result.selectedIds, ["honored_one", "vessel"]);
+});
+
 test("character picker payload renders one dense emoji-button panel without attachments", () => {
   const entries = (Array.isArray(botConfig.characters) ? botConfig.characters : []).map((value) => ({
     id: value.id,
@@ -228,9 +250,56 @@ test("presentation normalization preserves character emoji config", () => {
 
 test("change mains route reopens picker with reply instead of rewriting the source panel", () => {
   const source = fs.readFileSync(path.join(__dirname, "..", "welcome-bot.js"), "utf8");
-  const changeMainsBranch = /if \(interaction\.customId === "onboard_change_mains"\) \{[\s\S]*?await openCharacterPicker\(interaction, isProfileSubmitSourceInteraction\(interaction\) \? "quick" : "full", "reply"\);/;
+  const changeMainsBranch = /if \(interaction\.customId === "onboard_change_mains"\) \{[\s\S]*?await openCharacterPicker\(interaction, "full", "reply"(?:,[\s\S]*?)?\);/;
   const legacyUpdateBranch = /if \(interaction\.customId === "onboard_change_mains"\) \{[\s\S]*?await openCharacterPicker\(interaction, "full", "update"\);/;
 
   assert.match(source, changeMainsBranch);
   assert.doesNotMatch(source, legacyUpdateBranch);
+});
+
+test("welcome-bot sanitizes stale mains before persisting picker state", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "welcome-bot.js"), "utf8");
+  const stateNormalizationBranch = /function normalizeMainsPickerState\(rawValue = \{\}\) \{[\s\S]*?selectedIds = normalizeCharacterPickerSelectedIds\(rawValue\?\.selectedIds, getCharacterPickerEntries\(\)\);/;
+
+  assert.match(source, stateNormalizationBranch);
+});
+
+test("welcome-bot sanitizes submit session mains through the live-role boundary", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "welcome-bot.js"), "utf8");
+  const sessionNormalizationBranch = /function normalizeSubmitSessionState\(rawValue = \{\}\) \{[\s\S]*?mainCharacterIds: getValidatedLiveMainCharacterIds\(nextValue\.mainCharacterIds\),[\s\S]*?function setSubmitSession\(userId, value\) \{[\s\S]*?normalizeSubmitSessionState\(value\)/;
+
+  assert.match(source, sessionNormalizationBranch);
+});
+
+test("welcome-bot validates live mains before creating a pending submission", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "welcome-bot.js"), "utf8");
+  const pendingSubmissionValidationBranch = /async function createPendingSubmissionFromAttachment\(client, input\) \{[\s\S]*?const mainCharacterIds = getValidatedLiveMainCharacterIds\(input\.mainCharacterIds\);[\s\S]*?if \(!selectedEntries\.length\) \{[\s\S]*?Сессия выбора мейнов устарела\.[\s\S]*?mainCharacterIds,/;
+
+  assert.match(source, pendingSubmissionValidationBranch);
+});
+
+test("welcome-bot renders submit and Roblox steps from normalized live mains", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "welcome-bot.js"), "utf8");
+  const submitStepBranch = /function buildSubmitStepPayload\(userId, options = \{\}\) \{[\s\S]*?const mainCharacterIds = getValidatedLiveMainCharacterIds\(/;
+  const robloxStepBranch = /function buildRobloxUsernameStepPayload\(userId, options = \{\}\) \{[\s\S]*?const mainCharacterIds = getValidatedLiveMainCharacterIds\(/;
+
+  assert.match(source, submitStepBranch);
+  assert.match(source, robloxStepBranch);
+});
+
+test("welcome-bot validates live mains before creating manual approved records", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "welcome-bot.js"), "utf8");
+  const manualApproveValidationBranch = /async function createManualApprovedRecord\(client, targetUser, screenshotAttachment, kills, moderatorTag\) \{[\s\S]*?const mainCharacterIds = getValidatedLiveMainCharacterIds\(profile\.mainCharacterIds\);[\s\S]*?if \(!selectedEntries\.length\) \{[\s\S]*?У пользователя не найдены актуальные мейны\./;
+
+  assert.match(source, manualApproveValidationBranch);
+});
+
+test("welcome-bot no longer carries the dormant main draft seam", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "welcome-bot.js"), "utf8");
+
+  assert.doesNotMatch(source, /const mainDrafts = new Map\(\);/);
+  assert.doesNotMatch(source, /function setMainDraft\(/);
+  assert.doesNotMatch(source, /function getMainDraft\(/);
+  assert.doesNotMatch(source, /function clearMainDraft\(/);
+  assert.doesNotMatch(source, /ONBOARD_BEGIN_ROUTES\.DRAFT/);
 });

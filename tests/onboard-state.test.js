@@ -896,7 +896,6 @@ test("onboard begin route prioritizes pending proof and pending submission over 
     hasPendingSubmission: true,
     cooldownLeft: 42,
     hasSubmitSession: true,
-    hasMainDraft: true,
   }), {
     type: ONBOARD_BEGIN_ROUTES.REQUIRED_ROBLOX,
     cooldownLeft: 42,
@@ -906,18 +905,16 @@ test("onboard begin route prioritizes pending proof and pending submission over 
     hasPendingSubmission: true,
     cooldownLeft: 42,
     hasSubmitSession: true,
-    hasMainDraft: true,
   }), {
     type: ONBOARD_BEGIN_ROUTES.PENDING,
     cooldownLeft: 42,
   });
 });
 
-test("onboard begin route falls through from cooldown to submit, draft, and picker", () => {
+test("onboard begin route falls through from cooldown to submit and picker", () => {
   assert.deepEqual(resolveOnboardBeginRoute({
     cooldownLeft: 17,
     hasSubmitSession: true,
-    hasMainDraft: true,
   }), {
     type: ONBOARD_BEGIN_ROUTES.COOLDOWN,
     cooldownLeft: 17,
@@ -925,16 +922,8 @@ test("onboard begin route falls through from cooldown to submit, draft, and pick
 
   assert.deepEqual(resolveOnboardBeginRoute({
     hasSubmitSession: true,
-    hasMainDraft: true,
   }), {
     type: ONBOARD_BEGIN_ROUTES.SUBMIT,
-    cooldownLeft: 0,
-  });
-
-  assert.deepEqual(resolveOnboardBeginRoute({
-    hasMainDraft: true,
-  }), {
-    type: ONBOARD_BEGIN_ROUTES.DRAFT,
     cooldownLeft: 0,
   });
 

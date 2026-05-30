@@ -6,7 +6,6 @@ const ONBOARD_BEGIN_ROUTES = Object.freeze({
   PENDING: "pending",
   COOLDOWN: "cooldown",
   SUBMIT: "submit",
-  DRAFT: "draft",
   PICKER: "picker",
 });
 
@@ -36,10 +35,6 @@ function resolveOnboardBeginRoute(value = {}) {
 
   if (state.hasSubmitSession) {
     return { type: ONBOARD_BEGIN_ROUTES.SUBMIT, cooldownLeft };
-  }
-
-  if (state.hasMainDraft) {
-    return { type: ONBOARD_BEGIN_ROUTES.DRAFT, cooldownLeft };
   }
 
   return { type: ONBOARD_BEGIN_ROUTES.PICKER, cooldownLeft };

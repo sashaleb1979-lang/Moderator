@@ -147,10 +147,32 @@ test("welcome-bot guildMemberAdd runs returning activity sync before newcomer ca
     const originalEmit = discord.Client.prototype.emit;
 
     discord.Client.prototype.login = function login() {
+      const guildRoles = new Map([
+        ["123", { id: "123", name: "@everyone" }],
+        ["role-newcomer", { id: "role-newcomer", name: "newcomer" }],
+        ["role-dead", { id: "role-dead", name: "dead" }],
+      ]);
       const roleCache = new Map([
         ["123", { id: "123", name: "@everyone" }],
         ["role-newcomer", { id: "role-newcomer", name: "newcomer" }],
       ]);
+      const guildRoleCache = {
+        filter(predicate) {
+          return new Map([...guildRoles].filter(([, role]) => predicate(role)));
+        },
+        get(roleId) {
+          return guildRoles.get(roleId) || null;
+        },
+        has(roleId) {
+          return guildRoles.has(roleId);
+        },
+        keys() {
+          return guildRoles.keys();
+        },
+        values() {
+          return guildRoles.values();
+        },
+      };
       const member = {
         id: "returning-user",
         displayName: "Returning User",
@@ -191,14 +213,9 @@ test("welcome-bot guildMemberAdd runs returning activity sync before newcomer ca
           fetch: async (userId) => userId === "returning-user" ? member : null,
         },
         roles: {
-          fetch: async () => ({ cache: new Map(), filter: () => new Map() }),
+          fetch: async () => ({ cache: guildRoleCache, filter: guildRoleCache.filter }),
           create: async () => ({ id: "role-created", name: "stub-role" }),
-          cache: {
-            filter: () => new Map(),
-            get: () => null,
-            keys: () => [],
-            values: () => [],
-          },
+          cache: guildRoleCache,
         },
       };
       member.guild = guild;
@@ -245,12 +262,12 @@ test("welcome-bot guildMemberAdd runs returning activity sync before newcomer ca
   assert.equal(
     result.status,
     0,
-    `activity rejoin smoke failed\nstdout:\n${result.stdout || ""}\nstderr:\n${result.stderr || ""}`
+    `activity join smoke failed\nstdout:\n${result.stdout || ""}\nstderr:\n${result.stderr || ""}`
   );
   assert.match(
     result.stdout || "",
     /activity-rejoin-smoke-ok/,
-    `expected activity rejoin smoke marker\nstdout:\n${result.stdout || ""}\nstderr:\n${result.stderr || ""}`
+    `expected activity join smoke marker\nstdout:\n${result.stdout || ""}\nstderr:\n${result.stderr || ""}`
   );
 });
 
@@ -305,10 +322,32 @@ test("welcome-bot clientReady auto-repairs fresh newcomers without a manual comm
     const originalEmit = discord.Client.prototype.emit;
 
     discord.Client.prototype.login = function login() {
+      const guildRoles = new Map([
+        ["123", { id: "123", name: "@everyone" }],
+        ["role-newcomer", { id: "role-newcomer", name: "newcomer" }],
+        ["role-dead", { id: "role-dead", name: "dead" }],
+      ]);
       const roleCache = new Map([
         ["123", { id: "123", name: "@everyone" }],
         ["role-dead", { id: "role-dead", name: "dead" }],
       ]);
+      const guildRoleCache = {
+        filter(predicate) {
+          return new Map([...guildRoles].filter(([, role]) => predicate(role)));
+        },
+        get(roleId) {
+          return guildRoles.get(roleId) || null;
+        },
+        has(roleId) {
+          return guildRoles.has(roleId);
+        },
+        keys() {
+          return guildRoles.keys();
+        },
+        values() {
+          return guildRoles.values();
+        },
+      };
       const member = {
         id: "fresh-user",
         displayName: "Fresh User",
@@ -349,14 +388,9 @@ test("welcome-bot clientReady auto-repairs fresh newcomers without a manual comm
           fetch: async (userId) => userId ? (userId === "fresh-user" ? member : null) : { cache: new Map([["fresh-user", member]]) },
         },
         roles: {
-          fetch: async () => ({ cache: new Map(), filter: () => new Map() }),
+          fetch: async () => ({ cache: guildRoleCache, filter: guildRoleCache.filter }),
           create: async () => ({ id: "role-created", name: "stub-role" }),
-          cache: {
-            filter: () => new Map(),
-            get: () => null,
-            keys: () => [],
-            values: () => [],
-          },
+          cache: guildRoleCache,
         },
       };
       member.guild = guild;

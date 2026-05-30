@@ -440,6 +440,84 @@ test("support progress button renders personal PNG from helper stats", async () 
   assert.equal(interaction.calls.at(-1)[1].files[0].name, "antiteam-support-progress.png");
 });
 
+test("support progress button reuses cached PNG while helper stats are unchanged", async () => {
+  const db = {};
+  const state = ensureAntiteamState(db).state;
+  state.stats.helpers["helper-1"] = {
+    responded: 8,
+    linkGranted: 8,
+    confirmedArrived: 7,
+    lastHelpedAt: "2026-05-16T10:00:00.000Z",
+  };
+  let currentMs = 1000;
+  const rendered = [];
+  const operator = createAntiteamOperator({
+    db,
+    saveDb() {},
+    nowMs: () => currentMs,
+    renderSupportProgressCard: async (options) => {
+      rendered.push(options);
+      return Buffer.from(`fake-png-${rendered.length}`);
+    },
+  });
+
+  const first = createButtonInteraction(ANTITEAM_CUSTOM_IDS.progress, { id: "helper-1", username: "Helper" });
+  assert.equal(await operator.handleButtonInteraction(first), true);
+
+  currentMs += 1000;
+  const second = createButtonInteraction(ANTITEAM_CUSTOM_IDS.progress, { id: "helper-1", username: "Helper" });
+  assert.equal(await operator.handleButtonInteraction(second), true);
+
+  assert.equal(rendered.length, 1);
+  assert.equal(second.calls.at(-1)[1].files[0].name, "antiteam-support-progress.png");
+});
+
+test("support progress button shares one PNG render across concurrent identical requests", async () => {
+  const db = {};
+  const state = ensureAntiteamState(db).state;
+  state.stats.helpers["helper-1"] = {
+    responded: 8,
+    linkGranted: 8,
+    confirmedArrived: 7,
+    lastHelpedAt: "2026-05-16T10:00:00.000Z",
+  };
+  const rendered = [];
+  let releaseRender = null;
+  let resolveRenderStarted = null;
+  const renderStarted = new Promise((resolve) => {
+    resolveRenderStarted = resolve;
+  });
+  const operator = createAntiteamOperator({
+    db,
+    saveDb() {},
+    renderSupportProgressCard: async (options) => {
+      rendered.push(options);
+      resolveRenderStarted();
+      await new Promise((resolve) => {
+        releaseRender = resolve;
+      });
+      return Buffer.from("fake-png-shared");
+    },
+  });
+
+  const first = createButtonInteraction(ANTITEAM_CUSTOM_IDS.progress, { id: "helper-1", username: "Helper" });
+  const second = createButtonInteraction(ANTITEAM_CUSTOM_IDS.progress, { id: "helper-1", username: "Helper" });
+
+  const firstPending = operator.handleButtonInteraction(first);
+  const secondPending = operator.handleButtonInteraction(second);
+  await renderStarted;
+
+  assert.equal(rendered.length, 1);
+
+  releaseRender();
+  assert.equal(await firstPending, true);
+  assert.equal(await secondPending, true);
+
+  assert.equal(rendered.length, 1);
+  assert.equal(first.calls.at(-1)[1].files[0].name, "antiteam-support-progress.png");
+  assert.equal(second.calls.at(-1)[1].files[0].name, "antiteam-support-progress.png");
+});
+
 test("join battalion button grants the base battalion role only", async () => {
   const db = {};
   const state = ensureAntiteamState(db).state;
@@ -1496,14 +1574,16 @@ test("standard draft submit sends battalion ping and transient configured role p
   assert.equal(await operator.handleButtonInteraction(interaction), true);
 
   const ticket = Object.values(db.sot.antiteam.tickets)[0];
-  assert.equal(ticket.message.pingMessageId, "thread-message-1");
+  assert.equal(ticket.message.threadPanelMessageId, "thread-message-1");
+  assert.equal(ticket.message.pingMessageId, "thread-message-2");
   assert.equal(sentToThread.length, 3);
-  assert.equal(sentToThread[0].content, "<@&battalion-role> <@&extra-base-role>");
-  assert.deepEqual(sentToThread[0].allowedMentions, { roles: ["battalion-role", "extra-base-role"] });
-  assert.equal(sentToThread[1].content, "<@&extra-role>");
-  assert.deepEqual(sentToThread[1].allowedMentions, { roles: ["extra-role"] });
+  assert.match(JSON.stringify(sentToThread[0].components[0].toJSON()), /Помочь/);
+  assert.equal(sentToThread[1].content, "<@&battalion-role> <@&extra-base-role>");
+  assert.deepEqual(sentToThread[1].allowedMentions, { roles: ["battalion-role", "extra-base-role"] });
+  assert.equal(sentToThread[2].content, "<@&extra-role>");
+  assert.deepEqual(sentToThread[2].allowedMentions, { roles: ["extra-role"] });
   assert.deepEqual(scheduledDelays, [250]);
-  assert.deepEqual(deletedMessages, ["thread-message-2"]);
+  assert.deepEqual(deletedMessages, ["thread-message-3"]);
 });
 
 test("standard draft submit sends edit-test buffer ping and deletes the edited buffer", async () => {
@@ -1570,21 +1650,23 @@ test("standard draft submit sends edit-test buffer ping and deletes the edited b
   assert.equal(await operator.handleButtonInteraction(interaction), true);
 
   const ticket = Object.values(db.sot.antiteam.tickets)[0];
-  assert.equal(ticket.message.pingMessageId, "thread-message-1");
+  assert.equal(ticket.message.threadPanelMessageId, "thread-message-1");
+  assert.equal(ticket.message.pingMessageId, "thread-message-2");
   assert.equal(sentToThread.length, 3);
-  assert.equal(sentToThread[0].content, "<@&battalion-role> <@&extra-base-role>");
-  assert.deepEqual(sentToThread[0].allowedMentions, { roles: ["battalion-role", "extra-base-role"] });
-  assert.equal(sentToThread[1].content, ".");
-  assert.deepEqual(sentToThread[1].allowedMentions, { parse: [] });
+  assert.match(JSON.stringify(sentToThread[0].components[0].toJSON()), /Помочь/);
+  assert.equal(sentToThread[1].content, "<@&battalion-role> <@&extra-base-role>");
+  assert.deepEqual(sentToThread[1].allowedMentions, { roles: ["battalion-role", "extra-base-role"] });
+  assert.equal(sentToThread[2].content, ".");
+  assert.deepEqual(sentToThread[2].allowedMentions, { parse: [] });
   assert.deepEqual(editedMessages, [{
-    id: "thread-message-2",
+    id: "thread-message-3",
     payload: {
       content: "<@&edit-role-1> <@&edit-role-2>",
       allowedMentions: { roles: ["edit-role-1", "edit-role-2"] },
     },
   }]);
   assert.deepEqual(scheduledDelays, [5000]);
-  assert.deepEqual(deletedMessages, ["thread-message-2"]);
+  assert.deepEqual(deletedMessages, ["thread-message-3"]);
 });
 
 test("standard draft submit skips edit-test buffer when edit roles are empty", async () => {
@@ -1646,9 +1728,11 @@ test("standard draft submit skips edit-test buffer when edit roles are empty", a
   assert.equal(await operator.handleButtonInteraction(interaction), true);
 
   const ticket = Object.values(db.sot.antiteam.tickets)[0];
-  assert.equal(ticket.message.pingMessageId, "thread-message-1");
+  assert.equal(ticket.message.threadPanelMessageId, "thread-message-1");
+  assert.equal(ticket.message.pingMessageId, "thread-message-2");
   assert.equal(sentToThread.length, 2);
-  assert.equal(sentToThread[0].content, "<@&battalion-role>");
+  assert.match(JSON.stringify(sentToThread[0].components[0].toJSON()), /Помочь/);
+  assert.equal(sentToThread[1].content, "<@&battalion-role>");
   assert.deepEqual(editedMessages, []);
   assert.deepEqual(scheduledDelays, []);
 });
@@ -1715,9 +1799,230 @@ test("standard draft submit logs edit-test edit failures without aborting ticket
   assert.equal(await operator.handleButtonInteraction(interaction), true);
 
   const ticket = Object.values(db.sot.antiteam.tickets)[0];
-  assert.equal(ticket.message.pingMessageId, "thread-message-1");
+  assert.equal(ticket.message.threadPanelMessageId, "thread-message-1");
+  assert.equal(ticket.message.pingMessageId, "thread-message-2");
   assert.equal(sentToThread.length, 3);
-  assert.deepEqual(deletedMessages, ["thread-message-2"]);
+  assert.deepEqual(deletedMessages, ["thread-message-3"]);
+  assert.match(logErrors.join("\n"), /Antiteam edit ping failed: edit failed/);
+});
+
+test("standard draft submit sends edit-test buffer ping and deletes the edited buffer", async () => {
+  const db = {};
+  const state = ensureAntiteamState(db).state;
+  state.config.channelId = "channel-1";
+  state.config.battalionRoleId = "battalion-role";
+  state.config.battalionPingRoleIds = ["extra-base-role"];
+  state.config.pingMode = "edit_roles";
+  state.config.editPingRoleIds = ["edit-role-1", "edit-role-2"];
+  setAntiteamDraft(db, "user-1", {
+    userTag: "User",
+    roblox: { userId: "101", username: "Anchor" },
+    description: "Два ника около 4k.",
+  }, { now: "2026-05-16T10:00:00.000Z" });
+
+  const sentToThread = [];
+  const editedMessages = [];
+  const deletedMessages = [];
+  const scheduledDelays = [];
+  const thread = {
+    id: "thread-1",
+    isTextBased: () => true,
+    messages: { fetch: async () => null },
+    send: async (payload) => {
+      sentToThread.push(payload);
+      const id = `thread-message-${sentToThread.length}`;
+      return {
+        id,
+        edit: async (editPayload) => {
+          editedMessages.push({ id, payload: editPayload });
+        },
+        delete: async () => {
+          deletedMessages.push(id);
+        },
+      };
+    },
+  };
+  const channel = {
+    id: "channel-1",
+    guildId: "guild-1",
+    isTextBased: () => true,
+    messages: { fetch: async () => null },
+    send: async () => ({
+      id: "message-1",
+      guildId: "guild-1",
+      edit: async () => {},
+      startThread: async () => thread,
+    }),
+  };
+  const operator = createAntiteamOperator({
+    db,
+    now: () => "2026-05-16T10:01:00.000Z",
+    saveDb() {},
+    fetchChannel: async (channelId) => channelId === "channel-1" ? channel : thread,
+    setTimeout: (callback, delay) => {
+      scheduledDelays.push(delay);
+      callback();
+      return { unref() {} };
+    },
+  });
+  const interaction = createButtonInteraction(ANTITEAM_CUSTOM_IDS.submitDraft, { id: "user-1", username: "User" });
+
+  assert.equal(await operator.handleButtonInteraction(interaction), true);
+
+  const ticket = Object.values(db.sot.antiteam.tickets)[0];
+  assert.equal(ticket.message.threadPanelMessageId, "thread-message-1");
+  assert.equal(ticket.message.pingMessageId, "thread-message-2");
+  assert.equal(sentToThread.length, 3);
+  assert.match(JSON.stringify(sentToThread[0].components[0].toJSON()), /Помочь/);
+  assert.equal(sentToThread[1].content, "<@&battalion-role> <@&extra-base-role>");
+  assert.deepEqual(sentToThread[1].allowedMentions, { roles: ["battalion-role", "extra-base-role"] });
+  assert.equal(sentToThread[2].content, ".");
+  assert.deepEqual(sentToThread[2].allowedMentions, { parse: [] });
+  assert.deepEqual(editedMessages, [{
+    id: "thread-message-3",
+    payload: {
+      content: "<@&edit-role-1> <@&edit-role-2>",
+      allowedMentions: { roles: ["edit-role-1", "edit-role-2"] },
+    },
+  }]);
+  assert.deepEqual(scheduledDelays, [5000]);
+  assert.deepEqual(deletedMessages, ["thread-message-3"]);
+});
+
+test("standard draft submit skips edit-test buffer when edit roles are empty", async () => {
+  const db = {};
+  const state = ensureAntiteamState(db).state;
+  state.config.channelId = "channel-1";
+  state.config.battalionRoleId = "battalion-role";
+  state.config.pingMode = "edit_roles";
+  setAntiteamDraft(db, "user-1", {
+    userTag: "User",
+    roblox: { userId: "101", username: "Anchor" },
+    description: "Два ника около 4k.",
+  }, { now: "2026-05-16T10:00:00.000Z" });
+
+  const sentToThread = [];
+  const editedMessages = [];
+  const scheduledDelays = [];
+  const thread = {
+    id: "thread-1",
+    isTextBased: () => true,
+    messages: { fetch: async () => null },
+    send: async (payload) => {
+      sentToThread.push(payload);
+      const id = `thread-message-${sentToThread.length}`;
+      return {
+        id,
+        edit: async (editPayload) => {
+          editedMessages.push({ id, payload: editPayload });
+        },
+        delete: async () => {},
+      };
+    },
+  };
+  const channel = {
+    id: "channel-1",
+    guildId: "guild-1",
+    isTextBased: () => true,
+    messages: { fetch: async () => null },
+    send: async () => ({
+      id: "message-1",
+      guildId: "guild-1",
+      edit: async () => {},
+      startThread: async () => thread,
+    }),
+  };
+  const operator = createAntiteamOperator({
+    db,
+    now: () => "2026-05-16T10:01:00.000Z",
+    saveDb() {},
+    fetchChannel: async (channelId) => channelId === "channel-1" ? channel : thread,
+    setTimeout: (callback, delay) => {
+      scheduledDelays.push(delay);
+      callback();
+      return { unref() {} };
+    },
+  });
+  const interaction = createButtonInteraction(ANTITEAM_CUSTOM_IDS.submitDraft, { id: "user-1", username: "User" });
+
+  assert.equal(await operator.handleButtonInteraction(interaction), true);
+
+  const ticket = Object.values(db.sot.antiteam.tickets)[0];
+  assert.equal(ticket.message.threadPanelMessageId, "thread-message-1");
+  assert.equal(ticket.message.pingMessageId, "thread-message-2");
+  assert.equal(sentToThread.length, 2);
+  assert.match(JSON.stringify(sentToThread[0].components[0].toJSON()), /Помочь/);
+  assert.equal(sentToThread[1].content, "<@&battalion-role>");
+  assert.deepEqual(editedMessages, []);
+  assert.deepEqual(scheduledDelays, []);
+});
+
+test("standard draft submit logs edit-test edit failures without aborting ticket publish", async () => {
+  const db = {};
+  const state = ensureAntiteamState(db).state;
+  state.config.channelId = "channel-1";
+  state.config.battalionRoleId = "battalion-role";
+  state.config.pingMode = "edit_roles";
+  state.config.editPingRoleIds = ["edit-role-1"];
+  setAntiteamDraft(db, "user-1", {
+    userTag: "User",
+    roblox: { userId: "101", username: "Anchor" },
+    description: "Два ника около 4k.",
+  }, { now: "2026-05-16T10:00:00.000Z" });
+
+  const sentToThread = [];
+  const deletedMessages = [];
+  const logErrors = [];
+  const thread = {
+    id: "thread-1",
+    isTextBased: () => true,
+    messages: { fetch: async () => null },
+    send: async (payload) => {
+      sentToThread.push(payload);
+      const id = `thread-message-${sentToThread.length}`;
+      return {
+        id,
+        edit: async () => {
+          throw new Error("edit failed");
+        },
+        delete: async () => {
+          deletedMessages.push(id);
+        },
+      };
+    },
+  };
+  const channel = {
+    id: "channel-1",
+    guildId: "guild-1",
+    isTextBased: () => true,
+    messages: { fetch: async () => null },
+    send: async () => ({
+      id: "message-1",
+      guildId: "guild-1",
+      edit: async () => {},
+      startThread: async () => thread,
+    }),
+  };
+  const operator = createAntiteamOperator({
+    db,
+    now: () => "2026-05-16T10:01:00.000Z",
+    saveDb() {},
+    fetchChannel: async (channelId) => channelId === "channel-1" ? channel : thread,
+    logError: (...args) => logErrors.push(args.join(" ")),
+    setTimeout: (callback) => {
+      callback();
+      return { unref() {} };
+    },
+  });
+  const interaction = createButtonInteraction(ANTITEAM_CUSTOM_IDS.submitDraft, { id: "user-1", username: "User" });
+
+  assert.equal(await operator.handleButtonInteraction(interaction), true);
+
+  const ticket = Object.values(db.sot.antiteam.tickets)[0];
+  assert.equal(ticket.message.threadPanelMessageId, "thread-message-1");
+  assert.equal(ticket.message.pingMessageId, "thread-message-2");
+  assert.equal(sentToThread.length, 3);
+  assert.deepEqual(deletedMessages, ["thread-message-3"]);
   assert.match(logErrors.join("\n"), /Antiteam edit ping failed: edit failed/);
 });
 
@@ -1844,8 +2149,380 @@ test("clan draft submit publishes without photo", async () => {
   assert.equal(startThreadOptions.autoArchiveDuration, 60);
   assert.match(JSON.stringify(sentToChannel[0].components[0].toJSON()), /ФАЙТ С ХН/);
   assert.match(JSON.stringify(publicEdits[0].components[1].toJSON()), /Прийти на помощь/);
-  assert.deepEqual(interaction.calls.map((call) => call[0]), ["deferUpdate", "editReply"]);
+  assert.deepEqual(interaction.calls.map((call) => call[0]), ["deferUpdate", "editReply", "editReply"]);
+  assert.match(interaction.calls[1][1].content, /Заявка принята/);
   assert.match(interaction.calls.at(-1)[1].content, /Заявка опубликована/);
+});
+
+test("draft submit confirms acceptance before publish finalize finishes", async () => {
+  const db = {};
+  ensureAntiteamState(db).state.config.channelId = "channel-1";
+  setAntiteamDraft(db, "user-1", {
+    userTag: "User",
+    roblox: { userId: "101", username: "Anchor" },
+    description: "Тимятся двое у центра.",
+  }, { now: "2026-05-16T10:00:00.000Z" });
+
+  let releaseChannelSend = null;
+  let resolveChannelSendStarted = null;
+  const channelSendStarted = new Promise((resolve) => {
+    resolveChannelSendStarted = resolve;
+  });
+  const thread = {
+    id: "thread-1",
+    isTextBased: () => true,
+    messages: { fetch: async () => null },
+    send: async (payload) => ({
+      id: payload?.content ? "thread-ping-1" : "thread-panel-1",
+      delete: async () => {},
+    }),
+  };
+  const channel = {
+    id: "channel-1",
+    guildId: "guild-1",
+    type: 0,
+    isTextBased: () => true,
+    messages: { fetch: async () => null },
+    send: async () => {
+      if (!releaseChannelSend) {
+        resolveChannelSendStarted();
+        await new Promise((resolve) => {
+          releaseChannelSend = resolve;
+        });
+      }
+      return {
+        id: "message-1",
+        guildId: "guild-1",
+        edit: async () => {},
+        startThread: async () => thread,
+      };
+    },
+  };
+  const interaction = createButtonInteraction(ANTITEAM_CUSTOM_IDS.submitDraft, { id: "user-1", username: "User" });
+  const operator = createAntiteamOperator({
+    db,
+    now: () => "2026-05-16T10:01:00.000Z",
+    saveDb() {},
+    fetchChannel: async (channelId) => channelId === "channel-1" ? channel : thread,
+  });
+
+  const pending = operator.handleButtonInteraction(interaction);
+  await channelSendStarted;
+
+  assert.deepEqual(interaction.calls.map((call) => call[0]), ["deferUpdate", "editReply"]);
+  assert.match(interaction.calls[1][1].content, /Заявка принята/);
+
+  releaseChannelSend();
+  assert.equal(await pending, true);
+  assert.deepEqual(interaction.calls.map((call) => call[0]), ["deferUpdate", "editReply", "editReply"]);
+  assert.match(interaction.calls.at(-1)[1].content, /Заявка опубликована/);
+});
+
+test("draft submit does not wait for detached panel resend after publish finalize", async () => {
+  const db = {};
+  ensureAntiteamState(db).state.config.channelId = "channel-1";
+  setAntiteamDraft(db, "user-1", {
+    userTag: "User",
+    roblox: { userId: "101", username: "Anchor" },
+    description: "Тимятся двое у центра.",
+  }, { now: "2026-05-16T10:00:00.000Z" });
+
+  let sendCount = 0;
+  let releasePanelResend = null;
+  const thread = {
+    id: "thread-1",
+    isTextBased: () => true,
+    messages: { fetch: async () => null },
+    send: async (payload) => ({
+      id: payload?.content ? `thread-ping-${sendCount}` : `thread-panel-${sendCount}`,
+      delete: async () => {},
+    }),
+  };
+  const channel = {
+    id: "channel-1",
+    guildId: "guild-1",
+    type: 0,
+    isTextBased: () => true,
+    messages: { fetch: async () => null },
+    send: async () => {
+      sendCount += 1;
+      if (sendCount === 1) {
+        return {
+          id: "message-1",
+          guildId: "guild-1",
+          edit: async () => {},
+          startThread: async () => thread,
+        };
+      }
+      await new Promise((resolve) => {
+        releasePanelResend = resolve;
+      });
+      return {
+        id: `message-${sendCount}`,
+        guildId: "guild-1",
+        edit: async () => {},
+        startThread: async () => thread,
+      };
+    },
+  };
+  const interaction = createButtonInteraction(ANTITEAM_CUSTOM_IDS.submitDraft, { id: "user-1", username: "User" });
+  const operator = createAntiteamOperator({
+    db,
+    now: () => "2026-05-16T10:01:00.000Z",
+    saveDb() {},
+    fetchChannel: async (channelId) => channelId === "channel-1" ? channel : thread,
+  });
+
+  const result = await Promise.race([
+    operator.handleButtonInteraction(interaction).then(() => "resolved"),
+    new Promise((resolve) => setTimeout(() => resolve("timeout"), 200)),
+  ]);
+
+  assert.equal(result, "resolved");
+  assert.match(interaction.calls.at(-1)[1].content, /Заявка опубликована/);
+
+  await Promise.resolve();
+  if (releasePanelResend) releasePanelResend();
+});
+
+test("draft submit does not wait for detached battalion role grant after publish finalize", async () => {
+  const db = {};
+  const state = ensureAntiteamState(db).state;
+  state.config.channelId = "channel-1";
+  state.config.battalionRoleId = "battalion-role";
+  setAntiteamDraft(db, "user-1", {
+    userTag: "User",
+    roblox: { userId: "101", username: "Anchor" },
+    description: "Тимятся двое у центра.",
+  }, { now: "2026-05-16T10:00:00.000Z" });
+
+  let releaseRoleGrant = null;
+  let resolveRoleGrantStarted = null;
+  const roleGrantStarted = new Promise((resolve) => {
+    resolveRoleGrantStarted = resolve;
+  });
+  const granted = [];
+  const thread = {
+    id: "thread-1",
+    isTextBased: () => true,
+    messages: { fetch: async () => null },
+    send: async (payload) => ({
+      id: payload?.content ? "thread-ping-1" : "thread-panel-1",
+      delete: async () => {},
+    }),
+  };
+  const channel = {
+    id: "channel-1",
+    guildId: "guild-1",
+    type: 0,
+    isTextBased: () => true,
+    messages: { fetch: async () => null },
+    send: async () => ({
+      id: "message-1",
+      guildId: "guild-1",
+      edit: async () => {},
+      startThread: async () => thread,
+    }),
+  };
+  const interaction = createButtonInteraction(ANTITEAM_CUSTOM_IDS.submitDraft, { id: "user-1", username: "User" });
+  const operator = createAntiteamOperator({
+    db,
+    now: () => "2026-05-16T10:01:00.000Z",
+    saveDb() {},
+    fetchChannel: async (channelId) => channelId === "channel-1" ? channel : thread,
+    grantRole: async (userId, roleId, reason) => {
+      granted.push({ userId, roleId, reason });
+      resolveRoleGrantStarted();
+      await new Promise((resolve) => {
+        releaseRoleGrant = resolve;
+      });
+      return { granted: true, roleId };
+    },
+  });
+
+  const result = await Promise.race([
+    operator.handleButtonInteraction(interaction).then(() => "resolved"),
+    new Promise((resolve) => setTimeout(() => resolve("timeout"), 200)),
+  ]);
+
+  assert.equal(result, "resolved");
+  assert.match(interaction.calls.at(-1)[1].content, /Заявка опубликована/);
+
+  await roleGrantStarted;
+  assert.deepEqual(granted, [{ userId: "user-1", roleId: "battalion-role", reason: "antiteam request created" }]);
+
+  if (releaseRoleGrant) releaseRoleGrant();
+});
+
+test("draft submit retries detached battalion role grant after a transient failure", async () => {
+  const db = {};
+  const state = ensureAntiteamState(db).state;
+  state.config.channelId = "channel-1";
+  state.config.battalionRoleId = "battalion-role";
+  setAntiteamDraft(db, "user-1", {
+    userTag: "User",
+    roblox: { userId: "101", username: "Anchor" },
+    description: "Тимятся двое у центра.",
+  }, { now: "2026-05-16T10:00:00.000Z" });
+
+  const scheduled = [];
+  const errors = [];
+  const granted = [];
+  let grantAttempts = 0;
+  const thread = {
+    id: "thread-1",
+    isTextBased: () => true,
+    messages: { fetch: async () => null },
+    send: async (payload) => ({
+      id: payload?.content ? "thread-ping-1" : "thread-panel-1",
+      delete: async () => {},
+    }),
+  };
+  const channel = {
+    id: "channel-1",
+    guildId: "guild-1",
+    type: 0,
+    isTextBased: () => true,
+    messages: { fetch: async () => null },
+    send: async () => ({
+      id: "message-1",
+      guildId: "guild-1",
+      edit: async () => {},
+      startThread: async () => thread,
+    }),
+  };
+  const operator = createAntiteamOperator({
+    db,
+    now: () => "2026-05-16T10:01:00.000Z",
+    saveDb() {},
+    fetchChannel: async (channelId) => channelId === "channel-1" ? channel : thread,
+    logError: (...args) => errors.push(args.join(" ")),
+    setTimeout: (callback, delay) => {
+      scheduled.push({ callback, delay });
+      return { unref() {} };
+    },
+    grantRole: async (userId, roleId, reason) => {
+      grantAttempts += 1;
+      if (grantAttempts === 1) throw new Error("temporary grant failure");
+      granted.push({ userId, roleId, reason });
+      return { granted: true, roleId };
+    },
+  });
+  const interaction = createButtonInteraction(ANTITEAM_CUSTOM_IDS.submitDraft, { id: "user-1", username: "User" });
+
+  assert.equal(await operator.handleButtonInteraction(interaction), true);
+  assert.match(interaction.calls.at(-1)[1].content, /Заявка опубликована/);
+
+  await Promise.resolve();
+
+  assert.equal(grantAttempts, 1);
+  assert.equal(scheduled.length, 1);
+  assert.equal(scheduled[0].delay, 2000);
+  assert.match(errors.join("\n"), /role grant retry scheduled/i);
+
+  scheduled[0].callback();
+  await Promise.resolve();
+
+  assert.equal(grantAttempts, 2);
+  assert.deepEqual(granted, [{ userId: "user-1", roleId: "battalion-role", reason: "antiteam request created" }]);
+});
+
+test("concurrent draft submits serialize panel resend and replay once after an in-flight resend", async () => {
+  const db = {};
+  const state = ensureAntiteamState(db).state;
+  state.config.channelId = "channel-1";
+  setAntiteamDraft(db, "user-1", {
+    userTag: "User One",
+    roblox: { userId: "101", username: "AnchorOne" },
+    description: "Тимятся двое у центра.",
+  }, { now: "2026-05-16T10:00:00.000Z" });
+  setAntiteamDraft(db, "user-2", {
+    userTag: "User Two",
+    roblox: { userId: "202", username: "AnchorTwo" },
+    description: "Тимятся трое у моста.",
+  }, { now: "2026-05-16T10:00:00.000Z" });
+
+  let sendCount = 0;
+  const panelSendOrder = [];
+  let releaseFirstPanelSend = null;
+  let resolveFirstPanelSendStarted = null;
+  let resolveSecondPanelSendStarted = null;
+  const firstPanelSendStarted = new Promise((resolve) => {
+    resolveFirstPanelSendStarted = resolve;
+  });
+  const secondPanelSendStarted = new Promise((resolve) => {
+    resolveSecondPanelSendStarted = resolve;
+  });
+  const thread = {
+    id: "thread-1",
+    isTextBased: () => true,
+    messages: { fetch: async () => null },
+    send: async (payload) => ({
+      id: payload?.content ? `thread-ping-${sendCount}` : `thread-panel-${sendCount}`,
+      delete: async () => {},
+    }),
+  };
+  const channel = {
+    id: "channel-1",
+    guildId: "guild-1",
+    type: 0,
+    isTextBased: () => true,
+    messages: { fetch: async () => null },
+    send: async () => {
+      sendCount += 1;
+      if (sendCount === 1 || sendCount === 3) {
+        return {
+          id: `message-${sendCount}`,
+          guildId: "guild-1",
+          edit: async () => {},
+          startThread: async () => thread,
+        };
+      }
+      panelSendOrder.push(sendCount);
+      if (sendCount === 2) {
+        resolveFirstPanelSendStarted();
+        await new Promise((resolve) => {
+          releaseFirstPanelSend = resolve;
+        });
+      }
+      if (sendCount === 4) resolveSecondPanelSendStarted();
+      return {
+        id: `panel-${sendCount}`,
+        guildId: "guild-1",
+        delete: async () => {},
+      };
+    },
+  };
+  const operator = createAntiteamOperator({
+    db,
+    now: () => "2026-05-16T10:01:00.000Z",
+    saveDb() {},
+    fetchChannel: async (channelId) => channelId === "channel-1" ? channel : thread,
+  });
+
+  const firstInteraction = createButtonInteraction(ANTITEAM_CUSTOM_IDS.submitDraft, { id: "user-1", username: "UserOne" });
+  const secondInteraction = createButtonInteraction(ANTITEAM_CUSTOM_IDS.submitDraft, { id: "user-2", username: "UserTwo" });
+
+  assert.equal(await operator.handleButtonInteraction(firstInteraction), true);
+  await firstPanelSendStarted;
+
+  const secondResult = await Promise.race([
+    operator.handleButtonInteraction(secondInteraction).then(() => "resolved"),
+    new Promise((resolve) => setTimeout(() => resolve("timeout"), 200)),
+  ]);
+
+  assert.equal(secondResult, "resolved");
+  assert.deepEqual(panelSendOrder, [2]);
+
+  releaseFirstPanelSend();
+  const replayResult = await Promise.race([
+    secondPanelSendStarted.then(() => "replayed"),
+    new Promise((resolve) => setTimeout(() => resolve("timeout"), 200)),
+  ]);
+
+  assert.equal(replayResult, "replayed");
+  assert.deepEqual(panelSendOrder, [2, 4]);
+  assert.match(secondInteraction.calls.at(-1)[1].content, /Заявка опубликована/);
 });
 
 test("draft toggle and select update the setup panel immediately", async () => {
@@ -1871,7 +2548,7 @@ test("draft toggle and select update the setup panel immediately", async () => {
   assert.equal(db.sot.antiteam.drafts["user-1"].count, "4-10");
 });
 
-test("draft toggle acknowledges before serialized persistence finishes", async () => {
+test("draft toggle bypasses serialized persistence queue and updates immediately", async () => {
   const db = {};
   setAntiteamDraft(db, "user-1", {
     userTag: "User",
@@ -1879,31 +2556,20 @@ test("draft toggle acknowledges before serialized persistence finishes", async (
     description: "Тимятся двое у центра.",
   }, { now: "2026-05-16T10:00:00.000Z" });
 
-  let releasePersist = null;
-  let resolvePersistEntered = null;
-  const persistEntered = new Promise((resolve) => {
-    resolvePersistEntered = resolve;
-  });
   const toggle = createButtonInteraction(ANTITEAM_CUSTOM_IDS.toggleDirect, { id: "user-1", username: "User" });
+  let serializedMutationCalled = false;
   const operator = createAntiteamOperator({
     db,
     now: () => "2026-05-16T10:01:00.000Z",
     saveDb() {},
-    runSerializedMutation: async ({ mutate }) => {
-      resolvePersistEntered(toggle.calls.map((call) => call[0]));
-      await new Promise((resolve) => {
-        releasePersist = resolve;
-      });
-      return mutate();
+    runSerializedMutation: async () => {
+      serializedMutationCalled = true;
+      throw new Error("draft toggle should not enter serialized persistence queue");
     },
   });
 
-  const pending = operator.handleButtonInteraction(toggle);
-  const callsBeforePersist = await persistEntered;
-
-  assert.deepEqual(callsBeforePersist, ["deferUpdate"]);
-  releasePersist();
-  assert.equal(await pending, true);
+  assert.equal(await operator.handleButtonInteraction(toggle), true);
+  assert.equal(serializedMutationCalled, false);
   assert.deepEqual(toggle.calls.map((call) => call[0]), ["deferUpdate", "editReply"]);
   assert.equal(db.sot.antiteam.drafts["user-1"].directJoinEnabled, true);
 });

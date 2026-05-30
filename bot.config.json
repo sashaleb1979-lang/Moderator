@@ -49,7 +49,7 @@
     "missingTierlistImagePath": ""
   },
   "roblox": {
-    "metadataRefreshEnabled": false,
+    "metadataRefreshEnabled": true,
     "metadataRefreshHours": 24,
     "playtimeTrackingEnabled": true,
     "playtimePollMinutes": 3,

@@ -1,0 +1,7 @@
+- Canonical anti-team submit owner remains src/antiteam/operator.js.
+- Keep publish finalize blocking only for public post, thread, thread panel, ping, ticket refs, and public edit; start-panel resend and battalion-role grant are intentionally detached best-effort work after publish confirmation.
+- Battalion role is not an access gate for the antiteam channel/thread; it is still a mandatory eventual side effect so published requests should still result in that role for future help pings.
+- Detached battalion-role grant now uses bounded retries in operator.js for transient failures; missing-role and other non-retryable outcomes must still surface as errors because role delivery is mandatory eventually.
+- Submit-triggered start-panel resend is intentionally coalesced: overlapping submits should never race concurrent delete/send publishes, but should replay once after an in-flight resend so the panel still ends at the bottom.
+- Support progress PNG is cached in-memory in operator.js by helper stats plus display name with a short TTL and shared in-flight renders; repeated or concurrent identical progress clicks should not rerender unchanged cards.
+- Anti-team latency telemetry uses [antiteam][latency] lines from operator.js for submit finalize, detached/coalesced panel resend, detached battalion role grant attempts, and progress card cache/render events.

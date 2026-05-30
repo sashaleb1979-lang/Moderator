@@ -335,6 +335,40 @@ test("profile operator handles slash command and edits ephemeral reply", async (
   assert.equal(calls[1].payload.flags, MessageFlags.IsComponentsV2);
 });
 
+test("profile operator registers full self-profile replies as source carriers", async () => {
+  const remembered = [];
+  const operator = createTestOperator({
+    rememberPrivateProfileSurface: (entry) => remembered.push(entry),
+  });
+
+  const handled = await operator.handleProfileButtonInteraction({
+    interaction: {
+      customId: buildProfileOpenCustomId("user-1", "user-1"),
+      user: { id: "user-1", username: "Sasha" },
+      member: makeMember({
+        userId: "user-1",
+        username: "Sasha",
+        displayName: "Sasha",
+        primaryGuild: makePrimaryGuild("TAG"),
+      }),
+      message: {
+        delete: async () => true,
+      },
+      deferReply: async () => {},
+      editReply: async () => ({ id: "private-profile-message" }),
+    },
+    checkActorGuard: async () => false,
+  });
+
+  assert.equal(handled, true);
+  assert.deepEqual(remembered, [{
+    userId: "user-1",
+    messageId: "private-profile-message",
+    isSelf: true,
+    displayMode: "full",
+  }]);
+});
+
 test("profile operator resolves slash target from replied message when explicit target is missing", async () => {
   const operator = createTestOperator({
     fetchChannelMessage: async (_channelId, messageId) => ({
@@ -586,6 +620,32 @@ test("profile operator routes elo self-card button into canonical compact-card p
   assert.match(payloadJson, /# Моя карточка/);
   assert.doesNotMatch(payloadJson, /profile_nav:/);
   assert.doesNotMatch(payloadJson, /profile_bind_roblox/);
+});
+
+test("profile operator does not register compact-card replies as source carriers", async () => {
+  const remembered = [];
+  const operator = createTestOperator({
+    rememberPrivateProfileSurface: (entry) => remembered.push(entry),
+  });
+
+  const handled = await operator.handleProfileButtonInteraction({
+    interaction: {
+      customId: "elo_submit_card",
+      user: { id: "user-1", username: "Sasha" },
+      member: makeMember({
+        userId: "user-1",
+        username: "Sasha",
+        displayName: "Sasha",
+        primaryGuild: makePrimaryGuild("TAG"),
+      }),
+      deferReply: async () => {},
+      editReply: async () => ({ id: "compact-card-message" }),
+    },
+    checkActorGuard: async () => false,
+  });
+
+  assert.equal(handled, true);
+  assert.deepEqual(remembered, []);
 });
 
 test("profile operator resolves and saves Roblox binding through modal submit", async () => {

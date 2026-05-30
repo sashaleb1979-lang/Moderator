@@ -147,8 +147,8 @@ const {
   handleActivityPanelButtonInteraction,
   handleActivityPanelModalSubmitInteraction,
   repairFreshNewcomerActivityRoles,
-  runActivityRoleSyncFromSnapshots,
   runActivityMemberJoinRoleSync,
+  runActivityRoleSyncFromSnapshots,
   runDailyActivityRoleSync,
   setManualActivityUserStatus,
 } = require("./src/activity/operator");
@@ -222,6 +222,12 @@ const {
 const { buildCommands } = require("./src/onboard/commands");
 const { ONBOARD_BEGIN_ROUTES, resolveOnboardBeginRoute } = require("./src/onboard/begin-state");
 const {
+  HELPER_INTAKE_ACTIONS,
+  SUBMIT_INTAKE_SOURCES,
+  createHelperIntakeSessionStore,
+  normalizeSubmitIntakeSource,
+} = require("./src/onboard/helper-intake");
+const {
   BOT_HELPER_PANEL_ACTION_IDS,
   BOT_HELPER_PANEL_AUTO_RESEND_INTERVAL_HOURS,
   BOT_HELPER_PANEL_AUTO_RESEND_INTERVAL_MS,
@@ -256,6 +262,7 @@ const {
   CHARACTER_PICKER_PAGE_SIZE,
   buildCharacterPickerPayload: buildFastCharacterPickerPayload,
   buildCharacterPickerStatusPayload,
+  normalizeCharacterPickerSelectedIds,
   paginateCharacterPickerEntries,
   toggleCharacterPickerSelection,
 } = require("./src/onboard/character-picker");
@@ -296,7 +303,6 @@ const { createProfileOperator } = require("./src/profile/operator");
 const {
   PROFILE_SUBMIT_ACTIONS,
   PROFILE_SUBMIT_CANCEL_CUSTOM_ID,
-  PROFILE_SUBMIT_CAPTURE_TTL_MS,
   buildProfileEloSubmitCapturePayload,
   buildProfileKillsSubmitCapturePayload,
   buildProfileSubmitCancelledPayload,
@@ -367,7 +373,6 @@ const {
 } = require("./src/integrations/elo-dormant");
 const {
   buildLegacyEloSubmitStepPayload,
-  getLegacyEloSubmitChannelGuideText,
   getLegacyEloSubmitMessageError,
   resolveLegacyEloSubmitTargetChannelId,
 } = require("./src/integrations/elo-submit-flow");
@@ -577,6 +582,8 @@ setAvatarCacheDir(path.join(DATA_ROOT, "graphic_avatar_cache"));
 
 const SUBMIT_SESSION_EXPIRE_MS = 10 * 60 * 1000;
 const PENDING_EXPIRE_HOURS = 72;
+const APPROVE_CLAIM_STALE_TTL_MS = 5 * 60 * 1000;
+const TIERLIST_REFRESH_COALESCE_MS = 3000;
 const TEMP_MESSAGE_DELETE_MS = 12000;
 const PROFILE_HELPER_MESSAGE_DELETE_MS = 20000;
 const SUBMIT_COOLDOWN_SECONDS = 120;
@@ -646,11 +653,13 @@ const NON_CHARACTER_ROLE_NAME_PATTERNS = [
 ];
 
 let guildCache = null;
-const mainDrafts = new Map();
+const helperIntakeSessions = createHelperIntakeSessionStore();
 const submitSessions = new Map();
+const submitProcessingUsers = new Set();
+const reviewApprovalProcessingIds = new Set();
 const mainsPickerSessions = new Map();
 const profileSubmitCaptures = createProfileSubmitCaptureStore();
-const legacyEloSubmitSessions = new Map();
+const profileSurfaceContexts = new Map();
 const legacyEloManualModsetSessions = new Map();
 const nonGgsCaptchaSessions = new Map();
 const rolePanelDrafts = new Map();
@@ -1056,7 +1065,19 @@ function saveDb() {
   return result;
 }
 
+function clearStaleApproveClaims() {
+  let cleared = 0;
+  for (const sub of Object.values(db.submissions || {})) {
+    if (sub?.approveClaim) { delete sub.approveClaim; cleared++; }
+  }
+  if (cleared > 0) {
+    try { saveDb(); } catch (_) {}
+    console.log(`[startup] Cleared ${cleared} stale approve claim(s).`);
+  }
+}
+
 if (db.__needsSaveAfterLoad) saveDb();
+clearStaleApproveClaims();
 
 function nowIso() {
   return new Date().toISOString();
@@ -1481,6 +1502,224 @@ function getResolvedBotHelperPanelSnapshot() {
     messageId: getPanelRecordValue(record),
     lastUpdated: record?.lastUpdated || null,
   };
+}
+
+function getHelperIntakeChannelId() {
+  return String(getResolvedBotHelperPanelSnapshot().channelId || "").trim();
+}
+
+function getKillsSubmitTargetChannelId() {
+  return String(getHelperIntakeChannelId() || getResolvedChannelId("welcome") || "").trim();
+}
+
+function getLegacyEloHelperTargetChannelId(options = {}) {
+  return resolveLegacyEloSubmitTargetChannelId({
+    sessionChannelId: "",
+    panelChannelId: getHelperIntakeChannelId() || options.panelChannelId,
+    fallbackChannelId: options.fallbackChannelId,
+  });
+}
+
+function setHelperIntakeSession(userId, value = {}) {
+  return helperIntakeSessions.set(userId, value);
+}
+
+function getHelperIntakeSession(userId) {
+  return helperIntakeSessions.get(userId);
+}
+
+function clearHelperIntakeSession(userId) {
+  helperIntakeSessions.clear(userId);
+}
+
+function clearAllHelperSubmitSessions(userId) {
+  clearHelperIntakeSession(userId);
+}
+
+const normalizeSubmitSource = normalizeSubmitIntakeSource;
+
+function clearExpiredProfileSurfaceContexts(now = Date.now()) {
+  for (const [messageId, context] of profileSurfaceContexts.entries()) {
+    if (now - Number(context?.createdAt || 0) > SUBMIT_SESSION_EXPIRE_MS) {
+      profileSurfaceContexts.delete(messageId);
+    }
+  }
+}
+
+function rememberProfileSurfaceContext({ userId = "", messageId = "", isSelf = false, displayMode = "" } = {}) {
+  const normalizedUserId = String(userId || "").trim();
+  const normalizedMessageId = String(messageId || "").trim();
+  const normalizedDisplayMode = String(displayMode || "").trim().toLowerCase() || "full";
+  if (!normalizedUserId || !normalizedMessageId || !isSelf || normalizedDisplayMode === "compact-card") {
+    return null;
+  }
+
+  const createdAt = Date.now();
+  clearExpiredProfileSurfaceContexts(createdAt);
+  const nextContext = {
+    userId: normalizedUserId,
+    source: SUBMIT_INTAKE_SOURCES.profile,
+    createdAt,
+  };
+  profileSurfaceContexts.set(normalizedMessageId, nextContext);
+  return { ...nextContext };
+}
+
+function getProfileSurfaceContext(messageId, userId = "") {
+  const normalizedMessageId = String(messageId || "").trim();
+  if (!normalizedMessageId) return null;
+
+  clearExpiredProfileSurfaceContexts();
+  const context = profileSurfaceContexts.get(normalizedMessageId);
+  if (!context) return null;
+  const normalizedUserId = String(userId || "").trim();
+  if (normalizedUserId && normalizedUserId !== String(context.userId || "").trim()) {
+    return null;
+  }
+  return { ...context };
+}
+
+function getStoredSubmitLaunchSource(userId) {
+  return normalizeSubmitSource(
+    getHelperIntakeSession(userId)?.source
+    || getMainsPickerSession(userId)?.source
+    || getSubmitSession(userId)?.source
+  );
+}
+
+function resolveSubmitLaunchSource(interaction) {
+  const userId = String(interaction?.user?.id || "").trim();
+  const messageId = String(interaction?.message?.id || "").trim();
+  const channelId = String(interaction?.channelId || interaction?.message?.channelId || interaction?.channel?.id || "").trim();
+
+  const profileContext = getProfileSurfaceContext(messageId, userId);
+  if (profileContext?.source) {
+    return profileContext.source;
+  }
+
+  const helperSnapshot = getResolvedBotHelperPanelSnapshot();
+  if (
+    messageId
+    && messageId === String(helperSnapshot.messageId || "").trim()
+    && (!channelId || channelId === String(helperSnapshot.channelId || "").trim())
+  ) {
+    return SUBMIT_INTAKE_SOURCES.helper;
+  }
+
+  const welcomeSnapshot = getResolvedWelcomePanelSnapshot();
+  if (
+    messageId
+    && messageId === String(welcomeSnapshot.messageId || "").trim()
+    && (!channelId || channelId === String(welcomeSnapshot.channelId || "").trim())
+  ) {
+    return SUBMIT_INTAKE_SOURCES.welcome;
+  }
+
+  return getStoredSubmitLaunchSource(userId);
+}
+
+function logProfileSubmitCapture(event, details = {}) {
+  const parts = [`[profile-submit] event=${String(event || "unknown").trim() || "unknown"}`];
+  for (const [key, value] of Object.entries(details || {})) {
+    const text = String(value ?? "").trim();
+    if (text) parts.push(`${key}=${text.slice(0, 180)}`);
+  }
+  console.log(parts.join(" "));
+}
+
+function isProfileSubmitSourceInteraction(interaction = {}) {
+  const ids = new Set(getMessageComponentCustomIds(interaction?.message));
+  const isBotHelperPanel = getBotHelperPanelRequiredCustomIds().every((customId) => ids.has(customId));
+  return ids.has("profile_bind_roblox")
+    || ids.has("elo_submit_card")
+    || isBotHelperPanel;
+}
+
+function isBotHelperPanelSourceInteraction(interaction = {}) {
+  const ids = new Set(getMessageComponentCustomIds(interaction?.message));
+  return getBotHelperPanelRequiredCustomIds().every((customId) => ids.has(customId));
+}
+
+function startProfileSubmitCapture(userId, options = {}) {
+  const session = profileSubmitCaptures.start(userId, {
+    action: options.action,
+    channelId: options.channelId,
+    source: options.source,
+    sourceMessageId: options.sourceMessageId,
+    interactionId: options.interactionId,
+    mainCharacterIds: options.mainCharacterIds,
+  });
+  if (session) {
+    logProfileSubmitCapture("profile_submit_start", {
+      user: session.userId,
+      action: session.action,
+      channel: session.channelId,
+      source: session.source,
+    });
+  }
+  return session;
+}
+
+function clearProfileSubmitCapture(userId, reason = "cleared") {
+  const session = profileSubmitCaptures.clear(userId);
+  if (session) {
+    logProfileSubmitCapture(reason, {
+      user: session.userId,
+      action: session.action,
+      channel: session.channelId,
+    });
+  }
+  return session;
+}
+
+function getActiveProfileSubmitCaptureForMessage(message = {}) {
+  const session = profileSubmitCaptures.peek(message?.author?.id);
+  if (!session) return null;
+  if (Date.now() >= Number(session.expiresAtMs || 0)) {
+    clearProfileSubmitCapture(message.author.id, "profile_submit_expired");
+    return null;
+  }
+  if (String(session.channelId || "") !== String(message.channelId || "")) {
+    return null;
+  }
+  return session;
+}
+
+function buildProfileKillsCapturePayloadForUser(userId, options = {}) {
+  const mainCharacterIds = Array.isArray(options.mainCharacterIds) && options.mainCharacterIds.length
+    ? options.mainCharacterIds
+    : getSubmitSession(userId)?.mainCharacterIds || [];
+  const selectedLabels = getSelectedCharacterEntries(mainCharacterIds)
+    .map((entry) => formatCharacterLabelWithEmoji(entry))
+    .filter(Boolean)
+    .join(", ");
+  return buildProfileKillsSubmitCapturePayload({
+    channelText: formatChannelMention(options.channelId) || "этот чат",
+    mainsText: selectedLabels,
+    noticeText: options.noticeText,
+  });
+}
+
+function armKillsHelperIntakeSession(userId, options = {}) {
+  const channelId = String(options.channelId || getKillsSubmitTargetChannelId() || "").trim();
+  if (!channelId) return null;
+  return setHelperIntakeSession(userId, {
+    action: HELPER_INTAKE_ACTIONS.kills,
+    source: normalizeSubmitSource(options.source),
+    channelId,
+    rawText: options.rawText,
+  });
+}
+
+function armLegacyEloHelperIntakeSession(userId, options = {}) {
+  const channelId = getLegacyEloHelperTargetChannelId(options);
+  if (!channelId) return null;
+  return setHelperIntakeSession(userId, {
+    action: HELPER_INTAKE_ACTIONS.elo,
+    source: normalizeSubmitSource(options.source),
+    channelId,
+    rawText: options.rawText,
+  });
 }
 
 function getResolvedEloSubmitPanelSnapshot() {
@@ -1920,12 +2159,8 @@ async function getLiveCharacterStatsContext(client, options = {}) {
       throw new Error("Не удалось получить сервер для статистики ролей персонажей.");
     }
 
-    const cachedMemberCount = guild.members.cache.size;
-    try {
-      await guild.members.fetch();
-    } catch (error) {
-      console.warn(`[tierlist-live] guild.members.fetch failed; using cached ${cachedMemberCount} members: ${error?.message || error}`);
-    }
+    // Refresh member cache before computing live role stats; a warm partial cache skews counts.
+    try { await guild.members.fetch(); } catch (error) { console.warn("guild.members.fetch failed:", error?.message || error); }
 
     const characterEntries = getCharacterEntries().filter((entry) => isLiveCharacterEntry(entry));
     if (!characterEntries.length) {
@@ -3128,14 +3363,11 @@ function resolveCharacterSelectionFromText(input, options = {}) {
 async function replyWithCharacterPicker(interaction, mode = "full", method = "reply", options = {}) {
   const picker = setMainsPickerSession(interaction.user.id, {
     mode,
+    source: normalizeSubmitSource(options.source),
+    afterSelectionProfileSubmitAction: options.afterSelectionProfileSubmitAction,
     query: "",
     page: 0,
     selectedIds: getInitialMainsPickerSelectedIds(interaction.user.id),
-    afterSelectionProfileSubmitAction: options.afterSelectionProfileSubmitAction,
-    afterSelectionProfileSubmitSource: options.afterSelectionProfileSubmitSource,
-    afterSelectionProfileSubmitChannelId: options.afterSelectionProfileSubmitChannelId,
-    afterSelectionProfileSubmitSourceMessageId: options.afterSelectionProfileSubmitSourceMessageId,
-    afterSelectionProfileSubmitInteractionId: options.afterSelectionProfileSubmitInteractionId,
   });
   const payload = await buildMainsPickerPayload(interaction.user.id, {
     picker,
@@ -3343,7 +3575,8 @@ async function completeMainSelection(interaction, selectedEntries, options = {})
   const isQuickSelection = options.mode === "quick";
   const responseMethod = options.responseMethod === "update" ? "update" : "reply";
   const selectedIds = selectedEntries.map((entry) => entry.id);
-  const pickerSession = options.picker || getMainsPickerSession(interaction.user.id);
+  const pickerSession = getMainsPickerSession(interaction.user.id);
+  const launchSource = normalizeSubmitSource(options.source || pickerSession?.source || getStoredSubmitLaunchSource(interaction.user.id));
   let usedDeferredUpdate = false;
 
   const sendSelectionError = async (message) => {
@@ -3418,17 +3651,26 @@ async function completeMainSelection(interaction, selectedEntries, options = {})
 
   if (isQuickSelection) {
     const activeSubmitSession = getSubmitSession(interaction.user.id);
+    const nextSubmitSource = normalizeSubmitSource(launchSource || activeSubmitSession?.source);
     const updatedMainCharacterIds = appliedEntries.map((entry) => entry.id);
     if (activeSubmitSession?.mainCharacterIds?.length) {
       setSubmitSession(interaction.user.id, {
         ...activeSubmitSession,
+        source: nextSubmitSource,
         mainCharacterIds: updatedMainCharacterIds,
       });
     }
 
     const syncedPending = await syncPendingSubmissionMainsForUser(client, interaction.user.id, appliedEntries);
-    const welcomeChannelId = getResolvedChannelId("welcome");
-    const uploadTarget = welcomeChannelId ? `<#${welcomeChannelId}>` : "welcome-канал";
+    let uploadSession = null;
+    if (activeSubmitSession?.mainCharacterIds?.length) {
+      clearAllHelperSubmitSessions(interaction.user.id);
+      uploadSession = armKillsHelperIntakeSession(interaction.user.id, {
+        source: nextSubmitSource,
+      });
+    }
+    const uploadTargetChannelId = String(uploadSession?.channelId || getKillsSubmitTargetChannelId() || "").trim();
+    const uploadTarget = uploadTargetChannelId ? `<#${uploadTargetChannelId}>` : "bot-helper канал";
     const needsRobloxIdentity = !(activeSubmitSession?.robloxUsername && activeSubmitSession?.robloxUserId);
     clearMainsPickerSession(interaction.user.id);
     const appliedLabels = appliedEntries.map((entry) => formatCharacterLabelWithEmoji(entry));
@@ -3456,41 +3698,52 @@ async function completeMainSelection(interaction, selectedEntries, options = {})
   }
 
   const activeSubmitSession = getSubmitSession(interaction.user.id);
+  const nextSubmitSource = normalizeSubmitSource(launchSource || activeSubmitSession?.source);
   setSubmitSession(interaction.user.id, {
     ...activeSubmitSession,
+    source: nextSubmitSource,
     mainCharacterIds: appliedEntries.map((entry) => entry.id),
   });
-  clearMainDraft(interaction.user.id);
-  clearMainsPickerSession(interaction.user.id);
-  let activeProfileSubmitCapture = profileSubmitCaptures.get(interaction.user.id);
-  if (!activeProfileSubmitCapture && pickerSession?.afterSelectionProfileSubmitAction === PROFILE_SUBMIT_ACTIONS.KILLS) {
-    activeProfileSubmitCapture = startProfileSubmitCapture(interaction.user.id, {
+  clearAllHelperSubmitSessions(interaction.user.id);
+  if (pickerSession?.afterSelectionProfileSubmitAction === PROFILE_SUBMIT_ACTIONS.KILLS) {
+    startProfileSubmitCapture(interaction.user.id, {
       action: PROFILE_SUBMIT_ACTIONS.KILLS,
-      channelId: pickerSession.afterSelectionProfileSubmitChannelId || interaction.channelId,
-      source: pickerSession.afterSelectionProfileSubmitSource,
-      sourceMessageId: pickerSession.afterSelectionProfileSubmitSourceMessageId,
-      interactionId: pickerSession.afterSelectionProfileSubmitInteractionId,
+      channelId: interaction.channelId,
+      source: normalizeSubmitSource(nextSubmitSource) === SUBMIT_INTAKE_SOURCES.helper ? "bot_helper_kills_button" : "profile_kills_button",
+      sourceMessageId: interaction.message?.id,
+      interactionId: interaction.id,
       mainCharacterIds: appliedEntries.map((entry) => entry.id),
     });
-  }
-  if (activeProfileSubmitCapture?.action === PROFILE_SUBMIT_ACTIONS.KILLS) {
-    const payload = buildProfileKillsCapturePayloadForUser(interaction.user.id, {
-      channelId: activeProfileSubmitCapture.channelId,
-      mainCharacterIds: appliedEntries.map((entry) => entry.id),
-      noticeText: "Мейны сохранены. Теперь следующее твоё сообщение в выбранном чате должно быть заявкой.",
-    });
-    payload.attachments = [];
+    clearMainsPickerSession(interaction.user.id);
     if (responseMethod === "update") {
+      const payload = buildProfileKillsCapturePayloadForUser(interaction.user.id, {
+        channelId: interaction.channelId,
+        mainCharacterIds: appliedEntries.map((entry) => entry.id),
+        noticeText: "Мейны сохранены. Следующее сообщение в этом чате должно быть kills-заявкой.",
+      });
+      delete payload.flags;
+      payload.attachments = [];
       if (usedDeferredUpdate) {
         await interaction.editReply(payload);
         return;
       }
+
       await interaction.update(payload);
       return;
     }
-    await interaction.reply(payload);
+
+    await interaction.reply(buildProfileKillsCapturePayloadForUser(interaction.user.id, {
+      channelId: interaction.channelId,
+      mainCharacterIds: appliedEntries.map((entry) => entry.id),
+      noticeText: "Мейны сохранены. Следующее сообщение в этом чате должно быть kills-заявкой.",
+    }));
     return;
   }
+
+  armKillsHelperIntakeSession(interaction.user.id, {
+    source: nextSubmitSource,
+  });
+  clearMainsPickerSession(interaction.user.id);
   if (responseMethod === "update") {
     const payload = buildSubmitStepPayload(interaction.user.id, {
       includeEphemeralFlag: false,
@@ -4101,6 +4354,33 @@ async function replyAndDelete(message, content, delayMs = TEMP_MESSAGE_DELETE_MS
   return reply;
 }
 
+function runDetached(task, onError = () => {}) {
+  Promise.resolve()
+    .then(task)
+    .catch(onError);
+}
+
+function buildPendingSubmissionSuccessReply({ isKillsUpdate, accessGrantMode, hasRobloxIdentity }) {
+  if (isKillsUpdate) {
+    return "Обновление kills отправлено модераторам. Текущие kills и tier изменятся после проверки.";
+  }
+  if (accessGrantMode === ONBOARD_ACCESS_GRANT_MODES.AFTER_SUBMIT && !hasRobloxIdentity) {
+    return "Заявка отправлена модераторам. Стартовая роль уже выдана, kill-tier прилетит после проверки. Если захочешь добавить Roblox username, нажми «Получить роль» ещё раз, пока заявка pending.";
+  }
+  if (accessGrantMode === ONBOARD_ACCESS_GRANT_MODES.AFTER_APPROVE) {
+    return "Заявка отправлена модераторам. Стартовая роль будет выдана после approve модератора, kill-tier прилетит после проверки.";
+  }
+  return "Заявка отправлена модераторам. Стартовая роль уже выдана, kill-tier прилетит после проверки.";
+}
+
+async function updatePendingSubmissionProgressReply(sourceMessage, progressReply, content, delayMs = TEMP_MESSAGE_DELETE_MS) {
+  const updated = progressReply && typeof progressReply.edit === "function"
+    ? await progressReply.edit(content).catch(() => null)
+    : await sourceMessage.reply(content).catch(() => null);
+  if (updated) scheduleDeleteMessage(updated, delayMs);
+  return updated;
+}
+
 function isSubmissionActive(submission) {
   return submission && submission.status === "pending" && hoursSince(submission.createdAt) <= PENDING_EXPIRE_HOURS;
 }
@@ -4142,26 +4422,17 @@ function getLatestSubmissionForUser(userId) {
   return submissions[0] || null;
 }
 
-function setMainDraft(userId, characterIds) {
-  mainDrafts.set(userId, { characterIds: [...characterIds], createdAt: Date.now() });
-}
-
-function getMainDraft(userId) {
-  const draft = mainDrafts.get(userId);
-  if (!draft) return null;
-  if (Date.now() - Number(draft.createdAt || 0) > SUBMIT_SESSION_EXPIRE_MS) {
-    mainDrafts.delete(userId);
-    return null;
-  }
-  return draft;
-}
-
-function clearMainDraft(userId) {
-  mainDrafts.delete(userId);
+function normalizeSubmitSessionState(rawValue = {}) {
+  const nextValue = rawValue && typeof rawValue === "object" ? rawValue : {};
+  return {
+    ...nextValue,
+    source: normalizeSubmitSource(nextValue.source),
+    mainCharacterIds: getValidatedLiveMainCharacterIds(nextValue.mainCharacterIds),
+  };
 }
 
 function setSubmitSession(userId, value) {
-  submitSessions.set(userId, { ...value, createdAt: Date.now() });
+  submitSessions.set(userId, { ...normalizeSubmitSessionState(value), createdAt: Date.now() });
 }
 
 function getSubmitSession(userId) {
@@ -4171,93 +4442,11 @@ function getSubmitSession(userId) {
     submitSessions.delete(userId);
     return null;
   }
-  return session;
+  return normalizeSubmitSessionState(session);
 }
 
 function clearSubmitSession(userId) {
   submitSessions.delete(userId);
-}
-
-function logProfileSubmitCapture(event, details = {}) {
-  const parts = [`[profile-submit] event=${String(event || "unknown").trim() || "unknown"}`];
-  for (const [key, value] of Object.entries(details || {})) {
-    const text = String(value ?? "").trim();
-    if (text) parts.push(`${key}=${text.slice(0, 180)}`);
-  }
-  console.log(parts.join(" "));
-}
-
-function isProfileSubmitSourceInteraction(interaction = {}) {
-  const ids = new Set(getMessageComponentCustomIds(interaction?.message));
-  const isBotHelperPanel = getBotHelperPanelRequiredCustomIds().every((customId) => ids.has(customId));
-  return ids.has("profile_bind_roblox")
-    || ids.has("elo_submit_card")
-    || isBotHelperPanel;
-}
-
-function isBotHelperPanelSourceInteraction(interaction = {}) {
-  const ids = new Set(getMessageComponentCustomIds(interaction?.message));
-  return getBotHelperPanelRequiredCustomIds().every((customId) => ids.has(customId));
-}
-
-function startProfileSubmitCapture(userId, options = {}) {
-  const session = profileSubmitCaptures.start(userId, {
-    action: options.action,
-    channelId: options.channelId,
-    source: options.source,
-    sourceMessageId: options.sourceMessageId,
-    interactionId: options.interactionId,
-    mainCharacterIds: options.mainCharacterIds,
-  });
-  if (session) {
-    logProfileSubmitCapture("profile_submit_start", {
-      user: session.userId,
-      action: session.action,
-      channel: session.channelId,
-      source: session.source,
-    });
-  }
-  return session;
-}
-
-function clearProfileSubmitCapture(userId, reason = "cleared") {
-  const session = profileSubmitCaptures.clear(userId);
-  if (session) {
-    logProfileSubmitCapture(reason, {
-      user: session.userId,
-      action: session.action,
-      channel: session.channelId,
-    });
-  }
-  return session;
-}
-
-function getActiveProfileSubmitCaptureForMessage(message = {}) {
-  const session = profileSubmitCaptures.peek(message?.author?.id);
-  if (!session) return null;
-  if (Date.now() >= Number(session.expiresAtMs || 0)) {
-    clearProfileSubmitCapture(message.author.id, "profile_submit_expired");
-    return null;
-  }
-  if (String(session.channelId || "") !== String(message.channelId || "")) {
-    return null;
-  }
-  return session;
-}
-
-function buildProfileKillsCapturePayloadForUser(userId, options = {}) {
-  const mainCharacterIds = Array.isArray(options.mainCharacterIds) && options.mainCharacterIds.length
-    ? options.mainCharacterIds
-    : getSubmitSession(userId)?.mainCharacterIds || [];
-  const selectedLabels = getSelectedCharacterEntries(mainCharacterIds)
-    .map((entry) => formatCharacterLabelWithEmoji(entry))
-    .filter(Boolean)
-    .join(", ");
-  return buildProfileKillsSubmitCapturePayload({
-    channelText: formatChannelMention(options.channelId) || "этот чат",
-    mainsText: selectedLabels,
-    noticeText: options.noticeText,
-  });
 }
 
 function getValidatedLiveMainCharacterIds(characterIds = []) {
@@ -4411,33 +4600,23 @@ function getOnboardingProofExampleImageUrl() {
 
 function normalizeMainsPickerState(rawValue = {}) {
   const mode = rawValue?.mode === "quick" ? "quick" : "full";
-  const query = String(rawValue?.query || "").trim().slice(0, 80);
-  const page = Math.max(0, Number(rawValue?.page) || 0);
-  const statusText = String(rawValue?.statusText || "").trim().slice(0, 220);
-  const selectedIds = [...new Set(
-    (Array.isArray(rawValue?.selectedIds) ? rawValue.selectedIds : [])
-      .map((value) => String(value || "").trim())
-      .filter(Boolean)
-  )].slice(0, 2);
+  const source = normalizeSubmitSource(rawValue?.source);
   const afterSelectionProfileSubmitAction = Object.values(PROFILE_SUBMIT_ACTIONS).includes(rawValue?.afterSelectionProfileSubmitAction)
     ? rawValue.afterSelectionProfileSubmitAction
     : "";
-  const afterSelectionProfileSubmitSource = String(rawValue?.afterSelectionProfileSubmitSource || "").trim().slice(0, 80);
-  const afterSelectionProfileSubmitChannelId = String(rawValue?.afterSelectionProfileSubmitChannelId || "").trim().slice(0, 80);
-  const afterSelectionProfileSubmitSourceMessageId = String(rawValue?.afterSelectionProfileSubmitSourceMessageId || "").trim().slice(0, 80);
-  const afterSelectionProfileSubmitInteractionId = String(rawValue?.afterSelectionProfileSubmitInteractionId || "").trim().slice(0, 80);
+  const query = String(rawValue?.query || "").trim().slice(0, 80);
+  const page = Math.max(0, Number(rawValue?.page) || 0);
+  const statusText = String(rawValue?.statusText || "").trim().slice(0, 220);
+  const selectedIds = normalizeCharacterPickerSelectedIds(rawValue?.selectedIds, getCharacterPickerEntries());
 
   return {
     mode,
+    source,
+    afterSelectionProfileSubmitAction,
     query,
     page,
     selectedIds,
     statusText,
-    afterSelectionProfileSubmitAction,
-    afterSelectionProfileSubmitSource,
-    afterSelectionProfileSubmitChannelId,
-    afterSelectionProfileSubmitSourceMessageId,
-    afterSelectionProfileSubmitInteractionId,
   };
 }
 
@@ -4620,19 +4799,20 @@ function getMainsPickerSelectionLabels(selectedIds = []) {
 }
 
 function getInitialMainsPickerSelectedIds(userId) {
+  const characterEntries = getCharacterPickerEntries();
   const submitSession = getSubmitSession(userId);
-  if (Array.isArray(submitSession?.mainCharacterIds) && submitSession.mainCharacterIds.length) {
-    return submitSession.mainCharacterIds;
-  }
-
-  const draft = getMainDraft(userId);
-  if (Array.isArray(draft?.characterIds) && draft.characterIds.length) {
-    return draft.characterIds;
+  const submitSessionMainCharacterIds = normalizeCharacterPickerSelectedIds(submitSession?.mainCharacterIds, characterEntries);
+  if (submitSessionMainCharacterIds.length) {
+    return submitSessionMainCharacterIds;
   }
 
   const profile = db.profiles?.[userId] || null;
-  if (Array.isArray(profile?.mainCharacterIds) && profile.mainCharacterIds.length) {
-    return profile.mainCharacterIds;
+  const profileMainCharacterIds = profile && typeof profile === "object"
+    ? getDerivedProfileMainFields(profile).mainCharacterIds
+    : [];
+  const normalizedProfileMainCharacterIds = normalizeCharacterPickerSelectedIds(profileMainCharacterIds, characterEntries);
+  if (normalizedProfileMainCharacterIds.length) {
+    return normalizedProfileMainCharacterIds;
   }
 
   return [];
@@ -5939,6 +6119,12 @@ function getProfileOperator() {
     getCharacterCatalog: () => getCharacterCatalog(),
     buildProfileRobloxBindModal: ({ initialValue = "" } = {}) => buildRobloxUsernameModal("profile_bind_roblox_modal", initialValue),
     resolveRobloxUserInput: (value) => resolveRobloxUserByIdentityInput(value),
+    rememberPrivateProfileSurface: ({ userId = "", messageId = "", isSelf = false, displayMode = "" } = {}) => rememberProfileSurfaceContext({
+      userId,
+      messageId,
+      isSelf,
+      displayMode,
+    }),
     writeProfileRobloxBinding: async (userId, robloxUser, context = {}) => {
       db.profiles ||= {};
       const previousProfile = cloneJsonValue(db.profiles?.[userId]);
@@ -6546,6 +6732,14 @@ function getGrantedAccessRoleIdForMode(mode = getCurrentOnboardMode()) {
 function memberHasManagedStartAccessRole(member) {
   if (!member?.roles?.cache) return false;
   return getManagedStartAccessRoleIds().some((roleId) => roleId && member.roles.cache.has(roleId));
+}
+
+function memberHasAnyCountedAccessRole(member) {
+  if (!member?.roles?.cache) return false;
+  return hasAnyAccessCompanionSourceRole({
+    heldRoleIds: [...member.roles.cache.keys()],
+    sourceRoleIds: getCountedAccessRoleIds(),
+  });
 }
 
 function getOnboardModeValidationError(mode = getCurrentOnboardMode()) {
@@ -7458,7 +7652,6 @@ async function completeVerificationApprovedAccess(client, userId, accessMode = "
     }
 
     await ensureAccessCompanionRoleForMemberBestEffort(member, reason, "verification access release");
-    await ensureResidentChatAccessRoleForMemberBestEffort(member, reason, "verification access release");
   } catch (error) {
     await restoreRolePoolSnapshot(client, userId, rolePoolIds, snapshot, `${reason} rollback`);
     throw new Error(`Не удалось выпустить ${userId} из verification: ${formatRuntimeError(error)}`);
@@ -7793,14 +7986,6 @@ async function restoreRolePoolSnapshot(client, userId, roleIds, previousRoleIds,
   return true;
 }
 
-function memberHasAnyCountedAccessRole(member) {
-  if (!member?.roles?.cache) return false;
-  return hasAnyAccessCompanionSourceRole({
-    heldRoleIds: [...member.roles.cache.keys()],
-    sourceRoleIds: getCountedAccessRoleIds(),
-  });
-}
-
 async function ensureAccessCompanionRoleForMember(member, reason = "access companion sync") {
   const companionRoleId = getAccessCompanionRoleId();
   const heldRoleIds = member?.roles?.cache ? [...member.roles.cache.keys()] : [];
@@ -7884,133 +8069,6 @@ async function ensureAccessCompanionRoleForMemberBestEffort(member, reason = "ac
       missingMember: !member?.roles?.cache,
       member: member || null,
       companionRoleId: getAccessCompanionRoleId(),
-      failed: true,
-    };
-  }
-}
-
-async function ensureResidentChatAccessRoleForMember(member, reason = "resident chat access sync") {
-  const residentConfig = getResidentChatAccessConfig();
-  const residentRoleId = getResidentChatAccessRoleId();
-  const heldRoleIds = member?.roles?.cache ? [...member.roles.cache.keys()] : [];
-  const state = resolveResidentChatAccessRoleState({
-    enabled: residentConfig.enabled,
-    residentRoleId,
-    heldRoleIds,
-    normalAccessRoleId: getNormalAccessRoleId(),
-    wartimeAccessRoleId: getWartimeAccessRoleId(),
-    eligibleActivityRoleIds: getResidentChatEligibleActivityRoleIds(),
-  });
-  const alreadyHad = state.eligible && state.hasResidentRole;
-
-  if (!member?.roles?.cache) {
-    return {
-      configured: Boolean(residentRoleId),
-      enabled: residentConfig.enabled,
-      eligible: false,
-      alreadyHad: false,
-      granted: false,
-      removed: false,
-      skipReason: "missing_member",
-      missingMember: true,
-      member: null,
-      residentRoleId,
-    };
-  }
-
-  if (state.shouldRemove) {
-    try {
-      await member.roles.remove(residentRoleId, reason);
-    } catch (error) {
-      throw new Error(`Не удалось снять роль чата постояльцев ${residentRoleId} у пользователя ${member.id}: ${formatRuntimeError(error)}`);
-    }
-    return {
-      configured: state.configured,
-      enabled: state.enabled,
-      eligible: false,
-      alreadyHad: false,
-      granted: false,
-      removed: true,
-      skipReason: state.skipReason,
-      missingMember: false,
-      member,
-      residentRoleId,
-    };
-  }
-
-  if (!state.shouldGrant) {
-    return {
-      configured: state.configured,
-      enabled: state.enabled,
-      eligible: state.eligible,
-      alreadyHad,
-      granted: false,
-      removed: false,
-      skipReason: state.skipReason,
-      missingMember: false,
-      member,
-      residentRoleId,
-    };
-  }
-
-  try {
-    await member.roles.add(residentRoleId, reason);
-  } catch (error) {
-    throw new Error(`Не удалось выдать роль чата постояльцев ${residentRoleId} пользователю ${member.id}: ${formatRuntimeError(error)}`);
-  }
-
-  return {
-    configured: true,
-    enabled: true,
-    eligible: true,
-    alreadyHad: false,
-    granted: true,
-    removed: false,
-    skipReason: "",
-    missingMember: false,
-    member,
-    residentRoleId,
-  };
-}
-
-async function ensureResidentChatAccessRoleForUser(client, userId, reason = "resident chat access sync") {
-  const member = await fetchMember(client, userId);
-  if (!member) {
-    return {
-      configured: Boolean(getResidentChatAccessRoleId()),
-      enabled: getResidentChatAccessConfig().enabled,
-      eligible: false,
-      alreadyHad: false,
-      granted: false,
-      removed: false,
-      skipReason: "missing_member",
-      missingMember: true,
-      member: null,
-      residentRoleId: getResidentChatAccessRoleId(),
-    };
-  }
-
-  return ensureResidentChatAccessRoleForMember(member, reason);
-}
-
-async function ensureResidentChatAccessRoleForMemberBestEffort(member, reason = "resident chat access sync", contextLabel = "access grant") {
-  try {
-    return await ensureResidentChatAccessRoleForMember(member, reason);
-  } catch (error) {
-    console.warn(
-      `Resident chat access role sync skipped during ${contextLabel} for ${String(member?.id || "unknown").trim() || "unknown"}: ${formatRuntimeError(error)}`
-    );
-    return {
-      configured: Boolean(getResidentChatAccessRoleId()),
-      enabled: getResidentChatAccessConfig().enabled,
-      eligible: false,
-      alreadyHad: Boolean(getResidentChatAccessRoleId() && member?.roles?.cache?.has?.(getResidentChatAccessRoleId())),
-      granted: false,
-      removed: false,
-      skipReason: "failed",
-      missingMember: !member?.roles?.cache,
-      member: member || null,
-      residentRoleId: getResidentChatAccessRoleId(),
       failed: true,
     };
   }
@@ -8151,7 +8209,6 @@ async function grantAccessRole(client, userId, reason = "welcome application sub
     }
 
     await ensureAccessCompanionRoleForMemberBestEffort(member, reason, "managed access grant");
-    await ensureResidentChatAccessRoleForMemberBestEffort(member, reason, "managed access grant");
   } catch (error) {
     await restoreRolePoolSnapshot(client, userId, rollbackRoleIds, snapshot, `${reason} rollback`);
     throw error;
@@ -8189,7 +8246,6 @@ async function grantNonGgsAccessRole(client, userId, reason = "non-JJS captcha p
     }
 
     await ensureAccessCompanionRoleForMemberBestEffort(member, reason, "non-JJS access grant");
-    await ensureResidentChatAccessRoleForMemberBestEffort(member, reason, "non-JJS access grant");
   } catch (error) {
     await restoreRolePoolSnapshot(client, userId, rollbackRoleIds, snapshot, `${reason} rollback`);
     throw error;
@@ -8286,11 +8342,9 @@ async function purgeUserProfile(client, userId, moderatorTag) {
   const hadCooldown = Boolean(db.cooldowns?.[userKey]);
   if (hadCooldown) delete db.cooldowns[userKey];
 
-  const hadMainDraft = mainDrafts.has(userKey);
-  clearMainDraft(userKey);
-
   const hadSubmitSession = submitSessions.has(userKey);
   clearSubmitSession(userKey);
+  clearAllHelperSubmitSessions(userKey);
 
   const hadNonGgsSession = nonGgsCaptchaSessions.has(userKey);
   clearNonGgsCaptchaSession(userKey);
@@ -8309,7 +8363,6 @@ async function purgeUserProfile(client, userId, moderatorTag) {
     removedReviewMessages: removedReviewMessages.deleted,
     missingReviewMessages: removedReviewMessages.missing,
     hadCooldown,
-    hadMainDraft,
     hadSubmitSession,
     hadNonGgsSession,
     rolesCleared,
@@ -8581,19 +8634,24 @@ function buildSubmitStepPayload(userId, options = {}) {
 
   const session = getSubmitSession(userId);
   const pending = getPendingSubmissionForUser(userId);
-  const mainCharacterIds = Array.isArray(options.mainCharacterIds) && options.mainCharacterIds.length
-    ? options.mainCharacterIds
-    : session?.mainCharacterIds;
+  const mainCharacterIds = getValidatedLiveMainCharacterIds(
+    Array.isArray(options.mainCharacterIds) && options.mainCharacterIds.length
+      ? options.mainCharacterIds
+      : session?.mainCharacterIds
+  );
   if (!mainCharacterIds?.length) {
     return ephemeralPayload({ content: "Сессия выбора мейнов истекла. Нажми кнопку заново." });
   }
+
+  const helperSession = getHelperIntakeSession(userId);
+  const activeKillsSession = helperSession?.action === HELPER_INTAKE_ACTIONS.kills ? helperSession : null;
 
   const selectedEntries = getSelectedCharacterEntries(mainCharacterIds);
   const selectedLabels = selectedEntries.length
     ? selectedEntries.map((entry) => formatCharacterLabelWithEmoji(entry))
     : mainCharacterIds.map((value) => String(value || "").trim()).filter(Boolean);
-  const welcomeChannelId = getResolvedChannelId("welcome");
-  const uploadTarget = welcomeChannelId ? `<#${welcomeChannelId}>` : "welcome-канал";
+  const uploadTargetChannelId = String(activeKillsSession?.channelId || getKillsSubmitTargetChannelId() || "").trim();
+  const uploadTarget = uploadTargetChannelId ? `<#${uploadTargetChannelId}>` : "bot-helper канал";
   const exampleImagePath = getOnboardingProofExampleImagePath();
   const exampleImageUrl = getOnboardingProofExampleImageUrl();
   const hasExampleImagePath = Boolean(exampleImagePath) && fs.existsSync(exampleImagePath);
@@ -8665,13 +8723,15 @@ function buildRobloxUsernameStepPayload(userId, options = {}) {
   const session = getSubmitSession(userId);
   const pending = getPendingSubmissionForUser(userId);
   const profile = db.profiles?.[userId];
-  const mainCharacterIds = Array.isArray(options.mainCharacterIds) && options.mainCharacterIds.length
-    ? options.mainCharacterIds
-    : Array.isArray(session?.mainCharacterIds) && session.mainCharacterIds.length
-      ? session.mainCharacterIds
-      : Array.isArray(pending?.mainCharacterIds)
-        ? pending.mainCharacterIds
-        : [];
+  const mainCharacterIds = getValidatedLiveMainCharacterIds(
+    Array.isArray(options.mainCharacterIds) && options.mainCharacterIds.length
+      ? options.mainCharacterIds
+      : Array.isArray(session?.mainCharacterIds) && session.mainCharacterIds.length
+        ? session.mainCharacterIds
+        : Array.isArray(pending?.mainCharacterIds)
+          ? pending.mainCharacterIds
+          : []
+  );
 
   if (!mainCharacterIds.length && !pending?.id) {
     return ephemeralPayload({ content: "Сессия онбординга истекла. Нажми «Получить роль» заново." });
@@ -9114,7 +9174,9 @@ async function refreshBotHelperPanel(client, options = {}) {
 
   let message = null;
 
-  message = await resolveBotHelperPanelManagedMessage(client, channel, state);
+  if (!options.forceRecreate) {
+    message = await resolveBotHelperPanelManagedMessage(client, channel, state);
+  }
 
   if (message && (options.bump || options.forceRecreate)) {
     await deleteManagedChannelMessage(client, channel.id, message.id);
@@ -9273,18 +9335,16 @@ async function refreshWelcomePanel(client) {
   }
 
   await cleanupWelcomeChannelMessages(welcomeChannel, [welcomeMessage.id]);
-  let botHelperMessage = null;
-  try {
-    botHelperMessage = (await refreshBotHelperPanel(client))?.message || null;
-  } catch (error) {
-    console.warn(`Bot helper panel refresh failed: ${formatRuntimeError(error)}`);
-  }
   saveDb();
-  return { welcomeMessage, nonGgsMessage: null, botHelperMessage };
+  return { welcomeMessage, nonGgsMessage: null, botHelperMessage: null };
 }
 
 async function ensureWelcomePanel(client) {
   return refreshWelcomePanel(client);
+}
+
+async function ensureBotHelperPanel(client) {
+  return refreshBotHelperPanel(client);
 }
 
 async function clearWelcomeManagedPanel(client, slot) {
@@ -9797,6 +9857,17 @@ async function refreshTierlistBoard(client) {
   return refreshAllTierlists(client);
 }
 
+let _tierlistRefreshTimer = null;
+function scheduleCoalescedTierlistRefresh(client, source) {
+  if (_tierlistRefreshTimer) clearTimeout(_tierlistRefreshTimer);
+  _tierlistRefreshTimer = setTimeout(() => {
+    _tierlistRefreshTimer = null;
+    refreshTierlistBoard(client).catch((error) => {
+      console.warn(`Coalesced tierlist refresh failed (${source}): ${formatRuntimeError(error)}`);
+    });
+  }, TIERLIST_REFRESH_COALESCE_MS);
+}
+
 function buildTierlistRefreshReply(result) {
   if (result?.graphicOk && result?.textOk) {
     return "Текстовый и PNG tier-листы обновлены.";
@@ -9918,7 +9989,11 @@ function createReviewAttachmentFromBuffer(submissionId, buffer) {
 
 async function createPendingSubmissionFromAttachment(client, input) {
   const submissionId = makeId();
-  const selectedEntries = getSelectedCharacterEntries(input.mainCharacterIds);
+  const mainCharacterIds = getValidatedLiveMainCharacterIds(input.mainCharacterIds);
+  const selectedEntries = getSelectedCharacterEntries(mainCharacterIds);
+  if (!selectedEntries.length) {
+    throw new Error("Сессия выбора мейнов устарела. Нажми «Получить роль» и выбери мейнов заново.");
+  }
   const derivedTier = killTierFor(input.kills);
 
   let reviewAttachment = null;
@@ -9935,7 +10010,7 @@ async function createPendingSubmissionFromAttachment(client, input) {
     userId: input.user.id,
     displayName: input.member?.displayName || input.user.username,
     username: input.user.username,
-    mainCharacterIds: selectedEntries.map((entry) => entry.id),
+    mainCharacterIds,
     mainCharacterLabels: selectedEntries.map((entry) => entry.label),
     mainRoleIds: selectedEntries.map((entry) => entry.roleId),
     kills: input.kills,
@@ -10008,11 +10083,113 @@ async function createPendingSubmissionFromAttachment(client, input) {
     throw error;
   }
 
-  await refreshTierlistBoard(client).catch((error) => {
-    console.warn(`Tierlist refresh after submit failed: ${formatRuntimeError(error)}`);
-  });
+  scheduleCoalescedTierlistRefresh(client, "submit");
 
   return submission;
+}
+
+async function processPendingSubmissionMessage(client, message, options) {
+  const {
+    session,
+    effectiveKills,
+    killsResult,
+    attachment,
+    currentAccessGrantMode,
+    hasRobloxIdentity,
+    progressReply = null,
+  } = options;
+
+  const accessRoleIds = getAccessGrantRollbackRoleIds();
+  const previousProfile = cloneJsonValue(db.profiles?.[message.author.id]);
+  const hadProfile = Boolean(db.profiles?.[message.author.id]);
+  const hadCooldown = Object.prototype.hasOwnProperty.call(db.cooldowns || {}, message.author.id);
+  const previousCooldown = hadCooldown ? db.cooldowns[message.author.id] : undefined;
+  const existingProfile = db.profiles?.[message.author.id] || null;
+  const isKillsUpdate = hasTrackedProfileKills(existingProfile);
+  let previousAccessRoleIds = [];
+  let submission = null;
+
+  try {
+    const accessMember = await fetchMember(client, message.author.id);
+    previousAccessRoleIds = getRolePoolSnapshot(accessMember, accessRoleIds);
+
+    if (currentAccessGrantMode === ONBOARD_ACCESS_GRANT_MODES.AFTER_SUBMIT) {
+      await maybeGrantAccessRoleAtStage(client, message.author.id, ONBOARD_ACCESS_GRANT_MODES.AFTER_SUBMIT, "newcomer application submitted");
+    }
+
+    submission = await createPendingSubmissionFromAttachment(client, {
+      user: message.author,
+      member: message.member,
+      mainCharacterIds: session.mainCharacterIds,
+      kills: effectiveKills,
+      robloxUsername: session.robloxUsername,
+      robloxUserId: session.robloxUserId,
+      robloxDisplayName: session.robloxDisplayName,
+      screenshotUrl: attachment.url,
+    });
+
+    if (currentAccessGrantMode === ONBOARD_ACCESS_GRANT_MODES.AFTER_REVIEW_POST) {
+      await maybeGrantAccessRoleAtStage(client, message.author.id, ONBOARD_ACCESS_GRANT_MODES.AFTER_REVIEW_POST, "newcomer application moved to moderator review");
+      saveDb();
+    }
+  } catch (error) {
+    if (submission?.id) {
+      delete db.submissions[submission.id];
+      restoreRecordValue(db.profiles, message.author.id, previousProfile, hadProfile);
+      restoreRecordValue(db.cooldowns, message.author.id, previousCooldown, hadCooldown);
+      saveDb();
+      await deleteTrackedMessage(
+        client,
+        submission.reviewChannelId,
+        submission.reviewMessageId,
+        `review-сообщение ${submission.id}`
+      ).catch((deleteError) => {
+        console.warn(`Submit outer rollback message cleanup failed for ${submission.id}: ${formatRuntimeError(deleteError)}`);
+      });
+    } else {
+      restoreRecordValue(db.profiles, message.author.id, previousProfile, hadProfile);
+      restoreRecordValue(db.cooldowns, message.author.id, previousCooldown, hadCooldown);
+    }
+
+    await restoreRolePoolSnapshot(
+      client,
+      message.author.id,
+      accessRoleIds,
+      previousAccessRoleIds,
+      "submit rollback"
+    ).catch((restoreError) => {
+      console.error(`Submit access-role rollback failed for ${message.author.id}: ${formatRuntimeError(restoreError)}`);
+    });
+
+    await updatePendingSubmissionProgressReply(
+      message,
+      progressReply,
+      String(error?.message || error || "Не удалось отправить заявку."),
+      16000
+    );
+    await message.delete().catch(() => {});
+    submitProcessingUsers.delete(message.author.id);
+    return;
+  }
+
+  clearSubmitSession(message.author.id);
+  clearHelperIntakeSession(message.author.id);
+  await updatePendingSubmissionProgressReply(
+    message,
+    progressReply,
+    buildPendingSubmissionSuccessReply({
+      isKillsUpdate,
+      accessGrantMode: currentAccessGrantMode,
+      hasRobloxIdentity,
+    })
+  );
+
+  await logLine(client, `SUBMIT: <@${message.author.id}> kills ${killsResult.kills} mains=${session.mainCharacterIds.join(",")}`).catch((error) => {
+    console.warn(`Submit log failed for ${message.author.id}: ${formatRuntimeError(error)}`);
+  });
+
+  await message.delete().catch(() => {});
+  submitProcessingUsers.delete(message.author.id);
 }
 
 async function expireSubmission(client, submission) {
@@ -10029,7 +10206,7 @@ async function expireSubmission(client, submission) {
     }).catch(() => {});
   }
 
-  await refreshTierlistBoard(client);
+  scheduleCoalescedTierlistRefresh(client, "expire");
 }
 
 async function supersedePendingSubmissionsForUser(client, userId, moderatorTag) {
@@ -10101,6 +10278,7 @@ async function approveSubmission(client, submission, moderatorTag) {
     roblox: profile?.domains?.roblox || profile,
   });
 
+  delete submission.approveClaim;
   try {
     saveDb();
   } catch (error) {
@@ -10134,9 +10312,26 @@ async function approveSubmission(client, submission, moderatorTag) {
   await logLine(client, `APPROVE: <@${submission.userId}> kills ${submission.kills} -> tier ${submission.derivedTier} by ${moderatorTag}`).catch((error) => {
     console.warn(`Approve log failed for ${submission.id}: ${formatRuntimeError(error)}`);
   });
-  await refreshTierlistBoard(client).catch((error) => {
-    console.warn(`Tierlist refresh after approve failed for ${submission.id}: ${formatRuntimeError(error)}`);
-  });
+  scheduleCoalescedTierlistRefresh(client, "approve");
+}
+
+async function processApprovalInteraction(client, interaction, submission, moderatorTag) {
+  try {
+    await approveSubmission(client, submission, moderatorTag);
+    await interaction.editReply("Заявка одобрена. Tier-role выдана.").catch(() => {});
+  } catch (error) {
+    console.error(`Approve interaction failed for ${submission.id}: ${formatRuntimeError(error)}`);
+    const message = String(error?.message || error || "Не удалось одобрить заявку.").trim() || "Не удалось одобрить заявку.";
+    const replyText = /^Не удалось/i.test(message) ? message : `Не удалось одобрить заявку: ${message}`;
+    await interaction.editReply(replyText).catch(() => {});
+  } finally {
+    reviewApprovalProcessingIds.delete(submission.id);
+    const _liveSub = db.submissions[submission.id];
+    if (_liveSub?.approveClaim) {
+      delete _liveSub.approveClaim;
+      try { saveDb(); } catch (_) {}
+    }
+  }
 }
 
 async function rejectSubmission(client, submission, moderatorTag, reason) {
@@ -10197,9 +10392,7 @@ async function rejectSubmission(client, submission, moderatorTag, reason) {
   await logLine(client, `REJECT: <@${submission.userId}> kills ${submission.kills} by ${moderatorTag} | reason: ${reason}`).catch((error) => {
     console.warn(`Reject log failed for ${submission.id}: ${formatRuntimeError(error)}`);
   });
-  await refreshTierlistBoard(client).catch((error) => {
-    console.warn(`Tierlist refresh after reject failed for ${submission.id}: ${formatRuntimeError(error)}`);
-  });
+  scheduleCoalescedTierlistRefresh(client, "reject");
 }
 
 async function updateSubmissionKills(client, submission, kills, moderatorTag) {
@@ -10255,8 +10448,11 @@ async function updatePendingSubmissionRobloxIdentity(client, submission, robloxU
 async function createManualApprovedRecord(client, targetUser, screenshotAttachment, kills, moderatorTag) {
   const member = await fetchMember(client, targetUser.id);
   const profile = getProfile(targetUser.id);
-  const mainCharacterIds = [...(profile.mainCharacterIds || [])];
+  const mainCharacterIds = getValidatedLiveMainCharacterIds(profile.mainCharacterIds);
   const selectedEntries = getSelectedCharacterEntries(mainCharacterIds);
+  if (!selectedEntries.length) {
+    throw new Error("У пользователя не найдены актуальные мейны. Пусть выберет их заново через welcome-панель.");
+  }
   const submissionId = makeId();
   const derivedTier = killTierFor(kills);
 
@@ -10993,12 +11189,10 @@ async function buildModeratorPanelPayload(client, statusText = "", includeFlags 
   const currentMode = onboardModeState.mode;
   const accessGrantState = getOnboardAccessGrantState();
   const currentAccessGrantMode = accessGrantState.mode;
-  const residentChatConfig = getResidentChatAccessConfig();
-  const residentChatRoleId = getResidentChatAccessRoleId();
-  const residentChatActivityRoleIds = getResidentChatEligibleActivityRoleIds();
-  const residentChatActivityText = residentChatConfig.eligibleActivityRoleKeys
-    .map((roleKey) => `${roleKey}: ${formatRoleMention(ensureActivityState(db).config?.activityRoleIds?.[roleKey])}`)
-    .join(", ");
+  const residentChatState = getResidentChatAccessConfig();
+  const residentChatActivityKeys = residentChatState.eligibleActivityRoleKeys.length
+    ? residentChatState.eligibleActivityRoleKeys.join(", ")
+    : "—";
   const wartimeValidationError = getOnboardModeValidationError(ONBOARD_ACCESS_MODES.WARTIME);
   const apocalypseDescription = isApocalypseMode(currentMode)
     ? "Новые участники без ролей удаляются сразу при входе."
@@ -11053,11 +11247,11 @@ async function buildModeratorPanelPayload(client, statusText = "", includeFlags 
       {
         name: "Чат постояльцев",
         value: [
-          `Система: **${residentChatConfig.enabled ? "ON" : "OFF"}**`,
-          `Роль чата: ${formatRoleMention(residentChatRoleId)}`,
-          `Условие: ${formatRoleMention(getNormalAccessRoleId())} + activity ${residentChatActivityText || "—"}`,
-          `Блокировка: ${formatRoleMention(getWartimeAccessRoleId())} снимает/не выдаёт роль чата.`,
-          residentChatActivityRoleIds.length ? "Activity-роли настроены." : "Activity-роли core/stable/active пока не настроены.",
+          `Статус: **${residentChatState.enabled ? "включен" : "выключен"}**`,
+          `Роль: ${formatRoleMention(getResidentChatAccessRoleId())}`,
+          `Активность: **${residentChatActivityKeys}**`,
+          `Стартовая роль доступа: ${formatRoleMention(getNormalAccessRoleId())}`,
+          `Военный доступ блокирует выдачу: ${formatRoleMention(getWartimeAccessRoleId())}`,
         ].join("\n"),
         inline: false,
       },
@@ -11093,7 +11287,7 @@ async function buildModeratorPanelPayload(client, statusText = "", includeFlags 
       new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId("panel_remind_missing").setLabel("Напомнить отсутствующим").setStyle(ButtonStyle.Danger),
         new ButtonBuilder().setCustomId("panel_config_channels").setLabel("Каналы").setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId("panel_sync_access_companion").setLabel("Синк постояльцев").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("panel_sync_access_companion").setLabel("Синхронизировать чат").setStyle(ButtonStyle.Secondary),
         new ButtonBuilder().setCustomId("panel_open_tierlist").setLabel("Панель тир-листа").setStyle(ButtonStyle.Secondary),
         new ButtonBuilder().setCustomId("panel_open_elo").setLabel("Панель ELO").setStyle(ButtonStyle.Secondary)
       ),
@@ -11112,15 +11306,7 @@ async function buildModeratorPanelPayload(client, statusText = "", includeFlags 
           .setCustomId("panel_mode_apocalypse")
           .setLabel("Апокалипсис")
           .setStyle(currentMode === ONBOARD_ACCESS_MODES.APOCALYPSE ? ButtonStyle.Danger : ButtonStyle.Secondary)
-          .setDisabled(currentMode === ONBOARD_ACCESS_MODES.APOCALYPSE),
-        new ButtonBuilder()
-          .setCustomId("panel_access_companion_toggle")
-          .setLabel(residentChatConfig.enabled ? "Постояльцы OFF" : "Постояльцы ON")
-          .setStyle(residentChatConfig.enabled ? ButtonStyle.Danger : ButtonStyle.Success),
-        new ButtonBuilder()
-          .setCustomId("panel_access_companion_role")
-          .setLabel("Роль постояльцев")
-          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(currentMode === ONBOARD_ACCESS_MODES.APOCALYPSE)
       ),
       new ActionRowBuilder().addComponents(
         new ButtonBuilder()
@@ -11148,8 +11334,8 @@ async function buildModeratorPanelPayload(client, statusText = "", includeFlags 
         new ButtonBuilder().setCustomId("panel_add_character").setLabel("Добавить персонажа").setStyle(ButtonStyle.Success),
         new ButtonBuilder().setCustomId("panel_sot_report").setLabel("Отчёт SoT").setStyle(ButtonStyle.Secondary),
         new ButtonBuilder().setCustomId("panel_open_activity").setLabel("Панель активности").setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId("welcome_editor").setLabel("Редактор UI").setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId("welcome_editor_jjs").setLabel("Редактировать JJS").setStyle(ButtonStyle.Secondary)
+        new ButtonBuilder().setCustomId("panel_access_companion_toggle").setLabel("Чат постояльцев").setStyle(residentChatState.enabled ? ButtonStyle.Success : ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("panel_access_companion_role").setLabel("Роль чата").setStyle(ButtonStyle.Secondary)
       ),
     ],
   };
@@ -14140,22 +14326,8 @@ function getLegacyEloSubmitPanelState(rawDb) {
   return dbState.config.submitPanel;
 }
 
-function setLegacyEloSubmitSession(userId, value) {
-  legacyEloSubmitSessions.set(userId, { ...value, createdAt: Date.now() });
-}
-
 function setLegacyEloManualModsetSession(userId, value) {
   legacyEloManualModsetSessions.set(userId, { ...value, createdAt: Date.now() });
-}
-
-function getLegacyEloSubmitSession(userId) {
-  const session = legacyEloSubmitSessions.get(userId);
-  if (!session) return null;
-  if (Date.now() - Number(session.createdAt || 0) > PROFILE_SUBMIT_CAPTURE_TTL_MS) {
-    legacyEloSubmitSessions.delete(userId);
-    return null;
-  }
-  return session;
 }
 
 function getLegacyEloManualModsetSession(userId) {
@@ -14166,10 +14338,6 @@ function getLegacyEloManualModsetSession(userId) {
     return null;
   }
   return session;
-}
-
-function clearLegacyEloSubmitSession(userId) {
-  legacyEloSubmitSessions.delete(userId);
 }
 
 function clearLegacyEloManualModsetSession(userId) {
@@ -14664,7 +14832,6 @@ function createAccessCompanionSyncSummary() {
     missingMembers: 0,
     skippedWithoutAccess: 0,
     skippedBots: 0,
-    failed: 0,
   };
 }
 
@@ -14675,117 +14842,6 @@ function formatAccessCompanionSyncSummary(result = {}) {
 
   const fallbackNote = result?.fallbackUsed ? " Fallback targeted scan used." : "";
   return `Доп. access-роль: eligible ${result.eligible}, granted ${result.granted}, already had ${result.alreadyHad}.${fallbackNote}`;
-}
-
-function collectAccessCompanionFallbackUserIds(guild) {
-  const sourceRoleMemberIds = [];
-  for (const roleId of getCountedAccessRoleIds()) {
-    const role = guild?.roles?.cache?.get(roleId);
-    if (!role?.members?.size) continue;
-    sourceRoleMemberIds.push(...role.members.keys());
-  }
-
-  return collectAccessCompanionCandidateUserIds({
-    sourceRoleMemberIds,
-    cachedMemberIds: guild?.members?.cache ? [...guild.members.cache.keys()] : [],
-    profileUserIds: Object.keys(db.profiles || {}),
-  });
-}
-
-async function fetchAccessCompanionFallbackMembers(guild, userIds = []) {
-  const members = new Map();
-  const pendingUserIds = [];
-
-  for (const userId of userIds) {
-    const normalizedUserId = String(userId || "").trim();
-    if (!normalizedUserId) continue;
-    const cachedMember = guild?.members?.cache?.get(normalizedUserId) || null;
-    if (cachedMember) {
-      members.set(cachedMember.id, cachedMember);
-      continue;
-    }
-    pendingUserIds.push(normalizedUserId);
-  }
-
-  for (let index = 0; index < pendingUserIds.length; index += 100) {
-    const chunk = pendingUserIds.slice(index, index + 100);
-    if (!chunk.length) continue;
-
-    const fetched = await guild.members.fetch({ user: chunk }).catch(() => null);
-    if (fetched?.values) {
-      for (const member of fetched.values()) {
-        members.set(member.id, member);
-      }
-      continue;
-    }
-
-    for (const userId of chunk) {
-      const member = await guild.members.fetch(userId).catch(() => null);
-      if (member) members.set(member.id, member);
-    }
-  }
-
-  return members;
-}
-
-async function syncAccessCompanionRoles(client, options = {}) {
-  const targetUserId = String(options?.targetUserId || "").trim();
-  const reason = String(options?.reason || "access companion sync").trim() || "access companion sync";
-  const result = createAccessCompanionSyncSummary();
-
-  if (!result.configured || getCountedAccessRoleIds().length === 0) {
-    return result;
-  }
-
-  if (targetUserId) {
-    result.scanned = 1;
-    const grantResult = await ensureAccessCompanionRoleForUser(client, targetUserId, reason);
-    if (grantResult.missingMember) {
-      result.missingMembers = 1;
-      return result;
-    }
-    if (grantResult.eligible) result.eligible = 1;
-    else result.skippedWithoutAccess = 1;
-    if (grantResult.alreadyHad) result.alreadyHad = 1;
-    if (grantResult.granted) result.granted = 1;
-    return result;
-  }
-
-  const guild = await getGuild(client).catch(() => null);
-  if (!guild) {
-    throw new Error("Не удалось получить guild для синхронизации доп. access-роли.");
-  }
-
-  let members = await guild.members.fetch().catch(() => null);
-  if (!members) {
-    await guild.roles.fetch().catch(() => null);
-    const fallbackUserIds = collectAccessCompanionFallbackUserIds(guild);
-    if (!fallbackUserIds.length) {
-      result.fallbackUsed = true;
-      return result;
-    }
-    members = await fetchAccessCompanionFallbackMembers(guild, fallbackUserIds);
-    result.fallbackUsed = true;
-  }
-
-  for (const member of members.values()) {
-    result.scanned += 1;
-    if (member.user?.bot) {
-      result.skippedBots += 1;
-      continue;
-    }
-
-    const grantResult = await ensureAccessCompanionRoleForMember(member, reason);
-    if (grantResult.eligible) result.eligible += 1;
-    else {
-      result.skippedWithoutAccess += 1;
-      continue;
-    }
-    if (grantResult.alreadyHad) result.alreadyHad += 1;
-    if (grantResult.granted) result.granted += 1;
-  }
-
-  return result;
 }
 
 function createResidentChatAccessSyncSummary() {
@@ -14840,6 +14896,225 @@ function collectResidentChatAccessFallbackUserIds(guild) {
     cachedMemberIds: guild?.members?.cache ? [...guild.members.cache.keys()] : [],
     profileUserIds: Object.keys(db.profiles || {}),
   });
+}
+
+function collectAccessCompanionFallbackUserIds(guild) {
+  const sourceRoleMemberIds = [];
+  for (const roleId of getCountedAccessRoleIds()) {
+    const role = guild?.roles?.cache?.get(roleId);
+    if (!role?.members?.size) continue;
+    sourceRoleMemberIds.push(...role.members.keys());
+  }
+
+  return collectAccessCompanionCandidateUserIds({
+    sourceRoleMemberIds,
+    cachedMemberIds: guild?.members?.cache ? [...guild.members.cache.keys()] : [],
+    profileUserIds: Object.keys(db.profiles || {}),
+  });
+}
+
+async function fetchAccessCompanionFallbackMembers(guild, userIds = []) {
+  const members = new Map();
+  const pendingUserIds = [];
+
+  for (const userId of userIds) {
+    const normalizedUserId = String(userId || "").trim();
+    if (!normalizedUserId) continue;
+    const cachedMember = guild?.members?.cache?.get(normalizedUserId) || null;
+    if (cachedMember) {
+      members.set(cachedMember.id, cachedMember);
+      continue;
+    }
+    pendingUserIds.push(normalizedUserId);
+  }
+
+  for (let index = 0; index < pendingUserIds.length; index += 100) {
+    const chunk = pendingUserIds.slice(index, index + 100);
+    if (!chunk.length) continue;
+
+    const fetched = await guild.members.fetch({ user: chunk }).catch(() => null);
+    if (fetched?.values) {
+      for (const member of fetched.values()) {
+        members.set(member.id, member);
+      }
+      continue;
+    }
+
+    for (const userId of chunk) {
+      const member = await guild.members.fetch(userId).catch(() => null);
+      if (member) members.set(member.id, member);
+    }
+  }
+
+  return members;
+}
+
+async function ensureResidentChatAccessRoleForMember(member, reason = "resident chat access sync") {
+  const residentConfig = getResidentChatAccessConfig();
+  const residentRoleId = getResidentChatAccessRoleId();
+  const heldRoleIds = member?.roles?.cache ? [...member.roles.cache.keys()] : [];
+  const state = resolveResidentChatAccessRoleState({
+    enabled: residentConfig.enabled,
+    residentRoleId,
+    heldRoleIds,
+    normalAccessRoleId: getNormalAccessRoleId(),
+    wartimeAccessRoleId: getWartimeAccessRoleId(),
+    eligibleActivityRoleIds: getResidentChatEligibleActivityRoleIds(),
+  });
+  const alreadyHad = state.eligible && state.hasResidentRole;
+
+  if (!member?.roles?.cache) {
+    return {
+      configured: Boolean(residentRoleId),
+      enabled: residentConfig.enabled,
+      eligible: false,
+      alreadyHad: false,
+      granted: false,
+      removed: false,
+      skipReason: "missing_member",
+      missingMember: true,
+      member: null,
+      residentRoleId,
+    };
+  }
+
+  if (state.shouldRemove) {
+    try {
+      await member.roles.remove(residentRoleId, reason);
+    } catch (error) {
+      throw new Error(`Не удалось снять роль чата постояльцев ${residentRoleId} у пользователя ${member.id}: ${formatRuntimeError(error)}`);
+    }
+    return {
+      configured: state.configured,
+      enabled: state.enabled,
+      eligible: false,
+      alreadyHad: false,
+      granted: false,
+      removed: true,
+      skipReason: state.skipReason,
+      missingMember: false,
+      member,
+      residentRoleId,
+    };
+  }
+
+  if (!state.shouldGrant) {
+    return {
+      configured: state.configured,
+      enabled: state.enabled,
+      eligible: state.eligible,
+      alreadyHad,
+      granted: false,
+      removed: false,
+      skipReason: state.skipReason,
+      missingMember: false,
+      member,
+      residentRoleId,
+    };
+  }
+
+  try {
+    await member.roles.add(residentRoleId, reason);
+  } catch (error) {
+    throw new Error(`Не удалось выдать роль чата постояльцев ${residentRoleId} пользователю ${member.id}: ${formatRuntimeError(error)}`);
+  }
+
+  return {
+    configured: true,
+    enabled: true,
+    eligible: true,
+    alreadyHad: false,
+    granted: true,
+    removed: false,
+    skipReason: "",
+    missingMember: false,
+    member,
+    residentRoleId,
+  };
+}
+
+async function ensureResidentChatAccessRoleForUser(client, userId, reason = "resident chat access sync") {
+  const member = await fetchMember(client, userId);
+  if (!member) {
+    return {
+      configured: Boolean(getResidentChatAccessRoleId()),
+      enabled: getResidentChatAccessConfig().enabled,
+      eligible: false,
+      alreadyHad: false,
+      granted: false,
+      removed: false,
+      skipReason: "missing_member",
+      missingMember: true,
+      member: null,
+      residentRoleId: getResidentChatAccessRoleId(),
+    };
+  }
+
+  return ensureResidentChatAccessRoleForMember(member, reason);
+}
+
+async function syncAccessCompanionRoles(client, options = {}) {
+  const targetUserId = String(options?.targetUserId || "").trim();
+  const reason = String(options?.reason || "access companion sync").trim() || "access companion sync";
+  const result = createAccessCompanionSyncSummary();
+
+  if (!result.configured || getCountedAccessRoleIds().length === 0) {
+    return result;
+  }
+
+  if (targetUserId) {
+    result.scanned = 1;
+    const grantResult = await ensureAccessCompanionRoleForUser(client, targetUserId, reason);
+    if (grantResult.missingMember) {
+      result.missingMembers = 1;
+      return result;
+    }
+    if (grantResult.member?.user?.bot) {
+      result.skippedBots = 1;
+      return result;
+    }
+    if (grantResult.eligible) result.eligible = 1;
+    else result.skippedWithoutAccess = 1;
+    if (grantResult.alreadyHad) result.alreadyHad = 1;
+    if (grantResult.granted) result.granted = 1;
+    return result;
+  }
+
+  const guild = await getGuild(client).catch(() => null);
+  if (!guild) {
+    throw new Error("Не удалось получить guild для синхронизации доп. access-роли.");
+  }
+
+  let members = await guild.members.fetch().catch(() => null);
+  if (!members) {
+    await guild.roles.fetch().catch(() => null);
+    const fallbackUserIds = collectAccessCompanionFallbackUserIds(guild);
+    if (!fallbackUserIds.length) {
+      result.fallbackUsed = true;
+      return result;
+    }
+    members = await fetchAccessCompanionFallbackMembers(guild, fallbackUserIds);
+    result.fallbackUsed = true;
+  }
+
+  for (const member of members.values()) {
+    result.scanned += 1;
+    if (member.user?.bot) {
+      result.skippedBots += 1;
+      continue;
+    }
+
+    const grantResult = await ensureAccessCompanionRoleForMember(member, reason);
+    if (grantResult.eligible) result.eligible += 1;
+    else {
+      result.skippedWithoutAccess += 1;
+      continue;
+    }
+    if (grantResult.alreadyHad) result.alreadyHad += 1;
+    if (grantResult.granted) result.granted += 1;
+  }
+
+  return result;
 }
 
 async function syncResidentChatAccessRoles(client, options = {}) {
@@ -15104,11 +15379,7 @@ client.once("clientReady", async () => {
       }),
       registerGuildCommands,
       syncApprovedTierRoles,
-      syncAccessCompanionRoles: async (currentClient) => {
-        const result = await syncAccessCompanionRoles(currentClient, { reason: "startup access companion sync" });
-        await syncResidentChatAccessRoles(currentClient, { reason: "startup resident chat access sync" });
-        return result;
-      },
+      syncAccessCompanionRoles: (currentClient) => syncAccessCompanionRoles(currentClient, { reason: "startup access companion sync" }),
       refreshWelcomePanel,
       refreshAllTierlists,
       resumeActivityRuntime: () => resumeActivityRuntime({
@@ -15126,6 +15397,12 @@ client.once("clientReady", async () => {
     client.destroy();
     return;
   }
+
+  await Promise.resolve(ensureBotHelperPanel(client)).catch((error) => {
+    const message = formatRuntimeError(error);
+    startupDegraded.push({ step: "ensureBotHelperPanel", message });
+    console.warn(`Bot helper panel startup failed: ${message}`);
+  });
 
   lastClientReadyCoreCompletedAt = nowIso();
   lastClientReadyCoreDegraded = Array.isArray(startupDegraded)
@@ -15661,241 +15938,6 @@ client.on("messageDeleteBulk", async (messages) => {
   }
 });
 
-async function handleProfileEloSubmitCaptureMessage(message, session) {
-  const legacyEloState = getLiveLegacyEloState();
-  if (!legacyEloState.ok) {
-    clearProfileSubmitCapture(message.author.id, "profile_submit_cancel");
-    await replyAndDelete(message, `Не удалось открыть legacy ELO базу: ${legacyEloState.error}`, 16000);
-    await message.delete().catch(() => {});
-    return true;
-  }
-
-  const pending = getPendingLegacyEloSubmissionForUser(legacyEloState.rawDb, message.author.id);
-  if (pending) {
-    clearProfileSubmitCapture(message.author.id, "profile_submit_cancel");
-    await replyAndDelete(message, "У тебя уже есть ELO-заявка на проверке. Дождись решения модера.");
-    await message.delete().catch(() => {});
-    return true;
-  }
-
-  const attachment = [...message.attachments.values()].find((item) => isImageAttachment(item));
-  const rawText = String(message.content || "").trim();
-  const messageError = getLegacyEloSubmitMessageError({
-    rawText,
-    hasImageAttachment: Boolean(attachment),
-  });
-  if (messageError) {
-    logProfileSubmitCapture("profile_submit_invalid_message", {
-      user: message.author.id,
-      action: session.action,
-      channel: session.channelId,
-      reason: "invalid_elo_payload",
-    });
-    await replyAndDelete(message, messageError);
-    await message.delete().catch(() => {});
-    return true;
-  }
-
-  const blockReason = getLegacyEloSubmitEligibilityError(legacyEloState.rawDb, message.author.id, rawText);
-  if (blockReason) {
-    clearProfileSubmitCapture(message.author.id, "profile_submit_cancel");
-    await replyAndDelete(message, blockReason, 16000);
-    await message.delete().catch(() => {});
-    return true;
-  }
-
-  try {
-    await createPendingLegacyEloSubmissionFromUrl(client, legacyEloState, {
-      user: message.author,
-      member: message.member,
-      rawText,
-      screenshotUrl: attachment.url,
-      messageUrl: message.url,
-    });
-    clearProfileSubmitCapture(message.author.id, "profile_submit_created");
-    await replyAndDelete(message, "ELO заявка отправлена на проверку модерам. ELO-роль обновится после review.");
-    await logLine(client, `ELO SUBMIT: <@${message.author.id}> raw=${rawText} via profile capture`);
-  } catch (error) {
-    await replyAndDelete(message, String(error?.message || error || "Не удалось отправить ELO заявку."), 16000);
-  }
-
-  await message.delete().catch(() => {});
-  return true;
-}
-
-async function handleProfileKillsSubmitCaptureMessage(message, session) {
-  let submitSession = getSubmitSession(message.author.id);
-  if (!submitSession?.mainCharacterIds?.length && Array.isArray(session.mainCharacterIds) && session.mainCharacterIds.length) {
-    setSubmitSession(message.author.id, { mainCharacterIds: session.mainCharacterIds });
-    submitSession = getSubmitSession(message.author.id);
-  }
-
-  if (!submitSession?.mainCharacterIds?.length) {
-    clearProfileSubmitCapture(message.author.id, "profile_submit_cancel");
-    await replyAndDelete(message, "Сессия выбора мейнов истекла. Открой профиль и нажми «Подать kills» заново.");
-    await message.delete().catch(() => {});
-    return true;
-  }
-
-  const pending = getPendingSubmissionForUser(message.author.id);
-  if (pending) {
-    clearProfileSubmitCapture(message.author.id, "profile_submit_cancel");
-    clearSubmitSession(message.author.id);
-    await replyAndDelete(message, "У тебя уже есть заявка на проверке. Дождись решения модератора.");
-    await message.delete().catch(() => {});
-    return true;
-  }
-
-  const attachment = [...message.attachments.values()].find((item) => isImageAttachment(item));
-  if (!attachment) {
-    logProfileSubmitCapture("profile_submit_invalid_message", {
-      user: message.author.id,
-      action: session.action,
-      channel: session.channelId,
-      reason: "missing_image",
-    });
-    await replyAndDelete(message, "В одной заявке должны быть и kills в тексте, и скрин во вложении. Отправь одно сообщение с числом kills и приложи картинку.");
-    await message.delete().catch(() => {});
-    return true;
-  }
-
-  const killsResult = resolveEffectiveSubmittedKills(message.content, submitSession?.suggestedKills);
-  const { effectiveKills } = killsResult;
-  if (effectiveKills === null) {
-    logProfileSubmitCapture("profile_submit_invalid_message", {
-      user: message.author.id,
-      action: session.action,
-      channel: session.channelId,
-      reason: killsResult.reason || "invalid_kills",
-    });
-    await replyAndDelete(
-      message,
-      killsResult.reason === "ambiguous"
-        ? "Не понял число kills. Укажи в тексте только одно число, например `3120`, и приложи скрин в этом же сообщении."
-        : "В тексте заявки нужно указать точное число kills, например `3120` или `3120 kills`, и приложить скрин в этом же сообщении."
-    );
-    await message.delete().catch(() => {});
-    return true;
-  }
-
-  const currentAccessGrantMode = getCurrentOnboardAccessGrantMode();
-  const requiresRobloxBeforeReview = currentAccessGrantMode !== ONBOARD_ACCESS_GRANT_MODES.AFTER_SUBMIT;
-  const hasRobloxIdentity = Boolean(submitSession.robloxUsername && submitSession.robloxUserId);
-
-  if (requiresRobloxBeforeReview && !hasRobloxIdentity) {
-    setSubmitSession(message.author.id, {
-      ...submitSession,
-      pendingKills: effectiveKills,
-      pendingScreenshotUrl: attachment.url,
-      pendingScreenshotName: attachment.name || "",
-    });
-    clearProfileSubmitCapture(message.author.id, "profile_submit_created");
-    await replyAndDelete(
-      message,
-      "Kills и скрин приняты. Теперь нажми кнопку Roblox в профиле или helper-панели и укажи Roblox username — без этого заявка не уйдёт модераторам.",
-      18000
-    );
-    await message.delete().catch(() => {});
-    return true;
-  }
-
-  const accessRoleIds = getAccessGrantRollbackRoleIds();
-  const previousProfile = cloneJsonValue(db.profiles?.[message.author.id]);
-  const hadProfile = Boolean(db.profiles?.[message.author.id]);
-  const hadCooldown = Object.prototype.hasOwnProperty.call(db.cooldowns || {}, message.author.id);
-  const previousCooldown = hadCooldown ? db.cooldowns[message.author.id] : undefined;
-  const accessMember = await fetchMember(client, message.author.id);
-  const previousAccessRoleIds = getRolePoolSnapshot(accessMember, accessRoleIds);
-  const existingProfile = db.profiles?.[message.author.id] || null;
-  const isKillsUpdate = hasTrackedProfileKills(existingProfile);
-  let submission = null;
-
-  try {
-    if (currentAccessGrantMode === ONBOARD_ACCESS_GRANT_MODES.AFTER_SUBMIT) {
-      await maybeGrantAccessRoleAtStage(client, message.author.id, ONBOARD_ACCESS_GRANT_MODES.AFTER_SUBMIT, "profile kills application submitted");
-    }
-
-    submission = await createPendingSubmissionFromAttachment(client, {
-      user: message.author,
-      member: message.member,
-      mainCharacterIds: submitSession.mainCharacterIds,
-      kills: effectiveKills,
-      robloxUsername: submitSession.robloxUsername,
-      robloxUserId: submitSession.robloxUserId,
-      robloxDisplayName: submitSession.robloxDisplayName,
-      screenshotUrl: attachment.url,
-    });
-
-    if (currentAccessGrantMode === ONBOARD_ACCESS_GRANT_MODES.AFTER_REVIEW_POST) {
-      await maybeGrantAccessRoleAtStage(client, message.author.id, ONBOARD_ACCESS_GRANT_MODES.AFTER_REVIEW_POST, "profile kills application moved to moderator review");
-      saveDb();
-    }
-  } catch (error) {
-    if (submission?.id) {
-      delete db.submissions[submission.id];
-      restoreRecordValue(db.profiles, message.author.id, previousProfile, hadProfile);
-      restoreRecordValue(db.cooldowns, message.author.id, previousCooldown, hadCooldown);
-      saveDb();
-      await deleteTrackedMessage(
-        client,
-        submission.reviewChannelId,
-        submission.reviewMessageId,
-        `review-сообщение ${submission.id}`
-      ).catch((deleteError) => {
-        console.warn(`Profile submit rollback message cleanup failed for ${submission.id}: ${formatRuntimeError(deleteError)}`);
-      });
-    } else {
-      restoreRecordValue(db.profiles, message.author.id, previousProfile, hadProfile);
-      restoreRecordValue(db.cooldowns, message.author.id, previousCooldown, hadCooldown);
-    }
-
-    await restoreRolePoolSnapshot(
-      client,
-      message.author.id,
-      accessRoleIds,
-      previousAccessRoleIds,
-      "profile submit rollback"
-    ).catch((restoreError) => {
-      console.error(`Profile submit access-role rollback failed for ${message.author.id}: ${formatRuntimeError(restoreError)}`);
-    });
-
-    await replyAndDelete(message, String(error?.message || error || "Не удалось отправить заявку."), 16000);
-    await message.delete().catch(() => {});
-    return true;
-  }
-
-  clearProfileSubmitCapture(message.author.id, "profile_submit_created");
-  clearSubmitSession(message.author.id);
-  await replyAndDelete(
-    message,
-    isKillsUpdate
-      ? "Обновление kills отправлено модераторам. Текущие kills и tier изменятся после проверки."
-      : currentAccessGrantMode === ONBOARD_ACCESS_GRANT_MODES.AFTER_APPROVE
-        ? "Заявка отправлена модераторам. Стартовая роль будет выдана после approve модератора, kill-tier прилетит после проверки."
-        : "Заявка отправлена модераторам. Kill-tier прилетит после проверки."
-  );
-
-  await logLine(client, `SUBMIT: <@${message.author.id}> kills ${effectiveKills} mains=${submitSession.mainCharacterIds.join(",")} via profile capture`).catch((error) => {
-    console.warn(`Profile submit log failed for ${message.author.id}: ${formatRuntimeError(error)}`);
-  });
-
-  await message.delete().catch(() => {});
-  return true;
-}
-
-async function handleProfileSubmitCaptureMessage(message) {
-  const session = getActiveProfileSubmitCaptureForMessage(message);
-  if (!session) return false;
-
-  if (session.action === PROFILE_SUBMIT_ACTIONS.ELO) {
-    return handleProfileEloSubmitCaptureMessage(message, session);
-  }
-  if (session.action === PROFILE_SUBMIT_ACTIONS.KILLS) {
-    return handleProfileKillsSubmitCaptureMessage(message, session);
-  }
-  return false;
-}
-
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
   if (message.guildId !== GUILD_ID) return;
@@ -15919,6 +15961,81 @@ client.on("messageCreate", async (message) => {
     return;
   }
 
+  async function handleProfileEloSubmitCaptureMessage(currentMessage, session) {
+    const legacyEloState = getLiveLegacyEloState();
+    if (!legacyEloState.ok) {
+      clearProfileSubmitCapture(currentMessage.author.id, "profile_submit_cancel");
+      await replyAndDelete(currentMessage, `Не удалось открыть legacy ELO базу: ${legacyEloState.error}`, 16000);
+      await currentMessage.delete().catch(() => {});
+      return true;
+    }
+
+    const pending = getPendingLegacyEloSubmissionForUser(legacyEloState.rawDb, currentMessage.author.id);
+    if (pending) {
+      clearProfileSubmitCapture(currentMessage.author.id, "profile_submit_cancel");
+      await replyAndDelete(currentMessage, "У тебя уже есть ELO-заявка на проверке. Дождись решения модера.");
+      await currentMessage.delete().catch(() => {});
+      return true;
+    }
+
+    clearProfileSubmitCapture(currentMessage.author.id, "profile_submit_armed");
+    setHelperIntakeSession(currentMessage.author.id, {
+      action: HELPER_INTAKE_ACTIONS.elo,
+      source: SUBMIT_INTAKE_SOURCES.profile,
+      channelId: session.channelId,
+    });
+    return false;
+  }
+
+  async function handleProfileKillsSubmitCaptureMessage(currentMessage, session) {
+    let submitSession = getSubmitSession(currentMessage.author.id);
+    if (!submitSession?.mainCharacterIds?.length && Array.isArray(session.mainCharacterIds) && session.mainCharacterIds.length) {
+      setSubmitSession(currentMessage.author.id, {
+        ...submitSession,
+        source: SUBMIT_INTAKE_SOURCES.profile,
+        mainCharacterIds: session.mainCharacterIds,
+      });
+      submitSession = getSubmitSession(currentMessage.author.id);
+    }
+
+    if (!submitSession?.mainCharacterIds?.length) {
+      clearProfileSubmitCapture(currentMessage.author.id, "profile_submit_cancel");
+      await replyAndDelete(currentMessage, "Сессия выбора мейнов истекла. Открой профиль и нажми «Подать kills» заново.");
+      await currentMessage.delete().catch(() => {});
+      return true;
+    }
+
+    const pending = getPendingSubmissionForUser(currentMessage.author.id);
+    if (pending) {
+      clearProfileSubmitCapture(currentMessage.author.id, "profile_submit_cancel");
+      clearSubmitSession(currentMessage.author.id);
+      await replyAndDelete(currentMessage, "У тебя уже есть заявка на проверке. Дождись решения модератора.");
+      await currentMessage.delete().catch(() => {});
+      return true;
+    }
+
+    clearProfileSubmitCapture(currentMessage.author.id, "profile_submit_armed");
+    setHelperIntakeSession(currentMessage.author.id, {
+      action: HELPER_INTAKE_ACTIONS.kills,
+      source: SUBMIT_INTAKE_SOURCES.profile,
+      channelId: session.channelId,
+    });
+    return false;
+  }
+
+  async function handleProfileSubmitCaptureMessage(currentMessage) {
+    const session = getActiveProfileSubmitCaptureForMessage(currentMessage);
+    if (!session) return false;
+
+    if (session.action === PROFILE_SUBMIT_ACTIONS.ELO) {
+      return handleProfileEloSubmitCaptureMessage(currentMessage, session);
+    }
+    if (session.action === PROFILE_SUBMIT_ACTIONS.KILLS) {
+      return handleProfileKillsSubmitCaptureMessage(currentMessage, session);
+    }
+    return false;
+  }
+
   if (await handleProfileSubmitCaptureMessage(message).catch((error) => {
     console.error("Profile submit capture failed:", error?.message || error);
     return false;
@@ -15927,9 +16044,6 @@ client.on("messageCreate", async (message) => {
   }
 
   const legacyEloState = getLiveLegacyEloState();
-  const legacyEloSubmitChannelId = legacyEloState.ok
-    ? String(getResolvedEloSubmitPanelSnapshot().channelId || getLegacyEloSubmitPanelState(legacyEloState.rawDb).channelId || "").trim()
-    : "";
 
   const legacyEloManualModsetSession = getLegacyEloManualModsetSession(message.author.id);
   if (legacyEloManualModsetSession && message.channelId === legacyEloManualModsetSession.channelId) {
@@ -16037,24 +16151,38 @@ client.on("messageCreate", async (message) => {
     return;
   }
 
-  const legacyEloSubmitSession = getLegacyEloSubmitSession(message.author.id);
-  const activeLegacyEloSubmitChannelId = resolveLegacyEloSubmitTargetChannelId({
-    sessionChannelId: legacyEloSubmitSession?.channelId,
-    panelChannelId: legacyEloSubmitChannelId,
-  });
-  if (legacyEloSubmitSession && message.channelId === activeLegacyEloSubmitChannelId) {
-    const session = legacyEloSubmitSession;
+  const activeHelperIntakeSession = getHelperIntakeSession(message.author.id);
+  const hasMatchingHelperIntakeSession = Boolean(activeHelperIntakeSession && activeHelperIntakeSession.channelId === message.channelId);
+  const hasActiveHelperEloSession = hasMatchingHelperIntakeSession && activeHelperIntakeSession.action === HELPER_INTAKE_ACTIONS.elo;
+  const hasActiveHelperKillsSession = hasMatchingHelperIntakeSession && activeHelperIntakeSession.action === HELPER_INTAKE_ACTIONS.kills;
+
+  if (!hasMatchingHelperIntakeSession && await getProfileOperator().handleProfileMessage({
+    message,
+    replyAndDelete,
+    scheduleDeleteMessage,
+    helperDeleteMs: PROFILE_HELPER_MESSAGE_DELETE_MS,
+  })) {
+    return;
+  }
+
+  if (hasActiveHelperEloSession) {
+    if (!legacyEloState.ok) {
+      clearAllHelperSubmitSessions(message.author.id);
+      await replyAndDelete(message, `Не удалось открыть legacy ELO базу: ${legacyEloState.error}`, 16000);
+      await message.delete().catch(() => {});
+      return;
+    }
 
     const pending = getPendingLegacyEloSubmissionForUser(legacyEloState.rawDb, message.author.id);
     if (pending) {
-      clearLegacyEloSubmitSession(message.author.id);
+      clearAllHelperSubmitSessions(message.author.id);
       await replyAndDelete(message, "У тебя уже есть заявка на проверке. Дождись решения модера.");
       await message.delete().catch(() => {});
       return;
     }
 
     const attachment = [...message.attachments.values()].find((item) => isImageAttachment(item));
-    const rawText = String(message.content || session.rawText || "").trim();
+    const rawText = String(message.content || activeHelperIntakeSession.rawText || "").trim();
     const messageError = getLegacyEloSubmitMessageError({
       rawText,
       hasImageAttachment: Boolean(attachment),
@@ -16081,7 +16209,7 @@ client.on("messageCreate", async (message) => {
         messageUrl: message.url,
       });
 
-      clearLegacyEloSubmitSession(message.author.id);
+      clearAllHelperSubmitSessions(message.author.id);
       await replyAndDelete(message, "ELO заявка отправлена на проверку модерам. ELO-роль обновится после review.");
       await logLine(client, `ELO SUBMIT: <@${message.author.id}> raw=${rawText}`);
     } catch (error) {
@@ -16092,28 +16220,10 @@ client.on("messageCreate", async (message) => {
     return;
   }
 
-  if (legacyEloSubmitChannelId && message.channelId === legacyEloSubmitChannelId) {
-    await replyAndDelete(message, getLegacyEloSubmitChannelGuideText({
-      channelText: formatChannelMention(legacyEloSubmitChannelId) || "этот канал",
-      activeChannelText: legacyEloSubmitSession && activeLegacyEloSubmitChannelId && activeLegacyEloSubmitChannelId !== legacyEloSubmitChannelId
-        ? formatChannelMention(activeLegacyEloSubmitChannelId) || "другой канал"
-        : "",
-    }));
-    await message.delete().catch(() => {});
+  if (!hasActiveHelperKillsSession) {
+    if (message.channelId !== getResolvedChannelId("welcome")) return;
     return;
   }
-
-  const hasActiveWelcomeSubmitSession = message.channelId === getResolvedChannelId("welcome") && Boolean(getSubmitSession(message.author.id));
-  if (!hasActiveWelcomeSubmitSession && await getProfileOperator().handleProfileMessage({
-    message,
-    replyAndDelete,
-    scheduleDeleteMessage,
-    helperDeleteMs: PROFILE_HELPER_MESSAGE_DELETE_MS,
-  })) {
-    return;
-  }
-
-  if (message.channelId !== getResolvedChannelId("welcome")) return;
 
   let session = getSubmitSession(message.author.id);
   const bootstrapMember = session
@@ -16129,12 +16239,22 @@ client.on("messageCreate", async (message) => {
   }
 
   if (!session) {
-    const reply = await message.reply(
-      canResumeWithAccessRole
-        ? "Не удалось восстановить твоих мейнов автоматически. Нажми «Получить роль» и выбери их заново, затем отправь kills и скрин одним сообщением."
-        : "В этом канале принимается только заявка одним сообщением после кнопки «Получить роль»: текст с точным числом kills и скрин во вложении. Остальные сообщения удаляются."
-    ).catch(() => null);
-    if (reply) scheduleDeleteMessage(reply);
+    if (hasActiveHelperKillsSession) {
+      clearHelperIntakeSession(message.author.id);
+      const reply = await message.reply(
+        canResumeWithAccessRole
+          ? "Не удалось восстановить твоих мейнов автоматически. Нажми «Получить роль» и выбери их заново, затем отправь kills и скрин одним сообщением."
+          : "Сессия подачи kills истекла. Нажми «Kills» или «Получить роль» заново."
+      ).catch(() => null);
+      if (reply) scheduleDeleteMessage(reply);
+      await message.delete().catch(() => {});
+    }
+    return;
+  }
+
+  if (submitProcessingUsers.has(message.author.id)) {
+    const reply = await message.reply("Твоя заявка уже принята и сейчас обрабатывается. Повторять не нужно.").catch(() => null);
+    if (reply) scheduleDeleteMessage(reply, 12000);
     await message.delete().catch(() => {});
     return;
   }
@@ -16142,6 +16262,7 @@ client.on("messageCreate", async (message) => {
   const pending = getPendingSubmissionForUser(message.author.id);
   if (pending) {
     clearSubmitSession(message.author.id);
+    clearHelperIntakeSession(message.author.id);
     const reply = await message.reply("У тебя уже есть заявка на проверке. Дождись решения модератора.").catch(() => null);
     if (reply) scheduleDeleteMessage(reply);
     await message.delete().catch(() => {});
@@ -16181,95 +16302,31 @@ client.on("messageCreate", async (message) => {
       pendingScreenshotUrl: attachment.url,
       pendingScreenshotName: attachment.name || "",
     });
+    clearHelperIntakeSession(message.author.id);
     const reply = await message.reply("Kills и скрин приняты. Теперь нажми «Получить роль» ещё раз и укажи Roblox username — без этого заявка не уйдёт модераторам.").catch(() => null);
     if (reply) scheduleDeleteMessage(reply, 18000);
     await message.delete().catch(() => {});
     return;
   }
 
-  const accessRoleIds = getAccessGrantRollbackRoleIds();
-  const previousProfile = cloneJsonValue(db.profiles?.[message.author.id]);
-  const hadProfile = Boolean(db.profiles?.[message.author.id]);
-  const hadCooldown = Object.prototype.hasOwnProperty.call(db.cooldowns || {}, message.author.id);
-  const previousCooldown = hadCooldown ? db.cooldowns[message.author.id] : undefined;
-  const accessMember = await fetchMember(client, message.author.id);
-  const previousAccessRoleIds = getRolePoolSnapshot(accessMember, accessRoleIds);
-  const existingProfile = db.profiles?.[message.author.id] || null;
-  const isKillsUpdate = hasTrackedProfileKills(existingProfile);
-  let submission = null;
-
-  try {
-    if (currentAccessGrantMode === ONBOARD_ACCESS_GRANT_MODES.AFTER_SUBMIT) {
-      await maybeGrantAccessRoleAtStage(client, message.author.id, ONBOARD_ACCESS_GRANT_MODES.AFTER_SUBMIT, "newcomer application submitted");
+  submitProcessingUsers.add(message.author.id);
+  const processingReply = await message.reply("Заявка принята. Обрабатываю и отправляю модераторам. Повторять не нужно.").catch(() => null);
+  runDetached(
+    () => processPendingSubmissionMessage(client, message, {
+      session,
+      effectiveKills,
+      killsResult,
+      attachment,
+      currentAccessGrantMode,
+      hasRobloxIdentity,
+      progressReply: processingReply,
+    }),
+    (error) => {
+      submitProcessingUsers.delete(message.author.id);
+      console.error(`Detached submit processing failed for ${message.author.id}: ${formatRuntimeError(error)}`);
     }
-
-    submission = await createPendingSubmissionFromAttachment(client, {
-      user: message.author,
-      member: message.member,
-      mainCharacterIds: session.mainCharacterIds,
-      kills: effectiveKills,
-      robloxUsername: session.robloxUsername,
-      robloxUserId: session.robloxUserId,
-      robloxDisplayName: session.robloxDisplayName,
-      screenshotUrl: attachment.url,
-    });
-
-    if (currentAccessGrantMode === ONBOARD_ACCESS_GRANT_MODES.AFTER_REVIEW_POST) {
-      await maybeGrantAccessRoleAtStage(client, message.author.id, ONBOARD_ACCESS_GRANT_MODES.AFTER_REVIEW_POST, "newcomer application moved to moderator review");
-      saveDb();
-    }
-  } catch (error) {
-    if (submission?.id) {
-      delete db.submissions[submission.id];
-      restoreRecordValue(db.profiles, message.author.id, previousProfile, hadProfile);
-      restoreRecordValue(db.cooldowns, message.author.id, previousCooldown, hadCooldown);
-      saveDb();
-      await deleteTrackedMessage(
-        client,
-        submission.reviewChannelId,
-        submission.reviewMessageId,
-        `review-сообщение ${submission.id}`
-      ).catch((deleteError) => {
-        console.warn(`Submit outer rollback message cleanup failed for ${submission.id}: ${formatRuntimeError(deleteError)}`);
-      });
-    } else {
-      restoreRecordValue(db.profiles, message.author.id, previousProfile, hadProfile);
-      restoreRecordValue(db.cooldowns, message.author.id, previousCooldown, hadCooldown);
-    }
-
-    await restoreRolePoolSnapshot(
-      client,
-      message.author.id,
-      accessRoleIds,
-      previousAccessRoleIds,
-      "submit rollback"
-    ).catch((restoreError) => {
-      console.error(`Submit access-role rollback failed for ${message.author.id}: ${formatRuntimeError(restoreError)}`);
-    });
-
-    const reply = await message.reply(String(error?.message || error || "Не удалось отправить заявку.")).catch(() => null);
-    if (reply) scheduleDeleteMessage(reply, 16000);
-    await message.delete().catch(() => {});
-    return;
-  }
-
-  clearSubmitSession(message.author.id);
-  const reply = await message.reply(
-    isKillsUpdate
-      ? "Обновление kills отправлено модераторам. Текущие kills и tier изменятся после проверки."
-      : currentAccessGrantMode === ONBOARD_ACCESS_GRANT_MODES.AFTER_SUBMIT && !hasRobloxIdentity
-        ? "Заявка отправлена модераторам. Стартовая роль уже выдана, kill-tier прилетит после проверки. Если захочешь добавить Roblox username, нажми «Получить роль» ещё раз, пока заявка pending."
-      : currentAccessGrantMode === ONBOARD_ACCESS_GRANT_MODES.AFTER_APPROVE
-        ? "Заявка отправлена модераторам. Стартовая роль будет выдана после approve модератора, kill-tier прилетит после проверки."
-        : "Заявка отправлена модераторам. Стартовая роль уже выдана, kill-tier прилетит после проверки."
-  ).catch(() => null);
-  if (reply) scheduleDeleteMessage(reply);
-
-  await logLine(client, `SUBMIT: <@${message.author.id}> kills ${killsResult.kills} mains=${session.mainCharacterIds.join(",")}`).catch((error) => {
-    console.warn(`Submit log failed for ${message.author.id}: ${formatRuntimeError(error)}`);
-  });
-
-  await message.delete().catch(() => {});
+  );
+  return;
 });
 
 client.on("interactionCreate", async (interaction) => {
@@ -17061,7 +17118,7 @@ client.on("interactionCreate", async (interaction) => {
       await interaction.editReply([
         `Профиль <@${targetId}> полностью удалён.`,
         `Удалено заявок: ${result.deletedSubmissions}. Удалено review-сообщений: ${result.removedReviewMessages}. Отсутствовали в Discord: ${result.missingReviewMessages}.`,
-        `Очищено: профиль ${result.hadProfile ? "да" : "нет"}, cooldown ${result.hadCooldown ? "да" : "нет"}, main-draft ${result.hadMainDraft ? "да" : "нет"}, submit-session ${result.hadSubmitSession ? "да" : "нет"}, non-JJS session ${result.hadNonGgsSession ? "да" : "нет"}.`,
+        `Очищено: профиль ${result.hadProfile ? "да" : "нет"}, cooldown ${result.hadCooldown ? "да" : "нет"}, submit-session ${result.hadSubmitSession ? "да" : "нет"}, non-JJS session ${result.hadNonGgsSession ? "да" : "нет"}.`,
         `Снятие ролей: tier ${result.rolesCleared.tier ? "да" : "нет"}, access ${result.rolesCleared.access ? "да" : "нет"}, non-JJS ${result.rolesCleared.nonGgs ? "да" : "нет"}, character ${result.rolesCleared.characters ? "да" : "нет"}.`,
         refreshText,
       ].join("\n"));
@@ -18132,73 +18189,67 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
-      const applyGraphicPanelMutation = async (mutate, successText = "") => {
-        await interaction.deferUpdate();
-        try {
-          await applyUiMutation(client, "graphic", mutate);
-          await interaction.editReply(buildGraphicPanelPayload(successText, false));
-        } catch (error) {
-          await interaction.editReply(buildGraphicPanelPayload(
-            `Не удалось обновить PNG panel: ${formatRuntimeError(error)}`,
-            false
-          ));
-        }
-      };
-
       // Size adjustment buttons
       if (interaction.customId === "graphic_panel_icon_minus" || interaction.customId === "graphic_panel_icon_plus") {
         const delta = interaction.customId.endsWith("plus") ? 12 : -12;
-        await applyGraphicPanelMutation(() => {
+        await applyUiMutation(client, "graphic", () => {
           const image = getGraphicTierlistConfig().image;
           image.icon = Math.max(64, Math.min(256, (image.icon || 112) + delta));
-        }, "Размер иконок PNG обновлён.");
+        });
+        await interaction.update(buildGraphicPanelPayload());
         return;
       }
 
       if (interaction.customId === "graphic_panel_w_minus" || interaction.customId === "graphic_panel_w_plus") {
         const delta = interaction.customId.endsWith("plus") ? 200 : -200;
-        await applyGraphicPanelMutation(() => {
+        await applyUiMutation(client, "graphic", () => {
           const image = getGraphicTierlistConfig().image;
           image.width = Math.max(1200, Math.min(4096, (image.width || 2000) + delta));
-        }, "Ширина PNG обновлена.");
+        });
+        await interaction.update(buildGraphicPanelPayload());
         return;
       }
 
       if (interaction.customId === "graphic_panel_h_minus" || interaction.customId === "graphic_panel_h_plus") {
         const delta = interaction.customId.endsWith("plus") ? 120 : -120;
-        await applyGraphicPanelMutation(() => {
+        await applyUiMutation(client, "graphic", () => {
           const image = getGraphicTierlistConfig().image;
           image.height = Math.max(700, Math.min(2160, (image.height || 1200) + delta));
-        }, "Высота PNG обновлена.");
+        });
+        await interaction.update(buildGraphicPanelPayload());
         return;
       }
 
       if (interaction.customId === "graphic_panel_reset_img") {
-        await applyGraphicPanelMutation(() => {
+        await applyUiMutation(client, "graphic", () => {
           getGraphicTierlistConfig().image = { width: null, height: null, icon: null };
-        }, "Размеры PNG сброшены.");
+        });
+        await interaction.update(buildGraphicPanelPayload());
         return;
       }
 
       if (interaction.customId === "graphic_panel_reset_color") {
-        await applyGraphicPanelMutation(() => {
+        await applyUiMutation(client, "graphic", () => {
           const colors = getGraphicTierlistConfig().colors;
           if (colors) delete colors[selectedTier];
-        }, `Цвет тира ${selectedTier} сброшен.`);
+        });
+        await interaction.update(buildGraphicPanelPayload());
         return;
       }
 
       if (interaction.customId === "graphic_panel_reset_colors") {
-        await applyGraphicPanelMutation(() => {
+        await applyUiMutation(client, "graphic", () => {
           getGraphicTierlistConfig().colors = {};
-        }, "Цвета тиров сброшены.");
+        });
+        await interaction.update(buildGraphicPanelPayload());
         return;
       }
 
       if (interaction.customId === "graphic_panel_outline_clear") {
-        await applyGraphicPanelMutation(() => {
+        await applyUiMutation(client, "graphic", () => {
           getGraphicTierlistConfig().outline = { roleId: "", roleIds: [], color: "#ffffff", rules: [] };
-        }, "Обводка PNG по ролям очищена.");
+        });
+        await interaction.update(buildGraphicPanelPayload("Обводка PNG по ролям очищена.", false));
         return;
       }
 
@@ -18334,24 +18385,6 @@ client.on("interactionCreate", async (interaction) => {
           degraded: lastClientReadyCoreDegraded,
         },
       }),
-      runRebuildMetrics: async (args) => {
-        const result = await runDailyActivityRoleSync(args);
-        const residentChat = await syncResidentChatAccessRoles(client, { reason: `activity panel full sync by ${interaction.user?.tag || interaction.user?.id || "unknown"}` });
-        return {
-          ...result,
-          residentChat,
-          accessCompanionSummary: formatResidentChatAccessSyncSummary(residentChat),
-        };
-      },
-      runSyncRoles: async (args) => {
-        const result = await runActivityRoleSyncFromSnapshots(args);
-        const residentChat = await syncResidentChatAccessRoles(client, { reason: `activity panel roles-only sync by ${interaction.user?.tag || interaction.user?.id || "unknown"}` });
-        return {
-          ...result,
-          residentChat,
-          accessCompanionSummary: formatResidentChatAccessSyncSummary(residentChat),
-        };
-      },
       fetchChannel: async (channelId) => {
         const guild = interaction.guild || await getGuild(client).catch(() => null);
         const cachedChannel = guild?.channels?.cache?.get(channelId) || client.channels?.cache?.get?.(channelId) || null;
@@ -18368,6 +18401,17 @@ client.on("interactionCreate", async (interaction) => {
         guildHint: interaction.guild || null,
         reason: `activity role sync by ${interaction.user?.tag || interaction.user?.id || "unknown"}`,
       }),
+      runSyncRoles: async (args) => {
+        const result = await runActivityRoleSyncFromSnapshots(args);
+        const residentChat = await syncResidentChatAccessRoles(client, {
+          reason: `activity resident chat sync by ${interaction.user?.tag || interaction.user?.id || "unknown"}`,
+        });
+        return {
+          ...result,
+          accessCompanionSummary: [result?.accessCompanionSummary, formatResidentChatAccessSyncSummary(residentChat)].filter(Boolean).join(" "),
+          residentChat,
+        };
+      },
       saveDb,
       runSerialized: runSerializedDbTask,
     })) {
@@ -18516,16 +18560,16 @@ client.on("interactionCreate", async (interaction) => {
       }
 
       const modal = new ModalBuilder().setCustomId("panel_access_companion_role_modal").setTitle("Роль чата постояльцев");
-      modal.addComponents(new ActionRowBuilder().addComponents(
-        new TextInputBuilder()
-          .setCustomId("panel_access_companion_role_id")
-          .setLabel("Role ID / mention, пусто = config fallback")
-          .setStyle(TextInputStyle.Short)
-          .setRequired(false)
-          .setMaxLength(80)
-          .setPlaceholder("<@&123456789012345678>")
-          .setValue(String(getResidentChatAccessRoleId() || "").slice(0, 80))
-      ));
+      const input = new TextInputBuilder()
+        .setCustomId("panel_access_companion_role_id")
+        .setLabel("ID или mention роли")
+        .setStyle(TextInputStyle.Short)
+        .setRequired(false)
+        .setMaxLength(80)
+        .setPlaceholder("123456789012345678 или <@&123456789012345678>")
+        .setValue(String(getResidentChatAccessRoleId() || "").slice(0, 80));
+
+      modal.addComponents(new ActionRowBuilder().addComponents(input));
       await interaction.showModal(modal);
       return;
     }
@@ -20315,15 +20359,16 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
-      const session = getLegacyEloSubmitSession(interaction.user.id);
+      const launchSource = resolveSubmitLaunchSource(interaction);
+      const session = getHelperIntakeSession(interaction.user.id);
       const submitPanel = getLegacyEloSubmitPanelState(liveState.rawDb);
-      const targetChannelId = resolveLegacyEloSubmitTargetChannelId({
-        sessionChannelId: session?.channelId,
-        panelChannelId: submitPanel.channelId,
-        fallbackChannelId: interaction.channelId,
-      });
-      if (session) {
-        await interaction.reply(buildLegacyEloSubmitAwaitPayload(targetChannelId, session.rawText));
+      const activeEloSession = session?.action === HELPER_INTAKE_ACTIONS.elo ? session : null;
+      const targetChannelId = String(
+        activeEloSession?.channelId
+        || getLegacyEloHelperTargetChannelId({ panelChannelId: submitPanel.channelId, fallbackChannelId: interaction.channelId })
+      ).trim();
+      if (activeEloSession) {
+        await interaction.reply(buildLegacyEloSubmitAwaitPayload(targetChannelId, activeEloSession.rawText));
         return;
       }
 
@@ -20333,16 +20378,23 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
-      setLegacyEloSubmitSession(interaction.user.id, {
-        channelId: targetChannelId,
+      clearAllHelperSubmitSessions(interaction.user.id);
+      const armedSession = armLegacyEloHelperIntakeSession(interaction.user.id, {
+        source: launchSource,
+        panelChannelId: submitPanel.channelId,
+        fallbackChannelId: interaction.channelId,
       });
-      await interaction.reply(buildLegacyEloSubmitAwaitPayload(targetChannelId));
+      if (!armedSession) {
+        await interaction.reply(ephemeralPayload({ content: "Не удалось определить канал для ELO-заявки. Настрой bot helper или ELO submit panel." }));
+        return;
+      }
+
+      await interaction.reply(buildLegacyEloSubmitAwaitPayload(armedSession.channelId));
       return;
     }
 
     if (interaction.customId === "elo_submit_cancel") {
-      clearLegacyEloSubmitSession(interaction.user.id);
-      clearProfileSubmitCapture(interaction.user.id, "profile_submit_cancel");
+      clearAllHelperSubmitSessions(interaction.user.id);
       await interaction.reply(ephemeralPayload({ content: "Ок. Шаг отправки ELO отменён." }));
       return;
     }
@@ -20522,11 +20574,11 @@ client.on("interactionCreate", async (interaction) => {
       "panel_refresh_tierlists",
       "panel_sync_roles",
       "panel_sync_character_emojis",
-      "panel_sync_access_companion",
-      "panel_access_companion_toggle",
       "panel_cleanup_orphan_characters",
       "panel_remind_missing",
       "panel_refresh_summary",
+      "panel_sync_access_companion",
+      "panel_access_companion_toggle",
       "panel_mode_normal",
       "panel_mode_wartime",
       "panel_access_grant_after_submit",
@@ -20543,7 +20595,7 @@ client.on("interactionCreate", async (interaction) => {
       let statusText = "Сводка обновлена.";
       if (interaction.customId === "panel_refresh_welcome") {
         await refreshWelcomePanel(client);
-        statusText = "Welcome-панель и helper-панель обновлены.";
+        statusText = "Welcome-панель обновлена.";
       } else if (interaction.customId === "panel_refresh_tierlists") {
         await refreshAllTierlists(client);
         statusText = "Graphic-board и текстовый тир-лист обновлены.";
@@ -20562,7 +20614,7 @@ client.on("interactionCreate", async (interaction) => {
         state.enabled = !state.enabled;
         saveDb();
         const residentChat = await syncResidentChatAccessRoles(client, { reason: `panel resident chat ${state.enabled ? "enable" : "disable"} by ${interaction.user.tag}` });
-        statusText = `Чат постояльцев ${state.enabled ? "включён" : "выключен"}. ${formatResidentChatAccessSyncSummary(residentChat)}`;
+        statusText = `Чат постояльцев ${state.enabled ? "включен" : "выключен"}. ${formatResidentChatAccessSyncSummary(residentChat)}`;
       } else if (interaction.customId === "panel_sync_character_emojis") {
         const result = await syncCharacterEmojiAssets(client, interaction.user.tag);
         statusText = formatCharacterEmojiSyncSummary(result);
@@ -20679,8 +20731,8 @@ client.on("interactionCreate", async (interaction) => {
       }
 
       if (captchaMode.mode !== "practice") {
-        clearMainDraft(interaction.user.id);
         clearSubmitSession(interaction.user.id);
+        clearHelperIntakeSession(interaction.user.id);
       }
       clearNonGgsCaptchaSession(interaction.user.id);
 
@@ -20722,9 +20774,9 @@ client.on("interactionCreate", async (interaction) => {
     if (interaction.customId === "onboard_begin") {
       try {
         clearNonGgsCaptchaSession(interaction.user.id);
-        const session = getSubmitSession(interaction.user.id);
+        const launchSource = resolveSubmitLaunchSource(interaction);
+        let session = getSubmitSession(interaction.user.id);
         const pending = getPendingSubmissionForUser(interaction.user.id);
-        const draft = getMainDraft(interaction.user.id);
         const cooldownLeft = getSubmitCooldownLeftSeconds(interaction.user.id);
         const beginMember = interaction.member?.roles?.cache
           ? interaction.member
@@ -20732,6 +20784,7 @@ client.on("interactionCreate", async (interaction) => {
         const accessResumeSession = !session && !pending && memberHasManagedStartAccessRole(beginMember)
           ? buildSubmitSessionBootstrap(interaction.user.id, beginMember)
           : null;
+        const profileScopedBegin = isProfileSubmitSourceInteraction(interaction);
         const beginRoute = resolveOnboardBeginRoute({
           hasPendingProof: Boolean(session?.mainCharacterIds?.length && Number.isSafeInteger(session?.pendingKills) && session?.pendingScreenshotUrl),
           hasPendingMissingRoblox: Boolean(pending && (!pending.robloxUsername || !pending.robloxUserId)),
@@ -20739,9 +20792,7 @@ client.on("interactionCreate", async (interaction) => {
           hasResumableAccessSubmit: Boolean(accessResumeSession?.mainCharacterIds?.length),
           cooldownLeft,
           hasSubmitSession: Boolean(session),
-          hasMainDraft: Boolean(draft?.characterIds?.length),
         });
-        const profileScopedBegin = isProfileSubmitSourceInteraction(interaction);
 
         if (beginRoute.type === ONBOARD_BEGIN_ROUTES.REQUIRED_ROBLOX) {
           await interaction.reply(buildRobloxUsernameStepPayload(interaction.user.id, {
@@ -20775,9 +20826,20 @@ client.on("interactionCreate", async (interaction) => {
 
         if (beginRoute.type === ONBOARD_BEGIN_ROUTES.SUBMIT) {
           if (!session?.mainCharacterIds?.length && accessResumeSession?.mainCharacterIds?.length) {
-            setSubmitSession(interaction.user.id, accessResumeSession);
+            setSubmitSession(interaction.user.id, {
+              ...accessResumeSession,
+              source: normalizeSubmitSource(launchSource || accessResumeSession?.source),
+            });
+            session = getSubmitSession(interaction.user.id);
+          } else if (session?.mainCharacterIds?.length) {
+            setSubmitSession(interaction.user.id, {
+              ...session,
+              source: normalizeSubmitSource(launchSource || session?.source),
+            });
+            session = getSubmitSession(interaction.user.id);
           }
 
+          clearAllHelperSubmitSessions(interaction.user.id);
           if (profileScopedBegin) {
             const activeSession = getSubmitSession(interaction.user.id);
             startProfileSubmitCapture(interaction.user.id, {
@@ -20796,57 +20858,34 @@ client.on("interactionCreate", async (interaction) => {
             return;
           }
 
-          const welcomeChannelId = getResolvedChannelId("welcome");
-          if (!welcomeChannelId) {
+          const armedSession = armKillsHelperIntakeSession(interaction.user.id, {
+            source: normalizeSubmitSource(launchSource || session?.source),
+          });
+          if (!armedSession?.channelId) {
             await interaction.reply(ephemeralPayload({
-              content: "Ты уже на шаге подачи заявки. Welcome-канал пока не настроен, попроси модератора указать его через Onboarding Panel.",
+              content: "Ты уже на шаге подачи заявки, но канал для helper intake пока не настроен. Попроси модератора указать bot helper или welcome-канал.",
             }));
             return;
           }
 
           await interaction.reply(buildSubmitStepPayload(interaction.user.id, {
             canManageRobloxIdentity: hasAdministratorAccess(interaction.member),
-            noticeText: `Ты уже на шаге отправки kills. Проверь число и загрузи скрин в <#${welcomeChannelId}>.`,
-          }));
-          return;
-        }
-
-        if (beginRoute.type === ONBOARD_BEGIN_ROUTES.DRAFT) {
-          setSubmitSession(interaction.user.id, { mainCharacterIds: draft.characterIds });
-          clearMainDraft(interaction.user.id);
-          if (profileScopedBegin) {
-            startProfileSubmitCapture(interaction.user.id, {
-              action: PROFILE_SUBMIT_ACTIONS.KILLS,
-              channelId: interaction.channelId,
-              source: isBotHelperPanelSourceInteraction(interaction) ? "bot_helper_kills_button" : "profile_kills_button",
-              sourceMessageId: interaction.message?.id,
-              interactionId: interaction.id,
-              mainCharacterIds: draft.characterIds,
-            });
-            await interaction.reply(buildProfileKillsCapturePayloadForUser(interaction.user.id, {
-              channelId: interaction.channelId,
-              mainCharacterIds: draft.characterIds,
-              noticeText: "Мейны из черновика сохранены. Следующее твоё сообщение в этом чате должно быть заявкой.",
-            }));
-            return;
-          }
-          await interaction.reply(buildSubmitStepPayload(interaction.user.id, {
-            canManageRobloxIdentity: hasAdministratorAccess(interaction.member),
+            noticeText: `Ты уже на шаге отправки kills. Проверь число и загрузи скрин в <#${armedSession.channelId}>.`,
           }));
           return;
         }
 
         if (profileScopedBegin) {
           await openCharacterPicker(interaction, "full", "reply", {
+            source: launchSource,
             afterSelectionProfileSubmitAction: PROFILE_SUBMIT_ACTIONS.KILLS,
-            afterSelectionProfileSubmitChannelId: interaction.channelId,
-            afterSelectionProfileSubmitSource: isBotHelperPanelSourceInteraction(interaction) ? "bot_helper_kills_button" : "profile_kills_button",
-            afterSelectionProfileSubmitSourceMessageId: interaction.message?.id,
-            afterSelectionProfileSubmitInteractionId: interaction.id,
           });
           return;
         }
-        await openCharacterPicker(interaction, "full");
+
+        await openCharacterPicker(interaction, "full", "reply", {
+          source: launchSource,
+        });
       } catch (error) {
         console.error("onboard_begin failed:", error?.message || error);
         await respondToOnboardError(
@@ -20859,7 +20898,9 @@ client.on("interactionCreate", async (interaction) => {
 
     if (interaction.customId === "onboard_quick_mains") {
       clearNonGgsCaptchaSession(interaction.user.id);
-      await openCharacterPicker(interaction, "quick");
+      await openCharacterPicker(interaction, "quick", "reply", {
+        source: SUBMIT_INTAKE_SOURCES.welcome,
+      });
       return;
     }
 
@@ -20872,7 +20913,14 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
-      await openCharacterPicker(interaction, isProfileSubmitSourceInteraction(interaction) ? "quick" : "full", "reply");
+      if (isProfileSubmitSourceInteraction(interaction)) {
+        await openCharacterPicker(interaction, isProfileSubmitSourceInteraction(interaction) ? "quick" : "full", "reply");
+        return;
+      }
+
+      await openCharacterPicker(interaction, "full", "reply", {
+        source: resolveSubmitLaunchSource(interaction),
+      });
       return;
     }
 
@@ -21019,8 +21067,8 @@ client.on("interactionCreate", async (interaction) => {
 
     if (interaction.customId === "onboard_cancel") {
       clearMainsPickerSession(interaction.user.id);
-      clearMainDraft(interaction.user.id);
       clearSubmitSession(interaction.user.id);
+      clearHelperIntakeSession(interaction.user.id);
       clearProfileSubmitCapture(interaction.user.id, "profile_submit_cancel");
       await interaction.update({ content: "Ок. Процесс отменён.", embeds: [], components: [], attachments: [] });
       return;
@@ -21183,8 +21231,50 @@ client.on("interactionCreate", async (interaction) => {
       }
 
       if (action === "approve") {
-        await approveSubmission(client, submission, interaction.user.tag);
-        await interaction.reply(ephemeralPayload({ content: "Заявка одобрена. Tier-role выдана." }));
+        if (reviewApprovalProcessingIds.has(submissionId)) {
+          await interaction.reply(ephemeralPayload({ content: "Эта заявка уже обрабатывается. Не нажимай approve повторно." }));
+          return;
+        }
+
+        const existingClaim = submission.approveClaim;
+        if (existingClaim) {
+          const claimAgeMs = Date.now() - new Date(existingClaim.claimedAt).getTime();
+          if (claimAgeMs < APPROVE_CLAIM_STALE_TTL_MS) {
+            await interaction.reply(ephemeralPayload({ content: `Заявка уже обрабатывается модератором ${existingClaim.claimedBy}. Подожди немного.` }));
+            return;
+          }
+          console.warn(`[approve] Stale claim on ${submissionId} by ${existingClaim.claimedBy} (${Math.round(claimAgeMs / 1000)}s), overriding.`);
+        }
+
+        reviewApprovalProcessingIds.add(submissionId);
+        submission.approveClaim = { claimedBy: interaction.user.tag, claimedAt: nowIso() };
+        try {
+          saveDb();
+        } catch (dbErr) {
+          reviewApprovalProcessingIds.delete(submissionId);
+          delete submission.approveClaim;
+          await interaction.reply(ephemeralPayload({ content: "Не удалось зафиксировать обработку заявки. Попробуй ещё раз." }));
+          return;
+        }
+
+        const acked = await safeDeferEphemeralReply(interaction, {
+          label: `welcome review approve ${submissionId}`,
+        });
+        if (!acked) {
+          reviewApprovalProcessingIds.delete(submissionId);
+          delete submission.approveClaim;
+          saveDb();
+          return;
+        }
+
+        await interaction.editReply("Одобряю заявку. Не нажимай кнопку повторно.").catch(() => {});
+        runDetached(
+          () => processApprovalInteraction(client, interaction, submission, interaction.user.tag),
+          (error) => {
+            reviewApprovalProcessingIds.delete(submissionId);
+            console.error(`Detached approve interaction failed for ${submissionId}: ${formatRuntimeError(error)}`);
+          }
+        );
         return;
       }
 
@@ -21866,6 +21956,7 @@ client.on("interactionCreate", async (interaction) => {
         }
 
         clearSubmitSession(interaction.user.id);
+        clearHelperIntakeSession(interaction.user.id);
         await logLine(client, `SUBMIT: <@${interaction.user.id}> kills ${session.pendingKills} mains=${session.mainCharacterIds.join(",")} with roblox ${robloxUser.name}`).catch((error) => {
           console.warn(`Submit log failed for ${interaction.user.id}: ${formatRuntimeError(error)}`);
         });
@@ -21887,6 +21978,7 @@ client.on("interactionCreate", async (interaction) => {
         }
 
         clearSubmitSession(interaction.user.id);
+        clearHelperIntakeSession(interaction.user.id);
         await logLine(client, `ROBLOX UPDATE: <@${interaction.user.id}> -> ${robloxUser.name} (${robloxUser.id}) for ${pending.id}`).catch((error) => {
           console.warn(`Roblox update log failed for ${pending.id}: ${formatRuntimeError(error)}`);
         });
@@ -21917,9 +22009,15 @@ client.on("interactionCreate", async (interaction) => {
 
       setSubmitSession(interaction.user.id, {
         ...session,
+        source: normalizeSubmitSource(getStoredSubmitLaunchSource(interaction.user.id) || session?.source),
         robloxUsername: robloxUser.name,
         robloxUserId: robloxUser.id,
         robloxDisplayName: robloxUser.displayName,
+      });
+
+      clearAllHelperSubmitSessions(interaction.user.id);
+      armKillsHelperIntakeSession(interaction.user.id, {
+        source: getStoredSubmitLaunchSource(interaction.user.id),
       });
 
       await interaction.editReply(buildSubmitStepPayload(interaction.user.id, {
@@ -22540,28 +22638,13 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-
-      const rawRoleText = interaction.fields.getTextInputValue("panel_access_companion_role_id").trim();
-      const roleId = parseRequestedRoleId(rawRoleText, "");
-      if (rawRoleText && !roleId) {
-        await interaction.editReply({
-          content: "Роль постояльцев не распознана. Укажи role ID или mention.",
-          embeds: [],
-          components: [],
-        });
-        return;
-      }
-
+      const roleId = parseRequestedRoleId(interaction.fields.getTextInputValue("panel_access_companion_role_id"), "");
       const state = getResidentChatAccessConfig();
       state.roleId = roleId;
       saveDb();
 
       const residentChat = await syncResidentChatAccessRoles(client, { reason: `panel resident chat role update by ${interaction.user.tag}` });
-      const statusText = roleId
-        ? `Роль чата постояльцев сохранена: ${formatRoleMention(roleId)}. ${formatResidentChatAccessSyncSummary(residentChat)}`
-        : `Роль чата постояльцев очищена; будет использоваться RESIDENT_CHAT_ACCESS_ROLE_ID, если он задан. ${formatResidentChatAccessSyncSummary(residentChat)}`;
-      await interaction.editReply(await buildModeratorPanelPayload(client, statusText, false));
+      await interaction.reply(await buildModeratorPanelPayload(client, `Роль чата постояльцев обновлена. ${formatResidentChatAccessSyncSummary(residentChat)}`, false));
       return;
     }
 
@@ -23163,30 +23246,6 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    if (interaction.customId === "elo_submit_modal") {
-      const liveState = getLiveLegacyEloState();
-      if (!liveState.ok) {
-        await interaction.reply(buildLegacyEloStateErrorPayload("Не удалось открыть legacy ELO данные", liveState));
-        return;
-      }
-
-      const rawText = String(interaction.fields.getTextInputValue("elo_submit_text") || "").trim();
-      const blockReason = getLegacyEloSubmitEligibilityError(liveState.rawDb, interaction.user.id, rawText);
-      if (blockReason) {
-        await interaction.reply(ephemeralPayload({ content: blockReason }));
-        return;
-      }
-
-      const submitPanel = getLegacyEloSubmitPanelState(liveState.rawDb);
-      const targetChannelId = submitPanel.channelId || interaction.channelId;
-      setLegacyEloSubmitSession(interaction.user.id, {
-        rawText,
-        channelId: targetChannelId,
-      });
-      await interaction.reply(buildLegacyEloSubmitAwaitPayload(targetChannelId, rawText));
-      return;
-    }
-
     if (interaction.customId === "elo_graphic_panel_setup_modal") {
       if (!isModerator(interaction.member)) {
         await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
@@ -23763,11 +23822,18 @@ client.on("guildMemberRemove", async (member) => {
 
   runSerializedDbTask(() => recordActivityMemberLeave({
     db,
-    member,
+    member: {
+      guildId,
+      userId: String(member?.id || member?.user?.id || "").trim(),
+      joinedAt: member?.joinedAt instanceof Date && Number.isFinite(member.joinedAt.getTime())
+        ? member.joinedAt.toISOString()
+        : null,
+      roleIds: [...member?.roles?.cache?.keys?.() || []],
+      leftAt: occurredAt,
+    },
     now: occurredAt,
-    saveDb,
   }), "activity-member-remove-capture").catch((error) => {
-    console.error("Activity member-remove capture failed:", error?.message || error);
+    console.error("Activity member-remove ingest failed:", error?.message || error);
   });
 
   const resolvedRemoval = await resolveDailyNewsMemberRemovalResolution({ member, occurredAt }).catch((error) => {

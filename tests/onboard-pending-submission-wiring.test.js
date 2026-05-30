@@ -64,3 +64,18 @@ test("getPendingSubmissionForUser ignores stale pending rows once a newer submis
   assert.equal(getPendingSubmissionForUser("user-1"), null);
   assert.equal(getPendingSubmissionForUser("user-2")?.id, "activePending");
 });
+
+test("welcome submit acknowledges before detached background processing starts", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "welcome-bot.js"), "utf8");
+  const guardIndex = source.indexOf("if (submitProcessingUsers.has(message.author.id)) {");
+  const replyIndex = source.indexOf("const processingReply = await message.reply(\"Заявка принята. Обрабатываю и отправляю модераторам. Повторять не нужно.\")", guardIndex);
+  const detachedIndex = source.indexOf("runDetached(", replyIndex);
+  const helperIndex = source.indexOf("processPendingSubmissionMessage(client, message, {", detachedIndex);
+  const returnIndex = source.indexOf("return;", helperIndex);
+
+  assert.ok(guardIndex >= 0, "expected onboarding submit in-flight guard before background processing");
+  assert.ok(replyIndex > guardIndex, "expected onboarding submit to reply before heavy processing");
+  assert.ok(detachedIndex > replyIndex, "expected onboarding submit to detach heavy processing after the reply");
+  assert.ok(helperIndex > detachedIndex, "expected detached onboarding submit helper invocation");
+  assert.ok(returnIndex > helperIndex, "expected message handler to return without awaiting detached submit processing");
+});

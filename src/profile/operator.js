@@ -165,6 +165,36 @@ function createProfileOperator(options = {}) {
     });
   }
 
+  async function rememberPrivateProfileSurface(interaction, replyMessage, { requesterUserId = "", isSelf = false, displayMode = "" } = {}) {
+    if (!isSelf || typeof options.rememberPrivateProfileSurface !== "function") {
+      return;
+    }
+
+    const normalizedDisplayMode = cleanString(displayMode, 40).toLowerCase() || "full";
+    if (normalizedDisplayMode === "compact-card") {
+      return;
+    }
+
+    const resolvedReply = cleanString(replyMessage?.id, 80)
+      ? replyMessage
+      : (typeof interaction?.fetchReply === "function"
+        ? await Promise.resolve(interaction.fetchReply()).catch(() => null)
+        : null);
+    const messageId = cleanString(resolvedReply?.id, 80);
+    if (!messageId) {
+      return;
+    }
+
+    await Promise.resolve(options.rememberPrivateProfileSurface({
+      userId: requesterUserId || interaction?.user?.id || "",
+      messageId,
+      isSelf,
+      displayMode: normalizedDisplayMode,
+    })).catch((error) => {
+      logProfileWarning(`profile surface remember failed (${messageId}): ${error?.message || error}`);
+    });
+  }
+
   async function buildPrivateProfileReadModel({
     targetUserId = "",
     targetUser = null,
@@ -401,12 +431,16 @@ function createProfileOperator(options = {}) {
     }
 
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-    await interaction.editReply(await buildPrivateProfilePayload({
+    const reply = await interaction.editReply(await buildPrivateProfilePayload({
       targetUserId: targetUser.id,
       targetUser,
       isSelf: access.isSelf,
       requesterUserId: interaction.user.id,
     }));
+    await rememberPrivateProfileSurface(interaction, reply, {
+      requesterUserId: interaction.user.id,
+      isSelf: access.isSelf,
+    });
     return true;
   }
 
@@ -433,13 +467,18 @@ function createProfileOperator(options = {}) {
       }
 
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-      await interaction.editReply(await buildPrivateProfilePayload({
+      const reply = await interaction.editReply(await buildPrivateProfilePayload({
         targetUserId: interaction.user.id,
         targetUser: interaction.user,
         isSelf: access.isSelf,
         requesterUserId: interaction.user.id,
         displayMode: "compact-card",
       }));
+      await rememberPrivateProfileSurface(interaction, reply, {
+        requesterUserId: interaction.user.id,
+        isSelf: access.isSelf,
+        displayMode: "compact-card",
+      });
       return true;
     }
 
@@ -488,11 +527,15 @@ function createProfileOperator(options = {}) {
       }
 
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-      await interaction.editReply(await buildPrivateProfilePayload({
+      const reply = await interaction.editReply(await buildPrivateProfilePayload({
         targetUserId: profileButtonRequest.targetUserId,
         isSelf: access.isSelf,
         requesterUserId: interaction.user.id,
       }));
+      await rememberPrivateProfileSurface(interaction, reply, {
+        requesterUserId: interaction.user.id,
+        isSelf: access.isSelf,
+      });
       if (deleteSourceMessage && typeof interaction?.message?.delete === "function") {
         await interaction.message.delete().catch(() => {});
       }
@@ -566,12 +609,16 @@ function createProfileOperator(options = {}) {
     }
 
     try {
-      await interaction.editReply(await buildPrivateProfilePayload({
+      const reply = await interaction.editReply(await buildPrivateProfilePayload({
         targetUserId: profileNavRequest.targetUserId,
         isSelf: access.isSelf,
         requesterUserId: interaction.user.id,
         view: profileNavRequest.view,
       }));
+      await rememberPrivateProfileSurface(interaction, reply, {
+        requesterUserId: interaction.user.id,
+        isSelf: access.isSelf,
+      });
     } catch (error) {
       if (typeof options.logWarning === "function") {
         options.logWarning(`profile nav payload failed (${profileNavRequest.view}/${profileNavRequest.targetUserId}): ${error?.message || error}`);
