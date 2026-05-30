@@ -176,3 +176,17 @@ test("welcome-bot no longer blocks regular users from reopening the Roblox usern
 
   assert.doesNotMatch(source, /robloxIdentityLockText\) \{[\s\S]*?может только админ/i);
 });
+
+test("welcome-bot keeps canonical Roblox binding out of pending submission writes", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "welcome-bot.js"), "utf8");
+  const createMatch = source.match(/async function createPendingSubmissionFromAttachment\(client, input\) \{([\s\S]*?)\n\}/);
+  const editMatch = source.match(/async function updatePendingSubmissionRobloxIdentity\(client, submission, robloxUser, moderatorTag = null\) \{([\s\S]*?)\n\}/);
+  const rejectMatch = source.match(/async function rejectSubmission\(client, submission, moderatorTag, reason\) \{([\s\S]*?)\n\}/);
+
+  assert.ok(createMatch, "expected pending submission create helper");
+  assert.ok(editMatch, "expected pending submission Roblox edit helper");
+  assert.ok(rejectMatch, "expected pending submission reject helper");
+  assert.doesNotMatch(createMatch[1], /writeCanonicalRobloxBinding\(/, "pending submission create should not overwrite canonical Roblox binding");
+  assert.doesNotMatch(editMatch[1], /writeCanonicalRobloxBinding\(/, "pending Roblox edit should stay in submission state");
+  assert.doesNotMatch(rejectMatch[1], /writeCanonicalRobloxBinding\(/, "reject should not downgrade canonical Roblox binding");
+});

@@ -26,6 +26,20 @@ test("welcome-bot approval flow appends proof-window snapshots before saveDb", (
   assert.match(match[1], /roblox:\s*profile\?\.domains\?\.roblox\s*\|\|\s*profile/);
 });
 
+test("welcome-bot approval flow preflights roles before mutating submission state", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "welcome-bot.js"), "utf8");
+  const preflightStart = source.indexOf("async function preflightSubmissionApprovalRoles(client, submission, profile = null) {");
+  const approveStart = source.indexOf("async function approveSubmission(client, submission, moderatorTag) {");
+  const preflightCallIndex = source.indexOf("await preflightSubmissionApprovalRoles(client, submission, profile);", approveStart);
+  const ensureTierIndex = source.indexOf('await ensureSingleTierRole(client, submission.userId, tier, "approved welcome submission");', approveStart);
+  const approvedStatusIndex = source.indexOf('submission.status = "approved";', approveStart);
+
+  assert.ok(preflightStart >= 0, "expected approval role preflight helper to exist");
+  assert.ok(preflightCallIndex > approveStart, "expected approveSubmission to call role preflight");
+  assert.ok(ensureTierIndex > preflightCallIndex, "expected role mutations to start after preflight");
+  assert.ok(approvedStatusIndex > preflightCallIndex, "expected submission status mutation after preflight");
+});
+
 test("welcome-bot review approve flow defers early and guards duplicate clicks", () => {
   const source = fs.readFileSync(path.join(__dirname, "..", "welcome-bot.js"), "utf8");
   const branchStart = source.indexOf('if (action === "approve") {');

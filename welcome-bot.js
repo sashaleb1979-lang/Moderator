@@ -8234,6 +8234,80 @@ async function ensureSingleTierRole(client, userId, targetTier, reason = "kill t
   }
 }
 
+async function assertApprovalManagedRoleAvailable(client, roleId, label) {
+  const normalizedRoleId = String(roleId || "").trim();
+  if (!normalizedRoleId) {
+    throw new Error(`Не настроена ${label}.`);
+  }
+
+  const role = await fetchRoleForPanel(client, normalizedRoleId);
+  if (!role) {
+    throw new Error(`${label} ${formatRoleMention(normalizedRoleId)} не найдена на сервере.`);
+  }
+  if (!role.editable) {
+    throw new Error(`Бот сейчас не может управлять ${label.toLowerCase()} ${formatRoleMention(role.id)}. Нужны Manage Roles и позиция бота выше роли.`);
+  }
+  return role;
+}
+
+async function preflightSubmissionApprovalRoles(client, submission, profile = null) {
+  const guild = await getGuild(client).catch(() => null);
+  if (!guild) {
+    throw new Error("Не удалось получить сервер для проверки ролей approve.");
+  }
+
+  const member = await fetchMember(client, submission.userId);
+  if (!member) {
+    return { ok: true, skipped: "missing_member" };
+  }
+
+  if (!member.manageable) {
+    throw new Error(`Бот сейчас не может менять роли участника <@${submission.userId}>. Проверь Manage Roles и иерархию ролей.`);
+  }
+
+  const targetTier = killTierFor(submission.kills);
+  if (!targetTier) {
+    throw new Error("Не удалось вычислить tier по kills");
+  }
+
+  const tierRoleIdsToCheck = new Set([
+    getTierRoleId(targetTier),
+    ...getAllTierRoleIds().filter((roleId) => roleId && member.roles.cache.has(roleId)),
+  ]);
+  for (const roleId of tierRoleIdsToCheck) {
+    const label = roleId === getTierRoleId(targetTier)
+      ? `tier-роль для kill tier ${targetTier}`
+      : "tier-роль для снятия";
+    await assertApprovalManagedRoleAvailable(client, roleId, label);
+  }
+
+  const shouldGrantAccessRole = (!profile?.accessGrantedAt || getCurrentOnboardAccessGrantMode() === ONBOARD_ACCESS_GRANT_MODES.AFTER_APPROVE)
+    && shouldGrantAccessRoleAtStage(ONBOARD_ACCESS_GRANT_MODES.AFTER_APPROVE);
+  if (!shouldGrantAccessRole) {
+    return { ok: true };
+  }
+
+  const mode = getCurrentOnboardMode();
+  const validationError = getOnboardModeValidationError(mode);
+  if (validationError) {
+    throw new Error(validationError);
+  }
+
+  const targetAccessRoleId = getGrantedAccessRoleIdForMode(mode, member);
+  const accessRoleIdsToCheck = new Set([
+    targetAccessRoleId,
+    ...getManagedStartAccessRoleIds().filter((roleId) => roleId && member.roles.cache.has(roleId)),
+  ]);
+  for (const roleId of accessRoleIdsToCheck) {
+    const label = roleId === targetAccessRoleId
+      ? "стартовая роль доступа"
+      : "стартовая роль для снятия";
+    await assertApprovalManagedRoleAvailable(client, roleId, label);
+  }
+
+  return { ok: true };
+}
+
 async function ensureSingleRoleInPool(client, userId, targetRoleId, roleIds, reason = "role sync") {
   const member = await fetchMember(client, userId);
   if (!member) return;
@@ -10180,17 +10254,6 @@ async function createPendingSubmissionFromAttachment(client, input) {
     profile.lastSubmissionId = submission.id;
     profile.lastSubmissionStatus = "pending";
     profile.updatedAt = nowIso();
-    if (submission.robloxUsername && submission.robloxUserId) {
-      writeCanonicalRobloxBinding(input.user.id, profile, submission, {
-        verificationStatus: "pending",
-        verifiedAt: null,
-        updatedAt: profile.updatedAt,
-        lastSubmissionId: submission.id,
-        lastReviewedAt: null,
-        reviewedBy: null,
-        source: "onboarding",
-      });
-    }
     setSubmitCooldown(input.user.id);
     saveDb();
   } catch (error) {
@@ -10360,11 +10423,12 @@ async function approveSubmission(client, submission, moderatorTag) {
   const tier = killTierFor(submission.kills);
   if (!tier) throw new Error("Не удалось вычислить tier по kills");
 
-  await ensureSingleTierRole(client, submission.userId, tier, "approved welcome submission");
-
   const profile = getProfile(submission.userId);
   const previousSubmission = cloneJsonValue(submission);
   const previousProfile = cloneJsonValue(profile);
+
+  await preflightSubmissionApprovalRoles(client, submission, profile);
+  await ensureSingleTierRole(client, submission.userId, tier, "approved welcome submission");
 
   submission.derivedTier = tier;
   submission.status = "approved";
@@ -10473,16 +10537,6 @@ async function rejectSubmission(client, submission, moderatorTag, reason) {
   profile.lastSubmissionStatus = "rejected";
   profile.lastReviewedAt = submission.reviewedAt;
   profile.updatedAt = nowIso();
-  if (submission.robloxUsername && submission.robloxUserId) {
-    writeCanonicalRobloxBinding(submission.userId, profile, submission, {
-      verificationStatus: "failed",
-      updatedAt: profile.updatedAt,
-      lastSubmissionId: submission.id,
-      lastReviewedAt: submission.reviewedAt,
-      reviewedBy: moderatorTag,
-      source: "onboarding",
-    });
-  }
 
   try {
     saveDb();
@@ -10536,28 +10590,15 @@ async function updateSubmissionKills(client, submission, kills, moderatorTag) {
 
 async function updatePendingSubmissionRobloxIdentity(client, submission, robloxUser, moderatorTag = null) {
   const previousSubmission = cloneJsonValue(submission);
-  const profile = getProfile(submission.userId);
-  const previousProfile = cloneJsonValue(profile);
-
-  profile.updatedAt = nowIso();
-  const bindingResult = writeCanonicalRobloxBinding(submission.userId, profile, robloxUser, {
-    verificationStatus: "pending",
-    verifiedAt: null,
-    updatedAt: profile.updatedAt,
-    lastSubmissionId: submission.id,
-    lastReviewedAt: null,
-    reviewedBy: moderatorTag,
-    source: "onboarding",
-  });
-  submission.robloxUsername = bindingResult?.snapshot?.username || "";
-  submission.robloxUserId = bindingResult?.snapshot?.userId || "";
-  submission.robloxDisplayName = bindingResult?.snapshot?.displayName || "";
+  const snapshot = buildCanonicalRobloxBindingSnapshot(robloxUser);
+  submission.robloxUsername = snapshot.username || "";
+  submission.robloxUserId = snapshot.userId || "";
+  submission.robloxDisplayName = snapshot.displayName || "";
 
   try {
     saveDb();
   } catch (error) {
     restoreRecordValue(db.submissions, submission.id, previousSubmission, true);
-    restoreRecordValue(db.profiles, submission.userId, previousProfile, true);
     throw error;
   }
 
