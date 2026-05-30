@@ -51,7 +51,13 @@ test("legacy ELO submit message validation requires elo text and screenshot toge
   );
 });
 
-test("legacy ELO submit target channel prefers session, then panel, then fallback channel", () => {
+test("legacy ELO submit target channel prefers explicit channel, then session, then panel, then fallback channel", () => {
+  assert.equal(resolveLegacyEloSubmitTargetChannelId({
+    channelId: "explicit-channel",
+    sessionChannelId: "session-channel",
+    panelChannelId: "panel-channel",
+    fallbackChannelId: "fallback-channel",
+  }), "explicit-channel");
   assert.equal(resolveLegacyEloSubmitTargetChannelId({
     sessionChannelId: "session-channel",
     panelChannelId: "panel-channel",

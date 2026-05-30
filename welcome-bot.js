@@ -1512,8 +1512,34 @@ function getKillsSubmitTargetChannelId() {
   return String(getHelperIntakeChannelId() || getResolvedChannelId("welcome") || "").trim();
 }
 
+function resolveEloIntakeTargetChannelId(options = {}) {
+  const source = normalizeSubmitSource(options.source);
+  const interactionChannelId = String(options.interactionChannelId || "").trim();
+  const legacySubmitPanelChannelId = String(options.legacySubmitPanelChannelId || "").trim();
+
+  if (source === SUBMIT_INTAKE_SOURCES.helper) {
+    return String(getResolvedBotHelperPanelSnapshot().channelId || interactionChannelId || "").trim();
+  }
+
+  if (source === SUBMIT_INTAKE_SOURCES.profile) {
+    return interactionChannelId;
+  }
+
+  if (source === SUBMIT_INTAKE_SOURCES.welcome) {
+    return String(getResolvedWelcomePanelSnapshot().channelId || interactionChannelId || "").trim();
+  }
+
+  return resolveLegacyEloSubmitTargetChannelId({
+    channelId: options.channelId,
+    sessionChannelId: options.sessionChannelId,
+    panelChannelId: legacySubmitPanelChannelId || options.panelChannelId,
+    fallbackChannelId: interactionChannelId || options.fallbackChannelId,
+  });
+}
+
 function getLegacyEloHelperTargetChannelId(options = {}) {
   return resolveLegacyEloSubmitTargetChannelId({
+    channelId: options.channelId,
     sessionChannelId: "",
     panelChannelId: getHelperIntakeChannelId() || options.panelChannelId,
     fallbackChannelId: options.fallbackChannelId,
@@ -20360,11 +20386,13 @@ client.on("interactionCreate", async (interaction) => {
       const launchSource = resolveSubmitLaunchSource(interaction);
       const session = getHelperIntakeSession(interaction.user.id);
       const submitPanel = getLegacyEloSubmitPanelState(liveState.rawDb);
+      const sourceAwareTargetChannelId = resolveEloIntakeTargetChannelId({
+        source: launchSource,
+        interactionChannelId: interaction.channelId,
+        legacySubmitPanelChannelId: submitPanel.channelId,
+      });
       const activeEloSession = session?.action === HELPER_INTAKE_ACTIONS.elo ? session : null;
-      const targetChannelId = String(
-        activeEloSession?.channelId
-        || getLegacyEloHelperTargetChannelId({ panelChannelId: submitPanel.channelId, fallbackChannelId: interaction.channelId })
-      ).trim();
+      const targetChannelId = String(activeEloSession?.channelId || sourceAwareTargetChannelId).trim();
       if (activeEloSession) {
         await interaction.reply(buildLegacyEloSubmitAwaitPayload(targetChannelId, activeEloSession.rawText));
         return;
@@ -20379,6 +20407,7 @@ client.on("interactionCreate", async (interaction) => {
       clearAllHelperSubmitSessions(interaction.user.id);
       const armedSession = armLegacyEloHelperIntakeSession(interaction.user.id, {
         source: launchSource,
+        channelId: sourceAwareTargetChannelId,
         panelChannelId: submitPanel.channelId,
         fallbackChannelId: interaction.channelId,
       });
