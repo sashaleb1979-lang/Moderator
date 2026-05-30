@@ -10,7 +10,7 @@ const source = fs.readFileSync(path.join(__dirname, "..", "welcome-bot.js"), "ut
 test("welcome-bot resolves launch source from message-bound profile context before panel snapshots", () => {
   assert.match(
     source,
-    /function resolveSubmitLaunchSource\(interaction\) \{[\s\S]*?getProfileSurfaceContext\(messageId, userId\)[\s\S]*?return profileContext\.source;[\s\S]*?getResolvedBotHelperPanelSnapshot\(\)[\s\S]*?SUBMIT_INTAKE_SOURCES\.helper;[\s\S]*?getResolvedWelcomePanelSnapshot\(\)[\s\S]*?SUBMIT_INTAKE_SOURCES\.welcome;/
+    /function resolveSubmitLaunchSource\(interaction = \{\}\) \{[\s\S]*?getProfileSurfaceContext\(messageId, userId\)[\s\S]*?profileSource === SUBMIT_INTAKE_SOURCES\.profile[\s\S]*?return profileSource;[\s\S]*?getResolvedBotHelperPanelSnapshot\(\)[\s\S]*?SUBMIT_INTAKE_SOURCES\.helper;[\s\S]*?getResolvedWelcomePanelSnapshot\(\)[\s\S]*?SUBMIT_INTAKE_SOURCES\.welcome;/
   );
 });
 
@@ -21,21 +21,35 @@ test("welcome-bot remembers only full self-profile surfaces as source carriers",
   );
 });
 
-test("shared CTA handlers arm intake from the resolved launch source", () => {
+test("profile submit source detection delegates to the canonical launch source resolver", () => {
+  const functionStart = source.indexOf("function isProfileSubmitSourceInteraction");
+  const functionEnd = source.indexOf("function isBotHelperPanelSourceInteraction", functionStart);
+  const functionBody = source.slice(functionStart, functionEnd);
+
+  assert.ok(functionStart > 0 && functionEnd > functionStart, "isProfileSubmitSourceInteraction must exist");
+  assert.match(
+    functionBody,
+    /return resolveSubmitLaunchSource\(interaction\) === SUBMIT_INTAKE_SOURCES\.profile;/
+  );
+  assert.doesNotMatch(functionBody, /getMessageComponentCustomIds/);
+  assert.doesNotMatch(functionBody, /profile_bind_roblox|elo_submit_card/);
+});
+
+test("shared CTA handlers arm intake from one resolved launch source", () => {
   assert.match(
     source,
-    /interaction\.customId === "elo_submit_open"[\s\S]*?const launchSource = resolveSubmitLaunchSource\(interaction\)[\s\S]*?source: launchSource/
+    /interaction\.customId === "elo_submit_open"[\s\S]*?const launchSource = resolveSubmitLaunchSource\(interaction\)[\s\S]*?launchSource === SUBMIT_INTAKE_SOURCES\.profile[\s\S]*?PROFILE_SUBMIT_ACTIONS\.ELO[\s\S]*?source: "profile_elo_button"[\s\S]*?armLegacyEloHelperIntakeSession\(interaction\.user\.id, \{[\s\S]*?source: launchSource/
   );
   assert.match(
     source,
-    /interaction\.customId === "onboard_begin"[\s\S]*?const launchSource = resolveSubmitLaunchSource\(interaction\)[\s\S]*?openCharacterPicker\(interaction, "full", "reply", \{[\s\S]*?source: launchSource/
+    /interaction\.customId === "onboard_begin"[\s\S]*?const launchSource = resolveSubmitLaunchSource\(interaction\)[\s\S]*?profileScopedBegin = launchSource === SUBMIT_INTAKE_SOURCES\.profile[\s\S]*?source: "profile_kills_button"[\s\S]*?openCharacterPicker\(interaction, "full", "reply", \{[\s\S]*?source: launchSource/
   );
 });
 
 test("shared mains buttons keep their current picker contracts", () => {
   assert.match(
     source,
-    /interaction\.customId === "onboard_change_mains"[\s\S]*?openCharacterPicker\(interaction, "full", "reply", \{[\s\S]*?source: resolveSubmitLaunchSource\(interaction\)/
+    /interaction\.customId === "onboard_change_mains"[\s\S]*?const launchSource = resolveSubmitLaunchSource\(interaction\)[\s\S]*?launchSource === SUBMIT_INTAKE_SOURCES\.profile[\s\S]*?openCharacterPicker\(interaction, "quick", "reply", \{[\s\S]*?source: launchSource[\s\S]*?openCharacterPicker\(interaction, "full", "reply", \{[\s\S]*?source: launchSource/
   );
   assert.match(
     source,
@@ -54,9 +68,9 @@ test("welcome-bot wires profile submit capture before legacy channel guards", ()
   assert.ok(welcomeGuardIndex > captureIndex, "profile capture should run before welcome-only guard");
 });
 
-test("welcome-bot starts current-channel scoped sessions from profile CTA buttons", () => {
-  assert.match(source, /interaction\.customId === "elo_submit_open"[\s\S]*?isProfileSubmitSourceInteraction\(interaction\)[\s\S]*?PROFILE_SUBMIT_ACTIONS\.ELO/);
-  assert.match(source, /interaction\.customId === "onboard_begin"[\s\S]*?profileScopedBegin[\s\S]*?PROFILE_SUBMIT_ACTIONS\.KILLS/);
+test("welcome-bot starts current-channel scoped sessions from profile launch source", () => {
+  assert.match(source, /interaction\.customId === "elo_submit_open"[\s\S]*?launchSource === SUBMIT_INTAKE_SOURCES\.profile[\s\S]*?PROFILE_SUBMIT_ACTIONS\.ELO/);
+  assert.match(source, /interaction\.customId === "onboard_begin"[\s\S]*?profileScopedBegin = launchSource === SUBMIT_INTAKE_SOURCES\.profile[\s\S]*?PROFILE_SUBMIT_ACTIONS\.KILLS/);
   assert.match(source, new RegExp("interaction\\.customId === PROFILE_SUBMIT_CANCEL_CUSTOM_ID[\\s\\S]*?clearProfileSubmitCapture"));
 });
 
@@ -83,6 +97,6 @@ test("profile kills wait until mains are selected before message capture starts"
 test("profile mains stay quick while helper mains keep the shared full-picker route", () => {
   assert.match(
     source,
-    /interaction\.customId === "onboard_change_mains"[\s\S]*?if \(isProfileSubmitSourceInteraction\(interaction\)\) \{[\s\S]*?openCharacterPicker\(interaction, isProfileSubmitSourceInteraction\(interaction\) \? "quick" : "full", "reply"\)[\s\S]*?openCharacterPicker\(interaction, "full", "reply", \{[\s\S]*?source: resolveSubmitLaunchSource\(interaction\)/
+    /interaction\.customId === "onboard_change_mains"[\s\S]*?const launchSource = resolveSubmitLaunchSource\(interaction\)[\s\S]*?if \(launchSource === SUBMIT_INTAKE_SOURCES\.profile\) \{[\s\S]*?openCharacterPicker\(interaction, "quick", "reply", \{[\s\S]*?source: launchSource[\s\S]*?openCharacterPicker\(interaction, "full", "reply", \{[\s\S]*?source: launchSource/
   );
 });

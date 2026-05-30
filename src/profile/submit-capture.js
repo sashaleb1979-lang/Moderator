@@ -25,6 +25,9 @@ function normalizeAction(value = "") {
 }
 
 function normalizeNowMs(value = null) {
+  if (value === null || value === undefined || value === "") {
+    return Date.now();
+  }
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric : Date.now();
 }
