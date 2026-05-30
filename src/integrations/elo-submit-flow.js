@@ -18,7 +18,7 @@ function cleanString(value, limit = 2000) {
 
 function resolveLegacyEloSubmitTargetChannelId(options = {}) {
   return cleanString(
-    options.sessionChannelId || options.panelChannelId || options.fallbackChannelId,
+    options.channelId || options.sessionChannelId || options.panelChannelId || options.fallbackChannelId,
     80
   );
 }
