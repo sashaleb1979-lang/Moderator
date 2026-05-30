@@ -30,6 +30,17 @@ test("profile submit capture store scopes sessions by user, channel and five min
   assert.equal(store.peek("user-1"), null);
 });
 
+test("profile submit capture store starts live sessions when nowMs is omitted", () => {
+  const store = createProfileSubmitCaptureStore({ ttlMs: 5 * 60 * 1000 });
+  const session = store.start("user-live", {
+    action: PROFILE_SUBMIT_ACTIONS.ELO,
+    channelId: "channel-live",
+  });
+
+  assert.equal(session.userId, "user-live");
+  assert.equal(store.get("user-live")?.channelId, "channel-live");
+});
+
 test("profile submit capture payloads explain next-message flow and expose cancel", () => {
   const killsPayload = buildProfileKillsSubmitCapturePayload({
     channelText: "<#profile-chat>",

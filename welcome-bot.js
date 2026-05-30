@@ -1537,6 +1537,25 @@ function resolveEloIntakeTargetChannelId(options = {}) {
   });
 }
 
+function resolveKillsIntakeTargetChannelId({ source = "", interactionChannelId = "" } = {}) {
+  const normalizedSource = normalizeSubmitSource(source);
+  const fallbackChannelId = String(interactionChannelId || "").trim();
+
+  if (normalizedSource === SUBMIT_INTAKE_SOURCES.welcome) {
+    return String(getResolvedWelcomePanelSnapshot().channelId || fallbackChannelId || "").trim();
+  }
+
+  if (normalizedSource === SUBMIT_INTAKE_SOURCES.helper) {
+    return String(getResolvedBotHelperPanelSnapshot().channelId || fallbackChannelId || "").trim();
+  }
+
+  if (normalizedSource === SUBMIT_INTAKE_SOURCES.profile) {
+    return fallbackChannelId;
+  }
+
+  return getKillsSubmitTargetChannelId();
+}
+
 function getLegacyEloHelperTargetChannelId(options = {}) {
   return resolveLegacyEloSubmitTargetChannelId({
     channelId: options.channelId,
@@ -1613,14 +1632,15 @@ function getStoredSubmitLaunchSource(userId) {
   );
 }
 
-function resolveSubmitLaunchSource(interaction) {
+function resolveSubmitLaunchSource(interaction = {}) {
   const userId = String(interaction?.user?.id || "").trim();
   const messageId = String(interaction?.message?.id || "").trim();
   const channelId = String(interaction?.channelId || interaction?.message?.channelId || interaction?.channel?.id || "").trim();
 
   const profileContext = getProfileSurfaceContext(messageId, userId);
-  if (profileContext?.source) {
-    return profileContext.source;
+  const profileSource = normalizeSubmitSource(profileContext?.source);
+  if (profileSource === SUBMIT_INTAKE_SOURCES.profile) {
+    return profileSource;
   }
 
   const helperSnapshot = getResolvedBotHelperPanelSnapshot();
@@ -1654,9 +1674,7 @@ function logProfileSubmitCapture(event, details = {}) {
 }
 
 function isProfileSubmitSourceInteraction(interaction = {}) {
-  const ids = new Set(getMessageComponentCustomIds(interaction?.message));
-  return ids.has("profile_bind_roblox")
-    || ids.has("elo_submit_card");
+  return resolveSubmitLaunchSource(interaction) === SUBMIT_INTAKE_SOURCES.profile;
 }
 
 function isBotHelperPanelSourceInteraction(interaction = {}) {
@@ -1725,7 +1743,14 @@ function buildProfileKillsCapturePayloadForUser(userId, options = {}) {
 }
 
 function armKillsHelperIntakeSession(userId, options = {}) {
-  const channelId = String(options.channelId || getKillsSubmitTargetChannelId() || "").trim();
+  const channelId = String(
+    options.channelId
+    || resolveKillsIntakeTargetChannelId({
+      source: options.source,
+      interactionChannelId: options.interactionChannelId,
+    })
+    || ""
+  ).trim();
   if (!channelId) return null;
   return setHelperIntakeSession(userId, {
     action: HELPER_INTAKE_ACTIONS.kills,
@@ -3691,9 +3716,17 @@ async function completeMainSelection(interaction, selectedEntries, options = {})
       clearAllHelperSubmitSessions(interaction.user.id);
       uploadSession = armKillsHelperIntakeSession(interaction.user.id, {
         source: nextSubmitSource,
+        interactionChannelId: interaction.channelId,
       });
     }
-    const uploadTargetChannelId = String(uploadSession?.channelId || getKillsSubmitTargetChannelId() || "").trim();
+    const uploadTargetChannelId = String(
+      uploadSession?.channelId
+      || resolveKillsIntakeTargetChannelId({
+        source: nextSubmitSource,
+        interactionChannelId: interaction.channelId,
+      })
+      || ""
+    ).trim();
     const uploadTarget = uploadTargetChannelId ? `<#${uploadTargetChannelId}>` : "bot-helper канал";
     const needsRobloxIdentity = !(activeSubmitSession?.robloxUsername && activeSubmitSession?.robloxUserId);
     clearMainsPickerSession(interaction.user.id);
@@ -3766,6 +3799,7 @@ async function completeMainSelection(interaction, selectedEntries, options = {})
 
   armKillsHelperIntakeSession(interaction.user.id, {
     source: nextSubmitSource,
+    interactionChannelId: interaction.channelId,
   });
   clearMainsPickerSession(interaction.user.id);
   if (responseMethod === "update") {
@@ -20357,33 +20391,35 @@ client.on("interactionCreate", async (interaction) => {
     }
 
     if (interaction.customId === "elo_submit_open") {
+      const launchSource = resolveSubmitLaunchSource(interaction);
       const liveState = getLiveLegacyEloState();
       if (!liveState.ok) {
         await interaction.reply(buildLegacyEloStateErrorPayload("Не удалось открыть legacy ELO данные", liveState));
         return;
       }
 
-      if (isProfileSubmitSourceInteraction(interaction)) {
-        const blockReason = getLegacyEloSubmitEligibilityError(liveState.rawDb, interaction.user.id);
-        if (blockReason) {
-          await interaction.reply(ephemeralPayload({ content: blockReason }));
+      if (launchSource === SUBMIT_INTAKE_SOURCES.profile) {
+        if (isProfileSubmitSourceInteraction(interaction)) {
+          const blockReason = getLegacyEloSubmitEligibilityError(liveState.rawDb, interaction.user.id);
+          if (blockReason) {
+            await interaction.reply(ephemeralPayload({ content: blockReason }));
+            return;
+          }
+
+          startProfileSubmitCapture(interaction.user.id, {
+            action: PROFILE_SUBMIT_ACTIONS.ELO,
+            channelId: interaction.channelId,
+            source: "profile_elo_button",
+            sourceMessageId: interaction.message?.id,
+            interactionId: interaction.id,
+          });
+          await interaction.reply(buildProfileEloSubmitCapturePayload({
+            channelText: formatChannelMention(interaction.channelId) || "этот чат",
+          }));
           return;
         }
-
-        startProfileSubmitCapture(interaction.user.id, {
-          action: PROFILE_SUBMIT_ACTIONS.ELO,
-          channelId: interaction.channelId,
-          source: isBotHelperPanelSourceInteraction(interaction) ? "bot_helper_elo_button" : "profile_elo_button",
-          sourceMessageId: interaction.message?.id,
-          interactionId: interaction.id,
-        });
-        await interaction.reply(buildProfileEloSubmitCapturePayload({
-          channelText: formatChannelMention(interaction.channelId) || "этот чат",
-        }));
-        return;
       }
 
-      const launchSource = resolveSubmitLaunchSource(interaction);
       const session = getHelperIntakeSession(interaction.user.id);
       const submitPanel = getLegacyEloSubmitPanelState(liveState.rawDb);
       const sourceAwareTargetChannelId = resolveEloIntakeTargetChannelId({
@@ -20811,7 +20847,7 @@ client.on("interactionCreate", async (interaction) => {
         const accessResumeSession = !session && !pending && memberHasManagedStartAccessRole(beginMember)
           ? buildSubmitSessionBootstrap(interaction.user.id, beginMember)
           : null;
-        const profileScopedBegin = isProfileSubmitSourceInteraction(interaction);
+        const profileScopedBegin = launchSource === SUBMIT_INTAKE_SOURCES.profile;
         const beginRoute = resolveOnboardBeginRoute({
           hasPendingProof: Boolean(session?.mainCharacterIds?.length && Number.isSafeInteger(session?.pendingKills) && session?.pendingScreenshotUrl),
           hasPendingMissingRoblox: Boolean(pending && (!pending.robloxUsername || !pending.robloxUserId)),
@@ -20872,7 +20908,7 @@ client.on("interactionCreate", async (interaction) => {
             startProfileSubmitCapture(interaction.user.id, {
               action: PROFILE_SUBMIT_ACTIONS.KILLS,
               channelId: interaction.channelId,
-              source: isBotHelperPanelSourceInteraction(interaction) ? "bot_helper_kills_button" : "profile_kills_button",
+              source: "profile_kills_button",
               sourceMessageId: interaction.message?.id,
               interactionId: interaction.id,
               mainCharacterIds: activeSession?.mainCharacterIds,
@@ -20885,8 +20921,13 @@ client.on("interactionCreate", async (interaction) => {
             return;
           }
 
+          const armedSource = normalizeSubmitSource(launchSource || session?.source);
           const armedSession = armKillsHelperIntakeSession(interaction.user.id, {
-            source: normalizeSubmitSource(launchSource || session?.source),
+            source: armedSource,
+            channelId: resolveKillsIntakeTargetChannelId({
+              source: armedSource,
+              interactionChannelId: interaction.channelId,
+            }),
           });
           if (!armedSession?.channelId) {
             await interaction.reply(ephemeralPayload({
@@ -20940,13 +20981,16 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
-      if (isProfileSubmitSourceInteraction(interaction)) {
-        await openCharacterPicker(interaction, isProfileSubmitSourceInteraction(interaction) ? "quick" : "full", "reply");
+      const launchSource = resolveSubmitLaunchSource(interaction);
+      if (launchSource === SUBMIT_INTAKE_SOURCES.profile) {
+        await openCharacterPicker(interaction, "quick", "reply", {
+          source: launchSource,
+        });
         return;
       }
 
       await openCharacterPicker(interaction, "full", "reply", {
-        source: resolveSubmitLaunchSource(interaction),
+        source: launchSource,
       });
       return;
     }
@@ -22045,6 +22089,7 @@ client.on("interactionCreate", async (interaction) => {
       clearAllHelperSubmitSessions(interaction.user.id);
       armKillsHelperIntakeSession(interaction.user.id, {
         source: getStoredSubmitLaunchSource(interaction.user.id),
+        interactionChannelId: interaction.channelId,
       });
 
       await interaction.editReply(buildSubmitStepPayload(interaction.user.id, {
@@ -23907,9 +23952,6 @@ client.on("guildBanRemove", async (ban) => {
 });
 
 client.login(DISCORD_TOKEN);
-
-
-
 
 
 
