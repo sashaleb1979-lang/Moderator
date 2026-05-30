@@ -1587,14 +1587,15 @@ function getStoredSubmitLaunchSource(userId) {
   );
 }
 
-function resolveSubmitLaunchSource(interaction) {
+function resolveSubmitLaunchSource(interaction = {}) {
   const userId = String(interaction?.user?.id || "").trim();
   const messageId = String(interaction?.message?.id || "").trim();
   const channelId = String(interaction?.channelId || interaction?.message?.channelId || interaction?.channel?.id || "").trim();
 
   const profileContext = getProfileSurfaceContext(messageId, userId);
-  if (profileContext?.source) {
-    return profileContext.source;
+  const profileSource = normalizeSubmitSource(profileContext?.source);
+  if (profileSource === SUBMIT_INTAKE_SOURCES.profile) {
+    return profileSource;
   }
 
   const helperSnapshot = getResolvedBotHelperPanelSnapshot();
@@ -1628,9 +1629,7 @@ function logProfileSubmitCapture(event, details = {}) {
 }
 
 function isProfileSubmitSourceInteraction(interaction = {}) {
-  const ids = new Set(getMessageComponentCustomIds(interaction?.message));
-  return ids.has("profile_bind_roblox")
-    || ids.has("elo_submit_card");
+  return resolveSubmitLaunchSource(interaction) === SUBMIT_INTAKE_SOURCES.profile;
 }
 
 function isBotHelperPanelSourceInteraction(interaction = {}) {
@@ -20331,13 +20330,14 @@ client.on("interactionCreate", async (interaction) => {
     }
 
     if (interaction.customId === "elo_submit_open") {
+      const launchSource = resolveSubmitLaunchSource(interaction);
       const liveState = getLiveLegacyEloState();
       if (!liveState.ok) {
         await interaction.reply(buildLegacyEloStateErrorPayload("Не удалось открыть legacy ELO данные", liveState));
         return;
       }
 
-      if (isProfileSubmitSourceInteraction(interaction)) {
+      if (launchSource === SUBMIT_INTAKE_SOURCES.profile) {
         const blockReason = getLegacyEloSubmitEligibilityError(liveState.rawDb, interaction.user.id);
         if (blockReason) {
           await interaction.reply(ephemeralPayload({ content: blockReason }));
@@ -20347,7 +20347,7 @@ client.on("interactionCreate", async (interaction) => {
         startProfileSubmitCapture(interaction.user.id, {
           action: PROFILE_SUBMIT_ACTIONS.ELO,
           channelId: interaction.channelId,
-          source: isBotHelperPanelSourceInteraction(interaction) ? "bot_helper_elo_button" : "profile_elo_button",
+          source: "profile_elo_button",
           sourceMessageId: interaction.message?.id,
           interactionId: interaction.id,
         });
@@ -20357,7 +20357,6 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
-      const launchSource = resolveSubmitLaunchSource(interaction);
       const session = getHelperIntakeSession(interaction.user.id);
       const submitPanel = getLegacyEloSubmitPanelState(liveState.rawDb);
       const activeEloSession = session?.action === HELPER_INTAKE_ACTIONS.elo ? session : null;
@@ -20782,7 +20781,7 @@ client.on("interactionCreate", async (interaction) => {
         const accessResumeSession = !session && !pending && memberHasManagedStartAccessRole(beginMember)
           ? buildSubmitSessionBootstrap(interaction.user.id, beginMember)
           : null;
-        const profileScopedBegin = isProfileSubmitSourceInteraction(interaction);
+        const profileScopedBegin = launchSource === SUBMIT_INTAKE_SOURCES.profile;
         const beginRoute = resolveOnboardBeginRoute({
           hasPendingProof: Boolean(session?.mainCharacterIds?.length && Number.isSafeInteger(session?.pendingKills) && session?.pendingScreenshotUrl),
           hasPendingMissingRoblox: Boolean(pending && (!pending.robloxUsername || !pending.robloxUserId)),
@@ -20843,7 +20842,7 @@ client.on("interactionCreate", async (interaction) => {
             startProfileSubmitCapture(interaction.user.id, {
               action: PROFILE_SUBMIT_ACTIONS.KILLS,
               channelId: interaction.channelId,
-              source: isBotHelperPanelSourceInteraction(interaction) ? "bot_helper_kills_button" : "profile_kills_button",
+              source: "profile_kills_button",
               sourceMessageId: interaction.message?.id,
               interactionId: interaction.id,
               mainCharacterIds: activeSession?.mainCharacterIds,
@@ -20911,13 +20910,16 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
-      if (isProfileSubmitSourceInteraction(interaction)) {
-        await openCharacterPicker(interaction, isProfileSubmitSourceInteraction(interaction) ? "quick" : "full", "reply");
+      const launchSource = resolveSubmitLaunchSource(interaction);
+      if (launchSource === SUBMIT_INTAKE_SOURCES.profile) {
+        await openCharacterPicker(interaction, "quick", "reply", {
+          source: launchSource,
+        });
         return;
       }
 
       await openCharacterPicker(interaction, "full", "reply", {
-        source: resolveSubmitLaunchSource(interaction),
+        source: launchSource,
       });
       return;
     }

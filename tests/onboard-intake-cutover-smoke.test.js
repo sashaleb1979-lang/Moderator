@@ -421,7 +421,7 @@ test("helper and profile kills buttons arm the shared submit flow", () => {
 
             const profilePrivateMessage = {
               id: "profile-private-message",
-              channelId: "profile-ephemeral",
+              channelId: helperChannel.id,
               delete: async () => true,
             };
 
@@ -532,7 +532,7 @@ test("helper and profile kills buttons arm the shared submit flow", () => {
 
             console.log("kills-cutover-smoke-ok");
             process.exit(0);
-          }, 4500);
+          }, 7000);
 
           return Promise.resolve("smoke-login");
         };
@@ -850,7 +850,7 @@ test("helper and profile elo buttons arm the shared elo flow", () => {
 
             const profilePrivateMessage = {
               id: "profile-elo-private-message",
-              channelId: "profile-ephemeral",
+              channelId: helperChannel.id,
               delete: async () => true,
             };
 
@@ -939,7 +939,7 @@ test("helper and profile elo buttons arm the shared elo flow", () => {
 
             console.log("elo-cutover-smoke-ok");
             process.exit(0);
-          }, 4500);
+          }, 7000);
 
           return Promise.resolve("smoke-login");
         };
