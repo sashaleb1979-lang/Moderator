@@ -1629,10 +1629,8 @@ function logProfileSubmitCapture(event, details = {}) {
 
 function isProfileSubmitSourceInteraction(interaction = {}) {
   const ids = new Set(getMessageComponentCustomIds(interaction?.message));
-  const isBotHelperPanel = getBotHelperPanelRequiredCustomIds().every((customId) => ids.has(customId));
   return ids.has("profile_bind_roblox")
-    || ids.has("elo_submit_card")
-    || isBotHelperPanel;
+    || ids.has("elo_submit_card");
 }
 
 function isBotHelperPanelSourceInteraction(interaction = {}) {

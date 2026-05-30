@@ -60,13 +60,16 @@ test("welcome-bot starts current-channel scoped sessions from profile CTA button
   assert.match(source, new RegExp("interaction\\.customId === PROFILE_SUBMIT_CANCEL_CUSTOM_ID[\\s\\S]*?clearProfileSubmitCapture"));
 });
 
-test("welcome-bot treats the full bot-helper panel as a profile submit source", () => {
-  assert.match(source, /function isProfileSubmitSourceInteraction[\s\S]*?getBotHelperPanelRequiredCustomIds\(\)\.every/);
-  assert.match(source, /source: isBotHelperPanelSourceInteraction\(interaction\) \? "bot_helper_elo_button" : "profile_elo_button"/);
-  assert.match(source, /source: isBotHelperPanelSourceInteraction\(interaction\) \? "bot_helper_kills_button" : "profile_kills_button"/);
+test("welcome-bot keeps bot-helper CTA buttons out of profile submit capture detection", () => {
+  const functionStart = source.indexOf("function isProfileSubmitSourceInteraction");
+  const functionEnd = source.indexOf("function isBotHelperPanelSourceInteraction", functionStart);
+  const functionBody = source.slice(functionStart, functionEnd);
+
+  assert.ok(functionStart > 0 && functionEnd > functionStart, "isProfileSubmitSourceInteraction must exist");
+  assert.doesNotMatch(functionBody, /getBotHelperPanelRequiredCustomIds\(\)\.every/);
 });
 
-test("profile and bot-helper kills wait until mains are selected before message capture starts", () => {
+test("profile kills wait until mains are selected before message capture starts", () => {
   const noDraftBranchStart = source.indexOf("await openCharacterPicker(interaction, \"full\", \"reply\", {");
   const noDraftBranchEnd = source.indexOf("} catch (error) {", noDraftBranchStart);
   const noDraftBranch = source.slice(noDraftBranchStart, noDraftBranchEnd);
@@ -77,9 +80,9 @@ test("profile and bot-helper kills wait until mains are selected before message 
   assert.doesNotMatch(noDraftBranch, /startProfileSubmitCapture\(interaction\.user\.id/);
 });
 
-test("profile and bot-helper mains buttons use quick mains update instead of full submit flow", () => {
+test("profile mains stay quick while helper mains keep the shared full-picker route", () => {
   assert.match(
     source,
-    /interaction\.customId === "onboard_change_mains"[\s\S]*?openCharacterPicker\(interaction, isProfileSubmitSourceInteraction\(interaction\) \? "quick" : "full", "reply"\)/
+    /interaction\.customId === "onboard_change_mains"[\s\S]*?if \(isProfileSubmitSourceInteraction\(interaction\)\) \{[\s\S]*?openCharacterPicker\(interaction, isProfileSubmitSourceInteraction\(interaction\) \? "quick" : "full", "reply"\)[\s\S]*?openCharacterPicker\(interaction, "full", "reply", \{[\s\S]*?source: resolveSubmitLaunchSource\(interaction\)/
   );
 });

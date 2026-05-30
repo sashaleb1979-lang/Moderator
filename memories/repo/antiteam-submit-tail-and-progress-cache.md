@@ -5,3 +5,5 @@
 - Submit-triggered start-panel resend is intentionally coalesced: overlapping submits should never race concurrent delete/send publishes, but should replay once after an in-flight resend so the panel still ends at the bottom.
 - Support progress PNG is cached in-memory in operator.js by helper stats plus display name with a short TTL and shared in-flight renders; repeated or concurrent identical progress clicks should not rerender unchanged cards.
 - Anti-team latency telemetry uses [antiteam][latency] lines from operator.js for submit finalize, detached/coalesced panel resend, detached battalion role grant attempts, and progress card cache/render events.
+- Description modal should reuse the existing draft setup reply when modal-submit has message/update capability; avoid spawning a second ephemeral reply for the normal anti-team setup flow.
+- When button interactions support deleteReply, antiteam draft submit/cancel should close the setup window immediately instead of replacing it with transient processing or cancelled text; only photo-needed and error paths should reopen UI.

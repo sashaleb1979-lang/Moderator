@@ -2047,6 +2047,28 @@ test("draft cancel clears a live draft and confirms cancellation", async () => {
   assert.equal(interaction.calls.at(-1)[1].content, "Заявка антитима отменена.");
 });
 
+test("draft cancel closes the setup reply when deleteReply is available", async () => {
+  const db = {};
+  setAntiteamDraft(db, "user-1", {
+    userTag: "User",
+    roblox: { userId: "101", username: "Anchor" },
+    description: "Два ника около 4k.",
+  }, { now: "2026-05-16T10:00:00.000Z" });
+  const operator = createAntiteamOperator({
+    db,
+    saveDb() {},
+  });
+  const interaction = createButtonInteraction(ANTITEAM_CUSTOM_IDS.cancelDraft, { id: "user-1", username: "User" });
+  interaction.deleteReply = async () => {
+    interaction.calls.push(["deleteReply"]);
+  };
+
+  assert.equal(await operator.handleButtonInteraction(interaction), true);
+
+  assert.equal(db.sot.antiteam.drafts["user-1"], undefined);
+  assert.deepEqual(interaction.calls.map((call) => call[0]), ["deferUpdate", "deleteReply"]);
+});
+
 test("draft cancel does not reply again when the interaction is already deferred", async () => {
   const db = {};
   setAntiteamDraft(db, "user-1", {
@@ -2216,6 +2238,75 @@ test("draft submit confirms acceptance before publish finalize finishes", async 
   assert.equal(await pending, true);
   assert.deepEqual(interaction.calls.map((call) => call[0]), ["deferUpdate", "editReply", "editReply"]);
   assert.match(interaction.calls.at(-1)[1].content, /Заявка опубликована/);
+});
+
+test("draft submit closes the setup reply immediately and publishes in the background when deleteReply is available", async () => {
+  const db = {};
+  ensureAntiteamState(db).state.config.channelId = "channel-1";
+  setAntiteamDraft(db, "user-1", {
+    userTag: "User",
+    roblox: { userId: "101", username: "Anchor" },
+    description: "Тимятся двое у центра.",
+  }, { now: "2026-05-16T10:00:00.000Z" });
+
+  let releaseChannelSend = null;
+  let resolveChannelSendStarted = null;
+  const channelSendStarted = new Promise((resolve) => {
+    resolveChannelSendStarted = resolve;
+  });
+  const thread = {
+    id: "thread-1",
+    isTextBased: () => true,
+    messages: { fetch: async () => null },
+    send: async (payload) => ({
+      id: payload?.content ? "thread-ping-1" : "thread-panel-1",
+      delete: async () => {},
+    }),
+  };
+  const channel = {
+    id: "channel-1",
+    guildId: "guild-1",
+    type: 0,
+    isTextBased: () => true,
+    messages: { fetch: async () => null },
+    send: async () => {
+      resolveChannelSendStarted();
+      await new Promise((resolve) => {
+        releaseChannelSend = resolve;
+      });
+      return {
+        id: "message-1",
+        guildId: "guild-1",
+        edit: async () => {},
+        startThread: async () => thread,
+      };
+    },
+  };
+  const interaction = createButtonInteraction(ANTITEAM_CUSTOM_IDS.submitDraft, { id: "user-1", username: "User" });
+  interaction.deleteReply = async () => {
+    interaction.calls.push(["deleteReply"]);
+  };
+  const operator = createAntiteamOperator({
+    db,
+    now: () => "2026-05-16T10:01:00.000Z",
+    saveDb() {},
+    fetchChannel: async (channelId) => channelId === "channel-1" ? channel : thread,
+  });
+
+  const result = await Promise.race([
+    operator.handleButtonInteraction(interaction).then(() => "resolved"),
+    new Promise((resolve) => setTimeout(() => resolve("timeout"), 200)),
+  ]);
+
+  assert.equal(result, "resolved");
+  assert.deepEqual(interaction.calls.map((call) => call[0]), ["deferUpdate", "deleteReply"]);
+
+  await channelSendStarted;
+  releaseChannelSend();
+  await Promise.resolve();
+  await Promise.resolve();
+
+  assert.deepEqual(interaction.calls.map((call) => call[0]), ["deferUpdate", "deleteReply"]);
 });
 
 test("draft submit does not wait for detached panel resend after publish finalize", async () => {
@@ -2586,11 +2677,15 @@ test("description modal updates the same setup message when update is available"
     saveDb() {},
   });
   const interaction = createModalInteraction("at:desc:modal", { description: "Бить A/B у центра." });
+  interaction.message = { id: "setup-1" };
+  interaction.update = async (payload) => {
+    interaction.calls.push(["update", payload]);
+  };
   assert.equal(await operator.handleModalSubmitInteraction(interaction), true);
 
   assert.equal(db.sot.antiteam.drafts["user-1"].description, "Бить A/B у центра.");
-  assert.deepEqual(interaction.calls.map((call) => call[0]), ["deferReply", "editReply"]);
-  assert.match(JSON.stringify(interaction.calls[1][1].components[0].toJSON()), /Бить A\/B у центра/);
+  assert.deepEqual(interaction.calls.map((call) => call[0]), ["update"]);
+  assert.match(JSON.stringify(interaction.calls[0][1].components[0].toJSON()), /Бить A\/B у центра/);
 });
 
 test("description modal keeps saved text when the interaction expired before ack", async () => {
