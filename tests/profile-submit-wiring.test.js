@@ -104,7 +104,7 @@ test("profile mains stay quick while helper mains keep the shared full-picker ro
 test("welcome-bot resolves kills intake target by submit source", () => {
   assert.match(
     source,
-    /function resolveKillsIntakeTargetChannelId\(\{ source = "", interactionChannelId = "" \} = \{\}\) \{[\s\S]*?normalizedSource === SUBMIT_INTAKE_SOURCES\.welcome[\s\S]*?getResolvedWelcomePanelSnapshot\(\)\.channelId \|\| fallbackChannelId[\s\S]*?normalizedSource === SUBMIT_INTAKE_SOURCES\.helper[\s\S]*?getResolvedBotHelperPanelSnapshot\(\)\.channelId \|\| fallbackChannelId[\s\S]*?normalizedSource === SUBMIT_INTAKE_SOURCES\.profile[\s\S]*?return fallbackChannelId;[\s\S]*?return getKillsSubmitTargetChannelId\(\);/
+    /function resolveKillsIntakeTargetChannelId\(\{ source = "", interactionChannelId = "" \} = \{\}\) \{[\s\S]*?normalizedSource === SUBMIT_INTAKE_SOURCES\.welcome[\s\S]*?getResolvedChannelId\("welcome"\) \|\| fallbackChannelId[\s\S]*?normalizedSource === SUBMIT_INTAKE_SOURCES\.helper[\s\S]*?getResolvedBotHelperPanelSnapshot\(\)\.channelId \|\| fallbackChannelId[\s\S]*?normalizedSource === SUBMIT_INTAKE_SOURCES\.profile[\s\S]*?return fallbackChannelId;[\s\S]*?return getKillsSubmitTargetChannelId\(\);/
   );
 });
 
