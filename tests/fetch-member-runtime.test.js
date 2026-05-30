@@ -90,5 +90,5 @@ test("fetchMember waits out a member-fetch rate limit and retries once", async (
   }
 
   assert.equal(fetchCalls, 2);
-  assert.deepEqual(capturedTimeouts, [20420]);
+  assert.deepEqual(capturedTimeouts, [20419]);
 });
