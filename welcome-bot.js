@@ -10428,47 +10428,47 @@ async function approveSubmission(client, submission, moderatorTag) {
   const previousProfile = cloneJsonValue(profile);
 
   await preflightSubmissionApprovalRoles(client, submission, profile);
-  await ensureSingleTierRole(client, submission.userId, tier, "approved welcome submission");
-
-  submission.derivedTier = tier;
-  submission.status = "approved";
-  submission.reviewedAt = nowIso();
-  submission.reviewedBy = moderatorTag;
-
-  profile.mainCharacterIds = submission.mainCharacterIds;
-  refreshDerivedProfileMainFields(profile);
-  profile.displayName = submission.displayName;
-  profile.username = submission.username;
-  profile.approvedKills = submission.kills;
-  profile.killTier = tier;
-  if (!profile.accessGrantedAt || getCurrentOnboardAccessGrantMode() === ONBOARD_ACCESS_GRANT_MODES.AFTER_APPROVE) {
-    await maybeGrantAccessRoleAtStage(client, submission.userId, ONBOARD_ACCESS_GRANT_MODES.AFTER_APPROVE, "welcome submission approved");
-  }
-  profile.lastSubmissionId = submission.id;
-  profile.lastSubmissionStatus = "approved";
-  profile.lastReviewedAt = submission.reviewedAt;
-  profile.updatedAt = nowIso();
-  if (submission.robloxUsername && submission.robloxUserId) {
-    writeCanonicalRobloxBinding(submission.userId, profile, submission, {
-      verificationStatus: "verified",
-      verifiedAt: submission.reviewedAt,
-      updatedAt: profile.updatedAt,
-      lastSubmissionId: submission.id,
-      lastReviewedAt: submission.reviewedAt,
-      reviewedBy: moderatorTag,
-      source: "onboarding",
-    });
-  }
-  appendProofWindowSnapshot(profile, {
-    approvedKills: profile.approvedKills,
-    killTier: profile.killTier,
-    reviewedAt: submission.reviewedAt,
-    reviewedBy: submission.reviewedBy,
-    roblox: profile?.domains?.roblox || profile,
-  });
-
-  delete submission.approveClaim;
   try {
+    await ensureSingleTierRole(client, submission.userId, tier, "approved welcome submission");
+
+    submission.derivedTier = tier;
+    submission.status = "approved";
+    submission.reviewedAt = nowIso();
+    submission.reviewedBy = moderatorTag;
+
+    profile.mainCharacterIds = submission.mainCharacterIds;
+    refreshDerivedProfileMainFields(profile);
+    profile.displayName = submission.displayName;
+    profile.username = submission.username;
+    profile.approvedKills = submission.kills;
+    profile.killTier = tier;
+    if (!profile.accessGrantedAt || getCurrentOnboardAccessGrantMode() === ONBOARD_ACCESS_GRANT_MODES.AFTER_APPROVE) {
+      await maybeGrantAccessRoleAtStage(client, submission.userId, ONBOARD_ACCESS_GRANT_MODES.AFTER_APPROVE, "welcome submission approved");
+    }
+    profile.lastSubmissionId = submission.id;
+    profile.lastSubmissionStatus = "approved";
+    profile.lastReviewedAt = submission.reviewedAt;
+    profile.updatedAt = nowIso();
+    if (submission.robloxUsername && submission.robloxUserId) {
+      writeCanonicalRobloxBinding(submission.userId, profile, submission, {
+        verificationStatus: "verified",
+        verifiedAt: submission.reviewedAt,
+        updatedAt: profile.updatedAt,
+        lastSubmissionId: submission.id,
+        lastReviewedAt: submission.reviewedAt,
+        reviewedBy: moderatorTag,
+        source: "onboarding",
+      });
+    }
+    appendProofWindowSnapshot(profile, {
+      approvedKills: profile.approvedKills,
+      killTier: profile.killTier,
+      reviewedAt: submission.reviewedAt,
+      reviewedBy: submission.reviewedBy,
+      roblox: profile?.domains?.roblox || profile,
+    });
+
+    delete submission.approveClaim;
     saveDb();
   } catch (error) {
     restoreRecordValue(db.submissions, submission.id, previousSubmission, true);

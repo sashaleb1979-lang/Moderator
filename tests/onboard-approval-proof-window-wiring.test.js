@@ -40,6 +40,22 @@ test("welcome-bot approval flow preflights roles before mutating submission stat
   assert.ok(approvedStatusIndex > preflightCallIndex, "expected submission status mutation after preflight");
 });
 
+test("welcome-bot approval flow rolls back db state when post-preflight work fails", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "welcome-bot.js"), "utf8");
+  const approveStart = source.indexOf("async function approveSubmission(client, submission, moderatorTag) {");
+  const tryIndex = source.indexOf("try {", approveStart);
+  const ensureTierIndex = source.indexOf('await ensureSingleTierRole(client, submission.userId, tier, "approved welcome submission");', approveStart);
+  const accessGrantIndex = source.indexOf('await maybeGrantAccessRoleAtStage(client, submission.userId, ONBOARD_ACCESS_GRANT_MODES.AFTER_APPROVE, "welcome submission approved");', approveStart);
+  const restoreSubmissionIndex = source.indexOf("restoreRecordValue(db.submissions, submission.id, previousSubmission, true);", approveStart);
+  const restoreProfileIndex = source.indexOf("restoreRecordValue(db.profiles, submission.userId, previousProfile, true);", approveStart);
+
+  assert.ok(tryIndex > approveStart, "expected approveSubmission to wrap post-preflight work in try/catch");
+  assert.ok(ensureTierIndex > tryIndex, "expected tier role mutation inside rollback guard");
+  assert.ok(accessGrantIndex > tryIndex, "expected access role mutation inside rollback guard");
+  assert.ok(restoreSubmissionIndex > accessGrantIndex, "expected submission rollback after post-preflight work");
+  assert.ok(restoreProfileIndex > restoreSubmissionIndex, "expected profile rollback after submission rollback");
+});
+
 test("welcome-bot review approve flow defers early and guards duplicate clicks", () => {
   const source = fs.readFileSync(path.join(__dirname, "..", "welcome-bot.js"), "utf8");
   const branchStart = source.indexOf('if (action === "approve") {');
