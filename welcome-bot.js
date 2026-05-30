@@ -2189,6 +2189,59 @@ function createTrackedLiveMemberEntry(userId, member) {
 
 let liveCharacterStatsContextCache = { at: 0, value: null, promise: null };
 const LIVE_CHARACTER_STATS_CACHE_TTL_MS = 60 * 1000;
+const LIVE_CHARACTER_MEMBER_REFRESH_TTL_MS = 5 * 60 * 1000;
+const LIVE_CHARACTER_MEMBER_REFRESH_MIN_RETRY_MS = 30 * 1000;
+let liveCharacterStatsMemberRefreshState = {
+  lastFullRefreshAt: 0,
+  cooldownUntil: 0,
+};
+
+function parseGuildMemberFetchRetryAfterMs(error) {
+  const text = String(error?.message || error || "");
+  const match = text.match(/retry after\s+([0-9]+(?:\.[0-9]+)?)\s+seconds?/i);
+  if (!match) return 0;
+  const seconds = Number(match[1]);
+  if (!Number.isFinite(seconds) || seconds <= 0) return 0;
+  return Math.ceil(seconds * 1000);
+}
+
+function hasFreshLiveCharacterMemberSnapshot(now = Date.now()) {
+  return liveCharacterStatsMemberRefreshState.lastFullRefreshAt > 0
+    && (now - liveCharacterStatsMemberRefreshState.lastFullRefreshAt) < LIVE_CHARACTER_MEMBER_REFRESH_TTL_MS;
+}
+
+async function maybeRefreshLiveCharacterStatsMembers(guild, options = {}) {
+  const now = Date.now();
+  const force = options.force === true;
+  if (!force) {
+    if (liveCharacterStatsMemberRefreshState.cooldownUntil > now) {
+      return false;
+    }
+    if (hasFreshLiveCharacterMemberSnapshot(now)) {
+      return false;
+    }
+  }
+
+  try {
+    await guild.members.fetch();
+    liveCharacterStatsMemberRefreshState = {
+      lastFullRefreshAt: Date.now(),
+      cooldownUntil: 0,
+    };
+    return true;
+  } catch (error) {
+    const retryAfterMs = Math.max(
+      parseGuildMemberFetchRetryAfterMs(error),
+      LIVE_CHARACTER_MEMBER_REFRESH_MIN_RETRY_MS
+    );
+    liveCharacterStatsMemberRefreshState = {
+      ...liveCharacterStatsMemberRefreshState,
+      cooldownUntil: Date.now() + retryAfterMs,
+    };
+    console.warn("guild.members.fetch failed:", error?.message || error);
+    return false;
+  }
+}
 
 function invalidateLiveCharacterStatsContext() {
   liveCharacterStatsContextCache = { at: 0, value: null, promise: null };
@@ -2208,14 +2261,16 @@ async function getLiveCharacterStatsContext(client, options = {}) {
       throw new Error("Не удалось получить сервер для статистики ролей персонажей.");
     }
 
-    // Refresh member cache before computing live role stats; a warm partial cache skews counts.
-    try { await guild.members.fetch(); } catch (error) { console.warn("guild.members.fetch failed:", error?.message || error); }
+    const didRefreshMembers = await maybeRefreshLiveCharacterStatsMembers(guild, {
+      force: options.force === true,
+    });
+    const hasTrustedMemberSnapshot = didRefreshMembers || hasFreshLiveCharacterMemberSnapshot();
 
     const characterEntries = getCharacterEntries().filter((entry) => isLiveCharacterEntry(entry));
     if (!characterEntries.length) {
       return {
         liveMainsByUserId: new Map(),
-        trackedUserIds: new Set(),
+        trackedUserIds: hasTrustedMemberSnapshot ? new Set() : null,
         trackedMemberStats: getTrackedMemberStats([]),
         characterStats: [],
       };
@@ -2266,7 +2321,7 @@ async function getLiveCharacterStatsContext(client, options = {}) {
 
     return {
       liveMainsByUserId,
-      trackedUserIds: new Set(trackedMembersByUserId.keys()),
+      trackedUserIds: hasTrustedMemberSnapshot ? new Set(trackedMembersByUserId.keys()) : null,
       trackedMemberStats: getTrackedMemberStats([...trackedMembersByUserId.values()]),
       characterStats: getCharacterRoleStats([...characterStatsInputById.values()]),
     };
@@ -6471,7 +6526,19 @@ async function sendMissingTierlistReminder(client) {
 async function fetchMember(client, userId) {
   const guild = await getGuild(client);
   if (!guild) return null;
-  return guild.members.fetch(userId).catch(() => null);
+  const normalizedUserId = String(userId || "").trim();
+  if (!normalizedUserId) return null;
+  const cachedMember = guild.members?.cache?.get(normalizedUserId) || null;
+  if (cachedMember) return cachedMember;
+
+  try {
+    return await guild.members.fetch(normalizedUserId);
+  } catch (error) {
+    const retryAfterMs = parseGuildMemberFetchRetryAfterMs(error);
+    if (retryAfterMs <= 0) return null;
+    await new Promise((resolve) => setTimeout(resolve, Math.min(retryAfterMs, 30 * 1000)));
+    return guild.members?.cache?.get(normalizedUserId) || await guild.members.fetch(normalizedUserId).catch(() => null);
+  }
 }
 
 async function syncProfileNamesFromDiscord(client) {
