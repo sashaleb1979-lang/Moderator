@@ -146,6 +146,7 @@ const {
   buildActivityOperatorPanelPayload,
   handleActivityPanelButtonInteraction,
   handleActivityPanelModalSubmitInteraction,
+  repairFreshNewcomerActivityRoles,
   runActivityRoleSyncFromSnapshots,
   runActivityMemberJoinRoleSync,
   runDailyActivityRoleSync,
@@ -585,6 +586,14 @@ const NON_GGS_CAPTCHA_EXPIRE_MS = 10 * 60 * 1000;
 const NON_GGS_CAPTCHA_STAGES = 2;
 const LEGACY_TIERLIST_SUMMARY_REFRESH_MS = 20 * 60 * 1000;
 const ACTIVITY_RUNTIME_FLUSH_INTERVAL_MS = 5 * 60 * 1000;
+const ACTIVITY_FRESH_NEWCOMER_REPAIR_INITIAL_DELAY_MS = Math.max(
+  0,
+  Number(process.env.ACTIVITY_FRESH_NEWCOMER_REPAIR_INITIAL_DELAY_MS ?? 45_000) || 0
+);
+const ACTIVITY_FRESH_NEWCOMER_REPAIR_INTERVAL_MS = Math.max(
+  60_000,
+  Number(process.env.ACTIVITY_FRESH_NEWCOMER_REPAIR_INTERVAL_MS ?? 6 * 60 * 60 * 1000) || 0
+);
 const LEGACY_TIERLIST_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 const LEGACY_TIERLIST_MAIN_SELECT_PAGE_SIZE = 25;
 const SOT_CHARACTER_ALERT_STALE_HOURS = 24;
@@ -5332,6 +5341,48 @@ async function listActivityRoleHolderUserIds(client, guildHint = null) {
     .filter((member) => managedRoleIds.some((roleId) => member.roles.cache.has(roleId)))
     .map((member) => String(member.id || "").trim())
     .filter(Boolean);
+}
+
+async function listActivityFreshNewcomerRepairMembers(client, guildHint = null) {
+  const guild = guildHint || await getGuild(client).catch(() => null);
+  if (!guild) return [];
+
+  await guild.members.fetch().catch(() => null);
+
+  return [...guild.members.cache.values()]
+    .map((member) => ({
+      userId: String(member?.id || "").trim(),
+      joinedAt: member?.joinedAt instanceof Date && Number.isFinite(member.joinedAt.getTime())
+        ? member.joinedAt.toISOString()
+        : null,
+      roleIds: [...member?.roles?.cache?.keys?.() || []],
+      bot: member?.user?.bot === true,
+    }))
+    .filter((member) => member.userId);
+}
+
+async function runActivityFreshNewcomerRepair(client, guildHint = null) {
+  const members = await listActivityFreshNewcomerRepairMembers(client, guildHint);
+  const result = await repairFreshNewcomerActivityRoles({
+    db,
+    members,
+    saveDb,
+    runSerialized: runSerializedDbTask,
+    applyRoleChanges: ({ userId, addRoleIds, removeRoleIds }) => applyActivityMemberRoleChanges(client, {
+      userId,
+      addRoleIds,
+      removeRoleIds,
+      guildHint,
+      reason: "repair mistaken activity newcomer bypass",
+    }),
+    now: nowIso(),
+  });
+  const appliedCount = Math.max(0, Number(result?.roleAssignment?.appliedCount) || 0);
+  const skippedCount = Math.max(0, Number(result?.roleAssignment?.skippedCount) || 0);
+  console.log(
+    `[activity][fresh-newcomer-repair] inspected=${result.inspectedCount} targets=${result.targetUserCount} rebuilt=${result.rebuiltUserCount} applied=${appliedCount} skipped=${skippedCount}`
+  );
+  return result;
 }
 
 async function applyActivityMemberRoleChanges(client, { userId, addRoleIds = [], removeRoleIds = [], reason = "activity role sync", guildHint = null } = {}) {
@@ -15283,6 +15334,12 @@ client.once("clientReady", async () => {
     news: ensureNewsState(db).config,
     roblox: getEffectiveRobloxConfig(),
     verification: getVerificationIntegrationState(),
+  });
+  periodicJobs.push({
+    run: (currentClient) => runActivityFreshNewcomerRepair(currentClient),
+    intervalMs: ACTIVITY_FRESH_NEWCOMER_REPAIR_INTERVAL_MS,
+    initialDelayMs: ACTIVITY_FRESH_NEWCOMER_REPAIR_INITIAL_DELAY_MS,
+    errorLabel: "Activity fresh newcomer repair failed",
   });
   periodicJobs.push({
     run: () => getAntiteamOperator().sweepIdleTickets(),
