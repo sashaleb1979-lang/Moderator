@@ -1528,6 +1528,10 @@ function resolveKillsIntakeTargetChannelId({ source = "", interactionChannelId =
     return fallbackChannelId;
   }
 
+  if (fallbackChannelId) {
+    return fallbackChannelId;
+  }
+
   return getKillsSubmitTargetChannelId();
 }
 
@@ -1632,6 +1636,14 @@ function resolveSubmitLaunchSource(interaction = {}) {
     && messageId === String(welcomeSnapshot.messageId || "").trim()
     && (!channelId || channelId === String(welcomeSnapshot.channelId || "").trim())
   ) {
+    return SUBMIT_INTAKE_SOURCES.welcome;
+  }
+
+  if (channelId && channelId === String(helperSnapshot.channelId || "").trim()) {
+    return SUBMIT_INTAKE_SOURCES.helper;
+  }
+
+  if (channelId && channelId === String(welcomeSnapshot.channelId || "").trim()) {
     return SUBMIT_INTAKE_SOURCES.welcome;
   }
 
@@ -23921,7 +23933,6 @@ client.on("guildBanRemove", async (ban) => {
 });
 
 client.login(DISCORD_TOKEN);
-
 
 
 
