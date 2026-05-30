@@ -100,3 +100,17 @@ test("profile mains stay quick while helper mains keep the shared full-picker ro
     /interaction\.customId === "onboard_change_mains"[\s\S]*?const launchSource = resolveSubmitLaunchSource\(interaction\)[\s\S]*?if \(launchSource === SUBMIT_INTAKE_SOURCES\.profile\) \{[\s\S]*?openCharacterPicker\(interaction, "quick", "reply", \{[\s\S]*?source: launchSource[\s\S]*?openCharacterPicker\(interaction, "full", "reply", \{[\s\S]*?source: launchSource/
   );
 });
+
+test("welcome-bot resolves kills intake target by submit source", () => {
+  assert.match(
+    source,
+    /function resolveKillsIntakeTargetChannelId\(\{ source = "", interactionChannelId = "" \} = \{\}\) \{[\s\S]*?normalizedSource === SUBMIT_INTAKE_SOURCES\.welcome[\s\S]*?getResolvedWelcomePanelSnapshot\(\)\.channelId \|\| fallbackChannelId[\s\S]*?normalizedSource === SUBMIT_INTAKE_SOURCES\.helper[\s\S]*?getResolvedBotHelperPanelSnapshot\(\)\.channelId \|\| fallbackChannelId[\s\S]*?normalizedSource === SUBMIT_INTAKE_SOURCES\.profile[\s\S]*?return fallbackChannelId;[\s\S]*?return getKillsSubmitTargetChannelId\(\);/
+  );
+});
+
+test("onboard begin arms kills intake with the source-aware channel", () => {
+  assert.match(
+    source,
+    /interaction\.customId === "onboard_begin"[\s\S]*?const launchSource = resolveSubmitLaunchSource\(interaction\)[\s\S]*?beginRoute\.type === ONBOARD_BEGIN_ROUTES\.SUBMIT[\s\S]*?const armedSource = normalizeSubmitSource\(launchSource \|\| session\?\.source\);[\s\S]*?armKillsHelperIntakeSession\(interaction\.user\.id, \{[\s\S]*?source: armedSource,[\s\S]*?channelId: resolveKillsIntakeTargetChannelId\(\{[\s\S]*?source: armedSource,[\s\S]*?interactionChannelId: interaction\.channelId/
+  );
+});

@@ -1512,6 +1512,25 @@ function getKillsSubmitTargetChannelId() {
   return String(getHelperIntakeChannelId() || getResolvedChannelId("welcome") || "").trim();
 }
 
+function resolveKillsIntakeTargetChannelId({ source = "", interactionChannelId = "" } = {}) {
+  const normalizedSource = normalizeSubmitSource(source);
+  const fallbackChannelId = String(interactionChannelId || "").trim();
+
+  if (normalizedSource === SUBMIT_INTAKE_SOURCES.welcome) {
+    return String(getResolvedWelcomePanelSnapshot().channelId || fallbackChannelId || "").trim();
+  }
+
+  if (normalizedSource === SUBMIT_INTAKE_SOURCES.helper) {
+    return String(getResolvedBotHelperPanelSnapshot().channelId || fallbackChannelId || "").trim();
+  }
+
+  if (normalizedSource === SUBMIT_INTAKE_SOURCES.profile) {
+    return fallbackChannelId;
+  }
+
+  return getKillsSubmitTargetChannelId();
+}
+
 function getLegacyEloHelperTargetChannelId(options = {}) {
   return resolveLegacyEloSubmitTargetChannelId({
     sessionChannelId: "",
@@ -1698,7 +1717,14 @@ function buildProfileKillsCapturePayloadForUser(userId, options = {}) {
 }
 
 function armKillsHelperIntakeSession(userId, options = {}) {
-  const channelId = String(options.channelId || getKillsSubmitTargetChannelId() || "").trim();
+  const channelId = String(
+    options.channelId
+    || resolveKillsIntakeTargetChannelId({
+      source: options.source,
+      interactionChannelId: options.interactionChannelId,
+    })
+    || ""
+  ).trim();
   if (!channelId) return null;
   return setHelperIntakeSession(userId, {
     action: HELPER_INTAKE_ACTIONS.kills,
@@ -3664,9 +3690,17 @@ async function completeMainSelection(interaction, selectedEntries, options = {})
       clearAllHelperSubmitSessions(interaction.user.id);
       uploadSession = armKillsHelperIntakeSession(interaction.user.id, {
         source: nextSubmitSource,
+        interactionChannelId: interaction.channelId,
       });
     }
-    const uploadTargetChannelId = String(uploadSession?.channelId || getKillsSubmitTargetChannelId() || "").trim();
+    const uploadTargetChannelId = String(
+      uploadSession?.channelId
+      || resolveKillsIntakeTargetChannelId({
+        source: nextSubmitSource,
+        interactionChannelId: interaction.channelId,
+      })
+      || ""
+    ).trim();
     const uploadTarget = uploadTargetChannelId ? `<#${uploadTargetChannelId}>` : "bot-helper канал";
     const needsRobloxIdentity = !(activeSubmitSession?.robloxUsername && activeSubmitSession?.robloxUserId);
     clearMainsPickerSession(interaction.user.id);
@@ -3739,6 +3773,7 @@ async function completeMainSelection(interaction, selectedEntries, options = {})
 
   armKillsHelperIntakeSession(interaction.user.id, {
     source: nextSubmitSource,
+    interactionChannelId: interaction.channelId,
   });
   clearMainsPickerSession(interaction.user.id);
   if (responseMethod === "update") {
@@ -20855,8 +20890,13 @@ client.on("interactionCreate", async (interaction) => {
             return;
           }
 
+          const armedSource = normalizeSubmitSource(launchSource || session?.source);
           const armedSession = armKillsHelperIntakeSession(interaction.user.id, {
-            source: normalizeSubmitSource(launchSource || session?.source),
+            source: armedSource,
+            channelId: resolveKillsIntakeTargetChannelId({
+              source: armedSource,
+              interactionChannelId: interaction.channelId,
+            }),
           });
           if (!armedSession?.channelId) {
             await interaction.reply(ephemeralPayload({
@@ -22018,6 +22058,7 @@ client.on("interactionCreate", async (interaction) => {
       clearAllHelperSubmitSessions(interaction.user.id);
       armKillsHelperIntakeSession(interaction.user.id, {
         source: getStoredSubmitLaunchSource(interaction.user.id),
+        interactionChannelId: interaction.channelId,
       });
 
       await interaction.editReply(buildSubmitStepPayload(interaction.user.id, {
