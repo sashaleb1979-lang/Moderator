@@ -421,7 +421,7 @@ test("helper and profile kills buttons arm the shared submit flow", () => {
 
             const profilePrivateMessage = {
               id: "profile-private-message",
-              channelId: "profile-ephemeral",
+              channelId: helperChannel.id,
               delete: async () => true,
             };
 
@@ -515,6 +515,9 @@ test("helper and profile kills buttons arm the shared submit flow", () => {
             }
             if (!events.some((entry) => entry[0] === "profile_open" && entry[1] === "editReply" && /# Твой профиль/.test(entry[2]))) {
               failures.push("profile self-open did not render the private self profile payload");
+            }
+            if (!events.some((entry) => entry[0] === "profile_begin" && entry[1] === "reply" && /<#223456789012345678>/.test(entry[2]))) {
+              failures.push("profile begin did not keep kills intake scoped to the current channel");
             }
             if (!events.some((entry) => entry[0] === "profile_kills" && entry[1] === "reply" && /Заявка принята\. Обрабатываю/.test(entry[2]))) {
               failures.push("profile kills flow did not accept the armed message");
@@ -850,7 +853,7 @@ test("helper and profile elo buttons arm the shared elo flow", () => {
 
             const profilePrivateMessage = {
               id: "profile-elo-private-message",
-              channelId: "profile-ephemeral",
+              channelId: helperChannel.id,
               delete: async () => true,
             };
 
