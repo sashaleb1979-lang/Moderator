@@ -1542,7 +1542,7 @@ function resolveKillsIntakeTargetChannelId({ source = "", interactionChannelId =
   const fallbackChannelId = String(interactionChannelId || "").trim();
 
   if (normalizedSource === SUBMIT_INTAKE_SOURCES.welcome) {
-    return String(getResolvedWelcomePanelSnapshot().channelId || fallbackChannelId || "").trim();
+    return String(getResolvedChannelId("welcome") || fallbackChannelId || "").trim();
   }
 
   if (normalizedSource === SUBMIT_INTAKE_SOURCES.helper) {
@@ -23952,8 +23952,3 @@ client.on("guildBanRemove", async (ban) => {
 });
 
 client.login(DISCORD_TOKEN);
-
-
-
-
-
