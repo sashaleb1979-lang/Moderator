@@ -99,6 +99,21 @@ test("welcome-bot edit kills modal skips empty prefill values for broken legacy 
   assert.ok(setValueIndex > guardIndex, "expected edit kills modal to prefill only non-empty values");
 });
 
+test("welcome-bot reject flow defers before durable reject work", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "welcome-bot.js"), "utf8");
+  const branchStart = source.indexOf('if (kind === "reject_reason") {');
+  const reasonIndex = source.indexOf('const reason = String(interaction.fields.getTextInputValue("reason") || "").trim().slice(0, 800);', branchStart);
+  const deferIndex = source.indexOf('const acked = await safeDeferEphemeralReply(interaction, {', reasonIndex);
+  const rejectIndex = source.indexOf('await rejectSubmission(client, submission, interaction.user.tag, reason);', deferIndex);
+  const successIndex = source.indexOf('await interaction.editReply("Заявка отклонена.").catch(() => {});', rejectIndex);
+
+  assert.ok(branchStart >= 0, "expected onboarding review reject modal branch");
+  assert.ok(reasonIndex > branchStart, "expected reject modal to read the reason before processing");
+  assert.ok(deferIndex > reasonIndex, "expected reject modal to acknowledge before slow reject work");
+  assert.ok(rejectIndex > deferIndex, "expected rejectSubmission to run only after defer succeeds");
+  assert.ok(successIndex > rejectIndex, "expected success reply after rejectSubmission finishes");
+});
+
 test("welcome-bot tierlist refresh is coalesced via scheduleCoalescedTierlistRefresh", () => {
   const source = fs.readFileSync(path.join(__dirname, "..", "welcome-bot.js"), "utf8");
 

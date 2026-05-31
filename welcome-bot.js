@@ -24129,8 +24129,22 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
-      await rejectSubmission(client, submission, interaction.user.tag, reason);
-      await interaction.reply(ephemeralPayload({ content: "Заявка отклонена." }));
+      const acked = await safeDeferEphemeralReply(interaction, {
+        label: `welcome review reject ${submission.id}`,
+        logWarning: (message) => console.warn(message),
+      });
+      if (!acked) {
+        return;
+      }
+
+      try {
+        await rejectSubmission(client, submission, interaction.user.tag, reason);
+        await interaction.editReply("Заявка отклонена.").catch(() => {});
+      } catch (error) {
+        const message = String(error?.message || error || "Не удалось отклонить заявку.").trim() || "Не удалось отклонить заявку.";
+        const replyText = /^Не удалось/i.test(message) ? message : `Не удалось отклонить заявку: ${message}`;
+        await interaction.editReply(replyText).catch(() => {});
+      }
       return;
     }
   }
