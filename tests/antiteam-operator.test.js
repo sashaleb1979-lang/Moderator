@@ -1533,7 +1533,7 @@ test("arrival toggle updates the close review before serialized persistence fini
   assert.equal(db.sot.antiteam.tickets["ticket-1"].helpers["helper-1"].arrived, false);
 });
 
-test("close modal counts only explicitly arrived helpers", async () => {
+test("close modal counts untouched helpers as arrived by default", async () => {
   const db = {};
   const state = ensureAntiteamState(db).state;
   state.config.helperRewardRoles = { "1": "role-1", "5": "", "10": "", "20": "", "50": "" };
@@ -1595,9 +1595,9 @@ test("close modal counts only explicitly arrived helpers", async () => {
   );
 
   assert.equal(await operator.handleModalSubmitInteraction(interaction), true);
-  assert.deepEqual(db.sot.antiteam.tickets["ticket-default-arrived"].closeSummary.confirmedHelperIds, []);
-  assert.equal(db.sot.antiteam.stats.helpers["helper-1"].confirmedArrived, 0);
-  assert.deepEqual(granted, []);
+  assert.deepEqual(db.sot.antiteam.tickets["ticket-default-arrived"].closeSummary.confirmedHelperIds, ["helper-1"]);
+  assert.equal(db.sot.antiteam.stats.helpers["helper-1"].confirmedArrived, 1);
+  assert.deepEqual(granted, [{ userId: "helper-1", roleId: "role-1" }]);
 });
 
 test("draft submit asks for photo when photo toggle is enabled", async () => {

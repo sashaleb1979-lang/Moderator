@@ -1176,7 +1176,7 @@ function didHelperArrive(helper = {}, options = {}) {
     : normalizeHelperIdSet(options.confirmedHelperIds);
   const userId = cleanString(helper.userId, 80);
   if (confirmedHelperIds.size && userId) return confirmedHelperIds.has(userId);
-  return helper?.arrived === true;
+  return helper?.arrived !== false;
 }
 
 function formatHelpersBlock(ticket = {}, options = {}) {
@@ -1450,7 +1450,7 @@ function buildCloseReviewPayload(ticket = {}, page = 0) {
     .addTextDisplayComponents(
       new TextDisplayBuilder().setContent("# Завершение антитима"),
       new TextDisplayBuilder().setContent(helpers.length
-        ? "Зелёная кнопка = helper пришёл. Серая кнопка = helper не пришёл. Отметь тех, кто реально пришёл: неотмеченные helper-ы не получат очки помощи и роли."
+        ? "Зелёная кнопка = helper пришёл. Серая кнопка = helper не пришёл. По умолчанию все helper-ы отмечены как пришёл, поэтому переведи в серый тех, кто не пришёл."
         : "Пока никто не получал ссылки помощи. Можно закрыть без отметок."),
       new TextDisplayBuilder().setContent(`Страница **${currentPage + 1}/${totalPages}** • helper-ов: **${helpers.length}**`)
     );

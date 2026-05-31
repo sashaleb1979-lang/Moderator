@@ -727,7 +727,8 @@ test("close review payload paginates helper arrival toggles", () => {
   assert.match(firstPage, /Страница/);
   assert.match(firstPage, /Зелёная кнопка = helper пришёл/);
   assert.match(firstPage, /Helper 0/);
-  assert.match(firstPage, /Не пришёл • Helper 0/);
+  assert.match(firstPage, /По умолчанию все helper-ы отмечены как пришёл/);
+  assert.match(firstPage, /Пришёл • Helper 0/);
   assert.doesNotMatch(firstPage, /Helper 11/);
   assert.match(firstPage, /Вперёд/);
   assert.match(secondPage, /Helper 11/);
