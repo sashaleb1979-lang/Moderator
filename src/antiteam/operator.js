@@ -18,6 +18,7 @@ const {
   getAntiteamDraft,
   getRobloxConfirmation,
   incrementHelperStats,
+  listOpenAntiteamTickets,
   markRobloxConfirmed,
   matchRobloxFriendsToDiscordProfiles,
   normalizeAntiteamPingMode,
@@ -46,6 +47,7 @@ const {
   buildRobloxConfirmPayload,
   buildRobloxMissingPayload,
   buildRobloxUsernameModal,
+  buildSupportLeaderboardPayload,
   buildStartPanelPayload,
   buildStartGuidePayload,
   buildSupportProgressPayload,
@@ -238,6 +240,11 @@ function createAntiteamOperator(options = {}) {
   const supportProgressInFlight = new Map();
   let submitPanelResendInFlight = null;
   let submitPanelResendQueued = false;
+
+  function formatAutoCloseSummaryText(minutes) {
+    const normalizedMinutes = Math.max(1, Number.parseInt(minutes, 10) || 120);
+    return `Автозавершено: ${normalizedMinutes} мин без движения.`;
+  }
 
   function getState() {
     return ensureAntiteamState(db).state;
@@ -1081,6 +1088,14 @@ function createAntiteamOperator(options = {}) {
     await Promise.all([publicMessageSync, threadSync]);
   }
 
+  async function syncOpenTicketMessages() {
+    const tickets = listOpenAntiteamTickets(db).filter((ticket) => ticket.message?.messageId || ticket.message?.threadPanelMessageId);
+    if (!tickets.length) return { updatedCount: 0 };
+    const results = await Promise.allSettled(tickets.map((ticket) => syncTicketMessages(ticket)));
+    const updatedCount = results.filter((result) => result.status === "fulfilled").length;
+    return { updatedCount };
+  }
+
   function getDraftPublishError(draft = {}) {
     if (!cleanString(draft.description, 900)) {
       return draft.kind === "clan"
@@ -1677,6 +1692,11 @@ function createAntiteamOperator(options = {}) {
       return true;
     }
 
+    if (id === ANTITEAM_CUSTOM_IDS.leaders) {
+      await safeReply(interaction, buildSupportLeaderboardPayload(getState(), interaction.user.id));
+      return true;
+    }
+
     if (id === ANTITEAM_CUSTOM_IDS.guide) {
       await safeReply(interaction, buildStartGuidePayload(getConfig()));
       return true;
@@ -1999,6 +2019,32 @@ function createAntiteamOperator(options = {}) {
       return true;
     }
 
+    if (action === "toggle_auto_close") {
+      if (!ticket || ticket.status !== "open") {
+        await safeReply(interaction, { content: "Эта миссия уже закрыта или не найдена.", flags: MessageFlags.Ephemeral });
+        return true;
+      }
+      if (ticket.kind === "clan") {
+        await safeReply(interaction, { content: "Для ФАЙТ С КЛАНОМ idle-автозакрытие не используется.", flags: MessageFlags.Ephemeral });
+        return true;
+      }
+      if (!canCloseTicket(interaction, ticket)) {
+        await replyNoPermission(interaction);
+        return true;
+      }
+      const ack = await safeDeferUpdate(interaction);
+      const now = nowIso();
+      const updated = await persist("antiteam-ticket-toggle-auto-close", () => updateAntiteamTicket(db, ticket.id, (current) => {
+        current.autoCloseEnabled = current.autoCloseEnabled === false;
+        current.updatedAt = now;
+        current.lastActivityAt = now;
+        return current;
+      }));
+      if (ack.ok) await safeEditReply(interaction, buildThreadPanelPayload(updated, getConfig()));
+      await syncTicketMessages(updated).catch(() => {});
+      return true;
+    }
+
     if (action === "friend_request_sent") {
       if (!ticket || ticket.status !== "open") {
         await safeReply(interaction, { content: "Эта миссия уже закрыта или не найдена.", flags: MessageFlags.Ephemeral });
@@ -2104,7 +2150,7 @@ function createAntiteamOperator(options = {}) {
         return true;
       }
       const page = Number.parseInt(pageRaw, 10) || 0;
-      const arrived = current.arrived === false;
+      const arrived = current.arrived !== true;
       const optimisticTicket = {
         ...ticket,
         helpers: {
@@ -2361,7 +2407,13 @@ function createAntiteamOperator(options = {}) {
         state.config = nextConfig;
         return { mutated: true };
       });
-      await interaction.reply(buildModeratorPanelPayload(getState(), "Roblox-ссылки и тайминги антитима сохранены."));
+      const refreshResult = await syncOpenTicketMessages().catch(() => ({ updatedCount: 0 }));
+      await interaction.reply(buildModeratorPanelPayload(
+        getState(),
+        refreshResult.updatedCount > 0
+          ? `Roblox-ссылки и тайминги антитима сохранены. Обновлено открытых миссий: **${refreshResult.updatedCount}**.`
+          : "Roblox-ссылки и тайминги антитима сохранены."
+      ));
       return true;
     }
 
@@ -2443,7 +2495,7 @@ function createAntiteamOperator(options = {}) {
       }
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       const summary = interaction.fields.getTextInputValue("summary");
-      const confirmedHelperIds = Object.values(ticket.helpers || {}).filter((helper) => helper.arrived !== false).map((helper) => helper.userId);
+      const confirmedHelperIds = Object.values(ticket.helpers || {}).filter((helper) => helper.arrived === true).map((helper) => helper.userId);
       const updated = await persist("antiteam-close", () => {
         const closed = closeAntiteamTicket(db, ticketId, {
           now: nowIso(),
@@ -2505,11 +2557,12 @@ function createAntiteamOperator(options = {}) {
     const idle = findIdleAntiteamTickets(db, nowIso());
     const closed = [];
     for (const ticket of idle) {
+      const autoCloseMinutes = Math.max(1, Number.parseInt(getState().config?.missionAutoCloseMinutes, 10) || 120);
       const updated = await persist("antiteam-auto-close", () => closeAntiteamTicket(db, ticket.id, {
         now: nowIso(),
         closedBy: "system",
-        summaryText: "Автозавершено после 2 часов без движения.",
-        confirmedHelperIds: Object.values(ticket.helpers || {}).filter((helper) => helper.arrived !== false).map((helper) => helper.userId),
+        summaryText: formatAutoCloseSummaryText(autoCloseMinutes),
+        confirmedHelperIds: Object.values(ticket.helpers || {}).filter((helper) => helper.arrived === true).map((helper) => helper.userId),
         autoClosed: true,
       }));
       await finalizeClosedTicket(updated).catch(() => {});

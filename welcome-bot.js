@@ -152,6 +152,7 @@ const {
   runDailyActivityRoleSync,
   setManualActivityUserStatus,
 } = require("./src/activity/operator");
+const { applyActivityRoleChangesForMember } = require("./src/activity/role-apply");
 const {
   flushActivityRuntime,
   recordActivityMemberLeave,
@@ -1074,6 +1075,121 @@ function clearStaleApproveClaims() {
     try { saveDb(); } catch (_) {}
     console.log(`[startup] Cleared ${cleared} stale approve claim(s).`);
   }
+}
+
+function isWelcomePendingKillSubmission(submission) {
+  return Boolean(
+    submission
+    && typeof submission === "object"
+    && submission.status === "pending"
+    && Array.isArray(submission.mainCharacterIds)
+    && Number.isFinite(Number(submission.kills))
+  );
+}
+
+function getApprovedPendingSubmissionReconcileKind(submission, profile) {
+  if (!isWelcomePendingKillSubmission(submission)) return false;
+  if (!profile || profile.lastSubmissionStatus !== "approved") return false;
+
+  const approvedKills = Number(profile.approvedKills);
+  const submissionKills = Number(submission.kills);
+  if (!Number.isFinite(approvedKills) || !Number.isFinite(submissionKills)) return false;
+
+  const reviewedTs = Date.parse(String(profile.lastReviewedAt || ""));
+  const createdTs = Date.parse(String(submission.createdAt || ""));
+  if (!Number.isFinite(reviewedTs) || !Number.isFinite(createdTs) || reviewedTs < createdTs) return false;
+
+  const lastSubmissionId = String(profile.lastSubmissionId || "").trim();
+  const submissionId = String(submission.id || "").trim();
+  if (lastSubmissionId && lastSubmissionId === submissionId && approvedKills === submissionKills) return "current";
+  if (lastSubmissionId && lastSubmissionId !== submissionId && submissionKills < approvedKills) return "historical";
+  return false;
+}
+
+function shouldReconcileApprovedPendingSubmission(submission, profile) {
+  return Boolean(getApprovedPendingSubmissionReconcileKind(submission, profile));
+}
+
+async function reconcileApprovedPendingSubmissions(client = null) {
+  const reconciled = [];
+  let currentApproved = 0;
+  let historicalApproved = 0;
+
+  for (const submission of Object.values(db.submissions || {})) {
+    if (!isWelcomePendingKillSubmission(submission)) continue;
+
+    const profile = finalizeStoredProfile(submission.userId);
+    const reconcileKind = getApprovedPendingSubmissionReconcileKind(submission, profile);
+    if (!reconcileKind) continue;
+
+    submission.status = "approved";
+    submission.reviewedAt = reconcileKind === "current"
+      ? profile.lastReviewedAt || submission.reviewedAt || nowIso()
+      : submission.reviewedAt || submission.createdAt || profile.lastReviewedAt || nowIso();
+    submission.reviewedBy = submission.reviewedBy || "startup reconcile";
+    submission.rejectReason = null;
+    submission.derivedTier = submission.derivedTier || killTierFor(submission.kills);
+    delete submission.approveClaim;
+    reconciled.push(submission);
+    if (reconcileKind === "current") currentApproved += 1;
+    if (reconcileKind === "historical") historicalApproved += 1;
+  }
+
+  if (!reconciled.length) {
+    return {
+      approved: 0,
+      currentApproved: 0,
+      historicalApproved: 0,
+      reviewUpdated: 0,
+      reviewMissing: 0,
+      reviewFailed: 0,
+    };
+  }
+
+  saveDb();
+
+  let reviewUpdated = 0;
+  let reviewMissing = 0;
+  let reviewFailed = 0;
+
+  if (client) {
+    for (const submission of reconciled) {
+      const reviewMessage = await fetchReviewMessage(client, submission).catch((error) => {
+        reviewFailed += 1;
+        console.warn(`Startup review fetch reconcile failed for ${submission.id}: ${formatRuntimeError(error)}`);
+        return null;
+      });
+
+      if (!reviewMessage) {
+        reviewMissing += 1;
+        continue;
+      }
+
+      try {
+        await reviewMessage.edit({
+          embeds: [buildReviewEmbed(submission, "approved")],
+          components: [],
+        });
+        reviewUpdated += 1;
+      } catch (error) {
+        reviewFailed += 1;
+        console.warn(`Startup review reconcile failed for ${submission.id}: ${formatRuntimeError(error)}`);
+      }
+    }
+  }
+
+  console.log(
+    `[startup] Reconciled stale pending submissions: approved=${reconciled.length}, current=${currentApproved}, historical=${historicalApproved}, reviewUpdated=${reviewUpdated}, reviewMissing=${reviewMissing}, reviewFailed=${reviewFailed}.`
+  );
+
+  return {
+    approved: reconciled.length,
+    currentApproved,
+    historicalApproved,
+    reviewUpdated,
+    reviewMissing,
+    reviewFailed,
+  };
 }
 
 if (db.__needsSaveAfterLoad) saveDb();
@@ -5692,17 +5808,7 @@ async function runActivityFreshNewcomerRepair(client, guildHint = null) {
 async function applyActivityMemberRoleChanges(client, { userId, addRoleIds = [], removeRoleIds = [], reason = "activity role sync", guildHint = null } = {}) {
   const member = await getActivityGuildMember(client, userId, guildHint);
   if (!member) return false;
-  try {
-    if (removeRoleIds.length) {
-      await member.roles.remove(removeRoleIds, reason);
-    }
-    if (addRoleIds.length) {
-      await member.roles.add(addRoleIds, reason);
-    }
-    return true;
-  } catch {
-    return false;
-  }
+  return applyActivityRoleChangesForMember(member, { addRoleIds, removeRoleIds, reason });
 }
 
 function getAutonomyGuardState() {
@@ -15611,8 +15717,20 @@ client.once("clientReady", async () => {
   };
   let startupDegraded = [];
 
+  await Promise.resolve(reconcileApprovedPendingSubmissions(client)).then((result) => {
+    if (result.reviewFailed > 0) {
+      const message = `approved ${result.approved}, reviewUpdated ${result.reviewUpdated}, reviewFailed ${result.reviewFailed}`;
+      startupDegraded.push({ step: "reconcileApprovedPendingSubmissions", message });
+      console.warn(`Startup pending submission reconcile degraded: ${message}`);
+    }
+  }).catch((error) => {
+    const message = formatRuntimeError(error);
+    startupDegraded.push({ step: "reconcileApprovedPendingSubmissions", message });
+    console.warn(`Startup pending submission reconcile failed: ${message}`);
+  });
+
   try {
-    ({ generated, degraded: startupDegraded } = await runClientReadyCore(client, {
+    const readyCoreResult = await runClientReadyCore(client, {
       ensureManagedRoles,
       runSotStartupAlerts: (currentClient) => runSotStartupAlerts(currentClient, {
         maybeLogSotCharacterHealthAlert,
@@ -15633,7 +15751,11 @@ client.once("clientReady", async () => {
         listCurrentVoiceStates: () => listCurrentActivityVoiceStates(client),
       }),
       logError: (...args) => console.error(...args),
-    }));
+    });
+    generated = readyCoreResult.generated;
+    if (Array.isArray(readyCoreResult.degraded) && readyCoreResult.degraded.length) {
+      startupDegraded.push(...readyCoreResult.degraded);
+    }
   } catch (error) {
     console.error("Client ready core failed:", error?.message || error);
     process.exitCode = 1;

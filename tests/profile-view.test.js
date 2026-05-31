@@ -266,7 +266,7 @@ test("profile payload renders overview, activity, rankings, roblox, and link but
   assert.match(JSON.stringify(container), /JJS 7 ч .* chat 210 .* Roblox готов/);
   assert.ok(textDisplays.some((component) => /### 🔥 Рейтинг профиля/.test(component.content) && /🔥 Рейтинг .* \d+\/100/.test(component.content)));
   assert.ok(textDisplays.some((component) => /### 🟣 Активность .* \d+\/100/.test(component.content) && /💡 до/.test(component.content)));
-  assert.ok(textDisplays.some((component) => /### ⚔️ Kills .* \d+\/100/.test(component.content) && /Approved/.test(component.content)));
+  assert.ok(textDisplays.some((component) => /### ⚔️ Kills .* \d+\/100/.test(component.content) && /7д \+/.test(component.content) && /(свежесть|лидер)/.test(component.content)));
   assert.ok(textDisplays.some((component) => /### 🎮 JJS .* \d+\/100/.test(component.content) && /S\+ от/.test(component.content)));
   assert.ok(textDisplays.some((component) => /### 📊 Сводка активности/.test(component.content) && /Roblox готов/.test(component.content)));
   assert.ok(!textDisplays.some((component) => /### 🎭 Мейны и места/.test(component.content)));
@@ -460,8 +460,8 @@ test("profile payload renders enriched progress and social sections", () => {
 
   const progressDisplays = getProfileContainer(progressPayload).textDisplays;
   assert.ok(progressDisplays.some((component) => /\*\*Прогресс\*\*/.test(component.content)));
-  assert.ok(progressDisplays.some((component) => /### ⚔️ Сейчас/.test(component.content) && /Kills 120/.test(component.content)));
-  assert.ok(progressDisplays.some((component) => /### 📈 Темп/.test(component.content) && /Последние окна: \+20 · \+20/.test(component.content)));
+  assert.ok(progressDisplays.some((component) => /### ⚔️ Сейчас/.test(component.content) && /Нужны две approved-проверки с датами/.test(component.content) && /За всё время 120 kills/.test(component.content)));
+  assert.ok(progressDisplays.some((component) => /### 📈 Темп/.test(component.content) && /Нужны две датированные точки/.test(component.content)));
   assert.ok(progressDisplays.some((component) => /### 🧾 Proof/.test(component.content)));
   assert.ok(progressDisplays.some((component) => /### 💡 До апа/.test(component.content)));
   assert.doesNotMatch(progressDisplays.map((component) => component.content).join("\n"), /ELO|elo|📊 ELO и Tierlist|Последний рост по kills|История approved ростов|Заявки и проверки|Практический прогресс/);
@@ -566,7 +566,7 @@ test("profile payload renders enriched progress and social sections", () => {
 
   const selfProgressContainer = getProfileContainer(selfProgressPayload);
   const selfProgressDisplays = selfProgressContainer.textDisplays;
-  assert.ok(selfProgressDisplays.some((component) => /### ⚔️ Сейчас/.test(component.content) && /Kills 4.?300/.test(component.content)));
+  assert.ok(selfProgressDisplays.some((component) => /### ⚔️ Сейчас/.test(component.content) && /Скользящие 7д/.test(component.content) && /За всё время 4.?300 kills/.test(component.content)));
   assert.ok(selfProgressDisplays.some((component) => /### 💡 До апа/.test(component.content) && /До tier 4: \+4.?700 kills/.test(component.content)));
   assert.doesNotMatch(selfProgressDisplays.map((component) => component.content).join("\n"), /Практический прогресс|ELO|elo/);
   assert.deepEqual(selfProgressContainer.actionRows[1].components.map((button) => button.label), [

@@ -518,6 +518,37 @@ test("support progress button shares one PNG render across concurrent identical 
   assert.equal(second.calls.at(-1)[1].files[0].name, "antiteam-support-progress.png");
 });
 
+test("leaders button replies with helper leaderboard and viewer position", async () => {
+  const db = {};
+  const state = ensureAntiteamState(db).state;
+  for (let index = 1; index <= 11; index += 1) {
+    state.stats.helpers[`helper-${index}`] = {
+      responded: 20 - index,
+      linkGranted: 15 - index,
+      confirmedArrived: 12 - index,
+      lastHelpedAt: `2026-05-16T10:${String(index).padStart(2, "0")}:00.000Z`,
+    };
+  }
+  state.stats.helpers["helper-zero"] = {
+    responded: 99,
+    linkGranted: 99,
+    confirmedArrived: 0,
+  };
+  const operator = createAntiteamOperator({
+    db,
+    saveDb() {},
+  });
+  const interaction = createButtonInteraction(ANTITEAM_CUSTOM_IDS.leaders, { id: "helper-11", username: "Helper" });
+
+  assert.equal(await operator.handleButtonInteraction(interaction), true);
+
+  assert.equal(interaction.calls[0][0], "reply");
+  assert.match(JSON.stringify(interaction.calls[0][1].components[0].toJSON()), /Лидеры батальона/);
+  assert.match(JSON.stringify(interaction.calls[0][1].components[0].toJSON()), /Твоё место: \*\*#11\*\*/);
+  assert.match(JSON.stringify(interaction.calls[0][1].components[0].toJSON()), /🥇 <@helper-1>/);
+  assert.doesNotMatch(JSON.stringify(interaction.calls[0][1].components[0].toJSON()), /helper-zero/);
+});
+
 test("join battalion button grants the base battalion role only", async () => {
   const db = {};
   const state = ensureAntiteamState(db).state;
@@ -812,6 +843,86 @@ test("ticket direct-join toggle is limited to author or admin and updates the mi
   adminToggle.member = { permissions: { has: () => true }, roles: { cache: new Map() } };
   assert.equal(await operator.handleButtonInteraction(adminToggle), true);
   assert.equal(db.sot.antiteam.tickets["ticket-1"].directJoinEnabled, false);
+});
+
+test("ticket auto-close toggle disables idle finish for this mission", async () => {
+  const db = {};
+  const state = ensureAntiteamState(db).state;
+  state.config.missionAutoCloseMinutes = 180;
+  const draft = setAntiteamDraft(db, "author-1", {
+    userTag: "Author",
+    roblox: { userId: "101", username: "Anchor" },
+    level: "medium",
+    count: "2-4",
+    description: "Тимятся у центра.",
+  }, { now: "2026-05-16T10:00:00.000Z" });
+  createAntiteamTicketFromDraft(db, draft, {
+    id: "ticket-1",
+    now: "2026-05-16T10:01:00.000Z",
+  });
+  db.sot.antiteam.tickets["ticket-1"].message = {
+    channelId: "channel-1",
+    messageId: "message-1",
+    threadId: "thread-1",
+    threadPanelMessageId: "panel-1",
+  };
+
+  let panelEdit = null;
+  const operator = createAntiteamOperator({
+    db,
+    now: () => "2026-05-16T10:02:00.000Z",
+    saveDb() {},
+    fetchChannel: async (channelId) => {
+      if (channelId === "channel-1") {
+        return {
+          messages: {
+            fetch: async () => ({
+              edit: async () => {},
+            }),
+          },
+        };
+      }
+      if (channelId === "thread-1") {
+        return {
+          messages: {
+            fetch: async () => ({
+              edit: async (payload) => {
+                panelEdit = payload;
+              },
+            }),
+          },
+        };
+      }
+      return null;
+    },
+  });
+
+  const denied = createButtonInteraction(ticketButtonId("toggle_auto_close", "ticket-1"), { id: "any-1", username: "Any" });
+  assert.equal(await operator.handleButtonInteraction(denied), true);
+  assert.equal(db.sot.antiteam.tickets["ticket-1"].autoCloseEnabled, true);
+  assert.deepEqual(denied.calls.map((call) => call[0]), ["reply"]);
+
+  const authorToggle = createButtonInteraction(ticketButtonId("toggle_auto_close", "ticket-1"), { id: "author-1", username: "Author" });
+  assert.equal(await operator.handleButtonInteraction(authorToggle), true);
+  assert.equal(db.sot.antiteam.tickets["ticket-1"].autoCloseEnabled, false);
+  assert.deepEqual(authorToggle.calls.map((call) => call[0]), ["deferUpdate", "editReply"]);
+  assert.match(JSON.stringify(authorToggle.calls.at(-1)[1].components[1].toJSON()), /Не закрывать автоматически/);
+  assert.match(JSON.stringify(panelEdit.components[1].toJSON()), /Не закрывать автоматически/);
+
+  db.sot.antiteam.tickets["ticket-1"].lastActivityAt = "2026-05-16T10:01:00.000Z";
+  const sweepOperator = createAntiteamOperator({
+    db,
+    now: () => "2026-05-16T13:05:00.000Z",
+    saveDb() {},
+  });
+  const sweepResult = await sweepOperator.sweepIdleTickets();
+  assert.equal(sweepResult.closedCount, 0);
+  assert.equal(db.sot.antiteam.tickets["ticket-1"].status, "open");
+
+  const adminToggle = createButtonInteraction(ticketButtonId("toggle_auto_close", "ticket-1"), { id: "admin-1", username: "Admin" });
+  adminToggle.member = { permissions: { has: () => true }, roles: { cache: new Map() } };
+  assert.equal(await operator.handleButtonInteraction(adminToggle), true);
+  assert.equal(db.sot.antiteam.tickets["ticket-1"].autoCloseEnabled, true);
 });
 
 test("help button acknowledges before ticket sync without thread notice spam", async () => {
@@ -1422,7 +1533,7 @@ test("arrival toggle updates the close review before serialized persistence fini
   assert.equal(db.sot.antiteam.tickets["ticket-1"].helpers["helper-1"].arrived, false);
 });
 
-test("close modal counts untouched helpers as arrived by default", async () => {
+test("close modal counts only explicitly arrived helpers", async () => {
   const db = {};
   const state = ensureAntiteamState(db).state;
   state.config.helperRewardRoles = { "1": "role-1", "5": "", "10": "", "20": "", "50": "" };
@@ -1484,9 +1595,9 @@ test("close modal counts untouched helpers as arrived by default", async () => {
   );
 
   assert.equal(await operator.handleModalSubmitInteraction(interaction), true);
-  assert.deepEqual(db.sot.antiteam.tickets["ticket-default-arrived"].closeSummary.confirmedHelperIds, ["helper-1"]);
-  assert.equal(db.sot.antiteam.stats.helpers["helper-1"].confirmedArrived, 1);
-  assert.deepEqual(granted, [{ userId: "helper-1", roleId: "role-1" }]);
+  assert.deepEqual(db.sot.antiteam.tickets["ticket-default-arrived"].closeSummary.confirmedHelperIds, []);
+  assert.equal(db.sot.antiteam.stats.helpers["helper-1"].confirmedArrived, 0);
+  assert.deepEqual(granted, []);
 });
 
 test("draft submit asks for photo when photo toggle is enabled", async () => {
@@ -3128,7 +3239,7 @@ test("closing ticket writes helper result markers into the public message", asyn
 test("auto-close reuses thread cleanup, keeps thread members, and archives the mission", async () => {
   const db = {};
   const state = ensureAntiteamState(db).state;
-  state.config.missionAutoCloseMinutes = 120;
+  state.config.missionAutoCloseMinutes = 180;
   const draft = setAntiteamDraft(db, "author-1", {
     userTag: "Author",
     roblox: { userId: "101", username: "Anchor" },
@@ -3156,7 +3267,7 @@ test("auto-close reuses thread cleanup, keeps thread members, and archives the m
   const removedMembers = [];
   const operator = createAntiteamOperator({
     db,
-    now: () => "2026-05-16T12:05:00.000Z",
+    now: () => "2026-05-16T13:05:00.000Z",
     saveDb() {},
     fetchChannel: async (channelId) => channelId === "channel-1"
       ? {
@@ -3204,6 +3315,7 @@ test("auto-close reuses thread cleanup, keeps thread members, and archives the m
 
   assert.equal(result.closedCount, 1);
   assert.equal(db.sot.antiteam.tickets["ticket-1"].status, "closed");
+  assert.equal(db.sot.antiteam.tickets["ticket-1"].closeSummary.text, "Автозавершено: 180 мин без движения.");
   assert.equal(pingDeleted, true);
   assert.equal(locked, true);
   assert.equal(archived, true);
@@ -3211,12 +3323,118 @@ test("auto-close reuses thread cleanup, keeps thread members, and archives the m
   assert.deepEqual(removedMembers, []);
 });
 
+test("auto-close sweep skips clan war tickets", async () => {
+  const db = {};
+  const state = ensureAntiteamState(db).state;
+  state.config.missionAutoCloseMinutes = 120;
+  const draft = setAntiteamDraft(db, "caller-1", {
+    kind: "clan",
+    userTag: "Caller",
+    anchorUserId: "anchor-1",
+    anchorUserTag: "Anchor",
+    roblox: { userId: "101", username: "Anchor" },
+    description: "Вражеский клан держит сервер.",
+  }, { now: "2026-05-16T10:00:00.000Z" });
+  createAntiteamTicketFromDraft(db, draft, {
+    id: "ticket-clan-1",
+    now: "2026-05-16T10:01:00.000Z",
+  });
+  db.sot.antiteam.tickets["ticket-clan-1"].lastActivityAt = "2026-05-16T10:01:00.000Z";
+
+  const operator = createAntiteamOperator({
+    db,
+    now: () => "2026-05-16T12:05:00.000Z",
+    saveDb() {},
+  });
+
+  const result = await operator.sweepIdleTickets();
+
+  assert.equal(result.closedCount, 0);
+  assert.equal(db.sot.antiteam.tickets["ticket-clan-1"].status, "open");
+  assert.equal(db.sot.antiteam.tickets["ticket-clan-1"].autoClosed, false);
+});
+
+test("auto-close sweep skips tickets with per-ticket auto-close disabled", async () => {
+  const db = {};
+  const state = ensureAntiteamState(db).state;
+  state.config.missionAutoCloseMinutes = 120;
+  const draft = setAntiteamDraft(db, "author-1", {
+    userTag: "Author",
+    roblox: { userId: "101", username: "Anchor" },
+    level: "medium",
+    count: "2-4",
+    description: "Цели A/B.",
+  }, { now: "2026-05-16T10:00:00.000Z" });
+  createAntiteamTicketFromDraft(db, draft, {
+    id: "ticket-1",
+    now: "2026-05-16T10:01:00.000Z",
+  });
+  db.sot.antiteam.tickets["ticket-1"].autoCloseEnabled = false;
+  db.sot.antiteam.tickets["ticket-1"].lastActivityAt = "2026-05-16T10:01:00.000Z";
+
+  const operator = createAntiteamOperator({
+    db,
+    now: () => "2026-05-16T12:05:00.000Z",
+    saveDb() {},
+  });
+
+  const result = await operator.sweepIdleTickets();
+
+  assert.equal(result.closedCount, 0);
+  assert.equal(db.sot.antiteam.tickets["ticket-1"].status, "open");
+  assert.equal(db.sot.antiteam.tickets["ticket-1"].autoClosed, false);
+});
+
 test("advanced config modal updates timing and Roblox link settings", async () => {
   const db = {};
-  ensureAntiteamState(db);
+  ensureAntiteamState(db).state;
+  const draft = setAntiteamDraft(db, "author-1", {
+    userTag: "Author",
+    roblox: { userId: "101", username: "Anchor" },
+    level: "medium",
+    count: "2-4",
+    description: "Цели A/B.",
+  }, { now: "2026-05-16T10:00:00.000Z" });
+  const ticket = createAntiteamTicketFromDraft(db, draft, {
+    id: "ticket-1",
+    now: "2026-05-16T10:01:00.000Z",
+  });
+  ticket.message = {
+    channelId: "channel-1",
+    messageId: "message-1",
+    threadId: "thread-1",
+    threadPanelMessageId: "panel-1",
+  };
+
+  let panelEdit = null;
   const operator = createAntiteamOperator({
     db,
     saveDb() {},
+    fetchChannel: async (channelId) => {
+      if (channelId === "channel-1") {
+        return {
+          messages: {
+            fetch: async () => ({
+              edit: async () => {},
+            }),
+          },
+        };
+      }
+      if (channelId === "thread-1") {
+        return {
+          messages: {
+            fetch: async (messageId) => messageId === "panel-1"
+              ? {
+                edit: async (payload) => {
+                  panelEdit = payload;
+                },
+              }
+              : null,
+          },
+        };
+      }
+      return null;
+    },
   });
   const interaction = createModalInteraction(
     "at:config_advanced:modal",
@@ -3240,6 +3458,8 @@ test("advanced config modal updates timing and Roblox link settings", async () =
   assert.equal(config.roblox.directJoinUrlTemplate, "https://example.test/start?placeId={placeId}&gameId={gameId}");
   assert.equal(config.roblox.friendRequestsUrl, "https://example.test/friends");
   assert.match(JSON.stringify(interaction.calls.at(-1)[1].components[0].toJSON()), /Roblox-ссылки/);
+  assert.match(JSON.stringify(interaction.calls.at(-1)[1].components[0].toJSON()), /Обновлено открытых миссий: \*\*1\*\*/);
+  assert.match(JSON.stringify(panelEdit.components[1].toJSON()), /Закрывать через 180 мин/);
 });
 
 test("ping config controls are available in moderator panel and save mode", async () => {

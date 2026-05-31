@@ -1,0 +1,5 @@
+- Kill review backlog can drift into stale pending rows even when profile state is already approved.
+- Startup repair runs in welcome-bot.js clientReady so it can persist DB status and clear review-message buttons.
+- It only touches welcome kill submissions, not legacy ELO rows in the shared submissions store.
+- Current rows approve when profile.lastSubmissionId matches and approvedKills equals submission.kills.
+- Older profile-backed rows approve as historical when a newer approved profile row has higher kills; do not supersede them or history is lost.

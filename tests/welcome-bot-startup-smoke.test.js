@@ -98,19 +98,16 @@ test("welcome-bot startup smoke completes clientReady without missing import reg
   );
 });
 
-test("welcome-bot guildMemberAdd runs returning activity sync before newcomer can stick", () => {
+test("welcome-bot guildMemberAdd promotes manually removed newcomer to the scored tier", () => {
   const repoRoot = path.join(__dirname, "..");
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "welcome-bot-rejoin-activity-smoke-"));
   fs.writeFileSync(path.join(tempDir, "welcome-db.json"), JSON.stringify({
     profiles: {
-      "returning-user": {
-        userId: "returning-user",
+      "moderated-user": {
+        userId: "moderated-user",
         domains: {
           activity: {
             appliedActivityRoleKey: "newcomer",
-            lastObservedGuildJoinAt: "2026-05-01T12:00:00.000Z",
-            lastGuildLeaveAt: "2026-05-27T10:00:00.000Z",
-            guildJoinCount: 1,
           },
         },
       },
@@ -152,10 +149,182 @@ test("welcome-bot guildMemberAdd runs returning activity sync before newcomer ca
         ["role-newcomer", { id: "role-newcomer", name: "newcomer" }],
         ["role-dead", { id: "role-dead", name: "dead" }],
       ]);
-      const roleCache = new Map([
+      const roleCache = new Map([["123", { id: "123", name: "@everyone" }]]);
+      const guildRoleCache = {
+        filter(predicate) {
+          return new Map([...guildRoles].filter(([, role]) => predicate(role)));
+        },
+        get(roleId) {
+          return guildRoles.get(roleId) || null;
+        },
+        has(roleId) {
+          return guildRoles.has(roleId);
+        },
+        keys() {
+          return guildRoles.keys();
+        },
+        values() {
+          return guildRoles.values();
+        },
+      };
+      const member = {
+        id: "moderated-user",
+        displayName: "Moderated User",
+        joinedAt: new Date("2026-05-28T10:00:00.000Z"),
+        user: {
+          id: "moderated-user",
+          bot: false,
+          tag: "Moderated#0001",
+          username: "Moderated",
+        },
+        roles: {
+          cache: roleCache,
+          async remove(roleIds, reason) {
+            calls.push(["remove", roleIds, reason]);
+            for (const roleId of Array.isArray(roleIds) ? roleIds : [roleIds]) {
+              roleCache.delete(roleId);
+            }
+          },
+          async add(roleIds, reason) {
+            calls.push(["add", roleIds, reason]);
+            for (const roleId of Array.isArray(roleIds) ? roleIds : [roleIds]) {
+              roleCache.set(roleId, { id: roleId, name: roleId });
+            }
+          },
+        },
+        send: async () => {},
+      };
+      const guild = {
+        id: "123",
+        name: "smoke-guild",
+        commands: { set: async (commands) => commands },
+        channels: {
+          fetch: async () => null,
+          cache: new Map(),
+        },
+        members: {
+          cache: new Map([["moderated-user", member]]),
+          fetch: async (userId) => userId === "moderated-user" ? member : null,
+        },
+        roles: {
+          fetch: async () => ({ cache: guildRoleCache, filter: guildRoleCache.filter }),
+          create: async () => ({ id: "role-created", name: "stub-role" }),
+          cache: guildRoleCache,
+        },
+      };
+      member.guild = guild;
+      this.user = { id: "1", tag: "Smoke#0001" };
+      this.guilds = { fetch: async () => guild };
+      this.channels = { cache: new Map(), fetch: async () => null };
+      this.destroy = () => {};
+
+      setImmediate(() => originalEmit.call(this, "guildMemberAdd", member));
+      setTimeout(() => {
+        const rendered = JSON.stringify(calls);
+        const addedDead = calls.some((entry) => entry[0] === "add" && String(entry[1]).includes("role-dead"));
+        const addedNewcomer = calls.some((entry) => entry[0] === "add" && String(entry[1]).includes("role-newcomer"));
+        const removedNewcomer = calls.some((entry) => entry[0] === "remove" && String(entry[1]).includes("role-newcomer"));
+        if (!addedDead || removedNewcomer || addedNewcomer) {
+          console.error("unexpected activity role calls:", rendered);
+          process.exit(1);
+        }
+        console.log("activity-manual-newcomer-smoke-ok", rendered);
+        process.exit(0);
+      }, 1200);
+      return Promise.resolve("smoke-login");
+    };
+
+    require("./welcome-bot.js");
+  `;
+
+  const result = spawnSync(process.execPath, ["-e", script], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    timeout: 15000,
+  });
+
+  try {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  } catch {
+    // Best effort cleanup for Windows temp files held briefly by the child process.
+  }
+
+  if (result.error) {
+    throw result.error;
+  }
+
+  assert.equal(
+    result.status,
+    0,
+    `activity join smoke failed\nstdout:\n${result.stdout || ""}\nstderr:\n${result.stderr || ""}`
+  );
+  assert.match(
+    result.stdout || "",
+    /activity-manual-newcomer-smoke-ok/,
+    `expected activity join smoke marker\nstdout:\n${result.stdout || ""}\nstderr:\n${result.stderr || ""}`
+  );
+});
+
+test("welcome-bot guildMemberAdd keeps returning-member evidence from news moderation when activity mirror is missing", () => {
+  const repoRoot = path.join(__dirname, "..");
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "welcome-bot-rejoin-trace-smoke-"));
+  fs.writeFileSync(path.join(tempDir, "welcome-db.json"), JSON.stringify({
+    profiles: {
+      "returning-user": {
+        userId: "returning-user",
+      },
+    },
+    sot: {
+      activity: {
+        config: {
+          activityRoleIds: {
+            newcomer: "role-newcomer",
+            dead: "role-dead",
+          },
+        },
+        watchedChannels: [],
+        globalUserSessions: [],
+        globalVoiceSessions: [],
+        userChannelDailyStats: [],
+        userVoiceDailyStats: [],
+        userSnapshots: {},
+        calibrationRuns: [],
+        ops: { moderationAuditLog: [] },
+        runtime: { openSessions: {}, openVoiceSessions: {}, dirtyUsers: [] },
+      },
+      news: {
+        moderation: {
+          events: [
+            {
+              eventType: "member_remove",
+              userId: "returning-user",
+              occurredAt: "2026-05-27T10:00:00.000Z",
+              resolution: "left_server",
+            },
+          ],
+        },
+      },
+    },
+  }, null, 2));
+
+  const script = String.raw`
+    process.env.DISCORD_TOKEN = "smoke-token";
+    process.env.GUILD_ID = "123";
+    process.env.BOT_DATA_DIR = ${JSON.stringify(tempDir)};
+    process.env.DB_PATH = "welcome-db.json";
+
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const discord = require("discord.js");
+    const originalEmit = discord.Client.prototype.emit;
+
+    discord.Client.prototype.login = function login() {
+      const guildRoles = new Map([
         ["123", { id: "123", name: "@everyone" }],
         ["role-newcomer", { id: "role-newcomer", name: "newcomer" }],
+        ["role-dead", { id: "role-dead", name: "dead" }],
       ]);
+      const roleCache = new Map([["123", { id: "123", name: "@everyone" }]]);
       const guildRoleCache = {
         filter(predicate) {
           return new Map([...guildRoles].filter(([, role]) => predicate(role)));
@@ -185,14 +354,12 @@ test("welcome-bot guildMemberAdd runs returning activity sync before newcomer ca
         },
         roles: {
           cache: roleCache,
-          async remove(roleIds, reason) {
-            calls.push(["remove", roleIds, reason]);
+          async remove(roleIds) {
             for (const roleId of Array.isArray(roleIds) ? roleIds : [roleIds]) {
               roleCache.delete(roleId);
             }
           },
-          async add(roleIds, reason) {
-            calls.push(["add", roleIds, reason]);
+          async add(roleIds) {
             for (const roleId of Array.isArray(roleIds) ? roleIds : [roleIds]) {
               roleCache.set(roleId, { id: roleId, name: roleId });
             }
@@ -226,15 +393,14 @@ test("welcome-bot guildMemberAdd runs returning activity sync before newcomer ca
 
       setImmediate(() => originalEmit.call(this, "guildMemberAdd", member));
       setTimeout(() => {
-        const rendered = JSON.stringify(calls);
-        const addedDead = calls.some((entry) => entry[0] === "add" && String(entry[1]).includes("role-dead"));
-        const addedNewcomer = calls.some((entry) => entry[0] === "add" && String(entry[1]).includes("role-newcomer"));
-        const removedNewcomer = calls.some((entry) => entry[0] === "remove" && String(entry[1]).includes("role-newcomer"));
-        if (!addedDead || !removedNewcomer || addedNewcomer) {
-          console.error("unexpected activity role calls:", rendered);
+        const dbPath = path.join(process.env.BOT_DATA_DIR, process.env.DB_PATH);
+        const db = JSON.parse(fs.readFileSync(dbPath, "utf8"));
+        const activity = db.profiles?.["returning-user"]?.domains?.activity || {};
+        if (activity.returningMember !== true || Number(activity.guildJoinCount) < 2) {
+          console.error("unexpected returning trace state:", JSON.stringify(activity));
           process.exit(1);
         }
-        console.log("activity-rejoin-smoke-ok", rendered);
+        console.log("activity-rejoin-trace-smoke-ok", JSON.stringify({ returningMember: activity.returningMember, guildJoinCount: activity.guildJoinCount }));
         process.exit(0);
       }, 1200);
       return Promise.resolve("smoke-login");
@@ -262,12 +428,12 @@ test("welcome-bot guildMemberAdd runs returning activity sync before newcomer ca
   assert.equal(
     result.status,
     0,
-    `activity join smoke failed\nstdout:\n${result.stdout || ""}\nstderr:\n${result.stderr || ""}`
+    `activity rejoin trace smoke failed\nstdout:\n${result.stdout || ""}\nstderr:\n${result.stderr || ""}`
   );
   assert.match(
     result.stdout || "",
-    /activity-rejoin-smoke-ok/,
-    `expected activity join smoke marker\nstdout:\n${result.stdout || ""}\nstderr:\n${result.stderr || ""}`
+    /activity-rejoin-trace-smoke-ok/,
+    `expected activity rejoin trace smoke marker\nstdout:\n${result.stdout || ""}\nstderr:\n${result.stderr || ""}`
   );
 });
 
@@ -280,11 +446,7 @@ test("welcome-bot clientReady auto-repairs fresh newcomers without a manual comm
         userId: "fresh-user",
         domains: {
           activity: {
-            returningMember: true,
             appliedActivityRoleKey: "dead",
-            firstObservedGuildJoinAt: "2026-05-29T10:00:00.000Z",
-            lastObservedGuildJoinAt: "2026-05-29T10:00:00.000Z",
-            guildJoinCount: 2,
           },
         },
       },

@@ -1,0 +1,5 @@
+- Activity newcomer cutover removed returning-member role bypass; newcomer gating now depends on join-age/newcomer window only.
+- welcome-bot member-add metadata must still pass resolveActivityPriorServerTrace into runActivityMemberJoinRoleSync so returning-member evidence from news moderation and activity stats survives even when profile.activity mirror is empty.
+- Manual moderator removal of newcomer is persisted as domains.activity.newcomerRoleSuppressedAt.
+- buildActivityRoleAssignmentPlan must honor newcomerRoleSuppressedAt by skipping newcomer restoration and promoting to the current scored tier instead.
+- Keep newcomerRoleSuppressedAt inside shared profile activity normalization; future activity metadata writes must preserve it.

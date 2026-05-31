@@ -1,0 +1,3 @@
+- Advanced antiteam config changes that affect live ticket UI, especially missionAutoCloseMinutes, must refresh open ticket messages after persist.
+- The per-ticket auto-close button label in thread panels is config-driven, so saving new close_minutes without syncing open tickets creates UI/runtime drift.
+- Keep the config save non-blocking: refresh open tickets best-effort and do not fail the modal save if one message edit errors.

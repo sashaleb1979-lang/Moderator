@@ -1,0 +1,3 @@
+- Standard antiteam tickets now carry autoCloseEnabled, defaulting to true; clan tickets do not expose the toggle and are still excluded from idle auto-close.
+- The thread panel owns the per-ticket toggle UI via at:toggle_auto_close and shows the configured missionAutoCloseMinutes in the button label.
+- Idle auto-close must respect both ticket.kind !== "clan" and ticket.autoCloseEnabled !== false before closing a mission.

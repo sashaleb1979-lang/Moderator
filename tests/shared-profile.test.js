@@ -687,6 +687,7 @@ test("ensureSharedProfile normalizes the activity domain and exposes an activity
         lastSeenAt: "2026-05-08T10:00:00.000Z",
         desiredActivityRoleKey: "stable",
         appliedActivityRoleKey: "active",
+        newcomerRoleSuppressedAt: "2026-05-08T14:00:00.000Z",
         manualOverride: true,
         autoRoleFrozen: true,
         recalculatedAt: "2026-05-09T12:00:00.000Z",
@@ -714,6 +715,7 @@ test("ensureSharedProfile normalizes the activity domain and exposes an activity
   assert.equal(result.profile.domains.activity.lastSeenAt, "2026-05-08T10:00:00.000Z");
   assert.equal(result.profile.domains.activity.desiredActivityRoleKey, "stable");
   assert.equal(result.profile.domains.activity.appliedActivityRoleKey, "active");
+  assert.equal(result.profile.domains.activity.newcomerRoleSuppressedAt, "2026-05-08T14:00:00.000Z");
   assert.equal(result.profile.domains.activity.manualOverride, true);
   assert.equal(result.profile.domains.activity.autoRoleFrozen, true);
   assert.equal(result.profile.domains.activity.recalculatedAt, "2026-05-09T12:00:00.000Z");
@@ -736,6 +738,7 @@ test("ensureSharedProfile normalizes the activity domain and exposes an activity
   assert.equal(result.profile.summary.activity.lastSeenAt, "2026-05-08T10:00:00.000Z");
   assert.equal(result.profile.summary.activity.desiredActivityRoleKey, "stable");
   assert.equal(result.profile.summary.activity.appliedActivityRoleKey, "active");
+  assert.equal(result.profile.summary.activity.newcomerRoleSuppressedAt, "2026-05-08T14:00:00.000Z");
   assert.equal(result.profile.summary.activity.manualOverride, true);
   assert.equal(result.profile.summary.activity.autoRoleFrozen, true);
   assert.equal(result.profile.summary.activity.recalculatedAt, "2026-05-09T12:00:00.000Z");

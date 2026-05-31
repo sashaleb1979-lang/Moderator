@@ -90,6 +90,7 @@ test("antiteam ticket lifecycle records helpers and closes mission", () => {
     friendEligibleDiscordUserIds: ["helper-1"],
   });
   assert.equal(ticket.id, "ticket-1");
+  assert.equal(ticket.autoCloseEnabled, true);
   assert.equal(db.sot.antiteam.drafts["author-1"], undefined);
   assert.deepEqual(ticket.friendEligibleDiscordUserIds, ["helper-1"]);
 
@@ -98,6 +99,7 @@ test("antiteam ticket lifecycle records helpers and closes mission", () => {
     discordTag: "Helper",
     linkKind: "friend_direct",
   }, { now: "2026-05-16T10:02:00.000Z" });
+  assert.equal(db.sot.antiteam.tickets["ticket-1"].helpers["helper-1"].arrived, false);
   incrementHelperStats(db, "helper-1", {
     responded: 1,
     linkGranted: 1,

@@ -328,7 +328,7 @@ function normalizeHelperRecord(value = {}, userId = "") {
     linkKind: cleanString(source.linkKind, 40),
     linkGrantedAt: normalizeIsoTimestamp(source.linkGrantedAt, null),
     friendRequestNotifiedAt: normalizeIsoTimestamp(source.friendRequestNotifiedAt, null),
-    arrived: normalizeBoolean(source.arrived, true),
+    arrived: normalizeBoolean(source.arrived, false),
     arrivedSetAt: normalizeIsoTimestamp(source.arrivedSetAt, null),
   };
 }
@@ -372,6 +372,7 @@ function normalizeAntiteamTicket(value = {}, config = createDefaultAntiteamConfi
     count: kind === "clan" ? "clan" : normalizeAntiteamCount(source.count, "2-4"),
     description: cleanString(source.description, 1200),
     directJoinEnabled: normalizeBoolean(source.directJoinEnabled, false),
+    autoCloseEnabled: normalizeBoolean(source.autoCloseEnabled, kind !== "clan"),
     photoWanted: normalizeBoolean(source.photoWanted, false),
     photo: photos[0] || null,
     photos,
@@ -720,6 +721,8 @@ function findIdleAntiteamTickets(db = {}, now = new Date().toISOString()) {
   if (!Number.isFinite(nowMs)) return [];
   const closeMs = Math.max(1, state.config.missionAutoCloseMinutes) * 60 * 1000;
   return listOpenAntiteamTickets(db).filter((ticket) => {
+    if (ticket.kind === "clan") return false;
+    if (ticket.autoCloseEnabled === false) return false;
     const lastMs = Date.parse(ticket.lastActivityAt || ticket.updatedAt || ticket.createdAt || "");
     return Number.isFinite(lastMs) && nowMs - lastMs >= closeMs;
   });

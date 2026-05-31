@@ -38,6 +38,7 @@ const CLAN_WAR_ACCENT_COLOR = 0x8E24AA;
 const ANTITEAM_CUSTOM_IDS = Object.freeze({
   open: "at:open",
   progress: "at:progress",
+  leaders: "at:leaders",
   guide: "at:guide",
   requestRobloxNick: "at:roblox:request",
   confirmRoblox: "at:roblox:confirm",
@@ -268,6 +269,10 @@ function buildStartPanelPayload(config = createDefaultAntiteamConfig()) {
           .setLabel("🛡️ Мой прогресс")
           .setStyle(ButtonStyle.Secondary),
         new ButtonBuilder()
+          .setCustomId(ANTITEAM_CUSTOM_IDS.leaders)
+          .setLabel("🏆 Лидеры")
+          .setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder()
           .setCustomId(ANTITEAM_CUSTOM_IDS.guide)
           .setLabel(panel.guideButtonLabel)
           .setStyle(ButtonStyle.Secondary)
@@ -275,6 +280,107 @@ function buildStartPanelPayload(config = createDefaultAntiteamConfig()) {
     );
 
   return buildPayload(container);
+}
+
+function getHelperStatsEntries(state = {}) {
+  return Object.entries(state.stats?.helpers || {})
+    .map(([userId, stats]) => ({
+      userId,
+      responded: Number(stats?.responded) || 0,
+      linkGranted: Number(stats?.linkGranted) || 0,
+      confirmedArrived: Number(stats?.confirmedArrived) || 0,
+      points: Number(stats?.confirmedArrived) || 0,
+      lastTicketId: cleanString(stats?.lastTicketId, 80),
+      lastHelpedAt: cleanString(stats?.lastHelpedAt, 80),
+    }))
+    .sort((left, right) => (right.confirmedArrived - left.confirmedArrived)
+      || (right.responded - left.responded)
+      || left.userId.localeCompare(right.userId));
+}
+
+function getSupportLeaderboardEntries(state = {}) {
+  return getHelperStatsEntries(state).filter((entry) => entry.points > 0);
+}
+
+function formatSupportLeaderboardRank(rankIndex = 0) {
+  if (rankIndex === 0) return "🥇";
+  if (rankIndex === 1) return "🥈";
+  if (rankIndex === 2) return "🥉";
+  return `#${rankIndex + 1}`;
+}
+
+function formatSupportLeaderboardEntry(entry = {}, rankIndex = 0) {
+  return `${formatSupportLeaderboardRank(rankIndex)} <@${entry.userId}> — **${entry.points} очк.** • отклики: ${entry.responded} • ссылки: ${entry.linkGranted}`;
+}
+
+function buildSupportLeaderboardPayload(state = {}, viewerUserId = "", options = {}) {
+  const config = createDefaultAntiteamConfig(state.config);
+  const helpers = getSupportLeaderboardEntries(state);
+  const normalizedViewerUserId = cleanString(viewerUserId, 80);
+  const maxVisible = Math.max(1, Math.min(10, Number.parseInt(options.limit, 10) || 10));
+  const visibleHelpers = helpers.slice(0, maxVisible);
+  const viewerIndex = normalizedViewerUserId
+    ? helpers.findIndex((entry) => entry.userId === normalizedViewerUserId)
+    : -1;
+  const viewerEntry = viewerIndex >= 0 ? helpers[viewerIndex] : null;
+
+  const summaryLines = [
+    `Записей в таблице: **${helpers.length}**`,
+    "Очки = подтверждённые приходы после закрытия миссии.",
+    viewerEntry
+      ? `Твоё место: **#${viewerIndex + 1}** • очков: **${viewerEntry.points}** • откликов: **${viewerEntry.responded}**`
+      : "Тебя пока нет в таблице. Первый балл появится после закрытой миссии, где твой приход подтвердили.",
+  ];
+
+  const container = new ContainerBuilder()
+    .setAccentColor(0xF9A825)
+    .addTextDisplayComponents(
+      new TextDisplayBuilder().setContent("# 🏆 Лидеры батальона"),
+      new TextDisplayBuilder().setContent(summaryLines.join("\n"))
+    );
+
+  if (visibleHelpers.length) {
+    container.addTextDisplayComponents(buildText(
+      "Топ helper-ов",
+      visibleHelpers.map((entry, index) => formatSupportLeaderboardEntry(entry, index)),
+      "Пока пусто"
+    ));
+  } else {
+    container.addTextDisplayComponents(new TextDisplayBuilder().setContent(
+      "Пока никто не закрыл миссию с подтверждённым приходом. Первый helper откроет лидерборд."
+    ));
+  }
+
+  if (viewerEntry && viewerIndex >= visibleHelpers.length) {
+    container.addTextDisplayComponents(buildText(
+      "Твоя позиция",
+      [formatSupportLeaderboardEntry(viewerEntry, viewerIndex)],
+      "—"
+    ));
+  }
+
+  if (helpers.length > visibleHelpers.length) {
+    container.addTextDisplayComponents(new TextDisplayBuilder().setContent(
+      `Показан топ-${visibleHelpers.length}. Ещё в таблице: **${helpers.length - visibleHelpers.length}**.`
+    ));
+  }
+
+  container
+    .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
+    .addActionRowComponents(
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(ANTITEAM_CUSTOM_IDS.progress)
+          .setLabel("🛡️ Мой прогресс")
+          .setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder()
+          .setCustomId(ANTITEAM_CUSTOM_IDS.guide)
+          .setLabel(config.panel.guideButtonLabel)
+          .setStyle(ButtonStyle.Secondary)
+      )
+    );
+
+  return buildPayload(container, { ephemeral: true });
 }
 
 function buildSupportProgressPayload(modelInput = {}, { attachmentName = "antiteam-support-progress.png" } = {}) {
@@ -340,7 +446,7 @@ function buildStartGuidePayload(config = createDefaultAntiteamConfig()) {
         "### Ранги помощи",
         "Очко засчитывается после закрытия миссии, если тебя отметили как пришедшего helper-а.",
         rankLines,
-        "Личный щит и прогресс открываются кнопкой **Мой прогресс**.",
+        "Личный щит и прогресс открываются кнопкой **Мой прогресс**, а общий топ виден в **Лидеры**.",
       ].join("\n"))
     );
   return buildPayload(container, { ephemeral: true });
@@ -421,7 +527,8 @@ function buildModeratorPanelPayload(state = {}, statusText = "") {
         `Закрыто миссий: **${closedCount}**`,
         `Помощников в статистике: **${helperCount}**`,
         `Автоархив thread: **${config.missionAutoArchiveMinutes} мин**`,
-        `Автозакрытие миссии: **${config.missionAutoCloseMinutes} мин**`,
+        `Автозакрытие обычных миссий: **${config.missionAutoCloseMinutes} мин**`,
+        "Клан-вар: без автооффа по idle-таймеру",
         `Пинг-система: **${formatAntiteamPingMode(config)}**`,
         `Roblox place id: ${config.roblox?.jjsPlaceId ? `\`${config.roblox.jjsPlaceId}\`` : "из общего конфига"}`,
       ].join("\n"))
@@ -464,19 +571,7 @@ function statsButtonId(action, extra = "") {
 
 function buildHelperStatsPayload(state = {}, page = 0, statusText = "", { confirmClear = false } = {}) {
   const config = createDefaultAntiteamConfig(state.config);
-  const helpers = Object.entries(state.stats?.helpers || {})
-    .map(([userId, stats]) => ({
-      userId,
-      responded: Number(stats?.responded) || 0,
-      linkGranted: Number(stats?.linkGranted) || 0,
-      confirmedArrived: Number(stats?.confirmedArrived) || 0,
-      points: Number(stats?.confirmedArrived) || 0,
-      lastTicketId: cleanString(stats?.lastTicketId, 80),
-      lastHelpedAt: cleanString(stats?.lastHelpedAt, 80),
-    }))
-    .sort((left, right) => (right.confirmedArrived - left.confirmedArrived)
-      || (right.responded - left.responded)
-      || left.userId.localeCompare(right.userId));
+  const helpers = getHelperStatsEntries(state);
   const totalPoints = helpers.reduce((sum, helper) => sum + helper.points, 0);
   const rewardRows = ANTITEAM_HELPER_REWARD_THRESHOLDS.map((threshold) => {
     const roleId = config.helperRewardRoles?.[String(threshold)] || "";
@@ -512,7 +607,7 @@ function buildHelperStatsPayload(state = {}, page = 0, statusText = "", { confir
           `<@${helper.userId}>`,
           `Очки помощи: **${helper.points}**`,
           `Откликнулся: **${helper.responded}** • ссылки: **${helper.linkGranted}** • пришёл: **${helper.confirmedArrived}**`,
-          helper.lastHelpedAt ? `Последняя помощь: ${helper.lastHelpedAt}` : "",
+          helper.lastHelpedAt ? `Последняя активность: ${helper.lastHelpedAt}` : "",
         ].filter(Boolean).join("\n")))
         .setButtonAccessory(
           new ButtonBuilder()
@@ -795,8 +890,8 @@ function buildAdvancedConfigModal(config = createDefaultAntiteamConfig()) {
       new ActionRowBuilder().addComponents(
         new TextInputBuilder()
           .setCustomId("close_minutes")
-          .setLabel("Автозакрытие без движения, минуты")
-          .setPlaceholder("120")
+          .setLabel("Автозакрытие обычных миссий, минуты")
+          .setPlaceholder("120; клан-вар не закрывается")
           .setStyle(TextInputStyle.Short)
           .setRequired(false)
           .setMaxLength(6)
@@ -1075,20 +1170,26 @@ function normalizeHelperIdSet(values = []) {
     .filter(Boolean));
 }
 
-function didHelperArrive(helper = {}) {
-  return helper?.arrived !== false;
+function didHelperArrive(helper = {}, options = {}) {
+  const confirmedHelperIds = options.confirmedHelperIds instanceof Set
+    ? options.confirmedHelperIds
+    : normalizeHelperIdSet(options.confirmedHelperIds);
+  const userId = cleanString(helper.userId, 80);
+  if (confirmedHelperIds.size && userId) return confirmedHelperIds.has(userId);
+  return helper?.arrived === true;
 }
 
 function formatHelpersBlock(ticket = {}, options = {}) {
   const helpers = Object.values(ticket.helpers || {})
     .sort((left, right) => String(left.respondedAt || "").localeCompare(String(right.respondedAt || "")) || String(left.userId || "").localeCompare(String(right.userId || "")));
-  const confirmed = helpers.filter((helper) => didHelperArrive(helper));
+  const confirmedHelperIds = normalizeHelperIdSet(ticket.closeSummary?.confirmedHelperIds);
+  const confirmed = helpers.filter((helper) => didHelperArrive(helper, { confirmedHelperIds }));
   const apiPresentIds = normalizeHelperIdSet(options.apiPresentHelperIds);
   const apiPresentCount = helpers.filter((helper) => apiPresentIds.has(cleanString(helper.userId, 80))).length;
   const isClosed = ticket.status === "closed";
   if (!helpers.length) return "Пока никто не отозвался.";
   const helperLine = helpers.slice(0, 8)
-    .map((helper) => isClosed ? `${didHelperArrive(helper) ? "✅" : "❌"} <@${helper.userId}>` : `<@${helper.userId}>`)
+    .map((helper) => isClosed ? `${didHelperArrive(helper, { confirmedHelperIds }) ? "✅" : "❌"} <@${helper.userId}>` : `<@${helper.userId}>`)
     .join(" • ");
   const overflow = helpers.length > 8 ? ` +${helpers.length - 8}` : "";
   const responseLine = isClosed
@@ -1174,8 +1275,9 @@ function ticketButtonId(action, ticketId, extra = "") {
 
 function buildThreadPanelPayload(ticket = {}, config = createDefaultAntiteamConfig()) {
   const isClosed = ticket.status === "closed";
-  return {
-    components: [new ActionRowBuilder().addComponents(
+  const autoCloseMinutes = Math.max(1, Number.parseInt(config?.missionAutoCloseMinutes, 10) || 120);
+  const autoCloseEnabled = ticket.autoCloseEnabled !== false;
+  const components = [new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId(ticketButtonId("help", ticket.id))
       .setLabel("🙋 Помочь")
@@ -1201,7 +1303,22 @@ function buildThreadPanelPayload(ticket = {}, config = createDefaultAntiteamConf
       .setLabel(isClosed ? "✅ Закрыто" : "✅ Завершить")
       .setStyle(ButtonStyle.Success)
       .setDisabled(isClosed)
-    )],
+  )];
+
+  if (ticket.kind !== "clan") {
+    components.push(
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(ticketButtonId("toggle_auto_close", ticket.id))
+          .setLabel(autoCloseEnabled ? `⏱ Закрывать через ${autoCloseMinutes} мин` : "⏸ Не закрывать автоматически")
+          .setStyle(autoCloseEnabled ? ButtonStyle.Success : ButtonStyle.Secondary)
+          .setDisabled(isClosed)
+      )
+    );
+  }
+
+  return {
+    components,
   };
 }
 
@@ -1333,7 +1450,7 @@ function buildCloseReviewPayload(ticket = {}, page = 0) {
     .addTextDisplayComponents(
       new TextDisplayBuilder().setContent("# Завершение антитима"),
       new TextDisplayBuilder().setContent(helpers.length
-        ? "Выбери по каждому helper-у: кто реально пришёл, а кто не пришёл. Даже если помогал мало, ставь честно."
+        ? "Зелёная кнопка = helper пришёл. Серая кнопка = helper не пришёл. Отметь тех, кто реально пришёл: неотмеченные helper-ы не получат очки помощи и роли."
         : "Пока никто не получал ссылки помощи. Можно закрыть без отметок."),
       new TextDisplayBuilder().setContent(`Страница **${currentPage + 1}/${totalPages}** • helper-ов: **${helpers.length}**`)
     );
@@ -1394,6 +1511,7 @@ module.exports = {
   buildPhotoRequestPayload,
   buildReportModal,
   buildRobloxConfirmPayload,
+  buildSupportLeaderboardPayload,
   buildRobloxMissingPayload,
   buildRobloxUsernameModal,
   buildStartPanelPayload,

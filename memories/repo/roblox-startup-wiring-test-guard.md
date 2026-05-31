@@ -1,0 +1,3 @@
+- Roblox startup scheduling ownership is split: concrete closures live in welcome-bot.js, while periodic descriptor assembly lives in src/runtime/client-ready-core.js.
+- tests/roblox-startup-wiring.test.js should assert local injection seams inside specific welcome-bot closures, not broad whole-file coincidences.
+- node:assert/strict assert.match accepts only source, regexp, message; passing a second RegExp as the third argument silently turns the intended check into a non-check.

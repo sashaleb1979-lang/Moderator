@@ -1,0 +1,4 @@
+- Profile Kills live rating is owned by src/profile/model.js buildRollingKillsRatingAxis.
+- Live Kills uses rolling last 7 days from dated approved proof windows; fixed weekly rollups are archive/history only.
+- S+ is the rolling 7d leader plus anyone at >=90% of that leader; lifetime approved kills may add up to +20% but cannot open S+ below the 90% 7d threshold.
+- Keep old lifetime-rank, JJS-efficiency, and 6 kill-day pace calculations out of the live Kills axis.

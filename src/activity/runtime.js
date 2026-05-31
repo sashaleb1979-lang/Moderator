@@ -310,16 +310,6 @@ function resolveActivityRoleTiming({ currentTime, joinedAt, config = {}, returni
   const joinedAtMs = Date.parse(joinedAt);
   const daysSinceGuildJoin = Math.max(0, (currentTimeMs - joinedAtMs) / DAY_MS);
 
-  if (returningMember) {
-    return {
-      guildJoinedAt: joinedAt,
-      daysSinceGuildJoin: Number(daysSinceGuildJoin.toFixed(2)),
-      roleEligibilityStatus: "eligible",
-      roleEligibleForActivityRole: true,
-      activityScoreMultiplier: 1,
-    };
-  }
-
   if (daysSinceGuildJoin < roleEligibilityMinMemberDays) {
     return {
       guildJoinedAt: joinedAt,
@@ -2079,6 +2069,7 @@ module.exports = {
   recordActivityMemberLeave,
   recordActivityMessage,
   recordActivityVoiceState,
+  resolveDesiredActivityRoleKey,
   resolveActivityPriorServerTrace,
   resumeActivityRuntime,
 };

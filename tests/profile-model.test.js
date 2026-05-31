@@ -423,11 +423,11 @@ test("profile read-model composes derived sections, links, and verification fact
   assert.equal(readModel.sections.overview.find((section) => section.title === "Main Core"), undefined);
   assert.doesNotMatch(readModel.sections.overview.map((section) => section.title).join("\n"), /📚 Мейны|Мейны и гайды/);
   assert.deepEqual(readModel.sections.progress.slice(0, 6).map((section) => section.title), ["⚔️ Сейчас", "📈 Темп", "🧾 Proof", "🗓️ Недели", "💡 До апа", "🏆 Прайм и рекорды"]);
-  assert.match(readModel.sections.progress[0].lines.join("\n"), /Kills 120 .* #2\/2 .* 37[,.]5% серверных kills/);
+  assert.match(readModel.sections.progress[0].lines.join("\n"), /Скользящие 7д[\s\S]*За всё время 120 kills .* за всё время #2\/2 .* 37[,.]5% серверных kills/);
   assert.match(readModel.sections.progress[1].lines.join("\n"), /Последние окна: \+20 · \+20/);
   assert.match(readModel.sections.progress[2].lines.join("\n"), /Proof отстал .* учёт kills 10%/);
   assert.match(readModel.sections.progress[2].lines.join("\n"), /После proof: 80,3 ч JJS/);
-  assert.match(readModel.sections.progress[4].lines.join("\n"), /Kills #1: \+81 kills|До tier/);
+  assert.match(readModel.sections.progress[4].lines.join("\n"), /Kills S\+|До tier|удержать 90%/);
   assert.doesNotMatch(readModel.sections.progress.map((section) => [section.title, ...section.lines].join("\n")).join("\n"), /ELO|elo|📊 ELO и Tierlist|Последний рост по kills|История approved ростов|Заявки и проверки|Практический прогресс/);
   assert.equal(readModel.sections.activity[0].title, "📊 Итог активности");
   assert.match(readModel.sections.activity[0].lines.join("\n"), /JJS 7 ч\/30д .* Roblox готов/);
@@ -1016,7 +1016,7 @@ test("profile rating applies raw voice penalty and compact detail line", () => {
   assert.match(detailText, /вклад/);
 });
 
-test("profile rating caps and hides stale kills correctly", () => {
+test("profile rating gates Kills on rolling 7d proof and applies freshness debuff", () => {
   const missingKills = buildProfileReadModel({
     now: "2026-05-16T12:00:00.000Z",
     guildId: "guild-1",
@@ -1040,7 +1040,7 @@ test("profile rating caps and hides stale kills correctly", () => {
   assert.match(missingKillsAxis.cardLines.join("\n"), /Нужен approved proof/);
   assert.doesNotMatch(missingKillsAxis.cardLines.join("\n"), /Approved 0/);
 
-  const noAverage = buildProfileReadModel({
+  const noRollingWindow = buildProfileReadModel({
     now: "2026-05-16T12:00:00.000Z",
     guildId: "guild-1",
     userId: "killer",
@@ -1055,10 +1055,9 @@ test("profile rating caps and hides stale kills correctly", () => {
       { userId: "fifth", approvedKills: 600 },
     ],
   });
-  const noAverageKills = noAverage.profileRatingAxes.find((axis) => axis.axisName === "kills");
-  assert.ok(noAverageKills.score <= 86);
-  assert.doesNotMatch(noAverageKills.grade, /^S/);
-  assert.match(noAverageKills.detailLine, /нет kills\/day/);
+  const noRollingKills = noRollingWindow.profileRatingAxes.find((axis) => axis.axisName === "kills");
+  assert.equal(noRollingKills.isLocked, true);
+  assert.match(noRollingKills.lockReason, /две approved-проверки/);
 
   const stale = buildProfileReadModel({
     now: "2026-05-16T12:00:00.000Z",
@@ -1066,26 +1065,29 @@ test("profile rating caps and hides stale kills correctly", () => {
     userId: "killer",
     targetDisplayName: "Killer",
     isSelf: true,
-    profile: { approvedKills: 1000, summary: { onboarding: { approvedKills: 1000 } } },
-    approvedEntries: [
-      { userId: "killer", approvedKills: 1000 },
-      { userId: "other", approvedKills: 900 },
-    ],
-    recentKillChanges: [
-      {
-        userId: "killer",
-        from: 500,
-        to: 1000,
-        fromAt: Date.parse("2026-04-10T00:00:00.000Z"),
-        toAt: Date.parse("2026-04-20T00:00:00.000Z"),
+    profile: {
+      approvedKills: 1210,
+      summary: { onboarding: { approvedKills: 1210 } },
+      domains: {
+        progress: {
+          proofWindows: [
+            { approvedKills: 1000, reviewedAt: "2026-05-08T00:00:00.000Z" },
+            { approvedKills: 1210, reviewedAt: "2026-05-15T00:00:00.000Z" },
+          ],
+        },
       },
+    },
+    approvedEntries: [
+      { userId: "killer", approvedKills: 1210 },
+      { userId: "other", approvedKills: 900 },
     ],
   });
   const staleKills = stale.profileRatingAxes.find((axis) => axis.axisName === "kills");
-  assert.equal(staleKills.isLocked, true);
-  assert.equal(staleKills.hiddenBecauseTooOld, true);
-  assert.equal(staleKills.lockedPenaltyPercent, 40);
-  assert.match(staleKills.cardLines.join("\n"), /старше 2 недель/);
+  assert.equal(staleKills.isLocked, false);
+  assert.equal(staleKills.freshnessDebuffPercent, 10);
+  assert.equal(staleKills.sPlusEligible, true);
+  assert.ok(staleKills.score < 97);
+  assert.match(staleKills.cardLines.join("\n"), /свежесть -10%/);
 
   const outlier = buildProfileReadModel({
     now: "2026-05-16T12:00:00.000Z",
@@ -1116,12 +1118,13 @@ test("profile rating caps and hides stale kills correctly", () => {
     ],
   });
   const outlierKills = outlier.profileRatingAxes.find((axis) => axis.axisName === "kills");
-  assert.ok(outlierKills.ignoredOutlierWindows.length > 0);
-  assert.match(outlierKills.detailLine, /480\/день не учтено/);
-  assert.match(outlier.ratingDetailCards.kills.blocks.map((block) => block.lines.join("\n")).join("\n"), /480\/день[\s\S]*не учтено: выше лимита 400/);
+  assert.equal(outlierKills.ignoredOutlierWindows.length, 0);
+  assert.ok(outlierKills.earnedKills7d >= 640);
+  assert.match(outlierKills.detailLine, /лидер/);
+  assert.match(outlier.ratingDetailCards.kills.blocks.map((block) => block.lines.join("\n")).join("\n"), /скользящие 7д|скользящих 7д/);
 });
 
-test("profile rating explains all three packs and uses proof windows for Kills growth", () => {
+test("profile rating explains all three packs and uses proof windows for rolling Kills race", () => {
   const readModel = buildProfileReadModel({
     now: "2026-05-16T12:00:00.000Z",
     guildId: "guild-1",
@@ -1152,8 +1155,8 @@ test("profile rating explains all three packs and uses proof windows for Kills g
         progress: {
           proofWindows: [
             { approvedKills: 6500, reviewedAt: "2026-05-01T00:00:00.000Z" },
-            { approvedKills: 6620, reviewedAt: "2026-05-04T00:00:00.000Z" },
-            { approvedKills: 6800, reviewedAt: "2026-05-10T00:00:00.000Z" },
+            { approvedKills: 6560, reviewedAt: "2026-05-09T12:00:00.000Z" },
+            { approvedKills: 6776, reviewedAt: "2026-05-16T12:00:00.000Z" },
           ],
         },
         seasonArchive: {
@@ -1176,6 +1179,19 @@ test("profile rating explains all three packs and uses proof windows for Kills g
           roblox: { jjsMinutes7d: 70.3 * 60 },
         },
       },
+      {
+        userId: "weekly-leader",
+        displayName: "Weekly Leader",
+        approvedKills: 5200,
+        domains: {
+          progress: {
+            proofWindows: [
+              { approvedKills: 5000, reviewedAt: "2026-05-09T12:00:00.000Z" },
+              { approvedKills: 5240, reviewedAt: "2026-05-16T12:00:00.000Z" },
+            ],
+          },
+        },
+      },
     ],
   });
 
@@ -1187,21 +1203,26 @@ test("profile rating explains all three packs and uses proof windows for Kills g
   const kills = readModel.profileRatingAxes.find((axis) => axis.axisName === "kills");
   assert.equal(kills.proofWindowCount, 3);
   assert.equal(kills.recentChangeCount, 0);
-  assert.equal(kills.killDayCoverage, 6);
-  assert.equal(Math.round(kills.averageKillsPerDay), 30);
-  assert.match(kills.cardLines.join("\n"), /30\/день/);
-  assert.match(kills.detailLine, /proof 2/);
+  assert.equal(kills.killDayCoverage, 7);
+  assert.equal(Math.round(kills.earnedKills7d), 216);
+  assert.equal(Math.round(kills.weeklyLeaderKills7d), 240);
+  assert.equal(Math.round(kills.sPlusThresholdKills7d), 216);
+  assert.equal(kills.sPlusEligible, true);
+  assert.equal(kills.grade, "S+");
+  assert.match(kills.cardLines.join("\n"), /7д \+216/);
+  assert.match(kills.detailLine, /доля 90/);
   assert.equal(kills.allKillWindows.length, 2);
 
   const killsDetail = readModel.ratingDetailCards.kills.blocks.map((block) => [block.title, ...block.lines].join("\n")).join("\n");
+  assert.match(killsDetail, /скользящие 7д|скользящих 7д/);
+  assert.match(killsDetail, /90% от лидера/);
   assert.match(killsDetail, /Использованы 3 proof-снимка и 0 recent-изменений/);
-  assert.match(killsDetail, /6\s?620 → 6\s?800|6620 → 6800/);
-  assert.match(killsDetail, /учтено/);
-  assert.match(killsDetail, /Игрок выше: GojoMain/);
-  assert.match(killsDetail, /Покрыто 6\/6 kill-days/);
-  assert.match(killsDetail, /До следующей буквы/);
+  assert.match(killsDetail, /6\s?560 → 6\s?776|6560 → 6776/);
+  assert.match(killsDetail, /скользящие 7д вошло|окно полностью пересекает скользящие 7д/);
+  assert.match(killsDetail, /Weekly Leader/);
+  assert.match(killsDetail, /До следующей буквы|Следующая буква уже закрыта/);
   assert.match(killsDetail, /До минимального S\+/);
-  assert.match(killsDetail, /старое окно/);
+  assert.match(killsDetail, /старое окно|Фиксированные недели/);
 
   const activityDetail = readModel.ratingDetailCards.activity.blocks.map((block) => [block.title, ...block.lines].join("\n")).join("\n");
   assert.match(activityDetail, /Период оценки: последние 7 дней/);
@@ -1376,7 +1397,7 @@ test("profile read-model keeps unapproved onboarding state null even when proof 
   const progressText = readModel.sections.progress.map((section) => section.lines.join("\n")).join("\n");
 
   assert.equal(readModel.sections.progress.find((section) => section.title === "🏅 Вклад"), undefined);
-  assert.match(readModel.sections.progress[0].lines.join("\n"), /Kills ждут proof/);
+  assert.match(readModel.sections.progress[0].lines.join("\n"), /approved proof|Lifetime ждёт proof/);
   assert.equal(readModel.selfActionState.killsLabel, "Добавить kills");
   assert.match(progressText, /Proof|13 ч JJS|approved-срез/);
   assert.doesNotMatch(progressText, /Зарегистрировано: 0 kills/);
@@ -1431,7 +1452,7 @@ test("profile read-model prepends the self-progress block before generic progres
   });
 
   assert.deepEqual(readModel.sections.progress.slice(0, 6).map((section) => section.title), ["⚔️ Сейчас", "📈 Темп", "🧾 Proof", "🗓️ Недели", "💡 До апа", "🏆 Прайм и рекорды"]);
-  assert.match(readModel.sections.progress[0].lines.join("\n"), /Kills 4.?300/);
+  assert.match(readModel.sections.progress[0].lines.join("\n"), /За всё время 4.?300 kills/);
   assert.match(readModel.sections.progress[4].lines.join("\n"), /До tier 4: \+4.?700 kills/);
   assert.match(readModel.sections.progress[4].lines.join("\n"), /До milestone 20k: \+15.?700 kills/);
   assert.doesNotMatch(readModel.sections.progress.map((section) => section.title).join("\n"), /Практический прогресс|🏅 Вклад/);

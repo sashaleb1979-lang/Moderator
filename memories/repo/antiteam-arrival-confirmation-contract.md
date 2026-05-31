@@ -1,0 +1,3 @@
+- Antiteam helper arrival is opt-in: helper records start with arrived=false until a close-review toggle marks them arrived.
+- Manual close and idle auto-close write closeSummary.confirmedHelperIds from helpers where arrived===true only.
+- Closed ticket helper result rendering should prefer closeSummary.confirmedHelperIds as the final truth so legacy tickets without explicit helper.arrived flags still render correctly.

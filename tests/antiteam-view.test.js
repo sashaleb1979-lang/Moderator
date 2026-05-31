@@ -7,6 +7,7 @@ const assert = require("node:assert/strict");
 const { MessageFlags } = require("discord.js");
 const {
   ANTITEAM_CUSTOM_IDS,
+  buildAdvancedConfigModal,
   buildCloseReviewPayload,
   buildHelperRewardRolesModal,
   buildHelperStatsPayload,
@@ -20,6 +21,7 @@ const {
   buildRobloxUsernameModal,
   buildStartPanelPayload,
   buildStartGuidePayload,
+  buildSupportLeaderboardPayload,
   buildSupportProgressPayload,
   buildThreadName,
   buildThreadPanelPayload,
@@ -69,9 +71,12 @@ test("start panel is Components V2 and exposes submit button", () => {
   assert.doesNotMatch(payloadJson(payload), /Батальён:/);
   assert.match(payloadJson(payload), /Вступить в батальён/);
   assert.match(payloadJson(payload), new RegExp(ANTITEAM_CUSTOM_IDS.joinBattalion.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-  assert.ok(payloadJson(payload).indexOf(ANTITEAM_CUSTOM_IDS.progress) < payloadJson(payload).indexOf(ANTITEAM_CUSTOM_IDS.guide));
+  assert.ok(payloadJson(payload).indexOf(ANTITEAM_CUSTOM_IDS.progress) < payloadJson(payload).indexOf(ANTITEAM_CUSTOM_IDS.leaders));
+  assert.ok(payloadJson(payload).indexOf(ANTITEAM_CUSTOM_IDS.leaders) < payloadJson(payload).indexOf(ANTITEAM_CUSTOM_IDS.guide));
   assert.match(payloadJson(payload), /Мой прогресс/);
+  assert.match(payloadJson(payload), /Лидеры/);
   assert.match(payloadJson(payload), new RegExp(ANTITEAM_CUSTOM_IDS.guide.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  assert.match(payloadJson(payload), new RegExp(ANTITEAM_CUSTOM_IDS.leaders.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   assert.match(payloadJson(payload), new RegExp(ANTITEAM_CUSTOM_IDS.open.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 });
 
@@ -106,6 +111,44 @@ test("support progress payload renders personal level card attachment", () => {
   assert.match(json, /Саппорт Ⅱ ур\./);
   assert.match(json, /До Саппорт Ⅲ ур\.: 3 помощи/);
   assert.match(json, /attachment:\/\/progress\.png/);
+});
+
+test("support leaderboard payload renders top helpers and viewer position", () => {
+  const helpers = {};
+  for (let index = 1; index <= 11; index += 1) {
+    helpers[`helper-${index}`] = {
+      responded: 20 - index,
+      linkGranted: 15 - index,
+      confirmedArrived: 12 - index,
+      lastHelpedAt: `2026-05-16T10:${String(index).padStart(2, "0")}:00.000Z`,
+    };
+  }
+  helpers["helper-zero"] = {
+    responded: 99,
+    linkGranted: 99,
+    confirmedArrived: 0,
+    lastHelpedAt: "2026-05-16T11:00:00.000Z",
+  };
+  const state = normalizeAntiteamState({
+    config: {
+      panel: { guideButtonLabel: "ℹ️ Инфо" },
+    },
+    stats: { helpers },
+  });
+  const payload = buildSupportLeaderboardPayload(state, "helper-11");
+  const json = payloadJson(payload);
+
+  assert.equal(payload.flags, MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral);
+  assert.match(json, /Лидеры батальона/);
+  assert.match(json, /🥇 <@helper-1>/);
+  assert.match(json, /🥈 <@helper-2>/);
+  assert.match(json, /🥉 <@helper-3>/);
+  assert.match(json, /Твоё место: \*\*#11\*\*/);
+  assert.match(json, /#11 <@helper-11>/);
+  assert.match(json, /Показан топ-10/);
+  assert.doesNotMatch(json, /helper-zero/);
+  assert.match(json, /Мой прогресс/);
+  assert.match(json, /ℹ️ Инфо/);
 });
 
 test("start guide and panel text modal expose polished setup copy", () => {
@@ -249,6 +292,7 @@ test("public ticket is the main compact post and thread panel is buttons only", 
   assert.match(threadJson, /⚠️ Пожаловаться/);
   assert.match(threadJson, /📈 Повысить/);
   assert.match(threadJson, /✅ Завершить/);
+  assert.match(threadJson, /⏱ Закрывать через 120 мин/);
   assert.doesNotMatch(threadJson, /Сбор помощи|Контекст|Маршрут|Бить A\/B/);
 });
 
@@ -330,6 +374,7 @@ test("public ticket and thread panel disable actions after close", () => {
   assert.doesNotMatch(payloadJson(buildTicketPublicPayload(ticket)), /Прийти на помощь/);
   assert.match(payloadJson(buildThreadPanelPayload(ticket)), /✅ Закрыто/);
   assert.match(payloadJson(buildThreadPanelPayload(ticket)), /🔒 Вход без др: нет/);
+  assert.match(payloadJson(buildThreadPanelPayload(ticket)), /⏱ Закрывать через 120 мин/);
   assert.match(payloadJson(buildThreadPanelPayload(ticket)), /"disabled":true/);
   assert.equal(ticketButtonId("help", "ticket-1"), "at:help:ticket-1");
 });
@@ -421,6 +466,35 @@ test("closed public ticket shows helper result markers", () => {
   assert.match(json, /### Помощники/);
   assert.match(json, /✅ <@helper-1> • ❌ <@helper-2>/);
   assert.match(json, /Итог: done/);
+});
+
+test("closed public ticket falls back to close summary confirmations when helper arrival flags are absent", () => {
+  const payload = buildTicketPublicPayload({
+    id: "ticket-1",
+    kind: "standard",
+    status: "closed",
+    createdBy: "author-1",
+    roblox: { username: "Anchor", userId: "101" },
+    level: "medium",
+    count: "2-4",
+    description: "Бить A/B, тимятся у центра.",
+    helpers: {
+      "helper-1": {
+        userId: "helper-1",
+        discordTag: "Helper 1",
+        respondedAt: "2026-05-16T10:01:00.000Z",
+      },
+      "helper-2": {
+        userId: "helper-2",
+        discordTag: "Helper 2",
+        respondedAt: "2026-05-16T10:02:00.000Z",
+      },
+    },
+    closeSummary: { text: "done", confirmedHelperIds: ["helper-1"] },
+  });
+  const json = payloadJson(payload);
+
+  assert.match(json, /✅ <@helper-1> • ❌ <@helper-2>/);
 });
 
 test("clan public ticket without photo does not touch photo attachment name", () => {
@@ -532,7 +606,8 @@ test("moderator panel renders setup controls", () => {
   assert.match(json, /Редактировать старт/);
   assert.match(json, /Пинг-система/);
   assert.match(json, /Roblox\/тайминги/);
-  assert.match(json, /Автозакрытие миссии/);
+  assert.match(json, /Автозакрытие обычных миссий/);
+  assert.match(json, /Клан-вар: без автооффа/);
   assert.match(json, /buffer-edit роли <@&role-2>/);
   assert.match(json, /Edit-test роли: <@&role-2>/);
   assert.match(json, /Статистика помощи/);
@@ -591,6 +666,14 @@ test("ping config modal exposes the four ping systems", () => {
   assert.match(json, /role-5\\nrole-6/);
 });
 
+test("advanced config modal clarifies clan war auto-close exemption", () => {
+  const json = JSON.stringify(buildAdvancedConfigModal({ missionAutoCloseMinutes: 180 }).toJSON());
+
+  assert.match(json, /Автозакрытие обычных миссий, минуты/);
+  assert.match(json, /клан-вар не закрывается/);
+  assert.match(json, /"value":"180"/);
+});
+
 test("helper stats payload supports per-helper delete and full clear confirmation", () => {
   const state = normalizeAntiteamState({
     config: {
@@ -602,6 +685,7 @@ test("helper stats payload supports per-helper delete and full clear confirmatio
     stats: {
       helpers: {
         "helper-1": { responded: 3, linkGranted: 2, confirmedArrived: 1, lastHelpedAt: "2026-05-16T10:00:00.000Z" },
+        "helper-2": { responded: 2, linkGranted: 1, confirmedArrived: 0, lastHelpedAt: "2026-05-16T10:05:00.000Z" },
       },
     },
   });
@@ -611,6 +695,7 @@ test("helper stats payload supports per-helper delete and full clear confirmatio
 
   assert.equal(payload.flags, MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral);
   assert.match(json, /<@helper-1>/);
+  assert.match(json, /<@helper-2>/);
   assert.match(json, /очков: \*\*1\*\*/);
   assert.match(json, /Очки помощи: \*\*1\*\*/);
   assert.match(json, /Роли за очки помощи/);
@@ -640,9 +725,9 @@ test("close review payload paginates helper arrival toggles", () => {
   const secondPage = payloadJson(buildCloseReviewPayload({ id: "ticket-1", helpers }, 1));
 
   assert.match(firstPage, /Страница/);
-  assert.match(firstPage, /кто реально пришёл, а кто не пришёл/);
+  assert.match(firstPage, /Зелёная кнопка = helper пришёл/);
   assert.match(firstPage, /Helper 0/);
-  assert.match(firstPage, /Пришёл • Helper 0/);
+  assert.match(firstPage, /Не пришёл • Helper 0/);
   assert.doesNotMatch(firstPage, /Helper 11/);
   assert.match(firstPage, /Вперёд/);
   assert.match(secondPage, /Helper 11/);

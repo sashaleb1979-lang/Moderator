@@ -1476,6 +1476,90 @@ test("buildActivityRoleAssignmentPlan keeps newcomer role for eligible members w
   assert.equal(plan.desiredRoleId, "role-newcomer");
 });
 
+test("buildActivityRoleAssignmentPlan promotes manually removed newcomer to the current scored tier", () => {
+  const db = {
+    profiles: {
+      newcomer: {
+        userId: "newcomer",
+        domains: {
+          activity: {
+            activityScore: 24,
+            baseActivityScore: 24,
+            desiredActivityRoleKey: null,
+            appliedActivityRoleKey: "newcomer",
+            roleEligibilityStatus: "gated_new_member",
+            roleEligibleForActivityRole: false,
+            daysSinceGuildJoin: 1.5,
+          },
+        },
+      },
+    },
+  };
+
+  updateActivityConfig(db, {
+    activityRoleIds: {
+      newcomer: "role-newcomer",
+      weak: "role-weak",
+      dead: "role-dead",
+    },
+  });
+
+  const plan = buildActivityRoleAssignmentPlan({
+    db,
+    userId: "newcomer",
+    memberRoleIds: [],
+  });
+
+  assert.equal(plan.shouldApply, true);
+  assert.equal(plan.newcomerSuppressed, true);
+  assert.equal(plan.desiredRoleKey, "weak");
+  assert.equal(plan.desiredRoleId, "role-weak");
+  assert.deepEqual(plan.addRoleIds, ["role-weak"]);
+  assert.deepEqual(plan.removeRoleIds, []);
+});
+
+test("buildActivityRoleAssignmentPlan keeps manually suppressed newcomer on the scored tier across later syncs", () => {
+  const db = {
+    profiles: {
+      newcomer: {
+        userId: "newcomer",
+        domains: {
+          activity: {
+            activityScore: 24,
+            baseActivityScore: 24,
+            desiredActivityRoleKey: null,
+            appliedActivityRoleKey: "weak",
+            newcomerRoleSuppressedAt: "2026-05-09T12:00:00.000Z",
+            roleEligibilityStatus: "gated_new_member",
+            roleEligibleForActivityRole: false,
+            daysSinceGuildJoin: 1.5,
+          },
+        },
+      },
+    },
+  };
+
+  updateActivityConfig(db, {
+    activityRoleIds: {
+      newcomer: "role-newcomer",
+      weak: "role-weak",
+      dead: "role-dead",
+    },
+  });
+
+  const plan = buildActivityRoleAssignmentPlan({
+    db,
+    userId: "newcomer",
+    memberRoleIds: ["role-weak"],
+  });
+
+  assert.equal(plan.shouldApply, false);
+  assert.equal(plan.skipReason, "unchanged");
+  assert.equal(plan.newcomerSuppressed, true);
+  assert.equal(plan.desiredRoleKey, "weak");
+  assert.equal(plan.desiredRoleId, "role-weak");
+});
+
 test("buildActivityRoleAssignmentPlan removes newcomer role after the first scored rank was already earned", () => {
   const db = {
     profiles: {
@@ -1551,7 +1635,7 @@ test("buildActivityRoleAssignmentPlan keeps join_age_unknown newcomer-safe-off",
   assert.deepEqual(plan.removeRoleIds, ["role-newcomer"]);
 });
 
-test("runActivityMemberJoinRoleSync gives returning members the scored role instead of newcomer", async () => {
+test("runActivityMemberJoinRoleSync keeps newcomer for recent rejoiners while newcomer is still present", async () => {
   const db = {
     profiles: {
       returning: {
@@ -1597,34 +1681,22 @@ test("runActivityMemberJoinRoleSync gives returning members the scored role inst
   });
 
   assert.equal(result.rebuiltUserCount, 1);
-  assert.equal(result.roleAssignment.appliedCount, 1);
-  assert.deepEqual(roleChanges, [
-    {
-      userId: "returning",
-      desiredRoleKey: "dead",
-      desiredRoleId: "role-dead",
-      addRoleIds: ["role-dead"],
-      removeRoleIds: ["role-newcomer"],
-    },
-  ]);
+  assert.equal(result.roleAssignment.appliedCount, 0);
+  assert.deepEqual(roleChanges, []);
   assert.equal(db.profiles.returning.domains.activity.returningMember, true);
-  assert.equal(db.profiles.returning.domains.activity.roleEligibleForActivityRole, true);
-  assert.equal(db.profiles.returning.domains.activity.desiredActivityRoleKey, "dead");
-  assert.equal(db.profiles.returning.domains.activity.appliedActivityRoleKey, "dead");
+  assert.equal(db.profiles.returning.domains.activity.roleEligibleForActivityRole, false);
+  assert.equal(db.profiles.returning.domains.activity.desiredActivityRoleKey, null);
+  assert.equal(db.profiles.returning.domains.activity.appliedActivityRoleKey, "newcomer");
 });
 
-test("runActivityMemberJoinRoleSync keeps fresh profile-only members in newcomer", async () => {
+test("runActivityMemberJoinRoleSync promotes manually removed newcomer to the scored tier", async () => {
   const db = {
     profiles: {
-      fresh: {
-        userId: "fresh",
+      moderated: {
+        userId: "moderated",
         domains: {
           activity: {
-            returningMember: true,
-            appliedActivityRoleKey: "dead",
-            firstObservedGuildJoinAt: "2026-05-09T12:00:00.000Z",
-            lastObservedGuildJoinAt: "2026-05-09T12:00:00.000Z",
-            guildJoinCount: 2,
+            appliedActivityRoleKey: "newcomer",
           },
         },
       },
@@ -1641,8 +1713,8 @@ test("runActivityMemberJoinRoleSync keeps fresh profile-only members in newcomer
   const roleChanges = [];
   const result = await runActivityMemberJoinRoleSync({
     db,
-    userId: "fresh",
-    memberRoleIds: ["role-dead"],
+    userId: "moderated",
+    memberRoleIds: [],
     memberActivityMeta: {
       joinedAt: "2026-05-09T12:00:00.000Z",
       returningMember: true,
@@ -1663,31 +1735,26 @@ test("runActivityMemberJoinRoleSync keeps fresh profile-only members in newcomer
   assert.equal(result.roleAssignment.appliedCount, 1);
   assert.deepEqual(roleChanges, [
     {
-      userId: "fresh",
-      desiredRoleKey: "newcomer",
-      desiredRoleId: "role-newcomer",
-      addRoleIds: ["role-newcomer"],
-      removeRoleIds: ["role-dead"],
+      userId: "moderated",
+      desiredRoleKey: "dead",
+      desiredRoleId: "role-dead",
+      addRoleIds: ["role-dead"],
+      removeRoleIds: [],
     },
   ]);
-  assert.equal(db.profiles.fresh.domains.activity.returningMember, false);
-  assert.equal(db.profiles.fresh.domains.activity.guildJoinCount, 1);
-  assert.equal(db.profiles.fresh.domains.activity.roleEligibilityStatus, "gated_new_member");
-  assert.equal(db.profiles.fresh.domains.activity.appliedActivityRoleKey, "newcomer");
+  assert.equal(db.profiles.moderated.domains.activity.roleEligibilityStatus, "gated_new_member");
+  assert.equal(db.profiles.moderated.domains.activity.appliedActivityRoleKey, "dead");
+  assert.ok(db.profiles.moderated.domains.activity.newcomerRoleSuppressedAt);
 });
 
-test("repairFreshNewcomerActivityRoles restores newcomer only for fresh members", async () => {
+test("repairFreshNewcomerActivityRoles restores newcomer for every recent member inside the newcomer window", async () => {
   const db = {
     profiles: {
       fresh: {
         userId: "fresh",
         domains: {
           activity: {
-            returningMember: true,
             appliedActivityRoleKey: "dead",
-            firstObservedGuildJoinAt: "2026-05-09T12:00:00.000Z",
-            lastObservedGuildJoinAt: "2026-05-09T12:00:00.000Z",
-            guildJoinCount: 2,
           },
         },
       },
@@ -1696,7 +1763,6 @@ test("repairFreshNewcomerActivityRoles restores newcomer only for fresh members"
         domains: {
           activity: {
             lastGuildLeaveAt: "2026-05-08T12:00:00.000Z",
-            lastObservedGuildJoinAt: "2026-05-01T12:00:00.000Z",
             appliedActivityRoleKey: "dead",
           },
         },
@@ -1733,8 +1799,8 @@ test("repairFreshNewcomerActivityRoles restores newcomer only for fresh members"
     now: "2026-05-09T12:01:00.000Z",
   });
 
-  assert.deepEqual(result.targetUserIds, ["fresh"]);
-  assert.equal(result.skippedReasons.returning, "real_returning_member");
+  assert.deepEqual(result.targetUserIds, ["fresh", "returning"]);
+  assert.deepEqual(result.skippedReasons, {});
   assert.deepEqual(roleChanges, [
     {
       userId: "fresh",
@@ -1743,10 +1809,60 @@ test("repairFreshNewcomerActivityRoles restores newcomer only for fresh members"
       addRoleIds: ["role-newcomer"],
       removeRoleIds: ["role-dead"],
     },
+    {
+      userId: "returning",
+      desiredRoleKey: "newcomer",
+      desiredRoleId: "role-newcomer",
+      addRoleIds: ["role-newcomer"],
+      removeRoleIds: ["role-dead"],
+    },
   ]);
-  assert.equal(db.profiles.fresh.domains.activity.returningMember, false);
   assert.equal(db.profiles.fresh.domains.activity.appliedActivityRoleKey, "newcomer");
-  assert.equal(db.profiles.returning.domains.activity.appliedActivityRoleKey, "dead");
+  assert.equal(db.profiles.returning.domains.activity.appliedActivityRoleKey, "newcomer");
+});
+
+test("getActivityUserInspection explains manually suppressed newcomer as a scored-tier moderation path", () => {
+  const db = {
+    profiles: {
+      newcomer: {
+        userId: "newcomer",
+        domains: {
+          activity: {
+            activityScore: 24,
+            baseActivityScore: 24,
+            appliedActivityRoleKey: "newcomer",
+            roleEligibilityStatus: "gated_new_member",
+            roleEligibleForActivityRole: false,
+            daysSinceGuildJoin: 1.5,
+          },
+        },
+      },
+    },
+  };
+
+  updateActivityConfig(db, {
+    activityRoleIds: {
+      newcomer: "role-newcomer",
+      weak: "role-weak",
+      dead: "role-dead",
+    },
+  });
+
+  const inspection = getActivityUserInspection({
+    db,
+    userId: "newcomer",
+    memberRoleIds: [],
+    resolveRoleAssignmentPlan: ({ db: nextDb, userId: nextUserId, memberRoleIds: nextMemberRoleIds }) => buildActivityRoleAssignmentPlan({
+      db: nextDb,
+      userId: nextUserId,
+      memberRoleIds: nextMemberRoleIds,
+    }),
+  });
+
+  assert.equal(inspection.roleAssignmentPlan.newcomerSuppressed, true);
+  assert.equal(inspection.roleAssignmentPlan.desiredRoleKey, "weak");
+  assert.equal(inspection.diagnosis.statusCode, "newcomer_suppressed");
+  assert.match(inspection.diagnosis.summary, /снята вручную/i);
 });
 
 test("runDailyActivityRoleSync rebuilds snapshots with member age metadata and applies boosted roles", async () => {

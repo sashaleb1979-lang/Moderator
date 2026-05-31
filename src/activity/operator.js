@@ -17,6 +17,7 @@ const {
   rebuildActivitySnapshots,
   recordActivityMessage,
   resolveActivityPriorServerTrace,
+  resolveDesiredActivityRoleKey,
 } = require("./runtime");
 const {
   ACTIVITY_CHANNEL_TYPES,
@@ -276,10 +277,6 @@ const ACTIVITY_PANEL_BUTTON_IDS = Object.freeze([
       roleEligibilityStatus = null,
       roleEligibleForActivityRole = false,
     } = {}) {
-      if (activity.returningMember === true) {
-        return false;
-      }
-
       if (isFirstActivityRankRoleKey(desiredRoleKey)) {
         return false;
       }
@@ -316,6 +313,41 @@ const ACTIVITY_PANEL_BUTTON_IDS = Object.freeze([
 
       return roleEligibleForActivityRole === true;
     }
+
+function resolveSuppressedNewcomerScoredRoleKey(activity = {}, config = {}) {
+  const candidateScores = [activity.activityScore, activity.baseActivityScore];
+  for (const candidate of candidateScores) {
+    const score = Number(candidate);
+    if (Number.isFinite(score) && score >= 0) {
+      return resolveDesiredActivityRoleKey(score, config);
+    }
+  }
+  return "dead";
+}
+
+function resolveActivityNewcomerSuppressionState({
+  activity = {},
+  newcomerRequested = false,
+  newcomerRoleId = "",
+  normalizedMemberRoleIds = [],
+} = {}) {
+  const normalizedNewcomerRoleId = cleanString(newcomerRoleId, 80) || null;
+  const newcomerRoleSuppressedAt = normalizeNullableString(activity.newcomerRoleSuppressedAt, 80);
+  const newcomerRolePresent = Boolean(
+    normalizedNewcomerRoleId && normalizedMemberRoleIds.includes(normalizedNewcomerRoleId)
+  );
+  const appliedActivityRoleKey = cleanString(activity.appliedActivityRoleKey, 80) || null;
+  const shouldStartSuppression = newcomerRequested
+    && normalizedNewcomerRoleId
+    && !newcomerRolePresent
+    && appliedActivityRoleKey === ACTIVITY_NEWCOMER_ROLE_KEY;
+
+  return {
+    newcomerSuppressed: newcomerRequested && (Boolean(newcomerRoleSuppressedAt) || shouldStartSuppression),
+    clearNewcomerRoleSuppression: Boolean(newcomerRoleSuppressedAt && newcomerRolePresent),
+    newcomerRoleSuppressedAt,
+  };
+}
 
     function formatRoleIdPreview(roleId) {
       return cleanString(roleId, 80) || "—";
@@ -962,7 +994,11 @@ function resolveActivityRolePlanSource(state, profile, userId) {
   return normalizedSnapshot || normalizedProfileMirror || {};
 }
 
-function syncAppliedActivityRoleMetadata(db, userId, { appliedActivityRoleKey, lastRoleAppliedAt }) {
+function syncAppliedActivityRoleMetadata(db, userId, {
+  appliedActivityRoleKey,
+  lastRoleAppliedAt,
+  newcomerRoleSuppressedAt,
+}) {
   const profile = ensureProfileRecord(db, userId);
   const nextProfile = clone(profile);
   nextProfile.domains ||= {};
@@ -971,9 +1007,13 @@ function syncAppliedActivityRoleMetadata(db, userId, { appliedActivityRoleKey, l
     : {};
   const normalizedAppliedActivityRoleKey = normalizeNullableString(appliedActivityRoleKey, 80);
   const normalizedLastRoleAppliedAt = normalizeIsoTimestamp(lastRoleAppliedAt, null);
+  const normalizedNewcomerRoleSuppressedAt = newcomerRoleSuppressedAt === undefined
+    ? normalizeNullableString(nextActivity.newcomerRoleSuppressedAt, 80)
+    : normalizeNullableString(newcomerRoleSuppressedAt, 80);
   const existingFirstActivityRoleGrantedAt = normalizeIsoTimestamp(nextActivity.firstActivityRoleGrantedAt, null);
   nextActivity.appliedActivityRoleKey = normalizedAppliedActivityRoleKey;
   nextActivity.lastRoleAppliedAt = normalizedLastRoleAppliedAt;
+  nextActivity.newcomerRoleSuppressedAt = normalizedNewcomerRoleSuppressedAt;
   nextActivity.firstActivityRoleGrantedAt = existingFirstActivityRoleGrantedAt
     || (isFirstActivityRankRoleKey(normalizedAppliedActivityRoleKey) ? normalizedLastRoleAppliedAt : null);
   nextProfile.domains.activity = nextActivity;
@@ -985,11 +1025,27 @@ function syncAppliedActivityRoleMetadata(db, userId, { appliedActivityRoleKey, l
       ...state.userSnapshots[userId],
       appliedActivityRoleKey: nextActivity.appliedActivityRoleKey,
       lastRoleAppliedAt: nextActivity.lastRoleAppliedAt,
+      newcomerRoleSuppressedAt: nextActivity.newcomerRoleSuppressedAt,
       firstActivityRoleGrantedAt: nextActivity.firstActivityRoleGrantedAt,
     };
   }
 
   return db.profiles[userId];
+}
+
+function buildAppliedActivityRoleMetadata(plan = {}, appliedAt = null) {
+  const normalizedAppliedAt = normalizeIsoTimestamp(appliedAt, null);
+  const normalizedNewcomerRoleSuppressedAt = normalizeNullableString(plan?.newcomerRoleSuppressedAt, 80);
+
+  return {
+    appliedActivityRoleKey: plan?.desiredRoleId ? plan.desiredRoleKey : null,
+    lastRoleAppliedAt: normalizedAppliedAt,
+    newcomerRoleSuppressedAt: plan?.newcomerSuppressed
+      ? (normalizedNewcomerRoleSuppressedAt || normalizedAppliedAt)
+      : plan?.clearNewcomerRoleSuppression
+        ? null
+        : undefined,
+  };
 }
 
 function normalizeActivityManualStatusRoleKey(value, fallback = null) {
@@ -1180,10 +1236,7 @@ async function setManualActivityUserStatus({
           roleSync.applied = applyAccepted === true;
           roleSync.skipReason = applyAccepted === true ? null : "apply_declined";
           if (applyAccepted === true) {
-            syncAppliedActivityRoleMetadata(db, normalizedUserId, {
-              appliedActivityRoleKey: plan.desiredRoleId ? plan.desiredRoleKey : null,
-              lastRoleAppliedAt: safeChangedAt,
-            });
+            syncAppliedActivityRoleMetadata(db, normalizedUserId, buildAppliedActivityRoleMetadata(plan, safeChangedAt));
           }
         }
       }
@@ -2338,23 +2391,39 @@ function buildActivityRoleAssignmentPlan({ db = {}, userId = "", memberRoleIds =
   const roleEligibilityStatus = cleanString(activity.roleEligibilityStatus, 80) || null;
   const roleEligibleForActivityRole = activity.roleEligibleForActivityRole !== false
     && roleEligibilityStatus !== "gated_new_member";
-  const desiredRoleKey = shouldUseNewcomerActivityRole({
+  const normalizedMemberRoleIds = normalizeStringArray(memberRoleIds, 5000);
+  const managedRoleIds = listActivityManagedRoleIds(config);
+  const newcomerRequested = shouldUseNewcomerActivityRole({
     activity,
     config,
     desiredRoleKey: scoreDesiredRoleKey,
     roleEligibilityStatus,
     roleEligibleForActivityRole,
-  })
-    ? ACTIVITY_NEWCOMER_ROLE_KEY
-    : scoreDesiredRoleKey;
+  });
+  const newcomerRoleId = normalizeNullableString(config.activityRoleIds?.[ACTIVITY_NEWCOMER_ROLE_KEY], 80);
+  const newcomerSuppressionState = resolveActivityNewcomerSuppressionState({
+    activity,
+    newcomerRequested,
+    newcomerRoleId,
+    normalizedMemberRoleIds,
+  });
+  const desiredRoleKey = newcomerSuppressionState.newcomerSuppressed
+    ? resolveSuppressedNewcomerScoredRoleKey(activity, config)
+    : newcomerRequested
+      ? ACTIVITY_NEWCOMER_ROLE_KEY
+      : scoreDesiredRoleKey;
   const desiredRoleId = desiredRoleKey
     ? normalizeNullableString(config.activityRoleIds?.[desiredRoleKey], 80)
     : null;
-  const normalizedMemberRoleIds = normalizeStringArray(memberRoleIds, 5000);
-  const managedRoleIds = listActivityManagedRoleIds(config);
+  const withNewcomerControl = (plan) => ({
+    ...plan,
+    newcomerSuppressed: newcomerSuppressionState.newcomerSuppressed,
+    clearNewcomerRoleSuppression: newcomerSuppressionState.clearNewcomerRoleSuppression,
+    newcomerRoleSuppressedAt: newcomerSuppressionState.newcomerRoleSuppressedAt,
+  });
 
   if (activity.manualOverride === true) {
-    return {
+    return withNewcomerControl({
       userId: normalizedUserId,
       shouldApply: false,
       skipReason: "manual_override",
@@ -2362,11 +2431,11 @@ function buildActivityRoleAssignmentPlan({ db = {}, userId = "", memberRoleIds =
       desiredRoleId,
       addRoleIds: [],
       removeRoleIds: [],
-    };
+    });
   }
 
   if (activity.autoRoleFrozen === true) {
-    return {
+    return withNewcomerControl({
       userId: normalizedUserId,
       shouldApply: false,
       skipReason: "auto_role_frozen",
@@ -2374,10 +2443,10 @@ function buildActivityRoleAssignmentPlan({ db = {}, userId = "", memberRoleIds =
       desiredRoleId,
       addRoleIds: [],
       removeRoleIds: [],
-    };
+    });
   }
 
-  if (!roleEligibleForActivityRole) {
+  if (!roleEligibleForActivityRole && !newcomerSuppressionState.newcomerSuppressed) {
     if (desiredRoleKey === ACTIVITY_NEWCOMER_ROLE_KEY) {
       const addRoleIds = desiredRoleId && !normalizedMemberRoleIds.includes(desiredRoleId) ? [desiredRoleId] : [];
       const removeRoleIds = managedRoleIds.filter((roleId) => roleId !== desiredRoleId && normalizedMemberRoleIds.includes(roleId));
@@ -2385,7 +2454,7 @@ function buildActivityRoleAssignmentPlan({ db = {}, userId = "", memberRoleIds =
 
       if (!desiredRoleId) {
         if (!removeRoleIds.length) {
-          return {
+          return withNewcomerControl({
             userId: normalizedUserId,
             shouldApply: false,
             skipReason: "missing_role_mapping",
@@ -2393,10 +2462,10 @@ function buildActivityRoleAssignmentPlan({ db = {}, userId = "", memberRoleIds =
             desiredRoleId: null,
             addRoleIds: [],
             removeRoleIds: [],
-          };
+          });
         }
 
-        return {
+        return withNewcomerControl({
           userId: normalizedUserId,
           shouldApply: true,
           skipReason: null,
@@ -2404,11 +2473,14 @@ function buildActivityRoleAssignmentPlan({ db = {}, userId = "", memberRoleIds =
           desiredRoleId: null,
           addRoleIds: [],
           removeRoleIds,
-        };
+        });
       }
 
-      if (!addRoleIds.length && !removeRoleIds.length && metadataAlreadySynced) {
-        return {
+      if (!addRoleIds.length
+        && !removeRoleIds.length
+        && metadataAlreadySynced
+        && !newcomerSuppressionState.clearNewcomerRoleSuppression) {
+        return withNewcomerControl({
           userId: normalizedUserId,
           shouldApply: false,
           skipReason: "unchanged",
@@ -2416,10 +2488,10 @@ function buildActivityRoleAssignmentPlan({ db = {}, userId = "", memberRoleIds =
           desiredRoleId,
           addRoleIds: [],
           removeRoleIds: [],
-        };
+        });
       }
 
-      return {
+      return withNewcomerControl({
         userId: normalizedUserId,
         shouldApply: true,
         skipReason: null,
@@ -2427,12 +2499,12 @@ function buildActivityRoleAssignmentPlan({ db = {}, userId = "", memberRoleIds =
         desiredRoleId,
         addRoleIds,
         removeRoleIds,
-      };
+      });
     }
 
     const removeRoleIds = managedRoleIds.filter((roleId) => normalizedMemberRoleIds.includes(roleId));
     if (!removeRoleIds.length) {
-      return {
+      return withNewcomerControl({
         userId: normalizedUserId,
         shouldApply: false,
         skipReason: "member_too_new",
@@ -2440,10 +2512,10 @@ function buildActivityRoleAssignmentPlan({ db = {}, userId = "", memberRoleIds =
         desiredRoleId: null,
         addRoleIds: [],
         removeRoleIds: [],
-      };
+      });
     }
 
-    return {
+    return withNewcomerControl({
       userId: normalizedUserId,
       shouldApply: true,
       skipReason: null,
@@ -2451,14 +2523,14 @@ function buildActivityRoleAssignmentPlan({ db = {}, userId = "", memberRoleIds =
       desiredRoleId: null,
       addRoleIds: [],
       removeRoleIds,
-    };
+    });
   }
 
   const managedRolesHeld = managedRoleIds.filter((roleId) => normalizedMemberRoleIds.includes(roleId));
 
   if (!desiredRoleKey) {
     if (!managedRolesHeld.length) {
-      return {
+      return withNewcomerControl({
         userId: normalizedUserId,
         shouldApply: false,
         skipReason: "missing_desired_role",
@@ -2466,10 +2538,10 @@ function buildActivityRoleAssignmentPlan({ db = {}, userId = "", memberRoleIds =
         desiredRoleId: null,
         addRoleIds: [],
         removeRoleIds: [],
-      };
+      });
     }
 
-    return {
+    return withNewcomerControl({
       userId: normalizedUserId,
       shouldApply: true,
       skipReason: null,
@@ -2477,12 +2549,12 @@ function buildActivityRoleAssignmentPlan({ db = {}, userId = "", memberRoleIds =
       desiredRoleId: null,
       addRoleIds: [],
       removeRoleIds: managedRolesHeld,
-    };
+    });
   }
 
   if (!desiredRoleId) {
     if (!managedRolesHeld.length) {
-      return {
+      return withNewcomerControl({
         userId: normalizedUserId,
         shouldApply: false,
         skipReason: "missing_role_mapping",
@@ -2490,10 +2562,10 @@ function buildActivityRoleAssignmentPlan({ db = {}, userId = "", memberRoleIds =
         desiredRoleId: null,
         addRoleIds: [],
         removeRoleIds: [],
-      };
+      });
     }
 
-    return {
+    return withNewcomerControl({
       userId: normalizedUserId,
       shouldApply: true,
       skipReason: null,
@@ -2501,7 +2573,7 @@ function buildActivityRoleAssignmentPlan({ db = {}, userId = "", memberRoleIds =
       desiredRoleId: null,
       addRoleIds: [],
       removeRoleIds: managedRolesHeld,
-    };
+    });
   }
 
   const addRoleIds = normalizedMemberRoleIds.includes(desiredRoleId) ? [] : [desiredRoleId];
@@ -2509,7 +2581,7 @@ function buildActivityRoleAssignmentPlan({ db = {}, userId = "", memberRoleIds =
   const metadataAlreadySynced = cleanString(activity.appliedActivityRoleKey, 80) === desiredRoleKey;
 
   if (!addRoleIds.length && !removeRoleIds.length && metadataAlreadySynced) {
-    return {
+    return withNewcomerControl({
       userId: normalizedUserId,
       shouldApply: false,
       skipReason: "unchanged",
@@ -2517,10 +2589,10 @@ function buildActivityRoleAssignmentPlan({ db = {}, userId = "", memberRoleIds =
       desiredRoleId,
       addRoleIds: [],
       removeRoleIds: [],
-    };
+    });
   }
 
-  return {
+  return withNewcomerControl({
     userId: normalizedUserId,
     shouldApply: true,
     skipReason: null,
@@ -2528,7 +2600,7 @@ function buildActivityRoleAssignmentPlan({ db = {}, userId = "", memberRoleIds =
     desiredRoleId,
     addRoleIds,
     removeRoleIds,
-  };
+  });
 }
 
 async function applyInitialActivityRoleAssignments({
@@ -2586,10 +2658,7 @@ async function applyInitialActivityRoleAssignments({
         continue;
       }
 
-      syncAppliedActivityRoleMetadata(db, userId, {
-        appliedActivityRoleKey: plan.desiredRoleId ? plan.desiredRoleKey : null,
-        lastRoleAppliedAt: appliedAt,
-      });
+      syncAppliedActivityRoleMetadata(db, userId, buildAppliedActivityRoleMetadata(plan, appliedAt));
       appliedUserIds.push(userId);
     }
 
@@ -2746,7 +2815,6 @@ async function repairFreshNewcomerActivityRoles({
       : [];
     const repairTargets = [];
     const skippedReasons = {};
-    const priorTraces = {};
 
     for (const member of normalizedMembers) {
       if (member.bot) {
@@ -2767,36 +2835,30 @@ async function repairFreshNewcomerActivityRoles({
         continue;
       }
 
-      const priorTrace = resolveActivityPriorServerTrace({
-        db,
-        userId: member.userId,
-        joinedAt: member.joinedAt,
-      });
-      if (priorTrace.returningMember) {
-        skippedReasons[member.userId] = "real_returning_member";
-        priorTraces[member.userId] = priorTrace;
-        continue;
-      }
-
       repairTargets.push(member);
-      priorTraces[member.userId] = priorTrace;
     }
 
     const repairTargetUserIds = repairTargets.map((member) => member.userId);
     const memberByUserId = new Map(repairTargets.map((member) => [member.userId, member]));
+    const priorTraces = {};
     const rebuildResult = await rebuildActivitySnapshots({
       db,
       userIds: repairTargetUserIds,
       now: repairedAt,
       resolveMemberActivityMeta: (targetUserId) => {
         const member = memberByUserId.get(targetUserId);
-        return member
-          ? {
-            joinedAt: member.joinedAt,
-            returningMember: false,
-            priorServerTrace: priorTraces[targetUserId] || { returningMember: false },
-          }
-          : null;
+        if (!member) return null;
+        const priorTrace = resolveActivityPriorServerTrace({
+          db,
+          userId: targetUserId,
+          joinedAt: member.joinedAt,
+        });
+        priorTraces[targetUserId] = priorTrace;
+        return {
+          joinedAt: member.joinedAt,
+          returningMember: priorTrace.returningMember,
+          priorServerTrace: priorTrace,
+        };
       },
     });
 
@@ -2840,7 +2902,6 @@ async function repairFreshNewcomerActivityRoles({
       targetUserCount: repairTargetUserIds.length,
       targetUserIds: repairTargetUserIds,
       skippedReasons,
-      priorTraces,
       rebuiltUserCount: rebuildResult.rebuiltUserCount,
       roleAssignment,
       plannedRoleChanges,

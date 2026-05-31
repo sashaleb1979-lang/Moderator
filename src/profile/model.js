@@ -36,6 +36,11 @@ const PROFILE_RATING_LOCK_PENALTY_PERCENT = 20;
 const PROFILE_RATING_KILLS_LOCK_PENALTY_PERCENT = 40;
 const PROFILE_RATING_LOCK_PENALTY_CAP_PERCENT = 80;
 const PROFILE_KILLS_DAY_OUTLIER_LIMIT = 400;
+const PROFILE_KILLS_ROLLING_WINDOW_DAYS = 7;
+const PROFILE_KILLS_S_PLUS_LEADER_RATIO = 0.9;
+const PROFILE_KILLS_LIFETIME_BONUS_MAX_PERCENT = 20;
+const PROFILE_KILLS_FRESHNESS_DEBUFF_PER_DAY_PERCENT = 10;
+const PROFILE_KILLS_FRESHNESS_DEBUFF_CAP_PERCENT = 30;
 const PROFILE_RATING_AXIS_LABELS = Object.freeze({
   activity: { emoji: "🟣", label: "Активность" },
   kills: { emoji: "⚔️", label: "Kills" },
@@ -1192,114 +1197,309 @@ function buildRatingKillChanges({ profile = null, recentKillChanges = [], limit 
     .slice(0, normalizedLimit);
 }
 
-function buildRecentKillPaceState({ recentKillChanges = [], now = null } = {}) {
-  const nowTimestamp = Number.isFinite(Number(now)) ? Number(now) : Date.parse(String(now || ""));
-  const normalizedNow = Number.isFinite(nowTimestamp) ? nowTimestamp : Date.now();
+function resolveRatingNowTimestamp(now = null) {
+  if (Number.isFinite(Number(now))) return Number(now);
+  const parsed = Date.parse(String(now || ""));
+  return Number.isFinite(parsed) ? parsed : Date.now();
+}
+
+function formatCompactKills(value = null, precision = 1) {
+  const amount = normalizeNullableFiniteNumber(value);
+  if (!Number.isFinite(amount)) return "—";
+  const factor = 10 ** Math.max(0, Math.min(3, Math.round(precision)));
+  const rounded = Math.round(amount * factor) / factor;
+  return formatNumber(Number.isInteger(rounded) ? rounded : rounded);
+}
+
+function computeFreshnessDebuffPercent(dataAgeDays = null) {
+  const days = normalizeNullableFiniteNumber(dataAgeDays);
+  if (!Number.isFinite(days)) return 0;
+  return Math.min(
+    PROFILE_KILLS_FRESHNESS_DEBUFF_CAP_PERCENT,
+    Math.max(0, Math.floor(days) * PROFILE_KILLS_FRESHNESS_DEBUFF_PER_DAY_PERCENT)
+  );
+}
+
+function normalizeRollingKillWindow(change = null) {
+  if (!change || typeof change !== "object") return null;
+  const from = normalizeNullableFiniteNumber(change?.from);
+  const to = normalizeNullableFiniteNumber(change?.to);
+  const delta = Number.isFinite(Number(change?.delta))
+    ? Number(change.delta)
+    : (Number.isFinite(from) && Number.isFinite(to) ? to - from : null);
+  const fromAt = parseRatingTimestamp(change?.fromAt);
+  const toAt = parseRatingTimestamp(change?.toAt);
+  const hasDateRange = Number.isFinite(fromAt) && Number.isFinite(toAt) && toAt > fromAt;
+  const dayCount = hasDateRange
+    ? Math.max(0.01, (toAt - fromAt) / (24 * 60 * 60 * 1000))
+    : normalizeNullableFiniteNumber(change?.dayCount);
+  if (!Number.isFinite(delta)) return null;
+  return {
+    ...change,
+    from,
+    to,
+    delta,
+    fromAt,
+    toAt,
+    dayCount,
+    averagePerDay: Number.isFinite(dayCount) && dayCount > 0 ? delta / dayCount : null,
+    source: cleanString(change?.source, 40) || "recentChange",
+    sourceLabel: cleanString(change?.sourceLabel, 40) || "recent",
+    sourceGap: change?.sourceGap === true || !hasDateRange,
+  };
+}
+
+function computeMergedCoverageDays(intervals = []) {
+  const normalized = (Array.isArray(intervals) ? intervals : [])
+    .map((entry) => ({ start: Number(entry?.start), end: Number(entry?.end) }))
+    .filter((entry) => Number.isFinite(entry.start) && Number.isFinite(entry.end) && entry.end > entry.start)
+    .sort((left, right) => left.start - right.start);
+  if (!normalized.length) return 0;
+  const merged = [];
+  for (const interval of normalized) {
+    const last = merged[merged.length - 1];
+    if (!last || interval.start > last.end) {
+      merged.push({ ...interval });
+    } else if (interval.end > last.end) {
+      last.end = interval.end;
+    }
+  }
+  const totalMs = merged.reduce((sum, entry) => sum + Math.max(0, entry.end - entry.start), 0);
+  return totalMs / (24 * 60 * 60 * 1000);
+}
+
+function buildRollingKillRaceState({ recentKillChanges = [], now = null, windowDays = PROFILE_KILLS_ROLLING_WINDOW_DAYS } = {}) {
+  const normalizedNow = resolveRatingNowTimestamp(now);
+  const dayMs = 24 * 60 * 60 * 1000;
+  const normalizedWindowDays = Math.max(1, normalizeFiniteNumber(windowDays, PROFILE_KILLS_ROLLING_WINDOW_DAYS));
+  const windowMs = normalizedWindowDays * dayMs;
+  const windowStart = normalizedNow - windowMs;
   const allWindows = (Array.isArray(recentKillChanges) ? recentKillChanges : [])
-    .map((change) => {
-      const from = normalizeNullableFiniteNumber(change?.from);
-      const to = normalizeNullableFiniteNumber(change?.to);
-      const fromAt = parseRatingTimestamp(change?.fromAt);
-      const toAt = parseRatingTimestamp(change?.toAt);
-      const dayCount = Number.isFinite(fromAt) && Number.isFinite(toAt)
-        ? Math.max(1, Math.round((toAt - fromAt) / (24 * 60 * 60 * 1000)))
-        : normalizeNullableFiniteNumber(change?.dayCount);
-      const delta = Number.isFinite(from) && Number.isFinite(to) ? to - from : normalizeNullableFiniteNumber(change?.delta);
-      if (!Number.isFinite(delta)) return null;
-      const averagePerDay = Number.isFinite(dayCount) && dayCount > 0 ? delta / dayCount : null;
-      return {
-        from,
-        to,
-        delta,
-        dayCount,
-        averagePerDay,
-        fromAt,
-        toAt,
-        source: cleanString(change?.source, 40) || "recentChange",
-        sourceLabel: cleanString(change?.sourceLabel, 40) || "recent",
-        sourceGap: change?.sourceGap === true,
-      };
-    })
+    .map(normalizeRollingKillWindow)
     .filter(Boolean)
     .sort((left, right) => (Number(right.toAt) || 0) - (Number(left.toAt) || 0));
   const ignoredNeutralWindows = allWindows.filter((entry) => entry.delta <= 0);
-  const ignoredSourceGapWindows = allWindows.filter((entry) => entry.delta > 0 && (!Number.isFinite(entry.dayCount) || entry.dayCount <= 0 || entry.sourceGap));
-  const scoredCandidates = allWindows.filter((entry) => entry.delta > 0 && Number.isFinite(entry.dayCount) && entry.dayCount > 0 && !entry.sourceGap);
-  const ignoredOutlierWindows = scoredCandidates.filter((entry) => entry.averagePerDay > PROFILE_KILLS_DAY_OUTLIER_LIMIT);
-  const windows = scoredCandidates.filter((entry) => entry.averagePerDay <= PROFILE_KILLS_DAY_OUTLIER_LIMIT);
-
-  let remainingDays = 6;
-  let coveredDays = 0;
-  let weightedKills = 0;
+  const ignoredSourceGapWindows = allWindows.filter((entry) => entry.delta > 0 && entry.sourceGap);
+  const datedPositiveWindows = allWindows.filter((entry) => entry.delta > 0 && !entry.sourceGap && Number.isFinite(entry.fromAt) && Number.isFinite(entry.toAt) && entry.toAt > entry.fromAt);
   const usedWindows = [];
-  for (const window of windows) {
-    if (remainingDays <= 0) break;
-    const days = Math.min(remainingDays, window.dayCount);
-    weightedKills += window.averagePerDay * days;
-    coveredDays += days;
-    remainingDays -= days;
-    usedWindows.push({ ...window, usedDays: days });
+  const olderKillWindows = [];
+  const futureKillWindows = [];
+  const coverageIntervals = [];
+  let earnedKills7d = 0;
+
+  for (const window of datedPositiveWindows) {
+    const overlapStart = Math.max(window.fromAt, windowStart);
+    const overlapEnd = Math.min(window.toAt, normalizedNow);
+    if (overlapEnd <= overlapStart) {
+      if (window.toAt <= windowStart) olderKillWindows.push(window);
+      else if (window.fromAt >= normalizedNow) futureKillWindows.push(window);
+      continue;
+    }
+    const overlapMs = overlapEnd - overlapStart;
+    const windowMsTotal = Math.max(1, window.toAt - window.fromAt);
+    const rollingKills = window.delta * (overlapMs / windowMsTotal);
+    const overlapDays = overlapMs / dayMs;
+    earnedKills7d += rollingKills;
+    coverageIntervals.push({ start: overlapStart, end: overlapEnd });
+    usedWindows.push({
+      ...window,
+      overlapStart,
+      overlapEnd,
+      overlapDays,
+      rollingKills,
+      usedDays: overlapDays,
+    });
   }
-  const usedWindowKeys = new Set(usedWindows.map((entry) => `${entry.from}:${entry.to}:${Number.isFinite(entry.toAt) ? entry.toAt : "na"}`));
-  const olderKillWindows = windows.filter((entry) => !usedWindowKeys.has(`${entry.from}:${entry.to}:${Number.isFinite(entry.toAt) ? entry.toAt : "na"}`));
-  const ignoredKillWindows = [
-    ...ignoredOutlierWindows.map((entry) => ({ ...entry, ignoredReason: `выше лимита ${formatNumber(PROFILE_KILLS_DAY_OUTLIER_LIMIT)}/день` })),
-    ...ignoredSourceGapWindows.map((entry) => ({ ...entry, ignoredReason: "нет двух дат" })),
-    ...ignoredNeutralWindows.map((entry) => ({ ...entry, ignoredReason: "нет роста" })),
-  ];
+
+  const latestToAt = datedPositiveWindows.find((entry) => Number.isFinite(entry.toAt))?.toAt ?? null;
+  const dataAgeDays = Number.isFinite(latestToAt)
+    ? Math.max(0, Math.floor((normalizedNow - latestToAt) / dayMs))
+    : null;
+  const coveredDays = Math.min(normalizedWindowDays, computeMergedCoverageDays(coverageIntervals));
+  const averageKillsPerDay = earnedKills7d / normalizedWindowDays;
+  const freshnessDebuffPercent = computeFreshnessDebuffPercent(dataAgeDays);
   const coveredTimestamps = usedWindows
-    .flatMap((entry) => [entry.fromAt, entry.toAt])
+    .flatMap((entry) => [entry.overlapStart, entry.overlapEnd])
     .filter((entry) => Number.isFinite(Number(entry)))
     .map(Number);
   const firstCoveredDay = coveredTimestamps.length ? Math.min(...coveredTimestamps) : null;
   const lastCoveredDay = coveredTimestamps.length ? Math.max(...coveredTimestamps) : null;
-  const latestToAt = windows.find((entry) => Number.isFinite(entry.toAt))?.toAt ?? null;
-  const dataAgeDays = Number.isFinite(latestToAt)
-    ? Math.max(0, Math.floor((normalizedNow - latestToAt) / (24 * 60 * 60 * 1000)))
-    : null;
-  let stalePenaltyPercent = 0;
-  if (Number.isFinite(dataAgeDays)) {
-    if (dataAgeDays <= 7) stalePenaltyPercent = 0;
-    else if (dataAgeDays <= 14) stalePenaltyPercent = ((dataAgeDays - 7) / 7) * 40;
-    else if (dataAgeDays <= 21) stalePenaltyPercent = 40 + ((dataAgeDays - 14) / 7) * 30;
-    else stalePenaltyPercent = 100;
-  }
-  const averageKillsPerDay = coveredDays >= 4 ? weightedKills / coveredDays : null;
+
   return {
+    now: normalizedNow,
+    windowStart,
+    windowEnd: normalizedNow,
+    windowDays: normalizedWindowDays,
+    earnedKills7d,
     averageKillsPerDay,
     coveredDays,
     dataAgeDays,
-    stalePenaltyPercent: Math.round(stalePenaltyPercent),
-    hiddenBecauseTooOld: Number.isFinite(dataAgeDays) && dataAgeDays > 21,
+    freshnessDebuffPercent,
     usedWindows,
-    ignoredOutlierWindows,
+    olderKillWindows,
+    futureKillWindows,
     ignoredNeutralWindows,
     ignoredSourceGapWindows,
-    candidateWindows: allWindows,
-    validWindows: windows,
-    olderKillWindows,
-    ignoredKillWindows,
+    ignoredOutlierWindows: [],
+    ignoredKillWindows: [
+      ...ignoredSourceGapWindows.map((entry) => ({ ...entry, ignoredReason: "нет двух дат" })),
+      ...ignoredNeutralWindows.map((entry) => ({ ...entry, ignoredReason: "нет роста" })),
+    ],
     allKillWindows: allWindows,
+    candidateWindows: allWindows,
+    validWindows: datedPositiveWindows,
     scoredKillWindows: usedWindows,
     coveredKillDays: coveredDays,
-    missingKillDays: Math.max(0, 6 - coveredDays),
+    missingKillDays: Math.max(0, normalizedWindowDays - coveredDays),
     firstCoveredDay,
     lastCoveredDay,
-    coveredDayRangeLabel: coveredTimestamps.length ? formatDateRange(firstCoveredDay, lastCoveredDay) : "нет закрытых дней с датами",
+    coveredDayRangeLabel: coveredTimestamps.length ? formatDateRange(firstCoveredDay, lastCoveredDay) : "нет пересечений со скользящими 7д",
   };
 }
 
-function computeKillsGrowthModifierPercent(averageKillsPerDay = null) {
-  const pace = normalizeNullableFiniteNumber(averageKillsPerDay);
-  if (!Number.isFinite(pace)) return null;
-  if (pace <= 10) return -20;
-  if (pace <= 20) return -20 + ((pace - 10) / 10) * 20;
-  if (pace <= 30) return ((pace - 20) / 10) * 20;
-  if (pace <= 40) return 20 + ((pace - 30) / 10) * 10;
-  return 30 + ((pace - 40) * 0.3);
+function resolvePopulationProfileRecord(entry = null) {
+  if (!entry || typeof entry !== "object") return null;
+  const profile = entry.profile && typeof entry.profile === "object" ? entry.profile : entry;
+  const summary = profile?.summary && typeof profile.summary === "object" ? profile.summary : {};
+  const userId = cleanString(entry.userId || profile.userId || profile.discordUserId || profile.id || summary.userId, 80);
+  const displayName = cleanString(
+    entry.displayName
+    || entry.label
+    || entry.ownerLabel
+    || profile.displayName
+    || profile.username
+    || summary.preferredDisplayName
+    || summary.displayName,
+    120
+  );
+  return { userId, displayName, profile };
 }
 
-function buildKillsRatingAxis({ profile = null, approvedKills = null, standing = {}, recentKillChanges = [], robloxSummary = {}, robloxDisplayState = null, now = null } = {}) {
+function getProfileApprovedKills(profile = null, fallback = null) {
+  const direct = normalizeNullableFiniteNumber(fallback);
+  if (Number.isFinite(direct)) return direct;
+  return normalizeNullableFiniteNumber(
+    profile?.approvedKills
+    ?? profile?.summary?.onboarding?.approvedKills
+    ?? profile?.domains?.progress?.approvedKills
+    ?? profile?.summary?.approvedKills
+  );
+}
+
+function buildRollingKillPopulationState({
+  profile = null,
+  approvedKills = null,
+  recentKillChanges = [],
+  populationProfiles = [],
+  userId = "",
+  currentProfileLabel = "",
+  now = null,
+} = {}) {
+  const currentUserId = cleanString(userId || profile?.userId || profile?.discordUserId || profile?.id, 80);
+  const records = [];
+  const seen = new Set();
+  const pushRecord = (record = null, changes = [], fallbackApprovedKills = null) => {
+    if (!record || typeof record !== "object") return;
+    const key = record.userId ? `id:${record.userId}` : `name:${record.displayName || records.length}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    const mergedChanges = buildRatingKillChanges({ profile: record.profile, recentKillChanges: changes, limit: Number.POSITIVE_INFINITY });
+    const rolling = buildRollingKillRaceState({ recentKillChanges: mergedChanges, now });
+    records.push({
+      userId: record.userId,
+      displayName: record.displayName,
+      profile: record.profile,
+      approvedKills: getProfileApprovedKills(record.profile, fallbackApprovedKills),
+      rolling,
+      earnedKills7d: rolling.earnedKills7d,
+      averageKillsPerDay: rolling.averageKillsPerDay,
+    });
+  };
+
+  pushRecord({
+    userId: currentUserId,
+    displayName: cleanString(currentProfileLabel, 120) || "этот профиль",
+    profile,
+  }, recentKillChanges, approvedKills);
+
+  for (const entry of Array.isArray(populationProfiles) ? populationProfiles : []) {
+    const record = resolvePopulationProfileRecord(entry);
+    if (!record) continue;
+    if (currentUserId && record.userId && record.userId === currentUserId) continue;
+    pushRecord(record, []);
+  }
+
+  const ranked = records.slice().sort((left, right) => {
+    const earnedDiff = normalizeFiniteNumber(right.earnedKills7d, 0) - normalizeFiniteNumber(left.earnedKills7d, 0);
+    if (Math.abs(earnedDiff) > 0.0001) return earnedDiff;
+    return normalizeFiniteNumber(right.approvedKills, 0) - normalizeFiniteNumber(left.approvedKills, 0);
+  });
+  const leaderEntry = ranked.find((entry) => normalizeFiniteNumber(entry.earnedKills7d, 0) > 0) || ranked[0] || null;
+  const currentEntry = ranked.find((entry) => currentUserId && entry.userId === currentUserId) || records[0] || null;
+  const rankIndex = currentEntry ? ranked.findIndex((entry) => entry === currentEntry) : -1;
+  return {
+    records,
+    ranked,
+    leaderEntry,
+    currentEntry,
+    rank: rankIndex >= 0 ? rankIndex + 1 : null,
+    totalVerified: ranked.length || null,
+  };
+}
+
+function computeKillsLifetimeBonusPercent({ approvedKills = null, standing = {} } = {}) {
+  const kills = normalizeNullableFiniteNumber(approvedKills);
+  const leaderKills = normalizeNullableFiniteNumber(standing?.leaderEntry?.approvedKills);
+  if (!Number.isFinite(kills) || kills <= 0 || !Number.isFinite(leaderKills) || leaderKills <= 0) return 0;
+  return Math.max(0, Math.min(PROFILE_KILLS_LIFETIME_BONUS_MAX_PERCENT, (kills / leaderKills) * PROFILE_KILLS_LIFETIME_BONUS_MAX_PERCENT));
+}
+
+function computeRollingKillsScore({ earnedKills7d = 0, leaderKills7d = 0, lifetimeBonusPercent = 0, freshnessDebuffPercent = 0 } = {}) {
+  const earned = Math.max(0, normalizeFiniteNumber(earnedKills7d, 0));
+  const leader = Math.max(0, normalizeFiniteNumber(leaderKills7d, 0));
+  if (leader <= 0) {
+    return {
+      baseScore: 0,
+      scoreBeforeFreshness: 0,
+      finalScore: 0,
+      weeklyLeaderRatio: 0,
+      sPlusThresholdKills: 0,
+      sPlusMissingKills: 0,
+      killsToLeader: 0,
+      sPlusEligible: false,
+    };
+  }
+  const sPlusThresholdKills = leader * PROFILE_KILLS_S_PLUS_LEADER_RATIO;
+  const weeklyLeaderRatio = earned / leader;
+  const sPlusEligible = weeklyLeaderRatio >= PROFILE_KILLS_S_PLUS_LEADER_RATIO;
+  const baseScore = clampRatingScore((earned / Math.max(0.1, sPlusThresholdKills)) * getSPlusGradeTarget().score);
+  const bonusMultiplier = 1 + (Math.max(0, normalizeFiniteNumber(lifetimeBonusPercent, 0)) / 100);
+  let scoreBeforeFreshness = Math.min(100, baseScore * bonusMultiplier);
+  if (sPlusEligible) scoreBeforeFreshness = Math.max(getSPlusGradeTarget().score, scoreBeforeFreshness);
+  else scoreBeforeFreshness = Math.min(getSPlusGradeTarget().score - 1, scoreBeforeFreshness);
+  const finalScore = clampRatingScore(scoreBeforeFreshness * (1 - (Math.max(0, normalizeFiniteNumber(freshnessDebuffPercent, 0)) / 100)));
+  return {
+    baseScore,
+    scoreBeforeFreshness,
+    finalScore,
+    weeklyLeaderRatio,
+    sPlusThresholdKills,
+    sPlusMissingKills: Math.max(0, sPlusThresholdKills - earned),
+    killsToLeader: Math.max(0, leader - earned),
+    sPlusEligible,
+  };
+}
+
+function buildRollingKillsRatingAxis({
+  profile = null,
+  approvedKills = null,
+  standing = {},
+  recentKillChanges = [],
+  populationProfiles = [],
+  userId = "",
+  currentProfileLabel = "",
+  now = null,
+} = {}) {
   const approvedKillsAmount = normalizeNullableFiniteNumber(approvedKills);
   if (!Number.isFinite(approvedKillsAmount)) {
     return buildRatingCardAxis({
@@ -1309,240 +1509,243 @@ function buildKillsRatingAxis({ profile = null, approvedKills = null, standing =
       lockedPenaltyPercent: PROFILE_RATING_KILLS_LOCK_PENALTY_PERCENT,
     });
   }
+
   const ratingKillChanges = buildRatingKillChanges({ profile, recentKillChanges, limit: Number.POSITIVE_INFINITY });
-  const pace = buildRecentKillPaceState({ recentKillChanges: ratingKillChanges, now });
+  const rolling = buildRollingKillRaceState({ recentKillChanges: ratingKillChanges, now });
+  const population = buildRollingKillPopulationState({
+    profile,
+    approvedKills: approvedKillsAmount,
+    recentKillChanges,
+    populationProfiles,
+    userId,
+    currentProfileLabel,
+    now,
+  });
   const proofWindowCount = normalizeRatingProofWindows(profile).length;
   const proofChangeWindowCount = ratingKillChanges.filter((entry) => entry.sourceLabel === "proof").length;
   const recentChangeCount = ratingKillChanges.filter((entry) => entry.sourceLabel !== "proof").length;
-  if (pace.hiddenBecauseTooOld) {
+  const leaderWeeklyKills = normalizeFiniteNumber(population.leaderEntry?.earnedKills7d, 0);
+
+  if (leaderWeeklyKills <= 0) {
     return buildRatingCardAxis({
       axisName: "kills",
       locked: true,
-      lockReason: `Последние 6 kill-days старше 2 недель: ${formatNumber(pace.dataAgeDays)}д назад.`,
+      lockReason: "Нужны две approved-проверки с датами, чтобы посчитать kills за скользящие 7д.",
       lockedPenaltyPercent: PROFILE_RATING_KILLS_LOCK_PENALTY_PERCENT,
-      hiddenBecauseTooOld: true,
       extra: {
-        ...pace,
+        ...rolling,
+        approvedKills: approvedKillsAmount,
+        earnedKills7d: rolling.earnedKills7d,
+        averageKillsPerDay: rolling.averageKillsPerDay,
+        weeklyLeaderKills7d: leaderWeeklyKills,
         proofWindowCount,
+        proofChangeWindowCount,
         recentChangeCount,
         formulaLines: [
-          "Kills оценивает approved kills, темп роста и эффективность относительно JJS.",
-          "Оценка роста смотрит на последние 6 kill-days.",
-          "Если последние окна старше 21 дня, Kills закрывается до нового proof.",
+          "Живой Kills теперь считается только по скользящим 7д: сколько kills реально заработано за последние 7 дней.",
+          "Заявки распределяются по интервалу между двумя approved proof, а не падают целиком в день проверки.",
+          "S+ появится, когда семидневный лидер задаст планку: S+ = 90% от его kills за скользящие 7д.",
           formatAxisWeightLine("kills"),
         ],
-        inputLines: [`Approved kills: ${formatNumber(approvedKillsAmount)}.`, `Последние данные: ${formatNumber(pace.dataAgeDays)} дней назад.`],
-        peakLines: ["Верхняя планка появится после свежего approved proof."],
-        modifierLines: [`Свежесть proof: окно старше лимита, поэтому Kills получает штраф -${formatNumber(PROFILE_RATING_KILLS_LOCK_PENALTY_PERCENT)}% и закрывается.`],
+        inputLines: [
+          `Approved kills: ${formatNumber(approvedKillsAmount)}. Это число за всё время сейчас даёт только бонус, не базу рейтинга.`,
+          "Скользящие 7д пока не открыты: нет пары proof-снимков с датами в популяции.",
+        ],
+        peakLines: ["Семидневный лидер появится после первых валидных окон за скользящие 7д."],
+        modifierLines: ["Бонус за kills за всё время не включается без живой семидневной базы: сначала нужен proof за скользящие 7д."],
         sourceLines: buildKillsRatingSourceLines({
           proofWindowCount,
           recentChangeCount,
-          usedWindows: pace.usedWindows,
-          olderKillWindows: pace.olderKillWindows,
-          ignoredOutlierWindows: pace.ignoredOutlierWindows,
-          ignoredNeutralWindows: pace.ignoredNeutralWindows,
-          ignoredSourceGapWindows: pace.ignoredSourceGapWindows,
-          allKillWindows: pace.allKillWindows,
+          usedWindows: rolling.usedWindows,
+          olderKillWindows: rolling.olderKillWindows,
+          ignoredNeutralWindows: rolling.ignoredNeutralWindows,
+          ignoredSourceGapWindows: rolling.ignoredSourceGapWindows,
+          allKillWindows: rolling.allKillWindows,
         }),
-        upgradeLines: ["Обнови kills proof: новые окна заполнят последние 6 kill-days задним числом.", "До следующей буквы и S+ путь появится после свежего окна."],
+        upgradeLines: [
+          "Обнови approved proof: когда появятся две точки с датами, прирост распределится по их реальному интервалу.",
+          "После появления лидера S+ будет считаться от 90% его kills за скользящие 7д.",
+        ],
       },
     });
   }
 
-  const rank = normalizeNullableFiniteNumber(standing?.rank);
-  const total = normalizeNullableFiniteNumber(standing?.totalVerified);
-  const rankScore = Number.isFinite(rank) && Number.isFinite(total) && total > 1
-    ? (1 - ((rank - 1) / Math.max(1, total - 1))) * 100
-    : Math.min(100, Math.log10(Math.max(1, approvedKillsAmount + 1)) * 25);
-  const growthModifier = computeKillsGrowthModifierPercent(pace.averageKillsPerDay);
-  const jjsHours7d = robloxDisplayState?.isTrackable === true && Number.isFinite(Number(robloxSummary?.jjsMinutes7d))
-    ? Number(robloxSummary.jjsMinutes7d) / 60
-    : null;
-  const killsPerJjsHour = Number.isFinite(pace.averageKillsPerDay) && Number.isFinite(jjsHours7d) && jjsHours7d > 0
-    ? (pace.averageKillsPerDay * 7) / jjsHours7d
-    : null;
-  const efficiencyModifier = Number.isFinite(killsPerJjsHour)
-    ? Math.max(-15, Math.min(15, (killsPerJjsHour - 5) * 3))
-    : 0;
-  const coveragePenalty = Number.isFinite(pace.averageKillsPerDay) && pace.coveredDays < 6 ? 20 : 0;
-  const stalePenalty = Math.min(70, Math.max(0, normalizeFiniteNumber(pace.stalePenaltyPercent, 0)));
-  const totalModifier = (Number.isFinite(growthModifier) ? growthModifier : 0) + efficiencyModifier - coveragePenalty - stalePenalty;
-  let score = rankScore * (1 + ((Number.isFinite(growthModifier) ? growthModifier : 0) / 100)) * (1 + (efficiencyModifier / 100));
-  score *= (1 - (coveragePenalty / 100)) * (1 - (stalePenalty / 100));
-  if (!Number.isFinite(pace.averageKillsPerDay)) score = Math.min(86, score);
-  const finalScore = clampRatingScore(score);
+  const lifetimeBonusPercent = computeKillsLifetimeBonusPercent({ approvedKills: approvedKillsAmount, standing });
+  const scoreState = computeRollingKillsScore({
+    earnedKills7d: rolling.earnedKills7d,
+    leaderKills7d: leaderWeeklyKills,
+    lifetimeBonusPercent,
+    freshnessDebuffPercent: rolling.freshnessDebuffPercent,
+  });
+  const finalScore = scoreState.finalScore;
+  const rank = normalizeNullableFiniteNumber(population.rank);
+  const total = normalizeNullableFiniteNumber(population.totalVerified);
+  const leaderEntry = population.leaderEntry || null;
+  const leaderOwner = resolveProfileBenchmarkOwner({
+    userId: leaderEntry?.userId,
+    displayName: leaderEntry?.displayName,
+    profile: leaderEntry?.profile,
+  }, "лидер скользящих 7д");
+  const lifetimeLeaderEntry = standing?.leaderEntry || null;
+  const lifetimeLeaderOwner = resolveProfileBenchmarkOwner(lifetimeLeaderEntry, "лидер за всё время");
+  const lifetimeLeaderKills = normalizeNullableFiniteNumber(lifetimeLeaderEntry?.approvedKills);
   const next = getNextGradeTarget(finalScore);
   const sPlus = getSPlusGradeTarget();
-  const sPlusScoreGap = Math.max(0, sPlus.score - finalScore);
-  const nextKills = next && Number.isFinite(rankScore)
-    ? Math.max(1, Math.ceil(((next.score - finalScore) / 100) * Math.max(100, approvedKillsAmount || 100)))
-    : null;
-  const sPlusKills = sPlusScoreGap > 0 && Number.isFinite(rankScore)
-    ? Math.max(1, Math.ceil((sPlusScoreGap / 100) * Math.max(100, approvedKillsAmount || 100)))
-    : 0;
-  const nextPaceTarget = Math.max(20, Math.ceil((pace.averageKillsPerDay || 20) + 4));
-  const sPlusPaceTarget = Math.max(nextPaceTarget, Math.ceil((pace.averageKillsPerDay || 20) + Math.max(8, sPlusScoreGap / 2)));
-  const daysToNextAtCurrentPace = Number.isFinite(pace.averageKillsPerDay) && pace.averageKillsPerDay > 0 && Number.isFinite(nextKills)
-    ? Math.ceil(nextKills / pace.averageKillsPerDay)
-    : null;
-  const daysToSPlusAtCurrentPace = Number.isFinite(pace.averageKillsPerDay) && pace.averageKillsPerDay > 0 && sPlusKills > 0
-    ? Math.ceil(sPlusKills / pace.averageKillsPerDay)
-    : null;
-  const leaderEntry = standing?.leaderEntry || null;
-  const nextRankEntry = standing?.nextRankEntry || null;
-  const killsToLeader = normalizeNullableFiniteNumber(standing?.killsToLeader);
-  const killsToNextRank = normalizeNullableFiniteNumber(standing?.killsToNextRank ?? standing?.killsToNext);
-  const detailItems = [];
-  if (pace.ignoredOutlierWindows?.length) {
-    const outlier = pace.ignoredOutlierWindows[0];
-    detailItems.push(`${formatNumber(Math.round(outlier.averagePerDay))}/день не учтено`);
-  }
-  const sourceBits = [];
-  if (proofChangeWindowCount) sourceBits.push(`proof ${formatNumber(proofChangeWindowCount)}`);
-  if (recentChangeCount) sourceBits.push(`recent ${formatNumber(recentChangeCount)}`);
-  detailItems.push(`окна: ${formatNumber(pace.coveredDays)}/6д${sourceBits.length ? ` из ${sourceBits.join("+")}` : ""}`);
-  if (Number.isFinite(growthModifier)) detailItems.push(`рост ${formatRatingModifier(growthModifier)}`);
-  else detailItems.push("нет kills/day: потолок A+");
-  if (stalePenalty > 0) detailItems.unshift(`просрочка -${formatNumber(stalePenalty)}%`);
-  if (coveragePenalty > 0) detailItems.unshift(`покрытие -20%`);
+  const weeklyRatioPercent = scoreState.weeklyLeaderRatio * 100;
+  const baseScore = scoreState.baseScore;
+  const scoreBeforeFreshness = scoreState.scoreBeforeFreshness;
+  const scoreLostToFreshness = Math.max(0, scoreBeforeFreshness - finalScore);
+  const sPlusMissingKills = Math.ceil(scoreState.sPlusMissingKills);
+  const killsToLeader = Math.ceil(scoreState.killsToLeader);
+  const freshnessDebuffPercent = rolling.freshnessDebuffPercent;
+  const lifetimeBonusScore = Math.max(0, scoreBeforeFreshness - baseScore);
+  const nextSPlusHint = scoreState.sPlusEligible
+    ? "S+ зона открыта: держи 90%+ от лидера и свежий proof"
+    : `до S+: +${formatCompactKills(sPlusMissingKills, 1)} kills за скользящие 7д`;
+  const effectiveWeightPercent = Math.max(0, 100 - freshnessDebuffPercent);
+  const totalModifierPercent = Math.round(lifetimeBonusPercent - freshnessDebuffPercent);
   const values = [
-    `Approved ${formatNumber(approvedKillsAmount)}`,
-    Number.isFinite(pace.averageKillsPerDay) ? `${formatNumber(Math.round(pace.averageKillsPerDay * 10) / 10)}/день` : "kills/day нет",
-    Number.isFinite(killsPerJjsHour) ? `${formatNumber(Math.round(killsPerJjsHour * 10) / 10)} kills/ч` : null,
-  ].filter(Boolean).join(" · ");
-  const nextRankOwner = resolveProfileBenchmarkOwner(nextRankEntry, "игрок выше");
-  const leaderOwner = resolveProfileBenchmarkOwner(leaderEntry, "лидер рейтинга");
-  const nextRankLine = nextRankEntry && Number.isFinite(killsToNextRank)
-    ? `Игрок выше: ${nextRankOwner.label} — ${formatNumber(nextRankEntry.approvedKills)} kills. До него не хватает +${formatNumber(killsToNextRank)} kills.`
-    : (Number.isFinite(rank) && rank === 1 ? "Ты сейчас лидер по approved kills среди переданных игроков." : "Игрок выше не передан в модель, поэтому показываю только твоё место.");
-  const leaderLine = leaderEntry && Number.isFinite(leaderEntry.approvedKills)
-    ? (Number.isFinite(killsToLeader) && killsToLeader > 0
-      ? `Сейчас лидер: ${leaderOwner.label}, ${formatNumber(leaderEntry.approvedKills)} kills. До лидера нужно +${formatNumber(killsToLeader)} kills.`
-      : `Сейчас лидер: ${leaderOwner.label}, ${formatNumber(leaderEntry.approvedKills)} kills. Ты уже на этой планке.`)
-    : "Лидер по kills не передан в модель, поэтому показываю только твоё место и общий размер рейтинга.";
-  const coverageLine = formatDaysCoverageLine({ coveredDays: pace.coveredDays, targetDays: 6, label: "kill-days" });
-  const coveredRangeLine = pace.coveredDays > 0
-    ? `Закрытые дни: ${pace.coveredDayRangeLabel}, всего ${formatNumber(pace.coveredDays)}/6.`
-    : "Закрытых kill-days с датами пока нет.";
-  const missingCoverageLine = pace.missingKillDays > 0
-    ? `Не хватает ещё ${formatNumber(pace.missingKillDays)} дней роста. Поэтому рост считается частично${coveragePenalty > 0 ? ", а покрытие даёт штраф -20%." : "."}`
-    : "Пробелов нет: штрафа за покрытие нет.";
-  const scoreLostToCoverage = score - (score * (1 - (coveragePenalty / 100)));
-  const scoreLostToStaleness = score - (score * (1 - (stalePenalty / 100)));
+    `7д +${formatCompactKills(rolling.earnedKills7d, 1)} kills`,
+    `${formatCompactKills(rolling.averageKillsPerDay, 1)}/день`,
+    `S+ от ${formatCompactKills(scoreState.sPlusThresholdKills, 1)}`,
+  ].join(" · ");
+  const detailItems = [
+    `лидер ${formatCompactKills(leaderWeeklyKills, 1)}`,
+    `доля ${formatPercent(weeklyRatioPercent, 1)}`,
+  ];
+  if (lifetimeBonusPercent > 0) detailItems.push(`за всё время +${formatCompactKills(lifetimeBonusPercent, 1)}%`);
+  if (freshnessDebuffPercent > 0) detailItems.unshift(`свежесть -${formatNumber(freshnessDebuffPercent)}%`);
+  const coveredRangeLine = rolling.coveredDays > 0
+    ? `Учтённый 7д-интервал: ${rolling.coveredDayRangeLabel}, покрытие ${formatCompactKills(rolling.coveredDays, 1)}/7 дней.`
+    : "В скользящих 7д нет пересечения с валидными proof-окнами.";
+  const leaderLine = leaderEntry
+    ? `Лидер скользящих 7д: ${leaderOwner.label}, +${formatCompactKills(leaderWeeklyKills, 1)} kills за последние 7 дней.`
+    : "Лидер скользящих 7д не найден.";
+  const sPlusLine = `Планка S+: ${formatCompactKills(scoreState.sPlusThresholdKills, 1)} kills за скользящие 7д, то есть 90% от лидера.`;
+  const lifetimeLine = Number.isFinite(lifetimeLeaderKills)
+    ? `Бонус за всё время: ${formatNumber(approvedKillsAmount)} из ${formatNumber(lifetimeLeaderKills)} kills у ${lifetimeLeaderOwner.label} = +${formatCompactKills(lifetimeBonusPercent, 1)}% к Kills, максимум +${formatNumber(PROFILE_KILLS_LIFETIME_BONUS_MAX_PERCENT)}%.`
+    : `Бонус за всё время: +${formatCompactKills(lifetimeBonusPercent, 1)}%, потому что лидер за всё время не передан полностью.`;
+  const freshnessLine = Number.isFinite(rolling.dataAgeDays)
+    ? `Свежесть proof: последнее валидное окно ${formatNumber(rolling.dataAgeDays)}д назад, дебафф -${formatNumber(freshnessDebuffPercent)}% (кап ${formatNumber(PROFILE_KILLS_FRESHNESS_DEBUFF_CAP_PERCENT)}%).`
+    : "Свежесть proof не посчитана: нет дат в валидных окнах.";
   const sourceLines = buildKillsRatingSourceLines({
     proofWindowCount,
     recentChangeCount,
-    usedWindows: pace.usedWindows,
-    olderKillWindows: pace.olderKillWindows,
-    ignoredOutlierWindows: pace.ignoredOutlierWindows,
-    ignoredNeutralWindows: pace.ignoredNeutralWindows,
-    ignoredSourceGapWindows: pace.ignoredSourceGapWindows,
-    allKillWindows: pace.allKillWindows,
+    usedWindows: rolling.usedWindows,
+    olderKillWindows: rolling.olderKillWindows,
+    ignoredNeutralWindows: rolling.ignoredNeutralWindows,
+    ignoredSourceGapWindows: rolling.ignoredSourceGapWindows,
+    allKillWindows: rolling.allKillWindows,
   });
   const formulaLines = [
-    "Kills оценивает три вещи: сколько approved kills загружено, как быстро kills растут, и сколько kills получается на час JJS.",
-    "База оценки — твоё место среди игроков с загруженными approved kills.",
-    "Рост считается по окнам proof/recent: берём изменения kills между двумя проверками и делим на число дней.",
-    `Окна выше ${formatNumber(PROFILE_KILLS_DAY_OUTLIER_LIMIT)} kills/день показываются в разборе, но не дают очки.`,
-    "Если закрыто меньше 6 kill-days, оценка получает штраф за неполное покрытие.",
+    "Живой Kills = гонка за скользящие 7д: считаем только kills, заработанные за последние 7 дней.",
+    "Каждая заявка/proof-пара распределяется по своему интервалу: если окно пересекает последние 7 дней частично, в рейтинг входит только эта доля.",
+    "S+ получает лидер и все, кто держит минимум 90% от лидера скользящих 7д.",
+    `Approved kills за всё время больше не является базой: он даёт только бонус до +${formatNumber(PROFILE_KILLS_LIFETIME_BONUS_MAX_PERCENT)}% относительно лидера за всё время и не может открыть S+ ниже 90% недельной планки.`,
+    `Свежесть proof даёт дебафф: 1 день -10%, 2 дня -20%, 3+ дня -${formatNumber(PROFILE_KILLS_FRESHNESS_DEBUFF_CAP_PERCENT)}%.`,
+    "Фиксированные недели сохраняются как архив и рекорды, но live-оценку не двигают.",
     formatAxisWeightLine("kills"),
   ];
   const inputLines = [
-    `Approved kills: ${formatNumber(approvedKillsAmount)}. Это число загружено в профиль и участвует в серверном kill-рейтинге.`,
-    Number.isFinite(rank) && Number.isFinite(total) ? `Место: #${formatNumber(rank)} из ${formatNumber(total)} игроков с approved kills.` : "Место по kills не передано, поэтому база считается по самому числу kills.",
-    nextRankLine,
-    Number.isFinite(pace.averageKillsPerDay)
-      ? `Рост: ${formatNumber(Math.round(pace.averageKillsPerDay * 10) / 10)} kills/день, потому что последние засчитанные окна закрыли ${formatNumber(pace.coveredDays)} дней.`
-      : `Рост пока не считается: закрыто ${formatNumber(pace.coveredDays)}/6 kill-days, для темпа нужно минимум 4 дня.`,
-    Number.isFinite(jjsHours7d) && Number.isFinite(killsPerJjsHour)
-      ? `JJS для эффективности: ${formatHours(jjsHours7d)}ч за 7 дней. Это даёт ${formatNumber(Math.round(killsPerJjsHour * 10) / 10)} kills на час JJS.`
-      : "JJS для эффективности пока не участвует: нет отслеживаемых часов JJS за неделю.",
-    coverageLine,
+    `Скользящие 7д: +${formatCompactKills(rolling.earnedKills7d, 1)} kills, среднее ${formatCompactKills(rolling.averageKillsPerDay, 1)}/день.`,
+    Number.isFinite(rank) && Number.isFinite(total) ? `Место в живой гонке: #${formatNumber(rank)}/${formatNumber(total)}.` : "Место в живой гонке пока не рассчитано.",
+    leaderLine,
+    sPlusLine,
+    scoreState.sPlusEligible
+      ? "S+ условие по семидневным kills закрыто: текущие 7 дней не ниже 90% лидера."
+      : `До S+ по семидневным kills не хватает +${formatCompactKills(sPlusMissingKills, 1)} kills за скользящие 7д.`,
     coveredRangeLine,
-    missingCoverageLine,
+    freshnessLine,
   ];
   const peakLines = [
-    "Верхняя планка по kills — это лидер среди игроков с загруженными approved kills.",
     leaderLine,
-    next ? `Для следующей буквы ${next.grade} сейчас нужно примерно +${formatNumber(nextKills)} kills или темп ${formatNumber(nextPaceTarget)} kills/день.` : "Следующая буква уже закрыта: Kills на уровне S+.",
-    sPlusKills > 0 ? `Для минимального S+ нужно добрать примерно +${formatNumber(sPlusKills)} kills или держать около ${formatNumber(sPlusPaceTarget)} kills/день до следующей проверки.` : "Минимальный S+ по Kills уже закрыт.",
+    sPlusLine,
+    killsToLeader > 0 ? `До лидера живой гонки: +${formatCompactKills(killsToLeader, 1)} kills за текущие 7 дней.` : "До лидера живой гонки добирать не нужно: ты на верхней планке.",
+    "После закрытия дня ничего не обнуляется вручную: окно катится каждый момент и пересчитывает долю старых заявок.",
   ];
   const modifierLines = [
-    Number.isFinite(rank) && Number.isFinite(total)
-      ? `Место по kills даёт базу оценки: #${formatNumber(rank)}/${formatNumber(total)} превращается примерно в ${formatProfileRatingScore(rankScore)} очков базы.`
-      : `Число kills без места в рейтинге превращается примерно в ${formatProfileRatingScore(rankScore)} очков базы.`,
-    Number.isFinite(growthModifier)
-      ? `Рост ${formatNumber(Math.round(pace.averageKillsPerDay * 10) / 10)}/день даёт ${formatRatingModifier(growthModifier)} по шкале роста.`
-      : "Рост даёт 0%: нужно минимум 4 валидных kill-day.",
-    Number.isFinite(killsPerJjsHour)
-      ? `Эффективность: ${formatNumber(Math.round(killsPerJjsHour * 10) / 10)} kills/ч JJS. По шкале эффективности это ${formatRatingModifier(efficiencyModifier)}.`
-      : "Эффективность по JJS сейчас 0%: нет связки kills/ч.",
-    `Покрытие: ${formatNumber(pace.coveredDays)}/6 kill-days${coveragePenalty > 0 ? `, штраф -${formatNumber(coveragePenalty)}%. Потеря около ${formatProfileRatingScore(scoreLostToCoverage)} очков Kills.` : ", штраф 0%."}`,
-    Number.isFinite(pace.dataAgeDays) ? `Свежесть proof: последнее окно ${formatNumber(pace.dataAgeDays)} дней назад${stalePenalty > 0 ? `, штраф -${formatNumber(stalePenalty)}%. Потеря около ${formatProfileRatingScore(scoreLostToStaleness)} очков Kills.` : ", штраф 0%."}` : "Свежесть proof не посчитана: нет дат.",
-    `Итоговый множитель: ${formatRatingModifier(totalModifier)}. Это сильно влияет на профиль, потому что Kills весит 40% общего рейтинга.`,
+    `Семидневная база: ${formatPercent(weeklyRatioPercent, 1)} от лидера даёт ${formatProfileRatingScore(baseScore)}/100 до бонусов.`,
+    lifetimeLine,
+    freshnessLine,
+    scoreState.sPlusEligible
+      ? `S+ порог активен: недельная доля >= 90%, поэтому до свежести и бонусов оценка не ниже ${formatProfileRatingScore(sPlus.score)}.`
+      : `S+ порог закрыт: бонус за всё время ограничен потолком ${formatProfileRatingScore(sPlus.score - 1)}, пока скользящие 7д ниже 90% лидера.`,
+    freshnessDebuffPercent > 0
+      ? `Потеря от свежести: около ${formatProfileRatingScore(scoreLostToFreshness)} очков Kills.`
+      : "Потери от свежести нет: последнее валидное окно сегодняшнее.",
   ];
   const upgradeLines = [
     ...formatGradePathLines({ currentScore: finalScore, nextGrade: next, sPlusTarget: sPlus }),
-    next ? `До следующей буквы ${next.grade} нужно +${formatNumber(nextKills)} kills или поднять темп до ${formatNumber(nextPaceTarget)} kills/день.` : "Следующая буква уже закрыта; задача — удержать темп и свежие proof-окна.",
-    Number.isFinite(daysToNextAtCurrentPace) ? `Если держать текущие ${formatNumber(Math.round(pace.averageKillsPerDay * 10) / 10)}/день, это примерно ${formatNumber(daysToNextAtCurrentPace)} дней до +${formatNumber(nextKills)} kills.` : "Срок до следующей буквы появится после валидного темпа роста.",
-    sPlusKills > 0 ? `До минимального S+ нужно +${formatNumber(sPlusKills)} kills или темп около ${formatNumber(sPlusPaceTarget)}/день.` : "До минимального S+ по очкам Kills уже хватает.",
-    Number.isFinite(daysToSPlusAtCurrentPace) ? `Если идти текущим темпом, это примерно ${formatNumber(daysToSPlusAtCurrentPace)} дней.` : "Срок до S+ появится после валидного темпа роста.",
-    "Самый короткий путь сейчас: регулярно обновлять proof и держать 6/6 kill-days без пробелов.",
+    scoreState.sPlusEligible
+      ? "S+ по семидневным kills открыт; удерживай свежие proof-окна, чтобы дебафф не снял оценку."
+      : `Главный путь к S+: добрать +${formatCompactKills(sPlusMissingKills, 1)} kills внутри скользящих 7д или сократить отставание от лидера.`,
+    killsToLeader > 0 ? `До лидера живой гонки: +${formatCompactKills(killsToLeader, 1)} kills.` : "Ты уже на лидерской семидневной планке.",
+    lifetimeBonusPercent < PROFILE_KILLS_LIFETIME_BONUS_MAX_PERCENT
+      ? `Kills за всё время дают только бонус: до максимальных +${formatNumber(PROFILE_KILLS_LIFETIME_BONUS_MAX_PERCENT)}% нужно приблизиться к лидеру за всё время, но это не заменяет семидневные kills.`
+      : "Бонус за всё время максимальный; дальше решают только скользящие 7д и свежесть proof.",
+    freshnessDebuffPercent > 0 ? "Самое срочное: обновить proof, чтобы снять дебафф свежести." : "Самое срочное: держать новое окно, пока старые kills выходят из скользящих 7д.",
   ];
 
   return buildRatingCardAxis({
     axisName: "kills",
     score: finalScore,
-    rawScore: rankScore,
+    rawScore: baseScore,
     place: { rank, total },
     valuesLine: values,
-    totalModifierPercent: totalModifier,
-    effectiveWeightPercent: Math.max(0, 100 - stalePenalty - coveragePenalty),
-    primaryHintLine: next ? `до ${next.grade}: +${formatNumber(nextKills)} kills или держи ${formatNumber(nextPaceTarget)}/день` : "S+ уже открыт",
+    totalModifierPercent,
+    effectiveWeightPercent,
+    primaryHintLine: nextSPlusHint,
     detailItems,
     extra: {
       approvedKills: approvedKillsAmount,
-      rankScore,
-      averageKillsPerDay: pace.averageKillsPerDay,
-      killDayCoverage: pace.coveredDays,
-      killDataAgeDays: pace.dataAgeDays,
-      stalePenaltyPercent: stalePenalty,
-      coveragePenaltyPercent: coveragePenalty,
-      growthModifierPercent: Number.isFinite(growthModifier) ? Math.round(growthModifier) : null,
-      jjsEfficiencyModifierPercent: Math.round(efficiencyModifier),
-      killsPerJjsHour,
-      jjsHours7d,
-      ignoredOutlierWindows: pace.ignoredOutlierWindows || [],
-      ignoredNeutralWindows: pace.ignoredNeutralWindows || [],
-      ignoredSourceGapWindows: pace.ignoredSourceGapWindows || [],
-      usedKillWindows: pace.usedWindows || [],
-      olderKillWindows: pace.olderKillWindows || [],
-      ignoredKillWindows: pace.ignoredKillWindows || [],
-      allKillWindows: pace.allKillWindows || [],
-      scoredKillWindows: pace.scoredKillWindows || [],
-      candidateKillWindows: pace.candidateWindows || [],
-      validKillWindows: pace.validWindows || [],
-      coveredKillDays: pace.coveredKillDays,
-      missingKillDays: pace.missingKillDays,
-      firstCoveredDay: pace.firstCoveredDay,
-      lastCoveredDay: pace.lastCoveredDay,
-      coveredDayRangeLabel: pace.coveredDayRangeLabel,
+      earnedKills7d: rolling.earnedKills7d,
+      weeklyKills7d: rolling.earnedKills7d,
+      averageKillsPerDay: rolling.averageKillsPerDay,
+      killDayCoverage: rolling.coveredDays,
+      killDataAgeDays: rolling.dataAgeDays,
+      dataAgeDays: rolling.dataAgeDays,
+      freshnessDebuffPercent,
+      stalePenaltyPercent: freshnessDebuffPercent,
+      coveragePenaltyPercent: 0,
+      growthModifierPercent: null,
+      lifetimeBonusPercent,
+      lifetimeBonusScore,
+      baseScore,
+      scoreBeforeFreshness,
+      weeklyLeaderRatio: scoreState.weeklyLeaderRatio,
+      weeklyLeaderRatioPercent: weeklyRatioPercent,
+      weeklyLeaderKills7d: leaderWeeklyKills,
+      sPlusThresholdKills7d: scoreState.sPlusThresholdKills,
+      sPlusMissingKills,
+      killsToLeader,
+      sPlusEligible: scoreState.sPlusEligible,
+      jjsEfficiencyModifierPercent: 0,
+      killsPerJjsHour: null,
+      jjsHours7d: null,
+      ignoredOutlierWindows: [],
+      ignoredNeutralWindows: rolling.ignoredNeutralWindows || [],
+      ignoredSourceGapWindows: rolling.ignoredSourceGapWindows || [],
+      usedKillWindows: rolling.usedWindows || [],
+      olderKillWindows: rolling.olderKillWindows || [],
+      ignoredKillWindows: rolling.ignoredKillWindows || [],
+      allKillWindows: rolling.allKillWindows || [],
+      scoredKillWindows: rolling.scoredKillWindows || [],
+      candidateKillWindows: rolling.candidateWindows || [],
+      validKillWindows: rolling.validWindows || [],
+      coveredKillDays: rolling.coveredKillDays,
+      missingKillDays: rolling.missingKillDays,
+      firstCoveredDay: rolling.firstCoveredDay,
+      lastCoveredDay: rolling.lastCoveredDay,
+      coveredDayRangeLabel: rolling.coveredDayRangeLabel,
       proofWindowCount,
       proofChangeWindowCount,
       recentChangeCount,
-      nextKills,
-      sPlusKills,
-      nextPaceTarget,
-      sPlusPaceTarget,
-      daysToNextAtCurrentPace,
-      daysToSPlusAtCurrentPace,
       leaderEntry,
-      nextRankEntry,
-      killsToLeader,
-      killsToNextRank,
-      scoreLostToCoverage,
-      scoreLostToStaleness,
-      peakLine: `окна: ${formatNumber(pace.coveredDays)}/6 дней · ${sourceBits.length ? sourceBits.join(" + ") : "история короткая"}`,
+      nextRankEntry: null,
+      killsToNextRank: null,
+      scoreLostToCoverage: 0,
+      scoreLostToStaleness: scoreLostToFreshness,
+      peakLine: `скользящие 7д: +${formatCompactKills(rolling.earnedKills7d, 1)} · S+ от ${formatCompactKills(scoreState.sPlusThresholdKills, 1)}`,
       formulaLines,
       inputLines,
       peakLines,
@@ -1570,10 +1773,10 @@ function buildKillsRatingSourceLines({
   const gaps = Array.isArray(ignoredSourceGapWindows) ? ignoredSourceGapWindows : [];
   const neutral = Array.isArray(ignoredNeutralWindows) ? ignoredNeutralWindows : [];
   for (const window of used.slice(0, 4)) {
-    lines.push(formatKillWindowLine(window, window.usedDays && window.usedDays < window.dayCount ? `учтено ${formatNumber(window.usedDays)} дней из окна` : "учтено полностью"));
+    lines.push(formatKillWindowLine(window, window.usedDays && window.usedDays < window.dayCount ? `в скользящие 7д вошло ${formatCompactKills(window.usedDays, 1)} дней из окна` : "окно полностью пересекает скользящие 7д"));
   }
   for (const window of old.slice(0, 2)) {
-    lines.push(formatKillWindowLine(window, "старое окно, сохранено в истории, но не вошло в последние 6 kill-days"));
+    lines.push(formatKillWindowLine(window, "старое окно, сохранено в истории, но уже вышло из скользящих 7д"));
   }
   for (const window of outliers.slice(0, 2)) {
     lines.push(formatKillWindowLine(window, `не учтено: выше лимита ${formatNumber(PROFILE_KILLS_DAY_OUTLIER_LIMIT)}/день`));
@@ -1740,12 +1943,13 @@ function buildProfileRatingLeagues({
   standing = {},
   populationProfiles = [],
   recentKillChanges = [],
+  userId = "",
   currentProfileLabel = "",
   now = null,
 } = {}) {
   return [
     buildActivityRatingAxis({ activitySummary, voiceSummary, populationProfiles, currentProfileLabel }),
-    buildKillsRatingAxis({ profile, approvedKills, standing, recentKillChanges, robloxSummary, robloxDisplayState, now }),
+    buildRollingKillsRatingAxis({ profile, approvedKills, standing, recentKillChanges, populationProfiles, userId, currentProfileLabel, now }),
     buildJjsRatingAxis({ profile, robloxSummary, robloxDisplayState, populationProfiles, currentProfileLabel }),
   ];
 }
@@ -2120,34 +2324,42 @@ function getNextKillMilestoneTargetLine(approvedKills = null) {
   return "Kill milestones: максимум открыт";
 }
 
-function buildProgressCurrentLines({ approvedKills = null, standing = {} } = {}) {
+function buildProgressCurrentLines({ approvedKills = null, standing = {}, killsAxis = null } = {}) {
   const lines = [];
   const kills = normalizeNullableFiniteNumber(approvedKills);
   const rank = normalizeNullableFiniteNumber(standing?.rank);
   const total = normalizeNullableFiniteNumber(standing?.totalVerified);
   const share = normalizeNullableFiniteNumber(standing?.shareOfServerKills);
   const nextKills = normalizeNullableFiniteNumber(standing?.killsToNextRank ?? standing?.killsToNext);
-  lines.push([
-    Number.isFinite(kills) ? `Kills ${formatNumber(kills)}` : "Kills ждут proof",
-    Number.isFinite(rank) && Number.isFinite(total) ? `#${formatNumber(rank)}/${formatNumber(total)}` : null,
-    Number.isFinite(share) ? `${formatPercent(share, 1)} серверных kills` : null,
-  ].filter(Boolean).join(" · "));
-  if (Number.isFinite(nextKills) && Number.isFinite(rank) && rank > 1) {
-    lines.push(`До #${formatNumber(rank - 1)}: +${formatNumber(nextKills)} kills`);
-  } else if (Number.isFinite(rank) && rank === 1) {
-    lines.push("Место по kills: лидер");
+  if (killsAxis && killsAxis.isLocked !== true && Number.isFinite(Number(killsAxis.earnedKills7d))) {
+    lines.push([
+      `Скользящие 7д +${formatCompactKills(killsAxis.earnedKills7d, 1)} kills`,
+      Number.isFinite(Number(killsAxis.weeklyLeaderRatioPercent)) ? `${formatPercent(killsAxis.weeklyLeaderRatioPercent, 1)} лидера` : null,
+      Number.isFinite(Number(killsAxis.weeklyLeaderKills7d)) ? `лидер +${formatCompactKills(killsAxis.weeklyLeaderKills7d, 1)}` : null,
+    ].filter(Boolean).join(" · "));
+    lines.push(Number.isFinite(Number(killsAxis.sPlusThresholdKills7d))
+      ? `S+ планка: ${formatCompactKills(killsAxis.sPlusThresholdKills7d, 1)} kills за 7д`
+      : "S+ планка появится после семидневного лидера");
+  } else if (killsAxis?.lockReason) {
+    lines.push(killsAxis.lockReason);
   } else {
-    lines.push("Место по kills откроется после общего рейтинга.");
+    lines.push("Скользящие 7д откроются после пары approved proof.");
   }
-  lines.push(getNextKillTierTargetLine(kills));
+  lines.push([
+    Number.isFinite(kills) ? `За всё время ${formatNumber(kills)} kills` : "За всё время ждёт proof",
+    Number.isFinite(killsAxis?.lifetimeBonusPercent) ? `бонус +${formatCompactKills(killsAxis.lifetimeBonusPercent, 1)}%` : null,
+    Number.isFinite(rank) && Number.isFinite(total) ? `за всё время #${formatNumber(rank)}/${formatNumber(total)}` : null,
+    Number.isFinite(share) ? `${formatPercent(share, 1)} серверных kills` : null,
+    Number.isFinite(nextKills) && Number.isFinite(rank) && rank > 1 ? `до места #${formatNumber(rank - 1)} за всё время +${formatNumber(nextKills)}` : null,
+  ].filter(Boolean).join(" · "));
   return lines.slice(0, 3);
 }
 
 function buildProgressPaceLines(killsAxis = null, recentKillChanges = []) {
   if (!killsAxis || killsAxis.isLocked) {
     return [
-      killsAxis?.lockReason || "Темп откроется после approved proof.",
-      "Нужно минимум 4 валидных kill-day.",
+      killsAxis?.lockReason || "Скользящие 7д откроются после approved proof.",
+      "Нужны две датированные точки: прирост распределится по интервалу заявки.",
     ];
   }
   const recentWindows = Array.isArray(recentKillChanges) && recentKillChanges.length
@@ -2164,18 +2376,17 @@ function buildProgressPaceLines(killsAxis = null, recentKillChanges = []) {
     .filter((entry) => Number.isFinite(entry) && entry > 0)
     .slice(0, 3);
   const lines = [
-    Number.isFinite(killsAxis.averageKillsPerDay)
-      ? `${formatNumber(Math.round(killsAxis.averageKillsPerDay * 10) / 10)}/день · ${formatNumber(killsAxis.killDayCoverage)} валидных дней · ${formatRatingModifier(killsAxis.growthModifierPercent)} к Kills`
-      : `${formatNumber(killsAxis.killDayCoverage || 0)} валидных дней · рост не участвует`,
+    Number.isFinite(killsAxis.earnedKills7d)
+      ? `7д +${formatCompactKills(killsAxis.earnedKills7d, 1)} kills · ${formatCompactKills(killsAxis.averageKillsPerDay, 1)}/день · покрытие ${formatCompactKills(killsAxis.killDayCoverage || 0, 1)}/7`
+      : `${formatCompactKills(killsAxis.killDayCoverage || 0, 1)} дней покрытия · скользящие 7д не участвуют`,
     deltas.length ? `Последние окна: ${deltas.map((entry) => formatSignedNumber(entry)).join(" · ")}` : "Последние окна: история proof ещё короткая",
   ];
-  const ignored = Array.isArray(killsAxis.ignoredOutlierWindows) ? killsAxis.ignoredOutlierWindows : [];
-  if (ignored.length) {
-    lines.push(`${formatNumber(Math.round(ignored[0].averagePerDay))}/день не учтено: выше лимита ${formatNumber(PROFILE_KILLS_DAY_OUTLIER_LIMIT)}`);
-  } else if (killsAxis.stalePenaltyPercent > 0) {
-    lines.push(`Старость данных: -${formatNumber(killsAxis.stalePenaltyPercent)}%`);
-  } else if (Number.isFinite(killsAxis.averageKillsPerDay)) {
-    lines.push("Outlier выше 400/день не найден.");
+  if (killsAxis.freshnessDebuffPercent > 0) {
+    lines.push(`Свежесть proof: -${formatNumber(killsAxis.freshnessDebuffPercent)}%`);
+  } else if (Number.isFinite(killsAxis.sPlusMissingKills) && killsAxis.sPlusMissingKills > 0) {
+    lines.push(`До S+: +${formatCompactKills(killsAxis.sPlusMissingKills, 1)} kills в скользящих 7д`);
+  } else if (Number.isFinite(killsAxis.earnedKills7d)) {
+    lines.push("S+ условие за 7д закрыто или почти закрыто; следи за свежестью proof.");
   }
   return lines.slice(0, 3);
 }
@@ -2202,7 +2413,7 @@ function buildProgressWeeklyLines(profile = null) {
     ? profile.domains.seasonArchive.weeklyRollups
     : [];
   if (!rollups.length) {
-    return ["Неделя откроется после 7 дней покрытия · сейчас 0/7"];
+    return ["Архив недель откроется после 7 дней покрытия · живой Kills уже считает скользящие 7д"];
   }
   return rollups.slice().sort((left, right) => {
     const rightTime = Date.parse(String(right?.endDayKey || right?.weekKey || ""));
@@ -2215,10 +2426,10 @@ function buildProgressWeeklyLines(profile = null) {
     const jjsMinutes = normalizeNullableFiniteNumber(rollup?.totals?.jjsMinutes);
     const coverage = normalizeNullableFiniteNumber(rollup?.coverage?.coveragePercent);
     if (Number.isFinite(coverage) && coverage < 50) {
-      return `${weekKey} закрыта · покрытие ${formatPercent(coverage, 0)}`;
+      return `${weekKey} архив · покрытие ${formatPercent(coverage, 0)}`;
     }
     return [
-      `${weekKey} ${grade}`,
+      `${weekKey} архив ${grade}`,
       Number.isFinite(killsDelta) ? `${formatSignedNumber(killsDelta)} kills` : null,
       Number.isFinite(jjsMinutes) ? `${formatJjsHoursFromMinutes(jjsMinutes)} JJS` : null,
       Number.isFinite(coverage) ? `покрытие ${formatPercent(coverage, 0)}` : null,
@@ -2229,10 +2440,17 @@ function buildProgressWeeklyLines(profile = null) {
 function buildUpgradeHintLines(profileRatingAxes = [], approvedKills = null, standing = {}) {
   const axes = Array.isArray(profileRatingAxes) ? profileRatingAxes : [];
   const lines = [];
-  const rank = normalizeNullableFiniteNumber(standing?.rank);
-  const nextKills = normalizeNullableFiniteNumber(standing?.killsToNextRank ?? standing?.killsToNext);
-  if (Number.isFinite(rank) && rank > 1 && Number.isFinite(nextKills)) {
-    lines.push(`Kills #${formatNumber(rank - 1)}: +${formatNumber(nextKills)} kills`);
+  const killsAxis = axes.find((axis) => axis?.axisName === "kills") || null;
+  if (killsAxis && killsAxis.isLocked !== true) {
+    if (Number.isFinite(killsAxis.sPlusMissingKills) && killsAxis.sPlusMissingKills > 0) {
+      lines.push(`Kills S+: +${formatCompactKills(killsAxis.sPlusMissingKills, 1)} kills за скользящие 7д`);
+    } else if (killsAxis.freshnessDebuffPercent > 0) {
+      lines.push(`Kills: обновить proof, сейчас свежесть -${formatNumber(killsAxis.freshnessDebuffPercent)}%`);
+    } else {
+      lines.push("Kills: удержать 90%+ от семидневного лидера");
+    }
+  } else if (killsAxis?.lockReason) {
+    lines.push("Kills: нужна пара датированных proof-снимков");
   }
   const tierLine = getNextKillTierTargetLine(approvedKills);
   if (tierLine && !/максимум/.test(tierLine)) lines.push(tierLine);
@@ -2277,7 +2495,7 @@ function buildProgressDashboard({
   const killsAxis = (Array.isArray(profileRatingAxes) ? profileRatingAxes : []).find((axis) => axis?.axisName === "kills") || null;
   return {
     blocks: [
-      { title: "⚔️ Сейчас", lines: buildProgressCurrentLines({ approvedKills, standing }) },
+      { title: "⚔️ Сейчас", lines: buildProgressCurrentLines({ approvedKills, standing, killsAxis }) },
       { title: "📈 Темп", lines: buildProgressPaceLines(killsAxis, recentKillChanges) },
       { title: "🧾 Proof", lines: buildProgressProofLines({ proofGapBlock, latestSubmission, pendingSubmission }) },
       { title: "🗓️ Недели", lines: buildProgressWeeklyLines(profile) },
@@ -3392,6 +3610,7 @@ function buildProfileReadModel(options = {}) {
       standing,
       populationProfiles,
       recentKillChanges,
+      userId,
       currentProfileLabel: displayName,
       now: options.now,
     }) : [];
@@ -3493,14 +3712,18 @@ function buildProfileReadModel(options = {}) {
   });
 
   const contributionLines = [];
+  const killsRatingAxis = profileRatingAxes.find((axis) => axis?.axisName === "kills") || null;
+  if (killsRatingAxis && killsRatingAxis.isLocked !== true && Number.isFinite(Number(killsRatingAxis.earnedKills7d))) {
+    contributionLines.push(`Скользящие 7д kills: +${formatCompactKills(killsRatingAxis.earnedKills7d, 1)} из S+ планки ${formatCompactKills(killsRatingAxis.sPlusThresholdKills7d, 1)}`);
+  }
   if (Number.isFinite(approvedKills)) {
-    contributionLines.push(`Подтверждённые kills: ${formatNumber(approvedKills)}`);
+    contributionLines.push(`Approved kills за всё время: ${formatNumber(approvedKills)}${Number.isFinite(killsRatingAxis?.lifetimeBonusPercent) ? ` · бонус +${formatCompactKills(killsRatingAxis.lifetimeBonusPercent, 1)}%` : ""}`);
   }
   if (Number.isFinite(killTier) && killTier > 0) {
     contributionLines.push(`Тир по kills: ${killTier}`);
   }
   if (standing.rank) {
-    contributionLines.push(`Место по kills: #${standing.rank} из ${formatNumber(standing.totalVerified)}`);
+    contributionLines.push(`Место по kills за всё время: #${standing.rank} из ${formatNumber(standing.totalVerified)}`);
   }
   if (standing.totalKills) {
     contributionLines.push(`Всего kills на сервере: ${formatNumber(standing.totalKills)}`);

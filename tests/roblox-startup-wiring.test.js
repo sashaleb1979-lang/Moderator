@@ -14,8 +14,7 @@ test("welcome-bot wires username repair into scheduled Roblox playtime sync", ()
   );
   assert.match(
     source,
-    /fetchUserPresences:\s*robloxApiClient\.fetchUserPresences\.bind\(robloxApiClient\)/,
-    /fetchUsersByUsernames:\s*robloxApiClient\.fetchUsersByUsernames\.bind\(robloxApiClient\)/,
+    /const syncRobloxPlaytime = [\s\S]*?runRobloxPlaytimeSyncJob\(\{[\s\S]*?fetchUsersByUsernames:\s*robloxApiClient\.fetchUsersByUsernames\.bind\(robloxApiClient\)/,
     "expected scheduled playtime sync to wire username-based binding repair"
   );
 });
@@ -27,11 +26,6 @@ test("welcome-bot serializes Roblox runtime flush through the shared db task run
     /const flushRobloxRuntime = [\s\S]*?runSerializedDbTask\(\(\) => flushRobloxRuntimeState\(\{[\s\S]*?saveDb,[\s\S]*?\}\),\s*"roblox-runtime-flush"\)/,
     "expected Roblox runtime flush wiring to use the shared serialized db task runner"
   );
-  assert.match(
-    source,
-    /saveDb/,
-    "expected serialized runtime flush wiring to preserve the existing saveDb persist path inside the queued task"
-  );
 });
 
 test("welcome-bot wires fetchAccessUser into the profile operator for fresh server-tag reads", () => {
@@ -39,7 +33,6 @@ test("welcome-bot wires fetchAccessUser into the profile operator for fresh serv
   assert.match(
     source,
     /function getProfileOperator\(\) \{[\s\S]*?profileOperator = createProfileOperator\(\{[\s\S]*?fetchAccessUser:\s*\(userId\) => client\.users\.fetch\(userId\),/,
-    /fetchAccessUser:\s*\(userId\)\s*=>\s*client\.users\.fetch\(userId\)/,
     "expected profile operator wiring to refresh requester user identity separately from general profile fetches"
   );
 });

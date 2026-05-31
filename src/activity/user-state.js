@@ -308,6 +308,24 @@ function resolveActivityUserInspectionDiagnosis({
     };
   }
 
+  if (roleAssignmentPlan?.newcomerSuppressed === true) {
+    if (roleAssignmentPlan?.skipReason === "unchanged") {
+      return {
+        statusCode: "newcomer_suppressed",
+        summary: "Newcomer-роль была снята вручную, поэтому авто-sync удерживает рассчитанный activity-tier вместо возврата newcomer.",
+        recommendedAction: "Если хочешь вернуть newcomer, сначала верни newcomer Discord-роль вручную и затем повтори roles-only sync.",
+      };
+    }
+
+    if (roleAssignmentPlan?.shouldApply) {
+      return {
+        statusCode: "newcomer_suppressed",
+        summary: "Newcomer-роль была снята вручную, поэтому система не возвращает newcomer и переключит пользователя на рассчитанный activity-tier.",
+        recommendedAction: "Запусти roles-only sync, чтобы выдать текущий activity-tier. Чтобы вернуть newcomer, сначала верни newcomer Discord-роль вручную.",
+      };
+    }
+  }
+
   if (roleEligibilityStatus === "gated_new_member") {
     return {
       statusCode: "gated_new_member",

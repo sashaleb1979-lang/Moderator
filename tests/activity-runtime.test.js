@@ -779,9 +779,9 @@ test("rebuildActivityUserSnapshot gates very new members and applies a temporary
   assert.equal(returningSnapshot.baseActivityScore, 21);
   assert.equal(returningSnapshot.activityScoreMultiplier, 1);
   assert.equal(returningSnapshot.activityScore, 21);
-  assert.equal(returningSnapshot.roleEligibilityStatus, "eligible");
-  assert.equal(returningSnapshot.roleEligibleForActivityRole, true);
-  assert.equal(returningSnapshot.desiredActivityRoleKey, "weak");
+  assert.equal(returningSnapshot.roleEligibilityStatus, "gated_new_member");
+  assert.equal(returningSnapshot.roleEligibleForActivityRole, false);
+  assert.equal(returningSnapshot.desiredActivityRoleKey, null);
   assert.equal(returningSnapshot.returningMember, true);
   assert.equal(returningSnapshot.guildJoinCount, 2);
 });
