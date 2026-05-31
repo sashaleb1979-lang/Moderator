@@ -298,6 +298,7 @@ async function runClientReadyCore(client, options = {}) {
     runSotStartupAlerts,
     registerGuildCommands,
     syncApprovedTierRoles,
+    syncApprovedAccessRoles = null,
     syncAccessCompanionRoles = null,
     refreshWelcomePanel,
     refreshAllTierlists,
@@ -309,6 +310,9 @@ async function runClientReadyCore(client, options = {}) {
   assertFunction(runSotStartupAlerts, "runSotStartupAlerts");
   assertFunction(registerGuildCommands, "registerGuildCommands");
   assertFunction(syncApprovedTierRoles, "syncApprovedTierRoles");
+  if (syncApprovedAccessRoles != null) {
+    assertFunction(syncApprovedAccessRoles, "syncApprovedAccessRoles");
+  }
   if (syncAccessCompanionRoles != null) {
     assertFunction(syncAccessCompanionRoles, "syncAccessCompanionRoles");
   }
@@ -341,6 +345,13 @@ async function runClientReadyCore(client, options = {}) {
     logError("Tier role sync failed:", message);
     return 0;
   });
+  if (typeof syncApprovedAccessRoles === "function") {
+    await Promise.resolve(syncApprovedAccessRoles(client)).catch((error) => {
+      const message = recordStartupDegraded(degraded, "syncApprovedAccessRoles", error);
+      logError("Approved access role sync failed:", message);
+      return null;
+    });
+  }
   if (typeof syncAccessCompanionRoles === "function") {
     await Promise.resolve(syncAccessCompanionRoles(client)).catch((error) => {
       const message = recordStartupDegraded(degraded, "syncAccessCompanionRoles", error);

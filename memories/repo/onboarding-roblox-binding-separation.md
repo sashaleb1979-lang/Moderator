@@ -1,0 +1,6 @@
+- Canonical Roblox binding in profile.domains.roblox must stay the trusted account record; onboarding submit/reject/moderator-edit state must not downgrade it to pending/failed.
+- Current regression path lives in welcome-bot.js submit/reject/updatePendingSubmissionRobloxIdentity calling writeCanonicalRobloxBinding with onboarding statuses; applyRobloxAccountSnapshot then propagates those statuses into shared-profile summary/runtime consumers.
+- Do not paper over this in shared-profile with a preserve-verified if-statement. The correct seam is to keep transient onboarding Roblox review data on the submission/onboarding side and reserve canonical writes for verified/admin-approved bindings.
+- Approve duplicate-click claim/defer logic is a separate guard; it does not fix the older role-first approve flow that can still fail before persistence on tier/access role mutations.
+- Manual approve must surface the same degraded role-sync warnings as the review-button path; do not reply with unconditional success when approveSubmission only persisted the decision and left Discord role repair for follow-up sync.
+- Shared-profile tests may cover explicit pending/failed low-level snapshots, but that wording must stay helper-level and not imply onboarding is allowed to write transient pending/failed state into the canonical Roblox binding.

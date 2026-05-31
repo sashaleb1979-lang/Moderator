@@ -41,6 +41,7 @@ test("live tierlist refresh does not trust a non-empty partial member cache", ()
   const match = source.match(/async function getLiveCharacterStatsContext\(client, options = \{\}\) \{([\s\S]*?)function chunkTextLines/);
 
   assert.ok(match, "getLiveCharacterStatsContext exists");
-  assert.match(match[1], /await guild\.members\.fetch\(\)/);
+  assert.match(match[1], /await maybeRefreshLiveCharacterStatsMembers\(guild, \{/);
+  assert.match(match[1], /const hasTrustedMemberSnapshot = didRefreshMembers \|\| hasFreshLiveCharacterMemberSnapshot\(\);/);
   assert.doesNotMatch(match[1], /guild\.members\.cache\.size\s*<\s*2/);
 });

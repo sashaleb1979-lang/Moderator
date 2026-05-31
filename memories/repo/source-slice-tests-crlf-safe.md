@@ -1,0 +1,2 @@
+- Source extraction tests should avoid end tokens with leading newlines; use the next function token or regex lookaheads so CRLF/LF does not break slices.
+- For live member refresh assertions, prefer the current owner seam `maybeRefreshLiveCharacterStatsMembers` over older direct `guild.members.fetch()` expectations inside callers.

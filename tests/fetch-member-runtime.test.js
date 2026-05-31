@@ -8,7 +8,7 @@ const path = require("node:path");
 function loadParseGuildMemberFetchRetryAfterMs() {
   const source = fs.readFileSync(path.join(__dirname, "..", "welcome-bot.js"), "utf8");
   const startToken = "function parseGuildMemberFetchRetryAfterMs(error) {";
-  const endToken = "\n\nfunction hasFreshLiveCharacterMemberSnapshot";
+  const endToken = "function hasFreshLiveCharacterMemberSnapshot";
   const startIndex = source.indexOf(startToken);
   const endIndex = source.indexOf(endToken, startIndex);
 
@@ -20,7 +20,7 @@ function loadParseGuildMemberFetchRetryAfterMs() {
 function loadFetchMember() {
   const source = fs.readFileSync(path.join(__dirname, "..", "welcome-bot.js"), "utf8");
   const startToken = "async function fetchMember(client, userId) {";
-  const endToken = "\nasync function syncProfileNamesFromDiscord(client) {";
+  const endToken = "async function syncProfileNamesFromDiscord(client) {";
   const startIndex = source.indexOf(startToken);
   const endIndex = source.indexOf(endToken, startIndex);
 

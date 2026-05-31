@@ -4454,6 +4454,17 @@ function writeCanonicalRobloxBinding(userId, profile, source = {}, options = {})
   };
 }
 
+function writePendingSubmissionRobloxIdentity(submission, source = {}) {
+  const targetSubmission = submission && typeof submission === "object" ? submission : null;
+  if (!targetSubmission) return null;
+
+  const snapshot = buildCanonicalRobloxBindingSnapshot(source);
+  targetSubmission.robloxUsername = snapshot.username || "";
+  targetSubmission.robloxUserId = snapshot.userId || "";
+  targetSubmission.robloxDisplayName = snapshot.displayName || "";
+  return snapshot;
+}
+
 function scheduleDeleteMessage(message, delayMs = TEMP_MESSAGE_DELETE_MS) {
   if (!message) return;
   setTimeout(() => {
@@ -8353,6 +8364,57 @@ async function maybeGrantAccessRoleAtStage(client, userId, stage, reason = "welc
   return granted;
 }
 
+async function syncApprovedSubmissionRoles(client, submission, options = {}) {
+  const tier = Number(options?.tier ?? submission?.derivedTier);
+  const reason = String(options?.reason || "welcome submission approved").trim() || "welcome submission approved";
+  const warnings = [];
+  let tierSynced = false;
+  let accessAttempted = false;
+  let accessGranted = false;
+
+  try {
+    await ensureSingleTierRole(client, submission.userId, tier, reason);
+    tierSynced = true;
+  } catch (error) {
+    warnings.push(`tier-role: ${formatRuntimeError(error)}`);
+  }
+
+  const profile = getProfile(submission.userId);
+  if (!profile.accessGrantedAt || getCurrentOnboardAccessGrantMode() === ONBOARD_ACCESS_GRANT_MODES.AFTER_APPROVE) {
+    accessAttempted = true;
+    try {
+      accessGranted = await maybeGrantAccessRoleAtStage(
+        client,
+        submission.userId,
+        ONBOARD_ACCESS_GRANT_MODES.AFTER_APPROVE,
+        reason
+      );
+      if (accessGranted) {
+        try {
+          saveDb();
+        } catch (error) {
+          warnings.push(`сохранение accessGrantedAt: ${formatRuntimeError(error)}`);
+        }
+      }
+    } catch (error) {
+      warnings.push(`стартовый доступ: ${formatRuntimeError(error)}`);
+    }
+  }
+
+  return {
+    tierSynced,
+    accessAttempted,
+    accessGranted,
+    warnings,
+  };
+}
+
+function normalizeApprovedRoleSyncWarnings(roleSync) {
+  return Array.isArray(roleSync?.warnings)
+    ? roleSync.warnings.filter((warning) => String(warning || "").trim())
+    : [];
+}
+
 async function grantNonGgsAccessRole(client, userId, reason = "non-JJS captcha passed") {
   const member = await fetchMember(client, userId);
   if (!member) return false;
@@ -10180,17 +10242,6 @@ async function createPendingSubmissionFromAttachment(client, input) {
     profile.lastSubmissionId = submission.id;
     profile.lastSubmissionStatus = "pending";
     profile.updatedAt = nowIso();
-    if (submission.robloxUsername && submission.robloxUserId) {
-      writeCanonicalRobloxBinding(input.user.id, profile, submission, {
-        verificationStatus: "pending",
-        verifiedAt: null,
-        updatedAt: profile.updatedAt,
-        lastSubmissionId: submission.id,
-        lastReviewedAt: null,
-        reviewedBy: null,
-        source: "onboarding",
-      });
-    }
     setSubmitCooldown(input.user.id);
     saveDb();
   } catch (error) {
@@ -10360,8 +10411,6 @@ async function approveSubmission(client, submission, moderatorTag) {
   const tier = killTierFor(submission.kills);
   if (!tier) throw new Error("Не удалось вычислить tier по kills");
 
-  await ensureSingleTierRole(client, submission.userId, tier, "approved welcome submission");
-
   const profile = getProfile(submission.userId);
   const previousSubmission = cloneJsonValue(submission);
   const previousProfile = cloneJsonValue(profile);
@@ -10377,9 +10426,6 @@ async function approveSubmission(client, submission, moderatorTag) {
   profile.username = submission.username;
   profile.approvedKills = submission.kills;
   profile.killTier = tier;
-  if (!profile.accessGrantedAt || getCurrentOnboardAccessGrantMode() === ONBOARD_ACCESS_GRANT_MODES.AFTER_APPROVE) {
-    await maybeGrantAccessRoleAtStage(client, submission.userId, ONBOARD_ACCESS_GRANT_MODES.AFTER_APPROVE, "welcome submission approved");
-  }
   profile.lastSubmissionId = submission.id;
   profile.lastSubmissionStatus = "approved";
   profile.lastReviewedAt = submission.reviewedAt;
@@ -10412,6 +10458,15 @@ async function approveSubmission(client, submission, moderatorTag) {
     throw error;
   }
 
+  const roleSync = await syncApprovedSubmissionRoles(client, submission, {
+    tier,
+    reason: "approved welcome submission",
+  });
+  const roleSyncWarnings = normalizeApprovedRoleSyncWarnings(roleSync);
+  if (roleSyncWarnings.length) {
+    console.warn(`Approve role sync degraded for ${submission.id}: ${roleSyncWarnings.join("; ")}`);
+  }
+
   const reviewMessage = await fetchReviewMessage(client, submission);
   if (reviewMessage) {
     await reviewMessage.edit({
@@ -10429,6 +10484,9 @@ async function approveSubmission(client, submission, moderatorTag) {
       "Твоя заявка одобрена.",
       `Kills: ${submission.kills}`,
       `Tier: ${submission.derivedTier} (${formatTierLabel(submission.derivedTier)})`,
+      ...(roleSyncWarnings.length
+        ? ["Синхронизация ролей завершилась с предупреждением. Если роль не появилась сразу, модератор досинхронизирует её отдельно."]
+        : []),
     ].join("\n")
   ).catch((error) => {
     console.warn(`Approve DM failed for ${submission.userId}: ${formatRuntimeError(error)}`);
@@ -10437,13 +10495,23 @@ async function approveSubmission(client, submission, moderatorTag) {
   await logLine(client, `APPROVE: <@${submission.userId}> kills ${submission.kills} -> tier ${submission.derivedTier} by ${moderatorTag}`).catch((error) => {
     console.warn(`Approve log failed for ${submission.id}: ${formatRuntimeError(error)}`);
   });
+  if (roleSyncWarnings.length) {
+    await logLine(client, `APPROVE DEGRADED: <@${submission.userId}> ${roleSyncWarnings.join(" | ")}`).catch((error) => {
+      console.warn(`Approve degraded log failed for ${submission.id}: ${formatRuntimeError(error)}`);
+    });
+  }
   scheduleCoalescedTierlistRefresh(client, "approve");
+  return roleSync;
 }
 
 async function processApprovalInteraction(client, interaction, submission, moderatorTag) {
   try {
-    await approveSubmission(client, submission, moderatorTag);
-    await interaction.editReply("Заявка одобрена. Tier-role выдана.").catch(() => {});
+    const roleSync = await approveSubmission(client, submission, moderatorTag);
+    const warnings = normalizeApprovedRoleSyncWarnings(roleSync);
+    const replyText = warnings.length
+      ? `Заявка одобрена, но синхронизация ролей завершилась с предупреждениями: ${warnings.join("; ")}`
+      : "Заявка одобрена. Tier-role выдана.";
+    await interaction.editReply(replyText).catch(() => {});
   } catch (error) {
     console.error(`Approve interaction failed for ${submission.id}: ${formatRuntimeError(error)}`);
     const message = String(error?.message || error || "Не удалось одобрить заявку.").trim() || "Не удалось одобрить заявку.";
@@ -10473,16 +10541,6 @@ async function rejectSubmission(client, submission, moderatorTag, reason) {
   profile.lastSubmissionStatus = "rejected";
   profile.lastReviewedAt = submission.reviewedAt;
   profile.updatedAt = nowIso();
-  if (submission.robloxUsername && submission.robloxUserId) {
-    writeCanonicalRobloxBinding(submission.userId, profile, submission, {
-      verificationStatus: "failed",
-      updatedAt: profile.updatedAt,
-      lastSubmissionId: submission.id,
-      lastReviewedAt: submission.reviewedAt,
-      reviewedBy: moderatorTag,
-      source: "onboarding",
-    });
-  }
 
   try {
     saveDb();
@@ -10536,28 +10594,12 @@ async function updateSubmissionKills(client, submission, kills, moderatorTag) {
 
 async function updatePendingSubmissionRobloxIdentity(client, submission, robloxUser, moderatorTag = null) {
   const previousSubmission = cloneJsonValue(submission);
-  const profile = getProfile(submission.userId);
-  const previousProfile = cloneJsonValue(profile);
-
-  profile.updatedAt = nowIso();
-  const bindingResult = writeCanonicalRobloxBinding(submission.userId, profile, robloxUser, {
-    verificationStatus: "pending",
-    verifiedAt: null,
-    updatedAt: profile.updatedAt,
-    lastSubmissionId: submission.id,
-    lastReviewedAt: null,
-    reviewedBy: moderatorTag,
-    source: "onboarding",
-  });
-  submission.robloxUsername = bindingResult?.snapshot?.username || "";
-  submission.robloxUserId = bindingResult?.snapshot?.userId || "";
-  submission.robloxDisplayName = bindingResult?.snapshot?.displayName || "";
+  writePendingSubmissionRobloxIdentity(submission, robloxUser);
 
   try {
     saveDb();
   } catch (error) {
     restoreRecordValue(db.submissions, submission.id, previousSubmission, true);
-    restoreRecordValue(db.profiles, submission.userId, previousProfile, true);
     throw error;
   }
 
@@ -10631,8 +10673,9 @@ async function createManualApprovedRecord(client, targetUser, screenshotAttachme
   }
 
   db.submissions[submission.id] = submission;
+  let roleSync = null;
   try {
-    await approveSubmission(client, submission, moderatorTag);
+    roleSync = await approveSubmission(client, submission, moderatorTag);
   } catch (error) {
     delete db.submissions[submission.id];
     await deleteTrackedMessage(
@@ -10645,7 +10688,10 @@ async function createManualApprovedRecord(client, targetUser, screenshotAttachme
     });
     throw error;
   }
-  return submission;
+  return {
+    submission,
+    roleSync,
+  };
 }
 
 function getRolePanelDraftErrorText(errors) {
@@ -14945,6 +14991,77 @@ async function syncApprovedTierRoles(client, targetUserId = null) {
   return synced;
 }
 
+function createApprovedAccessSyncSummary() {
+  return {
+    processed: 0,
+    granted: 0,
+    alreadyHad: 0,
+    missingMembers: 0,
+    failed: 0,
+    updatedProfiles: 0,
+  };
+}
+
+function formatApprovedAccessSyncSummary(result = {}) {
+  return `Стартовый доступ: processed ${Number(result.processed || 0)}, granted ${Number(result.granted || 0)}, already had ${Number(result.alreadyHad || 0)}, missing members ${Number(result.missingMembers || 0)}, failed ${Number(result.failed || 0)}.`;
+}
+
+async function syncApprovedAccessRoles(client, targetUserId = null, options = {}) {
+  const summary = createApprovedAccessSyncSummary();
+  const reason = String(
+    options?.reason
+    || (targetUserId ? "manual approved access sync" : "approved access sync")
+  ).trim() || "approved access sync";
+  const profileEntries = targetUserId
+    ? [[targetUserId, db.profiles?.[targetUserId]]]
+    : Object.entries(db.profiles || {});
+  let changed = false;
+
+  for (const [userId, profile] of profileEntries) {
+    if (!profile || profile.lastSubmissionStatus !== "approved") continue;
+
+    const member = await fetchMember(client, userId);
+    if (!member) {
+      summary.missingMembers += 1;
+      continue;
+    }
+
+    summary.processed += 1;
+    const managedRoleIds = getManagedStartAccessRoleIds().filter((roleId) => roleId && member?.roles?.cache?.has(roleId));
+    const targetRoleId = getGrantedAccessRoleIdForMode(getCurrentOnboardMode(), member);
+    const alreadyInSync = Boolean(targetRoleId && member?.roles?.cache?.has(targetRoleId) && managedRoleIds.length === 1);
+    if (alreadyInSync) {
+      summary.alreadyHad += 1;
+      if (!profile.accessGrantedAt) {
+        profile.accessGrantedAt = nowIso();
+        profile.updatedAt = nowIso();
+        summary.updatedProfiles += 1;
+        changed = true;
+      }
+      continue;
+    }
+
+    try {
+      const granted = await grantAccessRole(client, userId, reason);
+      if (!granted) {
+        summary.missingMembers += 1;
+        continue;
+      }
+      profile.accessGrantedAt = profile.accessGrantedAt || nowIso();
+      profile.updatedAt = nowIso();
+      summary.granted += 1;
+      summary.updatedProfiles += 1;
+      changed = true;
+    } catch (error) {
+      summary.failed += 1;
+      console.warn(`Approved access sync failed for ${userId}: ${formatRuntimeError(error)}`);
+    }
+  }
+
+  if (changed) saveDb();
+  return summary;
+}
+
 function createAccessCompanionSyncSummary() {
   return {
     configured: Boolean(getAccessCompanionRoleId()),
@@ -15504,6 +15621,7 @@ client.once("clientReady", async () => {
       }),
       registerGuildCommands,
       syncApprovedTierRoles,
+      syncApprovedAccessRoles: (currentClient) => syncApprovedAccessRoles(currentClient, null, { reason: "startup approved access sync" }),
       syncAccessCompanionRoles: (currentClient) => syncAccessCompanionRoles(currentClient, { reason: "startup access companion sync" }),
       refreshWelcomePanel,
       refreshAllTierlists,
@@ -17116,12 +17234,13 @@ client.on("interactionCreate", async (interaction) => {
       const accessMember = await fetchMember(client, target.id);
       const previousAccessRoleIds = getRolePoolSnapshot(accessMember, accessRoleIds);
 
+      let manualApproval = null;
       try {
         const profile = getProfile(target.id);
         profile.displayName = getProfileDisplayName(target.id, profile);
         profile.username = target.username;
 
-        await createManualApprovedRecord(client, target, screenshot, kills, interaction.user.tag);
+        manualApproval = await createManualApprovedRecord(client, target, screenshot, kills, interaction.user.tag);
       } catch (error) {
         restoreRecordValue(db.profiles, target.id, previousProfile, hadProfile);
         await restoreRolePoolSnapshot(
@@ -17141,7 +17260,11 @@ client.on("interactionCreate", async (interaction) => {
         console.warn(`Manual approve supersede warning for ${target.id}: ${formatRuntimeError(error)}`);
       });
 
-      await interaction.editReply(`Готово. <@${target.id}> теперь имеет kills ${kills} и tier ${killTierFor(kills)}.`);
+      const manualWarnings = normalizeApprovedRoleSyncWarnings(manualApproval?.roleSync);
+      const statusText = manualWarnings.length
+        ? `Профиль одобрен для <@${target.id}>: kills ${kills}, tier ${killTierFor(kills)}. Но синхронизация ролей завершилась с предупреждениями: ${manualWarnings.join("; ")}`
+        : `Готово. <@${target.id}> теперь имеет kills ${kills} и tier ${killTierFor(kills)}.`;
+      await interaction.editReply(statusText);
       return;
     }
 
@@ -20733,9 +20856,10 @@ client.on("interactionCreate", async (interaction) => {
         const managed = await ensureManagedRoles(client);
         await maybeLogSotCharacterHealthAlert(client, "panel-sync-roles");
         const synced = await syncApprovedTierRoles(client);
+        const approvedAccess = await syncApprovedAccessRoles(client, null, { reason: `panel approved access sync by ${interaction.user.tag}` });
         const companion = await syncAccessCompanionRoles(client, { reason: `panel sync roles by ${interaction.user.tag}` });
         const residentChat = await syncResidentChatAccessRoles(client, { reason: `panel resident chat sync by ${interaction.user.tag}` });
-        statusText = `Роли пересинхронизированы. Tier-профилей: ${synced}. Персонажи: resolved ${managed.resolvedCharacters}, recovered ${managed.recoveredCharacters}, ambiguous ${managed.ambiguousCharacters}, unresolved ${managed.unresolvedCharacters}. ${formatAccessCompanionSyncSummary(companion)} ${formatResidentChatAccessSyncSummary(residentChat)}`;
+        statusText = `Роли пересинхронизированы. Tier-профилей: ${synced}. Персонажи: resolved ${managed.resolvedCharacters}, recovered ${managed.recoveredCharacters}, ambiguous ${managed.ambiguousCharacters}, unresolved ${managed.unresolvedCharacters}. ${formatApprovedAccessSyncSummary(approvedAccess)} ${formatAccessCompanionSyncSummary(companion)} ${formatResidentChatAccessSyncSummary(residentChat)}`;
       } else if (interaction.customId === "panel_sync_access_companion") {
         const residentChat = await syncResidentChatAccessRoles(client, { reason: `panel resident chat sync by ${interaction.user.tag}` });
         statusText = formatResidentChatAccessSyncSummary(residentChat);

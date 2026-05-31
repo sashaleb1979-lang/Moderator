@@ -402,6 +402,9 @@ test("runClientReadyCore preserves startup order for the core prelude", async ()
       calls.push(["syncApprovedTierRoles", currentClient]);
       return 0;
     },
+    async syncApprovedAccessRoles(currentClient) {
+      calls.push(["syncApprovedAccessRoles", currentClient]);
+    },
     async syncAccessCompanionRoles(currentClient) {
       calls.push(["syncAccessCompanionRoles", currentClient]);
     },
@@ -418,6 +421,7 @@ test("runClientReadyCore preserves startup order for the core prelude", async ()
     ["ensureManagedRoles", client],
     ["runSotStartupAlerts", client],
     ["syncApprovedTierRoles", client],
+    ["syncApprovedAccessRoles", client],
     ["syncAccessCompanionRoles", client],
     ["refreshWelcomePanel", client],
     ["refreshAllTierlists", client],
@@ -511,6 +515,9 @@ test("runClientReadyCore returns degraded summaries for every soft startup failu
     async syncApprovedTierRoles() {
       throw new Error("tier sync failed");
     },
+    async syncApprovedAccessRoles() {
+      throw new Error("approved access sync failed");
+    },
     async syncAccessCompanionRoles() {
       throw new Error("companion sync failed");
     },
@@ -530,6 +537,7 @@ test("runClientReadyCore returns degraded summaries for every soft startup failu
   assert.deepEqual(result.degraded, [
     { step: "runSotStartupAlerts", message: "sot alerts failed" },
     { step: "syncApprovedTierRoles", message: "tier sync failed" },
+    { step: "syncApprovedAccessRoles", message: "approved access sync failed" },
     { step: "syncAccessCompanionRoles", message: "companion sync failed" },
     { step: "refreshWelcomePanel", message: "welcome refresh failed" },
     { step: "refreshAllTierlists", message: "tierlist refresh failed" },
@@ -538,6 +546,7 @@ test("runClientReadyCore returns degraded summaries for every soft startup failu
   assert.deepEqual(errors, [
     "SoT startup alerts failed: sot alerts failed",
     "Tier role sync failed: tier sync failed",
+    "Approved access role sync failed: approved access sync failed",
     "Access companion role sync failed: companion sync failed",
     "Welcome panel refresh failed: welcome refresh failed",
     "Tierlist refresh failed: tierlist refresh failed",
@@ -602,6 +611,9 @@ test("runClientReadyCore logs access companion sync failures and continues", asy
     async syncApprovedTierRoles() {
       calls.push("syncApprovedTierRoles");
     },
+    async syncApprovedAccessRoles() {
+      calls.push("syncApprovedAccessRoles");
+    },
     async syncAccessCompanionRoles() {
       calls.push("syncAccessCompanionRoles");
       throw new Error("companion sync failed");
@@ -620,11 +632,55 @@ test("runClientReadyCore logs access companion sync failures and continues", asy
     "ensureManagedRoles",
     "runSotStartupAlerts",
     "syncApprovedTierRoles",
+    "syncApprovedAccessRoles",
     "syncAccessCompanionRoles",
     "refreshWelcomePanel",
     "refreshAllTierlists",
   ]);
   assert.deepEqual(errors, ["Access companion role sync failed: companion sync failed"]);
+});
+
+test("runClientReadyCore logs approved access sync failures and continues", async () => {
+  const calls = [];
+  const errors = [];
+
+  await runClientReadyCore({ id: "client" }, {
+    async registerGuildCommands() {
+      calls.push("registerGuildCommands");
+    },
+    async ensureManagedRoles() {
+      calls.push("ensureManagedRoles");
+      return {};
+    },
+    async runSotStartupAlerts() {
+      calls.push("runSotStartupAlerts");
+    },
+    async syncApprovedTierRoles() {
+      calls.push("syncApprovedTierRoles");
+    },
+    async syncApprovedAccessRoles() {
+      calls.push("syncApprovedAccessRoles");
+      throw new Error("approved access sync failed");
+    },
+    async refreshWelcomePanel() {
+      calls.push("refreshWelcomePanel");
+    },
+    async refreshAllTierlists() {
+      calls.push("refreshAllTierlists");
+    },
+    logError: (...args) => errors.push(args.join(" ")),
+  });
+
+  assert.deepEqual(calls, [
+    "registerGuildCommands",
+    "ensureManagedRoles",
+    "runSotStartupAlerts",
+    "syncApprovedTierRoles",
+    "syncApprovedAccessRoles",
+    "refreshWelcomePanel",
+    "refreshAllTierlists",
+  ]);
+  assert.deepEqual(errors, ["Approved access role sync failed: approved access sync failed"]);
 });
 
 test("runClientReadyCore logs welcome refresh failures and still refreshes tierlists", async () => {

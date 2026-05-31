@@ -1223,7 +1223,7 @@ test("normalizeRobloxDomainState keeps current names first and normalizes social
   assert.equal(result.coPlay.peers[1].isRobloxFriend, false);
 });
 
-test("applyRobloxAccountSnapshot writes canonical pending Roblox state and preserves existing social scaffolding", () => {
+test("applyRobloxAccountSnapshot applies an explicit pending snapshot and preserves existing social scaffolding", () => {
   const profile = {
     domains: {
       roblox: {
@@ -1271,7 +1271,7 @@ test("applyRobloxAccountSnapshot writes canonical pending Roblox state and prese
     lastSubmissionId: "sub-1",
     lastReviewedAt: null,
     reviewedBy: null,
-    source: "onboarding",
+    source: "manual_review",
   });
 
   assert.equal(result.userId, "222");
@@ -1284,7 +1284,7 @@ test("applyRobloxAccountSnapshot writes canonical pending Roblox state and prese
   assert.equal(result.verificationStatus, "pending");
   assert.equal(result.verifiedAt, null);
   assert.equal(result.lastSubmissionId, "sub-1");
-  assert.equal(result.source, "onboarding");
+  assert.equal(result.source, "manual_review");
   assert.equal(result.serverFriends.userIds[0], "friend-1");
   assert.equal(result.playtime.totalJjsMinutes, 33);
   assert.equal(result.coPlay.peers[0].peerUserId, "peer-1");
@@ -1299,7 +1299,7 @@ test("applyRobloxAccountSnapshot writes canonical pending Roblox state and prese
   assert.equal(profile.domains.roblox.userId, "222");
 });
 
-test("applyRobloxAccountSnapshot preserves existing verification timestamp when a failed review does not override it", () => {
+test("applyRobloxAccountSnapshot preserves existing verification timestamp when an explicit failed snapshot does not override it", () => {
   const profile = {
     domains: {
       roblox: {
@@ -1320,7 +1320,7 @@ test("applyRobloxAccountSnapshot preserves existing verification timestamp when 
     lastSubmissionId: "sub-2",
     lastReviewedAt: "2026-05-10T00:00:00.000Z",
     reviewedBy: "mod#0001",
-    source: "onboarding",
+    source: "manual_review",
   });
 
   assert.equal(result.verificationStatus, "failed");
