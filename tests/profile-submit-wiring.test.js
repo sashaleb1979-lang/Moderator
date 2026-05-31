@@ -61,10 +61,12 @@ test("welcome-bot wires profile submit capture before legacy channel guards", ()
   assert.match(source, /createProfileSubmitCaptureStore\(\)/);
   const captureIndex = source.indexOf("handleProfileSubmitCaptureMessage(message)");
   const legacyEloIndex = source.indexOf("const legacyEloState = getLiveLegacyEloState();", captureIndex);
-  const welcomeGuardIndex = source.indexOf("if (message.channelId !== getResolvedChannelId(\"welcome\")) return;", captureIndex);
+  const helperRouteIndex = source.indexOf("const helperIntakeRoute = resolveHelperIntakeMessageRoute({", captureIndex);
+  const welcomeGuardIndex = source.indexOf("if (helperIntakeRoute.shouldDeleteIdleWelcomeMessage) {", captureIndex);
 
   assert.ok(captureIndex > 0, "profile capture message handler must be called");
   assert.ok(legacyEloIndex > captureIndex, "profile capture should run before legacy ELO channel guard");
+  assert.ok(helperRouteIndex > captureIndex, "profile capture should run before helper intake route resolution");
   assert.ok(welcomeGuardIndex > captureIndex, "profile capture should run before welcome-only guard");
 });
 

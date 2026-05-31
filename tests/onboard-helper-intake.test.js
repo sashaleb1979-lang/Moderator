@@ -5,6 +5,7 @@ const assert = require("node:assert/strict");
 
 const {
   HELPER_INTAKE_ACTIONS,
+  HELPER_INTAKE_MESSAGE_ROUTES,
   HELPER_INTAKE_SESSION_EXPIRE_MS,
   SUBMIT_INTAKE_ACTIONS,
   SUBMIT_INTAKE_SESSION_TTL_MS,
@@ -15,6 +16,7 @@ const {
   isSubmitIntakeSessionExpired,
   normalizeHelperIntakeSession,
   normalizeSubmitIntakeSource,
+  resolveHelperIntakeMessageRoute,
 } = require("../src/onboard/helper-intake");
 
 test("helper intake session store normalizes and matches armed sessions", () => {
@@ -77,4 +79,80 @@ test("submit intake aliases preserve the helper store contract and normalize sou
     rawText: "1234 elo",
     createdAt: created.createdAt,
   });
+});
+
+test("helper intake route resolves matching helper ELO sessions ahead of profile or welcome cleanup", () => {
+  const route = resolveHelperIntakeMessageRoute({
+    session: {
+      action: HELPER_INTAKE_ACTIONS.elo,
+      source: SUBMIT_INTAKE_SOURCES.helper,
+      channelId: "helper-channel",
+      rawText: "73 elo",
+      createdAt: 1,
+    },
+    channelId: "helper-channel",
+    welcomeChannelId: "welcome-channel",
+  });
+
+  assert.equal(route.route, HELPER_INTAKE_MESSAGE_ROUTES.helperElo);
+  assert.equal(route.hasMatchingHelperIntakeSession, true);
+  assert.equal(route.hasActiveHelperEloSession, true);
+  assert.equal(route.hasActiveHelperKillsSession, false);
+  assert.equal(route.shouldOfferProfileMessageRoute, false);
+  assert.equal(route.shouldDeleteIdleWelcomeMessage, false);
+  assert.equal(route.helperSession?.action, HELPER_INTAKE_ACTIONS.elo);
+});
+
+test("helper intake route resolves matching helper kills sessions into submit continuation", () => {
+  const route = resolveHelperIntakeMessageRoute({
+    session: {
+      action: HELPER_INTAKE_ACTIONS.kills,
+      source: SUBMIT_INTAKE_SOURCES.profile,
+      channelId: "helper-channel",
+      rawText: "3120 kills",
+      createdAt: 1,
+    },
+    channelId: "helper-channel",
+    welcomeChannelId: "welcome-channel",
+  });
+
+  assert.equal(route.route, HELPER_INTAKE_MESSAGE_ROUTES.killsSubmit);
+  assert.equal(route.hasMatchingHelperIntakeSession, true);
+  assert.equal(route.hasActiveHelperEloSession, false);
+  assert.equal(route.hasActiveHelperKillsSession, true);
+  assert.equal(route.shouldOfferProfileMessageRoute, false);
+  assert.equal(route.shouldDeleteIdleWelcomeMessage, false);
+  assert.equal(route.helperSession?.action, HELPER_INTAKE_ACTIONS.kills);
+});
+
+test("helper intake route keeps idle helper messages available for profile routing when no matching session exists", () => {
+  const route = resolveHelperIntakeMessageRoute({
+    session: {
+      action: HELPER_INTAKE_ACTIONS.kills,
+      channelId: "other-channel",
+      createdAt: 1,
+    },
+    channelId: "helper-channel",
+    welcomeChannelId: "welcome-channel",
+  });
+
+  assert.equal(route.route, HELPER_INTAKE_MESSAGE_ROUTES.ignore);
+  assert.equal(route.hasMatchingHelperIntakeSession, false);
+  assert.equal(route.shouldOfferProfileMessageRoute, true);
+  assert.equal(route.shouldDeleteIdleWelcomeMessage, false);
+  assert.equal(route.helperSession, null);
+});
+
+test("helper intake route still marks unmatched welcome messages for cleanup after profile routing declines", () => {
+  const route = resolveHelperIntakeMessageRoute({
+    session: null,
+    channelId: "welcome-channel",
+    welcomeChannelId: "welcome-channel",
+  });
+
+  assert.equal(route.route, HELPER_INTAKE_MESSAGE_ROUTES.idleWelcomeCleanup);
+  assert.equal(route.hasMatchingHelperIntakeSession, false);
+  assert.equal(route.shouldOfferProfileMessageRoute, true);
+  assert.equal(route.shouldDeleteIdleWelcomeMessage, true);
+  assert.equal(route.helperSession, null);
 });

@@ -32,7 +32,9 @@ test("welcome-bot review approve flow defers early and guards duplicate clicks",
   const guardIndex = source.indexOf("if (reviewApprovalProcessingIds.has(submissionId)) {", branchStart);
   const addIndex = source.indexOf("reviewApprovalProcessingIds.add(submissionId);", guardIndex);
   const deferIndex = source.indexOf("const acked = await safeDeferEphemeralReply(interaction, {", addIndex);
-  const progressIndex = source.indexOf('await interaction.editReply("Одобряю заявку. Не нажимай кнопку повторно.")', deferIndex);
+  const claimSetIndex = source.indexOf("submission.approveClaim = { claimedBy: interaction.user.tag, claimedAt: nowIso() };", deferIndex);
+  const saveIndex = source.indexOf("saveDb();", claimSetIndex);
+  const progressIndex = source.indexOf('await interaction.editReply("Одобряю заявку. Не нажимай кнопку повторно.")', saveIndex);
   const detachedIndex = source.indexOf("runDetached(", progressIndex);
   const helperIndex = source.indexOf("() => processApprovalInteraction(client, interaction, submission, interaction.user.tag)", detachedIndex);
   const directApproveIndex = source.indexOf("await approveSubmission(client, submission, interaction.user.tag);", branchStart);
@@ -41,13 +43,15 @@ test("welcome-bot review approve flow defers early and guards duplicate clicks",
   assert.ok(guardIndex > branchStart, "expected duplicate approve guard before heavy processing");
   assert.ok(addIndex > guardIndex, "expected approve branch to claim processing state before ack");
   assert.ok(deferIndex > addIndex, "expected approve branch to ack before slow work");
+  assert.ok(claimSetIndex > deferIndex, "expected durable approve claim only after the interaction is acknowledged");
+  assert.ok(saveIndex > claimSetIndex, "expected durable approve claim to be saved after acknowledgement");
   assert.ok(progressIndex > deferIndex, "expected approve branch to send immediate progress text");
   assert.ok(detachedIndex > progressIndex, "expected approve branch to detach heavy processing");
   assert.ok(helperIndex > detachedIndex, "expected detached helper to own approve finalize");
   assert.equal(directApproveIndex, -1, "expected approve branch to avoid awaiting heavy approval inline");
 });
 
-test("welcome-bot approve flow uses durable DB claim before heavy processing", () => {
+test("welcome-bot approve flow persists and clears durable DB claim around detached processing", () => {
   const source = fs.readFileSync(path.join(__dirname, "..", "welcome-bot.js"), "utf8");
   const branchStart = source.indexOf('if (action === "approve") {');
 
@@ -55,11 +59,15 @@ test("welcome-bot approve flow uses durable DB claim before heavy processing", (
   const claimCheckIndex = source.indexOf("const existingClaim = submission.approveClaim;", branchStart);
   assert.ok(claimCheckIndex > branchStart, "expected durable claim check in approve handler");
 
-  // claim set on submission before safeDeferEphemeralReply
-  const claimSetIndex = source.indexOf("submission.approveClaim = { claimedBy:", claimCheckIndex);
-  const deferIndex = source.indexOf("const acked = await safeDeferEphemeralReply(interaction, {", claimCheckIndex);
-  assert.ok(claimSetIndex > claimCheckIndex, "expected approveClaim to be set before ack");
-  assert.ok(claimSetIndex < deferIndex, "expected approveClaim to be set before defer");
+  // in-memory guard exists before ack, durable claim after ack
+  const addIndex = source.indexOf("reviewApprovalProcessingIds.add(submissionId);", claimCheckIndex);
+  const deferIndex = source.indexOf("const acked = await safeDeferEphemeralReply(interaction, {", addIndex);
+  const claimSetIndex = source.indexOf("submission.approveClaim = { claimedBy:", deferIndex);
+  const saveClaimIndex = source.indexOf("saveDb();", claimSetIndex);
+  assert.ok(addIndex > claimCheckIndex, "expected in-memory approve guard before ack");
+  assert.ok(deferIndex > addIndex, "expected approve branch to acknowledge before durable save");
+  assert.ok(claimSetIndex > deferIndex, "expected approveClaim to be set only after defer succeeds");
+  assert.ok(saveClaimIndex > claimSetIndex, "expected durable claim save after claim assignment");
 
   // claim deleted inside approveSubmission before saveDb
   const approveStart = source.indexOf("async function approveSubmission(client, submission, moderatorTag)");
@@ -76,6 +84,19 @@ test("welcome-bot approve flow uses durable DB claim before heavy processing", (
   // startup cleanup function exists
   assert.ok(source.includes("function clearStaleApproveClaims()"), "expected clearStaleApproveClaims function at startup");
   assert.ok(source.includes("clearStaleApproveClaims();"), "expected clearStaleApproveClaims to be called at startup");
+});
+
+test("welcome-bot edit kills modal skips empty prefill values for broken legacy submissions", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "welcome-bot.js"), "utf8");
+  const branchStart = source.indexOf('if (action === "edit") {');
+  const normalizeIndex = source.indexOf('const currentKillsValue = String(submission.kills ?? "").trim();', branchStart);
+  const guardIndex = source.indexOf("if (currentKillsValue) {", normalizeIndex);
+  const setValueIndex = source.indexOf("input.setValue(currentKillsValue);", guardIndex);
+
+  assert.ok(branchStart >= 0, "expected onboarding review edit branch");
+  assert.ok(normalizeIndex > branchStart, "expected edit kills modal to normalize the current kills value");
+  assert.ok(guardIndex > normalizeIndex, "expected edit kills modal to guard empty default values");
+  assert.ok(setValueIndex > guardIndex, "expected edit kills modal to prefill only non-empty values");
 });
 
 test("welcome-bot tierlist refresh is coalesced via scheduleCoalescedTierlistRefresh", () => {

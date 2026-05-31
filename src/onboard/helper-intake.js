@@ -16,6 +16,13 @@ const SUBMIT_INTAKE_SOURCES = Object.freeze({
 const HELPER_INTAKE_SESSION_EXPIRE_MS = 5 * 60 * 1000;
 const SUBMIT_INTAKE_SESSION_TTL_MS = HELPER_INTAKE_SESSION_EXPIRE_MS;
 
+const HELPER_INTAKE_MESSAGE_ROUTES = Object.freeze({
+  helperElo: "helper_elo",
+  killsSubmit: "kills_submit",
+  idleWelcomeCleanup: "idle_welcome_cleanup",
+  ignore: "ignore",
+});
+
 function cleanString(value, limit = 200) {
   return String(value || "").trim().slice(0, Math.max(0, Number(limit) || 0));
 }
@@ -116,6 +123,55 @@ function createHelperIntakeSessionStore(options = {}) {
   };
 }
 
+function resolveHelperIntakeMessageRoute(options = {}) {
+  const channelId = cleanString(options.channelId, 80);
+  const welcomeChannelId = cleanString(options.welcomeChannelId, 80);
+  const helperSession = normalizeHelperIntakeSession(options.session);
+  const hasMatchingHelperIntakeSession = Boolean(
+    helperSession.action
+    && helperSession.channelId
+    && channelId
+    && helperSession.channelId === channelId
+  );
+
+  if (hasMatchingHelperIntakeSession && helperSession.action === HELPER_INTAKE_ACTIONS.elo) {
+    return {
+      route: HELPER_INTAKE_MESSAGE_ROUTES.helperElo,
+      helperSession: { ...helperSession },
+      hasMatchingHelperIntakeSession: true,
+      hasActiveHelperEloSession: true,
+      hasActiveHelperKillsSession: false,
+      shouldDeleteIdleWelcomeMessage: false,
+      shouldOfferProfileMessageRoute: false,
+    };
+  }
+
+  if (hasMatchingHelperIntakeSession && helperSession.action === HELPER_INTAKE_ACTIONS.kills) {
+    return {
+      route: HELPER_INTAKE_MESSAGE_ROUTES.killsSubmit,
+      helperSession: { ...helperSession },
+      hasMatchingHelperIntakeSession: true,
+      hasActiveHelperEloSession: false,
+      hasActiveHelperKillsSession: true,
+      shouldDeleteIdleWelcomeMessage: false,
+      shouldOfferProfileMessageRoute: false,
+    };
+  }
+
+  const shouldDeleteIdleWelcomeMessage = Boolean(channelId && welcomeChannelId && channelId === welcomeChannelId);
+  return {
+    route: shouldDeleteIdleWelcomeMessage
+      ? HELPER_INTAKE_MESSAGE_ROUTES.idleWelcomeCleanup
+      : HELPER_INTAKE_MESSAGE_ROUTES.ignore,
+    helperSession: null,
+    hasMatchingHelperIntakeSession: false,
+    hasActiveHelperEloSession: false,
+    hasActiveHelperKillsSession: false,
+    shouldDeleteIdleWelcomeMessage,
+    shouldOfferProfileMessageRoute: true,
+  };
+}
+
 const createSubmitIntakeSessionStore = createHelperIntakeSessionStore;
 const isSubmitIntakeSessionExpired = isHelperIntakeSessionExpired;
 const normalizeSubmitIntakeAction = normalizeHelperIntakeAction;
@@ -123,6 +179,7 @@ const normalizeSubmitIntakeSession = normalizeHelperIntakeSession;
 
 module.exports = {
   HELPER_INTAKE_ACTIONS,
+  HELPER_INTAKE_MESSAGE_ROUTES,
   HELPER_INTAKE_SESSION_EXPIRE_MS,
   SUBMIT_INTAKE_ACTIONS,
   SUBMIT_INTAKE_SESSION_TTL_MS,
@@ -136,4 +193,5 @@ module.exports = {
   normalizeSubmitIntakeAction,
   normalizeSubmitIntakeSession,
   normalizeSubmitIntakeSource,
+  resolveHelperIntakeMessageRoute,
 };

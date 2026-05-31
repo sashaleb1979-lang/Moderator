@@ -227,6 +227,7 @@ const {
   SUBMIT_INTAKE_SOURCES,
   createHelperIntakeSessionStore,
   normalizeSubmitIntakeSource,
+  resolveHelperIntakeMessageRoute,
 } = require("./src/onboard/helper-intake");
 const {
   BOT_HELPER_PANEL_ACTION_IDS,
@@ -432,6 +433,9 @@ const {
   upsertDirectLegacyEloRating,
   wipeLegacyEloRatings,
 } = require("./src/integrations/elo-review-store");
+const {
+  createLegacyEloReviewSync,
+} = require("./src/integrations/elo-review-sync");
 const {
   getDormantEloPanelSnapshot,
   getDormantEloProfileSnapshot,
@@ -13775,6 +13779,11 @@ async function fetchLegacyEloReviewMessage(client, submission) {
   return reviewChannel.messages.fetch(submission.reviewMessageId).catch(() => null);
 }
 
+const legacyEloReviewSync = createLegacyEloReviewSync({
+  buildReviewPayload: buildLegacyEloReviewChannelPayload,
+  fetchReviewMessage: fetchLegacyEloReviewMessage,
+});
+
 async function getLegacyEloApprovalProfileData(client, userId) {
   const user = await client.users.fetch(userId).catch(() => null);
   const member = await fetchMember(client, userId);
@@ -16516,12 +16525,16 @@ client.on("messageCreate", async (message) => {
     return;
   }
 
-  const activeHelperIntakeSession = getHelperIntakeSession(message.author.id);
-  const hasMatchingHelperIntakeSession = Boolean(activeHelperIntakeSession && activeHelperIntakeSession.channelId === message.channelId);
-  const hasActiveHelperEloSession = hasMatchingHelperIntakeSession && activeHelperIntakeSession.action === HELPER_INTAKE_ACTIONS.elo;
-  const hasActiveHelperKillsSession = hasMatchingHelperIntakeSession && activeHelperIntakeSession.action === HELPER_INTAKE_ACTIONS.kills;
+  const helperIntakeRoute = resolveHelperIntakeMessageRoute({
+    session: getHelperIntakeSession(message.author.id),
+    channelId: message.channelId,
+    welcomeChannelId: getResolvedChannelId("welcome"),
+  });
+  const activeHelperIntakeSession = helperIntakeRoute.helperSession;
+  const hasActiveHelperEloSession = helperIntakeRoute.hasActiveHelperEloSession;
+  const hasActiveHelperKillsSession = helperIntakeRoute.hasActiveHelperKillsSession;
 
-  if (!hasMatchingHelperIntakeSession && await getProfileOperator().handleProfileMessage({
+  if (helperIntakeRoute.shouldOfferProfileMessageRoute && await getProfileOperator().handleProfileMessage({
     message,
     replyAndDelete,
     scheduleDeleteMessage,
@@ -16585,8 +16598,12 @@ client.on("messageCreate", async (message) => {
     return;
   }
 
+  if (helperIntakeRoute.shouldDeleteIdleWelcomeMessage) {
+    await message.delete().catch(() => {});
+    return;
+  }
+
   if (!hasActiveHelperKillsSession) {
-    if (message.channelId !== getResolvedChannelId("welcome")) return;
     return;
   }
 
@@ -20872,8 +20889,17 @@ client.on("interactionCreate", async (interaction) => {
         const expired = expireLegacyEloSubmission(liveState.rawDb, eloReviewSubmissionId, { reviewedAt: nowIso() });
         saveLegacyEloDbFile(liveState.resolvedPath, expired.db);
         const syncWarning = getLegacyEloResyncWarning();
-        await interaction.update(buildLegacyEloReviewChannelPayload(expired.submission, "expired"));
-        if (syncWarning) {
+        const reviewStatus = await legacyEloReviewSync.updateReviewStatusFromInteraction(
+          client,
+          interaction,
+          expired.submission,
+          "expired",
+          `Заявка протухла и помечена expired. Основное review-сообщение обновлено.${syncWarning}`,
+          {
+            degradedNoticeText: `Заявка протухла и помечена expired, но основное review-сообщение не удалось обновить.${syncWarning}`,
+          }
+        );
+        if (syncWarning && reviewStatus.usedCanonicalInteractionMessage) {
           await interaction.followUp(ephemeralPayload({ content: `Заявка протухла и помечена expired.${syncWarning}` })).catch(() => {});
         }
         return;
@@ -20906,8 +20932,17 @@ client.on("interactionCreate", async (interaction) => {
             ].join("\n")
           );
           await logLine(client, `ELO APPROVE: <@${submission.userId}> elo ${approved.submission.elo} -> tier ${approved.submission.tier} (id ${approved.submission.id}) by ${interaction.user.tag}`);
-          await interaction.update(buildLegacyEloReviewChannelPayload(approved.submission, "approved"));
-          if (syncWarning) {
+          const reviewStatus = await legacyEloReviewSync.updateReviewStatusFromInteraction(
+            client,
+            interaction,
+            approved.submission,
+            "approved",
+            `Одобрено. Основное review-сообщение обновлено.${syncWarning}`,
+            {
+              degradedNoticeText: `Одобрено, но основное review-сообщение не удалось обновить.${syncWarning}`,
+            }
+          );
+          if (syncWarning && reviewStatus.usedCanonicalInteractionMessage) {
             await interaction.followUp(ephemeralPayload({ content: `Одобрено.${syncWarning}` })).catch(() => {});
           }
         } catch (error) {
@@ -21631,23 +21666,23 @@ client.on("interactionCreate", async (interaction) => {
         }
 
         reviewApprovalProcessingIds.add(submissionId);
+        const acked = await safeDeferEphemeralReply(interaction, {
+          label: `welcome review approve ${submissionId}`,
+          logWarning: (message) => console.warn(message),
+        });
+        if (!acked) {
+          reviewApprovalProcessingIds.delete(submissionId);
+          return;
+        }
+
         submission.approveClaim = { claimedBy: interaction.user.tag, claimedAt: nowIso() };
         try {
           saveDb();
         } catch (dbErr) {
           reviewApprovalProcessingIds.delete(submissionId);
           delete submission.approveClaim;
-          await interaction.reply(ephemeralPayload({ content: "Не удалось зафиксировать обработку заявки. Попробуй ещё раз." }));
-          return;
-        }
-
-        const acked = await safeDeferEphemeralReply(interaction, {
-          label: `welcome review approve ${submissionId}`,
-        });
-        if (!acked) {
-          reviewApprovalProcessingIds.delete(submissionId);
-          delete submission.approveClaim;
-          saveDb();
+          try { saveDb(); } catch (_) {}
+          await interaction.editReply("Не удалось зафиксировать обработку заявки. Попробуй ещё раз.").catch(() => {});
           return;
         }
 
@@ -21669,8 +21704,11 @@ client.on("interactionCreate", async (interaction) => {
           .setLabel("Новое точное количество kills")
           .setStyle(TextInputStyle.Short)
           .setRequired(true)
-          .setValue(String(submission.kills))
           .setPlaceholder("Например 3120");
+        const currentKillsValue = String(submission.kills ?? "").trim();
+        if (currentKillsValue) {
+          input.setValue(currentKillsValue);
+        }
         modal.addComponents(new ActionRowBuilder().addComponents(input));
         await interaction.showModal(modal);
         return;
@@ -23945,11 +23983,12 @@ client.on("interactionCreate", async (interaction) => {
         const expired = expireLegacyEloSubmission(liveState.rawDb, submissionId, { reviewedAt: nowIso() });
         saveLegacyEloDbFile(liveState.resolvedPath, expired.db);
         const syncWarning = getLegacyEloResyncWarning();
-        const reviewMessage = await fetchLegacyEloReviewMessage(client, expired.submission);
-        if (reviewMessage) {
-          await reviewMessage.edit(buildLegacyEloReviewChannelPayload(expired.submission, "expired")).catch(() => {});
-        }
-        await interaction.reply(ephemeralPayload({ content: `Заявка протухла и помечена expired.${syncWarning}` }));
+        const reviewStatus = await legacyEloReviewSync.syncReviewMessage(client, expired.submission, "expired");
+        await interaction.reply(ephemeralPayload({
+          content: reviewStatus.reviewMessageUpdated
+            ? `Заявка протухла и помечена expired.${syncWarning}`
+            : `Заявка протухла и помечена expired, но основное review-сообщение не удалось обновить.${syncWarning}`,
+        }));
         return;
       }
 
@@ -23962,11 +24001,14 @@ client.on("interactionCreate", async (interaction) => {
         saveLegacyEloDbFile(liveState.resolvedPath, edited.db);
         const syncWarning = getLegacyEloResyncWarning();
         await logLine(client, `ELO EDIT: <@${submission.userId}> pending elo ${edited.submission.elo} -> tier ${edited.submission.tier} (id ${edited.submission.id}) by ${interaction.user.tag}`);
-        const reviewMessage = await fetchLegacyEloReviewMessage(client, edited.submission);
-        if (reviewMessage) {
-          await reviewMessage.edit(buildLegacyEloReviewChannelPayload(edited.submission, "pending", [buildLegacyEloReviewButtons(edited.submission.id)])).catch(() => {});
-        }
-        await interaction.reply(ephemeralPayload({ content: `ELO обновлено: ${edited.submission.elo} (тир ${edited.submission.tier}).${syncWarning}` }));
+        const reviewStatus = await legacyEloReviewSync.syncReviewMessage(client, edited.submission, "pending", {
+          components: [buildLegacyEloReviewButtons(edited.submission.id)],
+        });
+        await interaction.reply(ephemeralPayload({
+          content: reviewStatus.reviewMessageUpdated
+            ? `ELO обновлено: ${edited.submission.elo} (тир ${edited.submission.tier}).${syncWarning}`
+            : `ELO обновлено: ${edited.submission.elo} (тир ${edited.submission.tier}), но основное review-сообщение не удалось обновить.${syncWarning}`,
+        }));
       } catch (error) {
         await interaction.reply(ephemeralPayload({ content: String(error?.message || error || "Не удалось изменить ELO в заявке.") }));
       }
@@ -24001,11 +24043,12 @@ client.on("interactionCreate", async (interaction) => {
         const expired = expireLegacyEloSubmission(liveState.rawDb, submissionId, { reviewedAt: nowIso() });
         saveLegacyEloDbFile(liveState.resolvedPath, expired.db);
         const syncWarning = getLegacyEloResyncWarning();
-        const reviewMessage = await fetchLegacyEloReviewMessage(client, expired.submission);
-        if (reviewMessage) {
-          await reviewMessage.edit(buildLegacyEloReviewChannelPayload(expired.submission, "expired")).catch(() => {});
-        }
-        await interaction.reply(ephemeralPayload({ content: `Заявка протухла и помечена expired.${syncWarning}` }));
+        const reviewStatus = await legacyEloReviewSync.syncReviewMessage(client, expired.submission, "expired");
+        await interaction.reply(ephemeralPayload({
+          content: reviewStatus.reviewMessageUpdated
+            ? `Заявка протухла и помечена expired.${syncWarning}`
+            : `Заявка протухла и помечена expired, но основное review-сообщение не удалось обновить.${syncWarning}`,
+        }));
         return;
       }
 
@@ -24032,11 +24075,12 @@ client.on("interactionCreate", async (interaction) => {
         ].join("\n")
       );
       await logLine(client, `ELO REJECT: <@${submission.userId}> elo ${submission.elo} (id ${submission.id}) by ${interaction.user.tag} | reason: ${reason}`);
-      const reviewMessage = await fetchLegacyEloReviewMessage(client, rejected.submission);
-      if (reviewMessage) {
-        await reviewMessage.edit(buildLegacyEloReviewChannelPayload(rejected.submission, "rejected")).catch(() => {});
-      }
-      await interaction.reply(ephemeralPayload({ content: `Отклонено.${syncWarning}` }));
+      const reviewStatus = await legacyEloReviewSync.syncReviewMessage(client, rejected.submission, "rejected");
+      await interaction.reply(ephemeralPayload({
+        content: reviewStatus.reviewMessageUpdated
+          ? `Отклонено.${syncWarning}`
+          : `Отклонено, но основное review-сообщение не удалось обновить.${syncWarning}`,
+      }));
       return;
     }
 
