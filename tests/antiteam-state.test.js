@@ -4,6 +4,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const {
   ANTITEAM_HELPER_REWARD_THRESHOLDS,
+  adjustHelperStatsPoints,
   closeAntiteamTicket,
   createAntiteamTicketFromDraft,
   clearHelperStats,
@@ -158,6 +159,33 @@ test("antiteam helper stats can delete one helper or clear the aggregate table",
   assert.equal(db.sot.antiteam.stats.helpers["helper-2"].confirmedArrived, 1);
   assert.equal(clearHelperStats(db), 1);
   assert.deepEqual(db.sot.antiteam.stats.helpers, {});
+});
+
+test("antiteam helper stats manual point adjustment clamps at zero", () => {
+  const db = {};
+  incrementHelperStats(db, "111111", { confirmedArrived: 3 }, { now: "2026-05-16T10:00:00.000Z" });
+
+  const removed = adjustHelperStatsPoints(db, "111111", -5, { now: "2026-05-16T11:00:00.000Z" });
+  const added = adjustHelperStatsPoints(db, "222222", 2, { now: "2026-05-16T11:01:00.000Z" });
+
+  assert.deepEqual({
+    userId: removed.userId,
+    before: removed.before,
+    after: removed.after,
+    requestedDelta: removed.requestedDelta,
+    appliedDelta: removed.appliedDelta,
+  }, {
+    userId: "111111",
+    before: 3,
+    after: 0,
+    requestedDelta: -5,
+    appliedDelta: -3,
+  });
+  assert.equal(db.sot.antiteam.stats.helpers["111111"].confirmedArrived, 0);
+  assert.equal(db.sot.antiteam.stats.helpers["111111"].lastHelpedAt, "2026-05-16T11:00:00.000Z");
+  assert.equal(added.before, 0);
+  assert.equal(added.after, 2);
+  assert.equal(db.sot.antiteam.stats.helpers["222222"].confirmedArrived, 2);
 });
 
 test("antiteam stores one-time Roblox confirmation per Discord user and account", () => {

@@ -979,8 +979,16 @@ test("command builder registers onboard, rolepanel, verify, profile, and antitea
   assert.equal(profileCommand.options.some((option) => option.type === 6 && option.name === "target"), true);
   assert.equal(antiteamCommand.options.some((option) => option.type === 1 && option.name === "panel"), true);
   assert.equal(antiteamCommand.options.some((option) => option.type === 1 && option.name === "clan"), true);
+  assert.equal(antiteamCommand.options.some((option) => option.type === 1 && option.name === "points"), true);
   const antiteamClan = antiteamCommand.options.find((option) => option.type === 1 && option.name === "clan");
+  const antiteamPoints = antiteamCommand.options.find((option) => option.type === 1 && option.name === "points");
   assert.equal(antiteamClan.options.some((option) => option.type === 6 && option.name === "target" && option.required === true), true);
+  assert.equal(antiteamPoints.options.some((option) => option.type === 3 && option.name === "action" && option.required === true), true);
+  assert.equal(antiteamPoints.options.some((option) => option.type === 4 && option.name === "amount" && option.required === true), true);
+  assert.equal(antiteamPoints.options.some((option) => option.type === 6 && option.name === "target"), true);
+  assert.equal(antiteamPoints.options.some((option) => option.type === 3 && option.name === "targets"), true);
+  assert.equal(antiteamPoints.options.some((option) => option.type === 3 && option.name === "user_ids"), true);
+  assert.equal(antiteamPoints.options.some((option) => option.type === 8 && option.name === "role"), true);
   assert.deepEqual(VERIFY_SUBCOMMAND_NAMES, ["panel", "add"]);
 });
 

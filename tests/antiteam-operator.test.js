@@ -107,6 +107,10 @@ function createSlashInteraction(subcommand, {
   user = { id: "mod-1", username: "Mod" },
   member = { permissions: { has: () => true }, roles: { cache: new Map() } },
   target = null,
+  strings = {},
+  integers = {},
+  role = null,
+  roles = {},
 } = {}) {
   const calls = [];
   return {
@@ -117,7 +121,10 @@ function createSlashInteraction(subcommand, {
     isChatInputCommand: () => true,
     options: {
       getSubcommand: () => subcommand,
-      getUser: () => target,
+      getUser: (name) => (name === "target" ? target : null),
+      getString: (name) => strings[name] ?? null,
+      getInteger: (name) => integers[name] ?? null,
+      getRole: (name) => roles[name] || (name === "role" ? role : null),
     },
     async reply(payload) {
       calls.push(["reply", payload]);
@@ -253,6 +260,128 @@ test("clan slash command rejects target without verified Roblox profile", async 
   assert.equal(interaction.calls[0][0], "reply");
   assert.match(interaction.calls[0][1].content, /нет проверенного Roblox/);
   assert.equal(db.sot.antiteam.drafts["mod-1"], undefined);
+});
+
+test("points slash command adjusts multiple antiteam helpers and syncs reward roles", async () => {
+  const db = {};
+  const state = ensureAntiteamState(db).state;
+  state.config.helperRewardRoles = { "1": "role-1", "5": "role-5", "10": "", "20": "", "50": "" };
+  state.stats.helpers["222222"] = {
+    responded: 1,
+    linkGranted: 1,
+    confirmedArrived: 4,
+    lastTicketId: "ticket-old",
+    lastHelpedAt: "2026-05-16T09:00:00.000Z",
+  };
+  const roleCacheByUserId = new Map([
+    ["111111", new Map()],
+    ["222222", new Map([["role-1", { id: "role-1" }]])],
+    ["333333", new Map()],
+  ]);
+  const added = [];
+  const removed = [];
+  const operator = createAntiteamOperator({
+    db,
+    now: () => "2026-05-16T10:00:00.000Z",
+    saveDb() {},
+    fetchMember: async (userId) => ({
+      roles: {
+        cache: roleCacheByUserId.get(userId) || new Map(),
+        add: async (roleId, reason) => {
+          added.push({ userId, roleId, reason });
+          roleCacheByUserId.get(userId)?.set(roleId, { id: roleId });
+        },
+        remove: async (roleId, reason) => {
+          removed.push({ userId, roleId, reason });
+          roleCacheByUserId.get(userId)?.delete(roleId);
+        },
+      },
+    }),
+  });
+  const interaction = createSlashInteraction("points", {
+    strings: {
+      action: "add",
+      targets: "<@111111> 222222",
+      user_ids: "333333",
+      note: "ручная компенсация",
+    },
+    integers: { amount: 2 },
+  });
+
+  assert.equal(await operator.handleSlashCommand(interaction), true);
+
+  assert.deepEqual(interaction.calls.map((call) => call[0]), ["deferReply", "editReply"]);
+  assert.equal(db.sot.antiteam.stats.helpers["111111"].confirmedArrived, 2);
+  assert.equal(db.sot.antiteam.stats.helpers["222222"].confirmedArrived, 6);
+  assert.equal(db.sot.antiteam.stats.helpers["333333"].confirmedArrived, 2);
+  assert.deepEqual(added, [
+    { userId: "111111", roleId: "role-1", reason: "antiteam helper reward sync" },
+    { userId: "222222", roleId: "role-5", reason: "antiteam helper reward sync" },
+    { userId: "333333", roleId: "role-1", reason: "antiteam helper reward sync" },
+  ]);
+  assert.deepEqual(removed, [
+    { userId: "222222", roleId: "role-1", reason: "antiteam helper reward sync" },
+  ]);
+  assert.match(interaction.calls.at(-1)[1], /Начислено по \*\*2\*\*/);
+  assert.match(interaction.calls.at(-1)[1], /<@222222>: \*\*4 → 6\*\* \(\+2\)/);
+  assert.match(interaction.calls.at(-1)[1], /ручная компенсация/);
+});
+
+test("points slash command removes points from role targets and clears stale reward roles at zero", async () => {
+  const db = {};
+  const state = ensureAntiteamState(db).state;
+  state.config.helperRewardRoles = { "1": "role-1", "5": "role-5", "10": "", "20": "", "50": "" };
+  state.stats.helpers["111111"] = {
+    responded: 1,
+    linkGranted: 1,
+    confirmedArrived: 1,
+    lastTicketId: "ticket-old",
+    lastHelpedAt: "2026-05-16T09:00:00.000Z",
+  };
+  const sourceRole = {
+    id: "source-role",
+    name: "Helpers",
+    members: new Map([
+      ["111111", { id: "111111", user: { id: "111111", bot: false } }],
+      ["999999", { id: "999999", user: { id: "999999", bot: true } }],
+    ]),
+  };
+  const roleCache = new Map([
+    ["role-1", { id: "role-1" }],
+    ["role-5", { id: "role-5" }],
+  ]);
+  const removed = [];
+  const operator = createAntiteamOperator({
+    db,
+    now: () => "2026-05-16T11:00:00.000Z",
+    saveDb() {},
+    fetchMember: async () => ({
+      roles: {
+        cache: roleCache,
+        add: async () => {},
+        remove: async (roleId, reason) => {
+          removed.push({ roleId, reason });
+          roleCache.delete(roleId);
+        },
+      },
+    }),
+  });
+  const interaction = createSlashInteraction("points", {
+    strings: { action: "remove" },
+    integers: { amount: 2 },
+    role: sourceRole,
+  });
+
+  assert.equal(await operator.handleSlashCommand(interaction), true);
+
+  assert.equal(db.sot.antiteam.stats.helpers["111111"].confirmedArrived, 0);
+  assert.deepEqual(removed, [
+    { roleId: "role-1", reason: "antiteam helper reward sync" },
+    { roleId: "role-5", reason: "antiteam helper reward sync" },
+  ]);
+  assert.match(interaction.calls.at(-1)[1], /Убрано по \*\*2\*\*/);
+  assert.match(interaction.calls.at(-1)[1], /<@111111>: \*\*1 → 0\*\* \(-1\)/);
+  assert.match(interaction.calls.at(-1)[1], /Источник по роли: <@&source-role> \(Helpers\)/);
 });
 
 test("start panel submit button shows a small Roblox panel when profile has no Roblox", async () => {

@@ -176,6 +176,45 @@ function buildCommands() {
             .setName("target")
             .setDescription("Игрок-якорь, который уже сидит на сервере и не должен выходить")
             .setRequired(true))
+      )
+      .addSubcommand((subcommand) =>
+        subcommand
+          .setName("points")
+          .setDescription("Начислить или убрать очки помощи антитима")
+          .addStringOption((option) =>
+            option
+              .setName("action")
+              .setDescription("Что сделать с очками")
+              .setRequired(true)
+              .addChoices(
+                { name: "Начислить", value: "add" },
+                { name: "Убрать", value: "remove" }
+              )
+          )
+          .addIntegerOption((option) =>
+            option
+              .setName("amount")
+              .setDescription("Сколько очков применить каждому выбранному участнику")
+              .setMinValue(1)
+              .setMaxValue(1000)
+              .setRequired(true)
+          )
+          .addUserOption((option) => option.setName("target").setDescription("Один участник сервера"))
+          .addStringOption((option) =>
+            option
+              .setName("targets")
+              .setDescription("Несколько user mention/ID через пробел, запятую или новую строку")
+              .setMaxLength(1200)
+          )
+          .addStringOption((option) => option.setName("user_id").setDescription("ID игрока, если пользователя нет в сервере"))
+          .addStringOption((option) =>
+            option
+              .setName("user_ids")
+              .setDescription("Несколько Discord ID через пробел, запятую или новую строку")
+              .setMaxLength(1200)
+          )
+          .addRoleOption((option) => option.setName("role").setDescription("Применить всем участникам с этой ролью"))
+          .addStringOption((option) => option.setName("note").setDescription("Короткая заметка для audit log").setMaxLength(300))
       ),
   ].map((command) => command.toJSON());
 }

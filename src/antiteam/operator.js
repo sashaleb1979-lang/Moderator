@@ -6,6 +6,7 @@ const { resolveUsableVerifiedRobloxIdentity } = require("../integrations/shared-
 const {
   ANTITEAM_HELPER_REWARD_THRESHOLDS,
   ANTITEAM_LEVELS,
+  adjustHelperStatsPoints,
   cleanString,
   clearAntiteamDraft,
   clearHelperStats,
@@ -72,6 +73,7 @@ const ANTITEAM_EDIT_PING_DELETE_MS = 5000;
 const ANTITEAM_ROLE_GRANT_RETRY_DELAYS_MS = [2000, 10000, 30000];
 const ANTITEAM_UNKNOWN_INTERACTION_CODES = new Set([10062]);
 const ANTITEAM_ALREADY_ACK_CODES = new Set([40060]);
+const ANTITEAM_MANUAL_POINTS_TARGET_LIMIT = 100;
 
 function normalizeUsernameInput(value) {
   const username = cleanString(value, 40);
@@ -161,6 +163,47 @@ function parseEntityIdList(value = "", limit = 25) {
     if (roleIds.length >= limit) break;
   }
   return roleIds;
+}
+
+function parseRequestedUserId(value, fallbackUserId = "") {
+  const text = cleanString(value, 80);
+  if (!text) return cleanString(fallbackUserId, 80);
+
+  const mentionMatch = text.match(/^<@!?(\d+)>$/);
+  const candidate = mentionMatch ? mentionMatch[1] : text.replace(/\s+/g, "");
+  return /^\d{5,25}$/.test(candidate) ? candidate : "";
+}
+
+function parseRequestedUserIdList(value = "", limit = ANTITEAM_MANUAL_POINTS_TARGET_LIMIT) {
+  const normalized = [];
+  const invalidEntries = [];
+  const seen = new Set();
+  let truncated = false;
+  const candidates = cleanString(value, 1200)
+    .split(/[;,\n\r\t ]+/g)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+
+  for (const entry of candidates) {
+    const userId = parseRequestedUserId(entry, "");
+    if (!userId) {
+      invalidEntries.push(entry);
+      continue;
+    }
+    if (seen.has(userId)) continue;
+    if (normalized.length >= limit) {
+      truncated = true;
+      continue;
+    }
+    seen.add(userId);
+    normalized.push(userId);
+  }
+
+  return {
+    userIds: normalized,
+    invalidEntries: [...new Set(invalidEntries)],
+    truncated,
+  };
 }
 
 function parseColorInput(value, fallback = 0xE53935) {
@@ -855,9 +898,7 @@ function createAntiteamOperator(options = {}) {
 
   async function grantHelperRewardRoles(userId, stats = {}, reason = "antiteam helper reward") {
     const roleIds = getHelperRewardRoleIds(stats);
-    const staleRoleIds = roleIds.length
-      ? getConfiguredHelperRewardRoleIds().filter((roleId) => !roleIds.includes(roleId))
-      : [];
+    const staleRoleIds = getConfiguredHelperRewardRoleIds().filter((roleId) => !roleIds.includes(roleId));
     let granted = 0;
     let removed = 0;
     let desiredRoleReady = roleIds.length === 0;
@@ -896,6 +937,85 @@ function createAntiteamOperator(options = {}) {
       removed += result.removed || 0;
     }
     return { users, roles, removed };
+  }
+
+  function getMemberUserId(member = {}) {
+    return cleanString(member?.id || member?.user?.id, 80);
+  }
+
+  function getRoleMemberValues(role = {}) {
+    const members = role?.members;
+    if (!members) return [];
+    if (typeof members.values === "function") return [...members.values()];
+    if (Array.isArray(members)) return members;
+    return [];
+  }
+
+  async function resolveManualPointsRoleTargets(role = null, interaction = {}) {
+    const roleId = cleanString(role?.id, 80);
+    if (!roleId) return { roleId: "", roleName: "", targetIds: [] };
+
+    const guild = role.guild || interaction.guild || null;
+    if (guild?.members?.fetch) {
+      await guild.members.fetch().catch((error) => {
+        logError(`Antiteam manual points role member fetch failed [${roleId}]:`, error?.message || error);
+      });
+    }
+
+    const directMembers = getRoleMemberValues(role);
+    const guildMembers = directMembers.length
+      ? directMembers
+      : (guild?.members?.cache?.values ? [...guild.members.cache.values()] : []);
+    const targetIds = guildMembers
+      .filter((member) => member?.user && !member.user.bot)
+      .filter((member) => directMembers.length || member.roles?.cache?.has?.(roleId))
+      .map((member) => getMemberUserId(member))
+      .filter(Boolean);
+
+    return {
+      roleId,
+      roleName: cleanString(role?.name, 120) || roleId,
+      targetIds: [...new Set(targetIds)],
+    };
+  }
+
+  function buildManualPointsTargetPreview(userIds = [], limit = 10) {
+    const safeUserIds = Array.isArray(userIds) ? userIds.filter(Boolean) : [];
+    const preview = safeUserIds.slice(0, limit).map((userId) => `<@${userId}>`).join(", ");
+    if (!preview) return "";
+    return safeUserIds.length > limit ? `${preview} и ещё ${safeUserIds.length - limit}` : preview;
+  }
+
+  function buildManualPointsResultText(results = [], details = {}) {
+    const actionText = details.action === "remove" ? "Убрано" : "Начислено";
+    const unchanged = results.filter((entry) => !entry.appliedDelta);
+    const changed = results.filter((entry) => entry.appliedDelta);
+    const lines = [
+      `${actionText} по **${details.amount}** очк. выбранным участникам: **${results.length}**.`,
+      `Изменено: **${changed.length}** • без изменения: **${unchanged.length}**.`,
+    ];
+
+    const previewRows = results.slice(0, 12).map((entry) => {
+      const sign = entry.appliedDelta > 0 ? "+" : "";
+      return `<@${entry.userId}>: **${entry.before} → ${entry.after}** (${sign}${entry.appliedDelta})`;
+    });
+    if (previewRows.length) lines.push(previewRows.join("\n"));
+    if (results.length > previewRows.length) {
+      lines.push(`И ещё ${results.length - previewRows.length} участн.`);
+    }
+    if (details.roleId) {
+      lines.push(`Источник по роли: <@&${details.roleId}> (${details.roleName || details.roleId}).`);
+    }
+    if (details.rewardSync) {
+      lines.push(`Reward-роли проверены: выдач/проверок **${details.rewardSync.roles}**, снятий **${details.rewardSync.removed}**.`);
+    }
+    if (details.rewardSyncError) {
+      lines.push(`Очки записаны, но роли не удалось пересинхронизировать: ${cleanString(details.rewardSyncError, 180)}`);
+    }
+    if (details.note) {
+      lines.push(`Заметка: ${cleanString(details.note, 300)}`);
+    }
+    return lines.join("\n").slice(0, 1900);
   }
 
   async function collectFriendEligibleDiscordIds(draft = {}) {
@@ -1640,6 +1760,104 @@ function createAntiteamOperator(options = {}) {
         anchorUser,
         statusText: `Якорь: <@${anchorUser.id}> • Roblox: ${storedRoblox.username}. Он должен оставаться на сервере.`,
       });
+    }
+
+    if (subcommand === "points") {
+      if (!isModerator(interaction.member)) {
+        await replyNoPermission(interaction);
+        return true;
+      }
+
+      const action = cleanString(interaction.options?.getString?.("action", true), 20).toLowerCase();
+      if (!["add", "remove"].includes(action)) {
+        await interaction.reply({ content: "Поддерживаются только action = add или remove.", flags: MessageFlags.Ephemeral });
+        return true;
+      }
+
+      const amount = Number(interaction.options?.getInteger?.("amount", true));
+      if (!Number.isSafeInteger(amount) || amount <= 0 || amount > 1000) {
+        await interaction.reply({ content: "amount должен быть целым числом от 1 до 1000.", flags: MessageFlags.Ephemeral });
+        return true;
+      }
+
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+      const targetUser = interaction.options?.getUser?.("target") || null;
+      const targetsInput = cleanString(interaction.options?.getString?.("targets"), 1200);
+      const userIdInput = cleanString(interaction.options?.getString?.("user_id"), 80);
+      const userIdsInput = cleanString(interaction.options?.getString?.("user_ids"), 1200);
+      const targetRole = interaction.options?.getRole?.("role") || null;
+      const note = cleanString(interaction.options?.getString?.("note"), 300);
+      const parsedTargets = parseRequestedUserIdList(targetsInput);
+      const parsedUserIds = parseRequestedUserIdList(userIdsInput);
+      const parsedSingleUserId = parseRequestedUserId(userIdInput, "");
+      const invalidEntries = [...new Set([
+        ...parsedTargets.invalidEntries,
+        ...parsedUserIds.invalidEntries,
+        userIdInput && !parsedSingleUserId ? userIdInput : "",
+      ].filter(Boolean))];
+      if (invalidEntries.length) {
+        await interaction.editReply("В `targets`, `user_id` и `user_ids` указывай только user mention или Discord ID, разделяя пробелами, запятыми или новыми строками.");
+        return true;
+      }
+      if (parsedTargets.truncated || parsedUserIds.truncated) {
+        await interaction.editReply(`За один запуск через текстовые списки можно обработать не больше ${ANTITEAM_MANUAL_POINTS_TARGET_LIMIT} уникальных участников на поле.`);
+        return true;
+      }
+
+      const roleTargets = targetRole
+        ? await resolveManualPointsRoleTargets(targetRole, interaction)
+        : { roleId: "", roleName: "", targetIds: [] };
+      const targetIds = [...new Set([
+        targetUser?.id || "",
+        parsedSingleUserId,
+        ...parsedTargets.userIds,
+        ...parsedUserIds.userIds,
+        ...roleTargets.targetIds,
+      ].filter(Boolean))];
+
+      if (!targetIds.length) {
+        await interaction.editReply("Укажи `target`, `targets`, `user_id`/`user_ids` или выбери `role`.");
+        return true;
+      }
+      if (targetIds.length > ANTITEAM_MANUAL_POINTS_TARGET_LIMIT) {
+        await interaction.editReply(`Слишком много участников: ${targetIds.length}. Максимум за один запуск: ${ANTITEAM_MANUAL_POINTS_TARGET_LIMIT}.`);
+        return true;
+      }
+
+      const delta = action === "add" ? amount : -amount;
+      const adjusted = await persist("antiteam-helper-points-manual", () => targetIds.map((targetId) =>
+        adjustHelperStatsPoints(db, targetId, delta, { now: nowIso() })
+      ).filter(Boolean));
+
+      let rewardSync = null;
+      let rewardSyncError = "";
+      try {
+        rewardSync = await syncHelperRewardRoles(targetIds);
+      } catch (error) {
+        rewardSyncError = error?.message || String(error || "unknown error");
+        logError("Antiteam manual points reward sync failed:", rewardSyncError);
+      }
+
+      if (typeof options.logLine === "function") {
+        const preview = buildManualPointsTargetPreview(targetIds, 20);
+        await options.logLine([
+          `ANTITEAM_POINTS_MANUAL: <@${interaction.user.id}> ${action} ${amount}`,
+          `targets=${preview || targetIds.length}`,
+          note ? `note=${note}` : "",
+        ].filter(Boolean).join(" ")).catch(() => null);
+      }
+
+      await interaction.editReply(buildManualPointsResultText(adjusted, {
+        action,
+        amount,
+        note,
+        rewardSync,
+        rewardSyncError,
+        roleId: roleTargets.roleId,
+        roleName: roleTargets.roleName,
+      }));
+      return true;
     }
 
     return false;

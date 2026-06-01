@@ -81,6 +81,11 @@ function normalizePositiveInteger(value, fallback = 1) {
   return Number.isSafeInteger(number) && number > 0 ? number : fallback;
 }
 
+function normalizeIntegerDelta(value, fallback = 0) {
+  const number = Number(value);
+  return Number.isSafeInteger(number) ? number : fallback;
+}
+
 function normalizeColorInteger(value, fallback = 0x1565C0) {
   if (Number.isSafeInteger(value) && value >= 0 && value <= 0xFFFFFF) return value;
   const text = cleanString(value, 20).replace(/^#/, "");
@@ -667,6 +672,40 @@ function incrementHelperStats(db = {}, helperUserId, patch = {}, options = {}) {
   return next;
 }
 
+function adjustHelperStatsPoints(db = {}, helperUserId, pointsDelta = 0, options = {}) {
+  const { state } = ensureAntiteamState(db);
+  const userId = cleanString(helperUserId, 80);
+  if (!userId) return null;
+  const current = state.stats.helpers[userId] || {
+    responded: 0,
+    linkGranted: 0,
+    confirmedArrived: 0,
+    lastTicketId: "",
+    lastHelpedAt: null,
+  };
+  const requestedDelta = normalizeIntegerDelta(pointsDelta, 0);
+  const before = normalizeNonNegativeInteger(current.confirmedArrived, 0);
+  const after = Math.max(0, before + requestedDelta);
+  const now = cleanString(options.now, 80) || new Date().toISOString();
+  const next = {
+    ...current,
+    responded: normalizeNonNegativeInteger(current.responded, 0),
+    linkGranted: normalizeNonNegativeInteger(current.linkGranted, 0),
+    confirmedArrived: after,
+    lastTicketId: cleanString(options.lastTicketId || current.lastTicketId, 80),
+    lastHelpedAt: options.touch === false ? current.lastHelpedAt : now,
+  };
+  state.stats.helpers[userId] = next;
+  return {
+    userId,
+    before,
+    after,
+    requestedDelta,
+    appliedDelta: after - before,
+    stats: next,
+  };
+}
+
 function deleteHelperStats(db = {}, helperUserId) {
   const { state } = ensureAntiteamState(db);
   const userId = cleanString(helperUserId, 80);
@@ -756,6 +795,7 @@ module.exports = {
   ANTITEAM_VERSION,
   DEFAULT_CLAN_PING_ROLES,
   cleanString,
+  adjustHelperStatsPoints,
   clearAntiteamDraft,
   clearHelperStats,
   closeAntiteamTicket,
