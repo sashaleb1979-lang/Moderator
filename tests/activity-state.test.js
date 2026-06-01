@@ -9,6 +9,7 @@ const {
   ensureActivityState,
   getActivityConfig,
   getWatchedChannel,
+  isActivitySourceExcluded,
   listWatchedChannels,
   normalizeActivityState,
   removeWatchedChannel,
@@ -20,6 +21,9 @@ test("createEmptyActivityState seeds config and empty activity collections", () 
   const state = createEmptyActivityState();
 
   assert.equal(state.config.sessionGapMinutes, 45);
+  assert.equal(state.config.messageSourceMode, "all_except");
+  assert.deepEqual(state.config.excludedChannelIds, []);
+  assert.equal(state.config.includeThreads, true);
   assert.equal(state.config.scoreWindowDays, 30);
   assert.equal(state.config.roleEligibilityMinMemberDays, 3);
   assert.equal(state.config.roleBoostEndMemberDays, 7);
@@ -53,6 +57,9 @@ test("normalizeActivityState deduplicates watched channels and normalizes config
       roleBoostEndMemberDays: "8",
       roleBoostMaxMultiplier: "1.2",
       newcomerRoleMaxMemberDays: "9",
+      messageSourceMode: "bad-mode",
+      excludedChannelIds: ["skip-1", "", "skip-1", "skip-2"],
+      includeThreads: false,
       moderatorRoleIds: ["mod-1", "", "mod-1", "mod-2"],
       voiceScoring: {
         mode: "smart",
@@ -72,6 +79,8 @@ test("normalizeActivityState deduplicates watched channels and normalizes config
       {
         channelId: "chat-1",
         channelType: "small_chat",
+        importedUntilMessageId: "m-99",
+        sourceKind: "channel",
         enabled: true,
       },
       {
@@ -82,6 +91,8 @@ test("normalizeActivityState deduplicates watched channels and normalizes config
       {
         channelId: "admin-1",
         channelType: "admin",
+        parentChannelId: "parent-1",
+        autoDiscovered: true,
       },
     ],
     runtime: {
@@ -95,6 +106,9 @@ test("normalizeActivityState deduplicates watched channels and normalizes config
   assert.equal(state.config.roleBoostEndMemberDays, 8);
   assert.equal(state.config.roleBoostMaxMultiplier, 1.2);
   assert.equal(state.config.newcomerRoleMaxMemberDays, 9);
+  assert.equal(state.config.messageSourceMode, "all_except");
+  assert.deepEqual(state.config.excludedChannelIds, ["skip-1", "skip-2"]);
+  assert.equal(state.config.includeThreads, false);
   assert.deepEqual(state.config.moderatorRoleIds, ["mod-1", "mod-2"]);
   assert.equal(state.config.voiceScoring.mode, "smart");
   assert.equal(state.config.voiceScoring.totalDailyCapHours, 8);
@@ -112,6 +126,9 @@ test("normalizeActivityState deduplicates watched channels and normalizes config
     guildId: null,
     channelId: "chat-1",
     channelNameCache: "",
+    sourceKind: "channel",
+    parentChannelId: null,
+    autoDiscovered: false,
     enabled: true,
     channelType: "media",
     channelWeight: ACTIVITY_CHANNEL_WEIGHT_PRESETS.media,
@@ -119,13 +136,16 @@ test("normalizeActivityState deduplicates watched channels and normalizes config
     countSessions: true,
     countForTrust: true,
     countForRoles: false,
-    importedUntilMessageId: "",
+    importedUntilMessageId: "m-99",
     lastScannedMessageId: "",
     lastImportAt: null,
     createdAt: null,
     updatedAt: null,
   });
   assert.equal(state.watchedChannels[1].channelType, "admin");
+  assert.equal(state.watchedChannels[1].sourceKind, "thread");
+  assert.equal(state.watchedChannels[1].parentChannelId, "parent-1");
+  assert.equal(state.watchedChannels[1].autoDiscovered, true);
   assert.equal(state.watchedChannels[1].countForTrust, false);
   assert.equal(state.watchedChannels[1].countForRoles, false);
   assert.deepEqual(state.runtime.dirtyUsers, ["user-1", "user-2"]);
@@ -143,6 +163,9 @@ test("upsertWatchedChannel adds and updates watched channel records with stable 
   });
 
   assert.equal(created.created, true);
+  assert.equal(created.record.sourceKind, "channel");
+  assert.equal(created.record.parentChannelId, null);
+  assert.equal(created.record.autoDiscovered, false);
   assert.equal(created.record.channelWeight, ACTIVITY_CHANNEL_WEIGHT_PRESETS.small_chat);
   assert.equal(created.record.createdAt, "2026-05-09T10:00:00.000Z");
   assert.equal(created.record.updatedAt, "2026-05-09T10:00:00.000Z");
@@ -158,6 +181,7 @@ test("upsertWatchedChannel adds and updates watched channel records with stable 
   assert.equal(updated.created, false);
   assert.equal(updated.record.enabled, false);
   assert.equal(updated.record.importedUntilMessageId, "999");
+  assert.equal(updated.record.sourceKind, "channel");
   assert.equal(updated.record.createdAt, "2026-05-09T10:00:00.000Z");
   assert.equal(updated.record.updatedAt, "2026-05-10T10:00:00.000Z");
   assert.deepEqual(listWatchedChannels(db), [updated.record]);
@@ -189,6 +213,9 @@ test("updateActivityConfig merges partial overrides and keeps defaults available
   const db = {};
 
   const result = updateActivityConfig(db, {
+    messageSourceMode: "include",
+    excludedChannelIds: ["thread-1", "", "thread-1", "parent-1"],
+    includeThreads: false,
     sessionGapMinutes: 50,
     newcomerRoleMaxMemberDays: 10,
     adminRoleIds: ["admin-1", "", "admin-1"],
@@ -207,6 +234,9 @@ test("updateActivityConfig merges partial overrides and keeps defaults available
   });
 
   assert.equal(result.mutated, true);
+  assert.equal(result.config.messageSourceMode, "include");
+  assert.deepEqual(result.config.excludedChannelIds, ["thread-1", "parent-1"]);
+  assert.equal(result.config.includeThreads, false);
   assert.equal(result.config.sessionGapMinutes, 50);
   assert.equal(result.config.newcomerRoleMaxMemberDays, 10);
   assert.deepEqual(result.config.adminRoleIds, ["admin-1"]);
@@ -221,11 +251,13 @@ test("updateActivityConfig merges partial overrides and keeps defaults available
   assert.equal(getActivityConfig(db).channelWeightPresets.flood, ACTIVITY_CHANNEL_WEIGHT_PRESETS.flood);
 
   const second = updateActivityConfig(db, {
+    messageSourceMode: "unknown",
     voiceScoring: {
       activeDailyCapHours: 5,
     },
   });
 
+  assert.equal(second.config.messageSourceMode, "all_except");
   assert.equal(second.config.voiceScoring.mode, "smart");
   assert.equal(second.config.voiceScoring.totalDailyCapHours, 8);
   assert.equal(second.config.voiceScoring.activeDailyCapHours, 5);
@@ -234,6 +266,36 @@ test("updateActivityConfig merges partial overrides and keeps defaults available
   const ensured = ensureActivityState(db);
   assert.equal(ensured.config.sessionGapMinutes, 50);
   assert.equal(ensured.watchedChannels.length, 0);
+  assert.equal(isActivitySourceExcluded(ensured.config, { channelId: "parent-1" }), true);
+  assert.equal(isActivitySourceExcluded(ensured.config, { channelId: "thread-2", parentChannelId: "parent-1" }), true);
+  assert.equal(isActivitySourceExcluded(ensured.config, { channelId: "other" }), false);
+});
+
+test("upsertWatchedChannel preserves legacy cursors while materializing thread source metadata", () => {
+  const db = {};
+
+  upsertWatchedChannel(db, {
+    guildId: "guild-1",
+    channelId: "thread-1",
+    importedUntilMessageId: "m-100",
+    now: "2026-05-01T00:00:00.000Z",
+  });
+
+  const result = upsertWatchedChannel(db, {
+    channelId: "thread-1",
+    channelNameCache: "Archived branch",
+    sourceKind: "thread",
+    parentChannelId: "forum-1",
+    autoDiscovered: true,
+    now: "2026-05-02T00:00:00.000Z",
+  });
+
+  assert.equal(result.record.importedUntilMessageId, "m-100");
+  assert.equal(result.record.sourceKind, "thread");
+  assert.equal(result.record.parentChannelId, "forum-1");
+  assert.equal(result.record.autoDiscovered, true);
+  assert.equal(result.record.channelType, "normal_chat");
+  assert.equal(result.record.channelWeight, 1);
 });
 
 test("ensureActivityState keeps the terminal freshness bucket open-ended after normalization", () => {

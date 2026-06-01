@@ -1,7 +1,13 @@
 "use strict";
 
 const { ensureSharedProfile } = require("../integrations/shared-profile");
-const { ensureActivityState } = require("./state");
+const {
+  ensureActivityState,
+  isActivityAllExceptMode,
+  isActivitySourceExcluded,
+  normalizeActivitySourceKind,
+  upsertWatchedChannel,
+} = require("./state");
 const {
   collectActivitySnapshotTargetUserIds,
   getActivityPersistedSnapshotRecord,
@@ -784,6 +790,8 @@ function getSessionBreakdownEntry(session, watchedChannel) {
   session.channelBreakdown[channelId] ||= {
     channelId,
     channelNameCache: cleanString(watchedChannel.channelNameCache, 200),
+    sourceKind: cleanString(watchedChannel.sourceKind, 40) || "channel",
+    parentChannelId: cleanString(watchedChannel.parentChannelId, 80) || null,
     channelType: cleanString(watchedChannel.channelType, 40) || "normal_chat",
     channelWeight: Number.isFinite(Number(watchedChannel.channelWeight)) ? Number(watchedChannel.channelWeight) : 1,
     messageCount: 0,
@@ -1882,19 +1890,82 @@ async function rebuildActivitySnapshots({ db = {}, userIds = [], now, saveDb, ru
   return execute();
 }
 
+function getActivityMessageSourceMetadata(message = {}) {
+  const parentChannelId = cleanString(message.parentChannelId ?? message.parentId, 80);
+  return {
+    guildId: cleanString(message.guildId, 80),
+    channelId: cleanString(message.channelId, 80),
+    channelNameCache: cleanString(message.channelNameCache ?? message.channelName, 200),
+    sourceKind: normalizeActivitySourceKind(message.sourceKind, parentChannelId ? "thread" : "channel"),
+    parentChannelId: parentChannelId || null,
+  };
+}
+
+function shouldRefreshActivityMessageSourceRecord(record = {}, metadata = {}) {
+  if (!record) return false;
+  if (metadata.guildId && !cleanString(record.guildId, 80)) return true;
+  if (metadata.channelNameCache && cleanString(record.channelNameCache, 200) !== metadata.channelNameCache) return true;
+  if (metadata.sourceKind && cleanString(record.sourceKind, 40) !== metadata.sourceKind) return true;
+  if (metadata.parentChannelId && cleanString(record.parentChannelId, 80) !== metadata.parentChannelId) return true;
+  return false;
+}
+
 function recordActivityMessage({ db = {}, message = {} } = {}) {
-  const state = ensureActivityState(db);
+  let state = ensureActivityState(db);
   const config = state.config || {};
   const createdAt = normalizeIsoTimestamp(message.createdAt, null);
   const guildId = cleanString(message.guildId, 80);
   const userId = cleanString(message.userId, 80);
   const channelId = cleanString(message.channelId, 80);
 
-  if (!createdAt || !guildId || !userId || !channelId) {
+  if (message.authorBot === true || message.bot === true || message.author?.bot === true) {
+    return { ignored: true, reason: "bot-message" };
+  }
+
+  if (!guildId) {
+    return { ignored: true, reason: "dm-message" };
+  }
+
+  if (!createdAt || !userId || !channelId) {
     throw new Error("guildId, userId, channelId, and createdAt are required");
   }
 
-  const watchedChannel = getWatchedChannelRecord(state, channelId);
+  const sourceMetadata = getActivityMessageSourceMetadata(message);
+  let watchedChannel = getWatchedChannelRecord(state, channelId);
+  const sourceForExclusion = watchedChannel || sourceMetadata;
+
+  if (isActivitySourceExcluded(config, sourceForExclusion)) {
+    return { ignored: true, reason: "channel-excluded" };
+  }
+
+  if (!watchedChannel && isActivityAllExceptMode(config)) {
+    upsertWatchedChannel(db, {
+      ...sourceMetadata,
+      channelType: "normal_chat",
+      channelWeight: 1,
+      enabled: true,
+      countMessages: true,
+      countSessions: true,
+      countForTrust: true,
+      countForRoles: true,
+      autoDiscovered: true,
+      now: createdAt,
+    });
+    state = ensureActivityState(db);
+    watchedChannel = getWatchedChannelRecord(state, channelId);
+  } else if (watchedChannel && isActivityAllExceptMode(config) && shouldRefreshActivityMessageSourceRecord(watchedChannel, sourceMetadata)) {
+    upsertWatchedChannel(db, {
+      channelId,
+      guildId,
+      channelNameCache: sourceMetadata.channelNameCache,
+      sourceKind: sourceMetadata.sourceKind,
+      parentChannelId: sourceMetadata.parentChannelId,
+      now: createdAt,
+    });
+    state = ensureActivityState(db);
+    watchedChannel = getWatchedChannelRecord(state, channelId);
+  }
+
   if (!watchedChannel || watchedChannel.enabled === false) {
     return { ignored: true, reason: "channel-not-watched" };
   }

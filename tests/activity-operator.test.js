@@ -2173,6 +2173,121 @@ test("importHistoricalActivityFromWatchedChannels paginates channel history, res
   assert.equal(db.profiles["user-1"].domains.activity.appliedActivityRoleKey, "weak");
 });
 
+test("importHistoricalActivityFromWatchedChannels discovers all_except sources, keeps old cursors, and fully imports new threads", async () => {
+  const db = {
+    profiles: {
+      "user-1": { userId: "user-1", username: "one" },
+      "user-2": { userId: "user-2", username: "two" },
+    },
+  };
+  upsertWatchedChannel(db, {
+    channelId: "main-1",
+    channelNameCache: "Main",
+    channelType: "main_chat",
+    importedUntilMessageId: "m-2",
+    now: "2026-05-01T00:00:00.000Z",
+  });
+
+  const fetchLog = [];
+  const result = await importHistoricalActivityFromWatchedChannels({
+    db,
+    requestedByUserId: "mod-1",
+    listActivityMessageSources: async () => [
+      { guildId: "guild-1", channelId: "main-1", channelNameCache: "Main" },
+      { guildId: "guild-1", channelId: "thread-1", channelNameCache: "Forum Thread", sourceKind: "thread", parentChannelId: "forum-1" },
+    ],
+    fetchChannel: async (channelId) => ({
+      isTextBased() {
+        return true;
+      },
+      messages: {
+        async fetch(options = {}) {
+          fetchLog.push([channelId, options]);
+          if (channelId === "main-1") {
+            return new Collection([
+              ["m-3", { id: "m-3", guildId: "guild-1", author: { id: "user-1", bot: false }, createdAt: new Date("2026-05-01T10:30:00.000Z") }],
+              ["m-2", { id: "m-2", guildId: "guild-1", author: { id: "user-1", bot: false }, createdAt: new Date("2026-05-01T10:20:00.000Z") }],
+              ["m-1", { id: "m-1", guildId: "guild-1", author: { id: "user-1", bot: false }, createdAt: new Date("2026-05-01T10:10:00.000Z") }],
+            ]);
+          }
+          return new Collection([
+            ["t-2", { id: "t-2", guildId: "guild-1", author: { id: "user-2", bot: false }, createdAt: new Date("2026-05-01T10:25:00.000Z") }],
+            ["t-1", { id: "t-1", guildId: "guild-1", author: { id: "user-2", bot: false }, createdAt: new Date("2026-05-01T10:05:00.000Z") }],
+          ]);
+        },
+      },
+    }),
+    resolveMemberRoleIds() {
+      return [];
+    },
+    async applyRoleChanges() {
+      return true;
+    },
+  });
+
+  assert.equal(result.importedEntryCount, 3);
+  assert.equal(result.scannedChannelCount, 2);
+  assert.deepEqual(fetchLog.map(([channelId]) => channelId), ["main-1", "thread-1"]);
+  const mainRecord = ensureActivityState(db).watchedChannels.find((entry) => entry.channelId === "main-1");
+  const threadRecord = ensureActivityState(db).watchedChannels.find((entry) => entry.channelId === "thread-1");
+  assert.equal(mainRecord.importedUntilMessageId, "m-3");
+  assert.equal(threadRecord.importedUntilMessageId, "t-2");
+  assert.equal(threadRecord.sourceKind, "thread");
+  assert.equal(threadRecord.parentChannelId, "forum-1");
+  assert.equal(threadRecord.autoDiscovered, true);
+});
+
+test("importHistoricalActivityFromWatchedChannels skips excluded parents and records inaccessible discovered sources", async () => {
+  const db = {
+    profiles: {
+      "user-1": { userId: "user-1" },
+    },
+  };
+  updateActivityConfig(db, {
+    excludedChannelIds: ["forum-1"],
+  });
+
+  const fetchedChannelIds = [];
+  const result = await importHistoricalActivityFromWatchedChannels({
+    db,
+    requestedByUserId: "mod-1",
+    listActivityMessageSources: async () => [
+      { guildId: "guild-1", channelId: "main-1", channelNameCache: "Main" },
+      { guildId: "guild-1", channelId: "thread-1", sourceKind: "thread", parentChannelId: "forum-1" },
+      { guildId: "guild-1", channelId: "lost-1", channelNameCache: "Lost" },
+    ],
+    fetchChannel: async (channelId) => {
+      fetchedChannelIds.push(channelId);
+      if (channelId === "lost-1") return null;
+      return {
+        isTextBased() {
+          return true;
+        },
+        messages: {
+          async fetch() {
+            return new Collection([
+              ["m-1", { id: "m-1", guildId: "guild-1", author: { id: "user-1", bot: false }, createdAt: new Date("2026-05-01T10:00:00.000Z") }],
+            ]);
+          },
+        },
+      };
+    },
+    resolveMemberRoleIds() {
+      return [];
+    },
+    async applyRoleChanges() {
+      return true;
+    },
+  });
+
+  assert.equal(result.importedEntryCount, 1);
+  assert.equal(result.failedChannelCount, 1);
+  assert.deepEqual(fetchedChannelIds, ["main-1", "lost-1"]);
+  assert.equal(result.failedChannels[0].channelId, "lost-1");
+  assert.equal(ensureActivityState(db).runtime.errors.at(-1).channelId, "lost-1");
+  assert.equal(ensureActivityState(db).watchedChannels.find((entry) => entry.channelId === "thread-1").importedUntilMessageId, "");
+});
+
 test("importHistoricalActivityFromWatchedChannels keeps successful channel progress when another watched channel fails", async () => {
   const db = {
     profiles: {

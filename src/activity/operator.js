@@ -22,8 +22,8 @@ const {
 const {
   ACTIVITY_CHANNEL_TYPES,
   ensureActivityState,
-  getWatchedChannel,
-  removeWatchedChannel,
+  isActivityAllExceptMode,
+  isActivitySourceExcluded,
   updateActivityConfig,
   upsertWatchedChannel,
 } = require("./state");
@@ -366,12 +366,13 @@ function resolveActivityNewcomerSuppressionState({
 
     function formatChannelPreview(record = {}) {
       const channelId = cleanString(record.channelId, 80) || "unknown";
-      return `${cleanString(record.channelNameCache, 80) || channelId} (${channelId})`;
+      const sourceKind = cleanString(record.sourceKind, 40) === "thread" ? "thread" : "channel";
+      return `${cleanString(record.channelNameCache, 80) || channelId} (${channelId}, ${sourceKind})`;
     }
 
     function buildWatchedChannelPreview(state = {}, limit = 4) {
       const watchedChannels = Array.isArray(state.watchedChannels) ? state.watchedChannels : [];
-      if (!watchedChannels.length) return "Список каналов ещё не настроен.";
+      if (!watchedChannels.length) return "Источники ещё не материализованы. Они появятся после live-сообщений или import.";
 
       const lines = watchedChannels
         .slice(0, Math.max(1, Number(limit) || 1))
@@ -384,7 +385,7 @@ function resolveActivityNewcomerSuppressionState({
 
     function buildWatchedChannelImportPreview(state = {}, limit = 4) {
       const watchedChannels = Array.isArray(state.watchedChannels) ? state.watchedChannels : [];
-      if (!watchedChannels.length) return "Список каналов ещё не настроен.";
+      if (!watchedChannels.length) return "Источники ещё не материализованы. Запусти import, чтобы обнаружить доступные каналы и ветки.";
 
       const lines = watchedChannels
         .slice(0, Math.max(1, Number(limit) || 1))
@@ -394,6 +395,19 @@ function resolveActivityNewcomerSuppressionState({
         ].join("\n"));
       if (watchedChannels.length > lines.length) {
         lines.push(`… ещё ${watchedChannels.length - lines.length}`);
+      }
+      return lines.join("\n");
+    }
+
+    function buildActivityExcludedChannelPreview(config = {}, limit = 6) {
+      const excludedChannelIds = normalizeStringArray(config.excludedChannelIds, 5000, 80);
+      if (!excludedChannelIds.length) return "Исключений нет: считаются все доступные чаты и ветки.";
+
+      const lines = excludedChannelIds
+        .slice(0, Math.max(1, Number(limit) || 1))
+        .map((channelId, index) => `${index + 1}. ${channelId}`);
+      if (excludedChannelIds.length > lines.length) {
+        lines.push(`… ещё ${excludedChannelIds.length - lines.length}`);
       }
       return lines.join("\n");
     }
@@ -559,18 +573,18 @@ function resolveActivityNewcomerSuppressionState({
 
       if (normalizedView === "channels") {
         if (!watchedChannelCount) {
-          return "Сначала добавь хотя бы один канал в tracking и сохрани список.";
+          return "Источники ещё не материализованы: live-сообщения уже будут считаться, а import обнаружит доступные чаты и ветки.";
         }
         if (runtimeErrorCount > 0) {
-          return "Есть ошибки import/runtime: проверь доступ к каналам и потом повтори импорт.";
+          return "Есть ошибки import/runtime: проверь доступ к чатам или исключи проблемные источники и потом повтори импорт.";
         }
         if (!lastCalibrationRun) {
-          return "После настройки списка запусти импорт истории, чтобы добрать старые сообщения.";
+          return "Запусти импорт истории, чтобы добрать старые сообщения из всех не исключённых доступных источников.";
         }
         if (channelsWithoutImportCheckpointCount > 0) {
-          return `У ${channelsWithoutImportCheckpointCount} каналов ещё нет checkpoint-а: после проверки списка запусти импорт истории.`;
+          return `У ${channelsWithoutImportCheckpointCount} источников ещё нет checkpoint-а: запусти импорт истории, чтобы добрать их архив.`;
         }
-        return "Checkpoint-и уже есть. Повторный импорт нужен после расширения списка каналов или если нужно добрать старую активность.";
+        return "Checkpoint-и уже есть. Повторный импорт догрузит только новое после последнего cursor-а и найдёт новые доступные ветки.";
       }
 
       if (normalizedView === "roles") {
@@ -618,7 +632,7 @@ function resolveActivityNewcomerSuppressionState({
       }
 
       if (!watchedChannelCount) {
-        return "Начни с раздела «Каналы и импорт»: без tracking-каналов activity не накопится.";
+        return "Начни с раздела «Каналы и импорт»: там виден режим all_except, исключения и состояние импортных cursor-ов.";
       }
       if (!mappedRoleCount) {
         return "Потом открой «Роли и правила» и привяжи activity-роли, иначе выдача будет неполной.";
@@ -663,8 +677,8 @@ function resolveActivityNewcomerSuppressionState({
           new ActionRowBuilder().addComponents(
             new ButtonBuilder().setCustomId(getActivityPanelRefreshButtonId(normalizedView)).setLabel("Обновить вид").setStyle(ButtonStyle.Secondary),
             new ButtonBuilder().setCustomId("activity_panel_historical_import").setLabel("Запустить импорт").setStyle(ButtonStyle.Primary),
-            new ButtonBuilder().setCustomId("activity_panel_config_watch_save").setLabel("Список каналов").setStyle(ButtonStyle.Secondary),
-            new ButtonBuilder().setCustomId("activity_panel_config_watch_remove").setLabel("Убрать 1 канал").setStyle(ButtonStyle.Secondary),
+            new ButtonBuilder().setCustomId("activity_panel_config_watch_save").setLabel("Исключения").setStyle(ButtonStyle.Secondary),
+            new ButtonBuilder().setCustomId("activity_panel_config_watch_remove").setLabel("Вернуть 1").setStyle(ButtonStyle.Secondary),
             new ButtonBuilder().setCustomId("activity_panel_inspect_user").setLabel("Проверить юзера").setStyle(ButtonStyle.Secondary)
           ),
         ];
@@ -703,7 +717,7 @@ function resolveActivityNewcomerSuppressionState({
           new ButtonBuilder().setCustomId("activity_panel_sync_roles").setLabel("Только выдать роли").setStyle(ButtonStyle.Success)
         ),
         new ActionRowBuilder().addComponents(
-          new ButtonBuilder().setCustomId("activity_panel_config_watch_save").setLabel("Каналы").setStyle(ButtonStyle.Secondary),
+          new ButtonBuilder().setCustomId("activity_panel_config_watch_save").setLabel("Исключения").setStyle(ButtonStyle.Secondary),
           new ButtonBuilder().setCustomId("activity_panel_config_access").setLabel("Кто управляет").setStyle(ButtonStyle.Secondary),
           new ButtonBuilder().setCustomId("activity_panel_config_roles_primary").setLabel("Основные роли").setStyle(ButtonStyle.Secondary),
           new ButtonBuilder().setCustomId("activity_panel_config_roles_secondary").setLabel("Доп. роли").setStyle(ButtonStyle.Secondary),
@@ -888,25 +902,23 @@ function buildActivityRoleMappingModal({ config = {}, modalId = "", title = "", 
 }
 
 function buildWatchedChannelSaveModal(state = {}) {
-  const channelValue = (Array.isArray(state.watchedChannels) ? state.watchedChannels : [])
-    .map((record) => cleanString(record?.channelId, 80))
-    .filter(Boolean)
+  const channelValue = normalizeStringArray(state.config?.excludedChannelIds, 5000, 80)
     .join("\n")
     .slice(0, 2000);
   const channelInput = new TextInputBuilder()
     .setCustomId("activity_watch_channel_list")
-    .setLabel("Полный список каналов")
+    .setLabel("Исключённые каналы/ветки")
     .setStyle(TextInputStyle.Paragraph)
-    .setRequired(true)
+    .setRequired(false)
     .setMaxLength(2000)
-    .setPlaceholder("Один канал на строку. Новый список заменит текущий целиком.");
+    .setPlaceholder("Один ID на строку. Пусто = считать все доступные источники.");
   if (channelValue) {
     channelInput.setValue(channelValue);
   }
 
   return new ModalBuilder()
     .setCustomId("activity_panel_config_watch_save_modal")
-    .setTitle("Каналы для Activity")
+    .setTitle("Исключения Activity")
     .addComponents(
       new ActionRowBuilder().addComponents(channelInput)
     );
@@ -915,16 +927,16 @@ function buildWatchedChannelSaveModal(state = {}) {
 function buildWatchedChannelRemoveModal() {
   return new ModalBuilder()
     .setCustomId("activity_panel_config_watch_remove_modal")
-    .setTitle("Убрать канал из Activity")
+    .setTitle("Вернуть источник Activity")
     .addComponents(
       new ActionRowBuilder().addComponents(
         new TextInputBuilder()
           .setCustomId("activity_watch_remove_channel_id")
-          .setLabel("ID канала или mention")
+          .setLabel("ID канала/ветки или mention")
           .setStyle(TextInputStyle.Short)
           .setRequired(true)
           .setMaxLength(80)
-          .setPlaceholder("123456789012345678 или <#123456789012345678>")
+          .setPlaceholder("Будет убран из списка исключений")
       )
     );
 }
@@ -1777,21 +1789,21 @@ function resolveActivityPanelStatusSnapshot({
     if (!watchedChannelCount) {
       return {
         label: "ПУСТО",
-        headline: "Tracking-контур ещё не собран.",
-        summary: "Пока список каналов пуст, Activity просто не из чего считать.",
+        headline: "Source table ещё не материализована.",
+        summary: "Live-сообщения уже будут считаться из всех не исключённых чатов, а import заполнит cursor-ы.",
       };
     }
     if (!lastCalibrationRun || channelsWithoutImportCheckpointCount > 0) {
       return {
         label: "ВНИМАНИЕ",
-        headline: "Список каналов уже есть, но historical backfill ещё не закрыт.",
+        headline: "Источники уже есть, но historical backfill ещё не закрыт.",
         summary: "Старые пользователи могут выпадать из статистики, пока import истории не доберёт прошлые сообщения.",
       };
     }
     return {
       label: "OK",
-      headline: "Tracking-контур выглядит собранным.",
-      summary: "Дальше это уже скорее операционный режим: расширяй список или повторяй import только по необходимости.",
+      headline: "Source/cursor-контур выглядит собранным.",
+      summary: "Дальше это уже операционный режим: исключай лишнее или повторяй import для догрузки новых источников.",
     };
   }
 
@@ -1863,8 +1875,8 @@ function resolveActivityPanelStatusSnapshot({
   if (!watchedChannelCount) {
     return {
       label: "ПУСТО",
-      headline: "Activity-контур ещё не собран.",
-      summary: "Начни с tracking-каналов, иначе ни статистика, ни роли не будут иметь нормальную базу.",
+      headline: "Activity-контур ещё не материализовал источники.",
+      summary: "Live уже считает все не исключённые чаты, но для старой истории нужен import и cursor-ы.",
     };
   }
 
@@ -1953,6 +1965,8 @@ function buildActivityOperatorPanelPayload({
   const normalizedStartupHealth = normalizeActivityPanelStartupHealth(startupHealth);
   const watchedChannels = Array.isArray(state.watchedChannels) ? state.watchedChannels : [];
   const watchedChannelCount = Array.isArray(state.watchedChannels) ? state.watchedChannels.length : 0;
+  const excludedChannelIds = normalizeStringArray(config.excludedChannelIds, 5000, 80);
+  const messageSourceMode = isActivityAllExceptMode(config) ? "all_except" : cleanString(config.messageSourceMode, 40) || "include";
   const mappedRoleCount = listActivityManagedRoleIds(config).length;
   const snapshotCount = Object.keys(state.userSnapshots || {}).length;
   const openSessions = Object.values(state.runtime?.openSessions || {});
@@ -2062,9 +2076,11 @@ function buildActivityOperatorPanelPayload({
   if (normalizedView === "channels") {
     embed.addFields(
       buildActivityPanelField("Контур импорта", [
-        `Каналов в tracking: **${watchedChannelCount}**`,
+        `Режим источников: **${messageSourceMode}**`,
+        `Материализованных sources: **${watchedChannelCount}**`,
+        `Исключений: **${excludedChannelIds.length}**`,
+        `Ветки: **${config.includeThreads === false ? "выключены" : "включены"}**`,
         `С import cursor: **${channelsWithImportCursorCount}**`,
-        `С completed import: **${channelsWithCompletedImportCount}**`,
         `Без checkpoint-а: **${channelsWithoutImportCheckpointCount}**`,
       ], true),
       buildActivityPanelField("Последний импорт", lastCalibrationRun
@@ -2085,11 +2101,12 @@ function buildActivityOperatorPanelPayload({
           ? "Последний import уже был не идеально чистым."
           : "Последний import не оставил каналов с ошибками.",
       ], true),
-      buildActivityPanelField(`Текущий список • ${watchedChannelCount}`, buildWatchedChannelImportPreview(state), false),
+      buildActivityPanelField(`Исключения • ${excludedChannelIds.length}`, buildActivityExcludedChannelPreview(config), false),
+      buildActivityPanelField(`Materialized sources • ${watchedChannelCount}`, buildWatchedChannelImportPreview(state), false),
       buildActivityPanelField("Быстрые действия", [
-        "Запустить импорт: добирает старые сообщения до включения tracking.",
-        "Список каналов: открывает и сохраняет полный текущий список целиком.",
-        "Убрать 1 канал: быстро удаляет один канал без полной правки списка.",
+        "Запустить импорт: обнаруживает доступные источники и добирает историю.",
+        "Исключения: сохраняет полный список каналов/веток, которые не считать.",
+        "Вернуть 1: убирает один ID из исключений, cursor records не удаляются.",
       ], false)
     );
     supportEmbeds.push(buildActivityPanelDiagnosticEmbed({
@@ -2105,9 +2122,9 @@ function buildActivityOperatorPanelPayload({
             : "Checkpoint-контур уже выглядит собранным.",
         ], false),
         buildActivityPanelField("Памятка", [
-          "Импорт не меняет список каналов сам по себе.",
-          "Редактор каналов заменяет список целиком.",
-          "Если каналов стало больше, сначала сохрани список, потом запускай import.",
+          "Materialized sources хранят cursor-ы, статистику и старые веса.",
+          "Редактор исключений не удаляет source records.",
+          "Новые доступные чаты и ветки появятся после live-сообщений или import.",
         ], false),
         buildActivityPanelField("Следующий шаг", buildActivityPanelNextStepPreview({
           view: normalizedView,
@@ -2263,7 +2280,9 @@ function buildActivityOperatorPanelPayload({
   } else {
     embed.addFields(
       buildActivityPanelField("Контур", [
-        `Каналов в tracking: **${watchedChannelCount}**`,
+        `Режим источников: **${messageSourceMode}**`,
+        `Материализованных sources: **${watchedChannelCount}**`,
+        `Исключений: **${excludedChannelIds.length}**`,
         `Привязано activity-ролей: **${mappedRoleCount}**`,
         `Готовых snapshots: **${snapshotCount}**`,
         `Профилей с activity: **${activityProfileCount}**`,
@@ -2292,10 +2311,10 @@ function buildActivityOperatorPanelPayload({
         ]
         : [
           "Импорт истории ещё не запускался.",
-          "Если tracking включили недавно, это первое действие перед лечением старых ролей.",
+          "Если all_except включили недавно, это первое действие перед лечением старых ролей.",
         ], false),
       buildActivityPanelField("Быстрые действия", [
-        "Запустить импорт: добирает старые сообщения из tracking-каналов.",
+        "Запустить импорт: добирает старые сообщения из всех не исключённых источников.",
         "Пересчитать и выдать: пересобирает snapshots и затем применяет роли.",
         "Только выдать роли: синхронизирует Discord-роли без нового score.",
       ], false)
@@ -2307,7 +2326,7 @@ function buildActivityOperatorPanelPayload({
       fields: [
         buildActivityPanelField("Что стопорит", [
           `Ошибки runtime: **${runtimeErrorCount}**`,
-          `Каналов без import checkpoint: **${channelsWithoutImportCheckpointCount}**`,
+          `Sources без import checkpoint: **${channelsWithoutImportCheckpointCount}**`,
           `Нужен добор старой истории: **${missingLocalHistoryUserCount}**`,
           `Canonical snapshots без local history: **${snapshotWithoutLocalHistoryUserCount}**`,
           `Mirror-only persisted fallback: **${mirrorOnlyPersistedUserCount}**`,
@@ -2926,6 +2945,9 @@ function normalizeHistoricalImportEntry(entry = {}) {
     guildId,
     userId,
     channelId,
+    channelNameCache: cleanString(source.channelNameCache ?? source.channelName, 200),
+    sourceKind: cleanString(source.sourceKind, 40),
+    parentChannelId: normalizeNullableString(source.parentChannelId ?? source.parentId, 80),
     createdAt,
     messageId: normalizeNullableString(source.messageId, 80),
   };
@@ -3210,10 +3232,59 @@ async function runActivityRoleSyncFromSnapshots({
   return execute();
 }
 
+function normalizeHistoricalActivitySource(value = {}, existingRecord = null, now = null) {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const channelId = cleanString(source.channelId ?? source.id ?? existingRecord?.channelId, 80);
+  if (!channelId) return null;
+  const parentChannelId = normalizeNullableString(source.parentChannelId ?? source.parentId ?? existingRecord?.parentChannelId, 80);
+
+  return {
+    guildId: normalizeNullableString(source.guildId ?? existingRecord?.guildId, 80),
+    channelId,
+    channelNameCache: cleanString(source.channelNameCache ?? source.name ?? existingRecord?.channelNameCache, 200),
+    sourceKind: cleanString(source.sourceKind ?? existingRecord?.sourceKind, 40) || (parentChannelId ? "thread" : "channel"),
+    parentChannelId,
+    autoDiscovered: source.autoDiscovered === undefined ? existingRecord?.autoDiscovered ?? true : source.autoDiscovered === true,
+    now,
+  };
+}
+
+async function resolveHistoricalActivitySources({
+  db = {},
+  listActivityMessageSources,
+  now,
+} = {}) {
+  const state = ensureActivityState(db);
+  const materializedById = new Map((Array.isArray(state.watchedChannels) ? state.watchedChannels : [])
+    .map((record) => [cleanString(record?.channelId, 80), record])
+    .filter(([channelId]) => Boolean(channelId)));
+
+  if (typeof listActivityMessageSources === "function") {
+    const discoveredSources = await Promise.resolve(listActivityMessageSources({
+      config: clone(state.config || {}),
+      watchedChannels: clone(state.watchedChannels || []),
+    }));
+    for (const discoveredSource of Array.isArray(discoveredSources) ? discoveredSources : []) {
+      const channelId = cleanString(discoveredSource?.channelId ?? discoveredSource?.id, 80);
+      const existingRecord = channelId ? materializedById.get(channelId) || null : null;
+      const normalizedSource = normalizeHistoricalActivitySource(discoveredSource, existingRecord, now);
+      if (!normalizedSource) continue;
+      const result = upsertWatchedChannel(db, normalizedSource);
+      materializedById.set(result.record.channelId, result.record);
+    }
+  }
+
+  const liveState = ensureActivityState(db);
+  return Array.from(new Map((Array.isArray(liveState.watchedChannels) ? liveState.watchedChannels : [])
+    .map((record) => [cleanString(record?.channelId, 80), record])
+    .filter(([channelId]) => Boolean(channelId))).values());
+}
+
 async function importHistoricalActivityFromWatchedChannels({
   db = {},
   requestedByUserId,
   fetchChannel,
+  listActivityMessageSources,
   now,
   resolveMemberRoleIds,
   resolveMemberActivityMeta,
@@ -3252,17 +3323,25 @@ async function importHistoricalActivityFromWatchedChannels({
 
     ACTIVE_HISTORICAL_IMPORTS.add(db);
     try {
-      const state = ensureActivityState(db);
-      const watchedChannels = Array.isArray(state.watchedChannels) ? state.watchedChannels : [];
       const collectedEntries = [];
       const channelUpdates = new Map();
       const failedChannels = [];
       const errorTimestamp = resolveNowIso(now);
+      const state = ensureActivityState(db);
+      const watchedChannels = isActivityAllExceptMode(state.config)
+        ? await resolveHistoricalActivitySources({
+          db,
+          listActivityMessageSources,
+          now: errorTimestamp,
+        })
+        : (Array.isArray(state.watchedChannels) ? state.watchedChannels : []);
+      const currentConfig = ensureActivityState(db).config || {};
       let scannedChannelCount = 0;
       let scannedMessageCount = 0;
 
       for (const watchedChannel of watchedChannels) {
         if (!watchedChannel || watchedChannel.enabled === false) continue;
+        if (isActivitySourceExcluded(currentConfig, watchedChannel)) continue;
 
         let newestImportedMessageId = null;
         let lastScannedMessageId = null;
@@ -3304,6 +3383,9 @@ async function importHistoricalActivityFromWatchedChannels({
                 guildId,
                 userId: cleanString(message.author.id, 80),
                 channelId: watchedChannel.channelId,
+                channelNameCache: cleanString(watchedChannel.channelNameCache, 200),
+                sourceKind: cleanString(watchedChannel.sourceKind, 40),
+                parentChannelId: normalizeNullableString(watchedChannel.parentChannelId, 80),
                 messageId: cleanString(message.id, 80),
                 createdAt,
               });
@@ -3415,6 +3497,7 @@ async function handleActivityPanelButtonInteraction({
   runRebuildMetrics = runDailyActivityRoleSync,
   runSyncRoles = runActivityRoleSyncFromSnapshots,
   fetchChannel,
+  listActivityMessageSources,
   listManagedActivityRoleUserIds,
   resolveMemberRoleIds,
   resolveMemberActivityMeta,
@@ -3590,6 +3673,7 @@ async function handleActivityPanelButtonInteraction({
         client,
         requestedByUserId: cleanString(interaction?.user?.id, 80),
         fetchChannel,
+        listActivityMessageSources,
         resolveMemberRoleIds,
         resolveMemberActivityMeta,
         applyRoleChanges,
@@ -3609,7 +3693,7 @@ async function handleActivityPanelButtonInteraction({
       ? "Импорт истории уже выполняется. Дождись завершения текущего запуска."
       : [
         `Импорт истории завершён. Импортировано ${result.importedEntryCount}, пропущено ${result.ignoredEntryCount}.`,
-        result.failedChannelCount ? `Каналов с ошибками: ${result.failedChannelCount}.` : "Все каналы обработаны без ошибок.",
+        result.failedChannelCount ? `Источников с ошибками: ${result.failedChannelCount}.` : "Все источники обработаны без ошибок.",
       ].join(" ");
     await interaction.editReply(buildActivityPanelPayload({
       db,
@@ -3767,7 +3851,6 @@ async function handleActivityPanelModalSubmitInteraction({
 
     if (customId === "activity_panel_config_watch_save_modal") {
       assertFunction(parseRequestedChannelId, "parseRequestedChannelId");
-      assertFunction(resolveChannel, "resolveChannel");
 
       const parsedChannels = parseRequestedChannelIds(
         interaction.fields.getTextInputValue("activity_watch_channel_list"),
@@ -3779,70 +3862,24 @@ async function handleActivityPanelModalSubmitInteraction({
           message: `Некорректные каналы: ${parsedChannels.invalidTokens.join(", ")}. Используй Channel ID или <#...>.`,
         };
       }
-      if (!parsedChannels.channelIds.length) {
-        return {
-          ok: false,
-          message: "Список каналов пуст. Укажи хотя бы один Channel ID или <#...>.",
-        };
-      }
 
-      const resolvedChannels = [];
-      for (const channelId of parsedChannels.channelIds) {
-        const resolvedChannel = await Promise.resolve(resolveChannel(channelId));
-        if (!resolvedChannel?.isTextBased?.()) {
-          return {
-            ok: false,
-            message: `Канал не найден или не является text channel, доступным боту: ${channelId}.`,
-          };
-        }
-        resolvedChannels.push({
-          channelId,
-          resolvedChannel,
-          existingRecord: getWatchedChannel(db, channelId),
-        });
-      }
-
-      const desiredChannelIds = new Set(resolvedChannels.map((entry) => entry.channelId));
-      const currentChannels = Array.isArray(ensureActivityState(db).watchedChannels)
-        ? [...ensureActivityState(db).watchedChannels]
-        : [];
-      let addedCount = 0;
-      let updatedCount = 0;
-      let removedCount = 0;
-
-      for (const { channelId, resolvedChannel, existingRecord } of resolvedChannels) {
-        const upsertResult = upsertWatchedChannel(db, {
-          channelId,
-          guildId: cleanString(resolvedChannel.guildId ?? resolvedChannel.guild?.id, 80) || existingRecord?.guildId || null,
-          channelNameCache: cleanString(resolvedChannel.name, 200) || existingRecord?.channelNameCache || "",
-          channelType: "normal_chat",
-          channelWeight: 1,
-          enabled: true,
-          countMessages: true,
-          countSessions: true,
-          countForTrust: true,
-          countForRoles: true,
-          now: changedAt,
-        });
-
-        if (upsertResult.created) addedCount += 1;
-        else if (upsertResult.mutated) updatedCount += 1;
-      }
-
-      for (const record of currentChannels) {
-        if (!desiredChannelIds.has(record.channelId)) {
-          const removeResult = removeWatchedChannel(db, { channelId: record.channelId });
-          if (removeResult.removed) removedCount += 1;
-        }
-      }
+      const previousExcludedChannelIds = normalizeStringArray(ensureActivityState(db).config?.excludedChannelIds, 5000, 80);
+      const updateResult = updateActivityConfig(db, {
+        messageSourceMode: "all_except",
+        excludedChannelIds: parsedChannels.channelIds,
+      });
+      const nextExcludedChannelIds = normalizeStringArray(updateResult.config.excludedChannelIds, 5000, 80);
+      const previousSet = new Set(previousExcludedChannelIds);
+      const nextSet = new Set(nextExcludedChannelIds);
+      const addedCount = nextExcludedChannelIds.filter((channelId) => !previousSet.has(channelId)).length;
+      const removedCount = previousExcludedChannelIds.filter((channelId) => !nextSet.has(channelId)).length;
 
       appendActivityAuditLog(db, {
-        actionType: "watch_channel_sync",
+        actionType: "activity_exclusion_sync",
         moderatorUserId: requestedByUserId,
         createdAt: changedAt,
-        channelIds: [...desiredChannelIds],
+        channelIds: nextExcludedChannelIds,
         addedCount,
-        updatedCount,
         removedCount,
       });
       if (typeof saveDb === "function") {
@@ -3851,7 +3888,7 @@ async function handleActivityPanelModalSubmitInteraction({
 
       return {
         ok: true,
-        message: `Каналы Activity сохранены. Сейчас в tracking: ${desiredChannelIds.size}. Добавлено: ${addedCount}, обновлено: ${updatedCount}, удалено: ${removedCount}.`,
+        message: `Исключения Activity сохранены. Сейчас исключено: ${nextExcludedChannelIds.length}. Добавлено: ${addedCount}, убрано: ${removedCount}. Source records и cursor-ы сохранены.`,
       };
     }
 
@@ -3869,16 +3906,21 @@ async function handleActivityPanelModalSubmitInteraction({
         };
       }
 
-      const removeResult = removeWatchedChannel(db, { channelId });
-      if (!removeResult.removed) {
+      const previousExcludedChannelIds = normalizeStringArray(ensureActivityState(db).config?.excludedChannelIds, 5000, 80);
+      if (!previousExcludedChannelIds.includes(channelId)) {
         return {
           ok: false,
-          message: `Watched channel не найден: ${channelId}.`,
+          message: `Этого ID нет в исключениях Activity: ${channelId}.`,
         };
       }
 
+      const nextExcludedChannelIds = previousExcludedChannelIds.filter((entry) => entry !== channelId);
+      updateActivityConfig(db, {
+        messageSourceMode: "all_except",
+        excludedChannelIds: nextExcludedChannelIds,
+      });
       appendActivityAuditLog(db, {
-        actionType: "watch_channel_remove",
+        actionType: "activity_exclusion_remove",
         moderatorUserId: requestedByUserId,
         createdAt: changedAt,
         channelId,
@@ -3889,7 +3931,7 @@ async function handleActivityPanelModalSubmitInteraction({
 
       return {
         ok: true,
-        message: `Канал убран из Activity: ${formatChannelPreview(removeResult.record)}. Обнови вид панели, если она уже открыта.`,
+        message: `Источник возвращён в Activity: ${channelId}. Cursor records не удалялись.`,
       };
     }
 

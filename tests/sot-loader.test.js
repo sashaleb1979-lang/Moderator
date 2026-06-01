@@ -366,6 +366,9 @@ test("syncSotShadowState preserves activity SoT state during legacy refresh", ()
   syncSotShadowState(db, schemaOptions);
 
   assert.equal(db.sot.activity.config.sessionGapMinutes, 45);
+  assert.equal(db.sot.activity.config.messageSourceMode, "all_except");
+  assert.deepEqual(db.sot.activity.config.excludedChannelIds, []);
+  assert.equal(db.sot.activity.config.includeThreads, true);
   assert.equal(db.sot.activity.config.scoreWindowDays, 30);
   assert.equal(db.sot.activity.config.channelWeightPresets.main_chat, 1);
   assert.equal(db.sot.activity.config.channelWeightPresets.flood, 0.35);
@@ -376,6 +379,9 @@ test("syncSotShadowState preserves activity SoT state during legacy refresh", ()
       guildId: null,
       channelId: "channel-1",
       channelNameCache: "",
+      sourceKind: "channel",
+      parentChannelId: null,
+      autoDiscovered: false,
       enabled: true,
       channelType: "normal_chat",
       channelWeight: 1,

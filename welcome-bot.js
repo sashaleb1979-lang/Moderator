@@ -537,6 +537,7 @@ const DEFAULT_NON_JJS_DESCRIPTION = "Если ты не играешь в JJS, �
 
 const {
   AuditLogEvent,
+  ChannelType,
   Client,
   GatewayIntentBits,
   PermissionsBitField,
@@ -5669,6 +5670,106 @@ async function getGuild(client) {
   if (guildCache) return guildCache;
   guildCache = await client.guilds.fetch(GUILD_ID).catch(() => null);
   return guildCache;
+}
+
+const ACTIVITY_DIRECT_MESSAGE_CHANNEL_TYPES = new Set([
+  ChannelType.GuildText,
+  ChannelType.GuildAnnouncement,
+].filter((value) => value !== undefined));
+const ACTIVITY_THREAD_CONTAINER_CHANNEL_TYPES = new Set([
+  ChannelType.GuildText,
+  ChannelType.GuildAnnouncement,
+  ChannelType.GuildForum,
+  ChannelType.GuildMedia,
+].filter((value) => value !== undefined));
+
+function toActivityMessageSource(channel, fallback = {}) {
+  const channelId = String(channel?.id || fallback.channelId || "").trim();
+  if (!channelId) return null;
+  const isThread = typeof channel?.isThread === "function" ? channel.isThread() : Boolean(fallback.parentChannelId);
+  return {
+    guildId: String(channel?.guildId || channel?.guild?.id || fallback.guildId || GUILD_ID || "").trim() || null,
+    channelId,
+    channelNameCache: String(channel?.name || fallback.channelNameCache || "").trim().slice(0, 200),
+    sourceKind: isThread ? "thread" : "channel",
+    parentChannelId: isThread
+      ? String(channel?.parentId || fallback.parentChannelId || "").trim() || null
+      : null,
+    autoDiscovered: true,
+  };
+}
+
+function addActivityMessageSource(sourceMap, channel, fallback = {}) {
+  const source = toActivityMessageSource(channel, fallback);
+  if (!source) return;
+  sourceMap.set(source.channelId, {
+    ...(sourceMap.get(source.channelId) || {}),
+    ...source,
+  });
+}
+
+async function collectActivityThreadsFromManager(sourceMap, channel) {
+  const threadManager = channel?.threads;
+  if (!threadManager) return;
+
+  for (const thread of threadManager.cache?.values?.() || []) {
+    addActivityMessageSource(sourceMap, thread, { parentChannelId: channel.id, guildId: channel.guildId });
+  }
+
+  const activeThreads = await threadManager.fetchActive?.().catch(() => null);
+  for (const thread of activeThreads?.threads?.values?.() || []) {
+    addActivityMessageSource(sourceMap, thread, { parentChannelId: channel.id, guildId: channel.guildId });
+  }
+
+  for (const archiveType of ["public", "private"]) {
+    let before = null;
+    for (let page = 0; page < 20; page += 1) {
+      const archivedThreads = await threadManager.fetchArchived?.({
+        type: archiveType,
+        limit: 100,
+        ...(before ? { before } : {}),
+      }).catch(() => null);
+      const threads = archivedThreads?.threads;
+      if (!threads?.size) break;
+      for (const thread of threads.values()) {
+        addActivityMessageSource(sourceMap, thread, { parentChannelId: channel.id, guildId: channel.guildId });
+      }
+      if (!archivedThreads.hasMore || threads.size < 100) break;
+      const lastThread = threads.last?.() || [...threads.values()].at(-1);
+      before = lastThread?.archiveTimestamp || lastThread?.createdTimestamp || lastThread?.id || null;
+      if (!before) break;
+    }
+  }
+}
+
+async function listActivityMessageSources(client, guildHint = null, config = {}) {
+  const guild = guildHint || await getGuild(client).catch(() => null);
+  if (!guild) return [];
+
+  await guild.channels.fetch?.().catch(() => null);
+  const sourceMap = new Map();
+  const channels = [...(guild.channels?.cache?.values?.() || [])];
+  const includeThreads = config.includeThreads !== false;
+
+  for (const channel of channels) {
+    if (!channel) continue;
+    if (ACTIVITY_DIRECT_MESSAGE_CHANNEL_TYPES.has(channel.type)) {
+      addActivityMessageSource(sourceMap, channel);
+    }
+    if (includeThreads && ACTIVITY_THREAD_CONTAINER_CHANNEL_TYPES.has(channel.type)) {
+      await collectActivityThreadsFromManager(sourceMap, channel);
+    }
+  }
+
+  if (includeThreads) {
+    for (const channel of client.channels?.cache?.values?.() || []) {
+      if (typeof channel?.isThread === "function" && channel.isThread() && channel.guildId === guild.id) {
+        addActivityMessageSource(sourceMap, channel);
+      }
+    }
+  }
+
+  return [...sourceMap.values()];
 }
 
 async function getActivityGuildMember(client, userId, guildHint = null) {
@@ -16314,6 +16415,7 @@ client.on("messageDeleteBulk", async (messages) => {
 
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
+  if (!message.guildId) return;
   if (message.guildId !== GUILD_ID) return;
 
   runSerializedDbTask(() => recordActivityMessage({
@@ -16322,6 +16424,9 @@ client.on("messageCreate", async (message) => {
       guildId: message.guildId,
       userId: message.author.id,
       channelId: message.channelId,
+      channelNameCache: String(message.channel?.name || "").trim(),
+      sourceKind: typeof message.channel?.isThread === "function" && message.channel.isThread() ? "thread" : "channel",
+      parentChannelId: String(message.channel?.parentId || "").trim() || null,
       createdAt: message.createdAt,
     },
   }), "activity-runtime-message-ingest").catch((error) => {
@@ -18777,6 +18882,10 @@ client.on("interactionCreate", async (interaction) => {
         const cachedChannel = guild?.channels?.cache?.get(channelId) || client.channels?.cache?.get?.(channelId) || null;
         if (cachedChannel) return cachedChannel;
         return client.channels.fetch(channelId).catch(() => null);
+      },
+      listActivityMessageSources: async ({ config } = {}) => {
+        const guild = interaction.guild || await getGuild(client).catch(() => null);
+        return listActivityMessageSources(client, guild, config || {});
       },
       resolveMemberRoleIds: (userId) => resolveActivityMemberRoleIds(client, userId, interaction.guild || null),
       resolveMemberActivityMeta: (userId) => resolveActivityMemberMeta(client, userId, interaction.guild || null),

@@ -113,6 +113,8 @@ const DEFAULT_ACTIVITY_MEMBER_RULES = Object.freeze({
 const NORMALIZED_ACTIVITY_STATES = new WeakSet();
 
 const WATCHED_CHANNEL_ROLE_OPT_OUT_TYPES = new Set(["admin", "ignored"]);
+const ACTIVITY_MESSAGE_SOURCE_MODES = new Set(["all_except", "include"]);
+const ACTIVITY_MESSAGE_SOURCE_KINDS = new Set(["channel", "thread"]);
 
 function clone(value) {
   if (value === undefined) return undefined;
@@ -184,6 +186,16 @@ function normalizeActivityChannelType(value, fallback = "normal_chat") {
   return ACTIVITY_CHANNEL_TYPES.has(channelType) ? channelType : fallback;
 }
 
+function normalizeActivityMessageSourceMode(value, fallback = "all_except") {
+  const mode = cleanString(value, 40).toLowerCase();
+  return ACTIVITY_MESSAGE_SOURCE_MODES.has(mode) ? mode : fallback;
+}
+
+function normalizeActivitySourceKind(value, fallback = "channel") {
+  const sourceKind = cleanString(value, 40).toLowerCase();
+  return ACTIVITY_MESSAGE_SOURCE_KINDS.has(sourceKind) ? sourceKind : fallback;
+}
+
 function normalizeActivityVoiceScoringMode(value, fallback = "smart") {
   const mode = cleanString(value, 40).toLowerCase();
   return mode === "smart" || mode === "legacy" ? mode : fallback;
@@ -198,6 +210,9 @@ function normalizeActivityChannelWeight(value, fallback, channelType = "normal_c
 
 function createDefaultActivityConfig() {
   return {
+    messageSourceMode: "all_except",
+    excludedChannelIds: [],
+    includeThreads: true,
     sessionGapMinutes: 45,
     scoreWindowDays: 30,
     maxEffectiveSessionsPerDay: 3.2,
@@ -384,6 +399,16 @@ function normalizeActivityConfig(value = {}) {
 
   return {
     ...clone(source),
+    messageSourceMode: normalizeActivityMessageSourceMode(
+      source.messageSourceMode ?? source.channelTrackingMode,
+      defaults.messageSourceMode
+    ),
+    excludedChannelIds: normalizeStringArray(
+      source.excludedChannelIds ?? source.excludedActivityChannelIds,
+      5000,
+      80
+    ),
+    includeThreads: normalizeBoolean(source.includeThreads, defaults.includeThreads),
     sessionGapMinutes: normalizePositiveInteger(source.sessionGapMinutes, defaults.sessionGapMinutes),
     scoreWindowDays: normalizePositiveInteger(source.scoreWindowDays, defaults.scoreWindowDays),
     maxEffectiveSessionsPerDay: normalizePositiveNumber(
@@ -459,11 +484,18 @@ function normalizeWatchedChannelRecord(value = {}, options = {}) {
   const channelType = normalizeActivityChannelType(source.channelType, existingRecord?.channelType || "normal_chat");
   const defaultCountForTrust = !WATCHED_CHANNEL_ROLE_OPT_OUT_TYPES.has(channelType);
   const defaultCountForRoles = !WATCHED_CHANNEL_ROLE_OPT_OUT_TYPES.has(channelType);
+  const parentChannelId = normalizeNullableString(source.parentChannelId ?? existingRecord?.parentChannelId, 80);
 
   return {
     guildId: normalizeNullableString(source.guildId ?? existingRecord?.guildId, 80),
     channelId,
     channelNameCache: cleanString(source.channelNameCache ?? existingRecord?.channelNameCache, 200),
+    sourceKind: normalizeActivitySourceKind(
+      source.sourceKind ?? existingRecord?.sourceKind,
+      parentChannelId ? "thread" : "channel"
+    ),
+    parentChannelId,
+    autoDiscovered: normalizeBoolean(source.autoDiscovered, existingRecord?.autoDiscovered ?? false),
     enabled: normalizeBoolean(source.enabled, existingRecord?.enabled ?? true),
     channelType,
     channelWeight: normalizeActivityChannelWeight(
@@ -695,6 +727,21 @@ function removeWatchedChannel(db = {}, { channelId } = {}) {
   };
 }
 
+function isActivityAllExceptMode(config = {}) {
+  return normalizeActivityMessageSourceMode(config?.messageSourceMode, "all_except") === "all_except";
+}
+
+function isActivitySourceExcluded(config = {}, source = {}) {
+  const excludedChannelIds = new Set(normalizeStringArray(config?.excludedChannelIds, 5000, 80));
+  if (!excludedChannelIds.size) return false;
+  const channelId = cleanString(source?.channelId, 80);
+  const parentChannelId = cleanString(source?.parentChannelId, 80);
+  return Boolean(
+    (channelId && excludedChannelIds.has(channelId))
+    || (parentChannelId && excludedChannelIds.has(parentChannelId))
+  );
+}
+
 module.exports = {
   ACTIVITY_CHANNEL_TYPES,
   ACTIVITY_CHANNEL_WEIGHT_PRESETS,
@@ -712,9 +759,13 @@ module.exports = {
   ensureActivityState,
   getActivityConfig,
   getWatchedChannel,
+  isActivityAllExceptMode,
+  isActivitySourceExcluded,
   listWatchedChannels,
   normalizeActivityConfig,
   normalizeActivityState,
+  normalizeActivityMessageSourceMode,
+  normalizeActivitySourceKind,
   normalizeWatchedChannelRecord,
   removeWatchedChannel,
   upsertWatchedChannel,

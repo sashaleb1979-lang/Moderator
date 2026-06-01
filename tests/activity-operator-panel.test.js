@@ -170,20 +170,22 @@ test("buildActivityOperatorPanelPayload separates overview, channels, roles, and
     "activity_panel_inspect_user",
   ]);
   assert.deepEqual(payload.components[2].components.map((component) => component.data.label), [
-    "Каналы",
+    "Исключения",
     "Кто управляет",
     "Основные роли",
     "Доп. роли",
     "Проверить юзера",
   ]);
   const fieldTexts = payload.embeds[0].data.fields.map((field) => `${field.name}: ${field.value}`).join("\n");
-  assert.match(fieldTexts, /Каналов в tracking: \*\*1\*\*/);
+  assert.match(fieldTexts, /Режим источников: \*\*all_except\*\*/);
+  assert.match(fieldTexts, /Материализованных sources: \*\*1\*\*/);
+  assert.match(fieldTexts, /Исключений: \*\*0\*\*/);
   assert.match(fieldTexts, /Привязано activity-ролей: \*\*2\*\*/);
   assert.match(fieldTexts, /Полный цикл:/);
   assert.match(fieldTexts, /Только роли:/);
   assert.match(fieldTexts, /Gate \/ boost snapshots: \*\*1\*\* \/ \*\*1\*\*/);
   assert.match(fieldTexts, /Импорт истории:/);
-  assert.match(fieldTexts, /Запустить импорт: добирает старые сообщения/);
+  assert.match(fieldTexts, /Запустить импорт: добирает старые сообщения из всех не исключённых источников/);
   assert.match(fieldTexts, /Пересчитать и выдать: пересобирает snapshots/);
   assert.match(fieldTexts, /Только выдать роли: синхронизирует Discord-роли/);
   assert.match(fieldTexts, /Открытых сессий: \*\*1\*\*/);
@@ -191,7 +193,7 @@ test("buildActivityOperatorPanelPayload separates overview, channels, roles, and
   assert.match(fieldTexts, /Готово\./);
   const overviewDiagnosticTexts = payload.embeds[1].data.fields.map((field) => `${field.name}: ${field.value}`).join("\n");
   assert.match(overviewDiagnosticTexts, /Ошибки runtime: \*\*0\*\*/);
-  assert.match(overviewDiagnosticTexts, /Каналов без import checkpoint: \*\*1\*\*/);
+  assert.match(overviewDiagnosticTexts, /Sources без import checkpoint: \*\*1\*\*/);
   assert.match(overviewDiagnosticTexts, /Нужен добор старой истории: \*\*1\*\*/);
   assert.match(overviewDiagnosticTexts, /Canonical snapshots без local history: \*\*1\*\*/);
   assert.match(overviewDiagnosticTexts, /Mirror-only persisted fallback: \*\*0\*\*/);
@@ -219,23 +221,25 @@ test("buildActivityOperatorPanelPayload separates overview, channels, roles, and
   assert.deepEqual(channelsPayload.components[1].components.map((component) => component.data.label), [
     "Обновить вид",
     "Запустить импорт",
-    "Список каналов",
-    "Убрать 1 канал",
+    "Исключения",
+    "Вернуть 1",
     "Проверить юзера",
   ]);
   const channelFieldTexts = channelsPayload.embeds[0].data.fields.map((field) => `${field.name}: ${field.value}`).join("\n");
-  assert.match(channelFieldTexts, /Каналов в tracking: \*\*1\*\*/);
+  assert.match(channelFieldTexts, /Режим источников: \*\*all_except\*\*/);
+  assert.match(channelFieldTexts, /Материализованных sources: \*\*1\*\*/);
+  assert.match(channelFieldTexts, /Исключений: \*\*0\*\*/);
   assert.match(channelFieldTexts, /С import cursor: \*\*0\*\*/);
   assert.match(channelFieldTexts, /Без checkpoint-а: \*\*1\*\*/);
   assert.match(channelFieldTexts, /Режим: \*\*historical_import\*\*/);
-  assert.match(channelFieldTexts, /main-1 \(main-1\)/);
-  assert.match(channelFieldTexts, /Список каналов: открывает и сохраняет полный текущий список целиком\./);
+  assert.match(channelFieldTexts, /main-1, channel\)/);
+  assert.match(channelFieldTexts, /Исключения: сохраняет полный список каналов\/веток, которые не считать\./);
   const channelDiagnosticTexts = channelsPayload.embeds[1].data.fields.map((field) => `${field.name}: ${field.value}`).join("\n");
   assert.match(channelDiagnosticTexts, /Каналов без import checkpoint: \*\*1\*\*/);
   assert.match(channelDiagnosticTexts, /Ошибки import\/runtime: \*\*0\*\*/);
-  assert.match(channelDiagnosticTexts, /Импорт не меняет список каналов сам по себе\./);
-  assert.match(channelDiagnosticTexts, /Редактор каналов заменяет список целиком\./);
-  assert.match(channelDiagnosticTexts, /У 1 каналов ещё нет checkpoint-а: после проверки списка запусти импорт истории\./);
+  assert.match(channelDiagnosticTexts, /Materialized sources хранят cursor-ы/);
+  assert.match(channelDiagnosticTexts, /Редактор исключений не удаляет source records\./);
+  assert.match(channelDiagnosticTexts, /У 1 источников ещё нет checkpoint-а: запусти импорт истории/);
 
   const rolesPayload = buildActivityOperatorPanelPayload({
     db,
@@ -470,13 +474,13 @@ test("handleActivityPanelButtonInteraction navigates views and routes rebuild vs
   const handledWatchSave = await handleActivityPanelButtonInteraction(buildArgs());
 
   assert.equal(handledWatchSave, true);
-  assert.deepEqual(calls[5], ["showModal", "activity_panel_config_watch_save_modal", "Каналы для Activity"]);
+  assert.deepEqual(calls[5], ["showModal", "activity_panel_config_watch_save_modal", "Исключения Activity"]);
 
   interaction.customId = "activity_panel_config_watch_remove";
   const handledWatchRemove = await handleActivityPanelButtonInteraction(buildArgs());
 
   assert.equal(handledWatchRemove, true);
-  assert.deepEqual(calls[6], ["showModal", "activity_panel_config_watch_remove_modal", "Убрать канал из Activity"]);
+  assert.deepEqual(calls[6], ["showModal", "activity_panel_config_watch_remove_modal", "Вернуть источник Activity"]);
 
   interaction.customId = "activity_panel_inspect_user";
   const handledInspectUser = await handleActivityPanelButtonInteraction(buildArgs());
@@ -489,7 +493,7 @@ test("handleActivityPanelButtonInteraction navigates views and routes rebuild vs
 
   assert.equal(handledImport, true);
   assert.deepEqual(calls[8], ["deferUpdate"]);
-  assert.deepEqual(calls[9], ["editReply", { content: "channels|Импорт истории завершён. Импортировано 4, пропущено 1. Все каналы обработаны без ошибок." }]);
+  assert.deepEqual(calls[9], ["editReply", { content: "channels|Импорт истории завершён. Импортировано 4, пропущено 1. Все источники обработаны без ошибок." }]);
 
   interaction.customId = "activity_panel_rebuild_metrics";
   const handledRebuild = await handleActivityPanelButtonInteraction(buildArgs());
@@ -661,7 +665,7 @@ test("handleActivityPanelModalSubmitInteraction updates access roles and activit
   assert.equal(saved.length, 2);
 });
 
-test("handleActivityPanelModalSubmitInteraction saves and removes watched channels", async () => {
+test("handleActivityPanelModalSubmitInteraction saves and removes activity exclusions without deleting cursor records", async () => {
   const db = {};
   const replies = [];
   const saved = [];
@@ -722,12 +726,10 @@ test("handleActivityPanelModalSubmitInteraction saves and removes watched channe
   });
 
   assert.equal(handledSave, true);
-  assert.equal(ensureActivityState(db).watchedChannels.length, 2);
-  assert.deepEqual(ensureActivityState(db).watchedChannels.map((entry) => entry.channelId).sort(), ["123456789012345678", "987654321098765432"]);
-  assert.equal(ensureActivityState(db).watchedChannels.find((entry) => entry.channelId === "123456789012345678").channelType, "normal_chat");
-  assert.equal(ensureActivityState(db).watchedChannels.find((entry) => entry.channelId === "123456789012345678").channelWeight, 1);
-  assert.equal(ensureActivityState(db).watchedChannels.find((entry) => entry.channelId === "123456789012345678").countForTrust, true);
-  assert.match(replies[0][1], /Каналы Activity сохранены/);
+  assert.equal(ensureActivityState(db).watchedChannels.length, 1);
+  assert.equal(ensureActivityState(db).watchedChannels[0].channelId, "111111111111111111");
+  assert.deepEqual(ensureActivityState(db).config.excludedChannelIds, ["123456789012345678", "987654321098765432"]);
+  assert.match(replies[0][1], /Исключения Activity сохранены/);
 
   const handledRemove = await handleActivityPanelModalSubmitInteraction({
     interaction: {
@@ -768,8 +770,9 @@ test("handleActivityPanelModalSubmitInteraction saves and removes watched channe
 
   assert.equal(handledRemove, true);
   assert.equal(ensureActivityState(db).watchedChannels.length, 1);
-  assert.equal(ensureActivityState(db).watchedChannels[0].channelId, "987654321098765432");
-  assert.match(replies[1][1], /Канал убран из Activity/);
+  assert.equal(ensureActivityState(db).watchedChannels[0].channelId, "111111111111111111");
+  assert.deepEqual(ensureActivityState(db).config.excludedChannelIds, ["987654321098765432"]);
+  assert.match(replies[1][1], /Источник возвращён в Activity/);
   assert.equal(saved.length, 2);
 });
 
@@ -1155,8 +1158,7 @@ test("handleActivityPanelModalSubmitInteraction defers modal replies before slow
 
   assert.equal(handled, true);
   assert.deepEqual(calls[0], ["deferReply", { flags: MessageFlags.Ephemeral }]);
-  assert.deepEqual(calls[1], ["resolveChannel", "123456789012345678"]);
-  assert.equal(calls[2][0], "editReply");
-  assert.match(calls[2][1].content, /Каналы Activity сохранены/);
+  assert.equal(calls[1][0], "editReply");
+  assert.match(calls[1][1].content, /Исключения Activity сохранены/);
   assert.equal(calls.some(([type]) => type === "replyError" || type === "replySuccess"), false);
 });

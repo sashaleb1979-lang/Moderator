@@ -11,7 +11,7 @@ const {
   rebuildActivityUserSnapshot,
   resumeActivityRuntime,
 } = require("../src/activity/runtime");
-const { updateActivityConfig, upsertWatchedChannel } = require("../src/activity/state");
+const { ensureActivityState, updateActivityConfig, upsertWatchedChannel } = require("../src/activity/state");
 
 function approxEqual(actual, expected, epsilon = 0.000001) {
   assert.equal(Math.abs(Number(actual) - Number(expected)) <= epsilon, true, `${actual} ~= ${expected}`);
@@ -152,6 +152,118 @@ test("recordActivityMessage groups watched channels into one global session and 
   assert.deepEqual(Object.keys(firstSession.channelBreakdown).sort(), ["main-1", "media-1", "small-1"]);
   assert.equal(db.sot.activity.runtime.openSessions["user-1"].messageCount, 1);
   assert.equal(db.sot.activity.runtime.openSessions["user-1"].startedAt, "2026-05-09T13:30:00.000Z");
+});
+
+test("recordActivityMessage auto-materializes unknown channels in all_except mode", () => {
+  const db = {};
+
+  const result = recordActivityMessage({
+    db,
+    message: {
+      guildId: "guild-1",
+      userId: "user-1",
+      channelId: "new-chat",
+      channelNameCache: "New Chat",
+      messageId: "m-1",
+      createdAt: "2026-05-09T12:00:00.000Z",
+    },
+  });
+
+  assert.equal(result.ignored, false);
+  const source = ensureActivityState(db).watchedChannels.find((entry) => entry.channelId === "new-chat");
+  assert.equal(source.channelNameCache, "New Chat");
+  assert.equal(source.sourceKind, "channel");
+  assert.equal(source.parentChannelId, null);
+  assert.equal(source.autoDiscovered, true);
+  assert.equal(source.channelType, "normal_chat");
+  assert.equal(source.channelWeight, 1);
+  assert.equal(db.sot.activity.runtime.openSessions["user-1"].messageCount, 1);
+});
+
+test("recordActivityMessage auto-materializes unknown threads with parent metadata", () => {
+  const db = {};
+
+  const result = recordActivityMessage({
+    db,
+    message: {
+      guildId: "guild-1",
+      userId: "user-1",
+      channelId: "thread-1",
+      channelNameCache: "Thread One",
+      sourceKind: "thread",
+      parentChannelId: "forum-1",
+      messageId: "m-1",
+      createdAt: "2026-05-09T12:00:00.000Z",
+    },
+  });
+
+  assert.equal(result.ignored, false);
+  const source = ensureActivityState(db).watchedChannels.find((entry) => entry.channelId === "thread-1");
+  assert.equal(source.sourceKind, "thread");
+  assert.equal(source.parentChannelId, "forum-1");
+  assert.equal(result.session.channelBreakdown["thread-1"].parentChannelId, "forum-1");
+});
+
+test("recordActivityMessage skips excluded channels and parent-excluded threads", () => {
+  const db = {};
+  updateActivityConfig(db, {
+    excludedChannelIds: ["skip-chat", "forum-1"],
+  });
+
+  const skippedChannel = recordActivityMessage({
+    db,
+    message: {
+      guildId: "guild-1",
+      userId: "user-1",
+      channelId: "skip-chat",
+      createdAt: "2026-05-09T12:00:00.000Z",
+    },
+  });
+  const skippedThread = recordActivityMessage({
+    db,
+    message: {
+      guildId: "guild-1",
+      userId: "user-1",
+      channelId: "thread-1",
+      sourceKind: "thread",
+      parentChannelId: "forum-1",
+      createdAt: "2026-05-09T12:01:00.000Z",
+    },
+  });
+
+  assert.equal(skippedChannel.ignored, true);
+  assert.equal(skippedChannel.reason, "channel-excluded");
+  assert.equal(skippedThread.ignored, true);
+  assert.equal(skippedThread.reason, "channel-excluded");
+  assert.deepEqual(ensureActivityState(db).watchedChannels, []);
+  assert.deepEqual(ensureActivityState(db).runtime.openSessions, {});
+});
+
+test("recordActivityMessage skips bot and DM messages before materializing sources", () => {
+  const db = {};
+
+  const skippedBot = recordActivityMessage({
+    db,
+    message: {
+      guildId: "guild-1",
+      userId: "bot-1",
+      channelId: "chat-1",
+      authorBot: true,
+      createdAt: "2026-05-09T12:00:00.000Z",
+    },
+  });
+  const skippedDm = recordActivityMessage({
+    db,
+    message: {
+      userId: "user-1",
+      channelId: "dm-1",
+      createdAt: "2026-05-09T12:01:00.000Z",
+    },
+  });
+
+  assert.equal(skippedBot.reason, "bot-message");
+  assert.equal(skippedDm.reason, "dm-message");
+  assert.deepEqual(ensureActivityState(db).watchedChannels, []);
 });
 
 test("recordActivityVoiceState tracks voice lifecycle, active voice time, and streaming time separately", () => {
