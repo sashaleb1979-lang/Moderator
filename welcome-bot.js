@@ -10641,7 +10641,11 @@ async function approveSubmission(client, submission, moderatorTag) {
   profile.lastSubmissionStatus = "approved";
   profile.lastReviewedAt = submission.reviewedAt;
   profile.updatedAt = nowIso();
-  if (submission.robloxUsername && submission.robloxUserId) {
+  const existingRobloxIdentity = buildProfileRobloxIdentitySession(
+    profile?.domains?.roblox || profile?.summary?.roblox || profile
+  );
+  const shouldPromoteSubmissionRoblox = !(existingRobloxIdentity.robloxUsername && existingRobloxIdentity.robloxUserId);
+  if (shouldPromoteSubmissionRoblox && submission.robloxUsername && submission.robloxUserId) {
     writeCanonicalRobloxBinding(submission.userId, profile, submission, {
       verificationStatus: "verified",
       verifiedAt: submission.reviewedAt,

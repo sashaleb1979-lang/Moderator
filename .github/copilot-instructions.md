@@ -1,24 +1,19 @@
 # Repo Guidelines
 
-- This repo is a Node.js Discord onboarding and moderation bot for Jujutsu Shinigans.
-- This `.github/` customization set is the active Copilot authority for day-to-day work in this repository; do not depend on older playbooks being fully current.
-- Canonical commands:
-  - `npm start`
-  - `npm test`
-  - `node --test tests/<target>.test.js`
-- High-level owners:
-  - startup/event wiring: `welcome-bot.js`
-  - ready path and periodic runtime flow: `src/runtime/client-ready-core.js`
-  - activity moderator controls: `src/activity/operator.js`
-  - SoT load/save boundary: `src/sot/loader.js`
-  - verification moderator/report flows: `src/verification/operator.js`
-  - onboarding domain logic: `src/onboard/*`
-  - integrations and tierlist bridges: `src/integrations/*` and `graphic-tierlist.js`
-- `welcome-bot.js` is a hot path. Edit it in narrow slices only; prefer the owner that directly computes or mutates behavior over wiring layers.
-- Legacy and SoT compat paths are intentional. Do not remove bridges or shadow writes blindly.
-- Do not revive old snapshots, stale plans, or pre-extraction code paths unless current owners, tests, or logs prove they are still canonical.
-- Avoid broad cleanup that can reawaken old bugs. Fix the active owner and the active failure mode first.
-- Validation order:
-  - focused validation first
-  - full `npm test` second
-  - for runtime-only issues, confirm with logs or a smoke after restart
+Node.js Discord onboarding/moderation bot for Jujutsu Shinigans.
+
+Commands: `npm start`, `npm test`, `node --test tests/<target>.test.js`.
+
+Owners: startup `welcome-bot.js`; ready/runtime `src/runtime/client-ready-core.js`; activity `src/activity/operator.js`; SoT `src/sot/loader.js`; verification `src/verification/operator.js`; onboarding `src/onboard/*`; integrations `src/integrations/*`, `graphic-tierlist.js`.
+
+Edit the active owner in narrow slices. Do not broadly rewrite `welcome-bot.js`.
+
+Preserve legacy and SoT compatibility paths unless current tests/logs prove they are stale.
+
+Avoid broad cleanup. Fix the active failure mode first.
+
+For implementation, refactoring, debugging, and code-editing tasks: output code only. No explanations, summaries, introductions, reasoning, or extra markdown unless explicitly requested.
+
+Return the smallest correct change. Do not rewrite unrelated code.
+
+Validate with focused tests first, then `npm test`; for runtime-only issues confirm with logs or smoke after restart.

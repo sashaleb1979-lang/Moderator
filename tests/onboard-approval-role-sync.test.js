@@ -25,6 +25,7 @@ function loadApproveSubmission() {
   return new Function(
     "killTierFor",
     "getProfile",
+    "buildProfileRobloxIdentitySession",
     "refreshDerivedProfileMainFields",
     "cloneJsonValue",
     "nowIso",
@@ -117,6 +118,7 @@ test("approveSubmission saves approval state before best-effort role sync warnin
   const approveSubmission = buildApproveSubmission(
     () => 4,
     () => profile,
+    () => ({ robloxUsername: "", robloxUserId: "", robloxDisplayName: "" }),
     () => {},
     (value) => JSON.parse(JSON.stringify(value || null)),
     () => "2026-05-30T12:00:00.000Z",
@@ -160,6 +162,82 @@ test("approveSubmission saves approval state before best-effort role sync warnin
   assert.equal(snapshots.length, 1);
   assert.deepEqual(result.warnings, ["tier-role: missing perms"]);
   assert.equal("approveClaim" in submission, false);
+});
+
+test("approveSubmission preserves an already verified Roblox binding during kills-only approval", async () => {
+  const db = {
+    submissions: {},
+    profiles: {},
+  };
+  const submission = {
+    id: "sub-2",
+    userId: "user-2",
+    mainCharacterIds: ["gojo"],
+    displayName: "User Two",
+    username: "usertwo",
+    kills: 777,
+    status: "pending",
+    robloxUsername: "OldSnapshot",
+    robloxUserId: "42",
+    approveClaim: { claimedBy: "Mod#2" },
+  };
+  const profile = {
+    userId: "user-2",
+    domains: {
+      roblox: {
+        username: "CurrentVerified",
+        userId: "999",
+        verificationStatus: "verified",
+      },
+    },
+  };
+  db.submissions[submission.id] = submission;
+  db.profiles[submission.userId] = profile;
+
+  let writeCalls = 0;
+  const proofSnapshots = [];
+  const buildApproveSubmission = loadApproveSubmission();
+  const approveSubmission = buildApproveSubmission(
+    () => 2,
+    () => profile,
+    (source) => ({
+      robloxUsername: String(source?.username || source?.robloxUsername || "").trim(),
+      robloxUserId: String(source?.userId || source?.robloxUserId || "").trim(),
+      robloxDisplayName: String(source?.displayName || source?.robloxDisplayName || "").trim(),
+    }),
+    () => {},
+    (value) => JSON.parse(JSON.stringify(value || null)),
+    () => "2026-06-02T12:00:00.000Z",
+    () => {
+      writeCalls += 1;
+      throw new Error("existing verified Roblox binding should not be overwritten");
+    },
+    (_targetProfile, snapshot) => {
+      proofSnapshots.push(snapshot);
+    },
+    () => {},
+    (collection, key, value) => {
+      collection[key] = value;
+    },
+    db,
+    async () => null,
+    () => ({}),
+    (error) => String(error?.message || error),
+    async () => {},
+    async () => {},
+    () => "Tier 2",
+    () => {},
+    async () => ({ warnings: [] }),
+    (roleSync) => Array.isArray(roleSync?.warnings) ? roleSync.warnings.filter(Boolean) : []
+  );
+
+  await approveSubmission({}, submission, "Mod#2");
+
+  assert.equal(writeCalls, 0);
+  assert.equal(profile.domains.roblox.username, "CurrentVerified");
+  assert.equal(profile.domains.roblox.userId, "999");
+  assert.equal(proofSnapshots.length, 1);
+  assert.equal(proofSnapshots[0].approvedKills, 777);
 });
 
 test("processApprovalInteraction surfaces degraded role sync warnings and clears durable claim state", async () => {
