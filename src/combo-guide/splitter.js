@@ -121,6 +121,12 @@ function injectTechLinks(comboText, techLinks) {
   return result;
 }
 
+function resolveTrackedLink(url, context = {}, options = {}) {
+  if (typeof options.linkBuilder !== "function") return url;
+  const tracked = options.linkBuilder(url, context);
+  return tracked || url;
+}
+
 /**
  * Build navigation text for all characters.
  * Returns array of 1-2 message strings.
@@ -137,7 +143,17 @@ function buildNavigationMessages(characters, guildId, channelId, options = {}) {
   for (const char of characters) {
     if (char.imageMessageId) {
       const url = `https://discord.com/channels/${guildId}/${channelId}/${char.imageMessageId}`;
-      lines.push(`${char.emoji} [**${char.name}**](${url})`);
+      const trackedUrl = resolveTrackedLink(url, {
+        feature: "combo_guide",
+        action: "open_character_anchor",
+        targetKind: "character_anchor",
+        guildId,
+        channelId,
+        messageId: char.imageMessageId,
+        characterId: char.id,
+        characterName: char.name,
+      }, options);
+      lines.push(`${char.emoji} [**${char.name}**](${trackedUrl})`);
     } else {
       lines.push(`${char.emoji} **${char.name}**`);
     }
@@ -145,7 +161,14 @@ function buildNavigationMessages(characters, guildId, channelId, options = {}) {
 
   if (options.generalTechsThreadId) {
     const url = `https://discord.com/channels/${guildId}/${options.generalTechsThreadId}`;
-    lines.push(`\n🛠️ [**Общие техи**](${url})`);
+    const trackedUrl = resolveTrackedLink(url, {
+      feature: "combo_guide",
+      action: "open_general_techs",
+      targetKind: "general_techs_thread",
+      guildId,
+      channelId: options.generalTechsThreadId,
+    }, options);
+    lines.push(`\n🛠️ [**Общие техи**](${trackedUrl})`);
   }
 
   const fullText = lines.join("\n");
@@ -161,8 +184,18 @@ function buildNavigationMessages(characters, guildId, channelId, options = {}) {
 
   for (let i = 0; i < characters.length; i++) {
     const char = characters[i];
-    const line = char.imageMessageId
-      ? `${char.emoji} [**${char.name}**](https://discord.com/channels/${guildId}/${channelId}/${char.imageMessageId})`
+    const rawUrl = char.imageMessageId ? `https://discord.com/channels/${guildId}/${channelId}/${char.imageMessageId}` : "";
+    const line = rawUrl
+      ? `${char.emoji} [**${char.name}**](${resolveTrackedLink(rawUrl, {
+          feature: "combo_guide",
+          action: "open_character_anchor",
+          targetKind: "character_anchor",
+          guildId,
+          channelId,
+          messageId: char.imageMessageId,
+          characterId: char.id,
+          characterName: char.name,
+        }, options)})`
       : `${char.emoji} **${char.name}**`;
 
     if (i < mid) {
@@ -174,7 +207,13 @@ function buildNavigationMessages(characters, guildId, channelId, options = {}) {
 
   if (options.generalTechsThreadId) {
     const url = `https://discord.com/channels/${guildId}/${options.generalTechsThreadId}`;
-    part2Lines.push(`\n🛠️ [**Общие техи**](${url})`);
+    part2Lines.push(`\n🛠️ [**Общие техи**](${resolveTrackedLink(url, {
+      feature: "combo_guide",
+      action: "open_general_techs",
+      targetKind: "general_techs_thread",
+      guildId,
+      channelId: options.generalTechsThreadId,
+    }, options)})`);
   }
 
   return [part1Lines.join("\n"), part2Lines.join("\n")];

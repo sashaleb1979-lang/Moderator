@@ -3,6 +3,7 @@
 const { ROLE_PANEL_COMMAND_NAME } = require("../role-panel");
 const { ANTITEAM_COMMAND_NAME } = require("../antiteam/view");
 const { VERIFY_COMMAND_NAME, VERIFY_SUBCOMMAND_NAMES } = require("../verification/operator");
+const { ANALYTICS_COMMAND_NAME } = require("../analytics/panel");
 
 const PROFILE_COMMAND_NAME = "профиль";
 
@@ -21,7 +22,7 @@ const ONBOARD_SUBCOMMAND_NAMES = [
   "removetier",
 ];
 
-const TOP_LEVEL_COMMAND_NAMES = ["onboard", ROLE_PANEL_COMMAND_NAME, VERIFY_COMMAND_NAME, PROFILE_COMMAND_NAME, ANTITEAM_COMMAND_NAME];
+const TOP_LEVEL_COMMAND_NAMES = ["onboard", ROLE_PANEL_COMMAND_NAME, VERIFY_COMMAND_NAME, PROFILE_COMMAND_NAME, ANTITEAM_COMMAND_NAME, ANALYTICS_COMMAND_NAME];
 
 function buildCommands() {
   const { SlashCommandBuilder } = require("discord.js");
@@ -216,12 +217,19 @@ function buildCommands() {
           .addRoleOption((option) => option.setName("role").setDescription("Применить всем участникам с этой ролью"))
           .addStringOption((option) => option.setName("note").setDescription("Короткая заметка для audit log").setMaxLength(300))
       ),
+    new SlashCommandBuilder()
+      .setName(ANALYTICS_COMMAND_NAME)
+      .setDescription("Открыть личную панель статистики бота")
+      .addSubcommand((subcommand) =>
+        subcommand.setName("panel").setDescription("Открыть analytics-панель")
+      ),
   ].map((command) => command.toJSON());
 }
 
 module.exports = {
   ONBOARD_SUBCOMMAND_NAMES,
   ANTITEAM_COMMAND_NAME,
+  ANALYTICS_COMMAND_NAME,
   PROFILE_COMMAND_NAME,
   ROLE_PANEL_COMMAND_NAME,
   TOP_LEVEL_COMMAND_NAMES,

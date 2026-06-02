@@ -138,9 +138,26 @@ const {
 } = require("./src/verification/operator");
 const {
   buildDiscordOAuthAuthorizeUrl,
+  createVerificationCallbackHandler,
   createVerificationCallbackServer,
   normalizeVerificationRuntimeConfig,
 } = require("./src/verification/runtime");
+const {
+  ANALYTICS_COMMAND_NAME,
+  ANALYTICS_PANEL_BACK_ID,
+  ANALYTICS_PANEL_BUTTON_IDS,
+  ANALYTICS_PANEL_OPEN_ID,
+  ANALYTICS_PANEL_REFRESH_ID,
+  buildAnalyticsPanelPayload,
+  parseAnalyticsPanelViewCustomId,
+} = require("./src/analytics/panel");
+const { buildAnalyticsEventFromInteraction } = require("./src/analytics/catalog");
+const { createAnalyticsStore } = require("./src/analytics/store");
+const {
+  buildAnalyticsRedirectUrl,
+  createAnalyticsRedirectHandler,
+  normalizeAnalyticsRuntimeConfig,
+} = require("./src/analytics/runtime");
 const { commitMutation } = require("./src/onboard/refresh-runner");
 const {
   buildActivityOperatorPanelPayload,
@@ -575,6 +592,7 @@ const DATA_ROOT = resolveDataRoot();
 const DISCORD_TOKEN = String(process.env.DISCORD_TOKEN || "").trim();
 const GUILD_ID = String(process.env.GUILD_ID || "").trim();
 const DB_PATH = resolvePathFromBase(DATA_ROOT, process.env.DB_PATH || "welcome-db.json");
+const ANALYTICS_DB_PATH = resolvePathFromBase(DATA_ROOT, process.env.ANALYTICS_DB_PATH || "analytics-db.json");
 const ROBLOX_STARTUP_AUDIT_DISCORD_USER_ID = String(process.env.ROBLOX_STARTUP_AUDIT_DISCORD_USER_ID || "1146511958305144883").trim();
 const ROBLOX_STARTUP_AUDIT_ROBLOX_USER_ID = String(process.env.ROBLOX_STARTUP_AUDIT_ROBLOX_USER_ID || "9843941555").trim();
 const CONFIG_PATH = resolvePathFromBase(PROJECT_ROOT, process.env.CONFIG_PATH || "./bot.config.json");
@@ -1032,6 +1050,7 @@ function loadDb() {
 }
 
 const db = loadDb();
+const analyticsStore = createAnalyticsStore({ analyticsPath: ANALYTICS_DB_PATH });
 if (appConfig?.moderation?.primaryAdminUserId) {
   setAutonomyGuardPrimaryAdminUserId(db, appConfig.moderation.primaryAdminUserId);
 }
@@ -1064,6 +1083,71 @@ let readyClient = null;
 let robloxIntervalHandles = [];
 
 logSotDrift(db, "startup-load");
+
+function getAnalyticsRuntimeConfig() {
+  return normalizeAnalyticsRuntimeConfig({ env: process.env });
+}
+
+function isAnalyticsRedirectConfigured() {
+  return getAnalyticsRuntimeConfig().enabled === true;
+}
+
+function recordAnalyticsEventSafe(eventInput = {}, options = {}) {
+  try {
+    return analyticsStore.recordEvent(eventInput, options);
+  } catch (error) {
+    console.warn(`[analytics] record failed: ${formatRuntimeError(error)}`);
+    return null;
+  }
+}
+
+function recordInteractionAnalytics(interaction, options = {}) {
+  const event = buildAnalyticsEventFromInteraction(interaction, options);
+  if (!event) return null;
+  return recordAnalyticsEventSafe(event);
+}
+
+function buildTrackedAnalyticsUrl(targetUrl = "", options = {}) {
+  try {
+    return buildAnalyticsRedirectUrl({
+      store: analyticsStore,
+      config: getAnalyticsRuntimeConfig(),
+      targetUrl,
+      ...options,
+    });
+  } catch (error) {
+    console.warn(`[analytics] redirect url build failed: ${formatRuntimeError(error)}`);
+    return targetUrl;
+  }
+}
+
+function buildComboGuideTrackedLink(targetUrl = "", context = {}) {
+  return buildTrackedAnalyticsUrl(targetUrl, {
+    feature: context.feature || "combo_guide",
+    action: context.action || "open_link",
+    targetKind: context.targetKind || "discord_message",
+    metadata: {
+      ...context,
+      source: "combo_guide",
+    },
+  });
+}
+
+buildComboGuideTrackedLink.estimate = function estimateComboGuideTrackedLink(targetUrl = "") {
+  const config = getAnalyticsRuntimeConfig();
+  if (!config.enabled) return targetUrl;
+  return `${config.publicBaseUrl}${config.redirectPrefix}/000000000000000000000000`;
+};
+
+function buildAnalyticsPanelReply(view = "overview", statusText = "", includeFlags = true) {
+  return buildAnalyticsPanelPayload({
+    state: analyticsStore.getState(),
+    view,
+    statusText,
+    includeFlags,
+    redirectEnabled: isAnalyticsRedirectConfigured(),
+  });
+}
 
 function saveDb() {
   const result = dbStore.save(db);
@@ -3163,7 +3247,17 @@ async function buildGraphicTierlistBoardPayload(client) {
     const textChannelId = String(textBoard?.channelId || "").trim();
     const textMessageId = getTextTierlistSummaryMessageId(textBoard);
     if (textChannelId && textMessageId && GUILD_ID) {
-      const url = `https://discord.com/channels/${GUILD_ID}/${textChannelId}/${textMessageId}`;
+      const url = buildTrackedAnalyticsUrl(`https://discord.com/channels/${GUILD_ID}/${textChannelId}/${textMessageId}`, {
+        feature: "tierlist",
+        action: "open_text_tierlist",
+        targetKind: "text_tierlist_summary",
+        metadata: {
+          guildId: GUILD_ID,
+          channelId: textChannelId,
+          messageId: textMessageId,
+          source: "graphic_tierlist_link_button",
+        },
+      });
       components.push(
         new ActionRowBuilder().addComponents(
           new ButtonBuilder().setStyle(ButtonStyle.Link).setLabel("Текстовый рейтинг и статистика").setURL(url)
@@ -8177,17 +8271,24 @@ async function handleVerificationFailedCallback(client, payload = {}) {
   await logVerificationRuntimeEvent(client, `VERIFICATION_FAILED: <@${userId}> ${cleanVerificationText(payload.error?.message || payload.error, 200)}`, "error");
 }
 
-async function startVerificationRuntime(client) {
-  if (!isVerificationEnabled()) {
-    return { enabled: false, callbackStarted: false, entryPublished: false };
-  }
+function writeRuntimeNotFound(response) {
+  response.statusCode = 404;
+  response.setHeader("Content-Type", "text/plain; charset=utf-8");
+  response.end("Runtime route not found.");
+}
 
-  let callbackStarted = false;
-  let entryPublished = false;
+function createSharedRuntimeRequestHandler(client) {
+  return async (request, response) => {
+    const analyticsHandler = createAnalyticsRedirectHandler({
+      store: analyticsStore,
+      config: getAnalyticsRuntimeConfig(),
+    });
+    if (await analyticsHandler(request, response)) {
+      return true;
+    }
 
-  if (isVerificationOauthConfigured()) {
-    if (!verificationCallbackServer) {
-      verificationCallbackServer = createVerificationCallbackServer({
+    if (isVerificationOauthConfigured()) {
+      const verificationHandler = createVerificationCallbackHandler({
         config: {
           integration: getVerificationIntegrationState(),
           env: process.env,
@@ -8197,9 +8298,47 @@ async function startVerificationRuntime(client) {
         onManualReview: (payload) => handleVerificationManualReviewCallback(client, payload),
         onFailure: (payload) => handleVerificationFailedCallback(client, payload),
       });
+      return verificationHandler(request, response);
     }
 
-    const result = await verificationCallbackServer.start();
+    writeRuntimeNotFound(response);
+    return true;
+  };
+}
+
+async function startSharedHttpRuntime(client) {
+  const shouldStart = isAnalyticsRedirectConfigured() || (isVerificationEnabled() && isVerificationOauthConfigured());
+  if (!shouldStart) {
+    return { started: false, alreadyListening: false, enabled: false };
+  }
+
+  if (!verificationCallbackServer) {
+    verificationCallbackServer = createVerificationCallbackServer({
+      config: {
+        integration: getVerificationIntegrationState(),
+        env: process.env,
+      },
+      requestHandler: createSharedRuntimeRequestHandler(client),
+    });
+  }
+
+  const result = await verificationCallbackServer.start();
+  return {
+    ...result,
+    enabled: true,
+  };
+}
+
+async function startVerificationRuntime(client) {
+  if (!isVerificationEnabled()) {
+    return { enabled: false, callbackStarted: false, entryPublished: false };
+  }
+
+  let callbackStarted = false;
+  let entryPublished = false;
+
+  if (isVerificationOauthConfigured()) {
+    const result = await startSharedHttpRuntime(client);
     callbackStarted = result.started === true || result.alreadyListening === true;
   }
 
@@ -8209,6 +8348,18 @@ async function startVerificationRuntime(client) {
   }
 
   return { enabled: true, callbackStarted, entryPublished };
+}
+
+async function startAnalyticsRuntime(client) {
+  if (!isAnalyticsRedirectConfigured()) {
+    return { enabled: false, callbackStarted: false };
+  }
+  const result = await startSharedHttpRuntime(client);
+  return {
+    enabled: true,
+    callbackStarted: result.started === true || result.alreadyListening === true,
+    config: result.config,
+  };
 }
 
 async function buildVerificationPanelReply(view = "home", statusText = "", includeFlags = true) {
@@ -11692,7 +11843,11 @@ async function buildModeratorPanelPayload(client, statusText = "", includeFlags 
           .setCustomId("panel_mode_apocalypse")
           .setLabel("Апокалипсис")
           .setStyle(currentMode === ONBOARD_ACCESS_MODES.APOCALYPSE ? ButtonStyle.Danger : ButtonStyle.Secondary)
-          .setDisabled(currentMode === ONBOARD_ACCESS_MODES.APOCALYPSE)
+          .setDisabled(currentMode === ONBOARD_ACCESS_MODES.APOCALYPSE),
+        new ButtonBuilder()
+          .setCustomId(ANALYTICS_PANEL_OPEN_ID)
+          .setLabel("Analytics")
+          .setStyle(ButtonStyle.Secondary)
       ),
       new ActionRowBuilder().addComponents(
         new ButtonBuilder()
@@ -15820,6 +15975,7 @@ client.once("clientReady", async () => {
   console.log(`Logged in as ${client.user.tag}`);
   console.log(`Data root: ${DATA_ROOT}`);
   console.log(`DB path: ${DB_PATH}`);
+  console.log(`Analytics DB path: ${ANALYTICS_DB_PATH}`);
   console.log(buildRobloxStartupAuditLine(db));
   let generated = {
     characterRoles: 0,
@@ -15981,6 +16137,17 @@ client.once("clientReady", async () => {
     }
   } catch (error) {
     console.error("Verification runtime startup failed:", error?.message || error);
+  }
+
+  try {
+    const analyticsRuntime = await startAnalyticsRuntime(client);
+    if (analyticsRuntime.enabled) {
+      console.log(`Analytics redirect runtime ready. callback=${analyticsRuntime.callbackStarted ? "yes" : "no"}`);
+    } else {
+      console.log("Analytics redirect runtime disabled: ANALYTICS_PUBLIC_BASE_URL is not set.");
+    }
+  } catch (error) {
+    console.error("Analytics redirect runtime startup failed:", error?.message || error);
   }
 
   try {
@@ -16437,6 +16604,44 @@ client.on("messageCreate", async (message) => {
     console.error("Activity runtime message ingest failed:", error?.message || error);
   });
 
+  try {
+    const helperSession = getHelperIntakeSession(message.author.id);
+    const profileCapture = getActiveProfileSubmitCaptureForMessage(message);
+    if (profileCapture) {
+      recordAnalyticsEventSafe({
+        feature: profileCapture.action === PROFILE_SUBMIT_ACTIONS.ELO ? "elo" : "onboarding",
+        action: profileCapture.action === PROFILE_SUBMIT_ACTIONS.ELO ? "profile_elo_submit_message" : "profile_kills_submit_message",
+        actorUserId: message.author.id,
+        guildId: message.guildId,
+        channelId: message.channelId,
+        messageId: message.id,
+        interactionType: "message",
+        outcome: "received",
+        metadata: {
+          source: "profile_submit_capture",
+          hasAttachments: message.attachments?.size > 0,
+        },
+      });
+    } else if (helperSession?.channelId && String(helperSession.channelId) === String(message.channelId)) {
+      recordAnalyticsEventSafe({
+        feature: helperSession.action === HELPER_INTAKE_ACTIONS.elo ? "elo" : "onboarding",
+        action: helperSession.action === HELPER_INTAKE_ACTIONS.elo ? "elo_submit_message" : "kills_submit_message",
+        actorUserId: message.author.id,
+        guildId: message.guildId,
+        channelId: message.channelId,
+        messageId: message.id,
+        interactionType: "message",
+        outcome: "received",
+        metadata: {
+          source: helperSession.source || "",
+          hasAttachments: message.attachments?.size > 0,
+        },
+      });
+    }
+  } catch (error) {
+    console.warn(`[analytics] message capture failed: ${formatRuntimeError(error)}`);
+  }
+
   if (await getAntiteamOperator().handlePhotoMessage(message).catch((error) => {
     console.error("Antiteam photo flow failed:", error?.message || error);
     return false;
@@ -16822,6 +17027,7 @@ client.on("messageCreate", async (message) => {
 
 client.on("interactionCreate", async (interaction) => {
   const customId = String(interaction.customId || "");
+  recordInteractionAnalytics(interaction);
   if (customId.startsWith("at:")) {
     if (!antiteamRuntimeReady) {
       await interaction.reply?.(ephemeralPayload({
@@ -16938,6 +17144,20 @@ client.on("interactionCreate", async (interaction) => {
       }
     }
 
+    if (interaction.commandName === ANALYTICS_COMMAND_NAME) {
+      if (await replyIfAutonomyGuardBlockedActor(interaction)) {
+        return;
+      }
+
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      await interaction.reply(buildAnalyticsPanelReply("overview", "", true));
+      return;
+    }
+
     if (await getProfileOperator().handleProfileSlashCommand({
       interaction,
       checkActorGuard: replyIfAutonomyGuardBlockedActor,
@@ -17003,6 +17223,7 @@ client.on("interactionCreate", async (interaction) => {
             comboText,
             techsText,
             assetsDir: CHARACTERS_ASSET_DIR,
+            linkBuilder: buildComboGuideTrackedLink,
             onProgress: async (step, total, desc) => {
               await interaction.editReply({ content: `[${step}/${total}] ${desc}` }).catch(() => {});
             },
@@ -17047,6 +17268,7 @@ client.on("interactionCreate", async (interaction) => {
             techsText: techsBuffer.toString("utf8"),
             assetsDir: CHARACTERS_ASSET_DIR,
             guideState: db.comboGuide,
+            linkBuilder: buildComboGuideTrackedLink,
             onProgress: async (step, total, desc) => {
               await interaction.editReply({ content: `[${step}/${total}] ${desc}` }).catch(() => {});
             },
@@ -17072,7 +17294,7 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.deferReply({ flags: MessageFlags.Ephemeral });
         try {
           const guideChannel = await client.channels.fetch(db.comboGuide.channelId);
-          await refreshNavigation({ channel: guideChannel, guideState: db.comboGuide });
+          await refreshNavigation({ channel: guideChannel, guideState: db.comboGuide, linkBuilder: buildComboGuideTrackedLink });
           saveDb();
           await interaction.editReply({ content: "Навигация обновлена." });
         } catch (error) {
@@ -17894,6 +18116,23 @@ client.on("interactionCreate", async (interaction) => {
     if (grantParsed) {
       const record = getRoleGrantRecord(grantParsed.recordId);
       await grantRoleFromRolePanelMessage(client, interaction, record, grantParsed.buttonIndex);
+      return;
+    }
+
+    if (ANALYTICS_PANEL_BUTTON_IDS.includes(interaction.customId)) {
+      if (!isModerator(interaction.member)) {
+        await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
+        return;
+      }
+
+      if (interaction.customId === ANALYTICS_PANEL_BACK_ID) {
+        await interaction.update(await buildModeratorPanelPayloadSafe(client, "", false));
+        return;
+      }
+
+      const requestedView = parseAnalyticsPanelViewCustomId(interaction.customId) || "overview";
+      const statusText = interaction.customId === ANALYTICS_PANEL_REFRESH_ID ? "Analytics обновлена." : "";
+      await interaction.update(buildAnalyticsPanelReply(requestedView, statusText, false));
       return;
     }
 
@@ -21867,7 +22106,7 @@ client.on("interactionCreate", async (interaction) => {
       await interaction.deferUpdate();
       try {
         const guideChannel = await client.channels.fetch(db.comboGuide.channelId);
-        await refreshNavigation({ channel: guideChannel, guideState: db.comboGuide });
+        await refreshNavigation({ channel: guideChannel, guideState: db.comboGuide, linkBuilder: buildComboGuideTrackedLink });
         saveDb();
         await interaction.editReply(buildComboPanelForMember(interaction.member, "Навигация обновлена."));
       } catch (error) {
@@ -21939,6 +22178,7 @@ client.on("interactionCreate", async (interaction) => {
           channel: guideChannel,
           guideState: db.comboGuide,
           characterId: charId,
+          linkBuilder: buildComboGuideTrackedLink,
         });
         saveDb();
         await interaction.editReply({ content: `Персонаж удалён. Осталось: ${db.comboGuide.characters.length}.` });
