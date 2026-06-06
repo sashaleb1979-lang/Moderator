@@ -7658,6 +7658,11 @@ function clearExpiredVerificationOauthStates() {
       verificationOauthStates.delete(state);
     }
   }
+  for (const [state, session] of verificationConsumedOauthStates.entries()) {
+    if (!session || now - Number(session.consumedAt) > VERIFICATION_OAUTH_STATE_EXPIRE_MS) {
+      verificationConsumedOauthStates.delete(state);
+    }
+  }
 }
 
 function createVerificationOauthState(userId) {
@@ -7677,11 +7682,22 @@ function consumeVerificationOauthState(state) {
   const normalizedState = cleanVerificationText(state, 200);
   if (!normalizedState) return null;
   const session = verificationOauthStates.get(normalizedState);
-  verificationOauthStates.delete(normalizedState);
-  if (!session || Date.now() - Number(session.createdAt) > VERIFICATION_OAUTH_STATE_EXPIRE_MS) {
-    return null;
+  if (session && Date.now() - Number(session.createdAt) <= VERIFICATION_OAUTH_STATE_EXPIRE_MS) {
+    verificationOauthStates.delete(normalizedState);
+    verificationConsumedOauthStates.set(normalizedState, {
+      ...session,
+      consumedAt: Date.now(),
+    });
+    return cloneJsonValue(session);
   }
-  return cloneJsonValue(session);
+  const consumed = verificationConsumedOauthStates.get(normalizedState);
+  if (consumed && Date.now() - Number(consumed.consumedAt) <= VERIFICATION_OAUTH_STATE_EXPIRE_MS) {
+    return {
+      ...cloneJsonValue(consumed),
+      alreadyConsumed: true,
+    };
+  }
+  return null;
 }
 
 function buildVerificationPanelSnapshot() {
@@ -8213,7 +8229,34 @@ async function runVerificationDeadlineSweep(client) {
 }
 
 async function handleVerificationApprovedCallback(client, payload = {}) {
-  return handleVerificationManualReviewCallback(client, payload);
+  const userId = cleanVerificationText(payload.session?.userId, 80);
+  if (!userId) throw new Error("Verification callback не содержит userId session.");
+  const lifecycle = await reconcileVerificationAssignmentForMember(client, userId, null, {
+    reason: "verification approved callback ignored because verify-role was removed",
+  });
+  if (!lifecycle.active || lifecycle.stopped) {
+    await logVerificationRuntimeEvent(client, `VERIFICATION_APPROVE_IGNORED: <@${userId}> verify-role уже снята, callback пропущен.`, "warn");
+    return;
+  }
+
+  try {
+    await approveVerificationUser(client, userId, "oauth:auto", "normal", "verification oauth auto approve");
+    await logVerificationRuntimeEvent(client, `VERIFICATION_APPROVED: <@${userId}> oauth auto approve completed.`);
+  } catch (error) {
+    const reasonText = cleanVerificationText(error?.message || error, 300) || "unknown";
+    updateVerificationProfile(userId, {
+      status: "manual_review",
+      decision: "manual_review",
+      decisionReason: "oauth_auto_approve_failed",
+      completedAt: nowIso(),
+      lastError: reasonText,
+    });
+    await postVerificationManualReport(client, userId, `OAuth завершён, но авто-выдача доступа не удалась: ${reasonText}. Кейс отправлен модераторам.`);
+    updateVerificationProfile(userId, {
+      reportSentAt: nowIso(),
+    });
+    await logVerificationRuntimeEvent(client, `VERIFICATION_APPROVE_FALLBACK_MANUAL: <@${userId}> error=${reasonText}`, "warn");
+  }
 }
 
 async function handleVerificationManualReviewCallback(client, payload = {}) {
@@ -16045,6 +16088,7 @@ process.on("unhandledRejection", (error) => {
 });
 
 const verificationOauthStates = new Map();
+const verificationConsumedOauthStates = new Map();
 const verificationRoleMutationIgnores = new Map();
 const autonomyGuardRoleMutationIgnores = new Map();
 const autonomyGuardProtectedRoleMutationIgnores = new Map();

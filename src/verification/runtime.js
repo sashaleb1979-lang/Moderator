@@ -79,7 +79,7 @@ function buildDiscordOAuthAuthorizeUrl(options = {}) {
   url.searchParams.set("response_type", "code");
   url.searchParams.set("redirect_uri", config.redirectUri);
   url.searchParams.set("scope", config.scopes.join(" "));
-  url.searchParams.set("prompt", "none");
+  url.searchParams.set("prompt", "consent");
   url.searchParams.set("state", state);
   return url.toString();
 }
@@ -277,6 +277,14 @@ function createVerificationCallbackHandler(options = {}) {
       if (!session || !cleanString(session.userId, 80)) {
         throw new Error("Verification session истекла или не найдена.");
       }
+      if (session.alreadyConsumed === true) {
+        writeHtmlResponse(response, 200, buildVerificationCallbackHtml({
+          title: "Проверка уже обработана",
+          description: "Этот OAuth callback уже был принят системой. Вернись в Discord и нажми \"Проверить статус\".",
+          color: "#2563eb",
+        }));
+        return true;
+      }
 
       if (oauthError) {
         throw new Error(`Discord OAuth returned error: ${oauthError}`);
@@ -325,12 +333,12 @@ function createVerificationCallbackHandler(options = {}) {
         return true;
       }
 
-      console.log(`[verification-runtime] CALLBACK_READY_FOR_REVIEW user=${cleanString(session.userId, 80) || "unknown"} state=${formatLogToken(state)} guilds=${risk.observedGuilds.length}`);
-      await onManualReview(payload);
+      console.log(`[verification-runtime] CALLBACK_APPROVED user=${cleanString(session.userId, 80) || "unknown"} state=${formatLogToken(state)} guilds=${risk.observedGuilds.length}`);
+      await onApproved(payload);
       writeHtmlResponse(response, 200, buildVerificationCallbackHtml({
-        title: "OAuth завершён, ждите решения",
-        description: "OAuth успешно завершён. Кейс отправлен модераторам, а доступ выдаётся только после их решения. Вернись в Discord и жди ответа.",
-        color: "#2563eb",
+        title: "Проверка завершена",
+        description: "OAuth успешно завершён. Вернись в Discord: доступ будет выдан автоматически.",
+        color: "#22c55e",
       }));
       return true;
     } catch (error) {
