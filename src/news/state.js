@@ -104,6 +104,15 @@ function normalizeReleaseQueue(value = null) {
     lastPreparedRangeEndDayKey: normalizeNullableString(source.lastPreparedRangeEndDayKey, 40),
     lastReleasedDayKey: normalizeNullableString(source.lastReleasedDayKey, 40),
     lastReleasedAt: normalizeNullableString(source.lastReleasedAt, 80),
+    lastPreparedDayCount: normalizeOptionalNonNegativeInteger(source.lastPreparedDayCount) ?? 0,
+    skippedAlreadyPublishedCount: normalizeOptionalNonNegativeInteger(source.skippedAlreadyPublishedCount) ?? 0,
+    alreadyPublishedDayCount: normalizeOptionalNonNegativeInteger(source.alreadyPublishedDayCount) ?? 0,
+    completedDayCount: normalizeOptionalNonNegativeInteger(source.completedDayCount) ?? 0,
+    currentDayKey: normalizeNullableString(source.currentDayKey, 40),
+    currentStartedAt: normalizeNullableString(source.currentStartedAt, 80),
+    lastFailedDayKey: normalizeNullableString(source.lastFailedDayKey, 40),
+    lastFailureMessage: normalizeNullableString(source.lastFailureMessage, 300),
+    lastFailureAt: normalizeNullableString(source.lastFailureAt, 80),
   };
 }
 
@@ -112,7 +121,7 @@ function createDefaultNewsConfig() {
     enabled: false,
     schedule: {
       publishHourMsk: 21,
-      tickMinutes: 5,
+      tickMinutes: 1,
     },
     publish: {
       autoPublishEnabled: false,
@@ -273,6 +282,15 @@ function createEmptyNewsState() {
         lastPreparedRangeEndDayKey: null,
         lastReleasedDayKey: null,
         lastReleasedAt: null,
+        lastPreparedDayCount: 0,
+        skippedAlreadyPublishedCount: 0,
+        alreadyPublishedDayCount: 0,
+        completedDayCount: 0,
+        currentDayKey: null,
+        currentStartedAt: null,
+        lastFailedDayKey: null,
+        lastFailureMessage: null,
+        lastFailureAt: null,
       },
       errors: [],
     },

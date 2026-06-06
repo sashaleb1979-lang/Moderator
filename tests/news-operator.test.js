@@ -538,8 +538,50 @@ test("handleDailyNewsPanelModalSubmitInteraction prepares a historical range and
   assert.equal(interaction.deferred, true);
   assert.deepEqual(db.sot.news.runtime.releaseQueue.dayKeys, ["2026-05-20", "2026-05-21", "2026-05-22"]);
   assert.equal(db.sot.news.runtime.releaseQueue.active, false);
-  assert.ok(db.sot.news.dailyDigests["2026-05-20"]);
+  assert.equal(db.sot.news.runtime.releaseQueue.lastPreparedDayCount, 3);
+  assert.equal(db.sot.news.runtime.releaseQueue.skippedAlreadyPublishedCount, 0);
+  assert.equal(db.sot.news.runtime.releaseQueue.alreadyPublishedDayCount, 0);
+  assert.equal(db.sot.news.runtime.releaseQueue.completedDayCount, 0);
+  assert.equal(db.sot.news.dailyDigests?.["2026-05-20"], undefined);
   assert.match(interaction.edits[0].embeds[0].data.fields.at(-1).value, /Период .* подготовлен/);
+  assert.match(interaction.edits[0].embeds[0].data.fields.at(-1).value, /В очередь: \*\*3\*\*/);
+});
+
+test("handleDailyNewsPanelModalSubmitInteraction keeps already published days in the prepared range", async () => {
+  const interaction = createModalInteraction(DAILY_NEWS_PANEL_PREPARE_RANGE_MODAL_ID, {
+    range_start_day_key: "2026-05-20",
+    range_end_day_key: "2026-05-22",
+  });
+  const db = {
+    sot: {
+      news: {
+        config: {},
+        dailyDigests: {
+          "2026-05-21": {
+            dayKey: "2026-05-21",
+            publish: {
+              publishMode: "public",
+              publicMessageId: "public-old",
+            },
+          },
+        },
+      },
+    },
+  };
+
+  await handleDailyNewsPanelModalSubmitInteraction({
+    interaction,
+    db,
+    isModerator: () => true,
+    replyNoPermission: async () => {},
+    now: "2026-05-23T10:00:00.000Z",
+  });
+
+  assert.deepEqual(db.sot.news.runtime.releaseQueue.dayKeys, ["2026-05-20", "2026-05-21", "2026-05-22"]);
+  assert.equal(db.sot.news.runtime.releaseQueue.lastPreparedDayCount, 3);
+  assert.equal(db.sot.news.runtime.releaseQueue.skippedAlreadyPublishedCount, 0);
+  assert.equal(db.sot.news.runtime.releaseQueue.alreadyPublishedDayCount, 1);
+  assert.match(interaction.edits[0].embeds[0].data.fields.at(-1).value, /Уже опубликованные дни тоже пойдут заново: \*\*1\*\*/);
 });
 
 test("handleDailyNewsPanelButtonInteraction starts and stops the historical release queue", async () => {

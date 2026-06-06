@@ -119,15 +119,16 @@ async function persistDb(saveDb) {
   }
 }
 
-function hasStoredPublicPublish(digest = null) {
-  return cleanString(digest?.publish?.publishMode, 40) === "public"
-    && Boolean(cleanString(digest?.publish?.publicMessageId || digest?.publish?.deliveryMessageId, 80));
-}
-
 async function markHistoricalQueueDayReleased({ queue, dayKeys = [], dayKey = "", now, saveDb } = {}) {
   queue.dayKeys = dayKeys.slice(1);
   queue.lastReleasedDayKey = cleanString(dayKey, 40) || null;
   queue.lastReleasedAt = resolveNowIso(now);
+  queue.completedDayCount = Math.max(0, Number(queue.completedDayCount) || 0) + 1;
+  queue.currentDayKey = null;
+  queue.currentStartedAt = null;
+  queue.lastFailedDayKey = null;
+  queue.lastFailureMessage = null;
+  queue.lastFailureAt = null;
   if (!queue.dayKeys.length) {
     queue.active = false;
   }
@@ -178,6 +179,12 @@ async function runHistoricalReleaseQueueTick({
 
   const publicChannelId = cleanString(state.config?.channels?.publicChannelId, 80);
   if (!publicChannel && !publicChannelId) {
+    queue.currentDayKey = dayKey;
+    queue.currentStartedAt ||= resolveNowIso(now);
+    queue.lastFailedDayKey = dayKey;
+    queue.lastFailureMessage = "не привязан публичный канал";
+    queue.lastFailureAt = resolveNowIso(now);
+    await persistDb(saveDb);
     return {
       compiled: false,
       skipped: true,
@@ -196,43 +203,55 @@ async function runHistoricalReleaseQueueTick({
     };
   }
 
-  let digest = state.dailyDigests?.[dayKey] || null;
+  queue.currentDayKey = dayKey;
+  queue.currentStartedAt = resolveNowIso(now);
+  queue.lastFailedDayKey = null;
+  queue.lastFailureMessage = null;
+  queue.lastFailureAt = null;
+  await persistDb(saveDb);
+
+  let digest = null;
   let compiled = false;
-  if (!digest) {
+  try {
     const compileResult = compileDailyNewsDigestFn({
       db,
       targetDayKey: dayKey,
       now,
       historySnapshotMode: "capture_if_current_day",
     });
-    digest = compileResult?.digest || null;
+    digest = compileResult?.digest || state.dailyDigests?.[dayKey] || null;
     compiled = true;
     await persistDb(saveDb);
-  }
-
-  if (hasStoredPublicPublish(digest)) {
-    await markHistoricalQueueDayReleased({ queue, dayKeys, dayKey, now, saveDb });
+  } catch (error) {
+    const failureAt = resolveNowIso(now);
+    const failureMessage = cleanString(error?.message || error, 400) || "unknown_error";
+    queue.lastFailedDayKey = dayKey;
+    queue.lastFailureMessage = failureMessage;
+    queue.lastFailureAt = failureAt;
+    state.runtime.lastFailure = {
+      stage: "historical_release_queue_compile",
+      dayKey,
+      message: failureMessage,
+      occurredAt: failureAt,
+    };
+    await persistDb(saveDb);
     return {
-      compiled,
+      compiled: false,
       skipped: false,
       reason: null,
       dayKey,
       publishHourMsk: null,
       nowIso: resolveNowIso(now),
       mode: "history_queue",
-      digest,
+      digest: null,
       published: false,
-      publishSkipped: true,
-      publishReason: "already_published",
+      publishSkipped: false,
+      publishFailed: true,
+      publishReason: "compile_failed",
       releaseMode: "history_queue",
-      publish: {
-        published: false,
-        skipped: true,
-        reason: "already_published",
-        dayKey,
-        result: digest.publish,
-      },
-      queueRemainingCount: Array.isArray(queue.dayKeys) ? queue.dayKeys.length : 0,
+      publish: null,
+      queueRemainingCount: queue.dayKeys.length,
+      error: state.runtime.lastFailure,
     };
   }
 
@@ -246,16 +265,21 @@ async function runHistoricalReleaseQueueTick({
       publicChannel,
       staffChannel,
       publishMode: "public",
-      force: false,
+      force: true,
       now,
       saveDb,
     });
   } catch (error) {
+    const failureAt = resolveNowIso(now);
+    const failureMessage = cleanString(error?.message || error, 400) || "unknown_error";
+    queue.lastFailedDayKey = dayKey;
+    queue.lastFailureMessage = failureMessage;
+    queue.lastFailureAt = failureAt;
     state.runtime.lastFailure = {
       stage: "historical_release_queue",
       dayKey,
-      message: cleanString(error?.message || error, 400) || "unknown_error",
-      occurredAt: resolveNowIso(now),
+      message: failureMessage,
+      occurredAt: failureAt,
     };
     await persistDb(saveDb);
     return {

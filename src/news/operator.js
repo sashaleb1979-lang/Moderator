@@ -306,11 +306,22 @@ function formatReleaseQueueState(queue = {}) {
 function formatReleaseQueueSummary(queue = {}) {
   const dayKeys = Array.isArray(queue?.dayKeys) ? queue.dayKeys : [];
   const nextDayKey = cleanString(dayKeys[0], 40);
+  const currentDayKey = cleanString(queue?.currentDayKey, 40);
   return [
     `Публикация периода: **${formatReleaseQueueState(queue)}**`,
-    `дней **${dayKeys.length}**`,
+    `осталось **${dayKeys.length}**`,
+    Number(queue?.completedDayCount) > 0 ? `готово **${Number(queue.completedDayCount)}**` : null,
+    Number(queue?.lastPreparedDayCount) > 0 ? `подготовлено **${Number(queue.lastPreparedDayCount)}**` : null,
+    Number(queue?.alreadyPublishedDayCount) > 0 ? `переоформятся **${Number(queue.alreadyPublishedDayCount)}**` : null,
+    currentDayKey ? `сейчас **${currentDayKey}**` : null,
     nextDayKey ? `следующий **${nextDayKey}**` : null,
+    queue?.lastFailedDayKey ? `последний сбой **${queue.lastFailedDayKey}**` : null,
   ].filter(Boolean).join(" · ");
+}
+
+function hasStoredPublicDailyNewsPublish(digest = null) {
+  return cleanString(digest?.publish?.publishMode, 40) === "public"
+    && Boolean(cleanString(digest?.publish?.publicMessageId || digest?.publish?.deliveryMessageId, 80));
 }
 
 async function prepareDailyNewsReleaseRange({
@@ -319,7 +330,6 @@ async function prepareDailyNewsReleaseRange({
   endDayKey = "",
   now,
   saveDb,
-  compileDailyNewsDigestFn = compileDailyNewsDigest,
 } = {}) {
   const normalizedStartDayKey = normalizeDayKey(startDayKey);
   const normalizedEndDayKey = normalizeDayKey(endDayKey);
@@ -333,15 +343,8 @@ async function prepareDailyNewsReleaseRange({
   }
 
   const dayKeys = buildInclusiveDayKeyRange(normalizedStartDayKey, normalizedEndDayKey, 62);
-  for (const dayKey of dayKeys) {
-    await Promise.resolve(compileDailyNewsDigestFn({
-      db,
-      targetDayKey: dayKey,
-      now,
-    }));
-  }
-
   const state = ensureNewsState(db);
+  const alreadyPublishedDayCount = dayKeys.filter((dayKey) => hasStoredPublicDailyNewsPublish(state.dailyDigests?.[dayKey])).length;
   state.runtime.releaseQueue = {
     ...state.runtime.releaseQueue,
     active: false,
@@ -349,13 +352,28 @@ async function prepareDailyNewsReleaseRange({
     lastPreparedAt: resolveNowIso(now),
     lastPreparedRangeStartDayKey: dayKeys[0] || null,
     lastPreparedRangeEndDayKey: dayKeys[dayKeys.length - 1] || null,
+    lastPreparedDayCount: dayKeys.length,
+    skippedAlreadyPublishedCount: 0,
+    alreadyPublishedDayCount,
+    completedDayCount: 0,
+    currentDayKey: null,
+    currentStartedAt: null,
+    lastFailedDayKey: null,
+    lastFailureMessage: null,
+    lastFailureAt: null,
   };
 
   if (typeof saveDb === "function") {
     await Promise.resolve(saveDb());
   }
 
-  return { dayKeys, queue: state.runtime.releaseQueue };
+  return {
+    dayKeys,
+    pendingDayKeys: dayKeys,
+    alreadyPublishedDayCount,
+    skippedAlreadyPublishedCount: 0,
+    queue: state.runtime.releaseQueue,
+  };
 }
 
 async function setDailyNewsReleaseQueueActive({ db = {}, active = false, now, saveDb } = {}) {
@@ -363,13 +381,14 @@ async function setDailyNewsReleaseQueueActive({ db = {}, active = false, now, sa
   const queue = state.runtime.releaseQueue;
   const hasQueuedDays = Array.isArray(queue?.dayKeys) && queue.dayKeys.length > 0;
   if (active && !hasQueuedDays) {
-    throw new Error("историческая очередь пуста: сначала подготовьте диапазон дней");
+    throw new Error("период пуст: сначала подготовьте диапазон дней");
   }
 
   state.runtime.releaseQueue = {
     ...queue,
     active: active === true,
     lastPreparedAt: queue?.lastPreparedAt || resolveNowIso(now),
+    ...(active === true ? { lastFailedDayKey: null, lastFailureMessage: null, lastFailureAt: null } : {}),
   };
 
   if (typeof saveDb === "function") {
@@ -436,11 +455,14 @@ function buildDailyNewsStatusPayload(db = {}) {
       "## 🗞️ Статус Daily News",
       `сборка: **${formatCompileStatusLabel(state.runtime.lastCompileStatus)}** · день **${state.runtime.lastCompiledDayKey || "—"}**`,
       `публикация: **${formatPublishStatusLabel(state.runtime.lastPublishStatus)}** · день **${state.runtime.lastPublishedDayKey || "—"}**`,
-      `период: **${formatReleaseQueueState(queue)}** · дней **${Array.isArray(queue.dayKeys) ? queue.dayKeys.length : 0}**${queue.dayKeys?.[0] ? ` · следующий **${queue.dayKeys[0]}**` : ""}`,
+      `период: **${formatReleaseQueueState(queue)}** · осталось **${Array.isArray(queue.dayKeys) ? queue.dayKeys.length : 0}**${queue.currentDayKey ? ` · сейчас **${queue.currentDayKey}**` : ""}${queue.dayKeys?.[0] ? ` · следующий **${queue.dayKeys[0]}**` : ""}`,
+      Number(queue.completedDayCount) > 0 ? `готово в этом запуске: **${queue.completedDayCount}**` : null,
+      Number(queue.alreadyPublishedDayCount) > 0 ? `заново оформятся уже опубликованные дни: **${queue.alreadyPublishedDayCount}**` : null,
+      queue.lastFailureMessage ? `сбой периода: **${queue.lastFailedDayKey || "—"}** · ${queue.lastFailureMessage}` : null,
       `покрытие: **${coverage.partial ? "частичное" : "чистое"}${coverage.ambiguous ? " + неоднозначное" : ""}**`,
       `кандидаты: **${audit.rawCandidateCounts?.total || 0}**`,
       state.runtime.lastFailure?.message ? `последний сбой: **${state.runtime.lastFailure.message}**` : "последний сбой: **—**",
-    ].join("\n"),
+    ].filter(Boolean).join("\n"),
     allowedMentions: { parse: [] },
   };
 }
@@ -1164,7 +1186,13 @@ async function handleDailyNewsPanelModalSubmitInteraction(options = {}) {
         });
         await interaction.editReply(buildDailyNewsOperatorPanelPayload({
           db: options.db,
-          statusText: `Период **${startDayKey} → ${endDayKey}** подготовлен. Собрано дней: **${result.dayKeys.length}**. Публикация остановлена до ручного запуска.`,
+          statusText: [
+            `Период **${startDayKey} → ${endDayKey}** подготовлен.`,
+            `Всего дней: **${result.dayKeys.length}**.`,
+            `В очередь: **${result.pendingDayKeys.length}**.`,
+            result.alreadyPublishedDayCount > 0 ? `Уже опубликованные дни тоже пойдут заново: **${result.alreadyPublishedDayCount}**.` : null,
+            "Публикация остановлена до ручного запуска.",
+          ].filter(Boolean).join(" "),
           includeFlags: false,
         }));
       },

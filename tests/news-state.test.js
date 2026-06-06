@@ -15,6 +15,7 @@ test("createDefaultNewsConfig seeds edition-first defaults for daily digest", ()
 
   assert.equal(config.enabled, false);
   assert.equal(config.schedule.publishHourMsk, 21);
+  assert.equal(config.schedule.tickMinutes, 1);
   assert.equal(config.publish.autoPublishEnabled, false);
   assert.equal(config.voice.topCount, 5);
   assert.equal(config.kills.topCount, 5);
@@ -49,6 +50,15 @@ test("createEmptyNewsState seeds raw capture and runtime scaffolds", () => {
     lastPreparedRangeEndDayKey: null,
     lastReleasedDayKey: null,
     lastReleasedAt: null,
+    lastPreparedDayCount: 0,
+    skippedAlreadyPublishedCount: 0,
+    alreadyPublishedDayCount: 0,
+    completedDayCount: 0,
+    currentDayKey: null,
+    currentStartedAt: null,
+    lastFailedDayKey: null,
+    lastFailureMessage: null,
+    lastFailureAt: null,
   });
   assert.deepEqual(state.runtime.errors, []);
 });
@@ -125,6 +135,15 @@ test("normalizeNewsState normalizes config and preserves captured runtime slices
         lastPreparedRangeEndDayKey: "2026-05-11",
         lastReleasedDayKey: "2026-05-10",
         lastReleasedAt: "2026-05-14T21:05:00.000Z",
+        lastPreparedDayCount: "3",
+        skippedAlreadyPublishedCount: "1",
+        alreadyPublishedDayCount: "2",
+        completedDayCount: "1",
+        currentDayKey: "2026-05-11",
+        currentStartedAt: "2026-05-14T21:05:30.000Z",
+        lastFailedDayKey: "2026-05-11",
+        lastFailureMessage: " send failed ",
+        lastFailureAt: "2026-05-14T21:06:00.000Z",
       },
       lastVoiceCaptureAt: "2026-05-14T20:59:00.000Z",
       errors: [{ scope: "voice", reason: "gap" }],
@@ -133,7 +152,7 @@ test("normalizeNewsState normalizes config and preserves captured runtime slices
 
   assert.equal(state.config.enabled, true);
   assert.equal(state.config.schedule.publishHourMsk, 21);
-  assert.equal(state.config.schedule.tickMinutes, 5);
+  assert.equal(state.config.schedule.tickMinutes, 1);
   assert.equal(state.config.publish.autoPublishEnabled, true);
   assert.equal(state.config.channels.publicChannelId, "public-news");
   assert.equal(state.config.voice.topCount, 10);
@@ -174,6 +193,15 @@ test("normalizeNewsState normalizes config and preserves captured runtime slices
     lastPreparedRangeEndDayKey: "2026-05-11",
     lastReleasedDayKey: "2026-05-10",
     lastReleasedAt: "2026-05-14T21:05:00.000Z",
+    lastPreparedDayCount: 3,
+    skippedAlreadyPublishedCount: 1,
+    alreadyPublishedDayCount: 2,
+    completedDayCount: 1,
+    currentDayKey: "2026-05-11",
+    currentStartedAt: "2026-05-14T21:05:30.000Z",
+    lastFailedDayKey: "2026-05-11",
+    lastFailureMessage: "send failed",
+    lastFailureAt: "2026-05-14T21:06:00.000Z",
   });
   assert.equal(state.runtime.lastVoiceCaptureAt, "2026-05-14T20:59:00.000Z");
   assert.deepEqual(state.runtime.errors, [{ scope: "voice", reason: "gap" }]);

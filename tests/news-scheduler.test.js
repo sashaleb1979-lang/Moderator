@@ -348,8 +348,8 @@ test("runDailyNewsReleaseTick keeps compile-only mode when auto-publish is disab
   assert.equal(publishCalled, false);
 });
 
-test("runDailyNewsReleaseTick publishes prepared historical queue items before regular auto mode", async () => {
-  let compileCalled = false;
+test("runDailyNewsReleaseTick recompiles historical queue items before publishing them", async () => {
+  const compileCalls = [];
   const publishCalls = [];
   const db = {
     sot: {
@@ -382,9 +382,9 @@ test("runDailyNewsReleaseTick publishes prepared historical queue items before r
   const result = await runDailyNewsReleaseTick({
     db,
     now: "2026-05-23T10:00:00.000Z",
-    compileDailyNewsDigestFn() {
-      compileCalled = true;
-      throw new Error("prepared queue should not recompile");
+    compileDailyNewsDigestFn(args) {
+      compileCalls.push(args);
+      return { digest: { dayKey: args.targetDayKey, stamp: "recompiled-for-queue" } };
     },
     publishDailyNewsIssueFn(args) {
       publishCalls.push(args);
@@ -397,17 +397,20 @@ test("runDailyNewsReleaseTick publishes prepared historical queue items before r
     },
   });
 
-  assert.equal(compileCalled, false);
+  assert.equal(compileCalls.length, 1);
+  assert.equal(compileCalls[0].targetDayKey, "2026-05-20");
   assert.equal(result.releaseMode, "history_queue");
   assert.equal(result.dayKey, "2026-05-20");
   assert.equal(result.published, true);
   assert.equal(result.publishSkipped, false);
   assert.equal(publishCalls.length, 1);
-  assert.equal(publishCalls[0].force, false);
-  assert.equal(publishCalls[0].digest.stamp, "prepared");
+  assert.equal(publishCalls[0].force, true);
+  assert.equal(publishCalls[0].digest.stamp, "recompiled-for-queue");
   assert.deepEqual(db.sot.news.runtime.releaseQueue.dayKeys, ["2026-05-21"]);
   assert.equal(db.sot.news.runtime.releaseQueue.active, true);
   assert.equal(db.sot.news.runtime.releaseQueue.lastReleasedDayKey, "2026-05-20");
+  assert.equal(db.sot.news.runtime.releaseQueue.completedDayCount, 1);
+  assert.equal(db.sot.news.runtime.releaseQueue.currentDayKey, null);
 });
 
 test("runDailyNewsReleaseTick compiles missing historical queue digest and stops when queue is drained", async () => {
@@ -462,9 +465,11 @@ test("runDailyNewsReleaseTick compiles missing historical queue digest and stops
   assert.deepEqual(db.sot.news.runtime.releaseQueue.dayKeys, []);
   assert.equal(db.sot.news.runtime.releaseQueue.active, false);
   assert.equal(db.sot.news.runtime.releaseQueue.lastReleasedDayKey, "2026-05-22");
+  assert.equal(db.sot.news.runtime.releaseQueue.completedDayCount, 1);
 });
 
 test("runDailyNewsReleaseTick keeps the historical queue item when publish is skipped", async () => {
+  const compileCalls = [];
   const db = {
     sot: {
       news: {
@@ -498,8 +503,9 @@ test("runDailyNewsReleaseTick keeps the historical queue item when publish is sk
   const result = await runDailyNewsReleaseTick({
     db,
     now: "2026-05-23T10:00:00.000Z",
-    compileDailyNewsDigestFn() {
-      throw new Error("prepared queue should not recompile");
+    compileDailyNewsDigestFn(args) {
+      compileCalls.push(args);
+      return { digest: { dayKey: args.targetDayKey, stamp: "recompiled" } };
     },
     publishDailyNewsIssueFn() {
       return {
@@ -515,15 +521,20 @@ test("runDailyNewsReleaseTick keeps the historical queue item when publish is sk
   assert.equal(result.published, false);
   assert.equal(result.publishSkipped, true);
   assert.equal(result.publishReason, "temporary_delivery_guard");
+  assert.equal(compileCalls.length, 1);
   assert.equal(result.queueRemainingCount, 2);
   assert.deepEqual(db.sot.news.runtime.releaseQueue.dayKeys, ["2026-05-20", "2026-05-21"]);
   assert.equal(db.sot.news.runtime.releaseQueue.active, true);
+  assert.equal(db.sot.news.runtime.releaseQueue.currentDayKey, "2026-05-20");
+  assert.equal(db.sot.news.runtime.releaseQueue.lastFailedDayKey, null);
+  assert.equal(db.sot.news.runtime.releaseQueue.lastFailureMessage, null);
   assert.equal(db.sot.news.runtime.releaseQueue.lastReleasedDayKey, null);
   assert.equal(db.sot.news.runtime.releaseQueue.lastReleasedAt, null);
 });
 
-test("runDailyNewsReleaseTick skips already published historical queue items without duplicating", async () => {
-  let publishCalled = false;
+test("runDailyNewsReleaseTick republishes already published historical queue items with a fresh compile", async () => {
+  const compileCalls = [];
+  const publishCalls = [];
   const db = {
     sot: {
       news: {
@@ -554,26 +565,37 @@ test("runDailyNewsReleaseTick skips already published historical queue items wit
   const result = await runDailyNewsReleaseTick({
     db,
     now: "2026-05-23T10:00:00.000Z",
-    compileDailyNewsDigestFn() {
-      throw new Error("already published queue item should not compile");
+    compileDailyNewsDigestFn(args) {
+      compileCalls.push(args);
+      return { digest: { dayKey: args.targetDayKey, stamp: "fresh-format" } };
     },
-    publishDailyNewsIssueFn() {
-      publishCalled = true;
-      throw new Error("already published queue item should not publish");
+    publishDailyNewsIssueFn(args) {
+      publishCalls.push(args);
+      return {
+        published: true,
+        skipped: false,
+        dayKey: args.dayKey,
+        result: { publicMessageId: "public-new" },
+      };
     },
   });
 
-  assert.equal(publishCalled, false);
+  assert.equal(compileCalls.length, 1);
+  assert.equal(publishCalls.length, 1);
+  assert.equal(publishCalls[0].force, true);
+  assert.equal(publishCalls[0].digest.stamp, "fresh-format");
   assert.equal(result.releaseMode, "history_queue");
   assert.equal(result.dayKey, "2026-05-20");
-  assert.equal(result.published, false);
-  assert.equal(result.publishSkipped, true);
-  assert.equal(result.publishReason, "already_published");
+  assert.equal(result.published, true);
+  assert.equal(result.publishSkipped, false);
+  assert.equal(result.publishReason, null);
   assert.deepEqual(db.sot.news.runtime.releaseQueue.dayKeys, ["2026-05-21"]);
   assert.equal(db.sot.news.runtime.releaseQueue.lastReleasedDayKey, "2026-05-20");
+  assert.equal(db.sot.news.runtime.releaseQueue.lastFailedDayKey, null);
 });
 
 test("runDailyNewsReleaseTick keeps historical queue item when publish throws", async () => {
+  const compileCalls = [];
   const db = {
     sot: {
       news: {
@@ -601,8 +623,9 @@ test("runDailyNewsReleaseTick keeps historical queue item when publish throws", 
   const result = await runDailyNewsReleaseTick({
     db,
     now: "2026-05-23T10:00:00.000Z",
-    compileDailyNewsDigestFn() {
-      throw new Error("prepared queue should not recompile");
+    compileDailyNewsDigestFn(args) {
+      compileCalls.push(args);
+      return { digest: { dayKey: args.targetDayKey, stamp: "recompiled" } };
     },
     publishDailyNewsIssueFn() {
       throw new Error("send failed");
@@ -613,7 +636,48 @@ test("runDailyNewsReleaseTick keeps historical queue item when publish throws", 
   assert.equal(result.dayKey, "2026-05-20");
   assert.equal(result.publishFailed, true);
   assert.equal(result.publishReason, "publish_failed");
+  assert.equal(compileCalls.length, 1);
   assert.deepEqual(db.sot.news.runtime.releaseQueue.dayKeys, ["2026-05-20", "2026-05-21"]);
   assert.equal(db.sot.news.runtime.releaseQueue.active, true);
+  assert.equal(db.sot.news.runtime.releaseQueue.currentDayKey, "2026-05-20");
+  assert.equal(db.sot.news.runtime.releaseQueue.lastFailedDayKey, "2026-05-20");
+  assert.match(db.sot.news.runtime.releaseQueue.lastFailureMessage, /send failed/);
+  assert.equal(db.sot.news.runtime.releaseQueue.lastFailureAt, "2026-05-23T10:00:00.000Z");
   assert.match(db.sot.news.runtime.lastFailure.message, /send failed/);
+});
+
+test("runDailyNewsReleaseTick records waiting state when historical queue has no public channel", async () => {
+  const db = {
+    sot: {
+      news: {
+        config: {
+          channels: {
+            publicChannelId: "",
+          },
+        },
+        runtime: {
+          releaseQueue: {
+            active: true,
+            dayKeys: ["2026-05-20"],
+          },
+        },
+      },
+    },
+  };
+
+  const result = await runDailyNewsReleaseTick({
+    db,
+    now: "2026-05-23T10:00:00.000Z",
+    compileDailyNewsDigestFn() {
+      throw new Error("should wait before compiling");
+    },
+    publishDailyNewsIssueFn() {
+      throw new Error("should wait before publishing");
+    },
+  });
+
+  assert.equal(result.publishReason, "missing_public_channel");
+  assert.deepEqual(db.sot.news.runtime.releaseQueue.dayKeys, ["2026-05-20"]);
+  assert.equal(db.sot.news.runtime.releaseQueue.lastFailedDayKey, "2026-05-20");
+  assert.match(db.sot.news.runtime.releaseQueue.lastFailureMessage, /публичный канал/);
 });
