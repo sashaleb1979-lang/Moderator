@@ -137,6 +137,25 @@ test("evaluateVerificationRisk forces manual review when Discord OAuth returns n
   assert.equal(result.requiresManualReview, true);
 });
 
+test("evaluateVerificationRisk includes friend matches and suspicious account signals", () => {
+  const result = evaluateVerificationRisk({
+    oauthUser: { id: "175928847299117063" },
+    oauthGuilds: [{ id: "safe-guild", name: "Safe Guild" }],
+    oauthFriends: [{ id: "friend-1" }, { user: { id: "friend-2", username: "ally" } }],
+    riskRules: {
+      enemyFriendUserIds: ["friend-2"],
+      suspiciousAccountUserIds: ["175928847299117063"],
+      suspiciousOldAccountDays: 1,
+    },
+  });
+
+  assert.deepEqual(result.observedFriendIds, ["friend-1", "friend-2"]);
+  assert.deepEqual(result.matchedEnemyFriendIds, ["friend-2"]);
+  assert.equal(result.suspiciousSignals.includes("manual_suspicious_account_match"), true);
+  assert.equal(result.suspiciousSignals.includes("old_discord_account"), true);
+  assert.equal(result.requiresManualReview, true);
+});
+
 test("createVerificationCallbackHandler auto-approves clean OAuth result", async () => {
   const approvals = [];
   const manualReviews = [];

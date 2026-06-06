@@ -346,6 +346,39 @@ function normalizeModalValue(value, fallback = "", limit = 4000) {
   return text || cleanString(fallback, limit);
 }
 
+function parseRiskEditorInput(rawValue, parseListInput, currentList = []) {
+  const rawText = String(rawValue || "").trim();
+  const baseList = normalizeStringArray(currentList, 200, 120);
+  if (!rawText) {
+    return baseList;
+  }
+
+  const lines = rawText
+    .split(/\r?\n/)
+    .map((line) => cleanString(line, 400))
+    .filter(Boolean);
+  const hasDeltaTokens = lines.some((line) => /^\s*[+-]\s*\S+/.test(line));
+  if (!hasDeltaTokens) {
+    return normalizeStringArray(parseListInput(rawText), 200, 120);
+  }
+
+  const result = new Set(baseList);
+  for (const line of lines) {
+    const match = line.match(/^\s*([+-])\s*(.+)$/);
+    if (!match) continue;
+    const sign = match[1];
+    const value = cleanString(match[2], 120);
+    if (!value) continue;
+    if (sign === "+") {
+      result.add(value);
+    } else {
+      result.delete(value);
+    }
+  }
+
+  return [...result].slice(0, 200);
+}
+
 function buildVerificationInfraConfigModal(options = {}) {
   const integration = options.integration && typeof options.integration === "object" && !Array.isArray(options.integration)
     ? options.integration
@@ -424,7 +457,7 @@ function buildVerificationRiskRulesModal(options = {}) {
       new ActionRowBuilder().addComponents(
         new TextInputBuilder()
           .setCustomId("verification_enemy_guild_ids")
-          .setLabel("ID вражеских серверов")
+          .setLabel("Вражеские серверы (ID, +добавить/-убрать)")
           .setStyle(TextInputStyle.Paragraph)
           .setRequired(false)
           .setMaxLength(4000)
@@ -433,11 +466,20 @@ function buildVerificationRiskRulesModal(options = {}) {
       new ActionRowBuilder().addComponents(
         new TextInputBuilder()
           .setCustomId("verification_enemy_user_ids")
-          .setLabel("ID подозрительных пользователей")
+          .setLabel("Подозрительные аккаунты (ID)")
           .setStyle(TextInputStyle.Paragraph)
           .setRequired(false)
           .setMaxLength(4000)
           .setValue(joinLines(riskRules.enemyUserIds))
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId("verification_enemy_friend_user_ids")
+          .setLabel("Опасные друзья (ID)")
+          .setStyle(TextInputStyle.Paragraph)
+          .setRequired(false)
+          .setMaxLength(4000)
+          .setValue(joinLines(riskRules.enemyFriendUserIds))
       ),
       new ActionRowBuilder().addComponents(
         new TextInputBuilder()
@@ -456,15 +498,6 @@ function buildVerificationRiskRulesModal(options = {}) {
           .setRequired(false)
           .setMaxLength(4000)
           .setValue(joinLines(riskRules.enemyInviterUserIds))
-      ),
-      new ActionRowBuilder().addComponents(
-        new TextInputBuilder()
-          .setCustomId("verification_manual_tags")
-          .setLabel("Теги для ручной проверки")
-          .setStyle(TextInputStyle.Paragraph)
-          .setRequired(false)
-          .setMaxLength(4000)
-          .setValue(joinLines(riskRules.manualTags))
       )
     );
 }
@@ -724,13 +757,15 @@ function buildVerificationReportPayload(options = {}) {
   const riskLines = [
     `Совпадения по серверам: **${Number(summary.matchedEnemyGuildCount) || 0}**`,
     `Совпадения по пользователям: **${Number(summary.matchedEnemyUserCount) || 0}**`,
+    `Совпадения по друзьям: **${Number(summary.matchedEnemyFriendCount) || 0}**`,
     `Совпадения по invite: **${Number(summary.matchedEnemyInviteCount) || 0}**`,
     `Совпадения по inviter: **${Number(summary.matchedEnemyInviterCount) || 0}**`,
-    `Ручные теги: **${Number(summary.manualTagCount) || 0}**`,
+    `Сигналы подозрительности: **${Number(summary.suspiciousSignalCount) || 0}**`,
   ];
   const detailsLines = [
     `OAuth-аккаунт: **${cleanString(summary.oauthUsername || verification.oauthUsername, 120) || "—"}**`,
     `Замечено серверов: **${Number(summary.observedGuildCount) || 0}**`,
+    `Замечено друзей: **${Number(summary.observedFriendCount) || 0}**`,
     `Статус: **${formatVerificationStatus(summary.status || verification.status, "не начато")}**`,
     `Решение: **${formatVerificationDecision(summary.decision || verification.decision, "нет")}**`,
     `Дедлайн отчёта: **${cleanString(summary.reportDueAt || verification.reportDueAt, 80) || "—"}**`,
@@ -738,9 +773,16 @@ function buildVerificationReportPayload(options = {}) {
   const exactMatchLines = [
     `Серверы: ${normalizeStringArray(verification.matchedEnemyGuildIds, 20, 80).join(", ") || "—"}`,
     `Пользователи: ${normalizeStringArray(verification.matchedEnemyUserIds, 20, 80).join(", ") || "—"}`,
+    `Друзья: ${normalizeStringArray(verification.matchedEnemyFriendIds, 20, 80).join(", ") || "—"}`,
     `Invite-коды: ${normalizeStringArray(verification.matchedEnemyInviteCodes, 20, 80).join(", ") || "—"}`,
     `Inviter ID: ${normalizeStringArray(verification.matchedEnemyInviterUserIds, 20, 80).join(", ") || "—"}`,
   ];
+  const observedFriendLines = normalizeStringArray(verification.observedFriendIds, 50, 80).length
+    ? normalizeStringArray(verification.observedFriendIds, 50, 80).map((id, index) => `${index + 1}. ${id}`)
+    : ["OAuth friends не вернулись или недоступны для этого scope."];
+  const suspiciousLines = normalizeStringArray(verification.suspiciousSignals, 20, 120).length
+    ? normalizeStringArray(verification.suspiciousSignals, 20, 120)
+    : ["—"];
   const observedGuildLines = observedGuildEntries.length
     ? observedGuildEntries.map((entry, index) => formatObservedGuildLine(entry, index))
     : ["Discord OAuth не вернул список серверов для этого участника."];
@@ -760,6 +802,16 @@ function buildVerificationReportPayload(options = {}) {
       {
         name: "Замеченные серверы OAuth",
         value: buildEmbedFieldValue(observedGuildLines),
+        inline: false,
+      },
+      {
+        name: "Список друзей OAuth",
+        value: buildEmbedFieldValue(observedFriendLines),
+        inline: false,
+      },
+      {
+        name: "Сигналы подозрительности",
+        value: buildEmbedFieldValue(suspiciousLines),
         inline: false,
       }
     );
@@ -854,9 +906,9 @@ function buildVerificationPanelPayload(options = {}) {
         value: [
           `Вражеские серверы: **${countRiskItems(riskRules, "enemyGuildIds")}**`,
           `Подозрительные пользователи: **${countRiskItems(riskRules, "enemyUserIds")}**`,
+          `Опасные друзья: **${countRiskItems(riskRules, "enemyFriendUserIds")}**`,
           `Опасные invite: **${countRiskItems(riskRules, "enemyInviteCodes")}**`,
           `Подозрительные inviter: **${countRiskItems(riskRules, "enemyInviterUserIds")}**`,
-          `Теги ручной проверки: **${countRiskItems(riskRules, "manualTags")}**`,
         ].join("\n"),
         inline: false,
       },
@@ -1214,13 +1266,40 @@ async function handleVerificationPanelModalSubmitInteraction(options = {}) {
     }
 
     if (customId === VERIFY_PANEL_CONFIG_RISK_MODAL_ID) {
+      const currentIntegration = getCurrentIntegration();
+      const currentRiskRules = currentIntegration.riskRules && typeof currentIntegration.riskRules === "object" && !Array.isArray(currentIntegration.riskRules)
+        ? currentIntegration.riskRules
+        : {};
       writeIntegrationSnapshot({
         riskRules: {
-          enemyGuildIds: parseListInput(interaction.fields.getTextInputValue("verification_enemy_guild_ids")),
-          enemyUserIds: parseListInput(interaction.fields.getTextInputValue("verification_enemy_user_ids")),
-          enemyInviteCodes: parseListInput(interaction.fields.getTextInputValue("verification_enemy_invite_codes")),
-          enemyInviterUserIds: parseListInput(interaction.fields.getTextInputValue("verification_enemy_inviter_user_ids")),
-          manualTags: parseListInput(interaction.fields.getTextInputValue("verification_manual_tags")),
+          enemyGuildIds: parseRiskEditorInput(
+            interaction.fields.getTextInputValue("verification_enemy_guild_ids"),
+            parseListInput,
+            currentRiskRules.enemyGuildIds
+          ),
+          enemyUserIds: parseRiskEditorInput(
+            interaction.fields.getTextInputValue("verification_enemy_user_ids"),
+            parseListInput,
+            currentRiskRules.enemyUserIds
+          ),
+          enemyFriendUserIds: parseRiskEditorInput(
+            interaction.fields.getTextInputValue("verification_enemy_friend_user_ids"),
+            parseListInput,
+            currentRiskRules.enemyFriendUserIds
+          ),
+          enemyInviteCodes: parseRiskEditorInput(
+            interaction.fields.getTextInputValue("verification_enemy_invite_codes"),
+            parseListInput,
+            currentRiskRules.enemyInviteCodes
+          ),
+          enemyInviterUserIds: parseRiskEditorInput(
+            interaction.fields.getTextInputValue("verification_enemy_inviter_user_ids"),
+            parseListInput,
+            currentRiskRules.enemyInviterUserIds
+          ),
+          suspiciousAccountUserIds: normalizeStringArray(currentRiskRules.suspiciousAccountUserIds, 200, 80),
+          suspiciousOldAccountDays: Math.max(0, Number(currentRiskRules.suspiciousOldAccountDays) || 0),
+          manualTags: normalizeStringArray(currentRiskRules.manualTags, 200, 80),
         },
         lastSyncAt: nowIso(),
       });

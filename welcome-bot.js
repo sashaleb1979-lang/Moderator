@@ -7265,6 +7265,10 @@ function normalizeVerificationObservedGuilds(value = []) {
   return normalized;
 }
 
+function normalizeVerificationObservedFriendIds(value = []) {
+  return normalizeVerificationTextArray(value, 50, 80);
+}
+
 function clearExpiredVerificationRoleMutationIgnores() {
   const now = Date.now();
   for (const [userId, expireAt] of verificationRoleMutationIgnores.entries()) {
@@ -7430,10 +7434,14 @@ function stopVerificationCycle(userId, reason = "verify role removed", options =
     observedGuilds: [],
     observedGuildIds: [],
     observedGuildNames: [],
+    observedFriendIds: [],
     matchedEnemyGuildIds: [],
     matchedEnemyUserIds: [],
+    matchedEnemyFriendIds: [],
     matchedEnemyInviteCodes: [],
     matchedEnemyInviterUserIds: [],
+    suspiciousSignals: [],
+    accountAgeDays: null,
     stoppedAt,
     stopReason,
   }, options);
@@ -7568,10 +7576,14 @@ async function assignUserToVerification(client, userId, options = {}) {
     observedGuilds: [],
     observedGuildIds: [],
     observedGuildNames: [],
+    observedFriendIds: [],
     matchedEnemyGuildIds: [],
     matchedEnemyUserIds: [],
+    matchedEnemyFriendIds: [],
     matchedEnemyInviteCodes: [],
     matchedEnemyInviterUserIds: [],
+    suspiciousSignals: [],
+    accountAgeDays: null,
   });
 
   const verificationChannelId = cleanVerificationText(getVerificationIntegrationState().verificationChannelId, 80);
@@ -7846,10 +7858,14 @@ function buildVerificationAuditMarkdown(userId, profile = {}, statusNote = "") {
     `- OAuth аккаунт: ${cleanVerificationText(verification.oauthUsername || verificationSummary.oauthUsername, 120) || "—"}`,
     `- OAuth user ID: ${cleanVerificationText(verification.oauthUserId || verificationSummary.oauthUserId, 80) || "—"}`,
     `- Замечено серверов: ${Number(verificationSummary.observedGuildCount) || observedGuilds.length || 0}`,
+    `- Замечено друзей OAuth: ${Number(verificationSummary.observedFriendCount) || normalizeVerificationObservedFriendIds(verification.observedFriendIds).length || 0}`,
     `- Совпадения по серверам: ${Number(verificationSummary.matchedEnemyGuildCount) || 0}`,
     `- Совпадения по пользователям: ${Number(verificationSummary.matchedEnemyUserCount) || 0}`,
+    `- Совпадения по друзьям: ${Number(verificationSummary.matchedEnemyFriendCount) || 0}`,
     `- Совпадения по invite: ${Number(verificationSummary.matchedEnemyInviteCount) || 0}`,
     `- Совпадения по inviter: ${Number(verificationSummary.matchedEnemyInviterCount) || 0}`,
+    `- Сигналы подозрительности: ${Number(verificationSummary.suspiciousSignalCount) || normalizeVerificationTextArray(verification.suspiciousSignals, 20, 120).length || 0}`,
+    `- Возраст Discord-аккаунта, дней: ${Number.isFinite(Number(verificationSummary.accountAgeDays)) ? Math.max(0, Number(verificationSummary.accountAgeDays)) : "—"}`,
     "",
     "### Замеченные серверы OAuth",
   );
@@ -7867,10 +7883,26 @@ function buildVerificationAuditMarkdown(userId, profile = {}, statusNote = "") {
     "### Точные совпадения риска",
     `- Серверы: ${normalizeVerificationTextArray(verification.matchedEnemyGuildIds, 20, 80).join(", ") || "—"}`,
     `- Пользователи: ${normalizeVerificationTextArray(verification.matchedEnemyUserIds, 20, 80).join(", ") || "—"}`,
+    `- Друзья: ${normalizeVerificationTextArray(verification.matchedEnemyFriendIds, 20, 80).join(", ") || "—"}`,
     `- Invite-коды: ${normalizeVerificationTextArray(verification.matchedEnemyInviteCodes, 20, 80).join(", ") || "—"}`,
     `- Inviter ID: ${normalizeVerificationTextArray(verification.matchedEnemyInviterUserIds, 20, 80).join(", ") || "—"}`,
+    `- Подозрительные сигналы: ${normalizeVerificationTextArray(verification.suspiciousSignals, 20, 120).join(", ") || "—"}`,
+    ""
+  );
+
+  const observedFriendIds = normalizeVerificationObservedFriendIds(verification.observedFriendIds);
+  lines.push("### OAuth friends (ID)");
+  if (observedFriendIds.length) {
+    for (const [index, friendId] of observedFriendIds.entries()) {
+      lines.push(`${index + 1}. ${friendId}`);
+    }
+  } else {
+    lines.push("- OAuth friends не вернулись или недоступны для этого scope.");
+  }
+
+  lines.push(
     "",
-    "## Roblox / друзья",
+    "## Roblox / друзья"
   );
 
   if (!cleanVerificationText(robloxSummary.userId || roblox.userId, 80)) {
@@ -7972,7 +8004,8 @@ function buildVerificationDegradedReportPayload(options = {}) {
     `Решение: ${cleanVerificationText(summary.decision || verification.decision, 80) || "—"}`,
     `Дедлайн отчёта: ${cleanVerificationText(summary.reportDueAt || verification.reportDueAt, 80) || "—"}`,
     `Замечено серверов: ${Math.max(0, Number(summary.observedGuildCount) || 0)}`,
-    `Совпадения: серверы ${Math.max(0, Number(summary.matchedEnemyGuildCount) || 0)}, пользователи ${Math.max(0, Number(summary.matchedEnemyUserCount) || 0)}, invite ${Math.max(0, Number(summary.matchedEnemyInviteCount) || 0)}, inviter ${Math.max(0, Number(summary.matchedEnemyInviterCount) || 0)}, теги ${Math.max(0, Number(summary.manualTagCount) || 0)}`,
+    `Замечено друзей OAuth: ${Math.max(0, Number(summary.observedFriendCount) || 0)}`,
+    `Совпадения: серверы ${Math.max(0, Number(summary.matchedEnemyGuildCount) || 0)}, пользователи ${Math.max(0, Number(summary.matchedEnemyUserCount) || 0)}, друзья ${Math.max(0, Number(summary.matchedEnemyFriendCount) || 0)}, invite ${Math.max(0, Number(summary.matchedEnemyInviteCount) || 0)}, inviter ${Math.max(0, Number(summary.matchedEnemyInviterCount) || 0)}, сигналы ${Math.max(0, Number(summary.suspiciousSignalCount) || 0)}`,
     "Rich payload не отправился, поэтому отчёт ушёл в сокращённом виде.",
   ];
 
@@ -8231,6 +8264,7 @@ async function runVerificationDeadlineSweep(client) {
 async function handleVerificationApprovedCallback(client, payload = {}) {
   const userId = cleanVerificationText(payload.session?.userId, 80);
   if (!userId) throw new Error("Verification callback не содержит userId session.");
+  const risk = payload.risk && typeof payload.risk === "object" ? payload.risk : {};
   const lifecycle = await reconcileVerificationAssignmentForMember(client, userId, null, {
     reason: "verification approved callback ignored because verify-role was removed",
   });
@@ -8238,6 +8272,29 @@ async function handleVerificationApprovedCallback(client, payload = {}) {
     await logVerificationRuntimeEvent(client, `VERIFICATION_APPROVE_IGNORED: <@${userId}> verify-role уже снята, callback пропущен.`, "warn");
     return;
   }
+
+  updateVerificationProfile(userId, {
+    startedAt: nowIso(),
+    completedAt: nowIso(),
+    oauthUserId: cleanVerificationText(payload.oauthUser?.id, 80),
+    oauthUsername: buildVerificationOauthUsername(payload.oauthUser),
+    oauthAvatarUrl: cleanVerificationText(payload.oauthUser?.avatar ? `https://cdn.discordapp.com/avatars/${payload.oauthUser.id}/${payload.oauthUser.avatar}.png` : "", 2000),
+    observedGuilds: normalizeVerificationObservedGuilds(risk.observedGuilds),
+    observedGuildIds: Array.isArray(risk.observedGuildIds) ? risk.observedGuildIds : [],
+    observedGuildNames: Array.isArray(risk.observedGuildNames) ? risk.observedGuildNames : [],
+    observedFriendIds: Array.isArray(risk.observedFriendIds)
+      ? [...new Set(risk.observedFriendIds.map((entry) => cleanVerificationText(entry, 80)).filter(Boolean))].slice(0, 50)
+      : [],
+    matchedEnemyGuildIds: Array.isArray(risk.matchedEnemyGuildIds) ? risk.matchedEnemyGuildIds : [],
+    matchedEnemyUserIds: Array.isArray(risk.matchedEnemyUserIds) ? risk.matchedEnemyUserIds : [],
+    matchedEnemyFriendIds: Array.isArray(risk.matchedEnemyFriendIds) ? risk.matchedEnemyFriendIds : [],
+    matchedEnemyInviteCodes: Array.isArray(risk.matchedEnemyInviteCodes) ? risk.matchedEnemyInviteCodes : [],
+    matchedEnemyInviterUserIds: Array.isArray(risk.matchedEnemyInviterUserIds) ? risk.matchedEnemyInviterUserIds : [],
+    suspiciousSignals: Array.isArray(risk.suspiciousSignals)
+      ? [...new Set(risk.suspiciousSignals.map((entry) => cleanVerificationText(entry, 120)).filter(Boolean))].slice(0, 20)
+      : [],
+    accountAgeDays: Number.isFinite(Number(risk.accountAgeDays)) ? Math.max(0, Number(risk.accountAgeDays)) : null,
+  });
 
   try {
     await approveVerificationUser(client, userId, "oauth:auto", "normal", "verification oauth auto approve");
@@ -8293,10 +8350,18 @@ async function handleVerificationManualReviewCallback(client, payload = {}) {
     observedGuilds: normalizeVerificationObservedGuilds(risk.observedGuilds),
     observedGuildIds: Array.isArray(risk.observedGuildIds) ? risk.observedGuildIds : [],
     observedGuildNames: Array.isArray(risk.observedGuildNames) ? risk.observedGuildNames : [],
+    observedFriendIds: Array.isArray(risk.observedFriendIds)
+      ? [...new Set(risk.observedFriendIds.map((entry) => cleanVerificationText(entry, 80)).filter(Boolean))].slice(0, 50)
+      : [],
     matchedEnemyGuildIds: Array.isArray(risk.matchedEnemyGuildIds) ? risk.matchedEnemyGuildIds : [],
     matchedEnemyUserIds: Array.isArray(risk.matchedEnemyUserIds) ? risk.matchedEnemyUserIds : [],
+    matchedEnemyFriendIds: Array.isArray(risk.matchedEnemyFriendIds) ? risk.matchedEnemyFriendIds : [],
     matchedEnemyInviteCodes: Array.isArray(risk.matchedEnemyInviteCodes) ? risk.matchedEnemyInviteCodes : [],
     matchedEnemyInviterUserIds: Array.isArray(risk.matchedEnemyInviterUserIds) ? risk.matchedEnemyInviterUserIds : [],
+    suspiciousSignals: Array.isArray(risk.suspiciousSignals)
+      ? [...new Set(risk.suspiciousSignals.map((entry) => cleanVerificationText(entry, 120)).filter(Boolean))].slice(0, 20)
+      : [],
+    accountAgeDays: Number.isFinite(Number(risk.accountAgeDays)) ? Math.max(0, Number(risk.accountAgeDays)) : null,
     decisionReason,
     lastError: "",
   });
