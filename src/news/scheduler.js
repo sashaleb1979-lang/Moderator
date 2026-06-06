@@ -119,6 +119,21 @@ async function persistDb(saveDb) {
   }
 }
 
+function hasStoredPublicPublish(digest = null) {
+  return cleanString(digest?.publish?.publishMode, 40) === "public"
+    && Boolean(cleanString(digest?.publish?.publicMessageId || digest?.publish?.deliveryMessageId, 80));
+}
+
+async function markHistoricalQueueDayReleased({ queue, dayKeys = [], dayKey = "", now, saveDb } = {}) {
+  queue.dayKeys = dayKeys.slice(1);
+  queue.lastReleasedDayKey = cleanString(dayKey, 40) || null;
+  queue.lastReleasedAt = resolveNowIso(now);
+  if (!queue.dayKeys.length) {
+    queue.active = false;
+  }
+  await persistDb(saveDb);
+}
+
 async function runHistoricalReleaseQueueTick({
   db = {},
   now,
@@ -195,27 +210,76 @@ async function runHistoricalReleaseQueueTick({
     await persistDb(saveDb);
   }
 
-  const publish = await publishDailyNewsIssueFn({
-    db,
-    digest,
-    dayKey,
-    client,
-    publicChannel,
-    staffChannel,
-    publishMode: "public",
-    force: true,
-    now,
-    saveDb,
-  });
+  if (hasStoredPublicPublish(digest)) {
+    await markHistoricalQueueDayReleased({ queue, dayKeys, dayKey, now, saveDb });
+    return {
+      compiled,
+      skipped: false,
+      reason: null,
+      dayKey,
+      publishHourMsk: null,
+      nowIso: resolveNowIso(now),
+      mode: "history_queue",
+      digest,
+      published: false,
+      publishSkipped: true,
+      publishReason: "already_published",
+      releaseMode: "history_queue",
+      publish: {
+        published: false,
+        skipped: true,
+        reason: "already_published",
+        dayKey,
+        result: digest.publish,
+      },
+      queueRemainingCount: Array.isArray(queue.dayKeys) ? queue.dayKeys.length : 0,
+    };
+  }
 
-  if (publish.published === true) {
-    queue.dayKeys = dayKeys.slice(1);
-    queue.lastReleasedDayKey = dayKey;
-    queue.lastReleasedAt = resolveNowIso(now);
-    if (!queue.dayKeys.length) {
-      queue.active = false;
-    }
+  let publish = null;
+  try {
+    publish = await publishDailyNewsIssueFn({
+      db,
+      digest,
+      dayKey,
+      client,
+      publicChannel,
+      staffChannel,
+      publishMode: "public",
+      force: false,
+      now,
+      saveDb,
+    });
+  } catch (error) {
+    state.runtime.lastFailure = {
+      stage: "historical_release_queue",
+      dayKey,
+      message: cleanString(error?.message || error, 400) || "unknown_error",
+      occurredAt: resolveNowIso(now),
+    };
     await persistDb(saveDb);
+    return {
+      compiled,
+      skipped: false,
+      reason: null,
+      dayKey,
+      publishHourMsk: null,
+      nowIso: resolveNowIso(now),
+      mode: "history_queue",
+      digest,
+      published: false,
+      publishSkipped: false,
+      publishFailed: true,
+      publishReason: "publish_failed",
+      releaseMode: "history_queue",
+      publish: null,
+      queueRemainingCount: queue.dayKeys.length,
+      error: state.runtime.lastFailure,
+    };
+  }
+
+  if (publish.published === true || (publish.skipped === true && cleanString(publish.reason, 80) === "already_published")) {
+    await markHistoricalQueueDayReleased({ queue, dayKeys, dayKey, now, saveDb });
   }
 
   return {

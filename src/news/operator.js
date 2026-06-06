@@ -307,7 +307,7 @@ function formatReleaseQueueSummary(queue = {}) {
   const dayKeys = Array.isArray(queue?.dayKeys) ? queue.dayKeys : [];
   const nextDayKey = cleanString(dayKeys[0], 40);
   return [
-    `Очередь исторических выпусков: **${formatReleaseQueueState(queue)}**`,
+    `Публикация периода: **${formatReleaseQueueState(queue)}**`,
     `дней **${dayKeys.length}**`,
     nextDayKey ? `следующий **${nextDayKey}**` : null,
   ].filter(Boolean).join(" · ");
@@ -407,15 +407,15 @@ function buildDailyNewsPanelRows(state = {}) {
         .setLabel("Smoke только в staff")
         .setStyle(ButtonStyle.Secondary)
         .setDisabled(!staffChannelId),
-      new ButtonBuilder().setCustomId(DAILY_NEWS_PANEL_PREPARE_RANGE_ID).setLabel("Подготовить диапазон").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId(DAILY_NEWS_PANEL_PREPARE_RANGE_ID).setLabel("Подготовить период").setStyle(ButtonStyle.Secondary),
       new ButtonBuilder()
         .setCustomId(DAILY_NEWS_PANEL_START_RELEASE_QUEUE_ID)
-        .setLabel("Запустить очередь")
+        .setLabel("Запустить период")
         .setStyle(ButtonStyle.Success)
         .setDisabled(!publicChannelId || !queueHasItems),
       new ButtonBuilder()
         .setCustomId(DAILY_NEWS_PANEL_STOP_RELEASE_QUEUE_ID)
-        .setLabel("Остановить очередь")
+        .setLabel("Остановить период")
         .setStyle(ButtonStyle.Secondary)
         .setDisabled(queue?.active !== true)
     ),
@@ -436,7 +436,7 @@ function buildDailyNewsStatusPayload(db = {}) {
       "## 🗞️ Статус Daily News",
       `сборка: **${formatCompileStatusLabel(state.runtime.lastCompileStatus)}** · день **${state.runtime.lastCompiledDayKey || "—"}**`,
       `публикация: **${formatPublishStatusLabel(state.runtime.lastPublishStatus)}** · день **${state.runtime.lastPublishedDayKey || "—"}**`,
-      `очередь: **${formatReleaseQueueState(queue)}** · дней **${Array.isArray(queue.dayKeys) ? queue.dayKeys.length : 0}**${queue.dayKeys?.[0] ? ` · следующий **${queue.dayKeys[0]}**` : ""}`,
+      `период: **${formatReleaseQueueState(queue)}** · дней **${Array.isArray(queue.dayKeys) ? queue.dayKeys.length : 0}**${queue.dayKeys?.[0] ? ` · следующий **${queue.dayKeys[0]}**` : ""}`,
       `покрытие: **${coverage.partial ? "частичное" : "чистое"}${coverage.ambiguous ? " + неоднозначное" : ""}**`,
       `кандидаты: **${audit.rawCandidateCounts?.total || 0}**`,
       state.runtime.lastFailure?.message ? `последний сбой: **${state.runtime.lastFailure.message}**` : "последний сбой: **—**",
@@ -619,7 +619,7 @@ function buildDayKeyModal(action = DAILY_NEWS_OPERATOR_ACTIONS.PREVIEW_DAY) {
 function buildPrepareRangeModal() {
   return new ModalBuilder()
     .setCustomId(DAILY_NEWS_PANEL_PREPARE_RANGE_MODAL_ID)
-    .setTitle("Подготовить диапазон Daily News")
+    .setTitle("Подготовить период Daily News")
     .addComponents(
       new ActionRowBuilder().addComponents(
         new TextInputBuilder()
@@ -1004,8 +1004,8 @@ async function handleDailyNewsPanelButtonInteraction(options = {}) {
         await interaction.editReply(buildDailyNewsOperatorPanelPayload({
           db: options.db,
           statusText: customId === DAILY_NEWS_PANEL_START_RELEASE_QUEUE_ID
-            ? `Историческая очередь запущена. Следующий выпуск: **${cleanString(queue.dayKeys?.[0], 40) || "—"}**.`
-            : "Историческая очередь остановлена.",
+            ? `Публикация периода запущена. Следующий выпуск: **${cleanString(queue.dayKeys?.[0], 40) || "—"}**.`
+            : "Публикация периода остановлена.",
           includeFlags: false,
         }));
       },
@@ -1164,7 +1164,7 @@ async function handleDailyNewsPanelModalSubmitInteraction(options = {}) {
         });
         await interaction.editReply(buildDailyNewsOperatorPanelPayload({
           db: options.db,
-          statusText: `Подготовлен диапазон **${startDayKey} → ${endDayKey}**. Собрано дней: **${result.dayKeys.length}**. Очередь остановлена до ручного запуска.`,
+          statusText: `Период **${startDayKey} → ${endDayKey}** подготовлен. Собрано дней: **${result.dayKeys.length}**. Публикация остановлена до ручного запуска.`,
           includeFlags: false,
         }));
       },

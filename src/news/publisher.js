@@ -22,6 +22,16 @@ function normalizePublishMode(value) {
   return cleanString(value, 40) === "staff_only" ? "staff_only" : "public";
 }
 
+function withoutMentions(payload = {}) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return { content: cleanString(payload, 2000) || "", allowedMentions: { parse: [] } };
+  }
+  return {
+    ...payload,
+    allowedMentions: { parse: [] },
+  };
+}
+
 async function runOptionalPublishStep(runStep, warnings, label, fallbackValue) {
   try {
     return await runStep();
@@ -64,7 +74,7 @@ async function sendThreadMessages(publicMessage, issue, state) {
 
   const sentThreadMessages = [];
   for (const payload of messages) {
-    sentThreadMessages.push(await thread.send(payload));
+    sentThreadMessages.push(await thread.send(withoutMentions(payload)));
   }
   return { thread, sentThreadMessages };
 }
@@ -114,7 +124,7 @@ async function publishDailyNewsIssue({
 
   try {
     const resolvedIssue = issue || renderDailyNewsIssue({ digest: resolvedDigest, config: state.config });
-    const publicPayload = clone(resolvedIssue.publicMessage) || {};
+    const publicPayload = withoutMentions(clone(resolvedIssue.publicMessage) || {});
     const coverAttachment = await buildDailyNewsCoverAttachment(resolvedIssue);
     publicPayload.files = [...(Array.isArray(publicPayload.files) ? publicPayload.files : []), coverAttachment];
     publicPayload.embeds = (Array.isArray(publicPayload.embeds) ? publicPayload.embeds : []).map((embed, index) => {
@@ -151,7 +161,7 @@ async function publishDailyNewsIssue({
         { thread: null, sentThreadMessages: [] }
       ));
       staffMessage = await runOptionalPublishStep(
-        () => resolvedStaffChannel.send(resolvedIssue.staffMessage),
+        () => resolvedStaffChannel.send(withoutMentions(resolvedIssue.staffMessage)),
         warnings,
         "Daily News audit message delivery failed",
         null
@@ -180,7 +190,7 @@ async function publishDailyNewsIssue({
           label: "staff Daily News",
         });
         staffMessage = await runOptionalPublishStep(
-          () => resolvedStaffChannel.send(resolvedIssue.staffMessage),
+          () => resolvedStaffChannel.send(withoutMentions(resolvedIssue.staffMessage)),
           warnings,
           "Daily News audit message delivery failed",
           null

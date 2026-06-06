@@ -17,6 +17,12 @@ function buildNewsDb() {
             activityScore: 58,
             appliedActivityRoleKey: "active",
           },
+          support: {
+            antiteam: {
+              sourceAvailable: true,
+              confirmedArrived: 5,
+            },
+          },
           tierlist: {
             mainId: "char-sukuna",
             mainName: "Sukuna",
@@ -149,6 +155,7 @@ function buildNewsDb() {
                 tierlistMainId: "char-gojo",
                 tierlistMainName: "Gojo",
                 tierlistInfluenceMultiplier: 1,
+                antiteamSupportPoints: 0,
               },
               "user-2": {
                 displayName: "Echo",
@@ -157,11 +164,13 @@ function buildNewsDb() {
                 tierlistMainId: "char-gojo",
                 tierlistMainName: "Gojo",
                 tierlistInfluenceMultiplier: 1,
+                antiteamSupportPoints: 0,
               },
               "user-3": {
                 displayName: "Nova",
                 activityScore: 12,
                 appliedActivityRoleKey: "cold",
+                antiteamSupportPoints: 0,
               },
             },
           },
@@ -233,7 +242,10 @@ test("renderDailyNewsIssue builds edition-style public payload from compiled dig
   assert.equal(issue.coverSpec.accentColor, "#E6B450");
   assert.match(issue.publicMessage.content, /🗞️ Moderator Chronicle · 14\.05\.2026/);
   assert.match(issue.publicMessage.content, /━━━━━━━━/);
-  assert.match(issue.publicMessage.content, /⚔️ резкие апы/);
+  assert.match(issue.publicMessage.content, /Самый большой рывок/);
+  assert.match(issue.publicMessage.content, /⚔️ апы киллов/);
+  assert.doesNotMatch(issue.publicMessage.content, /<@/);
+  assert.doesNotMatch(issue.publicMessage.content, /Главный рывок дня|резкие апы|редкие/);
   assert.deepEqual(issue.publicMessage.allowedMentions, { parse: [] });
 
   const embed = issue.publicMessage.embeds[0];
@@ -241,30 +253,39 @@ test("renderDailyNewsIssue builds edition-style public payload from compiled dig
   assert.match(embed.description, /Акценты дня/);
   assert.match(embed.description, /⚠️ частично \+ неоднозначно/);
   assert.deepEqual(embed.fields.map((field) => field.name), [
-    "⚔️ Киллы · резкие апы",
+    "⚡ Сильные изменения",
+    "⚔️ Киллы · апы",
     "💬 Активность · топ сообщений",
     "🎮 JJS · топ игры",
-    "🆕 Новички · входы и верификации",
     "🎙️ Voice · лидеры эфира",
-    "🛡️ Модерация · highlights",
+    "🛡️ Модерация",
     "🧩 Тирлист · обновления",
+    "🛡️ Антитим · новые ранги",
     "📡 Покрытие",
   ]);
-  assert.match(embed.fields[0].value, /@Prime/);
-  assert.match(embed.fields[1].value, /@Echo/);
-  assert.match(embed.fields[1].value, /@Prime/);
-  assert.match(embed.fields[1].value, /\+18 активности/);
-  assert.match(embed.fields[2].value, /@Echo/);
-  assert.match(embed.fields[4].value, /@Echo/);
-  assert.match(embed.fields[5].value, /@Shadow/);
+  assert.match(embed.fields[0].value, /Prime/);
+  assert.match(embed.fields[0].value, /антитим/);
+  assert.match(embed.fields[1].value, /Prime/);
+  assert.match(embed.fields[2].value, /Echo/);
+  assert.match(embed.fields[2].value, /Prime/);
+  assert.match(embed.fields[2].value, /\+18 активности/);
+  assert.match(embed.fields[3].value, /Echo/);
+  assert.match(embed.fields[4].value, /Echo/);
+  assert.match(embed.fields[5].value, /Shadow/);
+  assert.match(embed.fields[5].value, /бан/);
   assert.match(embed.fields[6].value, /Gojo → Sukuna/);
-  assert.match(embed.fields[7].value, /activity_rows_without_precise_timestamps/);
+  assert.match(embed.fields[7].value, /Саппорт/);
+  assert.match(embed.fields[8].value, /activity_rows_without_precise_timestamps/);
+  assert.doesNotMatch(JSON.stringify(embed), /<@|highlights|резкие апы|редкие/);
 
   assert.ok(issue.publicThreadMessages.some((message) => {
     return /Полный voice список/.test(message.content)
-      && /@Echo/.test(message.content)
-      && /@Nova/.test(message.content);
+      && /Echo/.test(message.content)
+      && /Nova/.test(message.content)
+      && message.allowedMentions?.parse?.length === 0;
   }));
+  assert.ok(issue.publicThreadMessages.some((message) => /Топ роста активности/.test(message.content)));
+  assert.ok(issue.publicThreadMessages.some((message) => /Топ падения активности/.test(message.content)));
 });
 
 test("renderDailyNewsIssue keeps rejected pending and ambiguous evidence in staff payload", () => {
@@ -281,12 +302,12 @@ test("renderDailyNewsIssue keeps rejected pending and ambiguous evidence in staf
   assert.match(bucketField.value, /⚠️ ambiguous: \*\*2\*\*/);
 
   const killTrail = staffEmbed.fields.find((field) => field.name === "⚔️ Kills staff trail");
-  assert.match(killTrail.value, /\*\*@Echo\*\* · rejected · 500 kills · bad screenshot/);
-  assert.match(killTrail.value, /\*\*@Nova\*\* · pending · 220 kills · pending_kill_review/);
+  assert.match(killTrail.value, /\*\*Echo\*\* · rejected · 500 kills · bad screenshot/);
+  assert.match(killTrail.value, /\*\*Nova\*\* · pending · 220 kills · pending_kill_review/);
 
   const watchlist = staffEmbed.fields.find((field) => field.name === "👀 Audit watchlist");
-  assert.match(watchlist.value, /\*\*@Nova\*\* · модерация · ambiguous · leave_ambiguous/);
-  assert.match(watchlist.value, /\*\*@Nova\*\* · активность · ambiguous · activity_daily_row_without_precise_timestamp/);
+  assert.match(watchlist.value, /\*\*Nova\*\* · модерация · ambiguous · leave_ambiguous/);
+  assert.match(watchlist.value, /\*\*Nova\*\* · активность · ambiguous · activity_daily_row_without_precise_timestamp/);
 
   const activityDiagnostics = staffEmbed.fields.find((field) => field.name === "💬 Activity diagnostics");
   assert.match(activityDiagnostics.value, /imprecise rows: \*\*1\*\*/);
@@ -326,8 +347,8 @@ test("renderDailyNewsIssue degrades gracefully when the digest has no public hig
   const issue = renderDailyNewsIssue({ digest });
 
   assert.match(issue.publicMessage.content, /Daily Edition · 15\.05\.2026/);
-  assert.match(issue.publicMessage.embeds[0].description, /День прошёл спокойно/);
-  assert.match(issue.publicMessage.embeds[0].fields[0].value, /без подтверждённых резких апов/);
+  assert.match(issue.publicMessage.embeds[0].description, /окно/);
+  assert.equal(issue.publicMessage.embeds[0].fields.length, 0);
   assert.equal(issue.publicThreadMessages.length, 0);
   assert.equal(issue.diagnostics.hasPublicHighlights, false);
 });
@@ -382,4 +403,84 @@ test("renderDailyNewsIssue keeps imprecise activity rows out of public thread", 
   assert.match(publicThreadText, /Safe6/);
   assert.doesNotMatch(publicThreadText, /StaffOnlyImprecise/);
   assert.match(issue.staffMessage.embeds[0].fields.find((field) => field.name === "💬 Activity diagnostics").value, /imprecise rows: \*\*1\*\*/);
+});
+
+test("renderDailyNewsIssue surfaces activity role dead transitions and antiteam rank upgrades", () => {
+  const db = {
+    profiles: {
+      returner: {
+        displayName: "Returner",
+        domains: {
+          activity: { activityScore: 22, appliedActivityRoleKey: "weak" },
+        },
+      },
+      fader: {
+        displayName: "Fader",
+        domains: {
+          activity: { activityScore: 0, appliedActivityRoleKey: "dead" },
+        },
+      },
+      helper: {
+        displayName: "Helper",
+        domains: {
+          activity: { activityScore: 33, appliedActivityRoleKey: "weak" },
+          support: {
+            antiteam: {
+              sourceAvailable: true,
+              confirmedArrived: 10,
+            },
+          },
+        },
+      },
+    },
+    sot: {
+      news: {
+        history: {
+          daySnapshots: {
+            "2026-05-13": {
+              returner: {
+                displayName: "Returner",
+                activityScore: 5,
+                appliedActivityRoleKey: "dead",
+                antiteamSupportPoints: 0,
+              },
+              fader: {
+                displayName: "Fader",
+                activityScore: 20,
+                appliedActivityRoleKey: "weak",
+                antiteamSupportPoints: 0,
+              },
+              helper: {
+                displayName: "Helper",
+                activityScore: 30,
+                appliedActivityRoleKey: "weak",
+                antiteamSupportPoints: 5,
+              },
+            },
+          },
+        },
+      },
+    },
+  };
+  const state = ensureNewsState(db);
+  const digest = compileDailyNewsDigest({
+    db,
+    targetDayKey: "2026-05-14",
+    now: "2026-05-14T18:00:00.000Z",
+    windowEndAt: "2026-05-14T18:00:00.000Z",
+  }).digest;
+
+  const issue = renderDailyNewsIssue({ digest, config: state.config });
+  const fieldsByName = new Map(issue.publicMessage.embeds[0].fields.map((field) => [field.name, field.value]));
+  const publicText = JSON.stringify(issue.publicMessage);
+
+  assert.equal(issue.diagnostics.hasPublicHighlights, true);
+  assert.match(fieldsByName.get("⚡ Сильные изменения"), /Returner/);
+  assert.match(fieldsByName.get("☠️ Мертвецы"), /вышел из мертвецов/);
+  assert.match(fieldsByName.get("☠️ Мертвецы"), /стал мертвецом/);
+  assert.match(fieldsByName.get("🛡️ Антитим · новые ранги"), /Helper/);
+  assert.match(fieldsByName.get("🛡️ Антитим · новые ранги"), /Саппорт/);
+  assert.doesNotMatch(publicText, /<@/);
+  assert.ok(issue.publicThreadMessages.some((message) => /Топ роста активности/.test(message.content) && /Returner/.test(message.content)));
+  assert.ok(issue.publicThreadMessages.some((message) => /Топ падения активности/.test(message.content) && /Fader/.test(message.content)));
 });

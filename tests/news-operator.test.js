@@ -124,7 +124,7 @@ test("runDailyNewsOperatorAction previews and reports status", async () => {
   const status = buildDailyNewsStatusPayload(db);
   assert.match(status.content, /сборка: \*\*готово для preview\*\*/);
   assert.match(status.content, /публикация: \*\*не опубликовано\*\*/);
-  assert.match(status.content, /очередь: \*\*на паузе\*\*/);
+  assert.match(status.content, /период: \*\*на паузе\*\*/);
 });
 
 test("runDailyNewsOperatorAction publishes through publisher owner", async () => {
@@ -270,11 +270,13 @@ test("buildDailyNewsOperatorPanelPayload shows runtime summary and disables publ
   assert.match(payload.embeds[0].data.description, /Ops Desk/);
   assert.match(payload.embeds[0].data.description, /Ежедневный тик: \*\*выключен\*\*/);
   assert.match(payload.embeds[0].data.description, /Режим выпуска: \*\*ручной\*\*/);
-  assert.match(payload.embeds[0].data.description, /Очередь исторических выпусков: \*\*на паузе\*\*/);
+  assert.match(payload.embeds[0].data.description, /Публикация периода: \*\*на паузе\*\*/);
   assert.match(payload.embeds[0].data.fields[0].value, /Статус: \*\*не запускалась\*\*/);
   assert.match(payload.embeds[0].data.fields[1].value, /Статус: \*\*не опубликовано\*\*/);
   assert.equal(payload.components[0].components[4].data.disabled, true);
   assert.equal(payload.components[1].components[0].data.disabled, true);
+  assert.equal(payload.components[1].components[2].data.label, "Подготовить период");
+  assert.equal(payload.components[1].components[3].data.label, "Запустить период");
   assert.equal(payload.components[2].components[0].data.custom_id, DAILY_NEWS_PANEL_CONFIG_INFRA_ID);
 });
 
@@ -537,7 +539,7 @@ test("handleDailyNewsPanelModalSubmitInteraction prepares a historical range and
   assert.deepEqual(db.sot.news.runtime.releaseQueue.dayKeys, ["2026-05-20", "2026-05-21", "2026-05-22"]);
   assert.equal(db.sot.news.runtime.releaseQueue.active, false);
   assert.ok(db.sot.news.dailyDigests["2026-05-20"]);
-  assert.match(interaction.edits[0].embeds[0].data.fields.at(-1).value, /Подготовлен диапазон/);
+  assert.match(interaction.edits[0].embeds[0].data.fields.at(-1).value, /Период .* подготовлен/);
 });
 
 test("handleDailyNewsPanelButtonInteraction starts and stops the historical release queue", async () => {
@@ -567,7 +569,7 @@ test("handleDailyNewsPanelButtonInteraction starts and stops the historical rele
 
   assert.equal(startInteraction.deferred, true);
   assert.equal(db.sot.news.runtime.releaseQueue.active, true);
-  assert.match(startInteraction.edits[0].embeds[0].data.fields.at(-1).value, /Историческая очередь запущена/);
+  assert.match(startInteraction.edits[0].embeds[0].data.fields.at(-1).value, /Публикация периода запущена/);
 
   await handleDailyNewsPanelButtonInteraction({
     interaction: stopInteraction,
@@ -579,7 +581,7 @@ test("handleDailyNewsPanelButtonInteraction starts and stops the historical rele
 
   assert.equal(stopInteraction.deferred, true);
   assert.equal(db.sot.news.runtime.releaseQueue.active, false);
-  assert.match(stopInteraction.edits[0].embeds[0].data.fields.at(-1).value, /Историческая очередь остановлена/);
+  assert.match(stopInteraction.edits[0].embeds[0].data.fields.at(-1).value, /Публикация периода остановлена/);
 });
 
 test("handleDailyNewsPanelModalSubmitInteraction rejects auto-publish without required tick and public channel", async () => {

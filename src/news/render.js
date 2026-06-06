@@ -120,11 +120,7 @@ function getCoverageLabel(digest = {}) {
 
 function formatParticipant(entry = {}, fallbackName = "неизвестно") {
   const displayName = cleanString(entry?.displayName, 120) || cleanString(fallbackName, 120) || "неизвестно";
-  const userId = cleanString(entry?.userId, 80);
-  if (isDiscordUserId(userId)) {
-    return `<@${userId}> · ${displayName}`;
-  }
-  return `@${displayName}`;
+  return displayName;
 }
 
 function getTopKillUpgrade(digest = {}) {
@@ -154,46 +150,30 @@ function getTopGameplayPlayer(digest = {}) {
 function buildStoryLine(digest = {}) {
   const kill = getTopKillUpgrade(digest);
   if (kill) {
-    return `⚔️ Главный рывок дня: **${formatParticipant(kill)}** поднял киллы на ${formatSignedNumber(kill.delta)} (${formatNumber(kill.from)} → ${formatNumber(kill.to)}).`;
+    return `⚔️ Самый большой рывок: **${formatParticipant(kill)}** поднял киллы на ${formatSignedNumber(kill.delta)} (${formatNumber(kill.from)} → ${formatNumber(kill.to)}).`;
   }
 
-  const activity = getTopMessageAuthor(digest);
-  if (activity) {
-    return `💬 Самый громкий чат-день у **${formatParticipant(activity)}**: ${formatNumber(activity.messagesCount)} сообщений.`;
-  }
-
-  const gameplay = getTopGameplayPlayer(digest);
-  if (gameplay) {
-    return `🎮 Главный JJS-гринд дня у **${formatParticipant(gameplay)}**: ${formatDuration(gameplay.minutes * 60)} в игре.`;
-  }
-
-  const voice = getTopVoiceVisitor(digest);
-  if (voice) {
-    return `🎙️ Главный голосовой эфир держал **${formatParticipant(voice)}**: ${formatDuration(voice.totalDurationSeconds)} за день.`;
-  }
-
-  const moderation = digest.publicEdition?.moderation?.highlights?.[0] || null;
-  if (moderation) {
-    return `🛡️ Важное модерационное событие: **${formatParticipant(moderation)}** · ${moderation.resolution || moderation.eventType}.`;
-  }
-
-  return "✨ День прошёл спокойно: критичных публичных highlights не набралось, но audit всё равно сохранён.";
+  return "";
 }
 
 function buildHeroMetrics(digest = {}) {
-  return [
-    `⚔️ резкие апы: **${formatNumber(digest.publicEdition?.kills?.upgradeCount || 0)}**`,
-    `💬 сообщения: **${formatNumber(digest.publicEdition?.activity?.totalMessagesCount || 0)}**`,
-    `🎮 JJS-игроки: **${formatNumber(digest.publicEdition?.gameplay?.precisePlayerCount || 0)}**`,
-    `🆕 новички: **${formatNumber(digest.publicEdition?.newcomers?.newcomerCount || 0)}**`,
-    `🎙️ voice-участники: **${formatNumber(digest.publicEdition?.voice?.visitorCount || 0)}**`,
-    `🛡️ mod-события: **${formatNumber(digest.moderation?.totalCount || 0)}**`,
+  const metrics = [
+    ["⚔️ апы киллов", digest.publicEdition?.kills?.upgradeCount || 0],
+    ["💬 сообщения", digest.publicEdition?.activity?.totalMessagesCount || 0],
+    ["🎮 JJS-игроки", digest.publicEdition?.gameplay?.precisePlayerCount || 0],
+    ["👋 входы", digest.publicEdition?.newcomers?.newcomerCount || 0],
+    ["✅ верификации", digest.publicEdition?.newcomers?.verifiedCount || 0],
+    ["🎙️ voice", digest.publicEdition?.voice?.visitorCount || 0],
+    ["🛡️ модерация", digest.moderation?.totalCount || 0],
   ];
+  return metrics
+    .filter(([, value]) => Number(value) > 0)
+    .map(([label, value]) => `${label}: **${formatNumber(value)}**`);
 }
 
 function renderKillLines(upgrades = [], limit = 5) {
   const items = (Array.isArray(upgrades) ? upgrades : []).slice(0, limit);
-  if (!items.length) return ["— сегодня без подтверждённых резких апов в публичном топе"];
+  if (!items.length) return [];
   return items.map((entry, index) => {
     const medal = MEDALS[index] || `${index + 1}.`;
     return `${medal} **${formatParticipant(entry)}** · ${formatSignedNumber(entry.delta)} киллов · ${formatNumber(entry.from)} → ${formatNumber(entry.to)}`;
@@ -202,7 +182,7 @@ function renderKillLines(upgrades = [], limit = 5) {
 
 function renderActivityLines(authors = [], limit = 5) {
   const items = (Array.isArray(authors) ? authors : []).slice(0, limit);
-  if (!items.length) return ["— точного публичного топа сообщений пока нет"];
+  if (!items.length) return [];
   return items.map((entry, index) => {
     const medal = MEDALS[index] || `${index + 1}.`;
     const sessions = Number(entry.sessionsCount || 0) > 0 ? ` · ${formatNumber(entry.sessionsCount)} сесс.` : "";
@@ -217,12 +197,12 @@ function renderActivityMoverLines(movers = {}, limitPerDirection = 1) {
   const falling = (Array.isArray(movers.down) ? movers.down : []).slice(0, limitPerDirection);
 
   for (const entry of rising) {
-    const roleLine = entry.roleChanged ? ` · роль ${entry.fromAppliedRoleKey || "—"} → ${entry.toAppliedRoleKey || "—"}` : "";
+    const roleLine = entry.roleChanged ? ` · роль ${formatActivityRoleLabel(entry.fromAppliedRoleKey)} → ${formatActivityRoleLabel(entry.toAppliedRoleKey)}` : "";
     lines.push(`↗ **${formatParticipant(entry)}** · ${formatSignedNumber(entry.delta)} активности (${formatNumber(entry.fromScore)} → ${formatNumber(entry.toScore)})${roleLine}`);
   }
 
   for (const entry of falling) {
-    const roleLine = entry.roleChanged ? ` · роль ${entry.fromAppliedRoleKey || "—"} → ${entry.toAppliedRoleKey || "—"}` : "";
+    const roleLine = entry.roleChanged ? ` · роль ${formatActivityRoleLabel(entry.fromAppliedRoleKey)} → ${formatActivityRoleLabel(entry.toAppliedRoleKey)}` : "";
     lines.push(`↘ **${formatParticipant(entry)}** · ${formatSignedNumber(entry.delta)} активности (${formatNumber(entry.fromScore)} → ${formatNumber(entry.toScore)})${roleLine}`);
   }
 
@@ -231,7 +211,7 @@ function renderActivityMoverLines(movers = {}, limitPerDirection = 1) {
 
 function renderGameplayLines(players = [], limit = 5) {
   const items = (Array.isArray(players) ? players : []).slice(0, limit);
-  if (!items.length) return ["— точного публичного JJS топа пока нет"];
+  if (!items.length) return [];
   return items.map((entry, index) => {
     const medal = MEDALS[index] || `${index + 1}.`;
     const source = entry.sourceType === "roblox_session_history" ? "сессии" : "почасовой учёт";
@@ -241,17 +221,23 @@ function renderGameplayLines(players = [], limit = 5) {
 
 function renderNewcomerLines(events = [], limit = 6) {
   const items = (Array.isArray(events) ? events : []).slice(0, limit);
-  if (!items.length) return ["— новых публичных входов/верификаций нет"];
-  return items.map((entry) => {
-    const icon = entry.eventType === "guild_joined" ? "🆕" : entry.eventType === "roblox_verified" ? "✅" : "🔓";
-    const label = entry.eventType === "guild_joined" ? "зашёл" : entry.eventType === "roblox_verified" ? "подтвердил Roblox" : "получил доступ";
-    return `${icon} **${formatParticipant(entry)}** · ${label}`;
-  });
+  if (!items.length) return [];
+  const groups = [
+    ["guild_joined", "👋 зашли"],
+    ["roblox_verified", "✅ верифицировались"],
+    ["access_granted", "🔓 получили доступ"],
+  ];
+  return groups.map(([eventType, label]) => {
+    const names = items
+      .filter((entry) => entry.eventType === eventType)
+      .map((entry) => `**${formatParticipant(entry)}**`);
+    return names.length ? `${label}: ${names.join(", ")}` : null;
+  }).filter(Boolean);
 }
 
 function renderTierlistLines(updates = [], limit = 5) {
   const items = (Array.isArray(updates) ? updates : []).slice(0, limit);
-  if (!items.length) return ["— подтверждённых tierlist updates нет"];
+  if (!items.length) return [];
   return items.map((entry) => `🧩 **${formatParticipant(entry)}** · мейн: **${entry.mainName || "неизвестно"}** · x${entry.influenceMultiplier || 1}`);
 }
 
@@ -275,7 +261,7 @@ function renderTierlistShiftLines(shifts = {}, limit = 2) {
 
 function renderVoiceLines(visitors = [], limit = 5) {
   const items = (Array.isArray(visitors) ? visitors : []).slice(0, limit);
-  if (!items.length) return ["— voice сегодня не зафиксирован"];
+  if (!items.length) return [];
   return items.map((entry, index) => {
     const medal = MEDALS[index] || `${index + 1}.`;
     const moves = Number(entry.moveCount || 0) > 0 ? ` · переходы ${formatNumber(entry.moveCount)}` : "";
@@ -285,10 +271,115 @@ function renderVoiceLines(visitors = [], limit = 5) {
 
 function renderModerationLines(events = [], limit = 5) {
   const items = (Array.isArray(events) ? events : []).slice(0, limit);
-  if (!items.length) return ["— публичных модерационных highlights нет"];
+  if (!items.length) return [];
   return items.map((entry) => {
+    const label = formatModerationPublicLabel(entry);
     const icon = entry.eventType === "ban_add" ? "🔨" : entry.eventType === "ban_remove" ? "🕊️" : "🛡️";
-    return `${icon} **${formatParticipant(entry)}** · ${entry.resolution || entry.eventType}`;
+    return `${icon} **${formatParticipant(entry)}** · ${label}`;
+  });
+}
+
+function formatActivityRoleLabel(roleKey = "") {
+  const labels = {
+    dead: "мертвец",
+    weak: "слабая активность",
+    floating: "плавающая активность",
+    active: "актив",
+    stable: "стабильный актив",
+    core: "ядро",
+  };
+  return labels[cleanString(roleKey, 80)] || cleanString(roleKey, 80) || "—";
+}
+
+function formatModerationPublicLabel(entry = {}) {
+  const type = cleanString(entry.eventType, 80);
+  const resolution = cleanString(entry.resolution, 120);
+  if (type === "ban_add") return "бан";
+  if (type === "ban_remove") return "разбан";
+  if (type === "timeout_add") return "таймаут";
+  if (type === "timeout_remove") return "таймаут снят";
+  if (type === "member_remove" && resolution === "kick_confirmed") return "кик";
+  if (type === "member_remove") return "ушёл";
+  return "модерация";
+}
+
+function renderDeadTransitionLines(movers = {}) {
+  const items = Array.isArray(movers?.deadTransitions) ? movers.deadTransitions : [];
+  return items.map((entry) => {
+    if (entry.deadTransition === "left_dead") {
+      return `↗ **${formatParticipant(entry)}** вышел из мертвецов: ${formatActivityRoleLabel(entry.fromAppliedRoleKey)} → ${formatActivityRoleLabel(entry.toAppliedRoleKey)}`;
+    }
+    if (entry.deadTransition === "became_dead") {
+      return `↘ **${formatParticipant(entry)}** стал мертвецом: ${formatActivityRoleLabel(entry.fromAppliedRoleKey)} → ${formatActivityRoleLabel(entry.toAppliedRoleKey)}`;
+    }
+    return null;
+  }).filter(Boolean);
+}
+
+function renderAntiteamSupportLines(upgrades = [], limit = 5) {
+  const items = (Array.isArray(upgrades) ? upgrades : []).slice(0, limit);
+  return items.map((entry) => (
+    `🛡️ **${formatParticipant(entry)}** апнул антитим: ${entry.fromLevel?.label || "без ранга"} → ${entry.toLevel?.label || "новый ранг"} · ${formatNumber(entry.fromPoints)} → ${formatNumber(entry.toPoints)}`
+  ));
+}
+
+function buildStrongChangeEntries(digest = {}, limit = 5) {
+  const entries = [];
+  for (const entry of Array.isArray(digest.publicEdition?.kills?.topUpgrades) ? digest.publicEdition.kills.topUpgrades : []) {
+    entries.push({
+      score: Math.max(1, Number(entry.delta) || 0),
+      line: `⚔️ **${formatParticipant(entry)}** · рост киллов ${formatSignedNumber(entry.delta)} (${formatNumber(entry.from)} → ${formatNumber(entry.to)})`,
+    });
+  }
+
+  const movers = digest.publicEdition?.activity?.movers;
+  for (const entry of Array.isArray(movers?.roleChanges) ? movers.roleChanges : []) {
+    if (Number(entry.roleRankDelta) <= 0) continue;
+    entries.push({
+      score: 160 + (Number(entry.roleRankDelta) * 30) + Math.max(0, Number(entry.delta) || 0),
+      line: `↗ **${formatParticipant(entry)}** · уровень активности ${formatActivityRoleLabel(entry.fromAppliedRoleKey)} → ${formatActivityRoleLabel(entry.toAppliedRoleKey)}`,
+    });
+  }
+
+  for (const entry of Array.isArray(movers?.deadTransitions) ? movers.deadTransitions : []) {
+    if (entry.deadTransition !== "left_dead") continue;
+    entries.push({
+      score: 220 + Math.max(0, Number(entry.delta) || 0),
+      line: `↗ **${formatParticipant(entry)}** · вышел из мертвецов`,
+    });
+  }
+
+  for (const entry of Array.isArray(digest.publicEdition?.antiteam?.upgrades) ? digest.publicEdition.antiteam.upgrades : []) {
+    entries.push({
+      score: 200 + (Number(entry.toLevel?.level) || 0) * 40 + (Number(entry.deltaPoints) || 0),
+      line: `🛡️ **${formatParticipant(entry)}** · антитим ${entry.fromLevel?.label || "без ранга"} → ${entry.toLevel?.label || "новый ранг"}`,
+    });
+  }
+
+  const shifts = digest.publicEdition?.tierlist?.shifts;
+  for (const entry of Array.isArray(shifts?.items) ? shifts.items : []) {
+    if (Number(entry.influenceDelta) <= 0 && !entry.mainChanged) continue;
+    entries.push({
+      score: 80 + Math.max(0, Number(entry.influenceDelta) || 0) * 30 + (entry.mainChanged ? 20 : 0),
+      line: `🧩 **${formatParticipant(entry)}** · тирлист ${entry.mainChanged ? `${entry.fromMainName || "—"} → ${entry.toMainName || "—"}` : `x${formatNumber(entry.fromInfluenceMultiplier)} → x${formatNumber(entry.toInfluenceMultiplier)}`}`,
+    });
+  }
+
+  return entries
+    .sort((left, right) => right.score - left.score || left.line.localeCompare(right.line, undefined, { sensitivity: "base" }))
+    .slice(0, limit)
+    .map((entry, index) => `${MEDALS[index] || `${index + 1}.`} ${entry.line}`);
+}
+
+function renderActivityScoreMoverLines(entries = [], direction = "up", limit = 5) {
+  const items = (Array.isArray(entries) ? entries : []).slice(0, limit);
+  const icon = direction === "down" ? "↘" : "↗";
+  return items.map((entry, index) => {
+    const medal = MEDALS[index] || `${index + 1}.`;
+    const roleLine = entry.roleChanged
+      ? ` · ${formatActivityRoleLabel(entry.fromAppliedRoleKey)} → ${formatActivityRoleLabel(entry.toAppliedRoleKey)}`
+      : "";
+    return `${medal} ${icon} **${formatParticipant(entry)}** · ${formatSignedNumber(entry.delta)} скор активности (${formatNumber(entry.fromScore)} → ${formatNumber(entry.toScore)})${roleLine}`;
   });
 }
 
@@ -309,7 +400,7 @@ function buildCoverSpec(digest = {}, config = {}) {
     visualMode: cleanString(presentation.visualMode, 40) || "edition",
     masthead: cleanString(presentation.masthead, 120) || "Daily Edition",
     title: `Выпуск дня · ${formatMoscowDate(digest.dayKey)}`,
-    subtitle: buildStoryLine(digest).replace(/\*\*/g, ""),
+    subtitle: (buildStoryLine(digest) || `Выпуск дня · ${formatMoscowDate(digest.dayKey)}`).replace(/\*\*/g, ""),
     accentColor,
     accentColorAlt,
     backgroundColor: cleanString(presentation.backgroundColor, 16) || "#101418",
@@ -334,40 +425,52 @@ function buildPublicEmbed(digest = {}, config = {}) {
   const maxVoiceSeconds = Math.max(1, topVoiceSeconds);
   const activityMoverLines = renderActivityMoverLines(digest.publicEdition?.activity?.movers, 1);
   const tierlistShiftLines = renderTierlistShiftLines(digest.publicEdition?.tierlist?.shifts, 2);
+  const storyLine = buildStoryLine(digest);
+  const descriptionLines = [
+    storyLine,
+    storyLine ? "" : null,
+    metrics.length ? SECTION_SEPARATOR : null,
+    metrics.length ? "**Акценты дня**" : null,
+    ...metrics,
+    `🕘 окно: **${formatMoscowWindow(digest.coverageWindow)}**`,
+    digest.coverage?.partial || digest.coverage?.ambiguous ? `📡 статус: **${getCoverageLabel(digest)}**` : null,
+  ].filter(Boolean);
+  const fields = [];
+  const pushField = (name, lines, inline = false) => {
+    const normalizedLines = (Array.isArray(lines) ? lines : []).filter((line) => cleanString(line, 500));
+    if (!normalizedLines.length) return;
+    fields.push(createEmbedField(name, normalizedLines, inline));
+  };
+
+  pushField("⚡ Сильные изменения", buildStrongChangeEntries(digest, 5));
+  pushField("⚔️ Киллы · апы", renderKillLines(digest.publicEdition?.kills?.topUpgrades, 5));
+  pushField("💬 Активность · топ сообщений", [
+    digest.publicEdition?.activity?.topMessageAuthors?.length ? makeBar("чат", topMessages, maxMessages) : null,
+    ...renderActivityLines(digest.publicEdition?.activity?.topMessageAuthors, 5),
+    ...activityMoverLines,
+  ].filter(Boolean));
+  pushField("🎮 JJS · топ игры", renderGameplayLines(digest.publicEdition?.gameplay?.topPlayers, 5));
+  pushField("👋 Новые и верификация", renderNewcomerLines(digest.publicEdition?.newcomers?.highlights, 6));
+  pushField("🎙️ Voice · лидеры эфира", [
+    digest.publicEdition?.voice?.topVisitors?.length ? makeBar("voice", topVoiceSeconds, maxVoiceSeconds) : null,
+    ...renderVoiceLines(digest.publicEdition?.voice?.topVisitors, 5),
+  ].filter(Boolean));
+  pushField("🛡️ Модерация", renderModerationLines(digest.publicEdition?.moderation?.highlights, 5));
+  pushField("🧩 Тирлист · обновления", [
+    ...renderTierlistLines(digest.publicEdition?.tierlist?.updates, 5),
+    ...tierlistShiftLines,
+  ]);
+  pushField("🛡️ Антитим · новые ранги", renderAntiteamSupportLines(digest.publicEdition?.antiteam?.upgrades, 5));
+  pushField("☠️ Мертвецы", renderDeadTransitionLines(digest.publicEdition?.activity?.movers));
+  if (digest.coverage?.partial || digest.coverage?.ambiguous) {
+    pushField("📡 Покрытие", renderCoverageLines(digest));
+  }
 
   return {
     title: `🗞️ ${cleanString(config.presentation?.masthead, 120) || "Daily Edition"} · ${formatMoscowDate(digest.dayKey)}`,
-    description: trimLines([
-      buildStoryLine(digest),
-      "",
-      SECTION_SEPARATOR,
-      "**Акценты дня**",
-      ...metrics,
-      `🕘 окно: **${formatMoscowWindow(digest.coverageWindow)}**`,
-      `📡 статус: **${getCoverageLabel(digest)}**`,
-    ], 4096),
+    description: trimLines(descriptionLines, 4096),
     color: accentColor || altColor,
-    fields: [
-      createEmbedField("⚔️ Киллы · резкие апы", renderKillLines(digest.publicEdition?.kills?.topUpgrades, 5)),
-      createEmbedField("💬 Активность · топ сообщений", [
-        makeBar("чат", topMessages, maxMessages),
-        ...renderActivityLines(digest.publicEdition?.activity?.topMessageAuthors, 5),
-        ...activityMoverLines,
-      ]),
-      createEmbedField("🎮 JJS · топ игры", renderGameplayLines(digest.publicEdition?.gameplay?.topPlayers, 5)),
-      createEmbedField("🆕 Новички · входы и верификации", renderNewcomerLines(digest.publicEdition?.newcomers?.highlights, 6)),
-      createEmbedField("🎙️ Voice · лидеры эфира", [
-        makeBar("voice", topVoiceSeconds, maxVoiceSeconds),
-        ...renderVoiceLines(digest.publicEdition?.voice?.topVisitors, 5),
-      ]),
-      createEmbedField("🛡️ Модерация · highlights", renderModerationLines(digest.publicEdition?.moderation?.highlights, 5)),
-      createEmbedField("🧩 Тирлист · обновления", [
-        ...renderTierlistLines(digest.publicEdition?.tierlist?.updates, 5),
-        ...tierlistShiftLines,
-        digest.publicEdition?.tierlist?.shifts?.available === false ? `↳ shifts: ${digest.publicEdition.tierlist.shifts.reason}` : null,
-      ].filter(Boolean)),
-      createEmbedField("📡 Покрытие", renderCoverageLines(digest)),
-    ],
+    fields,
     footer: {
       text: `Дайджест дня · ${digest.coverageWindow?.timeZone || "Europe/Moscow"} · ${getCoverageLabel(digest)}`,
     },
@@ -388,6 +491,7 @@ function buildPublicThreadMessages(digest = {}) {
         SECTION_SEPARATOR,
         voiceLine,
       ], 3900),
+      allowedMentions: { parse: [] },
     });
   }
 
@@ -395,10 +499,36 @@ function buildPublicThreadMessages(digest = {}) {
   if (allUpgrades.length > 5) {
     messages.push({
       content: trimLines([
-        `⚔️ **Все подтверждённые резкие апы · ${formatMoscowDate(digest.dayKey)}**`,
+        `⚔️ **Все апы киллов · ${formatMoscowDate(digest.dayKey)}**`,
         SECTION_SEPARATOR,
         ...renderKillLines(allUpgrades, 20),
       ], 3900),
+      allowedMentions: { parse: [] },
+    });
+  }
+
+  const activityMovers = digest.publicEdition?.activity?.movers || {};
+  const activityUpLines = renderActivityScoreMoverLines(activityMovers.up, "up", 5);
+  if (activityUpLines.length) {
+    messages.push({
+      content: trimLines([
+        `↗ **Топ роста активности · ${formatMoscowDate(digest.dayKey)}**`,
+        SECTION_SEPARATOR,
+        ...activityUpLines,
+      ], 3900),
+      allowedMentions: { parse: [] },
+    });
+  }
+
+  const activityDownLines = renderActivityScoreMoverLines(activityMovers.down, "down", 5);
+  if (activityDownLines.length) {
+    messages.push({
+      content: trimLines([
+        `↘ **Топ падения активности · ${formatMoscowDate(digest.dayKey)}**`,
+        SECTION_SEPARATOR,
+        ...activityDownLines,
+      ], 3900),
+      allowedMentions: { parse: [] },
     });
   }
 
@@ -411,6 +541,7 @@ function buildPublicThreadMessages(digest = {}) {
         SECTION_SEPARATOR,
         ...renderActivityLines(publicActivityAuthors, 20),
       ], 3900),
+      allowedMentions: { parse: [] },
     });
   }
 
@@ -422,6 +553,7 @@ function buildPublicThreadMessages(digest = {}) {
         SECTION_SEPARATOR,
         ...renderGameplayLines(gameplayItems, 20),
       ], 3900),
+      allowedMentions: { parse: [] },
     });
   }
 
@@ -578,6 +710,8 @@ function renderDailyNewsIssue({ digest = {}, config = {} } = {}) {
   const publicEmbed = buildPublicEmbed(digest, config);
   const staffEmbed = buildStaffEmbed(digest, config);
   const publicThreadMessages = buildPublicThreadMessages(digest);
+  const storyLine = buildStoryLine(digest);
+  const heroMetrics = buildHeroMetrics(digest);
 
   return {
     dayKey: cleanString(digest.dayKey, 40),
@@ -585,10 +719,10 @@ function renderDailyNewsIssue({ digest = {}, config = {} } = {}) {
     publicMessage: {
       content: trimLines([
         `# 🗞️ ${masthead} · ${formatMoscowDate(digest.dayKey)}`,
-        `> ${buildStoryLine(digest)}`,
-        SECTION_SEPARATOR,
-        buildHeroMetrics(digest).join("  •  "),
-      ], 1900),
+        storyLine ? `> ${storyLine}` : null,
+        heroMetrics.length ? SECTION_SEPARATOR : null,
+        heroMetrics.length ? heroMetrics.join("  •  ") : null,
+      ].filter(Boolean), 1900),
       embeds: [publicEmbed],
       allowedMentions: { parse: [] },
     },
@@ -614,6 +748,7 @@ function renderDailyNewsIssue({ digest = {}, config = {} } = {}) {
         || digest.publicEdition?.tierlist?.enabled
         || digest.publicEdition?.voice?.enabled
         || digest.publicEdition?.moderation?.enabled
+        || digest.publicEdition?.antiteam?.enabled
       ),
     },
   };

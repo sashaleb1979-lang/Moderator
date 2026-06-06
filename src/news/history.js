@@ -87,6 +87,14 @@ function resolveTierlistDomain(profile = {}) {
       : {};
 }
 
+function resolveSupportDomain(profile = {}) {
+  return profile?.domains?.support && typeof profile.domains.support === "object"
+    ? profile.domains.support
+    : profile?.summary?.support && typeof profile.summary.support === "object"
+      ? profile.summary.support
+      : {};
+}
+
 function buildDailyNewsProfileHistorySnapshot({ db = {} } = {}) {
   const profiles = db.profiles && typeof db.profiles === "object" && !Array.isArray(db.profiles)
     ? db.profiles
@@ -100,12 +108,17 @@ function buildDailyNewsProfileHistorySnapshot({ db = {} } = {}) {
 
     const activity = resolveActivityDomain(profile);
     const tierlist = resolveTierlistDomain(profile);
+    const support = resolveSupportDomain(profile);
+    const antiteam = support?.antiteam && typeof support.antiteam === "object" && !Array.isArray(support.antiteam)
+      ? support.antiteam
+      : {};
     const activityScore = normalizeNullableInteger(activity?.activityScore);
     const appliedActivityRoleKey = cleanString(activity?.appliedActivityRoleKey, 80) || null;
     const desiredActivityRoleKey = cleanString(activity?.desiredActivityRoleKey, 80) || null;
     const tierlistMainId = cleanString(tierlist?.mainId, 80) || null;
     const tierlistMainName = cleanString(tierlist?.mainName, 120) || null;
     const tierlistInfluenceMultiplier = normalizePositiveNumber(tierlist?.influenceMultiplier, 1);
+    const antiteamSupportPoints = normalizeNullableInteger(antiteam?.confirmedArrived);
 
     if (
       activityScore === null
@@ -114,6 +127,7 @@ function buildDailyNewsProfileHistorySnapshot({ db = {} } = {}) {
       && !tierlistMainId
       && !tierlistMainName
       && tierlistInfluenceMultiplier === 1
+      && antiteamSupportPoints === null
     ) {
       continue;
     }
@@ -127,6 +141,7 @@ function buildDailyNewsProfileHistorySnapshot({ db = {} } = {}) {
       tierlistMainId,
       tierlistMainName,
       tierlistInfluenceMultiplier,
+      antiteamSupportPoints,
     };
   }
 

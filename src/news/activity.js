@@ -94,6 +94,25 @@ function compareActivityMovers(left, right) {
     || compareText(left.displayName, right.displayName);
 }
 
+const ACTIVITY_ROLE_ORDER = Object.freeze({
+  dead: 0,
+  weak: 1,
+  floating: 2,
+  active: 3,
+  stable: 4,
+  core: 5,
+});
+
+function normalizeActivityRoleKey(value = "") {
+  const key = cleanString(value, 80);
+  return Object.prototype.hasOwnProperty.call(ACTIVITY_ROLE_ORDER, key) ? key : null;
+}
+
+function getActivityRoleRank(roleKey = "") {
+  const normalized = normalizeActivityRoleKey(roleKey);
+  return normalized === null ? null : ACTIVITY_ROLE_ORDER[normalized];
+}
+
 function collectActivityMovers({ db = {}, window = {}, config = {} } = {}) {
   const dayKey = cleanString(window.dayKey, 40);
   const baselineDayKey = shiftMoscowDayKey(dayKey, -1);
@@ -116,6 +135,8 @@ function collectActivityMovers({ db = {}, window = {}, config = {} } = {}) {
     ...Object.keys(currentSnapshot || {}),
   ], 80);
   const movers = [];
+  const roleChanges = [];
+  const deadTransitions = [];
   let comparedUserCount = 0;
 
   for (const userId of userIds) {
@@ -128,9 +149,19 @@ function collectActivityMovers({ db = {}, window = {}, config = {} } = {}) {
     comparedUserCount += 1;
     const delta = currentScore - previousScore;
     if (delta === 0) continue;
-    const previousRoleKey = cleanString(previous?.appliedActivityRoleKey, 80) || null;
-    const currentRoleKey = cleanString(current?.appliedActivityRoleKey, 80) || null;
-    movers.push({
+    const previousRoleKey = cleanString(previous?.appliedActivityRoleKey, 80)
+      || cleanString(previous?.desiredActivityRoleKey, 80)
+      || null;
+    const currentRoleKey = cleanString(current?.appliedActivityRoleKey, 80)
+      || cleanString(current?.desiredActivityRoleKey, 80)
+      || null;
+    const previousRank = getActivityRoleRank(previousRoleKey);
+    const currentRank = getActivityRoleRank(currentRoleKey);
+    const roleChanged = previousRoleKey !== currentRoleKey && previousRoleKey !== null && currentRoleKey !== null;
+    const roleRankDelta = roleChanged && previousRank !== null && currentRank !== null
+      ? currentRank - previousRank
+      : 0;
+    const entry = {
       userId,
       displayName: cleanString(current?.displayName, 120) || cleanString(previous?.displayName, 120) || userId,
       delta,
@@ -138,13 +169,25 @@ function collectActivityMovers({ db = {}, window = {}, config = {} } = {}) {
       toScore: currentScore,
       fromAppliedRoleKey: previousRoleKey,
       toAppliedRoleKey: currentRoleKey,
-      roleChanged: previousRoleKey !== currentRoleKey,
-    });
+      roleChanged,
+      roleRankDelta,
+      deadTransition: previousRoleKey === "dead" && currentRoleKey !== "dead"
+        ? "left_dead"
+        : previousRoleKey !== "dead" && currentRoleKey === "dead"
+          ? "became_dead"
+          : null,
+    };
+    movers.push(entry);
+    if (roleChanged) roleChanges.push(entry);
+    if (entry.deadTransition) deadTransitions.push(entry);
   }
 
-  const topMoversCount = Math.max(1, Number(config?.activity?.topMoversCount) || 3);
+  const topMoversCount = Math.max(1, Number(config?.activity?.topMoversCount) || 5);
   const rising = movers.filter((entry) => entry.delta > 0).sort(compareActivityMovers).slice(0, topMoversCount);
   const falling = movers.filter((entry) => entry.delta < 0).sort(compareActivityMovers).slice(0, topMoversCount);
+  const compareRoleChanges = (left, right) => Math.abs(right.roleRankDelta) - Math.abs(left.roleRankDelta)
+    || Math.abs(right.delta) - Math.abs(left.delta)
+    || compareText(left.displayName, right.displayName);
 
   return {
     available: true,
@@ -154,6 +197,8 @@ function collectActivityMovers({ db = {}, window = {}, config = {} } = {}) {
     changedUserCount: movers.length,
     up: rising,
     down: falling,
+    roleChanges: roleChanges.sort(compareRoleChanges).slice(0, topMoversCount),
+    deadTransitions: deadTransitions.sort(compareRoleChanges).slice(0, topMoversCount),
   };
 }
 

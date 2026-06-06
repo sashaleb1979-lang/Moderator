@@ -403,7 +403,7 @@ test("runDailyNewsReleaseTick publishes prepared historical queue items before r
   assert.equal(result.published, true);
   assert.equal(result.publishSkipped, false);
   assert.equal(publishCalls.length, 1);
-  assert.equal(publishCalls[0].force, true);
+  assert.equal(publishCalls[0].force, false);
   assert.equal(publishCalls[0].digest.stamp, "prepared");
   assert.deepEqual(db.sot.news.runtime.releaseQueue.dayKeys, ["2026-05-21"]);
   assert.equal(db.sot.news.runtime.releaseQueue.active, true);
@@ -520,4 +520,100 @@ test("runDailyNewsReleaseTick keeps the historical queue item when publish is sk
   assert.equal(db.sot.news.runtime.releaseQueue.active, true);
   assert.equal(db.sot.news.runtime.releaseQueue.lastReleasedDayKey, null);
   assert.equal(db.sot.news.runtime.releaseQueue.lastReleasedAt, null);
+});
+
+test("runDailyNewsReleaseTick skips already published historical queue items without duplicating", async () => {
+  let publishCalled = false;
+  const db = {
+    sot: {
+      news: {
+        config: {
+          channels: {
+            publicChannelId: "public-room",
+          },
+        },
+        dailyDigests: {
+          "2026-05-20": {
+            dayKey: "2026-05-20",
+            publish: {
+              publishMode: "public",
+              publicMessageId: "public-old",
+            },
+          },
+        },
+        runtime: {
+          releaseQueue: {
+            active: true,
+            dayKeys: ["2026-05-20", "2026-05-21"],
+          },
+        },
+      },
+    },
+  };
+
+  const result = await runDailyNewsReleaseTick({
+    db,
+    now: "2026-05-23T10:00:00.000Z",
+    compileDailyNewsDigestFn() {
+      throw new Error("already published queue item should not compile");
+    },
+    publishDailyNewsIssueFn() {
+      publishCalled = true;
+      throw new Error("already published queue item should not publish");
+    },
+  });
+
+  assert.equal(publishCalled, false);
+  assert.equal(result.releaseMode, "history_queue");
+  assert.equal(result.dayKey, "2026-05-20");
+  assert.equal(result.published, false);
+  assert.equal(result.publishSkipped, true);
+  assert.equal(result.publishReason, "already_published");
+  assert.deepEqual(db.sot.news.runtime.releaseQueue.dayKeys, ["2026-05-21"]);
+  assert.equal(db.sot.news.runtime.releaseQueue.lastReleasedDayKey, "2026-05-20");
+});
+
+test("runDailyNewsReleaseTick keeps historical queue item when publish throws", async () => {
+  const db = {
+    sot: {
+      news: {
+        config: {
+          channels: {
+            publicChannelId: "public-room",
+          },
+        },
+        dailyDigests: {
+          "2026-05-20": {
+            dayKey: "2026-05-20",
+            stamp: "prepared",
+          },
+        },
+        runtime: {
+          releaseQueue: {
+            active: true,
+            dayKeys: ["2026-05-20", "2026-05-21"],
+          },
+        },
+      },
+    },
+  };
+
+  const result = await runDailyNewsReleaseTick({
+    db,
+    now: "2026-05-23T10:00:00.000Z",
+    compileDailyNewsDigestFn() {
+      throw new Error("prepared queue should not recompile");
+    },
+    publishDailyNewsIssueFn() {
+      throw new Error("send failed");
+    },
+  });
+
+  assert.equal(result.releaseMode, "history_queue");
+  assert.equal(result.dayKey, "2026-05-20");
+  assert.equal(result.publishFailed, true);
+  assert.equal(result.publishReason, "publish_failed");
+  assert.deepEqual(db.sot.news.runtime.releaseQueue.dayKeys, ["2026-05-20", "2026-05-21"]);
+  assert.equal(db.sot.news.runtime.releaseQueue.active, true);
+  assert.match(db.sot.news.runtime.lastFailure.message, /send failed/);
 });

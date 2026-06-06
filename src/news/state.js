@@ -139,8 +139,11 @@ function createDefaultNewsConfig() {
     },
     activity: {
       topMessagesCount: 5,
-      topMoversCount: 3,
+      topMoversCount: 5,
       includeMessageLeaderboard: true,
+    },
+    antiteam: {
+      topCount: 5,
     },
     newcomers: {
       topCount: 8,
@@ -202,6 +205,9 @@ function normalizeNewsConfig(value = {}) {
       topMessagesCount: normalizePositiveInteger(source.activity?.topMessagesCount, defaults.activity.topMessagesCount),
       topMoversCount: normalizePositiveInteger(source.activity?.topMoversCount, defaults.activity.topMoversCount),
       includeMessageLeaderboard: normalizeBoolean(source.activity?.includeMessageLeaderboard, defaults.activity.includeMessageLeaderboard),
+    },
+    antiteam: {
+      topCount: normalizePositiveInteger(source.antiteam?.topCount, defaults.antiteam.topCount),
     },
     newcomers: {
       topCount: normalizePositiveInteger(source.newcomers?.topCount, defaults.newcomers.topCount),

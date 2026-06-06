@@ -76,8 +76,11 @@ test("publishDailyNewsIssue sends public thread and staff payload once per day",
   assert.equal(publicChannel.sent.length, 1);
   assert.equal(publicChannel.sent[0].payload.files[0].name, "daily-news-2026-05-14.png");
   assert.equal(publicChannel.sent[0].payload.embeds[0].image.url, "attachment://daily-news-2026-05-14.png");
+  assert.deepEqual(publicChannel.sent[0].payload.allowedMentions, { parse: [] });
   assert.equal(publicChannel.sent[0].threadMessages.length, 1);
+  assert.deepEqual(publicChannel.sent[0].threadMessages[0].allowedMentions, { parse: [] });
   assert.equal(staffChannel.sent.length, 1);
+  assert.deepEqual(staffChannel.sent[0].payload.allowedMentions, { parse: [] });
   assert.equal(db.sot.news.runtime.lastPublishStatus, "published");
   assert.equal(db.sot.news.runtime.lastPublishedDayKey, "2026-05-14");
   assert.equal(db.sot.news.runtime.lastPublishResult.publicMessageId, "public-message-1");

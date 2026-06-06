@@ -2,6 +2,7 @@
 
 const { ensureNewsState } = require("./state");
 const { collectActivityDigest } = require("./activity");
+const { collectAntiteamSupportDigest } = require("./antiteam");
 const { collectGameplayDigest } = require("./gameplay");
 const {
   buildDailyNewsProfileHistorySnapshot,
@@ -513,7 +514,7 @@ function collectModerationDigest(state, window) {
   };
 }
 
-function createAuditSummary({ voiceDigest, moderationDigest, killDigest, activityDigest, newcomerDigest, gameplayDigest, tierlistDigest }, auditCandidates) {
+function createAuditSummary({ voiceDigest, moderationDigest, killDigest, activityDigest, newcomerDigest, gameplayDigest, tierlistDigest, antiteamDigest }, auditCandidates) {
   return {
     rawCandidateCounts: {
       voiceSessions: voiceDigest.candidateBuckets.length,
@@ -523,6 +524,7 @@ function createAuditSummary({ voiceDigest, moderationDigest, killDigest, activit
       newcomerEvents: newcomerDigest.candidateBuckets.length,
       gameplayPlayers: gameplayDigest.candidateBuckets.length,
       tierlistUpdates: tierlistDigest.candidateBuckets.length,
+      antiteamSupport: antiteamDigest.candidateBuckets.length,
       total: auditCandidates.length,
     },
     emittedCounts: {
@@ -535,6 +537,7 @@ function createAuditSummary({ voiceDigest, moderationDigest, killDigest, activit
       publicNewcomerHighlights: newcomerDigest.highlights.length,
       publicGameplayPlayers: gameplayDigest.topPlayers.length,
       publicTierlistUpdates: tierlistDigest.updates.length,
+      publicAntiteamSupportUpgrades: antiteamDigest.upgrades.length,
     },
     ambiguousSourceCount: auditCandidates.filter((candidate) => candidate.bucket === "ambiguous_source").length,
     bucketCounts: countAuditBuckets(auditCandidates),
@@ -565,6 +568,7 @@ function compileDailyNewsDigest({ db = {}, targetDayKey = "", now, saveDb, windo
     const newcomers = collectNewcomerDigest({ db, window, config: state.config });
     const gameplay = collectGameplayDigest({ db, window, config: state.config });
     const tierlist = collectTierlistDigest({ db, window, config: state.config });
+    const antiteam = collectAntiteamSupportDigest({ db, window, config: state.config });
     const auditCandidates = [
       ...voice.candidateBuckets,
       ...moderation.candidateBuckets,
@@ -573,6 +577,7 @@ function compileDailyNewsDigest({ db = {}, targetDayKey = "", now, saveDb, windo
       ...newcomers.candidateBuckets,
       ...gameplay.candidateBuckets,
       ...tierlist.candidateBuckets,
+      ...antiteam.candidateBuckets,
     ];
     const coverageReasons = uniqueStrings([
       ...voice.partialReasons,
@@ -581,6 +586,7 @@ function compileDailyNewsDigest({ db = {}, targetDayKey = "", now, saveDb, windo
       ...newcomers.partialReasons,
       ...gameplay.partialReasons,
       ...tierlist.partialReasons,
+      ...antiteam.partialReasons,
       ...(moderation.ambiguousCount > 0 ? ["ambiguous_moderation"] : []),
     ], 120);
 
@@ -603,8 +609,9 @@ function compileDailyNewsDigest({ db = {}, targetDayKey = "", now, saveDb, windo
       newcomers,
       gameplay,
       tierlist,
+      antiteam,
       coverage: {
-        partial: voice.partial || kills.partial || activity.partial || newcomers.partial || gameplay.partial || tierlist.partial,
+        partial: voice.partial || kills.partial || activity.partial || newcomers.partial || gameplay.partial || tierlist.partial || antiteam.partial,
         ambiguous: moderation.ambiguousCount > 0 || activity.impreciseRowCount > 0 || gameplay.ambiguousDailyBucketCount > 0,
         reasons: coverageReasons,
       },
@@ -616,6 +623,7 @@ function compileDailyNewsDigest({ db = {}, targetDayKey = "", now, saveDb, windo
         newcomerDigest: newcomers,
         gameplayDigest: gameplay,
         tierlistDigest: tierlist,
+        antiteamDigest: antiteam,
       }, auditCandidates),
       publicEdition: {
         voice: {
@@ -635,7 +643,7 @@ function compileDailyNewsDigest({ db = {}, targetDayKey = "", now, saveDb, windo
           upgradeCount: kills.upgradeCount,
         },
         activity: {
-          enabled: activity.topMessageAuthors.length > 0,
+          enabled: activity.topMessageAuthors.length > 0 || Number(activity.movers?.changedUserCount || 0) > 0,
           topMessageAuthors: clone(activity.topMessageAuthors),
           activeUserCount: activity.activeUserCount,
           totalMessagesCount: activity.totalMessagesCount,
@@ -655,9 +663,13 @@ function compileDailyNewsDigest({ db = {}, targetDayKey = "", now, saveDb, windo
           totalPreciseMinutes: gameplay.totalPreciseMinutes,
         },
         tierlist: {
-          enabled: tierlist.updates.length > 0,
+          enabled: tierlist.updates.length > 0 || Number(tierlist.shifts?.totalShiftCount || 0) > 0,
           updates: clone(tierlist.updates),
           shifts: clone(tierlist.shifts),
+        },
+        antiteam: {
+          enabled: antiteam.upgrades.length > 0,
+          upgrades: clone(antiteam.upgrades),
         },
       },
       staffDigest: {
@@ -702,6 +714,11 @@ function compileDailyNewsDigest({ db = {}, targetDayKey = "", now, saveDb, windo
           updates: clone(tierlist.updates),
           items: clone(tierlist.staffItems),
           shifts: clone(tierlist.shifts),
+        },
+        antiteam: {
+          upgrades: clone(antiteam.upgrades),
+          available: antiteam.available,
+          reason: antiteam.reason,
         },
       },
     };
