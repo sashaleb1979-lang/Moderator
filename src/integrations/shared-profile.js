@@ -301,10 +301,14 @@ function normalizeVerificationDomainState(value = {}) {
     observedGuilds: normalizeVerificationObservedGuilds(source.observedGuilds),
     observedGuildIds: normalizeStringArray(source.observedGuildIds, 20, 80),
     observedGuildNames: normalizeStringArray(source.observedGuildNames, 20, 120),
+    observedFriendIds: normalizeStringArray(source.observedFriendIds, 50, 80),
     matchedEnemyGuildIds: normalizeStringArray(source.matchedEnemyGuildIds, 20, 80),
     matchedEnemyUserIds: normalizeStringArray(source.matchedEnemyUserIds, 20, 80),
+    matchedEnemyFriendIds: normalizeStringArray(source.matchedEnemyFriendIds, 20, 80),
     matchedEnemyInviteCodes: normalizeStringArray(source.matchedEnemyInviteCodes, 20, 80),
     matchedEnemyInviterUserIds: normalizeStringArray(source.matchedEnemyInviterUserIds, 20, 80),
+    suspiciousSignals: normalizeStringArray(source.suspiciousSignals, 20, 120),
+    accountAgeDays: normalizeNullableInteger(source.accountAgeDays, { min: 0 }),
   };
 }
 
@@ -1985,6 +1989,7 @@ function buildSharedProfileSummary(profile = {}, domains = {}) {
   const frequentNonFriendCount = roblox.coPlay.peers.filter((entry) => isFrequentRobloxNonFriendPeer(entry)).length;
   const topCoPlayPeers = buildRobloxTopCoPlayPeers(roblox.coPlay.peers);
   const observedGuildCount = verification.observedGuilds.length || verification.observedGuildIds.length;
+  const observedFriendCount = verification.observedFriendIds.length;
   const lastRenameSeenAt = getLatestTimestamp([
     getRobloxLastRenameSeenAt(roblox.username, roblox.usernameHistory),
     getRobloxLastRenameSeenAt(roblox.displayName, roblox.displayNameHistory),
@@ -2142,10 +2147,14 @@ function buildSharedProfileSummary(profile = {}, domains = {}) {
       oauthUsername: verification.oauthUsername,
       oauthAvatarUrl: verification.oauthAvatarUrl,
       observedGuildCount,
+      observedFriendCount,
       matchedEnemyGuildCount: verification.matchedEnemyGuildIds.length,
       matchedEnemyUserCount: verification.matchedEnemyUserIds.length,
+      matchedEnemyFriendCount: verification.matchedEnemyFriendIds.length,
       matchedEnemyInviteCount: verification.matchedEnemyInviteCodes.length,
       matchedEnemyInviterCount: verification.matchedEnemyInviterUserIds.length,
+      suspiciousSignalCount: verification.suspiciousSignals.length,
+      accountAgeDays: verification.accountAgeDays,
       manualTagCount: 0,
     },
     progress: {

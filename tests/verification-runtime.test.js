@@ -137,7 +137,26 @@ test("evaluateVerificationRisk forces manual review when Discord OAuth returns n
   assert.equal(result.requiresManualReview, true);
 });
 
-test("createVerificationCallbackHandler sends clean OAuth result to moderator review", async () => {
+test("evaluateVerificationRisk includes friend matches and suspicious account signals", () => {
+  const result = evaluateVerificationRisk({
+    oauthUser: { id: "175928847299117063" },
+    oauthGuilds: [{ id: "safe-guild", name: "Safe Guild" }],
+    oauthFriends: [{ id: "friend-1" }, { user: { id: "friend-2", username: "ally" } }],
+    riskRules: {
+      enemyFriendUserIds: ["friend-2"],
+      suspiciousAccountUserIds: ["175928847299117063"],
+      suspiciousOldAccountDays: 1,
+    },
+  });
+
+  assert.deepEqual(result.observedFriendIds, ["friend-1", "friend-2"]);
+  assert.deepEqual(result.matchedEnemyFriendIds, ["friend-2"]);
+  assert.equal(result.suspiciousSignals.includes("manual_suspicious_account_match"), true);
+  assert.equal(result.suspiciousSignals.includes("old_discord_account"), true);
+  assert.equal(result.requiresManualReview, true);
+});
+
+test("createVerificationCallbackHandler auto-approves clean OAuth result", async () => {
   const approvals = [];
   const manualReviews = [];
   const failures = [];
@@ -180,14 +199,56 @@ test("createVerificationCallbackHandler sends clean OAuth result to moderator re
 
   assert.equal(handled, true);
   assert.equal(response.statusCode, 200);
-  assert.equal(approvals.length, 0);
-  assert.equal(manualReviews.length, 1);
-  assert.equal(manualReviews[0].oauthUser.username, "discord-user");
-  assert.equal(manualReviews[0].risk.requiresManualReview, false);
+  assert.equal(approvals.length, 1);
+  assert.equal(approvals[0].oauthUser.username, "discord-user");
+  assert.equal(approvals[0].risk.requiresManualReview, false);
+  assert.equal(manualReviews.length, 0);
   assert.equal(failures.length, 0);
-  assert.equal(response.body.includes("Проверка завершена"), false);
-  assert.match(response.body, /Кейс отправлен модераторам/);
-  assert.match(response.body, /доступ выдаётся только после их решения/);
+  assert.match(response.body, /Проверка завершена/);
+  assert.match(response.body, /доступ будет выдан автоматически/);
+});
+
+test("createVerificationCallbackHandler treats already-consumed state as idempotent success", async () => {
+  const approvals = [];
+  const manualReviews = [];
+  const failures = [];
+  const handler = createVerificationCallbackHandler({
+    config: {
+      integration: {
+        enabled: true,
+        callbackBaseUrl: "https://verify.example.com/oauth/discord/callback",
+      },
+      env: {
+        DISCORD_OAUTH_CLIENT_ID: "client-id",
+        DISCORD_OAUTH_CLIENT_SECRET: "secret",
+        DISCORD_OAUTH_REDIRECT_URI: "https://verify.example.com/oauth/discord/callback",
+      },
+    },
+    consumeState: () => ({
+      userId: "user-1",
+      alreadyConsumed: true,
+      riskRules: {},
+    }),
+    onApproved: async (payload) => {
+      approvals.push(payload);
+    },
+    onManualReview: async (payload) => {
+      manualReviews.push(payload);
+    },
+    onFailure: async (payload) => {
+      failures.push(payload);
+    },
+  });
+
+  const response = createResponseRecorder();
+  const handled = await handler({ method: "GET", url: "/oauth/discord/callback?state=good-state&code=oauth-code" }, response);
+
+  assert.equal(handled, true);
+  assert.equal(response.statusCode, 200);
+  assert.equal(approvals.length, 0);
+  assert.equal(manualReviews.length, 0);
+  assert.equal(failures.length, 0);
+  assert.match(response.body, /Проверка уже обработана/);
 });
 
 test("createVerificationCallbackHandler routes risky OAuth result into manual review", async () => {

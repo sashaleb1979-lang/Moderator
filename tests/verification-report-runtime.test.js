@@ -77,7 +77,7 @@ function loadRunVerificationDeadlineSweep() {
 function loadHandleVerificationEntryStartInteraction() {
   const source = fs.readFileSync(path.join(__dirname, "..", "welcome-bot.js"), "utf8");
   const startToken = "async function handleVerificationEntryStartInteraction(client, interaction) {";
-  const endToken = "\nasync function buildVerificationPanelReply(view = \"home\", statusText = \"\", includeFlags = true) {";
+  const endToken = "\nasync function startAnalyticsRuntime(client) {";
   const startIndex = source.indexOf(startToken);
   const endIndex = source.indexOf(endToken, startIndex);
 

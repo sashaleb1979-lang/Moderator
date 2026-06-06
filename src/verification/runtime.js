@@ -79,7 +79,7 @@ function buildDiscordOAuthAuthorizeUrl(options = {}) {
   url.searchParams.set("response_type", "code");
   url.searchParams.set("redirect_uri", config.redirectUri);
   url.searchParams.set("scope", config.scopes.join(" "));
-  url.searchParams.set("prompt", "none");
+  url.searchParams.set("prompt", "consent");
   url.searchParams.set("state", state);
   return url.toString();
 }
@@ -94,10 +94,34 @@ function normalizeOauthGuildRecord(value = {}) {
   };
 }
 
+function normalizeOauthFriendRecord(value = {}) {
+  const source = value && typeof value === "object" ? value : {};
+  const user = source.user && typeof source.user === "object" ? source.user : source;
+  return {
+    id: cleanString(user.id || source.id, 80),
+    username: cleanString(user.username || source.username || user.global_name || source.global_name, 120),
+  };
+}
+
+function parseDiscordSnowflakeTimestamp(snowflake) {
+  const text = cleanString(snowflake, 80);
+  if (!/^\d{10,30}$/.test(text)) return null;
+  try {
+    const value = BigInt(text);
+    const discordEpochMs = 1420070400000n;
+    const timestampMs = (value >> 22n) + discordEpochMs;
+    const asNumber = Number(timestampMs);
+    return Number.isFinite(asNumber) ? asNumber : null;
+  } catch {
+    return null;
+  }
+}
+
 function evaluateVerificationRisk(options = {}) {
   const source = options && typeof options === "object" && !Array.isArray(options) ? options : {};
   const oauthUser = source.oauthUser && typeof source.oauthUser === "object" ? source.oauthUser : {};
   const oauthGuilds = Array.isArray(source.oauthGuilds) ? source.oauthGuilds : [];
+  const oauthFriends = Array.isArray(source.oauthFriends) ? source.oauthFriends : [];
   const riskRules = source.riskRules && typeof source.riskRules === "object" && !Array.isArray(source.riskRules)
     ? source.riskRules
     : {};
@@ -106,9 +130,15 @@ function evaluateVerificationRisk(options = {}) {
   const enemyUserIds = new Set(normalizeStringArray(riskRules.enemyUserIds, 200, 80));
   const enemyInviteCodes = normalizeStringArray(riskRules.enemyInviteCodes, 200, 80);
   const enemyInviterUserIds = normalizeStringArray(riskRules.enemyInviterUserIds, 200, 80);
+  const enemyFriendUserIds = new Set(normalizeStringArray(riskRules.enemyFriendUserIds, 200, 80));
+  const suspiciousAccountUserIds = new Set(normalizeStringArray(riskRules.suspiciousAccountUserIds, 200, 80));
+  const suspiciousOldAccountDays = Math.max(0, Number(riskRules.suspiciousOldAccountDays) || 0);
 
   const observedGuilds = oauthGuilds
     .map((entry) => normalizeOauthGuildRecord(entry))
+    .filter((entry) => entry.id);
+  const observedFriends = oauthFriends
+    .map((entry) => normalizeOauthFriendRecord(entry))
     .filter((entry) => entry.id);
   const matchedEnemyGuildIds = observedGuilds
     .map((entry) => entry.id)
@@ -116,17 +146,48 @@ function evaluateVerificationRisk(options = {}) {
   const matchedEnemyUserIds = enemyUserIds.has(cleanString(oauthUser.id, 80))
     ? [cleanString(oauthUser.id, 80)]
     : [];
+  const matchedEnemyFriendIds = observedFriends
+    .map((entry) => entry.id)
+    .filter((userId) => enemyFriendUserIds.has(userId));
+
+  const suspiciousSignals = [];
+  const oauthUserId = cleanString(oauthUser.id, 80);
+  if (oauthUserId && suspiciousAccountUserIds.has(oauthUserId)) {
+    suspiciousSignals.push("manual_suspicious_account_match");
+  }
+
+  const createdAtMs = parseDiscordSnowflakeTimestamp(oauthUserId);
+  const accountAgeDays = Number.isFinite(createdAtMs)
+    ? Math.max(0, Math.floor((Date.now() - createdAtMs) / (24 * 60 * 60 * 1000)))
+    : null;
+  if (suspiciousOldAccountDays > 0 && Number.isFinite(accountAgeDays) && accountAgeDays >= suspiciousOldAccountDays) {
+    suspiciousSignals.push("old_discord_account");
+    if (observedGuilds.length <= 1) {
+      suspiciousSignals.push("old_account_low_oauth_footprint");
+    }
+  }
 
   return {
     observedGuilds,
     observedGuildIds: observedGuilds.map((entry) => entry.id),
     observedGuildNames: observedGuilds.map((entry) => entry.name).filter(Boolean),
+    observedFriends,
+    observedFriendIds: observedFriends.map((entry) => entry.id),
     matchedEnemyGuildIds,
     matchedEnemyUserIds,
+    matchedEnemyFriendIds,
     matchedEnemyInviteCodes: enemyInviteCodes,
     matchedEnemyInviterUserIds: enemyInviterUserIds,
+    suspiciousSignals,
+    accountAgeDays: Number.isFinite(accountAgeDays) ? accountAgeDays : null,
     missingObservedGuilds: observedGuilds.length === 0,
-    requiresManualReview: observedGuilds.length === 0 || matchedEnemyGuildIds.length > 0 || matchedEnemyUserIds.length > 0 || enemyInviteCodes.length > 0 || enemyInviterUserIds.length > 0,
+    requiresManualReview: observedGuilds.length === 0
+      || matchedEnemyGuildIds.length > 0
+      || matchedEnemyUserIds.length > 0
+      || matchedEnemyFriendIds.length > 0
+      || enemyInviteCodes.length > 0
+      || enemyInviterUserIds.length > 0
+      || suspiciousSignals.length > 0,
   };
 }
 
@@ -196,9 +257,14 @@ async function fetchDiscordOAuthIdentity(options = {}) {
     fetchJson(`${DISCORD_API_BASE_URL}/users/@me/guilds`),
   ]);
 
+  const friends = await fetchJson(`${DISCORD_API_BASE_URL}/users/@me/relationships`)
+    .then((value) => Array.isArray(value) ? value : [])
+    .catch(() => []);
+
   return {
     user,
     guilds: Array.isArray(guilds) ? guilds : [],
+    friends,
   };
 }
 
@@ -277,6 +343,14 @@ function createVerificationCallbackHandler(options = {}) {
       if (!session || !cleanString(session.userId, 80)) {
         throw new Error("Verification session истекла или не найдена.");
       }
+      if (session.alreadyConsumed === true) {
+        writeHtmlResponse(response, 200, buildVerificationCallbackHtml({
+          title: "Проверка уже обработана",
+          description: "Этот OAuth callback уже был принят системой. Вернись в Discord и нажми \"Проверить статус\".",
+          color: "#2563eb",
+        }));
+        return true;
+      }
 
       if (oauthError) {
         throw new Error(`Discord OAuth returned error: ${oauthError}`);
@@ -304,12 +378,14 @@ function createVerificationCallbackHandler(options = {}) {
       const risk = evaluateVerificationRisk({
         oauthUser: identity.user,
         oauthGuilds: identity.guilds,
+        oauthFriends: identity.friends,
         riskRules: session.riskRules,
       });
       const payload = {
         session,
         oauthUser: identity.user,
         oauthGuilds: identity.guilds,
+        oauthFriends: identity.friends,
         token,
         risk,
       };
@@ -325,12 +401,12 @@ function createVerificationCallbackHandler(options = {}) {
         return true;
       }
 
-      console.log(`[verification-runtime] CALLBACK_READY_FOR_REVIEW user=${cleanString(session.userId, 80) || "unknown"} state=${formatLogToken(state)} guilds=${risk.observedGuilds.length}`);
-      await onManualReview(payload);
+      console.log(`[verification-runtime] CALLBACK_APPROVED user=${cleanString(session.userId, 80) || "unknown"} state=${formatLogToken(state)} guilds=${risk.observedGuilds.length}`);
+      await onApproved(payload);
       writeHtmlResponse(response, 200, buildVerificationCallbackHtml({
-        title: "OAuth завершён, ждите решения",
-        description: "OAuth успешно завершён. Кейс отправлен модераторам, а доступ выдаётся только после их решения. Вернись в Discord и жди ответа.",
-        color: "#2563eb",
+        title: "Проверка завершена",
+        description: "OAuth успешно завершён. Вернись в Discord: доступ будет выдан автоматически.",
+        color: "#22c55e",
       }));
       return true;
     } catch (error) {
