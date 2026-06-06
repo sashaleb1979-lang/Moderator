@@ -74,6 +74,43 @@ function loadRunVerificationDeadlineSweep() {
   );
 }
 
+function loadHandleVerificationEntryStartInteraction() {
+  const source = fs.readFileSync(path.join(__dirname, "..", "welcome-bot.js"), "utf8");
+  const startToken = "async function handleVerificationEntryStartInteraction(client, interaction) {";
+  const endToken = "\nasync function buildVerificationPanelReply(view = \"home\", statusText = \"\", includeFlags = true) {";
+  const startIndex = source.indexOf(startToken);
+  const endIndex = source.indexOf(endToken, startIndex);
+
+  assert.ok(startIndex >= 0 && endIndex > startIndex, "expected to find handleVerificationEntryStartInteraction in welcome-bot.js");
+  const functionSource = source.slice(startIndex, endIndex).trimEnd();
+
+  return new Function(
+    "isVerificationEnabled",
+    "isVerificationOauthConfigured",
+    "getVerifyAccessRoleId",
+    "cleanVerificationText",
+    "ephemeralPayload",
+    "MessageFlags",
+    "fetchMember",
+    "reconcileVerificationAssignmentForMember",
+    "memberHasVerificationRole",
+    "formatRoleMention",
+    "verificationCallbackServer",
+    "startVerificationRuntime",
+    "nowIso",
+    "ensureVerificationPendingProfile",
+    "computeVerificationReportDueAt",
+    "createVerificationOauthState",
+    "logVerificationRuntimeEvent",
+    "formatVerificationStateLogToken",
+    "buildDiscordOAuthAuthorizeUrl",
+    "getVerificationIntegrationState",
+    "buildVerificationLaunchPayload",
+    "buildVerificationStatusText",
+    `return (${functionSource});`
+  );
+}
+
 test("postVerificationManualReport falls back to degraded payload when rich report send fails", async () => {
   const calls = [];
   let sendAttempt = 0;
@@ -281,4 +318,173 @@ test("runVerificationDeadlineSweep continues after one overdue report fails", as
   } finally {
     Date.now = originalDateNow;
   }
+});
+
+test("handleVerificationEntryStartInteraction rejects disabled verification before defer", async () => {
+  const calls = [];
+  const buildFunction = loadHandleVerificationEntryStartInteraction();
+  const handleVerificationEntryStartInteraction = buildFunction(
+    () => false,
+    () => true,
+    () => "verify-role",
+    (value, max) => String(value || "").trim().slice(0, max || 400),
+    (payload) => ({ ...payload, flags: 64 }),
+    { Ephemeral: 64 },
+    async () => {
+      calls.push(["fetchMember"]);
+      return null;
+    },
+    async () => ({ active: false, stopped: false }),
+    () => true,
+    (roleId) => `<@&${roleId}>`,
+    null,
+    async () => {
+      calls.push(["startRuntime"]);
+      return { callbackStarted: true };
+    },
+    () => "2026-05-10T00:00:00.000Z",
+    () => calls.push(["ensurePending"]),
+    () => "2026-05-17T00:00:00.000Z",
+    () => "state-1",
+    async () => calls.push(["log"]),
+    (state) => state,
+    () => "https://discord.com/oauth2/authorize?state=state-1",
+    () => ({}),
+    () => ({ content: "launch" }),
+    () => "status"
+  );
+
+  await handleVerificationEntryStartInteraction({}, {
+    user: { id: "user-1" },
+    async reply(payload) {
+      calls.push(["reply", payload]);
+    },
+    async deferReply(payload) {
+      calls.push(["deferReply", payload]);
+    },
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], "reply");
+  assert.match(calls[0][1].content, /выключена/);
+});
+
+test("handleVerificationEntryStartInteraction defers before runtime start and edits launch payload", async () => {
+  const calls = [];
+  const member = {
+    roles: {
+      cache: {
+        has: (roleId) => roleId === "verify-role",
+      },
+    },
+  };
+  const buildFunction = loadHandleVerificationEntryStartInteraction();
+  const handleVerificationEntryStartInteraction = buildFunction(
+    () => true,
+    () => true,
+    () => "verify-role",
+    (value, max) => String(value || "").trim().slice(0, max || 400),
+    (payload) => ({ ...payload, flags: 64 }),
+    { Ephemeral: 64 },
+    async () => {
+      calls.push(["fetchMember"]);
+      return member;
+    },
+    async () => {
+      calls.push(["reconcile"]);
+      return { active: false, stopped: false };
+    },
+    (currentMember, roleId) => currentMember.roles.cache.has(roleId),
+    (roleId) => `<@&${roleId}>`,
+    null,
+    async () => {
+      calls.push(["startRuntime"]);
+      return { callbackStarted: true };
+    },
+    () => "2026-05-10T00:00:00.000Z",
+    (_userId, patch) => calls.push(["ensurePending", patch]),
+    () => "2026-05-17T00:00:00.000Z",
+    () => "state-1",
+    async () => calls.push(["log"]),
+    (state) => state,
+    () => "https://discord.com/oauth2/authorize?state=state-1",
+    () => ({ enabled: true }),
+    (payload) => ({ content: "launch", payload }),
+    () => "Статус: pending"
+  );
+
+  await handleVerificationEntryStartInteraction({}, {
+    user: { id: "user-1" },
+    member,
+    async deferReply(payload) {
+      calls.push(["deferReply", payload]);
+    },
+    async editReply(payload) {
+      calls.push(["editReply", payload]);
+    },
+  });
+
+  assert.deepEqual(calls.map((entry) => entry[0]), [
+    "deferReply",
+    "reconcile",
+    "startRuntime",
+    "ensurePending",
+    "log",
+    "editReply",
+  ]);
+  assert.equal(calls[0][1].flags, 64);
+  assert.equal(calls.at(-1)[1].content, "launch");
+});
+
+test("handleVerificationEntryStartInteraction blocks users without verify-role", async () => {
+  const calls = [];
+  const member = {
+    roles: {
+      cache: {
+        has: () => false,
+      },
+    },
+  };
+  const buildFunction = loadHandleVerificationEntryStartInteraction();
+  const handleVerificationEntryStartInteraction = buildFunction(
+    () => true,
+    () => true,
+    () => "verify-role",
+    (value, max) => String(value || "").trim().slice(0, max || 400),
+    (payload) => ({ ...payload, flags: 64 }),
+    { Ephemeral: 64 },
+    async () => member,
+    async () => ({ active: true, stopped: true }),
+    () => false,
+    (roleId) => `<@&${roleId}>`,
+    null,
+    async () => {
+      calls.push(["startRuntime"]);
+      return { callbackStarted: true };
+    },
+    () => "2026-05-10T00:00:00.000Z",
+    () => calls.push(["ensurePending"]),
+    () => "2026-05-17T00:00:00.000Z",
+    () => "state-1",
+    async () => calls.push(["log"]),
+    (state) => state,
+    () => "https://discord.com/oauth2/authorize?state=state-1",
+    () => ({ enabled: true }),
+    () => ({ content: "launch" }),
+    () => "status"
+  );
+
+  await handleVerificationEntryStartInteraction({}, {
+    user: { id: "user-1" },
+    member,
+    async deferReply(payload) {
+      calls.push(["deferReply", payload]);
+    },
+    async editReply(payload) {
+      calls.push(["editReply", payload]);
+    },
+  });
+
+  assert.deepEqual(calls.map((entry) => entry[0]), ["deferReply", "editReply"]);
+  assert.match(calls[1][1], /verify-ролью/);
 });

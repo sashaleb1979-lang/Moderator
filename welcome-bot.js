@@ -7535,6 +7535,28 @@ function buildVerificationStatusText(userId) {
     : "Статус: not started. Verification room пока не настроен.";
 }
 
+function buildVerificationEntryRuntimeStatusText() {
+  if (!isVerificationEnabled()) {
+    return "Система проверки выключена. Модератор должен включить её в панели перед запуском OAuth.";
+  }
+  if (!isVerificationOauthConfigured()) {
+    return "OAuth env пока не настроен. Guide уже доступен, launch станет рабочим после заполнения env.";
+  }
+  if (!verificationCallbackServer?.isListening?.()) {
+    return "OAuth env настроен, но callback server сейчас не слушает запросы. Нажатие кнопки попробует запустить runtime.";
+  }
+  return "OAuth callback server готов. Если кейс зависнет, модераторы увидят его в queue/report flow.";
+}
+
+function memberHasVerificationRole(member, roleId) {
+  const normalizedRoleId = cleanVerificationText(roleId, 80);
+  if (!normalizedRoleId) return false;
+  if (member?.roles?.cache?.has) return member.roles.cache.has(normalizedRoleId);
+  if (Array.isArray(member?.roles)) return member.roles.includes(normalizedRoleId);
+  if (Array.isArray(member?.roles?.value)) return member.roles.value.includes(normalizedRoleId);
+  return false;
+}
+
 function clearExpiredVerificationOauthStates() {
   const now = Date.now();
   for (const [state, session] of verificationOauthStates.entries()) {
@@ -7923,9 +7945,7 @@ async function ensureVerificationEntryMessage(client) {
 
   const payload = buildVerificationEntryPayload({
     integration,
-    statusText: isVerificationOauthConfigured()
-      ? "OAuth runtime готов. Если кейс зависнет, модераторы увидят его в queue/report flow."
-      : "OAuth env пока не настроен. Guide уже доступен, launch станет рабочим после заполнения env.",
+    statusText: buildVerificationEntryRuntimeStatusText(),
   });
 
   const trackedMessageId = cleanVerificationText(integration.entryMessage?.messageId, 80);
@@ -8186,7 +8206,7 @@ async function startVerificationRuntime(client) {
   let entryPublished = false;
 
   if (isVerificationOauthConfigured()) {
-    if (!verificationCallbackServer) {
+    if (!verificationCallbackServer || !verificationCallbackServer.isListening?.()) {
       verificationCallbackServer = createVerificationCallbackServer({
         config: {
           integration: getVerificationIntegrationState(),
@@ -8209,6 +8229,73 @@ async function startVerificationRuntime(client) {
   }
 
   return { enabled: true, callbackStarted, entryPublished };
+}
+
+async function handleVerificationEntryStartInteraction(client, interaction) {
+  if (!isVerificationEnabled()) {
+    await interaction.reply(ephemeralPayload({ content: "Система проверки сейчас выключена. Сообщи модератору." }));
+    return;
+  }
+  if (!isVerificationOauthConfigured()) {
+    await interaction.reply(ephemeralPayload({ content: "OAuth env пока не настроен. Сообщи модератору." }));
+    return;
+  }
+
+  const verifyRoleId = cleanVerificationText(getVerifyAccessRoleId(), 80);
+  if (!verifyRoleId) {
+    await interaction.reply(ephemeralPayload({ content: "Verify-роль не настроена. Сообщи модератору." }));
+    return;
+  }
+
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+  try {
+    const member = interaction.member || await fetchMember(client, interaction.user.id);
+    if (!member) {
+      await interaction.editReply("Не удалось найти участника на сервере. Сообщи модератору.");
+      return;
+    }
+
+    const lifecycle = await reconcileVerificationAssignmentForMember(client, interaction.user.id, member, {
+      reason: "verification begin skipped because verify-role is missing",
+    });
+    if (lifecycle.stopped || !memberHasVerificationRole(member, verifyRoleId)) {
+      await interaction.editReply(`Проверка доступна только участникам с verify-ролью ${formatRoleMention(verifyRoleId)}. Попроси модератора выдать её через /verify add.`);
+      return;
+    }
+
+    if (!verificationCallbackServer?.isListening?.()) {
+      const runtime = await startVerificationRuntime(client);
+      if (runtime.callbackStarted !== true) {
+        throw new Error("Verification callback server не запущен. Проверь enabled/OAuth/порт.");
+      }
+    }
+
+    const startedAt = nowIso();
+    ensureVerificationPendingProfile(interaction.user.id, {
+      status: "pending",
+      decision: "none",
+      startedAt,
+      reportDueAt: computeVerificationReportDueAt(startedAt),
+      lastError: "",
+    });
+    const state = createVerificationOauthState(interaction.user.id);
+    await logVerificationRuntimeEvent(client, `VERIFICATION_BEGIN: <@${interaction.user.id}> state=${formatVerificationStateLogToken(state)}`);
+    const authorizeUrl = buildDiscordOAuthAuthorizeUrl({
+      integration: getVerificationIntegrationState(),
+      env: process.env,
+      state,
+    });
+    await interaction.editReply(buildVerificationLaunchPayload({
+      authorizeUrl,
+      description: [
+        "Открой ссылку, авторизуйся тем же Discord-аккаунтом и дождись callback страницы.",
+        buildVerificationStatusText(interaction.user.id),
+      ].join("\n\n"),
+    }));
+  } catch (error) {
+    await interaction.editReply(`Не удалось запустить verification OAuth: ${cleanVerificationText(error?.message || error, 300)}`);
+  }
 }
 
 async function buildVerificationPanelReply(view = "home", statusText = "", includeFlags = true) {
@@ -17737,6 +17824,24 @@ client.on("interactionCreate", async (interaction) => {
   }
 
   if (interaction.isButton()) {
+    if (interaction.customId === VERIFY_ENTRY_GUIDE_ID) {
+      await interaction.reply(ephemeralPayload(buildVerificationGuidePayload({
+        audience: "participant",
+        integration: getVerificationIntegrationState(),
+      })));
+      return;
+    }
+
+    if (interaction.customId === VERIFY_ENTRY_STATUS_ID) {
+      await interaction.reply(ephemeralPayload({ content: buildVerificationStatusText(interaction.user.id) }));
+      return;
+    }
+
+    if (interaction.customId === VERIFY_ENTRY_START_ID) {
+      await handleVerificationEntryStartInteraction(client, interaction);
+      return;
+    }
+
     if (await getProfileOperator().handleProfileButtonInteraction({
       interaction,
       checkActorGuard: replyIfAutonomyGuardBlockedActor,
@@ -17788,60 +17893,6 @@ client.on("interactionCreate", async (interaction) => {
         }
       },
     })) {
-      return;
-    }
-
-    if (interaction.customId === VERIFY_ENTRY_GUIDE_ID) {
-      await interaction.reply(ephemeralPayload(buildVerificationGuidePayload({
-        audience: "participant",
-        integration: getVerificationIntegrationState(),
-      })));
-      return;
-    }
-
-    if (interaction.customId === VERIFY_ENTRY_STATUS_ID) {
-      await interaction.reply(ephemeralPayload({ content: buildVerificationStatusText(interaction.user.id) }));
-      return;
-    }
-
-    if (interaction.customId === VERIFY_ENTRY_START_ID) {
-      if (!isVerificationOauthConfigured()) {
-        await interaction.reply(ephemeralPayload({ content: "OAuth env пока не настроен. Сообщи модератору." }));
-        return;
-      }
-
-      try {
-        if (!verificationCallbackServer?.isListening?.()) {
-          await startVerificationRuntime(client);
-        }
-
-        const startedAt = nowIso();
-        ensureVerificationPendingProfile(interaction.user.id, {
-          status: "pending",
-          decision: "none",
-          startedAt,
-          reportDueAt: computeVerificationReportDueAt(startedAt),
-          lastError: "",
-        });
-        const state = createVerificationOauthState(interaction.user.id);
-        await logVerificationRuntimeEvent(client, `VERIFICATION_BEGIN: <@${interaction.user.id}> state=${formatVerificationStateLogToken(state)}`);
-        const authorizeUrl = buildDiscordOAuthAuthorizeUrl({
-          integration: getVerificationIntegrationState(),
-          env: process.env,
-          state,
-        });
-        await interaction.reply(ephemeralPayload(buildVerificationLaunchPayload({
-          authorizeUrl,
-          description: [
-            "Открой ссылку, авторизуйся тем же Discord-аккаунтом и дождись callback страницы.",
-            buildVerificationStatusText(interaction.user.id),
-          ].join("\n\n"),
-        })));
-      } catch (error) {
-        await interaction.reply(ephemeralPayload({
-          content: `Не удалось запустить verification OAuth: ${cleanVerificationText(error?.message || error, 300)}`,
-        }));
-      }
       return;
     }
 
