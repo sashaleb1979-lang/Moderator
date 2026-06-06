@@ -63,6 +63,9 @@ function createGuideState(channelId) {
 }
 
 function estimateNavigationMessageCount(characters, guildId, channelId, options = {}) {
+  const estimateLinkBuilder = typeof options.linkBuilder?.estimate === "function"
+    ? options.linkBuilder.estimate
+    : null;
   const placeholderCharacters = (characters || []).map((char) => ({
     emoji: char.emoji,
     name: char.name,
@@ -73,7 +76,7 @@ function estimateNavigationMessageCount(characters, guildId, channelId, options 
     placeholderCharacters,
     guildId || FAKE_DISCORD_ID,
     channelId || FAKE_DISCORD_ID,
-    { generalTechsThreadId: options.includeGeneralTechs ? FAKE_DISCORD_ID : null }
+    { generalTechsThreadId: options.includeGeneralTechs ? FAKE_DISCORD_ID : null, linkBuilder: estimateLinkBuilder }
   ).length;
 }
 
@@ -98,7 +101,7 @@ async function deleteThreadIfExists(guild, threadId) {
  * @param {Function} options.onProgress - Progress callback (step, total, description)
  * @returns {Object} Guide state for DB storage
  */
-async function publishFullGuide({ channel, comboText, techsText, assetsDir, onProgress }) {
+async function publishFullGuide({ channel, comboText, techsText, assetsDir, onProgress, linkBuilder }) {
   const progress = onProgress || (() => {});
   const guildId = channel.guild.id;
 
@@ -208,7 +211,7 @@ async function publishFullGuide({ channel, comboText, techsText, assetsDir, onPr
     const charTechs = techs.characters[charState.name] || [];
     if (!charTechs.length || !charState.techMessageIds.length) continue;
 
-    const techLinkMap = buildTechLinkMap(charTechs, charState, guildId);
+    const techLinkMap = buildTechLinkMap(charTechs, charState, guildId, { linkBuilder });
     if (!Object.keys(techLinkMap).length) continue;
 
     // Re-fetch each combo message and edit with injected links
@@ -231,7 +234,7 @@ async function publishFullGuide({ channel, comboText, techsText, assetsDir, onPr
 
   const navMessages = buildNavigationMessages(
     state.characters, guildId, channel.id,
-    { generalTechsThreadId: state.generalTechsThreadId }
+    { generalTechsThreadId: state.generalTechsThreadId, linkBuilder }
   );
 
   // We need to send nav ABOVE all content. Discord doesn't allow reordering, so we
@@ -270,7 +273,7 @@ async function publishFullGuide({ channel, comboText, techsText, assetsDir, onPr
  * Publish full guide with correct ordering: nav first, then content, then nav again.
  * This is the main entry point.
  */
-async function publishGuideOrdered({ channel, comboText, techsText, assetsDir, onProgress }) {
+async function publishGuideOrdered({ channel, comboText, techsText, assetsDir, onProgress, linkBuilder }) {
   const progress = onProgress || (() => {});
   const guildId = channel.guild.id;
 
@@ -286,6 +289,7 @@ async function publishGuideOrdered({ channel, comboText, techsText, assetsDir, o
   progress(2, 7, "Создание навигации (заглушки)…");
   const navPlaceholderCount = estimateNavigationMessageCount(combo.characters, guildId, channel.id, {
     includeGeneralTechs: techs.general.length > 0,
+    linkBuilder,
   });
   for (let index = 0; index < navPlaceholderCount; index++) {
     const placeholder = await sendMessage(channel, {
@@ -387,7 +391,7 @@ async function publishGuideOrdered({ channel, comboText, techsText, assetsDir, o
     const charTechs = techs.characters[charState.name] || [];
     if (!charTechs.length || !charState.techMessageIds.length) continue;
 
-    const techLinkMap = buildTechLinkMap(charTechs, charState, guildId);
+    const techLinkMap = buildTechLinkMap(charTechs, charState, guildId, { linkBuilder });
     if (!Object.keys(techLinkMap).length) continue;
 
     for (const msgId of charState.comboMessageIds) {
@@ -408,7 +412,7 @@ async function publishGuideOrdered({ channel, comboText, techsText, assetsDir, o
   progress(6, 7, "Обновление навигации…");
   const navMessages = buildNavigationMessages(
     state.characters, guildId, channel.id,
-    { generalTechsThreadId: state.generalTechsThreadId }
+    { generalTechsThreadId: state.generalTechsThreadId, linkBuilder }
   );
 
   // Edit top nav placeholders
@@ -435,7 +439,7 @@ async function publishGuideOrdered({ channel, comboText, techsText, assetsDir, o
 /**
  * Add a single character to an existing guide.
  */
-async function addCharacterToGuide({ channel, comboText, techsText, assetsDir, guideState, onProgress }) {
+async function addCharacterToGuide({ channel, comboText, techsText, assetsDir, guideState, onProgress, linkBuilder }) {
   const progress = onProgress || (() => {});
   const guildId = channel.guild.id;
 
@@ -457,7 +461,7 @@ async function addCharacterToGuide({ channel, comboText, techsText, assetsDir, g
     [...(guideState.characters || []), ...combo.characters],
     guildId,
     channel.id,
-    { includeGeneralTechs: Boolean(guideState.generalTechsThreadId) }
+    { includeGeneralTechs: Boolean(guideState.generalTechsThreadId), linkBuilder }
   );
   if (requiredTopNavCount > (guideState.navTop || []).length) {
     throw new Error("После добавления верхняя навигация перестанет помещаться в текущие сообщения. Используй `/combo publish` для полного перезалива гайда.");
@@ -538,7 +542,7 @@ async function addCharacterToGuide({ channel, comboText, techsText, assetsDir, g
     }
 
     // Inject tech links
-    const techLinkMap = buildTechLinkMap(charTechs, charState, guildId);
+    const techLinkMap = buildTechLinkMap(charTechs, charState, guildId, { linkBuilder });
     if (Object.keys(techLinkMap).length) {
       for (const msgId of charState.comboMessageIds) {
         try {
@@ -561,7 +565,7 @@ async function addCharacterToGuide({ channel, comboText, techsText, assetsDir, g
   progress(4, 5, "Обновление навигации…");
   const navMessages = buildNavigationMessages(
     guideState.characters, guildId, channel.id,
-    { generalTechsThreadId: guideState.generalTechsThreadId }
+    { generalTechsThreadId: guideState.generalTechsThreadId, linkBuilder }
   );
 
   // Edit top nav
@@ -588,7 +592,7 @@ async function addCharacterToGuide({ channel, comboText, techsText, assetsDir, g
 /**
  * Remove a character from the guide.
  */
-async function removeCharacterFromGuide({ channel, guideState, characterId, onProgress }) {
+async function removeCharacterFromGuide({ channel, guideState, characterId, onProgress, linkBuilder }) {
   const progress = onProgress || (() => {});
   const guildId = channel.guild.id;
   const charIndex = guideState.characters.findIndex((c) => c.id === characterId);
@@ -621,7 +625,7 @@ async function removeCharacterFromGuide({ channel, guideState, characterId, onPr
 
   // Update navigation
   progress(2, 3, "Обновление навигации…");
-  await refreshNavigation({ channel, guideState });
+  await refreshNavigation({ channel, guideState, linkBuilder });
 
   progress(3, 3, "Готово!");
   return guideState;
@@ -630,13 +634,13 @@ async function removeCharacterFromGuide({ channel, guideState, characterId, onPr
 /**
  * Refresh navigation messages (top + bottom).
  */
-async function refreshNavigation({ channel, guideState }) {
+async function refreshNavigation({ channel, guideState, linkBuilder }) {
   const guildId = guideState.guildId || channel.guild.id;
   const requiredTopNavCount = estimateNavigationMessageCount(
     guideState.characters,
     guildId,
     channel.id,
-    { includeGeneralTechs: Boolean(guideState.generalTechsThreadId) }
+    { includeGeneralTechs: Boolean(guideState.generalTechsThreadId), linkBuilder }
   );
   if (requiredTopNavCount > (guideState.navTop || []).length) {
     throw new Error("Текущего числа верхних navigation-сообщений уже недостаточно. Нужен полный `/combo publish` для перезалива гайда.");
@@ -644,7 +648,7 @@ async function refreshNavigation({ channel, guideState }) {
 
   const navMessages = buildNavigationMessages(
     guideState.characters, guildId, channel.id,
-    { generalTechsThreadId: guideState.generalTechsThreadId }
+    { generalTechsThreadId: guideState.generalTechsThreadId, linkBuilder }
   );
 
   // Edit top nav
@@ -746,7 +750,7 @@ async function deleteFullGuide({ channel, guideState }) {
  * Build a map from tech name to Discord message URL.
  * Maps each tech to the thread message that contains it.
  */
-function buildTechLinkMap(charTechs, charState, guildId) {
+function buildTechLinkMap(charTechs, charState, guildId, options = {}) {
   if (!charTechs.length || !charState.threadId) return {};
 
   const techMsgTexts = splitTechsIntoMessages(charTechs);
@@ -756,12 +760,24 @@ function buildTechLinkMap(charTechs, charState, guildId) {
     const msgId = charState.techMessageIds[mi];
     if (!msgId) continue;
 
-    const url = `https://discord.com/channels/${guildId}/${charState.threadId}/${msgId}`;
+    const rawUrl = `https://discord.com/channels/${guildId}/${charState.threadId}/${msgId}`;
 
     // Find which tech names are in this message
     for (const tech of charTechs) {
       if (techMsgTexts[mi].includes(`**${tech.name}**`)) {
-        map[tech.name] = url;
+        map[tech.name] = typeof options.linkBuilder === "function"
+          ? options.linkBuilder(rawUrl, {
+              feature: "combo_guide",
+              action: "open_tech_message",
+              targetKind: "tech_message",
+              guildId,
+              channelId: charState.threadId,
+              messageId: msgId,
+              characterId: charState.id,
+              characterName: charState.name,
+              techName: tech.name,
+            }) || rawUrl
+          : rawUrl;
       }
     }
   }

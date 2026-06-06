@@ -21,6 +21,7 @@ const {
 const { commitMutation } = require("../src/onboard/refresh-runner");
 const {
   ONBOARD_SUBCOMMAND_NAMES,
+  ANALYTICS_COMMAND_NAME,
   ANTITEAM_COMMAND_NAME,
   PROFILE_COMMAND_NAME,
   ROLE_PANEL_COMMAND_NAME,
@@ -966,13 +967,22 @@ test("command builder includes new admin refresh and editor subcommands", () => 
   assert.equal(nonfakeCommand.options.some((option) => option.name === "role"), true);
 });
 
-test("command builder registers onboard, rolepanel, verify, profile, and antiteam top-level commands", () => {
-  assert.deepEqual([...TOP_LEVEL_COMMAND_NAMES].sort(), ["onboard", ROLE_PANEL_COMMAND_NAME, VERIFY_COMMAND_NAME, PROFILE_COMMAND_NAME, ANTITEAM_COMMAND_NAME].sort());
-  assert.deepEqual(buildCommands().map((command) => command.name).sort(), ["onboard", ROLE_PANEL_COMMAND_NAME, VERIFY_COMMAND_NAME, PROFILE_COMMAND_NAME, ANTITEAM_COMMAND_NAME].sort());
+test("command builder registers onboard, rolepanel, verify, profile, antiteam, and analytics top-level commands", () => {
+  const expectedTopLevelCommands = [
+    "onboard",
+    ROLE_PANEL_COMMAND_NAME,
+    VERIFY_COMMAND_NAME,
+    PROFILE_COMMAND_NAME,
+    ANTITEAM_COMMAND_NAME,
+    ANALYTICS_COMMAND_NAME,
+  ];
+  assert.deepEqual([...TOP_LEVEL_COMMAND_NAMES].sort(), expectedTopLevelCommands.sort());
+  assert.deepEqual(buildCommands().map((command) => command.name).sort(), expectedTopLevelCommands.sort());
   const onboardCommand = buildCommands().find((command) => command.name === "onboard");
   const verifyCommand = buildCommands().find((command) => command.name === VERIFY_COMMAND_NAME);
   const profileCommand = buildCommands().find((command) => command.name === PROFILE_COMMAND_NAME);
   const antiteamCommand = buildCommands().find((command) => command.name === ANTITEAM_COMMAND_NAME);
+  const analyticsCommand = buildCommands().find((command) => command.name === ANALYTICS_COMMAND_NAME);
   assert.equal(onboardCommand.options.some((option) => option.type === 1 && option.name === "sotreport"), true);
   assert.equal(verifyCommand.options.some((option) => option.type === 1 && option.name === "panel"), true);
   assert.equal(verifyCommand.options.some((option) => option.type === 1 && option.name === "add"), true);
@@ -980,6 +990,7 @@ test("command builder registers onboard, rolepanel, verify, profile, and antitea
   assert.equal(antiteamCommand.options.some((option) => option.type === 1 && option.name === "panel"), true);
   assert.equal(antiteamCommand.options.some((option) => option.type === 1 && option.name === "clan"), true);
   assert.equal(antiteamCommand.options.some((option) => option.type === 1 && option.name === "points"), true);
+  assert.equal(analyticsCommand.options.some((option) => option.type === 1 && option.name === "panel"), true);
   const antiteamClan = antiteamCommand.options.find((option) => option.type === 1 && option.name === "clan");
   const antiteamPoints = antiteamCommand.options.find((option) => option.type === 1 && option.name === "points");
   assert.equal(antiteamClan.options.some((option) => option.type === 6 && option.name === "target" && option.required === true), true);
