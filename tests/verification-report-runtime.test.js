@@ -193,13 +193,15 @@ test("handleVerificationManualReviewCallback stamps reportSentAt only after repo
   assert.deepEqual(calls[2][2], { reportSentAt: "2026-05-10T00:00:00.000Z" });
 });
 
-test("handleVerificationManualReviewCallback leaves reportSentAt empty when report delivery fails", async () => {
+test("handleVerificationManualReviewCallback keeps failed report delivery retryable", async () => {
   const calls = [];
   const buildFunction = loadHandleVerificationManualReviewCallback();
   const handleVerificationManualReviewCallback = buildFunction(
     (value, max) => String(value || "").trim().slice(0, max || 400),
     async () => ({ active: true, stopped: false }),
-    async () => {},
+    async (_client, message, level = "info") => {
+      calls.push(["log", level, message]);
+    },
     (userId, patch) => {
       calls.push(["update", userId, patch]);
       return { userId, domains: { verification: patch } };
@@ -212,7 +214,7 @@ test("handleVerificationManualReviewCallback leaves reportSentAt empty when repo
     () => "2026-05-10T00:00:00.000Z"
   );
 
-  await assert.rejects(() => handleVerificationManualReviewCallback({}, {
+  await handleVerificationManualReviewCallback({}, {
     session: { userId: "user-1" },
     oauthUser: { id: "oauth-1", username: "discord-user" },
     risk: {
@@ -226,11 +228,18 @@ test("handleVerificationManualReviewCallback leaves reportSentAt empty when repo
       matchedEnemyInviteCodes: [],
       matchedEnemyInviterUserIds: [],
     },
-  }), /send failed/);
+  });
 
-  assert.equal(calls.length, 1);
+  assert.equal(calls.length, 3);
   assert.equal(calls[0][0], "update");
   assert.equal(Object.prototype.hasOwnProperty.call(calls[0][2], "reportSentAt"), false);
+  assert.deepEqual(calls[1][2], {
+    reportDueAt: "2026-05-10T00:00:00.000Z",
+    lastError: "verification report delivery failed: send failed",
+  });
+  assert.equal(calls[2][0], "log");
+  assert.equal(calls[2][1], "error");
+  assert.match(calls[2][2], /VERIFICATION_MANUAL_REVIEW_REPORT_FAILED/);
 });
 
 test("runVerificationDeadlineSweep continues after one overdue report fails", async () => {
@@ -254,6 +263,15 @@ test("runVerificationDeadlineSweep continues after one overdue report fails", as
           summary: {
             verification: {
               status: "failed",
+              reportDueAt: "2026-05-09T00:00:00.000Z",
+              reportSentAt: "",
+            },
+          },
+        },
+        "user-manual": {
+          summary: {
+            verification: {
+              status: "manual_review",
               reportDueAt: "2026-05-09T00:00:00.000Z",
               reportSentAt: "",
             },
@@ -305,9 +323,9 @@ test("runVerificationDeadlineSweep continues after one overdue report fails", as
 
     const result = await runVerificationDeadlineSweep({});
 
-    assert.deepEqual(result, { scanned: 2, reported: 1, failed: 1 });
-    assert.deepEqual(calls.filter((entry) => entry[0] === "post").map((entry) => entry[1]), ["user-fail", "user-ok"]);
-    assert.deepEqual(calls.filter((entry) => entry[0] === "update").map((entry) => entry[1]), ["user-ok"]);
+    assert.deepEqual(result, { scanned: 3, reported: 2, failed: 1 });
+    assert.deepEqual(calls.filter((entry) => entry[0] === "post").map((entry) => entry[1]), ["user-fail", "user-ok", "user-manual"]);
+    assert.deepEqual(calls.filter((entry) => entry[0] === "update").map((entry) => entry[1]), ["user-ok", "user-manual"]);
     assert.deepEqual(calls.find((entry) => entry[0] === "update")?.[2], {
       status: "manual_review",
       decision: "manual_review",

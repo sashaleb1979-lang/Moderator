@@ -7,6 +7,8 @@ const { compileDailyNewsDigest } = require("../src/news/compiler");
 const { renderDailyNewsIssue } = require("../src/news/render");
 const { ensureNewsState } = require("../src/news/state");
 
+const DENY_ALLOWED_MENTIONS = { parse: [], users: [], roles: [], repliedUser: false };
+
 function buildNewsDb() {
   return {
     profiles: {
@@ -246,7 +248,7 @@ test("renderDailyNewsIssue builds edition-style public payload from compiled dig
   assert.match(issue.publicMessage.content, /⚔️ апы киллов/);
   assert.doesNotMatch(issue.publicMessage.content, /<@/);
   assert.doesNotMatch(issue.publicMessage.content, /Главный рывок дня|резкие апы|редкие/);
-  assert.deepEqual(issue.publicMessage.allowedMentions, { parse: [] });
+  assert.deepEqual(issue.publicMessage.allowedMentions, DENY_ALLOWED_MENTIONS);
 
   const embed = issue.publicMessage.embeds[0];
   assert.equal(embed.color, 0xE6B450);
@@ -254,7 +256,6 @@ test("renderDailyNewsIssue builds edition-style public payload from compiled dig
   assert.match(embed.description, /⚠️ частично \+ неоднозначно/);
   assert.deepEqual(embed.fields.map((field) => field.name), [
     "⚡ Сильные изменения",
-    "⚔️ Киллы · апы",
     "💬 Активность · топ сообщений",
     "🎮 JJS · топ игры",
     "🎙️ Voice · лидеры эфира",
@@ -264,28 +265,30 @@ test("renderDailyNewsIssue builds edition-style public payload from compiled dig
     "📡 Покрытие",
   ]);
   assert.match(embed.fields[0].value, /Prime/);
+  assert.match(embed.fields[0].value, /за .*дн\./);
   assert.match(embed.fields[0].value, /антитим/);
+  assert.match(embed.fields[1].value, /Echo/);
   assert.match(embed.fields[1].value, /Prime/);
+  assert.match(embed.fields[1].value, /\+18 активности/);
   assert.match(embed.fields[2].value, /Echo/);
-  assert.match(embed.fields[2].value, /Prime/);
-  assert.match(embed.fields[2].value, /\+18 активности/);
   assert.match(embed.fields[3].value, /Echo/);
-  assert.match(embed.fields[4].value, /Echo/);
-  assert.match(embed.fields[5].value, /Shadow/);
-  assert.match(embed.fields[5].value, /бан/);
-  assert.match(embed.fields[6].value, /Gojo → Sukuna/);
-  assert.match(embed.fields[7].value, /Саппорт/);
-  assert.match(embed.fields[8].value, /activity_rows_without_precise_timestamps/);
+  assert.match(embed.fields[4].value, /Shadow/);
+  assert.match(embed.fields[4].value, /бан/);
+  assert.match(embed.fields[5].value, /Gojo → Sukuna/);
+  assert.match(embed.fields[6].value, /Саппорт/);
+  assert.match(embed.fields[7].value, /activity_rows_without_precise_timestamps/);
   assert.doesNotMatch(JSON.stringify(embed), /<@|highlights|резкие апы|редкие/);
 
   assert.ok(issue.publicThreadMessages.some((message) => {
-    return /Полный voice список/.test(message.content)
+    return /Полный voice-лидерборд/.test(message.content)
       && /Echo/.test(message.content)
       && /Nova/.test(message.content)
-      && message.allowedMentions?.parse?.length === 0;
+      && JSON.stringify(message.allowedMentions) === JSON.stringify(DENY_ALLOWED_MENTIONS);
   }));
-  assert.ok(issue.publicThreadMessages.some((message) => /Топ роста активности/.test(message.content)));
-  assert.ok(issue.publicThreadMessages.some((message) => /Топ падения активности/.test(message.content)));
+  assert.ok(issue.publicThreadMessages.some((message) => /Все апы киллов/.test(message.content) && /\/день/.test(message.content)));
+  assert.ok(issue.publicThreadMessages.some((message) => /Рост активности/.test(message.content)));
+  assert.ok(issue.publicThreadMessages.some((message) => /Падение активности/.test(message.content)));
+  assert.ok(issue.publicThreadMessages.some((message) => /Полный топ времени JJS/.test(message.content)));
 });
 
 test("renderDailyNewsIssue keeps rejected pending and ambiguous evidence in staff payload", () => {
@@ -318,6 +321,72 @@ test("renderDailyNewsIssue keeps rejected pending and ambiguous evidence in staf
 
   const tierlistDiagnostics = staffEmbed.fields.find((field) => field.name === "🧩 Tierlist diagnostics");
   assert.match(tierlistDiagnostics.value, /historical changes/);
+});
+
+test("renderDailyNewsIssue uses silent user mentions and avoids duplicate public kill entries", () => {
+  const digest = {
+    dayKey: "2026-05-15",
+    compiledAt: "2026-05-15T18:00:00.000Z",
+    coverageWindow: {
+      startAt: "2026-05-14T21:00:00.000Z",
+      endAt: "2026-05-15T18:00:00.000Z",
+      timeZone: "Europe/Moscow",
+    },
+    publicEdition: {
+      voice: { enabled: false, topVisitors: [], visitorCount: 0, allVisitorsLine: null, publishFullListInThread: false },
+      moderation: { enabled: false, highlights: [] },
+      kills: {
+        enabled: true,
+        upgradeCount: 1,
+        topUpgrades: [{
+          userId: "123456789012345678",
+          displayName: "@everyone <@999999999999999999>",
+          from: 120,
+          to: 180,
+          delta: 60,
+          dayCount: 3,
+          averagePerDay: 20,
+          toAt: "2026-05-15T12:00:00.000Z",
+        }],
+      },
+      activity: { enabled: false, topMessageAuthors: [], activeUserCount: 0, totalMessagesCount: 0 },
+    },
+    kills: {
+      allUpgrades: [{
+        userId: "123456789012345678",
+        displayName: "@everyone <@999999999999999999>",
+        from: 120,
+        to: 180,
+        delta: 60,
+        dayCount: 3,
+        averagePerDay: 20,
+        toAt: "2026-05-15T12:00:00.000Z",
+      }],
+    },
+    coverage: { partial: false, ambiguous: false, reasons: [] },
+    audit: { rawCandidateCounts: { total: 1 }, bucketCounts: { published_public: 1 } },
+    staffDigest: {
+      moderation: { totalCount: 0, ambiguousCount: 0 },
+      kills: { items: [] },
+      activity: { sourceRowCount: 0, impreciseRowCount: 0, movers: { reason: "no_daily_activity_baseline_yet" } },
+      gameplay: { items: [] },
+    },
+  };
+
+  const issue = renderDailyNewsIssue({ digest });
+  const publicText = JSON.stringify(issue.publicMessage);
+  const threadText = issue.publicThreadMessages.map((message) => message.content).join("\n");
+
+  assert.match(publicText, /<@123456789012345678>/);
+  assert.doesNotMatch(publicText, /@everyone|<@999999999999999999>/);
+  assert.deepEqual(issue.publicMessage.allowedMentions, DENY_ALLOWED_MENTIONS);
+  assert.equal(issue.publicMessage.embeds[0].fields.some((field) => field.name === "⚔️ Киллы · апы"), false);
+  assert.match(issue.publicMessage.embeds[0].fields[0].value, /\+60 · за 3 дн\. · ~20\/день/);
+  assert.match(threadText, /Все апы киллов/);
+  assert.match(threadText, /<@123456789012345678>/);
+  assert.ok(issue.publicThreadMessages.every((message) => {
+    return JSON.stringify(message.allowedMentions) === JSON.stringify(DENY_ALLOWED_MENTIONS);
+  }));
 });
 
 test("renderDailyNewsIssue degrades gracefully when the digest has no public highlights", () => {
@@ -399,7 +468,7 @@ test("renderDailyNewsIssue keeps imprecise activity rows out of public thread", 
   const issue = renderDailyNewsIssue({ digest });
   const publicThreadText = issue.publicThreadMessages.map((message) => message.content).join("\n");
 
-  assert.match(publicThreadText, /Расширенный чат-лидерборд/);
+  assert.match(publicThreadText, /Полный чат-лидерборд/);
   assert.match(publicThreadText, /Safe6/);
   assert.doesNotMatch(publicThreadText, /StaffOnlyImprecise/);
   assert.match(issue.staffMessage.embeds[0].fields.find((field) => field.name === "💬 Activity diagnostics").value, /imprecise rows: \*\*1\*\*/);
@@ -481,6 +550,7 @@ test("renderDailyNewsIssue surfaces activity role dead transitions and antiteam 
   assert.match(fieldsByName.get("🛡️ Антитим · новые ранги"), /Helper/);
   assert.match(fieldsByName.get("🛡️ Антитим · новые ранги"), /Саппорт/);
   assert.doesNotMatch(publicText, /<@/);
-  assert.ok(issue.publicThreadMessages.some((message) => /Топ роста активности/.test(message.content) && /Returner/.test(message.content)));
-  assert.ok(issue.publicThreadMessages.some((message) => /Топ падения активности/.test(message.content) && /Fader/.test(message.content)));
+  assert.ok(issue.publicThreadMessages.some((message) => /Рост активности/.test(message.content) && /Returner/.test(message.content)));
+  assert.ok(issue.publicThreadMessages.some((message) => /Падение активности/.test(message.content) && /Fader/.test(message.content)));
+  assert.ok(issue.publicThreadMessages.some((message) => /Антитим-очки/.test(message.content) && /Helper/.test(message.content)));
 });

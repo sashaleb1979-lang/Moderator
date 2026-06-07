@@ -849,13 +849,13 @@ test("onboard mode state normalizes persisted values and exposes readable labels
   });
 });
 
-test("resolveGrantedAccessRoleId keeps the existing access role for returning members", () => {
+test("resolveGrantedAccessRoleId follows the active access mode", () => {
   assert.equal(resolveGrantedAccessRoleId({
     mode: ONBOARD_ACCESS_MODES.WARTIME,
     normalAccessRoleId: "base-role",
     wartimeAccessRoleId: "wartime-role",
     heldRoleIds: ["base-role"],
-  }), "base-role");
+  }), "wartime-role");
 
   assert.equal(resolveGrantedAccessRoleId({
     mode: ONBOARD_ACCESS_MODES.WARTIME,
@@ -869,7 +869,7 @@ test("resolveGrantedAccessRoleId keeps the existing access role for returning me
     normalAccessRoleId: "base-role",
     wartimeAccessRoleId: "wartime-role",
     heldRoleIds: ["wartime-role"],
-  }), "wartime-role");
+  }), "base-role");
 
   assert.equal(resolveGrantedAccessRoleId({
     mode: ONBOARD_ACCESS_MODES.WARTIME,

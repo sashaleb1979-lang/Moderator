@@ -8145,10 +8145,13 @@ async function completeVerificationApprovedAccess(client, userId, accessMode = "
   const verifyRoleId = cleanVerificationText(getVerifyAccessRoleId(), 80);
   const releaseRoleIds = getVerificationQuarantineRoleIds();
   const rolePoolIds = [...new Set([...releaseRoleIds, verifyRoleId, getAccessCompanionRoleId()].filter(Boolean))];
+  const roleIdsToRemove = normalizedMode === "wartime"
+    ? [...new Set([...releaseRoleIds, getAccessCompanionRoleId()].filter(Boolean))]
+    : releaseRoleIds;
   const snapshot = getRolePoolSnapshot(member, rolePoolIds);
 
   try {
-    for (const roleId of releaseRoleIds) {
+    for (const roleId of roleIdsToRemove) {
       if (roleId !== targetRoleId && member.roles.cache.has(roleId)) {
         await member.roles.remove(roleId, reason);
       }
@@ -8161,7 +8164,9 @@ async function completeVerificationApprovedAccess(client, userId, accessMode = "
       await member.roles.remove(verifyRoleId, reason);
     }
 
-    await ensureAccessCompanionRoleForMemberBestEffort(member, reason, "verification access release");
+    if (normalizedMode !== "wartime") {
+      await ensureAccessCompanionRoleForMemberBestEffort(member, reason, "verification access release");
+    }
   } catch (error) {
     await restoreRolePoolSnapshot(client, userId, rolePoolIds, snapshot, `${reason} rollback`);
     throw new Error(`Не удалось выпустить ${userId} из verification: ${formatRuntimeError(error)}`);
@@ -8233,7 +8238,7 @@ async function runVerificationDeadlineSweep(client) {
     const status = cleanVerificationText(verification.status, 40);
     const reportDueAt = cleanVerificationText(verification.reportDueAt, 80);
     const reportSentAt = cleanVerificationText(verification.reportSentAt, 80);
-    if (!["pending", "failed"].includes(status) || !reportDueAt || reportSentAt) continue;
+    if (!["pending", "failed", "manual_review"].includes(status) || !reportDueAt || reportSentAt) continue;
 
     const dueAt = Date.parse(reportDueAt);
     if (!Number.isFinite(dueAt) || dueAt > Date.now()) continue;
@@ -8365,10 +8370,24 @@ async function handleVerificationManualReviewCallback(client, payload = {}) {
     decisionReason,
     lastError: "",
   });
-  await postVerificationManualReport(client, userId, statusNote);
-  updateVerificationProfile(userId, {
-    reportSentAt: nowIso(),
-  });
+  try {
+    await postVerificationManualReport(client, userId, statusNote);
+    updateVerificationProfile(userId, {
+      reportSentAt: nowIso(),
+    });
+  } catch (error) {
+    const reasonText = cleanVerificationText(error?.message || error, 300) || "unknown";
+    updateVerificationProfile(userId, {
+      reportDueAt: nowIso(),
+      lastError: `verification report delivery failed: ${reasonText}`,
+    });
+    await logVerificationRuntimeEvent(
+      client,
+      `VERIFICATION_MANUAL_REVIEW_REPORT_FAILED: <@${userId}> error=${reasonText}`,
+      "error"
+    ).catch(() => {});
+    return;
+  }
   await logVerificationRuntimeEvent(
     client,
     `${risk.requiresManualReview ? "VERIFICATION_MANUAL_REVIEW" : "VERIFICATION_READY_FOR_REVIEW"}: <@${userId}> oauth=${buildVerificationOauthUsername(payload.oauthUser) || "unknown"}`
@@ -8879,11 +8898,15 @@ async function grantAccessRole(client, userId, reason = "welcome application sub
   if (!targetRoleId) {
     throw new Error("Не настроена роль стартового доступа для текущего режима.");
   }
+  const isWartimeMode = normalizeOnboardAccessMode(mode) === ONBOARD_ACCESS_MODES.WARTIME;
   const managedRoleIds = getManagedStartAccessRoleIds();
-  const rollbackRoleIds = [...new Set([...managedRoleIds, getAccessCompanionRoleId()].filter(Boolean))];
+  const exclusiveRoleIds = isWartimeMode
+    ? [...new Set([...getVerificationQuarantineRoleIds(), getAccessCompanionRoleId()].filter(Boolean))]
+    : managedRoleIds;
+  const rollbackRoleIds = [...new Set([...exclusiveRoleIds, getAccessCompanionRoleId()].filter(Boolean))];
   const snapshot = getRolePoolSnapshot(member, rollbackRoleIds);
   try {
-    for (const roleId of managedRoleIds) {
+    for (const roleId of exclusiveRoleIds) {
       if (roleId !== targetRoleId && member.roles.cache.has(roleId)) {
         try {
           await member.roles.remove(roleId, reason);
@@ -8901,7 +8924,9 @@ async function grantAccessRole(client, userId, reason = "welcome application sub
       }
     }
 
-    await ensureAccessCompanionRoleForMemberBestEffort(member, reason, "managed access grant");
+    if (!isWartimeMode) {
+      await ensureAccessCompanionRoleForMemberBestEffort(member, reason, "managed access grant");
+    }
   } catch (error) {
     await restoreRolePoolSnapshot(client, userId, rollbackRoleIds, snapshot, `${reason} rollback`);
     throw error;
@@ -22757,6 +22782,7 @@ client.on("interactionCreate", async (interaction) => {
         writeIntegrationSnapshot: (patch) => writeNativeIntegrationSnapshot(db, { slot: "verification", patch }),
         writeVerifyRole: (roleId) => writeNativeRoleRecord(db, { slot: "verifyAccess", roleId }),
         clearVerifyRole: () => clearNativeRoleRecord(db, { slot: "verifyAccess" }),
+        getCurrentVerifyRoleId: getVerifyAccessRoleId,
         saveDb,
         startRuntime: startVerificationRuntime,
         ensureEntryMessage: ensureVerificationEntryMessage,

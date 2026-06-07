@@ -1130,6 +1130,7 @@ async function handleVerificationPanelModalSubmitInteraction(options = {}) {
     writeIntegrationSnapshot,
     writeVerifyRole,
     clearVerifyRole,
+    getCurrentVerifyRoleId,
     saveDb,
     startRuntime,
     ensureEntryMessage,
@@ -1187,10 +1188,17 @@ async function handleVerificationPanelModalSubmitInteraction(options = {}) {
     if (customId === VERIFY_PANEL_CONFIG_INFRA_MODAL_ID) {
       const currentIntegration = getCurrentIntegration();
       const enabledRaw = interaction.fields.getTextInputValue("verification_enabled");
-      const callbackBaseUrl = cleanText(interaction.fields.getTextInputValue("verification_callback_base_url"), 500);
+      const callbackBaseUrlRaw = interaction.fields.getTextInputValue("verification_callback_base_url");
       const verifyRoleRaw = interaction.fields.getTextInputValue("verification_verify_role");
       const verificationRoomRaw = interaction.fields.getTextInputValue("verification_room_channel");
       const reportChannelRaw = interaction.fields.getTextInputValue("verification_report_channel");
+      const currentCallbackBaseUrl = cleanText(currentIntegration.callbackBaseUrl, 500);
+      const callbackBaseUrl = cleanText(callbackBaseUrlRaw, 500) || currentCallbackBaseUrl;
+      const currentVerifyRoleId = typeof getCurrentVerifyRoleId === "function"
+        ? cleanText(getCurrentVerifyRoleId(), 80)
+        : "";
+      const currentVerificationChannelId = cleanText(currentIntegration.verificationChannelId, 80);
+      const currentReportChannelId = cleanText(currentIntegration.reportChannelId, 80);
 
       const enabled = parseBooleanInput(enabledRaw, currentIntegration.enabled === true);
       if (enabled === null) {
@@ -1198,9 +1206,9 @@ async function handleVerificationPanelModalSubmitInteraction(options = {}) {
         return true;
       }
 
-      const verifyRoleId = await resolveRoleId(verifyRoleRaw, "");
-      const verificationChannelId = await resolveChannelId(verificationRoomRaw, "");
-      const reportChannelId = await resolveChannelId(reportChannelRaw, "");
+      const verifyRoleId = await resolveRoleId(verifyRoleRaw, currentVerifyRoleId);
+      const verificationChannelId = await resolveChannelId(verificationRoomRaw, currentVerificationChannelId);
+      const reportChannelId = await resolveChannelId(reportChannelRaw, currentReportChannelId);
       if (cleanText(verifyRoleRaw, 80) && !verifyRoleId) {
         await editPayload({ content: "Verify-роль должна быть ID, mention или точным названием существующей роли." });
         return true;
@@ -1221,7 +1229,7 @@ async function handleVerificationPanelModalSubmitInteraction(options = {}) {
         reportChannelId,
         lastSyncAt: nowIso(),
       };
-      if (cleanText(currentIntegration.verificationChannelId, 80) !== verificationChannelId) {
+      if (currentVerificationChannelId !== verificationChannelId) {
         patch.entryMessage = { channelId: "", messageId: "" };
       }
       writeIntegrationSnapshot(patch);

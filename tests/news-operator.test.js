@@ -25,6 +25,8 @@ const {
   runDailyNewsOperatorAction,
 } = require("../src/news/operator");
 
+const DENY_ALLOWED_MENTIONS = { parse: [], users: [], roles: [], repliedUser: false };
+
 function createFakeChannel(id = "public") {
   return {
     id,
@@ -430,8 +432,13 @@ test("handleDailyNewsPanelModalSubmitInteraction previews an exact day ephemeral
 
   assert.equal(interaction.deferred, true);
   assert.match(interaction.edits[0].content, /Preview · public issue · 2026-05-14/);
+  assert.deepEqual(interaction.edits[0].allowedMentions, DENY_ALLOWED_MENTIONS);
   assert.equal(interaction.followUps[0].files[0].name, "daily-news-2026-05-14.png");
+  assert.deepEqual(interaction.followUps[0].allowedMentions, DENY_ALLOWED_MENTIONS);
   assert.ok(interaction.followUps.length >= 2);
+  assert.ok(interaction.followUps.every((payload) => {
+    return JSON.stringify(payload.allowedMentions) === JSON.stringify(DENY_ALLOWED_MENTIONS);
+  }));
 });
 
 test("handleDailyNewsPanelModalSubmitInteraction publishes an exact day manually", async () => {

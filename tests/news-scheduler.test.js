@@ -306,6 +306,67 @@ test("runDailyNewsReleaseTick retries publish for an already compiled day when a
   assert.equal(publishCalls[0].dayKey, "2026-05-14");
 });
 
+test("runDailyNewsReleaseTick does not duplicate an already published auto day from stored metadata", async () => {
+  const publishCalls = [];
+  const db = {
+    sot: {
+      news: {
+        config: {
+          enabled: true,
+          publish: {
+            autoPublishEnabled: true,
+          },
+          schedule: {
+            publishHourMsk: 21,
+          },
+          channels: {
+            publicChannelId: "public-room",
+          },
+        },
+        dailyDigests: {
+          "2026-05-14": {
+            dayKey: "2026-05-14",
+            publish: {
+              publishMode: "public",
+              publicMessageId: "public-old",
+            },
+          },
+        },
+        runtime: {
+          lastCompiledDayKey: "2026-05-14",
+          lastCompileStatus: "shadow_compiled",
+          lastPublishedDayKey: null,
+          lastPublishStatus: null,
+        },
+      },
+    },
+  };
+
+  const result = await runDailyNewsReleaseTick({
+    db,
+    now: "2026-05-14T20:45:00.000Z",
+    compileDailyNewsDigestFn() {
+      throw new Error("compile should not rerun");
+    },
+    publishDailyNewsIssueFn(args) {
+      publishCalls.push(args);
+      return {
+        published: false,
+        skipped: true,
+        reason: "already_published",
+        dayKey: args.dayKey,
+        result: db.sot.news.dailyDigests["2026-05-14"].publish,
+      };
+    },
+  });
+
+  assert.equal(result.releaseMode, "auto_publish");
+  assert.equal(result.published, false);
+  assert.equal(result.publishSkipped, true);
+  assert.equal(result.publishReason, "already_published");
+  assert.equal(publishCalls.length, 1);
+});
+
 test("runDailyNewsReleaseTick keeps compile-only mode when auto-publish is disabled", async () => {
   let publishCalled = false;
   const db = {
@@ -520,14 +581,15 @@ test("runDailyNewsReleaseTick keeps the historical queue item when publish is sk
   assert.equal(result.dayKey, "2026-05-20");
   assert.equal(result.published, false);
   assert.equal(result.publishSkipped, true);
+  assert.equal(result.publishFailed, true);
   assert.equal(result.publishReason, "temporary_delivery_guard");
   assert.equal(compileCalls.length, 1);
   assert.equal(result.queueRemainingCount, 2);
   assert.deepEqual(db.sot.news.runtime.releaseQueue.dayKeys, ["2026-05-20", "2026-05-21"]);
   assert.equal(db.sot.news.runtime.releaseQueue.active, true);
   assert.equal(db.sot.news.runtime.releaseQueue.currentDayKey, "2026-05-20");
-  assert.equal(db.sot.news.runtime.releaseQueue.lastFailedDayKey, null);
-  assert.equal(db.sot.news.runtime.releaseQueue.lastFailureMessage, null);
+  assert.equal(db.sot.news.runtime.releaseQueue.lastFailedDayKey, "2026-05-20");
+  assert.equal(db.sot.news.runtime.releaseQueue.lastFailureMessage, "temporary_delivery_guard");
   assert.equal(db.sot.news.runtime.releaseQueue.lastReleasedDayKey, null);
   assert.equal(db.sot.news.runtime.releaseQueue.lastReleasedAt, null);
 });

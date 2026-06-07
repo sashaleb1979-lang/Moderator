@@ -634,3 +634,77 @@ test("handleVerificationPanelModalSubmitInteraction resolves exact role and chan
   }]);
   assert.deepEqual(calls[2], ["writeVerifyRole", "123"]);
 });
+
+test("handleVerificationPanelModalSubmitInteraction preserves current infra fields when inputs are blank", async () => {
+  const calls = [];
+
+  const handled = await handleVerificationPanelModalSubmitInteraction({
+    interaction: {
+      customId: VERIFY_PANEL_CONFIG_INFRA_MODAL_ID,
+      member: { id: "moderator" },
+      fields: {
+        getTextInputValue(fieldId) {
+          if (fieldId === "verification_enabled") return "да";
+          return "";
+        },
+      },
+      async deferReply(options) {
+        calls.push(["deferReply", options]);
+      },
+      async editReply(payload) {
+        calls.push(["editReply", payload]);
+      },
+    },
+    client: { id: "client" },
+    isModerator: () => true,
+    replyNoPermission: async () => {
+      throw new Error("should not run");
+    },
+    buildPanelReply: async (view, statusText) => ({ view, statusText }),
+    getCurrentIntegration: () => ({
+      enabled: true,
+      callbackBaseUrl: "https://example.com/callback",
+      verificationChannelId: "verify-room",
+      reportChannelId: "report-room",
+    }),
+    parseBooleanInput: () => true,
+    parseListInput: () => [],
+    parseRequestedRoleId: (value, fallback = "") => String(value || fallback || "").trim(),
+    parseRequestedChannelId: (value, fallback = "") => String(value || fallback || "").trim(),
+    parseRequestedUserId: (value) => String(value || "").trim(),
+    cleanText: (value) => String(value || "").trim(),
+    nowIso: () => "2026-05-10T00:00:00.000Z",
+    writeIntegrationSnapshot: (patch) => {
+      calls.push(["writeIntegrationSnapshot", patch]);
+    },
+    writeVerifyRole: (roleId) => {
+      calls.push(["writeVerifyRole", roleId]);
+    },
+    clearVerifyRole: () => {
+      calls.push(["clearVerifyRole"]);
+    },
+    getCurrentVerifyRoleId: () => "verify-role",
+    saveDb: () => {
+      calls.push(["saveDb"]);
+    },
+    startRuntime: async () => ({ callbackStarted: true, entryPublished: true }),
+    ensureEntryMessage: async () => {
+      calls.push(["ensureEntryMessage"]);
+    },
+    ensurePendingProfile: () => {},
+    postManualReport: async () => ({ channel: { id: "report-room" }, profile: { domains: { verification: {} } } }),
+    updateProfile: () => {},
+    computeReportDueAt: () => "2026-05-17T00:00:00.000Z",
+  });
+
+  assert.equal(handled, true);
+  assert.deepEqual(calls[1], ["writeIntegrationSnapshot", {
+    enabled: true,
+    callbackBaseUrl: "https://example.com/callback",
+    verificationChannelId: "verify-room",
+    reportChannelId: "report-room",
+    lastSyncAt: "2026-05-10T00:00:00.000Z",
+  }]);
+  assert.deepEqual(calls[2], ["writeVerifyRole", "verify-role"]);
+  assert.equal(calls.some(([name]) => name === "clearVerifyRole"), false);
+});

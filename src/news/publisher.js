@@ -1,6 +1,7 @@
 "use strict";
 
 const { buildDailyNewsCoverAttachment } = require("./cover");
+const { withoutMentions } = require("./mentions");
 const { renderDailyNewsIssue } = require("./render");
 const { ensureNewsState } = require("./state");
 
@@ -20,16 +21,6 @@ function resolveNowIso(now) {
 
 function normalizePublishMode(value) {
   return cleanString(value, 40) === "staff_only" ? "staff_only" : "public";
-}
-
-function withoutMentions(payload = {}) {
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
-    return { content: cleanString(payload, 2000) || "", allowedMentions: { parse: [] } };
-  }
-  return {
-    ...payload,
-    allowedMentions: { parse: [] },
-  };
 }
 
 async function runOptionalPublishStep(runStep, warnings, label, fallbackValue) {
@@ -108,13 +99,23 @@ async function publishDailyNewsIssue({
   const resolvedDayKey = cleanString(resolvedDigest.dayKey || dayKey, 40);
   if (!resolvedDayKey) throw new Error("daily news dayKey is required for publish");
 
-  if (normalizedPublishMode === "public" && !force && state.runtime.lastPublishedDayKey === resolvedDayKey && state.runtime.lastPublishStatus === "published") {
+  const storedPublicPublish = state.dailyDigests?.[resolvedDayKey]?.publish || resolvedDigest.publish || null;
+  const hasStoredPublicPublish = cleanString(storedPublicPublish?.publishMode, 40) === "public"
+    && Boolean(cleanString(storedPublicPublish?.publicMessageId || storedPublicPublish?.deliveryMessageId, 80));
+  if (
+    normalizedPublishMode === "public"
+    && !force
+    && (
+      (state.runtime.lastPublishedDayKey === resolvedDayKey && state.runtime.lastPublishStatus === "published")
+      || hasStoredPublicPublish
+    )
+  ) {
     return {
       published: false,
       skipped: true,
       reason: "already_published",
       dayKey: resolvedDayKey,
-      result: state.runtime.lastPublishResult || null,
+      result: hasStoredPublicPublish ? storedPublicPublish : state.runtime.lastPublishResult || null,
     };
   }
 

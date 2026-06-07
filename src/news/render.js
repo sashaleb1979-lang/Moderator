@@ -1,5 +1,7 @@
 "use strict";
 
+const { DENY_ALLOWED_MENTIONS } = require("./mentions");
+
 const DEFAULT_ACCENT_COLOR = 0xD6A441;
 const DEFAULT_ALT_COLOR = 0x5DA9E9;
 const SECTION_SEPARATOR = "━━━━━━━━━━━━━━━━━━━━";
@@ -103,6 +105,27 @@ function createEmbedField(name, lines, inline = false) {
   };
 }
 
+function sanitizeDisplayName(value = "", fallbackName = "неизвестно") {
+  const text = cleanString(value, 120)
+    .replace(/@everyone/gi, "everyone")
+    .replace(/@here/gi, "here")
+    .replace(/<@!?\d{5,25}>/g, "")
+    .replace(/<@&\d{5,25}>/g, "")
+    .replace(/<#\d{5,25}>/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (text) return text;
+  const fallback = cleanString(fallbackName, 120)
+    .replace(/@everyone/gi, "everyone")
+    .replace(/@here/gi, "here")
+    .replace(/<@!?\d{5,25}>/g, "")
+    .replace(/<@&\d{5,25}>/g, "")
+    .replace(/<#\d{5,25}>/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return fallback || "неизвестно";
+}
+
 function makeBar(label = "", value = 0, maxValue = 1, filled = "█", empty = "░") {
   const width = 10;
   const amount = Math.max(0, Number(value) || 0);
@@ -119,8 +142,31 @@ function getCoverageLabel(digest = {}) {
 }
 
 function formatParticipant(entry = {}, fallbackName = "неизвестно") {
-  const displayName = cleanString(entry?.displayName, 120) || cleanString(fallbackName, 120) || "неизвестно";
-  return displayName;
+  const mentionId = cleanString(entry?.discordUserId || entry?.discordId || entry?.userId, 80);
+  if (isDiscordUserId(mentionId)) return `<@${mentionId}>`;
+  return sanitizeDisplayName(entry?.displayName, fallbackName);
+}
+
+function createKillEventKey(entry = {}) {
+  return [
+    cleanString(entry.userId, 80),
+    formatNumber(entry.to),
+    cleanString(entry.toAt, 80),
+    formatNumber(entry.delta),
+  ].join("|");
+}
+
+function formatKillTempo(entry = {}) {
+  const parts = [];
+  const dayCount = Number(entry.dayCount);
+  if (Number.isFinite(dayCount) && dayCount > 0) {
+    parts.push(`за ${formatNumber(dayCount)} дн.`);
+  }
+  const averagePerDay = Number(entry.averagePerDay);
+  if (Number.isFinite(averagePerDay) && averagePerDay > 0) {
+    parts.push(`~${formatNumber(averagePerDay)}/день`);
+  }
+  return parts.join(" · ");
 }
 
 function getTopKillUpgrade(digest = {}) {
@@ -150,7 +196,8 @@ function getTopGameplayPlayer(digest = {}) {
 function buildStoryLine(digest = {}) {
   const kill = getTopKillUpgrade(digest);
   if (kill) {
-    return `⚔️ Самый большой рывок: **${formatParticipant(kill)}** поднял киллы на ${formatSignedNumber(kill.delta)} (${formatNumber(kill.from)} → ${formatNumber(kill.to)}).`;
+    const tempo = formatKillTempo(kill);
+    return `⚔️ Самый большой рывок: **${formatParticipant(kill)}** поднял киллы на ${formatSignedNumber(kill.delta)}${tempo ? ` · ${tempo}` : ""} (${formatNumber(kill.from)} → ${formatNumber(kill.to)}).`;
   }
 
   return "";
@@ -171,12 +218,16 @@ function buildHeroMetrics(digest = {}) {
     .map(([label, value]) => `${label}: **${formatNumber(value)}**`);
 }
 
-function renderKillLines(upgrades = [], limit = 5) {
-  const items = (Array.isArray(upgrades) ? upgrades : []).slice(0, limit);
+function renderKillLines(upgrades = [], limit = 5, options = {}) {
+  const excludeKeys = options?.excludeKeys instanceof Set ? options.excludeKeys : new Set();
+  const items = (Array.isArray(upgrades) ? upgrades : [])
+    .filter((entry) => !excludeKeys.has(createKillEventKey(entry)))
+    .slice(0, limit);
   if (!items.length) return [];
   return items.map((entry, index) => {
     const medal = MEDALS[index] || `${index + 1}.`;
-    return `${medal} **${formatParticipant(entry)}** · ${formatSignedNumber(entry.delta)} киллов · ${formatNumber(entry.from)} → ${formatNumber(entry.to)}`;
+    const tempo = formatKillTempo(entry);
+    return `${medal} **${formatParticipant(entry)}** · ${formatSignedNumber(entry.delta)}${tempo ? ` · ${tempo}` : ""} · ${formatNumber(entry.from)} → ${formatNumber(entry.to)}`;
   });
 }
 
@@ -323,12 +374,21 @@ function renderAntiteamSupportLines(upgrades = [], limit = 5) {
   ));
 }
 
-function buildStrongChangeEntries(digest = {}, limit = 5) {
+function renderAntiteamThreadLines(upgrades = [], limit = 20) {
+  return (Array.isArray(upgrades) ? upgrades : []).slice(0, limit).map((entry, index) => {
+    const medal = MEDALS[index] || `${index + 1}.`;
+    return `${medal} **${formatParticipant(entry)}** · ${formatSignedNumber(entry.deltaPoints)} очк. · ${formatNumber(entry.fromPoints)} → ${formatNumber(entry.toPoints)} · ${entry.fromLevel?.label || "без ранга"} → ${entry.toLevel?.label || "новый ранг"}`;
+  });
+}
+
+function collectStrongChangeEntries(digest = {}, limit = 5) {
   const entries = [];
   for (const entry of Array.isArray(digest.publicEdition?.kills?.topUpgrades) ? digest.publicEdition.kills.topUpgrades : []) {
     entries.push({
+      module: "kills",
+      key: createKillEventKey(entry),
       score: Math.max(1, Number(entry.delta) || 0),
-      line: `⚔️ **${formatParticipant(entry)}** · рост киллов ${formatSignedNumber(entry.delta)} (${formatNumber(entry.from)} → ${formatNumber(entry.to)})`,
+      line: `⚔️ **${formatParticipant(entry)}** · рост киллов ${formatSignedNumber(entry.delta)}${formatKillTempo(entry) ? ` · ${formatKillTempo(entry)}` : ""} (${formatNumber(entry.from)} → ${formatNumber(entry.to)})`,
     });
   }
 
@@ -336,23 +396,29 @@ function buildStrongChangeEntries(digest = {}, limit = 5) {
   for (const entry of Array.isArray(movers?.roleChanges) ? movers.roleChanges : []) {
     if (Number(entry.roleRankDelta) <= 0) continue;
     entries.push({
+      module: "activity",
+      key: `activity-role|${cleanString(entry.userId, 80)}|${entry.fromAppliedRoleKey}|${entry.toAppliedRoleKey}`,
       score: 160 + (Number(entry.roleRankDelta) * 30) + Math.max(0, Number(entry.delta) || 0),
-      line: `↗ **${formatParticipant(entry)}** · уровень активности ${formatActivityRoleLabel(entry.fromAppliedRoleKey)} → ${formatActivityRoleLabel(entry.toAppliedRoleKey)}`,
+      line: `↗ **${formatParticipant(entry)}** · уровень активности ${formatActivityRoleLabel(entry.fromAppliedRoleKey)} → ${formatActivityRoleLabel(entry.toAppliedRoleKey)} · ${formatSignedNumber(entry.delta)} очк.`,
     });
   }
 
   for (const entry of Array.isArray(movers?.deadTransitions) ? movers.deadTransitions : []) {
     if (entry.deadTransition !== "left_dead") continue;
     entries.push({
+      module: "activity",
+      key: `activity-dead|${cleanString(entry.userId, 80)}|${entry.deadTransition}`,
       score: 220 + Math.max(0, Number(entry.delta) || 0),
-      line: `↗ **${formatParticipant(entry)}** · вышел из мертвецов`,
+      line: `↗ **${formatParticipant(entry)}** · вышел из мертвецов · ${formatSignedNumber(entry.delta)} очк.`,
     });
   }
 
   for (const entry of Array.isArray(digest.publicEdition?.antiteam?.upgrades) ? digest.publicEdition.antiteam.upgrades : []) {
     entries.push({
+      module: "antiteam",
+      key: `antiteam|${cleanString(entry.userId, 80)}|${entry.toPoints}`,
       score: 200 + (Number(entry.toLevel?.level) || 0) * 40 + (Number(entry.deltaPoints) || 0),
-      line: `🛡️ **${formatParticipant(entry)}** · антитим ${entry.fromLevel?.label || "без ранга"} → ${entry.toLevel?.label || "новый ранг"}`,
+      line: `🛡️ **${formatParticipant(entry)}** · антитим ${entry.fromLevel?.label || "без ранга"} → ${entry.toLevel?.label || "новый ранг"} · ${formatSignedNumber(entry.deltaPoints)} очк.`,
     });
   }
 
@@ -360,6 +426,8 @@ function buildStrongChangeEntries(digest = {}, limit = 5) {
   for (const entry of Array.isArray(shifts?.items) ? shifts.items : []) {
     if (Number(entry.influenceDelta) <= 0 && !entry.mainChanged) continue;
     entries.push({
+      module: "tierlist",
+      key: `tierlist|${cleanString(entry.userId, 80)}|${entry.fromMainName}|${entry.toMainName}|${entry.influenceDelta}`,
       score: 80 + Math.max(0, Number(entry.influenceDelta) || 0) * 30 + (entry.mainChanged ? 20 : 0),
       line: `🧩 **${formatParticipant(entry)}** · тирлист ${entry.mainChanged ? `${entry.fromMainName || "—"} → ${entry.toMainName || "—"}` : `x${formatNumber(entry.fromInfluenceMultiplier)} → x${formatNumber(entry.toInfluenceMultiplier)}`}`,
     });
@@ -368,7 +436,14 @@ function buildStrongChangeEntries(digest = {}, limit = 5) {
   return entries
     .sort((left, right) => right.score - left.score || left.line.localeCompare(right.line, undefined, { sensitivity: "base" }))
     .slice(0, limit)
-    .map((entry, index) => `${MEDALS[index] || `${index + 1}.`} ${entry.line}`);
+    .map((entry, index) => ({
+      ...entry,
+      line: `${MEDALS[index] || `${index + 1}.`} ${entry.line}`,
+    }));
+}
+
+function buildStrongChangeEntries(digest = {}, limit = 5) {
+  return collectStrongChangeEntries(digest, limit).map((entry) => entry.line);
 }
 
 function renderActivityScoreMoverLines(entries = [], direction = "up", limit = 5) {
@@ -379,8 +454,27 @@ function renderActivityScoreMoverLines(entries = [], direction = "up", limit = 5
     const roleLine = entry.roleChanged
       ? ` · ${formatActivityRoleLabel(entry.fromAppliedRoleKey)} → ${formatActivityRoleLabel(entry.toAppliedRoleKey)}`
       : "";
-    return `${medal} ${icon} **${formatParticipant(entry)}** · ${formatSignedNumber(entry.delta)} скор активности (${formatNumber(entry.fromScore)} → ${formatNumber(entry.toScore)})${roleLine}`;
+    return `${medal} ${icon} **${formatParticipant(entry)}** · ${formatSignedNumber(entry.delta)} очк. активности (${formatNumber(entry.fromScore)} → ${formatNumber(entry.toScore)})${roleLine}`;
   });
+}
+
+function chunkLines(header = "", lines = [], limit = 20) {
+  const result = [];
+  const items = Array.isArray(lines) ? lines.filter((line) => cleanString(line, 500)) : [];
+  for (let index = 0; index < items.length; index += limit) {
+    const slice = items.slice(index, index + limit);
+    if (!slice.length) continue;
+    const suffix = items.length > limit ? ` · ${Math.floor(index / limit) + 1}/${Math.ceil(items.length / limit)}` : "";
+    result.push({
+      content: trimLines([
+        `${header}${suffix}`,
+        SECTION_SEPARATOR,
+        ...slice,
+      ], 3900),
+      allowedMentions: DENY_ALLOWED_MENTIONS,
+    });
+  }
+  return result;
 }
 
 function renderCoverageLines(digest = {}) {
@@ -426,6 +520,8 @@ function buildPublicEmbed(digest = {}, config = {}) {
   const activityMoverLines = renderActivityMoverLines(digest.publicEdition?.activity?.movers, 1);
   const tierlistShiftLines = renderTierlistShiftLines(digest.publicEdition?.tierlist?.shifts, 2);
   const storyLine = buildStoryLine(digest);
+  const strongChanges = collectStrongChangeEntries(digest, 5);
+  const strongKillKeys = new Set(strongChanges.filter((entry) => entry.module === "kills").map((entry) => entry.key));
   const descriptionLines = [
     storyLine,
     storyLine ? "" : null,
@@ -442,8 +538,8 @@ function buildPublicEmbed(digest = {}, config = {}) {
     fields.push(createEmbedField(name, normalizedLines, inline));
   };
 
-  pushField("⚡ Сильные изменения", buildStrongChangeEntries(digest, 5));
-  pushField("⚔️ Киллы · апы", renderKillLines(digest.publicEdition?.kills?.topUpgrades, 5));
+  pushField("⚡ Сильные изменения", strongChanges.map((entry) => entry.line));
+  pushField("⚔️ Киллы · апы", renderKillLines(digest.publicEdition?.kills?.topUpgrades, 5, { excludeKeys: strongKillKeys }));
   pushField("💬 Активность · топ сообщений", [
     digest.publicEdition?.activity?.topMessageAuthors?.length ? makeBar("чат", topMessages, maxMessages) : null,
     ...renderActivityLines(digest.publicEdition?.activity?.topMessageAuthors, 5),
@@ -482,79 +578,69 @@ function buildPublicThreadMessages(digest = {}) {
   const messages = [];
   const shouldPublishVoiceThread = digest.publicEdition?.voice?.publishFullListInThread === true;
   const voiceVisitors = Array.isArray(digest.voice?.visitors) ? digest.voice.visitors : [];
-  const voiceLine = cleanString(voiceVisitors.map((entry) => formatParticipant(entry)).join(", "), 3800)
-    || cleanString(digest.publicEdition?.voice?.allVisitorsLine, 3800);
-  if (shouldPublishVoiceThread && voiceLine) {
-    messages.push({
-      content: trimLines([
-        `🎙️ **Полный voice список · ${formatMoscowDate(digest.dayKey)}**`,
-        SECTION_SEPARATOR,
-        voiceLine,
-      ], 3900),
-      allowedMentions: { parse: [] },
-    });
+  if (shouldPublishVoiceThread && voiceVisitors.length) {
+    messages.push(...chunkLines(
+      `🎙️ **Полный voice-лидерборд · ${formatMoscowDate(digest.dayKey)}**`,
+      renderVoiceLines(voiceVisitors, voiceVisitors.length),
+      20
+    ));
   }
 
   const allUpgrades = Array.isArray(digest.kills?.allUpgrades) ? digest.kills.allUpgrades : [];
-  if (allUpgrades.length > 5) {
-    messages.push({
-      content: trimLines([
-        `⚔️ **Все апы киллов · ${formatMoscowDate(digest.dayKey)}**`,
-        SECTION_SEPARATOR,
-        ...renderKillLines(allUpgrades, 20),
-      ], 3900),
-      allowedMentions: { parse: [] },
-    });
+  if (allUpgrades.length) {
+    messages.push(...chunkLines(
+      `⚔️ **Все апы киллов · ${formatMoscowDate(digest.dayKey)}**`,
+      renderKillLines(allUpgrades, allUpgrades.length),
+      20
+    ));
   }
 
   const activityMovers = digest.publicEdition?.activity?.movers || {};
-  const activityUpLines = renderActivityScoreMoverLines(activityMovers.up, "up", 5);
+  const activityUpLines = renderActivityScoreMoverLines(activityMovers.up, "up", 20);
   if (activityUpLines.length) {
-    messages.push({
-      content: trimLines([
-        `↗ **Топ роста активности · ${formatMoscowDate(digest.dayKey)}**`,
-        SECTION_SEPARATOR,
-        ...activityUpLines,
-      ], 3900),
-      allowedMentions: { parse: [] },
-    });
+    messages.push(...chunkLines(
+      `↗ **Рост активности · ${formatMoscowDate(digest.dayKey)}**`,
+      activityUpLines,
+      20
+    ));
   }
 
-  const activityDownLines = renderActivityScoreMoverLines(activityMovers.down, "down", 5);
+  const activityDownLines = renderActivityScoreMoverLines(activityMovers.down, "down", 20);
   if (activityDownLines.length) {
-    messages.push({
-      content: trimLines([
-        `↘ **Топ падения активности · ${formatMoscowDate(digest.dayKey)}**`,
-        SECTION_SEPARATOR,
-        ...activityDownLines,
-      ], 3900),
-      allowedMentions: { parse: [] },
-    });
+    messages.push(...chunkLines(
+      `↘ **Падение активности · ${formatMoscowDate(digest.dayKey)}**`,
+      activityDownLines,
+      20
+    ));
   }
 
   const publicActivityAuthors = (Array.isArray(digest.activity?.allMessageAuthors) ? digest.activity.allMessageAuthors : [])
     .filter((entry) => entry?.hasImpreciseRows !== true);
-  if (publicActivityAuthors.length > 5) {
-    messages.push({
-      content: trimLines([
-        `💬 **Расширенный чат-лидерборд · ${formatMoscowDate(digest.dayKey)}**`,
-        SECTION_SEPARATOR,
-        ...renderActivityLines(publicActivityAuthors, 20),
-      ], 3900),
-      allowedMentions: { parse: [] },
-    });
+  if (publicActivityAuthors.length) {
+    messages.push(...chunkLines(
+      `💬 **Полный чат-лидерборд · ${formatMoscowDate(digest.dayKey)}**`,
+      renderActivityLines(publicActivityAuthors, publicActivityAuthors.length),
+      20
+    ));
   }
 
-  const gameplayItems = Array.isArray(digest.gameplay?.topPlayers) ? digest.gameplay.topPlayers : [];
-  if (gameplayItems.length > 5) {
-    messages.push({
-      content: trimLines([
-        `🎮 **Расширенный JJS-лидерборд · ${formatMoscowDate(digest.dayKey)}**`,
-        SECTION_SEPARATOR,
-        ...renderGameplayLines(gameplayItems, 20),
-      ], 3900),
-      allowedMentions: { parse: [] },
-    });
+  const gameplayItems = (Array.isArray(digest.staffDigest?.gameplay?.items) ? digest.staffDigest.gameplay.items : [])
+    .filter((entry) => entry?.preciseWindow === true);
+  if (gameplayItems.length) {
+    messages.push(...chunkLines(
+      `🎮 **Полный топ времени JJS · ${formatMoscowDate(digest.dayKey)}**`,
+      renderGameplayLines(gameplayItems, gameplayItems.length),
+      20
+    ));
+  }
+
+  const antiteamUpgrades = Array.isArray(digest.publicEdition?.antiteam?.upgrades) ? digest.publicEdition.antiteam.upgrades : [];
+  if (antiteamUpgrades.length) {
+    messages.push(...chunkLines(
+      `🛡️ **Антитим-очки и новые ранги · ${formatMoscowDate(digest.dayKey)}**`,
+      renderAntiteamThreadLines(antiteamUpgrades, antiteamUpgrades.length),
+      20
+    ));
   }
 
   return messages;
@@ -724,7 +810,7 @@ function renderDailyNewsIssue({ digest = {}, config = {} } = {}) {
         heroMetrics.length ? heroMetrics.join("  •  ") : null,
       ].filter(Boolean), 1900),
       embeds: [publicEmbed],
-      allowedMentions: { parse: [] },
+      allowedMentions: DENY_ALLOWED_MENTIONS,
     },
     publicThreadTitle: `Daily News · ${formatMoscowDate(digest.dayKey)}`,
     publicThreadMessages,
@@ -734,7 +820,7 @@ function renderDailyNewsIssue({ digest = {}, config = {} } = {}) {
         `${getCoverageLabel(digest)} · candidates ${formatNumber(digest.audit?.rawCandidateCounts?.total || 0)}`,
       ], 1900),
       embeds: [staffEmbed],
-      allowedMentions: { parse: [] },
+      allowedMentions: DENY_ALLOWED_MENTIONS,
     },
     diagnostics: {
       coverage: clone(digest.coverage || {}),

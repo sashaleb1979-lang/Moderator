@@ -302,8 +302,39 @@ async function runHistoricalReleaseQueueTick({
     };
   }
 
-  if (publish.published === true || (publish.skipped === true && cleanString(publish.reason, 80) === "already_published")) {
+  if (publish.published === true) {
     await markHistoricalQueueDayReleased({ queue, dayKeys, dayKey, now, saveDb });
+  } else if (publish.skipped === true) {
+    const failureAt = resolveNowIso(now);
+    const failureMessage = cleanString(publish.reason, 120) || "publish_skipped";
+    queue.lastFailedDayKey = dayKey;
+    queue.lastFailureMessage = failureMessage;
+    queue.lastFailureAt = failureAt;
+    state.runtime.lastFailure = {
+      stage: "historical_release_queue",
+      dayKey,
+      message: failureMessage,
+      occurredAt: failureAt,
+    };
+    await persistDb(saveDb);
+    return {
+      compiled,
+      skipped: false,
+      reason: null,
+      dayKey,
+      publishHourMsk: null,
+      nowIso: resolveNowIso(now),
+      mode: "history_queue",
+      digest,
+      published: false,
+      publishSkipped: true,
+      publishFailed: true,
+      publishReason: failureMessage,
+      releaseMode: "history_queue",
+      publish,
+      queueRemainingCount: queue.dayKeys.length,
+      error: state.runtime.lastFailure,
+    };
   }
 
   return {

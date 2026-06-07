@@ -12,6 +12,7 @@ const {
 } = require("discord.js");
 const { compileDailyNewsDigest, resolveMoscowDayKey } = require("./compiler");
 const { buildDailyNewsCoverAttachment } = require("./cover");
+const { DENY_ALLOWED_MENTIONS, withoutMentions } = require("./mentions");
 const { compileDailyNewsPreview, renderStoredDailyNewsPreview } = require("./preview");
 const { publishDailyNewsIssue } = require("./publisher");
 const { ensureNewsState, normalizeNewsConfig } = require("./state");
@@ -183,30 +184,30 @@ function withEphemeralFlag(payload, includeFlags = true) {
 
 function normalizeReplyPayload(payload, includeFlags = true) {
   if (typeof payload === "string") {
-    return withEphemeralFlag({ content: cleanString(payload, 2000) || "Готово.", embeds: [], components: [] }, includeFlags);
+    return withEphemeralFlag(withoutMentions({ content: cleanString(payload, 2000) || "Готово.", embeds: [], components: [] }), includeFlags);
   }
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
-    return withEphemeralFlag({ content: cleanString(payload, 2000) || "Готово.", embeds: [], components: [] }, includeFlags);
+    return withEphemeralFlag(withoutMentions({ content: cleanString(payload, 2000) || "Готово.", embeds: [], components: [] }), includeFlags);
   }
-  return withEphemeralFlag(payload, includeFlags);
+  return withEphemeralFlag(withoutMentions(payload), includeFlags);
 }
 
 function normalizeEditPayload(payload) {
   if (typeof payload === "string") {
-    return { content: cleanString(payload, 2000) || "Готово.", embeds: [], components: [] };
+    return withoutMentions({ content: cleanString(payload, 2000) || "Готово.", embeds: [], components: [] });
   }
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
-    return { content: cleanString(payload, 2000) || "Готово.", embeds: [], components: [] };
+    return withoutMentions({ content: cleanString(payload, 2000) || "Готово.", embeds: [], components: [] });
   }
-  const next = { ...payload };
+  const next = withoutMentions(payload);
   delete next.flags;
   return next;
 }
 
 function prefixPayload(payload, header = "") {
   const next = payload && typeof payload === "object" && !Array.isArray(payload)
-    ? { ...payload }
-    : { content: cleanString(payload, 2000) || "Готово." };
+    ? withoutMentions(payload)
+    : withoutMentions({ content: cleanString(payload, 2000) || "Готово." });
   const prefix = cleanString(header, 300);
   if (!prefix) return next;
   next.content = next.content ? `${prefix}\n\n${next.content}` : prefix;
@@ -316,6 +317,7 @@ function formatReleaseQueueSummary(queue = {}) {
     currentDayKey ? `сейчас **${currentDayKey}**` : null,
     nextDayKey ? `следующий **${nextDayKey}**` : null,
     queue?.lastFailedDayKey ? `последний сбой **${queue.lastFailedDayKey}**` : null,
+    queue?.lastFailureAt ? `retry на следующем тике` : null,
   ].filter(Boolean).join(" · ");
 }
 
@@ -453,17 +455,18 @@ function buildDailyNewsStatusPayload(db = {}) {
   return {
     content: [
       "## 🗞️ Статус Daily News",
+      `ежедневный выпуск: **${formatReleaseModeLabel(state.config)}** · cutoff **${Number(state.config?.schedule?.publishHourMsk) || 21}:00 МСК**`,
       `сборка: **${formatCompileStatusLabel(state.runtime.lastCompileStatus)}** · день **${state.runtime.lastCompiledDayKey || "—"}**`,
       `публикация: **${formatPublishStatusLabel(state.runtime.lastPublishStatus)}** · день **${state.runtime.lastPublishedDayKey || "—"}**`,
       `период: **${formatReleaseQueueState(queue)}** · осталось **${Array.isArray(queue.dayKeys) ? queue.dayKeys.length : 0}**${queue.currentDayKey ? ` · сейчас **${queue.currentDayKey}**` : ""}${queue.dayKeys?.[0] ? ` · следующий **${queue.dayKeys[0]}**` : ""}`,
       Number(queue.completedDayCount) > 0 ? `готово в этом запуске: **${queue.completedDayCount}**` : null,
       Number(queue.alreadyPublishedDayCount) > 0 ? `заново оформятся уже опубликованные дни: **${queue.alreadyPublishedDayCount}**` : null,
-      queue.lastFailureMessage ? `сбой периода: **${queue.lastFailedDayKey || "—"}** · ${queue.lastFailureMessage}` : null,
+      queue.lastFailureMessage ? `сбой периода: **${queue.lastFailedDayKey || "—"}** · ${queue.lastFailureMessage} · retry на следующем тике` : null,
       `покрытие: **${coverage.partial ? "частичное" : "чистое"}${coverage.ambiguous ? " + неоднозначное" : ""}**`,
       `кандидаты: **${audit.rawCandidateCounts?.total || 0}**`,
       state.runtime.lastFailure?.message ? `последний сбой: **${state.runtime.lastFailure.message}**` : "последний сбой: **—**",
     ].filter(Boolean).join("\n"),
-    allowedMentions: { parse: [] },
+    allowedMentions: DENY_ALLOWED_MENTIONS,
   };
 }
 
@@ -700,12 +703,12 @@ async function sendDailyNewsPreviewMessages(interaction, issue, firstMethod = "f
     queue.push({
       content: `## 🖼️ Preview · cover · ${issue.dayKey}`,
       files: [coverAttachment],
-      allowedMentions: { parse: [] },
+      allowedMentions: DENY_ALLOWED_MENTIONS,
     });
   } catch (error) {
     queue.push({
       content: `## 🖼️ Preview · cover · ${issue.dayKey}\n\ncover render failed: ${cleanString(error?.message || error, 300) || "unknown error"}`,
-      allowedMentions: { parse: [] },
+      allowedMentions: DENY_ALLOWED_MENTIONS,
     });
   }
 

@@ -5,6 +5,11 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 
+const {
+  ONBOARD_ACCESS_MODES,
+  normalizeOnboardAccessMode,
+} = require("../src/onboard/access-mode");
+
 const welcomeBotSource = fs.readFileSync(path.join(__dirname, "..", "welcome-bot.js"), "utf8");
 
 function sliceFunction(startToken, endToken, label) {
@@ -87,9 +92,88 @@ function loadSyncApprovedAccessRoles() {
   );
 }
 
+function loadGrantAccessRole() {
+  const functionSource = sliceFunction(
+    "async function grantAccessRole(client, userId, reason = \"welcome application submitted\") {",
+    "async function maybeGrantAccessRoleAtStage(client, userId, stage, reason = \"welcome application submitted\") {",
+    "grantAccessRole"
+  );
+
+  return new Function(
+    "fetchMember",
+    "getCurrentOnboardMode",
+    "getOnboardModeValidationError",
+    "getGrantedAccessRoleIdForMode",
+    "normalizeOnboardAccessMode",
+    "ONBOARD_ACCESS_MODES",
+    "getManagedStartAccessRoleIds",
+    "getVerificationQuarantineRoleIds",
+    "getAccessCompanionRoleId",
+    "getRolePoolSnapshot",
+    "restoreRolePoolSnapshot",
+    "ensureAccessCompanionRoleForMemberBestEffort",
+    "formatRuntimeError",
+    `return (${functionSource});`
+  );
+}
+
 test("welcome-bot wires approved access repair into startup and panel role sync flows", () => {
   assert.match(welcomeBotSource, /panel_sync_roles[\s\S]*?syncApprovedAccessRoles\(client, null,/);
   assert.match(welcomeBotSource, /runClientReadyCore\(client, \{[\s\S]*?syncApprovedAccessRoles:/);
+});
+
+test("grantAccessRole in wartime grants only the wartime access role", async () => {
+  const calls = [];
+  const roleState = new Map([
+    ["base-role", { id: "base-role" }],
+    ["nonjjs-role", { id: "nonjjs-role" }],
+    ["companion-role", { id: "companion-role" }],
+  ]);
+  const member = {
+    id: "user-1",
+    roles: {
+      cache: roleState,
+      async remove(roleId, reason) {
+        calls.push(["remove", roleId, reason]);
+        roleState.delete(roleId);
+      },
+      async add(roleId, reason) {
+        calls.push(["add", roleId, reason]);
+        roleState.set(roleId, { id: roleId });
+      },
+    },
+  };
+  const buildGrantAccessRole = loadGrantAccessRole();
+  const grantAccessRole = buildGrantAccessRole(
+    async () => member,
+    () => ONBOARD_ACCESS_MODES.WARTIME,
+    () => "",
+    () => "wartime-role",
+    normalizeOnboardAccessMode,
+    ONBOARD_ACCESS_MODES,
+    () => ["base-role", "wartime-role"],
+    () => ["base-role", "wartime-role", "nonjjs-role"],
+    () => "companion-role",
+    (currentMember, roleIds) => [...roleIds].filter((roleId) => currentMember.roles.cache.has(roleId)),
+    async () => {
+      throw new Error("rollback should not run");
+    },
+    async () => {
+      calls.push(["companion"]);
+    },
+    (error) => String(error?.message || error)
+  );
+
+  const granted = await grantAccessRole({}, "user-1", "wartime auto grant");
+
+  assert.equal(granted, true);
+  assert.deepEqual([...roleState.keys()].sort(), ["wartime-role"]);
+  assert.deepEqual(calls, [
+    ["remove", "base-role", "wartime auto grant"],
+    ["remove", "nonjjs-role", "wartime auto grant"],
+    ["remove", "companion-role", "wartime auto grant"],
+    ["add", "wartime-role", "wartime auto grant"],
+  ]);
 });
 
 test("approveSubmission saves approval state before best-effort role sync warnings", async () => {
