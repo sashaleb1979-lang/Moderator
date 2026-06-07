@@ -130,7 +130,12 @@ test("bot helper force resend resolves and deletes the managed message before se
   const body = welcomeBotSource.slice(functionStart, functionEnd);
 
   assert.ok(functionStart > 0, "refreshBotHelperPanel must exist");
-  assert.match(body, /if \(!options\.forceRecreate\)\s*{\s*message = await resolveBotHelperPanelManagedMessage/);
+  assert.match(body, /message = await resolveBotHelperPanelManagedMessage\(client, channel, state\);/);
+  assert.doesNotMatch(
+    body,
+    /if \(!options\.forceRecreate\)\s*{\s*message = await resolveBotHelperPanelManagedMessage/,
+    "force recreate must still resolve the old managed message so it can be deleted"
+  );
   assert.ok(
     body.indexOf("message = await resolveBotHelperPanelManagedMessage(client, channel, state);")
       < body.indexOf("if (message && (options.bump || options.forceRecreate))"),

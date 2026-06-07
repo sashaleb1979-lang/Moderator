@@ -9918,9 +9918,7 @@ async function refreshBotHelperPanel(client, options = {}) {
 
   let message = null;
 
-  if (!options.forceRecreate) {
-    message = await resolveBotHelperPanelManagedMessage(client, channel, state);
-  }
+  message = await resolveBotHelperPanelManagedMessage(client, channel, state);
 
   if (message && (options.bump || options.forceRecreate)) {
     await deleteManagedChannelMessage(client, channel.id, message.id);
@@ -21856,28 +21854,6 @@ client.on("interactionCreate", async (interaction) => {
     }
 
     if (interaction.customId === BOT_HELPER_PANEL_ACTION_IDS.roblox) {
-      const session = getSubmitSession(interaction.user.id);
-      const pending = getPendingSubmissionForUser(interaction.user.id);
-      if (session?.mainCharacterIds?.length || pending?.id) {
-        const robloxIdentityLockText = getWelcomeRobloxIdentityLockText({
-          session,
-          pending,
-          canManage: hasAdministratorAccess(interaction.member),
-        });
-        if (robloxIdentityLockText) {
-          await interaction.reply(ephemeralPayload({ content: robloxIdentityLockText }));
-          return;
-        }
-
-        const profile = db.profiles?.[interaction.user.id] || null;
-        const profileIdentity = buildProfileRobloxIdentitySession(profile?.domains?.roblox || profile?.summary?.roblox || {});
-        await interaction.showModal(buildRobloxUsernameModal(
-          "onboard_roblox_username_modal",
-          session?.robloxUsername || pending?.robloxUsername || profileIdentity.robloxUsername || ""
-        ));
-        return;
-      }
-
       const profile = db.profiles?.[interaction.user.id] || null;
       const profileIdentity = buildProfileRobloxIdentitySession(profile?.domains?.roblox || profile?.summary?.roblox || {});
       await interaction.showModal(buildRobloxUsernameModal("profile_bind_roblox_modal", profileIdentity.robloxUsername || ""));

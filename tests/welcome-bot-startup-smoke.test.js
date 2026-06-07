@@ -513,7 +513,7 @@ test("welcome-bot clientReady auto-repairs fresh newcomers without a manual comm
       const member = {
         id: "fresh-user",
         displayName: "Fresh User",
-        joinedAt: new Date("2026-05-29T10:00:00.000Z"),
+        joinedAt: new Date("2026-06-05T10:00:00.000Z"),
         user: {
           id: "fresh-user",
           bot: false,
@@ -966,6 +966,14 @@ test("welcome-bot profile smoke covers helper open, self, other and compact-card
           reviewedAt: "2026-05-11T00:00:00.000Z",
           reviewedBy: "SmokeMod#0001",
           mainCharacterIds: ["vessel"]
+        },
+        "sub-pending": {
+          id: "sub-pending",
+          userId: "user-1",
+          status: "pending",
+          kills: 150,
+          createdAt: "2026-05-20T00:00:00.000Z",
+          mainCharacterIds: ["honored_one"]
         }
       },
       cooldowns: {},
@@ -983,6 +991,7 @@ test("welcome-bot profile smoke covers helper open, self, other and compact-card
 
     const discord = require("discord.js");
     const { buildProfileOpenCustomId } = require("./src/profile/entry");
+    const { BOT_HELPER_PANEL_ACTION_IDS } = require("./src/onboard/bot-helper-panel");
     const originalEmit = discord.Client.prototype.emit;
 
     function makeUser(id, username, options = {}) {
@@ -1113,6 +1122,7 @@ test("welcome-bot profile smoke covers helper open, self, other and compact-card
         deferReply: async (payload) => pushCall(label, "deferReply", payload),
         editReply: async (payload) => pushCall(label, "editReply", payload),
         deferUpdate: async () => pushCall(label, "deferUpdate", "ok"),
+        showModal: async (payload) => pushCall(label, "showModal", payload),
       };
     }
 
@@ -1161,6 +1171,7 @@ test("welcome-bot profile smoke covers helper open, self, other and compact-card
           }),
           makeCommandInteraction("profile_other", targetUser),
           makeButtonInteraction("compact_card", "elo_submit_card"),
+          makeButtonInteraction("helper_roblox", BOT_HELPER_PANEL_ACTION_IDS.roblox),
         ];
 
         originalEmit.call(this, "messageCreate", helperMessage);
@@ -1197,6 +1208,13 @@ test("welcome-bot profile smoke covers helper open, self, other and compact-card
           if (/profile_bind_roblox/.test(compactCardCall[2])) {
             failures.push("compact-card unexpectedly rendered self-action buttons");
           }
+        }
+
+        const helperRobloxCall = calls.find((entry) => entry[0] === "helper_roblox" && entry[1] === "showModal");
+        if (!helperRobloxCall || !/profile_bind_roblox_modal/.test(helperRobloxCall[2])) {
+          failures.push("bot helper Roblox button did not open the profile bind modal while pending exists");
+        } else if (/onboard_roblox_username_modal/.test(helperRobloxCall[2])) {
+          failures.push("bot helper Roblox button unexpectedly routed to onboarding Roblox modal");
         }
 
         if (failures.length) {
