@@ -231,6 +231,30 @@ function normalizeObservedGuildEntries(verification = {}) {
   }));
 }
 
+function normalizeObservedFriendEntries(verification = {}) {
+  const source = verification && typeof verification === "object" && !Array.isArray(verification)
+    ? verification
+    : {};
+  const directEntries = Array.isArray(source.observedFriends) ? source.observedFriends : [];
+  const normalized = [];
+  const seen = new Set();
+
+  for (const entry of directEntries) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const id = cleanString(entry.id || entry.userId, 80);
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    normalized.push({
+      id,
+      username: cleanString(entry.username || entry.name || entry.globalName || entry.global_name, 120),
+    });
+  }
+
+  if (normalized.length) return normalized;
+
+  return normalizeStringArray(source.observedFriendIds, 50, 80).map((id) => ({ id, username: "" }));
+}
+
 function formatObservedGuildLine(entry, index) {
   const name = cleanString(entry?.name, 120) || "Без названия";
   const id = cleanString(entry?.id, 80) || "—";
@@ -242,6 +266,12 @@ function formatObservedGuildLine(entry, index) {
     parts.push(`perm ${cleanString(entry.permissions, 40)}`);
   }
   return parts.join(" • ");
+}
+
+function formatObservedFriendLine(entry, index) {
+  const id = cleanString(entry?.id, 80) || "—";
+  const username = cleanString(entry?.username, 120);
+  return username ? `${index + 1}. ${id} • ${username}` : `${index + 1}. ${id}`;
 }
 
 function normalizeVerificationSnapshot(value = {}) {
@@ -754,6 +784,7 @@ function buildVerificationReportPayload(options = {}) {
     : {};
   const userId = cleanString(options.userId || profile.userId, 80);
   const observedGuildEntries = normalizeObservedGuildEntries(verification);
+  const observedFriendEntries = normalizeObservedFriendEntries(verification);
   const riskLines = [
     `Совпадения по серверам: **${Number(summary.matchedEnemyGuildCount) || 0}**`,
     `Совпадения по пользователям: **${Number(summary.matchedEnemyUserCount) || 0}**`,
@@ -777,8 +808,8 @@ function buildVerificationReportPayload(options = {}) {
     `Invite-коды: ${normalizeStringArray(verification.matchedEnemyInviteCodes, 20, 80).join(", ") || "—"}`,
     `Inviter ID: ${normalizeStringArray(verification.matchedEnemyInviterUserIds, 20, 80).join(", ") || "—"}`,
   ];
-  const observedFriendLines = normalizeStringArray(verification.observedFriendIds, 50, 80).length
-    ? normalizeStringArray(verification.observedFriendIds, 50, 80).map((id, index) => `${index + 1}. ${id}`)
+  const observedFriendLines = observedFriendEntries.length
+    ? observedFriendEntries.slice(0, 50).map((entry, index) => formatObservedFriendLine(entry, index))
     : ["OAuth friends не вернулись или недоступны для этого scope."];
   const suspiciousLines = normalizeStringArray(verification.suspiciousSignals, 20, 120).length
     ? normalizeStringArray(verification.suspiciousSignals, 20, 120)

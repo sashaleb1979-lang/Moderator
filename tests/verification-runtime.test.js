@@ -150,6 +150,10 @@ test("evaluateVerificationRisk includes friend matches and suspicious account si
   });
 
   assert.deepEqual(result.observedFriendIds, ["friend-1", "friend-2"]);
+  assert.deepEqual(result.observedFriends, [
+    { id: "friend-1", username: "" },
+    { id: "friend-2", username: "ally" },
+  ]);
   assert.deepEqual(result.matchedEnemyFriendIds, ["friend-2"]);
   assert.equal(result.suspiciousSignals.includes("manual_suspicious_account_match"), true);
   assert.equal(result.suspiciousSignals.includes("old_discord_account"), true);

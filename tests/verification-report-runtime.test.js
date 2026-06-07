@@ -44,6 +44,7 @@ function loadHandleVerificationManualReviewCallback() {
     "updateVerificationProfile",
     "buildVerificationOauthUsername",
     "normalizeVerificationObservedGuilds",
+    "normalizeVerificationObservedFriends",
     "postVerificationManualReport",
     "grantVerificationTemporaryReviewAccess",
     "nowIso",
@@ -68,6 +69,7 @@ function loadHandleVerificationApprovedCallback() {
     "updateVerificationProfile",
     "buildVerificationOauthUsername",
     "normalizeVerificationObservedGuilds",
+    "normalizeVerificationObservedFriends",
     "grantVerificationTemporaryReviewAccess",
     "postVerificationManualReport",
     "nowIso",
@@ -188,6 +190,7 @@ test("handleVerificationApprovedCallback routes clean OAuth to manual review wit
     },
     () => "discord-user",
     (value) => value,
+    (value) => Array.isArray(value) ? value : [],
     async (_client, userId, reason) => {
       calls.push(["temporaryAccess", userId, reason]);
       return { granted: true, roleId: "wartime-role", accessMode: "wartime" };
@@ -206,6 +209,7 @@ test("handleVerificationApprovedCallback routes clean OAuth to manual review wit
       observedGuilds: [{ id: "guild-1", name: "Guild" }],
       observedGuildIds: ["guild-1"],
       observedGuildNames: ["Guild"],
+      observedFriends: [{ id: "friend-1", username: "ally_one" }],
       observedFriendIds: [],
       matchedEnemyGuildIds: [],
       matchedEnemyUserIds: [],
@@ -218,6 +222,7 @@ test("handleVerificationApprovedCallback routes clean OAuth to manual review wit
 
   assert.equal(calls[0][0], "update");
   assert.equal(Object.prototype.hasOwnProperty.call(calls[0][2], "status"), false);
+  assert.deepEqual(calls[0][2].observedFriends, [{ id: "friend-1", username: "ally_one" }]);
   assert.deepEqual(calls[1][2], {
     status: "manual_review",
     decision: "manual_review",
@@ -248,6 +253,7 @@ test("handleVerificationApprovedCallback keeps clean OAuth retryable when report
     },
     () => "discord-user",
     (value) => value,
+    (value) => Array.isArray(value) ? value : [],
     async (_client, userId, reason) => {
       calls.push(["temporaryAccess", userId, reason]);
       return { granted: true, roleId: "wartime-role", accessMode: "wartime" };
@@ -286,6 +292,7 @@ test("handleVerificationManualReviewCallback stamps reportSentAt only after repo
     },
     () => "discord-user",
     (value) => value,
+    (value) => Array.isArray(value) ? value : [],
     async (_client, userId, statusNote) => {
       calls.push(["post", userId, statusNote]);
       return { degraded: false };
@@ -336,6 +343,7 @@ test("handleVerificationManualReviewCallback keeps failed report delivery retrya
     },
     () => "discord-user",
     (value) => value,
+    (value) => Array.isArray(value) ? value : [],
     async () => {
       throw new Error("send failed");
     },

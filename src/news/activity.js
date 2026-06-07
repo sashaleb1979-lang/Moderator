@@ -47,6 +47,8 @@ function createAuditCandidateId(prefix, parts = []) {
 function createActivityRowDedupeKey(row = {}, rowWindow = {}) {
   void rowWindow;
   return [
+    cleanString(row.sourceType, 80),
+    cleanString(row.sessionId, 160),
     cleanString(row.guildId, 80),
     cleanString(row.channelId, 80),
     cleanString(row.userId, 80),
@@ -94,6 +96,11 @@ function resolveRowWindowMs(row = {}) {
 function overlapsWindow(rowWindow = {}, window = {}) {
   if (!Number.isFinite(rowWindow.startMs) || !Number.isFinite(rowWindow.endMs)) return false;
   return rowWindow.startMs <= window.endMs && rowWindow.endMs >= window.startMs;
+}
+
+function isContainedInWindow(rowWindow = {}, window = {}) {
+  if (!Number.isFinite(rowWindow.startMs) || !Number.isFinite(rowWindow.endMs)) return false;
+  return rowWindow.startMs >= window.startMs && rowWindow.endMs <= window.endMs;
 }
 
 function compareMessageLeaders(left, right) {
@@ -216,16 +223,81 @@ function collectActivityMovers({ db = {}, window = {}, config = {} } = {}) {
   };
 }
 
+function collectSessionActivityRows(activityState = {}) {
+  const sessions = [];
+  const addSession = (session, sourceType) => {
+    if (!session || typeof session !== "object" || Array.isArray(session)) return;
+    sessions.push({ ...session, sourceType });
+  };
+
+  for (const session of Array.isArray(activityState.globalUserSessions) ? activityState.globalUserSessions : []) {
+    addSession(session, "global_user_session");
+  }
+  for (const session of Object.values(activityState.runtime?.openSessions || {})) {
+    addSession(session, "open_user_session");
+  }
+
+  const rows = [];
+  for (const session of sessions) {
+    const guildId = cleanString(session.guildId, 80);
+    const userId = cleanString(session.userId, 80);
+    if (!guildId || !userId) continue;
+
+    const sessionId = cleanString(session.id, 200)
+      || createAuditCandidateId("session", [guildId, userId, session.startedAt, session.endedAt]);
+    const channelBreakdown = session.channelBreakdown && typeof session.channelBreakdown === "object" && !Array.isArray(session.channelBreakdown)
+      ? session.channelBreakdown
+      : {};
+    const entries = Object.keys(channelBreakdown).length
+      ? Object.values(channelBreakdown)
+      : [{
+          channelId: session.mainChannelId,
+          messageCount: session.messageCount,
+          weightedMessageCount: session.weightedMessageCount,
+          firstMessageAt: session.startedAt,
+          lastMessageAt: session.endedAt || session.startedAt,
+        }];
+
+    for (const entry of entries) {
+      const channelId = cleanString(entry?.channelId || session.mainChannelId, 80);
+      const messagesCount = normalizeNonNegativeNumber(entry?.messageCount ?? entry?.messagesCount, 0);
+      if (!channelId || messagesCount <= 0) continue;
+
+      rows.push({
+        sourceType: session.sourceType,
+        sessionId,
+        guildId,
+        channelId,
+        userId,
+        date: cleanString(entry?.date, 20) || cleanString(session.startedAt, 20).slice(0, 10),
+        messagesCount,
+        weightedMessagesCount: normalizeNonNegativeNumber(entry?.weightedMessageCount ?? entry?.weightedMessagesCount, messagesCount),
+        sessionsCount: 1,
+        effectiveSessionsCount: normalizeNonNegativeNumber(session.effectiveValue, 0),
+        firstMessageAt: entry?.firstMessageAt || session.startedAt,
+        lastMessageAt: entry?.lastMessageAt || session.endedAt || session.startedAt,
+      });
+    }
+  }
+
+  return rows;
+}
+
 function collectActivityDigest({ db = {}, window = {}, config = {} } = {}) {
   const profiles = db.profiles && typeof db.profiles === "object" && !Array.isArray(db.profiles) ? db.profiles : {};
   const activityState = db.sot?.activity && typeof db.sot.activity === "object" && !Array.isArray(db.sot.activity)
     ? db.sot.activity
     : {};
-  const rows = Array.isArray(activityState.userChannelDailyStats) ? activityState.userChannelDailyStats : [];
+  const sessionRows = collectSessionActivityRows(activityState);
+  const rows = sessionRows.length
+    ? sessionRows
+    : Array.isArray(activityState.userChannelDailyStats) ? activityState.userChannelDailyStats : [];
+  const sourceMode = sessionRows.length ? "session" : "daily";
   const aggregateByUser = new Map();
   const rowCandidates = [];
   const seenRows = new Set();
   let impreciseRowCount = 0;
+  let boundaryRowCount = 0;
 
   for (const row of rows) {
     if (!row || typeof row !== "object") continue;
@@ -247,19 +319,23 @@ function collectActivityDigest({ db = {}, window = {}, config = {} } = {}) {
       userId,
       displayName,
       date: cleanString(row.date, 20),
+      sourceType: cleanString(row.sourceType, 80) || (sourceMode === "session" ? "global_user_session" : "user_channel_daily_stat"),
+      sessionId: cleanString(row.sessionId, 200),
       messagesCount,
       weightedMessagesCount,
       sessionsCount,
       effectiveSessionsCount,
       firstMessageAt: toIsoString(rowWindow.startMs),
       lastMessageAt: toIsoString(rowWindow.endMs),
-      preciseWindow: rowWindow.precise,
+      preciseWindow: rowWindow.precise && isContainedInWindow(rowWindow, window),
+      crossesWindowBoundary: overlapsWindow(rowWindow, window) && !isContainedInWindow(rowWindow, window),
     };
 
     if (!candidate.preciseWindow) impreciseRowCount += 1;
+    if (candidate.crossesWindowBoundary) boundaryRowCount += 1;
     rowCandidates.push(candidate);
 
-    if (!userId) continue;
+    if (!userId || !candidate.preciseWindow) continue;
     const existing = aggregateByUser.get(userId) || {
       userId,
       displayName,
@@ -311,6 +387,9 @@ function collectActivityDigest({ db = {}, window = {}, config = {} } = {}) {
     if (!candidate.userId || candidate.messagesCount <= 0) {
       bucket = "invalid_source";
       detail = "invalid_activity_daily_row";
+    } else if (candidate.crossesWindowBoundary) {
+      bucket = "ambiguous_source";
+      detail = "activity_row_crosses_publish_window_boundary";
     } else if (!candidate.preciseWindow) {
       bucket = "ambiguous_source";
       detail = "activity_daily_row_without_precise_timestamp";
@@ -324,20 +403,28 @@ function collectActivityDigest({ db = {}, window = {}, config = {} } = {}) {
       module: "activity",
       bucket,
       detail,
-      sourceType: "user_channel_daily_stat",
+      sourceType: candidate.sourceType,
       userId: candidate.userId,
       displayName: candidate.displayName,
       occurredAt: candidate.lastMessageAt || candidate.firstMessageAt,
     };
   });
 
-  const partialReasons = impreciseRowCount > 0 ? ["activity_rows_without_precise_timestamps"] : [];
+  const partialReasons = [
+    impreciseRowCount > 0 ? "activity_rows_without_precise_timestamps" : null,
+    boundaryRowCount > 0 ? "activity_rows_cross_publish_window_boundary" : null,
+  ].filter(Boolean);
   const movers = collectActivityMovers({ db, window, config });
   return {
     sourceRowCount: rowCandidates.length,
-    activeUserCount: authors.length,
+    sourceMode,
+    activeUserCount: publicAuthors.length,
+    sourceActiveUserCount: new Set(rowCandidates
+      .filter((entry) => entry.userId && entry.messagesCount > 0)
+      .map((entry) => entry.userId)).size,
     totalMessagesCount: authors.reduce((sum, entry) => sum + entry.messagesCount, 0),
     totalWeightedMessagesCount: Number(authors.reduce((sum, entry) => sum + entry.weightedMessagesCount, 0).toFixed(2)),
+    sourceMessagesCount: rowCandidates.reduce((sum, entry) => sum + entry.messagesCount, 0),
     topMessageAuthors,
     allMessageAuthors: authors,
     movers,

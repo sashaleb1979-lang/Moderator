@@ -79,13 +79,15 @@ test("collectActivityDigest builds top message authors from persisted daily rows
   });
 
   assert.equal(digest.sourceRowCount, 4);
-  assert.equal(digest.activeUserCount, 3);
-  assert.equal(digest.totalMessagesCount, 38);
+  assert.equal(digest.activeUserCount, 2);
+  assert.equal(digest.sourceActiveUserCount, 3);
+  assert.equal(digest.totalMessagesCount, 18);
+  assert.equal(digest.sourceMessagesCount, 38);
   assert.deepEqual(digest.topMessageAuthors.map((entry) => [entry.userId, entry.displayName, entry.messagesCount]), [
     ["user-2", "Beta", 10],
   ]);
   assert.equal(digest.partial, true);
-  assert.deepEqual(digest.partialReasons, ["activity_rows_without_precise_timestamps"]);
+  assert.deepEqual(digest.partialReasons, ["activity_rows_without_precise_timestamps", "activity_rows_cross_publish_window_boundary"]);
   assert.deepEqual(digest.candidateBuckets.map((entry) => [entry.userId, entry.bucket]), [
     ["user-1", "suppressed_by_threshold"],
     ["user-1", "suppressed_by_threshold"],
@@ -94,6 +96,136 @@ test("collectActivityDigest builds top message authors from persisted daily rows
   ]);
   assert.equal(digest.movers.available, false);
   assert.equal(digest.movers.reason, "no_daily_activity_baseline_yet");
+});
+
+test("collectActivityDigest prefers session rows over UTC daily aggregates for publish-window counts", () => {
+  const db = {
+    profiles: {
+      "user-1": { displayName: "Alpha" },
+      "user-2": { displayName: "Beta" },
+    },
+    sot: {
+      activity: {
+        globalUserSessions: [
+          {
+            id: "session-alpha",
+            guildId: "guild-1",
+            userId: "user-1",
+            startedAt: "2026-05-14T10:00:00.000Z",
+            endedAt: "2026-05-14T11:00:00.000Z",
+            messageCount: 3869,
+            weightedMessageCount: 3869,
+            effectiveValue: 1,
+            mainChannelId: "main-1",
+            channelBreakdown: {
+              "main-1": {
+                channelId: "main-1",
+                messageCount: 3869,
+                weightedMessageCount: 3869,
+                firstMessageAt: "2026-05-14T10:00:00.000Z",
+                lastMessageAt: "2026-05-14T11:00:00.000Z",
+              },
+            },
+          },
+        ],
+        userChannelDailyStats: [
+          {
+            guildId: "guild-1",
+            channelId: "main-1",
+            userId: "user-1",
+            date: "2026-05-14",
+            messagesCount: 11053,
+            weightedMessagesCount: 11053,
+            sessionsCount: 20,
+            effectiveSessionsCount: 20,
+            firstMessageAt: "2026-05-14T00:00:00.000Z",
+            lastMessageAt: "2026-05-14T23:59:00.000Z",
+          },
+          {
+            guildId: "guild-1",
+            channelId: "main-1",
+            userId: "user-2",
+            date: "2026-05-13",
+            messagesCount: 5000,
+            weightedMessagesCount: 5000,
+            sessionsCount: 5,
+            effectiveSessionsCount: 5,
+            firstMessageAt: "2026-05-13T20:00:00.000Z",
+            lastMessageAt: "2026-05-13T23:30:00.000Z",
+          },
+        ],
+      },
+    },
+  };
+
+  const digest = collectActivityDigest({
+    db,
+    window: buildWindow(),
+    config: { activity: { topMessagesCount: 5 } },
+  });
+
+  assert.equal(digest.sourceMode, "session");
+  assert.equal(digest.sourceRowCount, 1);
+  assert.equal(digest.totalMessagesCount, 3869);
+  assert.deepEqual(digest.topMessageAuthors.map((entry) => [entry.userId, entry.messagesCount]), [
+    ["user-1", 3869],
+  ]);
+});
+
+test("collectActivityDigest keeps boundary-crossing activity rows out of public totals", () => {
+  const db = {
+    profiles: {
+      "user-1": { displayName: "Alpha" },
+      "user-2": { displayName: "Beta" },
+    },
+    sot: {
+      activity: {
+        userChannelDailyStats: [
+          {
+            guildId: "guild-1",
+            channelId: "main-1",
+            userId: "user-1",
+            date: "2026-05-14",
+            messagesCount: 100,
+            weightedMessagesCount: 100,
+            sessionsCount: 1,
+            effectiveSessionsCount: 1,
+            firstMessageAt: "2026-05-14T10:00:00.000Z",
+            lastMessageAt: "2026-05-14T11:00:00.000Z",
+          },
+          {
+            guildId: "guild-1",
+            channelId: "main-1",
+            userId: "user-2",
+            date: "2026-05-13",
+            messagesCount: 9000,
+            weightedMessagesCount: 9000,
+            sessionsCount: 3,
+            effectiveSessionsCount: 3,
+            firstMessageAt: "2026-05-13T20:30:00.000Z",
+            lastMessageAt: "2026-05-13T21:30:00.000Z",
+          },
+        ],
+      },
+    },
+  };
+
+  const digest = collectActivityDigest({
+    db,
+    window: buildWindow(),
+    config: { activity: { topMessagesCount: 5 } },
+  });
+
+  assert.equal(digest.totalMessagesCount, 100);
+  assert.equal(digest.sourceMessagesCount, 9100);
+  assert.deepEqual(digest.topMessageAuthors.map((entry) => [entry.userId, entry.messagesCount]), [
+    ["user-1", 100],
+  ]);
+  assert.deepEqual(digest.partialReasons, ["activity_rows_without_precise_timestamps", "activity_rows_cross_publish_window_boundary"]);
+  assert.equal(
+    digest.candidateBuckets.some((entry) => entry.userId === "user-2" && entry.detail === "activity_row_crosses_publish_window_boundary"),
+    true
+  );
 });
 
 test("collectActivityDigest dedupes repeated daily rows with shifted timestamps", () => {

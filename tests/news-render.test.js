@@ -309,7 +309,7 @@ test("renderDailyNewsIssue keeps rejected pending and ambiguous evidence in staf
 
   const watchlist = staffEmbed.fields.find((field) => field.name === "👀 Audit watchlist");
   assert.match(watchlist.value, /\*\*Nova\*\* · модерация · ambiguous · leave_ambiguous/);
-  assert.match(watchlist.value, /\*\*Nova\*\* · активность · ambiguous · activity_daily_row_without_precise_timestamp/);
+  assert.match(watchlist.value, /\*\*Nova\*\* · активность · ambiguous · activity_row_crosses_publish_window_boundary/);
 
   const activityDiagnostics = staffEmbed.fields.find((field) => field.name === "💬 Activity diagnostics");
   assert.match(activityDiagnostics.value, /imprecise rows: \*\*1\*\*/);

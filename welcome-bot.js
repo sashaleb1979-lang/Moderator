@@ -7264,6 +7264,25 @@ function normalizeVerificationObservedFriendIds(value = []) {
   return normalizeVerificationTextArray(value, 50, 80);
 }
 
+function normalizeVerificationObservedFriends(value = []) {
+  if (!Array.isArray(value)) return [];
+  const normalized = [];
+  const seen = new Set();
+
+  for (const entry of value) {
+    const source = entry && typeof entry === "object" && !Array.isArray(entry) ? entry : {};
+    const id = cleanVerificationText(source.id || source.userId, 80);
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    normalized.push({
+      id,
+      username: cleanVerificationText(source.username || source.name || source.globalName || source.global_name, 120),
+    });
+  }
+
+  return normalized;
+}
+
 function clearExpiredVerificationRoleMutationIgnores() {
   const now = Date.now();
   for (const [userId, expireAt] of verificationRoleMutationIgnores.entries()) {
@@ -7430,6 +7449,7 @@ function stopVerificationCycle(userId, reason = "verify role removed", options =
     observedGuildIds: [],
     observedGuildNames: [],
     observedFriendIds: [],
+    observedFriends: [],
     matchedEnemyGuildIds: [],
     matchedEnemyUserIds: [],
     matchedEnemyFriendIds: [],
@@ -7820,6 +7840,7 @@ function buildVerificationAuditMarkdown(userId, profile = {}, statusNote = "") {
     ? profile.summary.roblox
     : {};
   const observedGuilds = normalizeVerificationObservedGuilds(verification.observedGuilds);
+  const observedFriends = normalizeVerificationObservedFriends(verification.observedFriends);
   const serverFriendIds = Array.isArray(robloxSummary.serverFriendsUserIds) ? robloxSummary.serverFriendsUserIds : [];
   const topCoPlayPeers = Array.isArray(robloxSummary.topCoPlayPeers) ? robloxSummary.topCoPlayPeers : [];
   const usernameHistory = Array.isArray(roblox.usernameHistory) ? roblox.usernameHistory : [];
@@ -7886,8 +7907,13 @@ function buildVerificationAuditMarkdown(userId, profile = {}, statusNote = "") {
   );
 
   const observedFriendIds = normalizeVerificationObservedFriendIds(verification.observedFriendIds);
-  lines.push("### OAuth friends (ID)");
-  if (observedFriendIds.length) {
+  lines.push("### OAuth friends (ID + username)");
+  if (observedFriends.length) {
+    for (const [index, friend] of observedFriends.entries()) {
+      const username = cleanVerificationText(friend.username, 120);
+      lines.push(`${index + 1}. ${cleanVerificationText(friend.id, 80)}${username ? ` | ${username}` : ""}`);
+    }
+  } else if (observedFriendIds.length) {
     for (const [index, friendId] of observedFriendIds.entries()) {
       lines.push(`${index + 1}. ${friendId}`);
     }
@@ -8308,6 +8334,7 @@ async function handleVerificationApprovedCallback(client, payload = {}) {
     observedGuilds: normalizeVerificationObservedGuilds(risk.observedGuilds),
     observedGuildIds: Array.isArray(risk.observedGuildIds) ? risk.observedGuildIds : [],
     observedGuildNames: Array.isArray(risk.observedGuildNames) ? risk.observedGuildNames : [],
+    observedFriends: normalizeVerificationObservedFriends(risk.observedFriends),
     observedFriendIds: Array.isArray(risk.observedFriendIds)
       ? [...new Set(risk.observedFriendIds.map((entry) => cleanVerificationText(entry, 80)).filter(Boolean))].slice(0, 50)
       : [],
@@ -8401,6 +8428,7 @@ async function handleVerificationManualReviewCallback(client, payload = {}) {
     observedGuilds: normalizeVerificationObservedGuilds(risk.observedGuilds),
     observedGuildIds: Array.isArray(risk.observedGuildIds) ? risk.observedGuildIds : [],
     observedGuildNames: Array.isArray(risk.observedGuildNames) ? risk.observedGuildNames : [],
+    observedFriends: normalizeVerificationObservedFriends(risk.observedFriends),
     observedFriendIds: Array.isArray(risk.observedFriendIds)
       ? [...new Set(risk.observedFriendIds.map((entry) => cleanVerificationText(entry, 80)).filter(Boolean))].slice(0, 50)
       : [],

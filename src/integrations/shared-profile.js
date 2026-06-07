@@ -277,6 +277,25 @@ function normalizeVerificationObservedGuilds(value = []) {
   return normalized;
 }
 
+function normalizeVerificationObservedFriends(value = []) {
+  if (!Array.isArray(value)) return [];
+
+  const normalized = [];
+  const seen = new Set();
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const id = cleanString(entry.id || entry.userId, 80);
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    normalized.push({
+      id,
+      username: normalizeNullableString(entry.username || entry.name || entry.globalName || entry.global_name, 120),
+    });
+  }
+
+  return normalized;
+}
+
 function normalizeVerificationDomainState(value = {}) {
   const source = value && typeof value === "object" ? value : {};
   return {
@@ -301,6 +320,7 @@ function normalizeVerificationDomainState(value = {}) {
     observedGuilds: normalizeVerificationObservedGuilds(source.observedGuilds),
     observedGuildIds: normalizeStringArray(source.observedGuildIds, 20, 80),
     observedGuildNames: normalizeStringArray(source.observedGuildNames, 20, 120),
+    observedFriends: normalizeVerificationObservedFriends(source.observedFriends),
     observedFriendIds: normalizeStringArray(source.observedFriendIds, 50, 80),
     matchedEnemyGuildIds: normalizeStringArray(source.matchedEnemyGuildIds, 20, 80),
     matchedEnemyUserIds: normalizeStringArray(source.matchedEnemyUserIds, 20, 80),
@@ -1989,7 +2009,7 @@ function buildSharedProfileSummary(profile = {}, domains = {}) {
   const frequentNonFriendCount = roblox.coPlay.peers.filter((entry) => isFrequentRobloxNonFriendPeer(entry)).length;
   const topCoPlayPeers = buildRobloxTopCoPlayPeers(roblox.coPlay.peers);
   const observedGuildCount = verification.observedGuilds.length || verification.observedGuildIds.length;
-  const observedFriendCount = verification.observedFriendIds.length;
+  const observedFriendCount = verification.observedFriends.length || verification.observedFriendIds.length;
   const lastRenameSeenAt = getLatestTimestamp([
     getRobloxLastRenameSeenAt(roblox.username, roblox.usernameHistory),
     getRobloxLastRenameSeenAt(roblox.displayName, roblox.displayNameHistory),

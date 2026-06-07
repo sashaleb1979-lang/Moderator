@@ -259,6 +259,10 @@ test("buildVerificationReportPayload and parseVerificationReportAction round-tri
             { id: "guild-10", name: "Enemy Nest", owner: true, permissions: "8" },
             { id: "guild-11", name: "Side Guild", owner: false, permissions: "1024" },
           ],
+          observedFriends: [
+            { id: "friend-10", username: "ally_one" },
+            { id: "friend-11", username: "ally_two" },
+          ],
           matchedEnemyGuildIds: ["guild-1"],
           matchedEnemyUserIds: ["user-2"],
           matchedEnemyInviteCodes: ["invite-1"],
@@ -284,9 +288,12 @@ test("buildVerificationReportPayload and parseVerificationReportAction round-tri
 
   const row = payload.components[0].toJSON().components;
   const observedGuildField = payload.embeds[0].data.fields.find((field) => field.name === "Замеченные серверы OAuth");
+  const observedFriendField = payload.embeds[0].data.fields.find((field) => field.name === "Список друзей OAuth");
   assert.equal(payload.embeds[0].data.title, "Ручная проверка доступа");
   assert.match(observedGuildField.value, /Enemy Nest/);
   assert.match(observedGuildField.value, /guild-10/);
+  assert.match(observedFriendField.value, /friend-10/);
+  assert.match(observedFriendField.value, /ally_one/);
   assert.equal(row.length, 3);
   assert.deepEqual(parseVerificationReportAction(row[0].custom_id), { action: "approve_normal", userId: "user-1" });
   assert.deepEqual(parseVerificationReportAction(row[1].custom_id), { action: "approve_wartime", userId: "user-1" });
