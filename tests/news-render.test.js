@@ -244,7 +244,7 @@ test("renderDailyNewsIssue builds edition-style public payload from compiled dig
   assert.equal(issue.coverSpec.accentColor, "#E6B450");
   assert.match(issue.publicMessage.content, /🗞️ Moderator Chronicle · 14\.05\.2026/);
   assert.match(issue.publicMessage.content, /━━━━━━━━/);
-  assert.match(issue.publicMessage.content, /Самый большой рывок/);
+  assert.doesNotMatch(issue.publicMessage.content, /Самый большой рывок/);
   assert.match(issue.publicMessage.content, /⚔️ апы киллов/);
   assert.doesNotMatch(issue.publicMessage.content, /<@/);
   assert.doesNotMatch(issue.publicMessage.content, /Главный рывок дня|резкие апы|редкие/);
@@ -255,7 +255,7 @@ test("renderDailyNewsIssue builds edition-style public payload from compiled dig
   assert.match(embed.description, /Акценты дня/);
   assert.match(embed.description, /⚠️ частично \+ неоднозначно/);
   assert.deepEqual(embed.fields.map((field) => field.name), [
-    "⚡ Сильные изменения",
+    "⚔️ Киллы · апы",
     "💬 Активность · топ сообщений",
     "🎮 JJS · топ игры",
     "🎙️ Voice · лидеры эфира",
@@ -266,7 +266,6 @@ test("renderDailyNewsIssue builds edition-style public payload from compiled dig
   ]);
   assert.match(embed.fields[0].value, /Prime/);
   assert.match(embed.fields[0].value, /за .*дн\./);
-  assert.match(embed.fields[0].value, /антитим/);
   assert.match(embed.fields[1].value, /Echo/);
   assert.match(embed.fields[1].value, /Prime/);
   assert.match(embed.fields[1].value, /\+18 активности/);
@@ -380,7 +379,7 @@ test("renderDailyNewsIssue uses silent user mentions and avoids duplicate public
   assert.match(publicText, /<@123456789012345678>/);
   assert.doesNotMatch(publicText, /@everyone|<@999999999999999999>/);
   assert.deepEqual(issue.publicMessage.allowedMentions, DENY_ALLOWED_MENTIONS);
-  assert.equal(issue.publicMessage.embeds[0].fields.some((field) => field.name === "⚔️ Киллы · апы"), false);
+  assert.equal(issue.publicMessage.embeds[0].fields.some((field) => field.name === "⚔️ Киллы · апы"), true);
   assert.match(issue.publicMessage.embeds[0].fields[0].value, /\+60 · за 3 дн\. · ~20\/день/);
   assert.match(threadText, /Все апы киллов/);
   assert.match(threadText, /<@123456789012345678>/);
@@ -544,7 +543,7 @@ test("renderDailyNewsIssue surfaces activity role dead transitions and antiteam 
   const publicText = JSON.stringify(issue.publicMessage);
 
   assert.equal(issue.diagnostics.hasPublicHighlights, true);
-  assert.match(fieldsByName.get("⚡ Сильные изменения"), /Returner/);
+  assert.match(fieldsByName.get("💬 Активность · топ сообщений"), /Returner/);
   assert.match(fieldsByName.get("☠️ Мертвецы"), /вышел из мертвецов/);
   assert.match(fieldsByName.get("☠️ Мертвецы"), /стал мертвецом/);
   assert.match(fieldsByName.get("🛡️ Антитим · новые ранги"), /Helper/);

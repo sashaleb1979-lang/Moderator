@@ -313,7 +313,7 @@ function formatReleaseQueueSummary(queue = {}) {
     `осталось **${dayKeys.length}**`,
     Number(queue?.completedDayCount) > 0 ? `готово **${Number(queue.completedDayCount)}**` : null,
     Number(queue?.lastPreparedDayCount) > 0 ? `подготовлено **${Number(queue.lastPreparedDayCount)}**` : null,
-    Number(queue?.alreadyPublishedDayCount) > 0 ? `переоформятся **${Number(queue.alreadyPublishedDayCount)}**` : null,
+    Number(queue?.skippedAlreadyPublishedCount) > 0 ? `пропущено уже опубликованных **${Number(queue.skippedAlreadyPublishedCount)}**` : null,
     currentDayKey ? `сейчас **${currentDayKey}**` : null,
     nextDayKey ? `следующий **${nextDayKey}**` : null,
     queue?.lastFailedDayKey ? `последний сбой **${queue.lastFailedDayKey}**` : null,
@@ -347,15 +347,16 @@ async function prepareDailyNewsReleaseRange({
   const dayKeys = buildInclusiveDayKeyRange(normalizedStartDayKey, normalizedEndDayKey, 62);
   const state = ensureNewsState(db);
   const alreadyPublishedDayCount = dayKeys.filter((dayKey) => hasStoredPublicDailyNewsPublish(state.dailyDigests?.[dayKey])).length;
+  const pendingDayKeys = dayKeys.filter((dayKey) => !hasStoredPublicDailyNewsPublish(state.dailyDigests?.[dayKey]));
   state.runtime.releaseQueue = {
     ...state.runtime.releaseQueue,
     active: false,
-    dayKeys,
+    dayKeys: pendingDayKeys,
     lastPreparedAt: resolveNowIso(now),
     lastPreparedRangeStartDayKey: dayKeys[0] || null,
     lastPreparedRangeEndDayKey: dayKeys[dayKeys.length - 1] || null,
     lastPreparedDayCount: dayKeys.length,
-    skippedAlreadyPublishedCount: 0,
+    skippedAlreadyPublishedCount: alreadyPublishedDayCount,
     alreadyPublishedDayCount,
     completedDayCount: 0,
     currentDayKey: null,
@@ -371,9 +372,9 @@ async function prepareDailyNewsReleaseRange({
 
   return {
     dayKeys,
-    pendingDayKeys: dayKeys,
+    pendingDayKeys,
     alreadyPublishedDayCount,
-    skippedAlreadyPublishedCount: 0,
+    skippedAlreadyPublishedCount: alreadyPublishedDayCount,
     queue: state.runtime.releaseQueue,
   };
 }
@@ -460,7 +461,7 @@ function buildDailyNewsStatusPayload(db = {}) {
       `публикация: **${formatPublishStatusLabel(state.runtime.lastPublishStatus)}** · день **${state.runtime.lastPublishedDayKey || "—"}**`,
       `период: **${formatReleaseQueueState(queue)}** · осталось **${Array.isArray(queue.dayKeys) ? queue.dayKeys.length : 0}**${queue.currentDayKey ? ` · сейчас **${queue.currentDayKey}**` : ""}${queue.dayKeys?.[0] ? ` · следующий **${queue.dayKeys[0]}**` : ""}`,
       Number(queue.completedDayCount) > 0 ? `готово в этом запуске: **${queue.completedDayCount}**` : null,
-      Number(queue.alreadyPublishedDayCount) > 0 ? `заново оформятся уже опубликованные дни: **${queue.alreadyPublishedDayCount}**` : null,
+      Number(queue.skippedAlreadyPublishedCount) > 0 ? `уже опубликованные дни пропущены: **${queue.skippedAlreadyPublishedCount}**` : null,
       queue.lastFailureMessage ? `сбой периода: **${queue.lastFailedDayKey || "—"}** · ${queue.lastFailureMessage} · retry на следующем тике` : null,
       `покрытие: **${coverage.partial ? "частичное" : "чистое"}${coverage.ambiguous ? " + неоднозначное" : ""}**`,
       `кандидаты: **${audit.rawCandidateCounts?.total || 0}**`,
@@ -1193,7 +1194,7 @@ async function handleDailyNewsPanelModalSubmitInteraction(options = {}) {
             `Период **${startDayKey} → ${endDayKey}** подготовлен.`,
             `Всего дней: **${result.dayKeys.length}**.`,
             `В очередь: **${result.pendingDayKeys.length}**.`,
-            result.alreadyPublishedDayCount > 0 ? `Уже опубликованные дни тоже пойдут заново: **${result.alreadyPublishedDayCount}**.` : null,
+            result.alreadyPublishedDayCount > 0 ? `Уже опубликованные дни пропущены: **${result.alreadyPublishedDayCount}**.` : null,
             "Публикация остановлена до ручного запуска.",
           ].filter(Boolean).join(" "),
           includeFlags: false,

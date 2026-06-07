@@ -117,6 +117,53 @@ test("compileDailyNewsDigest aggregates Moscow-day voice visitors including open
   assert.equal(db.sot.news.runtime.lastCoverageSummary.partial, true);
 });
 
+test("compileDailyNewsDigest falls back to activity voice daily rows when news voice capture is empty", () => {
+  const db = {
+    profiles: {
+      "user-voice": { displayName: "VoiceUser" },
+    },
+    sot: {
+      activity: {
+        userVoiceDailyStats: [
+          {
+            guildId: "guild-1",
+            userId: "user-voice",
+            date: "2026-05-14",
+            voiceDurationSeconds: 3600,
+            activeVoiceDurationSeconds: 1800,
+            sessionsCount: 2,
+            firstJoinedAt: "2026-05-14T10:00:00.000Z",
+            lastLeftAt: "2026-05-14T12:00:00.000Z",
+          },
+        ],
+      },
+      news: {
+        voice: {
+          openSessions: {},
+          finalizedSessions: [],
+        },
+        moderation: {
+          events: [],
+        },
+      },
+    },
+  };
+
+  const result = compileDailyNewsDigest({
+    db,
+    targetDayKey: "2026-05-14",
+    now: "2026-05-14T18:00:00.000Z",
+  });
+
+  assert.equal(result.digest.voice.visitorCount, 1);
+  assert.deepEqual(result.digest.voice.topVisitors.map((entry) => [entry.userId, entry.displayName, entry.totalDurationSeconds]), [
+    ["user-voice", "VoiceUser", 3600],
+  ]);
+  assert.equal(result.digest.voice.topVisitors[0].sourceTypes.includes("activity_voice_daily_stat"), true);
+  assert.equal(result.digest.publicEdition.voice.visitorCount, 1);
+  assert.equal(result.digest.audit.rawCandidateCounts.voiceSessions, 1);
+});
+
 test("compileDailyNewsDigest respects a fixed Moscow cutoff even when the compile starts later", () => {
   const db = {
     sot: {

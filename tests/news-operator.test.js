@@ -554,7 +554,7 @@ test("handleDailyNewsPanelModalSubmitInteraction prepares a historical range and
   assert.match(interaction.edits[0].embeds[0].data.fields.at(-1).value, /В очередь: \*\*3\*\*/);
 });
 
-test("handleDailyNewsPanelModalSubmitInteraction keeps already published days in the prepared range", async () => {
+test("handleDailyNewsPanelModalSubmitInteraction skips already published days in the prepared range", async () => {
   const interaction = createModalInteraction(DAILY_NEWS_PANEL_PREPARE_RANGE_MODAL_ID, {
     range_start_day_key: "2026-05-20",
     range_end_day_key: "2026-05-22",
@@ -584,11 +584,11 @@ test("handleDailyNewsPanelModalSubmitInteraction keeps already published days in
     now: "2026-05-23T10:00:00.000Z",
   });
 
-  assert.deepEqual(db.sot.news.runtime.releaseQueue.dayKeys, ["2026-05-20", "2026-05-21", "2026-05-22"]);
+  assert.deepEqual(db.sot.news.runtime.releaseQueue.dayKeys, ["2026-05-20", "2026-05-22"]);
   assert.equal(db.sot.news.runtime.releaseQueue.lastPreparedDayCount, 3);
-  assert.equal(db.sot.news.runtime.releaseQueue.skippedAlreadyPublishedCount, 0);
+  assert.equal(db.sot.news.runtime.releaseQueue.skippedAlreadyPublishedCount, 1);
   assert.equal(db.sot.news.runtime.releaseQueue.alreadyPublishedDayCount, 1);
-  assert.match(interaction.edits[0].embeds[0].data.fields.at(-1).value, /Уже опубликованные дни тоже пойдут заново: \*\*1\*\*/);
+  assert.match(interaction.edits[0].embeds[0].data.fields.at(-1).value, /Уже опубликованные дни пропущены: \*\*1\*\*/);
 });
 
 test("handleDailyNewsPanelButtonInteraction starts and stops the historical release queue", async () => {

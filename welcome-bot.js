@@ -4700,14 +4700,10 @@ function runDetached(task, onError = () => {}) {
 }
 
 function buildPendingSubmissionSuccessReply({ isKillsUpdate, accessGrantMode, hasRobloxIdentity }) {
+  void accessGrantMode;
+  void hasRobloxIdentity;
   if (isKillsUpdate) {
     return "Обновление kills отправлено модераторам. Текущие kills и tier изменятся после проверки.";
-  }
-  if (accessGrantMode === ONBOARD_ACCESS_GRANT_MODES.AFTER_SUBMIT && !hasRobloxIdentity) {
-    return "Заявка отправлена модераторам. Стартовая роль уже выдана, kill-tier прилетит после проверки. Если захочешь добавить Roblox username, нажми «Получить роль» ещё раз, пока заявка pending.";
-  }
-  if (accessGrantMode === ONBOARD_ACCESS_GRANT_MODES.AFTER_APPROVE) {
-    return "Заявка отправлена модераторам. Стартовая роль будет выдана после approve модератора, kill-tier прилетит после проверки.";
   }
   return "Заявка отправлена модераторам. Стартовая роль уже выдана, kill-tier прилетит после проверки.";
 }
@@ -7124,14 +7120,13 @@ function getCurrentOnboardAccessGrantMode() {
 }
 
 function getOnboardAccessGrantModeRank(value) {
-  const normalized = normalizeOnboardAccessGrantMode(value);
-  if (normalized === ONBOARD_ACCESS_GRANT_MODES.AFTER_REVIEW_POST) return 2;
-  if (normalized === ONBOARD_ACCESS_GRANT_MODES.AFTER_APPROVE) return 3;
+  void value;
   return 1;
 }
 
 function shouldGrantAccessRoleAtStage(stage, mode = getCurrentOnboardAccessGrantMode()) {
-  return getOnboardAccessGrantModeRank(stage) >= getOnboardAccessGrantModeRank(mode);
+  void mode;
+  return normalizeOnboardAccessGrantMode(stage) === ONBOARD_ACCESS_GRANT_MODES.AFTER_SUBMIT;
 }
 
 function getRobloxNicknameMarkerState() {
@@ -8175,6 +8170,32 @@ async function completeVerificationApprovedAccess(client, userId, accessMode = "
   return { granted: true, roleId: targetRoleId, accessMode: normalizedMode };
 }
 
+async function grantVerificationTemporaryReviewAccess(client, userId, reason = "verification pending moderator review") {
+  const roleId = getWartimeAccessRoleId();
+  if (!roleId) {
+    throw new Error("Не настроена временная роль доступа для verification review.");
+  }
+
+  const lifecycle = await reconcileVerificationAssignmentForMember(client, userId, null, {
+    reason: "verification temporary access skipped because verify-role was removed",
+  });
+  if (!lifecycle.active || lifecycle.stopped) {
+    throw new Error("Участник уже не находится на verification.");
+  }
+
+  const member = await fetchMember(client, userId);
+  if (!member) {
+    throw new Error("Участник не найден на сервере. Выдать временный доступ после OAuth не удалось.");
+  }
+
+  if (!member.roles.cache.has(roleId)) {
+    await member.roles.add(roleId, reason);
+    return { granted: true, roleId, accessMode: "wartime" };
+  }
+
+  return { granted: false, roleId, accessMode: "wartime" };
+}
+
 async function approveVerificationUser(client, userId, reviewedBy, accessMode = "normal", reason = "verification moderator approve") {
   const release = await completeVerificationApprovedAccess(client, userId, accessMode, reason);
   return updateVerificationProfile(userId, {
@@ -8301,24 +8322,49 @@ async function handleVerificationApprovedCallback(client, payload = {}) {
     accountAgeDays: Number.isFinite(Number(risk.accountAgeDays)) ? Math.max(0, Number(risk.accountAgeDays)) : null,
   });
 
+  updateVerificationProfile(userId, {
+    status: "manual_review",
+    decision: "manual_review",
+    decisionReason: "oauth_completed_waiting_moderator",
+    lastError: "",
+  });
+
+  let accessNote = "Временная роль доступа выдана до решения модератора.";
   try {
-    await approveVerificationUser(client, userId, "oauth:auto", "normal", "verification oauth auto approve");
-    await logVerificationRuntimeEvent(client, `VERIFICATION_APPROVED: <@${userId}> oauth auto approve completed.`);
+    await grantVerificationTemporaryReviewAccess(client, userId, "verification clean oauth pending moderator review");
   } catch (error) {
-    const reasonText = cleanVerificationText(error?.message || error, 300) || "unknown";
+    const accessError = cleanVerificationText(error?.message || error, 300) || "unknown";
+    accessNote = `Предупреждение: временную роль доступа не удалось выдать автоматически: ${accessError}.`;
     updateVerificationProfile(userId, {
-      status: "manual_review",
-      decision: "manual_review",
-      decisionReason: "oauth_auto_approve_failed",
-      completedAt: nowIso(),
-      lastError: reasonText,
+      lastError: `verification temporary access failed: ${accessError}`,
     });
-    await postVerificationManualReport(client, userId, `OAuth завершён, но авто-выдача доступа не удалась: ${reasonText}. Кейс отправлен модераторам.`);
+    await logVerificationRuntimeEvent(client, `VERIFICATION_TEMPORARY_ACCESS_FAILED: <@${userId}> error=${accessError}`, "error");
+  }
+
+  try {
+    await postVerificationManualReport(
+      client,
+      userId,
+      `OAuth завершён без риск-флагов. Кейс отправлен на ручное решение модератора. ${accessNote}`
+    );
     updateVerificationProfile(userId, {
       reportSentAt: nowIso(),
     });
-    await logVerificationRuntimeEvent(client, `VERIFICATION_APPROVE_FALLBACK_MANUAL: <@${userId}> error=${reasonText}`, "warn");
+  } catch (error) {
+    const reportError = cleanVerificationText(error?.message || error, 300) || "unknown";
+    updateVerificationProfile(userId, {
+      reportDueAt: nowIso(),
+      lastError: `verification report delivery failed: ${reportError}`,
+    });
+    await logVerificationRuntimeEvent(
+      client,
+      `VERIFICATION_READY_FOR_REVIEW_REPORT_FAILED: <@${userId}> error=${reportError}`,
+      "error"
+    ).catch(() => {});
+    return;
   }
+
+  await logVerificationRuntimeEvent(client, `VERIFICATION_READY_FOR_REVIEW: <@${userId}> clean oauth waiting for moderator decision.`);
 }
 
 async function handleVerificationManualReviewCallback(client, payload = {}) {
@@ -8339,10 +8385,10 @@ async function handleVerificationManualReviewCallback(client, payload = {}) {
       ? "oauth_risk_review"
       : "oauth_completed_waiting_moderator";
   const statusNote = risk.missingObservedGuilds
-    ? "Discord OAuth не вернул список серверов. Кейс отправлен на ручную проверку и остаётся в карантине."
+    ? "Discord OAuth не вернул список серверов. Кейс отправлен на ручную проверку."
     : risk.requiresManualReview
-      ? "OAuth завершён, система нашла совпадения по рискам. Кейс остаётся в карантине до ручного решения модератора."
-      : "OAuth завершён. Доступ не выдаётся автоматически: кейс остаётся в карантине до ручного решения модератора.";
+      ? "OAuth завершён, система нашла совпадения по рискам. Кейс отправлен на ручную проверку."
+      : "OAuth завершён. Кейс отправлен на ручную проверку модератора.";
 
   updateVerificationProfile(userId, {
     status: "manual_review",
@@ -8370,8 +8416,21 @@ async function handleVerificationManualReviewCallback(client, payload = {}) {
     decisionReason,
     lastError: "",
   });
+
+  let releaseNote = "Временная роль доступа выдана до решения модератора.";
   try {
-    await postVerificationManualReport(client, userId, statusNote);
+    await grantVerificationTemporaryReviewAccess(client, userId, "verification manual review temporary access");
+  } catch (error) {
+    const releaseError = cleanVerificationText(error?.message || error, 300) || "unknown";
+    releaseNote = `Предупреждение: временную роль доступа не удалось выдать автоматически: ${releaseError}.`;
+    updateVerificationProfile(userId, {
+      lastError: `verification temporary access failed: ${releaseError}`,
+    });
+    await logVerificationRuntimeEvent(client, `VERIFICATION_TEMPORARY_ACCESS_FAILED: <@${userId}> error=${releaseError}`, "error");
+  }
+
+  try {
+    await postVerificationManualReport(client, userId, `${statusNote} ${releaseNote}`);
     updateVerificationProfile(userId, {
       reportSentAt: nowIso(),
     });
@@ -8959,28 +9018,6 @@ async function syncApprovedSubmissionRoles(client, submission, options = {}) {
     tierSynced = true;
   } catch (error) {
     warnings.push(`tier-role: ${formatRuntimeError(error)}`);
-  }
-
-  const profile = getProfile(submission.userId);
-  if (!profile.accessGrantedAt || getCurrentOnboardAccessGrantMode() === ONBOARD_ACCESS_GRANT_MODES.AFTER_APPROVE) {
-    accessAttempted = true;
-    try {
-      accessGranted = await maybeGrantAccessRoleAtStage(
-        client,
-        submission.userId,
-        ONBOARD_ACCESS_GRANT_MODES.AFTER_APPROVE,
-        reason
-      );
-      if (accessGranted) {
-        try {
-          saveDb();
-        } catch (error) {
-          warnings.push(`сохранение accessGrantedAt: ${formatRuntimeError(error)}`);
-        }
-      }
-    } catch (error) {
-      warnings.push(`стартовый доступ: ${formatRuntimeError(error)}`);
-    }
   }
 
   return {
@@ -10871,9 +10908,7 @@ async function processPendingSubmissionMessage(client, message, options) {
     const accessMember = await fetchMember(client, message.author.id);
     previousAccessRoleIds = getRolePoolSnapshot(accessMember, accessRoleIds);
 
-    if (currentAccessGrantMode === ONBOARD_ACCESS_GRANT_MODES.AFTER_SUBMIT) {
-      await maybeGrantAccessRoleAtStage(client, message.author.id, ONBOARD_ACCESS_GRANT_MODES.AFTER_SUBMIT, "newcomer application submitted");
-    }
+    await maybeGrantAccessRoleAtStage(client, message.author.id, ONBOARD_ACCESS_GRANT_MODES.AFTER_SUBMIT, "newcomer application submitted");
 
     submission = await createPendingSubmissionFromAttachment(client, {
       user: message.author,
@@ -10886,10 +10921,6 @@ async function processPendingSubmissionMessage(client, message, options) {
       screenshotUrl: attachment.url,
     });
 
-    if (currentAccessGrantMode === ONBOARD_ACCESS_GRANT_MODES.AFTER_REVIEW_POST) {
-      await maybeGrantAccessRoleAtStage(client, message.author.id, ONBOARD_ACCESS_GRANT_MODES.AFTER_REVIEW_POST, "newcomer application moved to moderator review");
-      saveDb();
-    }
   } catch (error) {
     if (submission?.id) {
       delete db.submissions[submission.id];
@@ -12075,16 +12106,6 @@ async function buildModeratorPanelPayload(client, statusText = "", includeFlags 
           .setLabel("Роль после заявки")
           .setStyle(currentAccessGrantMode === ONBOARD_ACCESS_GRANT_MODES.AFTER_SUBMIT ? ButtonStyle.Success : ButtonStyle.Secondary)
           .setDisabled(currentAccessGrantMode === ONBOARD_ACCESS_GRANT_MODES.AFTER_SUBMIT),
-        new ButtonBuilder()
-          .setCustomId("panel_access_grant_after_review_post")
-          .setLabel("Роль после проверки")
-          .setStyle(currentAccessGrantMode === ONBOARD_ACCESS_GRANT_MODES.AFTER_REVIEW_POST ? ButtonStyle.Success : ButtonStyle.Secondary)
-          .setDisabled(currentAccessGrantMode === ONBOARD_ACCESS_GRANT_MODES.AFTER_REVIEW_POST),
-        new ButtonBuilder()
-          .setCustomId("panel_access_grant_after_approve")
-          .setLabel("Роль после одобрения")
-          .setStyle(currentAccessGrantMode === ONBOARD_ACCESS_GRANT_MODES.AFTER_APPROVE ? ButtonStyle.Success : ButtonStyle.Secondary)
-          .setDisabled(currentAccessGrantMode === ONBOARD_ACCESS_GRANT_MODES.AFTER_APPROVE),
         new ButtonBuilder()
           .setCustomId(BOT_HELPER_PANEL_CONFIG_BUTTON_ID)
           .setLabel("Bot helper")
@@ -15623,7 +15644,7 @@ async function syncApprovedAccessRoles(client, targetUserId = null, options = {}
 
     summary.processed += 1;
     const managedRoleIds = getManagedStartAccessRoleIds().filter((roleId) => roleId && member?.roles?.cache?.has(roleId));
-    if (!targetUserId && managedRoleIds.length > 0) {
+    if (managedRoleIds.length > 0) {
       summary.alreadyHad += 1;
       if (!profile.accessGrantedAt) {
         profile.accessGrantedAt = nowIso();
@@ -15634,252 +15655,12 @@ async function syncApprovedAccessRoles(client, targetUserId = null, options = {}
       continue;
     }
 
-    const targetRoleId = getGrantedAccessRoleIdForMode(getCurrentOnboardMode(), member);
-    const alreadyInSync = Boolean(targetRoleId && member?.roles?.cache?.has(targetRoleId) && managedRoleIds.length === 1);
-    if (alreadyInSync) {
-      summary.alreadyHad += 1;
-      if (!profile.accessGrantedAt) {
-        profile.accessGrantedAt = nowIso();
-        profile.updatedAt = nowIso();
-        summary.updatedProfiles += 1;
-        changed = true;
-      }
-      continue;
-    }
-
-    try {
-      const granted = await grantAccessRole(client, userId, reason);
-      if (!granted) {
-        summary.missingMembers += 1;
-        continue;
-      }
-      profile.accessGrantedAt = profile.accessGrantedAt || nowIso();
-      profile.updatedAt = nowIso();
-      summary.granted += 1;
-      summary.updatedProfiles += 1;
-      changed = true;
-    } catch (error) {
-      summary.failed += 1;
-      console.warn(`Approved access sync failed for ${userId}: ${formatRuntimeError(error)}`);
-    }
+    summary.failed += 1;
+    console.warn(`Approved access sync skipped for ${userId}: managed access roles are only granted on submit, manual action, or verification release.`);
   }
 
   if (changed) saveDb();
   return summary;
-}
-
-const WARTIME_ACCESS_ROLLBACK_SUBCOMMAND_NAME = "rollbackwartime";
-const WARTIME_ACCESS_ROLLBACK_FROM_AT = "2026-06-07T08:00:00.000Z";
-const WARTIME_ACCESS_ROLLBACK_COMMAND_EXPIRES_AT = "2026-06-08T08:00:00.000Z";
-const WARTIME_ACCESS_ROLLBACK_CONFIRM = "ROLLBACK";
-const WARTIME_ACCESS_ROLLBACK_DEFAULT_LIMIT = 500;
-const WARTIME_ACCESS_ROLLBACK_MAX_LIMIT = 1000;
-
-function normalizeWartimeAccessRollbackLimit(value) {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) return WARTIME_ACCESS_ROLLBACK_DEFAULT_LIMIT;
-  return Math.max(1, Math.min(WARTIME_ACCESS_ROLLBACK_MAX_LIMIT, Math.trunc(parsed)));
-}
-
-function isWartimeAccessRollbackCommandExpired(now = Date.now()) {
-  return now >= new Date(WARTIME_ACCESS_ROLLBACK_COMMAND_EXPIRES_AT).getTime();
-}
-
-function getRollbackAuditEntryCreatedAt(entry) {
-  const timestamp = Number(entry?.createdTimestamp);
-  if (Number.isFinite(timestamp) && timestamp > 0) return new Date(timestamp).toISOString();
-  return "";
-}
-
-function formatWartimeAccessRollbackPreview(candidates, limit = 20) {
-  const preview = candidates.slice(0, limit).map((candidate) => (
-    `<@${candidate.userId}> (${candidate.userId}, audit ${candidate.auditEntryId}, ${candidate.createdAt || "time unknown"})`
-  ));
-  const hidden = candidates.length - preview.length;
-  if (hidden > 0) preview.push(`...и ещё ${hidden}`);
-  return preview.length ? preview.join("\n") : "Кандидатов нет.";
-}
-
-async function fetchWartimeAccessRollbackAuditEntries(guild, { fromTimestamp, limit }) {
-  const entries = [];
-  let before;
-  let exhaustedByTime = false;
-
-  while (entries.length < limit && !exhaustedByTime) {
-    const pageLimit = Math.min(100, limit - entries.length);
-    const request = { type: AuditLogEvent.MemberRoleUpdate, limit: pageLimit };
-    if (before) request.before = before;
-
-    const auditLogs = await guild.fetchAuditLogs(request).catch((error) => {
-      throw new Error(`Не удалось прочитать Discord audit log: ${formatRuntimeError(error)}`);
-    });
-    const pageEntries = auditLogs?.entries ? [...auditLogs.entries.values()] : [];
-    if (!pageEntries.length) break;
-
-    for (const entry of pageEntries) {
-      before = entry?.id || before;
-      const createdTimestamp = Number(entry?.createdTimestamp);
-      if (Number.isFinite(createdTimestamp) && createdTimestamp < fromTimestamp) {
-        exhaustedByTime = true;
-        continue;
-      }
-      entries.push(entry);
-      if (entries.length >= limit) break;
-    }
-  }
-
-  return entries;
-}
-
-async function collectWartimeAccessRollbackCandidates(client, options = {}) {
-  const normalAccessRoleId = getNormalAccessRoleId();
-  const wartimeAccessRoleId = getWartimeAccessRoleId();
-  if (!normalAccessRoleId || !wartimeAccessRoleId) {
-    throw new Error("Не настроены normal/wartime access роли. Откат остановлен.");
-  }
-
-  const fromIso = String(options?.fromIso || WARTIME_ACCESS_ROLLBACK_FROM_AT).trim();
-  const fromTimestamp = new Date(fromIso).getTime();
-  if (!Number.isFinite(fromTimestamp)) {
-    throw new Error(`Некорректное время начала отката: ${fromIso}`);
-  }
-
-  const limit = normalizeWartimeAccessRollbackLimit(options?.limit);
-  const guild = await getGuild(client);
-  if (!guild) throw new Error("Guild недоступен.");
-
-  const entries = await fetchWartimeAccessRollbackAuditEntries(guild, { fromTimestamp, limit });
-  const seenUserIds = new Set();
-  const candidates = [];
-  const skipped = {
-    noTarget: 0,
-    duplicate: 0,
-    noWartimeAdd: 0,
-    memberMissing: 0,
-    noCurrentWartime: 0,
-  };
-
-  for (const entry of entries) {
-    const executorId = String(entry?.executor?.id || entry?.executorId || "").trim();
-    const addedRoleIds = getAutonomyGuardAuditChangeRoleIds(entry, "$add");
-    const removedRoleIds = getAutonomyGuardAuditChangeRoleIds(entry, "$remove");
-    if (!addedRoleIds.includes(wartimeAccessRoleId)) {
-      skipped.noWartimeAdd += 1;
-      continue;
-    }
-
-    const userId = getAutonomyGuardAuditEntryTargetId(entry);
-    if (!userId) {
-      skipped.noTarget += 1;
-      continue;
-    }
-    if (seenUserIds.has(userId)) {
-      skipped.duplicate += 1;
-      continue;
-    }
-    seenUserIds.add(userId);
-
-    const member = await fetchMember(client, userId);
-    if (!member) {
-      skipped.memberMissing += 1;
-      continue;
-    }
-    if (!member.roles?.cache?.has?.(wartimeAccessRoleId)) {
-      skipped.noCurrentWartime += 1;
-      continue;
-    }
-
-    const profile = db.profiles?.[userId] || null;
-    candidates.push({
-      userId,
-      auditEntryId: String(entry?.id || "").trim(),
-      createdAt: getRollbackAuditEntryCreatedAt(entry),
-      executorId,
-      removedRoleIds,
-      addedRoleIds,
-      profileStatus: String(profile?.lastSubmissionStatus || "").trim(),
-    });
-  }
-
-  return {
-    fromIso,
-    limit,
-    scanned: entries.length,
-    candidates,
-    skipped,
-    normalAccessRoleId,
-    wartimeAccessRoleId,
-  };
-}
-
-async function rollbackWartimeAccessIncident(client, options = {}) {
-  const dryRun = options?.dryRun !== false;
-  const actorTag = String(options?.actorTag || "unknown moderator").trim();
-  const summary = await collectWartimeAccessRollbackCandidates(client, options);
-  summary.dryRun = dryRun;
-  summary.restored = 0;
-  summary.failed = 0;
-  summary.failures = [];
-
-  if (dryRun) return summary;
-
-  for (const candidate of summary.candidates) {
-    const userId = candidate.userId;
-    const reason = `wartime access incident rollback by ${actorTag}`;
-    try {
-      const member = await fetchMember(client, userId);
-      if (!member) {
-        summary.failed += 1;
-        summary.failures.push({ userId, error: "member missing" });
-        continue;
-      }
-
-      markAutonomyGuardRoleMutationIgnore(userId);
-      if (!member.roles.cache.has(summary.normalAccessRoleId)) {
-        await member.roles.add(summary.normalAccessRoleId, reason);
-      }
-      if (member.roles.cache.has(summary.wartimeAccessRoleId)) {
-        markAutonomyGuardRoleMutationIgnore(userId);
-        await member.roles.remove(summary.wartimeAccessRoleId, reason);
-      }
-      summary.restored += 1;
-    } catch (error) {
-      summary.failed += 1;
-      summary.failures.push({ userId, error: formatRuntimeError(error) });
-      console.warn(`Wartime access incident rollback failed for ${userId}: ${formatRuntimeError(error)}`);
-    }
-  }
-
-  await logLine(
-    client,
-    `WARTIME_ACCESS_ROLLBACK: by=${actorTag} scanned=${summary.scanned} candidates=${summary.candidates.length} restored=${summary.restored} failed=${summary.failed}`
-  ).catch(() => {});
-  return summary;
-}
-
-function formatWartimeAccessRollbackSummary(summary) {
-  const skipped = summary?.skipped || {};
-  const lines = [
-    `Окно отката: с 2026-06-07 11:00 МСК (${summary.fromIso}).`,
-    `Режим: ${summary.dryRun ? "dry-run, роли не менялись" : "реальный откат"}.`,
-    `Audit log проверено: ${summary.scanned}/${summary.limit}. Кандидатов: ${summary.candidates.length}.`,
-  ];
-
-  if (!summary.dryRun) {
-    lines.push(`Восстановлено: ${summary.restored}. Ошибок: ${summary.failed}.`);
-  }
-
-  lines.push(
-    `Пропущено: без выдачи wartime ${skipped.noWartimeAdd || 0}, уже без wartime ${skipped.noCurrentWartime || 0}, нет участника ${skipped.memberMissing || 0}, дубли ${skipped.duplicate || 0}.`
-  );
-  lines.push(formatWartimeAccessRollbackPreview(summary.candidates));
-
-  if (Array.isArray(summary.failures) && summary.failures.length) {
-    lines.push("Ошибки:");
-    lines.push(summary.failures.slice(0, 10).map((item) => `<@${item.userId}>: ${String(item.error || "").slice(0, 160)}`).join("\n"));
-  }
-
-  return lines.join("\n");
 }
 
 function createAccessCompanionSyncSummary() {
@@ -17775,7 +17556,6 @@ client.on("interactionCreate", async (interaction) => {
       "deleteprofile",
       "nonfake",
       "removetier",
-      WARTIME_ACCESS_ROLLBACK_SUBCOMMAND_NAME,
     ]);
 
     if (isIsolatorCommand) {
@@ -17799,33 +17579,6 @@ client.on("interactionCreate", async (interaction) => {
       })) {
         return;
       }
-    }
-
-    if (subcommand === WARTIME_ACCESS_ROLLBACK_SUBCOMMAND_NAME) {
-      if (isWartimeAccessRollbackCommandExpired()) {
-        await interaction.editReply("Аварийная команда отката истекла и должна исчезнуть после следующей регистрации slash-команд.");
-        return;
-      }
-
-      const dryRun = interaction.options.getBoolean("dry_run") !== false;
-      const limit = normalizeWartimeAccessRollbackLimit(interaction.options.getInteger("limit"));
-      const confirm = String(interaction.options.getString("confirm") || "").trim();
-      if (!dryRun && confirm !== WARTIME_ACCESS_ROLLBACK_CONFIRM) {
-        await interaction.editReply("Для реального отката запусти с `dry_run: false` и `confirm: ROLLBACK`. Сначала лучше dry-run.");
-        return;
-      }
-
-      try {
-        const result = await rollbackWartimeAccessIncident(client, {
-          dryRun,
-          limit,
-          actorTag: interaction.user?.tag || interaction.user?.id || "unknown moderator",
-        });
-        await interaction.editReply(formatWartimeAccessRollbackSummary(result).slice(0, 1900));
-      } catch (error) {
-        await interaction.editReply(`Откат wartime access остановлен: ${String(error?.message || error || "неизвестная ошибка").slice(0, 500)}`);
-      }
-      return;
     }
 
     if (subcommand === "panel") {
@@ -21782,8 +21535,6 @@ client.on("interactionCreate", async (interaction) => {
       "panel_mode_normal",
       "panel_mode_wartime",
       "panel_access_grant_after_submit",
-      "panel_access_grant_after_review_post",
-      "panel_access_grant_after_approve",
     ].includes(interaction.customId)) {
       if (!isModerator(interaction.member)) {
         await interaction.reply(ephemeralPayload({ content: "Нет прав." }));
@@ -21853,20 +21604,6 @@ client.on("interactionCreate", async (interaction) => {
         state.changedBy = interaction.user.tag;
         saveDb();
         statusText = "Выдача стартовой роли переключена на режим: сразу после заявки.";
-      } else if (interaction.customId === "panel_access_grant_after_review_post") {
-        const state = getOnboardAccessGrantState();
-        state.mode = ONBOARD_ACCESS_GRANT_MODES.AFTER_REVIEW_POST;
-        state.changedAt = nowIso();
-        state.changedBy = interaction.user.tag;
-        saveDb();
-        statusText = "Выдача стартовой роли переключена на режим: после публикации review-заявки.";
-      } else if (interaction.customId === "panel_access_grant_after_approve") {
-        const state = getOnboardAccessGrantState();
-        state.mode = ONBOARD_ACCESS_GRANT_MODES.AFTER_APPROVE;
-        state.changedAt = nowIso();
-        state.changedBy = interaction.user.tag;
-        saveDb();
-        statusText = "Выдача стартовой роли переключена на режим: только после approve модератора.";
       }
 
       await interaction.editReply(await buildModeratorPanelPayload(client, statusText, false));
@@ -22347,41 +22084,11 @@ client.on("interactionCreate", async (interaction) => {
           return;
         }
 
-        const grantWartimeStarterRole = normalizeOnboardAccessMode(getCurrentOnboardMode()) === ONBOARD_ACCESS_MODES.WARTIME
-          && Boolean(getWartimeAccessRoleId());
-        let grantedWartimeStarterRole = false;
-        const wartimeRollbackRoleIds = grantWartimeStarterRole ? getAccessGrantRollbackRoleIds() : [];
-        const wartimeAccessMember = grantWartimeStarterRole ? await fetchMember(client, interaction.user.id) : null;
-        const wartimeSnapshot = grantWartimeStarterRole ? getRolePoolSnapshot(wartimeAccessMember, wartimeRollbackRoleIds) : [];
-
-        if (grantWartimeStarterRole) {
-          await grantAccessRole(client, interaction.user.id, "non-JJS captcha passed during wartime");
-          grantedWartimeStarterRole = true;
-        }
-
-        try {
-          await grantNonGgsAccessRole(client, interaction.user.id, "non-JJS captcha passed");
-        } catch (error) {
-          if (grantedWartimeStarterRole) {
-            await restoreRolePoolSnapshot(
-              client,
-              interaction.user.id,
-              wartimeRollbackRoleIds,
-              wartimeSnapshot,
-              "rollback wartime starter role after non-JJS grant failure"
-            ).catch((rollbackError) => {
-              console.warn(`Rollback wartime starter role failed for ${interaction.user.id}: ${formatRuntimeError(rollbackError)}`);
-            });
-          }
-          throw error;
-        }
+        await grantNonGgsAccessRole(client, interaction.user.id, "non-JJS captcha passed");
 
         clearNonGgsCaptchaSession(interaction.user.id);
 
         const profile = getProfile(interaction.user.id);
-        if (grantedWartimeStarterRole) {
-          profile.accessGrantedAt = profile.accessGrantedAt || nowIso();
-        }
         profile.nonGgsAccessGrantedAt = profile.nonGgsAccessGrantedAt || nowIso();
         profile.nonGgsCaptchaPassedAt = nowIso();
         profile.updatedAt = nowIso();
@@ -22389,15 +22096,11 @@ client.on("interactionCreate", async (interaction) => {
 
         await logLine(
           client,
-          grantedWartimeStarterRole
-            ? `NON_JJS_ACCESS: <@${interaction.user.id}> passed captcha and received separate no-JJS role plus wartime starter role`
-            : `NON_JJS_ACCESS: <@${interaction.user.id}> passed captcha and received separate no-JJS role`
+          `NON_JJS_ACCESS: <@${interaction.user.id}> passed captcha and received separate no-JJS role`
         );
 
         await interaction.update({
-          content: grantedWartimeStarterRole
-            ? "Готово. Капча пройдена: тебе выдана отдельная роль доступа для тех, кто не играет в JJS, и военная стартовая роль текущего режима."
-            : "Готово. Капча пройдена, тебе выдана отдельная роль доступа для тех, кто не играет в JJS.",
+          content: "Готово. Капча пройдена, тебе выдана отдельная роль доступа для тех, кто не играет в JJS.",
           embeds: [],
           components: [],
           attachments: [],
@@ -23117,9 +22820,7 @@ client.on("interactionCreate", async (interaction) => {
         let submission = null;
 
         try {
-          if (currentAccessGrantMode === ONBOARD_ACCESS_GRANT_MODES.AFTER_SUBMIT) {
-            await maybeGrantAccessRoleAtStage(client, interaction.user.id, ONBOARD_ACCESS_GRANT_MODES.AFTER_SUBMIT, "newcomer application submitted");
-          }
+          await maybeGrantAccessRoleAtStage(client, interaction.user.id, ONBOARD_ACCESS_GRANT_MODES.AFTER_SUBMIT, "newcomer application submitted");
 
           submission = await createPendingSubmissionFromAttachment(client, {
             user: interaction.user,
@@ -23132,10 +22833,6 @@ client.on("interactionCreate", async (interaction) => {
             screenshotUrl: session.pendingScreenshotUrl,
           });
 
-          if (currentAccessGrantMode === ONBOARD_ACCESS_GRANT_MODES.AFTER_REVIEW_POST) {
-            await maybeGrantAccessRoleAtStage(client, interaction.user.id, ONBOARD_ACCESS_GRANT_MODES.AFTER_REVIEW_POST, "newcomer application moved to moderator review");
-            saveDb();
-          }
         } catch (error) {
           if (submission?.id) {
             delete db.submissions[submission.id];
@@ -23175,11 +22872,7 @@ client.on("interactionCreate", async (interaction) => {
           console.warn(`Submit log failed for ${interaction.user.id}: ${formatRuntimeError(error)}`);
         });
 
-        await interaction.editReply(
-          currentAccessGrantMode === ONBOARD_ACCESS_GRANT_MODES.AFTER_APPROVE
-            ? `Roblox username подтверждён: **${robloxUser.name}** (ID ${robloxUser.id}). Заявка ушла модераторам. Стартовая роль будет выдана после approve.`
-            : `Roblox username подтверждён: **${robloxUser.name}** (ID ${robloxUser.id}). Заявка ушла модераторам.`
-        );
+        await interaction.editReply(`Roblox username подтверждён: **${robloxUser.name}** (ID ${robloxUser.id}). Заявка ушла модераторам, стартовая роль уже выдана.`);
         return;
       }
 

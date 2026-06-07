@@ -233,6 +233,42 @@ function createVoiceCandidate(session, { windowStartMs, windowEndMs, sourceType,
   };
 }
 
+function createActivityVoiceCandidate(row, { profiles = {}, windowStartMs, windowEndMs } = {}) {
+  const userId = cleanString(row?.userId, 80);
+  if (!userId) return null;
+
+  const startedMs = parseIsoMs(row?.firstJoinedAt);
+  const endedMs = parseIsoMs(row?.lastLeftAt);
+  if (startedMs === null && endedMs === null) return null;
+
+  const firstObservedMs = startedMs !== null ? Math.max(startedMs, windowStartMs) : endedMs;
+  const lastObservedMs = endedMs !== null ? Math.min(endedMs, windowEndMs) : startedMs;
+  if (!Number.isFinite(firstObservedMs) || !Number.isFinite(lastObservedMs)) return null;
+  if (lastObservedMs < windowStartMs || firstObservedMs > windowEndMs) return null;
+
+  const profile = profiles && typeof profiles === "object" && !Array.isArray(profiles) ? profiles[userId] : null;
+  const displayName = cleanString(
+    profile?.summary?.preferredDisplayName
+      || profile?.displayName
+      || profile?.username
+      || userId,
+    120
+  ) || "unknown";
+
+  return {
+    userId,
+    displayName,
+    durationSeconds: Math.max(0, Number(row?.voiceDurationSeconds) || 0),
+    enteredChannelIds: [],
+    moveCount: 0,
+    incomplete: false,
+    incompleteReason: null,
+    firstObservedMs,
+    lastObservedMs,
+    sourceType: "activity_voice_daily_stat",
+  };
+}
+
 function addVoiceCandidate(aggregateByUser, candidate) {
   const existing = aggregateByUser.get(candidate.userId) || {
     userId: candidate.userId,
@@ -284,8 +320,9 @@ function compareVoiceLeaders(left, right) {
     || compareVoiceVisitors(left, right);
 }
 
-function collectVoiceDigest(state, window) {
+function collectVoiceDigest(state, window, db = {}) {
   const voiceState = state.voice && typeof state.voice === "object" && !Array.isArray(state.voice) ? state.voice : {};
+  const profiles = db.profiles && typeof db.profiles === "object" && !Array.isArray(db.profiles) ? db.profiles : {};
   const aggregateByUser = new Map();
   const sourceCandidates = [];
   let incompleteSessionCount = 0;
@@ -319,6 +356,23 @@ function collectVoiceDigest(state, window) {
     sourceCandidates.push(candidate);
     sourceSessionCount += 1;
     if (candidate.incomplete) incompleteSessionCount += 1;
+    addVoiceCandidate(aggregateByUser, candidate);
+  }
+
+  const activityVoiceRows = Array.isArray(db.sot?.activity?.userVoiceDailyStats)
+    ? db.sot.activity.userVoiceDailyStats
+    : [];
+  for (const row of activityVoiceRows) {
+    const userId = cleanString(row?.userId, 80);
+    if (!userId || aggregateByUser.has(userId)) continue;
+    const candidate = createActivityVoiceCandidate(row, {
+      profiles,
+      windowStartMs: window.startMs,
+      windowEndMs: window.endMs,
+    });
+    if (!candidate) continue;
+    sourceCandidates.push(candidate);
+    sourceSessionCount += 1;
     addVoiceCandidate(aggregateByUser, candidate);
   }
 
@@ -561,7 +615,7 @@ function compileDailyNewsDigest({ db = {}, targetDayKey = "", now, saveDb, windo
       windowEndAt,
       publishHourMsk,
     });
-    const voice = collectVoiceDigest(state, window);
+    const voice = collectVoiceDigest(state, window, db);
     const moderation = collectModerationDigest(state, window);
     const kills = collectKillDigest({ db, window, config: state.config });
     const activity = collectActivityDigest({ db, window, config: state.config });

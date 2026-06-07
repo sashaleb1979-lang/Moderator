@@ -401,11 +401,11 @@ function createVerificationCallbackHandler(options = {}) {
         return true;
       }
 
-      console.log(`[verification-runtime] CALLBACK_APPROVED user=${cleanString(session.userId, 80) || "unknown"} state=${formatLogToken(state)} guilds=${risk.observedGuilds.length}`);
+      console.log(`[verification-runtime] CALLBACK_READY_FOR_REVIEW user=${cleanString(session.userId, 80) || "unknown"} state=${formatLogToken(state)} guilds=${risk.observedGuilds.length}`);
       await onApproved(payload);
       writeHtmlResponse(response, 200, buildVerificationCallbackHtml({
-        title: "Проверка завершена",
-        description: "OAuth успешно завершён. Вернись в Discord: доступ будет выдан автоматически.",
+        title: "Проверка принята",
+        description: "OAuth успешно завершён. Вернись в Discord: отчёт отправлен модераторам, решение будет вынесено вручную.",
         color: "#22c55e",
       }));
       return true;

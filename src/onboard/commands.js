@@ -6,12 +6,6 @@ const { VERIFY_COMMAND_NAME, VERIFY_SUBCOMMAND_NAMES } = require("../verificatio
 const { ANALYTICS_COMMAND_NAME } = require("../analytics/panel");
 
 const PROFILE_COMMAND_NAME = "профиль";
-const WARTIME_ACCESS_ROLLBACK_SUBCOMMAND_NAME = "rollbackwartime";
-const WARTIME_ACCESS_ROLLBACK_COMMAND_EXPIRES_AT = "2026-06-08T08:00:00.000Z";
-
-function shouldRegisterWartimeAccessRollbackCommand(now = new Date()) {
-  return new Date(WARTIME_ACCESS_ROLLBACK_COMMAND_EXPIRES_AT).getTime() > now.getTime();
-}
 
 const ONBOARD_SUBCOMMAND_NAMES = [
   "activitystatus",
@@ -26,7 +20,6 @@ const ONBOARD_SUBCOMMAND_NAMES = [
   "robloxauth",
   "deleteprofile",
   "removetier",
-  ...(shouldRegisterWartimeAccessRollbackCommand() ? [WARTIME_ACCESS_ROLLBACK_SUBCOMMAND_NAME] : []),
 ];
 
 const TOP_LEVEL_COMMAND_NAMES = ["onboard", ROLE_PANEL_COMMAND_NAME, VERIFY_COMMAND_NAME, PROFILE_COMMAND_NAME, ANTITEAM_COMMAND_NAME, ANALYTICS_COMMAND_NAME];
@@ -149,32 +142,6 @@ function buildCommands() {
           .addUserOption((option) => option.setName("target").setDescription("Игрок (если в сервере)"))
           .addStringOption((option) => option.setName("user_id").setDescription("ID игрока (если вышел из сервера)"))
       );
-
-  if (shouldRegisterWartimeAccessRollbackCommand()) {
-    onboardCommand.addSubcommand((subcommand) =>
-      subcommand
-        .setName(WARTIME_ACCESS_ROLLBACK_SUBCOMMAND_NAME)
-        .setDescription("Аварийный откат ошибочной выдачи wartime access после 11:00 МСК")
-        .addBooleanOption((option) =>
-          option
-            .setName("dry_run")
-            .setDescription("Только показать кандидатов без изменения ролей")
-        )
-        .addIntegerOption((option) =>
-          option
-            .setName("limit")
-            .setDescription("Сколько audit log записей проверить")
-            .setMinValue(1)
-            .setMaxValue(1000)
-        )
-        .addStringOption((option) =>
-          option
-            .setName("confirm")
-            .setDescription("Для реального отката введи ROLLBACK")
-            .setMaxLength(20)
-        )
-    );
-  }
 
   return [
     onboardCommand,

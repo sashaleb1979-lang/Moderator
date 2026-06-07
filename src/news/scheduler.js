@@ -135,6 +135,27 @@ async function markHistoricalQueueDayReleased({ queue, dayKeys = [], dayKey = ""
   await persistDb(saveDb);
 }
 
+function hasStoredPublicDailyNewsPublish(digest = null) {
+  return cleanString(digest?.publish?.publishMode, 40) === "public"
+    && Boolean(cleanString(digest?.publish?.publicMessageId || digest?.publish?.deliveryMessageId, 80));
+}
+
+async function markHistoricalQueueDayAlreadyPublished({ queue, dayKeys = [], dayKey = "", now, saveDb } = {}) {
+  queue.dayKeys = dayKeys.slice(1);
+  queue.lastReleasedDayKey = cleanString(dayKey, 40) || null;
+  queue.lastReleasedAt = resolveNowIso(now);
+  queue.skippedAlreadyPublishedCount = Math.max(0, Number(queue.skippedAlreadyPublishedCount) || 0) + 1;
+  queue.currentDayKey = null;
+  queue.currentStartedAt = null;
+  queue.lastFailedDayKey = null;
+  queue.lastFailureMessage = null;
+  queue.lastFailureAt = null;
+  if (!queue.dayKeys.length) {
+    queue.active = false;
+  }
+  await persistDb(saveDb);
+}
+
 async function runHistoricalReleaseQueueTick({
   db = {},
   now,
@@ -173,6 +194,33 @@ async function runHistoricalReleaseQueueTick({
       publishReason: "invalid_queue_day",
       releaseMode: "history_queue",
       publish: null,
+      queueRemainingCount: queue.dayKeys.length,
+    };
+  }
+
+  if (hasStoredPublicDailyNewsPublish(state.dailyDigests?.[dayKey])) {
+    const storedPublish = state.dailyDigests[dayKey].publish;
+    await markHistoricalQueueDayAlreadyPublished({ queue, dayKeys, dayKey, now, saveDb });
+    return {
+      compiled: false,
+      skipped: true,
+      reason: "already_published",
+      dayKey,
+      publishHourMsk: null,
+      nowIso: resolveNowIso(now),
+      mode: "history_queue",
+      digest: state.dailyDigests?.[dayKey] || null,
+      published: false,
+      publishSkipped: true,
+      publishReason: "already_published",
+      releaseMode: "history_queue",
+      publish: {
+        published: false,
+        skipped: true,
+        reason: "already_published",
+        dayKey,
+        result: storedPublish,
+      },
       queueRemainingCount: queue.dayKeys.length,
     };
   }
@@ -265,7 +313,7 @@ async function runHistoricalReleaseQueueTick({
       publicChannel,
       staffChannel,
       publishMode: "public",
-      force: true,
+      force: false,
       now,
       saveDb,
     });
@@ -304,6 +352,8 @@ async function runHistoricalReleaseQueueTick({
 
   if (publish.published === true) {
     await markHistoricalQueueDayReleased({ queue, dayKeys, dayKey, now, saveDb });
+  } else if (publish.skipped === true && cleanString(publish.reason, 120) === "already_published") {
+    await markHistoricalQueueDayAlreadyPublished({ queue, dayKeys, dayKey, now, saveDb });
   } else if (publish.skipped === true) {
     const failureAt = resolveNowIso(now);
     const failureMessage = cleanString(publish.reason, 120) || "publish_skipped";

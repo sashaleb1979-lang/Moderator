@@ -96,6 +96,56 @@ test("collectActivityDigest builds top message authors from persisted daily rows
   assert.equal(digest.movers.reason, "no_daily_activity_baseline_yet");
 });
 
+test("collectActivityDigest dedupes repeated daily rows with shifted timestamps", () => {
+  const db = {
+    profiles: {
+      "user-1": { displayName: "Alpha" },
+    },
+    sot: {
+      activity: {
+        userChannelDailyStats: [
+          {
+            guildId: "guild-1",
+            channelId: "main-1",
+            userId: "user-1",
+            date: "2026-05-14",
+            messagesCount: 5405,
+            weightedMessagesCount: 5405,
+            sessionsCount: 18,
+            effectiveSessionsCount: 18,
+            firstMessageAt: "2026-05-14T10:00:00.000Z",
+            lastMessageAt: "2026-05-14T18:00:00.000Z",
+          },
+          {
+            guildId: "guild-1",
+            channelId: "main-1",
+            userId: "user-1",
+            date: "2026-05-14",
+            messagesCount: 5405,
+            weightedMessagesCount: 5405,
+            sessionsCount: 18,
+            effectiveSessionsCount: 18,
+            firstMessageAt: "2026-05-14T10:05:00.000Z",
+            lastMessageAt: "2026-05-14T17:55:00.000Z",
+          },
+        ],
+      },
+    },
+  };
+
+  const digest = collectActivityDigest({
+    db,
+    window: buildWindow(),
+    config: { activity: { topMessagesCount: 5 } },
+  });
+
+  assert.equal(digest.sourceRowCount, 1);
+  assert.equal(digest.totalMessagesCount, 5405);
+  assert.deepEqual(digest.topMessageAuthors.map((entry) => [entry.userId, entry.messagesCount, entry.sessionsCount]), [
+    ["user-1", 5405, 18],
+  ]);
+});
+
 test("collectActivityDigest derives daily activity movers from news-owned day snapshots", () => {
   const db = {
     profiles: {

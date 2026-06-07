@@ -194,12 +194,7 @@ function getTopGameplayPlayer(digest = {}) {
 }
 
 function buildStoryLine(digest = {}) {
-  const kill = getTopKillUpgrade(digest);
-  if (kill) {
-    const tempo = formatKillTempo(kill);
-    return `⚔️ Самый большой рывок: **${formatParticipant(kill)}** поднял киллы на ${formatSignedNumber(kill.delta)}${tempo ? ` · ${tempo}` : ""} (${formatNumber(kill.from)} → ${formatNumber(kill.to)}).`;
-  }
-
+  void digest;
   return "";
 }
 
@@ -210,7 +205,7 @@ function buildHeroMetrics(digest = {}) {
     ["🎮 JJS-игроки", digest.publicEdition?.gameplay?.precisePlayerCount || 0],
     ["👋 входы", digest.publicEdition?.newcomers?.newcomerCount || 0],
     ["✅ верификации", digest.publicEdition?.newcomers?.verifiedCount || 0],
-    ["🎙️ voice", digest.publicEdition?.voice?.visitorCount || 0],
+    ["🎙️ voice-участники", digest.publicEdition?.voice?.visitorCount || 0],
     ["🛡️ модерация", digest.moderation?.totalCount || 0],
   ];
   return metrics
@@ -520,8 +515,6 @@ function buildPublicEmbed(digest = {}, config = {}) {
   const activityMoverLines = renderActivityMoverLines(digest.publicEdition?.activity?.movers, 1);
   const tierlistShiftLines = renderTierlistShiftLines(digest.publicEdition?.tierlist?.shifts, 2);
   const storyLine = buildStoryLine(digest);
-  const strongChanges = collectStrongChangeEntries(digest, 5);
-  const strongKillKeys = new Set(strongChanges.filter((entry) => entry.module === "kills").map((entry) => entry.key));
   const descriptionLines = [
     storyLine,
     storyLine ? "" : null,
@@ -538,8 +531,7 @@ function buildPublicEmbed(digest = {}, config = {}) {
     fields.push(createEmbedField(name, normalizedLines, inline));
   };
 
-  pushField("⚡ Сильные изменения", strongChanges.map((entry) => entry.line));
-  pushField("⚔️ Киллы · апы", renderKillLines(digest.publicEdition?.kills?.topUpgrades, 5, { excludeKeys: strongKillKeys }));
+  pushField("⚔️ Киллы · апы", renderKillLines(digest.publicEdition?.kills?.topUpgrades, 5));
   pushField("💬 Активность · топ сообщений", [
     digest.publicEdition?.activity?.topMessageAuthors?.length ? makeBar("чат", topMessages, maxMessages) : null,
     ...renderActivityLines(digest.publicEdition?.activity?.topMessageAuthors, 5),

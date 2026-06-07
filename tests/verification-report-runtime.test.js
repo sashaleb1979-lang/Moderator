@@ -45,6 +45,31 @@ function loadHandleVerificationManualReviewCallback() {
     "buildVerificationOauthUsername",
     "normalizeVerificationObservedGuilds",
     "postVerificationManualReport",
+    "grantVerificationTemporaryReviewAccess",
+    "nowIso",
+    `return (${functionSource});`
+  );
+}
+
+function loadHandleVerificationApprovedCallback() {
+  const source = fs.readFileSync(path.join(__dirname, "..", "welcome-bot.js"), "utf8");
+  const startToken = "async function handleVerificationApprovedCallback(client, payload = {}) {";
+  const endToken = "\nasync function handleVerificationManualReviewCallback(client, payload = {}) {";
+  const startIndex = source.indexOf(startToken);
+  const endIndex = source.indexOf(endToken, startIndex);
+
+  assert.ok(startIndex >= 0 && endIndex > startIndex, "expected to find handleVerificationApprovedCallback in welcome-bot.js");
+  const functionSource = source.slice(startIndex, endIndex).trimEnd();
+
+  return new Function(
+    "cleanVerificationText",
+    "reconcileVerificationAssignmentForMember",
+    "logVerificationRuntimeEvent",
+    "updateVerificationProfile",
+    "buildVerificationOauthUsername",
+    "normalizeVerificationObservedGuilds",
+    "grantVerificationTemporaryReviewAccess",
+    "postVerificationManualReport",
     "nowIso",
     `return (${functionSource});`
   );
@@ -148,6 +173,104 @@ test("postVerificationManualReport falls back to degraded payload when rich repo
   assert.equal(calls.some((entry) => entry[0] === "log" && /VERIFICATION_REPORT_SENT/.test(entry[2]) && /degraded=true/.test(entry[2])), true);
 });
 
+test("handleVerificationApprovedCallback routes clean OAuth to manual review with temporary access", async () => {
+  const calls = [];
+  const buildFunction = loadHandleVerificationApprovedCallback();
+  const handleVerificationApprovedCallback = buildFunction(
+    (value, max) => String(value || "").trim().slice(0, max || 400),
+    async () => ({ active: true, stopped: false }),
+    async (_client, message, level = "info") => {
+      calls.push(["log", level, message]);
+    },
+    (userId, patch) => {
+      calls.push(["update", userId, patch]);
+      return { userId, domains: { verification: patch } };
+    },
+    () => "discord-user",
+    (value) => value,
+    async (_client, userId, reason) => {
+      calls.push(["temporaryAccess", userId, reason]);
+      return { granted: true, roleId: "wartime-role", accessMode: "wartime" };
+    },
+    async (_client, userId, statusNote, options) => {
+      calls.push(["post", userId, statusNote, options]);
+      return { degraded: false };
+    },
+    () => "2026-05-10T00:00:00.000Z"
+  );
+
+  await handleVerificationApprovedCallback({}, {
+    session: { userId: "user-1" },
+    oauthUser: { id: "oauth-1", username: "discord-user" },
+    risk: {
+      observedGuilds: [{ id: "guild-1", name: "Guild" }],
+      observedGuildIds: ["guild-1"],
+      observedGuildNames: ["Guild"],
+      observedFriendIds: [],
+      matchedEnemyGuildIds: [],
+      matchedEnemyUserIds: [],
+      matchedEnemyFriendIds: [],
+      matchedEnemyInviteCodes: [],
+      matchedEnemyInviterUserIds: [],
+      suspiciousSignals: [],
+    },
+  });
+
+  assert.equal(calls[0][0], "update");
+  assert.equal(Object.prototype.hasOwnProperty.call(calls[0][2], "status"), false);
+  assert.deepEqual(calls[1][2], {
+    status: "manual_review",
+    decision: "manual_review",
+    decisionReason: "oauth_completed_waiting_moderator",
+    lastError: "",
+  });
+  assert.deepEqual(calls[2], ["temporaryAccess", "user-1", "verification clean oauth pending moderator review"]);
+  assert.equal(calls[3][0], "post");
+  assert.equal(calls[3][1], "user-1");
+  assert.match(calls[3][2], /Кейс отправлен на ручное решение модератора/);
+  assert.equal(calls[3][3], undefined);
+  assert.deepEqual(calls[4], ["update", "user-1", { reportSentAt: "2026-05-10T00:00:00.000Z" }]);
+  assert.equal(calls.some((entry) => entry[0] === "log" && /VERIFICATION_READY_FOR_REVIEW:/.test(entry[2])), true);
+});
+
+test("handleVerificationApprovedCallback keeps clean OAuth retryable when report delivery fails", async () => {
+  const calls = [];
+  const buildFunction = loadHandleVerificationApprovedCallback();
+  const handleVerificationApprovedCallback = buildFunction(
+    (value, max) => String(value || "").trim().slice(0, max || 400),
+    async () => ({ active: true, stopped: false }),
+    async (_client, message, level = "info") => {
+      calls.push(["log", level, message]);
+    },
+    (userId, patch) => {
+      calls.push(["update", userId, patch]);
+      return { userId, domains: { verification: patch } };
+    },
+    () => "discord-user",
+    (value) => value,
+    async (_client, userId, reason) => {
+      calls.push(["temporaryAccess", userId, reason]);
+      return { granted: true, roleId: "wartime-role", accessMode: "wartime" };
+    },
+    async () => {
+      throw new Error("report channel unavailable");
+    },
+    () => "2026-05-10T00:00:00.000Z"
+  );
+
+  await handleVerificationApprovedCallback({}, {
+    session: { userId: "user-1" },
+    oauthUser: { id: "oauth-1", username: "discord-user" },
+    risk: {},
+  });
+
+  assert.equal(calls.some((entry) => entry[0] === "temporaryAccess"), true);
+  assert.equal(calls.some((entry) => entry[0] === "update" && entry[2]?.status === "verified"), false);
+  assert.equal(calls.some((entry) => entry[0] === "update" && entry[2]?.reportSentAt), false);
+  assert.equal(calls.some((entry) => entry[0] === "update" && entry[2]?.reportDueAt === "2026-05-10T00:00:00.000Z"), true);
+  assert.equal(calls.some((entry) => entry[0] === "log" && entry[1] === "error" && /VERIFICATION_READY_FOR_REVIEW_REPORT_FAILED/.test(entry[2])), true);
+});
+
 test("handleVerificationManualReviewCallback stamps reportSentAt only after report delivery succeeds", async () => {
   const calls = [];
   const buildFunction = loadHandleVerificationManualReviewCallback();
@@ -166,6 +289,10 @@ test("handleVerificationManualReviewCallback stamps reportSentAt only after repo
     async (_client, userId, statusNote) => {
       calls.push(["post", userId, statusNote]);
       return { degraded: false };
+    },
+    async (_client, userId, reason) => {
+      calls.push(["temporaryAccess", userId, reason]);
+      return { granted: true, roleId: "wartime-role", accessMode: "wartime" };
     },
     () => "2026-05-10T00:00:00.000Z"
   );
@@ -188,9 +315,10 @@ test("handleVerificationManualReviewCallback stamps reportSentAt only after repo
 
   assert.equal(calls[0][0], "update");
   assert.equal(Object.prototype.hasOwnProperty.call(calls[0][2], "reportSentAt"), false);
-  assert.deepEqual(calls[1], ["post", "user-1", "OAuth завершён. Доступ не выдаётся автоматически: кейс остаётся в карантине до ручного решения модератора."]);
-  assert.equal(calls[2][0], "update");
-  assert.deepEqual(calls[2][2], { reportSentAt: "2026-05-10T00:00:00.000Z" });
+  assert.deepEqual(calls[1], ["temporaryAccess", "user-1", "verification manual review temporary access"]);
+  assert.deepEqual(calls[2], ["post", "user-1", "OAuth завершён. Кейс отправлен на ручную проверку модератора. Временная роль доступа выдана до решения модератора."]);
+  assert.equal(calls[3][0], "update");
+  assert.deepEqual(calls[3][2], { reportSentAt: "2026-05-10T00:00:00.000Z" });
 });
 
 test("handleVerificationManualReviewCallback keeps failed report delivery retryable", async () => {
@@ -211,6 +339,10 @@ test("handleVerificationManualReviewCallback keeps failed report delivery retrya
     async () => {
       throw new Error("send failed");
     },
+    async (_client, userId, reason) => {
+      calls.push(["temporaryAccess", userId, reason]);
+      return { granted: true, roleId: "wartime-role", accessMode: "wartime" };
+    },
     () => "2026-05-10T00:00:00.000Z"
   );
 
@@ -230,16 +362,17 @@ test("handleVerificationManualReviewCallback keeps failed report delivery retrya
     },
   });
 
-  assert.equal(calls.length, 3);
+  assert.equal(calls.length, 4);
   assert.equal(calls[0][0], "update");
   assert.equal(Object.prototype.hasOwnProperty.call(calls[0][2], "reportSentAt"), false);
-  assert.deepEqual(calls[1][2], {
+  assert.deepEqual(calls[1], ["temporaryAccess", "user-1", "verification manual review temporary access"]);
+  assert.deepEqual(calls[2][2], {
     reportDueAt: "2026-05-10T00:00:00.000Z",
     lastError: "verification report delivery failed: send failed",
   });
-  assert.equal(calls[2][0], "log");
-  assert.equal(calls[2][1], "error");
-  assert.match(calls[2][2], /VERIFICATION_MANUAL_REVIEW_REPORT_FAILED/);
+  assert.equal(calls[3][0], "log");
+  assert.equal(calls[3][1], "error");
+  assert.match(calls[3][2], /VERIFICATION_MANUAL_REVIEW_REPORT_FAILED/);
 });
 
 test("runVerificationDeadlineSweep continues after one overdue report fails", async () => {

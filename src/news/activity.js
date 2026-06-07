@@ -44,6 +44,20 @@ function createAuditCandidateId(prefix, parts = []) {
   return [cleanString(prefix, 40) || "candidate", ...parts.map((part) => cleanString(part, 120) || "na")].join(":");
 }
 
+function createActivityRowDedupeKey(row = {}, rowWindow = {}) {
+  void rowWindow;
+  return [
+    cleanString(row.guildId, 80),
+    cleanString(row.channelId, 80),
+    cleanString(row.userId, 80),
+    cleanString(row.date, 20),
+    normalizeNonNegativeNumber(row.messagesCount ?? row.messageCount, 0),
+    normalizeNonNegativeNumber(row.weightedMessagesCount ?? row.weightedMessageCount, 0),
+    normalizeNonNegativeNumber(row.sessionsCount, 0),
+    normalizeNonNegativeNumber(row.effectiveSessionsCount, 0),
+  ].join("|");
+}
+
 function resolveProfileDisplayName(profiles = {}, userId = "") {
   const profile = profiles && typeof profiles === "object" && !Array.isArray(profiles)
     ? profiles[cleanString(userId, 80)]
@@ -210,12 +224,16 @@ function collectActivityDigest({ db = {}, window = {}, config = {} } = {}) {
   const rows = Array.isArray(activityState.userChannelDailyStats) ? activityState.userChannelDailyStats : [];
   const aggregateByUser = new Map();
   const rowCandidates = [];
+  const seenRows = new Set();
   let impreciseRowCount = 0;
 
   for (const row of rows) {
     if (!row || typeof row !== "object") continue;
     const rowWindow = resolveRowWindowMs(row);
     if (!overlapsWindow(rowWindow, window)) continue;
+    const dedupeKey = createActivityRowDedupeKey(row, rowWindow);
+    if (seenRows.has(dedupeKey)) continue;
+    seenRows.add(dedupeKey);
 
     const userId = cleanString(row.userId, 80);
     const displayName = resolveProfileDisplayName(profiles, userId);

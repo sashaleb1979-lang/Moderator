@@ -73,7 +73,7 @@ function loadProcessApprovalInteraction() {
 function loadSyncApprovedAccessRoles() {
   const functionSource = sliceFunction(
     "async function syncApprovedAccessRoles(client, targetUserId = null, options = {}) {",
-    "const WARTIME_ACCESS_ROLLBACK_SUBCOMMAND_NAME = \"rollbackwartime\";",
+    "function createAccessCompanionSyncSummary() {",
     "syncApprovedAccessRoles"
   );
 
@@ -120,17 +120,6 @@ function loadGrantAccessRole() {
 test("welcome-bot wires approved access repair into startup and panel role sync flows", () => {
   assert.match(welcomeBotSource, /panel_sync_roles[\s\S]*?syncApprovedAccessRoles\(client, null,/);
   assert.match(welcomeBotSource, /runClientReadyCore\(client, \{[\s\S]*?syncApprovedAccessRoles:/);
-});
-
-test("wartime incident rollback targets every post-cutoff wartime role add and restores normal before removing wartime", () => {
-  assert.match(welcomeBotSource, /const WARTIME_ACCESS_ROLLBACK_FROM_AT = "2026-06-07T08:00:00\.000Z";/);
-  assert.match(welcomeBotSource, /type: AuditLogEvent\.MemberRoleUpdate/);
-  assert.match(welcomeBotSource, /getAutonomyGuardAuditChangeRoleIds\(entry, "\$add"\)/);
-  assert.match(welcomeBotSource, /!addedRoleIds\.includes\(wartimeAccessRoleId\)/);
-  assert.doesNotMatch(welcomeBotSource, /executorId !== botUserId/);
-  assert.doesNotMatch(welcomeBotSource, /removedRoleIds\.includes\(normalAccessRoleId\)/);
-  assert.match(welcomeBotSource, /member\.roles\.add\(summary\.normalAccessRoleId[\s\S]*member\.roles\.remove\(summary\.wartimeAccessRoleId/);
-  assert.match(welcomeBotSource, /subcommand === WARTIME_ACCESS_ROLLBACK_SUBCOMMAND_NAME/);
 });
 
 test("grantAccessRole in wartime grants only the wartime access role", async () => {
@@ -384,7 +373,7 @@ test("approveSubmission DM warns the user when role sync completes with warnings
   assert.match(welcomeBotSource, /Синхронизация ролей завершилась с предупреждением\. Если роль не появилась сразу, модератор досинхронизирует её отдельно\./);
 });
 
-test("syncApprovedAccessRoles repairs approved members without onboarding access and stamps repaired profiles", async () => {
+test("syncApprovedAccessRoles does not grant missing onboarding access during bulk sync", async () => {
   const db = {
     profiles: {
       "user-missing": { lastSubmissionStatus: "approved" },
@@ -422,18 +411,18 @@ test("syncApprovedAccessRoles repairs approved members without onboarding access
 
   const result = await syncApprovedAccessRoles({}, null, { reason: "startup approved access sync" });
 
-  assert.deepEqual(grantCalls, [["user-missing", "startup approved access sync"]]);
-  assert.equal(db.profiles["user-missing"].accessGrantedAt, "2026-05-30T12:00:00.000Z");
+  assert.deepEqual(grantCalls, []);
+  assert.equal(db.profiles["user-missing"].accessGrantedAt, undefined);
   assert.equal(db.profiles["user-present"].accessGrantedAt, "2026-05-30T12:00:00.000Z");
   assert.equal(db.profiles["user-pending"].accessGrantedAt, undefined);
   assert.equal(saveCalls, 1);
   assert.deepEqual(result, {
     processed: 2,
-    granted: 1,
+    granted: 0,
     alreadyHad: 1,
     missingMembers: 0,
-    failed: 0,
-    updatedProfiles: 2,
+    failed: 1,
+    updatedProfiles: 1,
   });
 });
 

@@ -465,7 +465,7 @@ test("runDailyNewsReleaseTick recompiles historical queue items before publishin
   assert.equal(result.published, true);
   assert.equal(result.publishSkipped, false);
   assert.equal(publishCalls.length, 1);
-  assert.equal(publishCalls[0].force, true);
+  assert.equal(publishCalls[0].force, false);
   assert.equal(publishCalls[0].digest.stamp, "recompiled-for-queue");
   assert.deepEqual(db.sot.news.runtime.releaseQueue.dayKeys, ["2026-05-21"]);
   assert.equal(db.sot.news.runtime.releaseQueue.active, true);
@@ -594,7 +594,7 @@ test("runDailyNewsReleaseTick keeps the historical queue item when publish is sk
   assert.equal(db.sot.news.runtime.releaseQueue.lastReleasedAt, null);
 });
 
-test("runDailyNewsReleaseTick republishes already published historical queue items with a fresh compile", async () => {
+test("runDailyNewsReleaseTick skips already published historical queue items without sending again", async () => {
   const compileCalls = [];
   const publishCalls = [];
   const db = {
@@ -642,17 +642,16 @@ test("runDailyNewsReleaseTick republishes already published historical queue ite
     },
   });
 
-  assert.equal(compileCalls.length, 1);
-  assert.equal(publishCalls.length, 1);
-  assert.equal(publishCalls[0].force, true);
-  assert.equal(publishCalls[0].digest.stamp, "fresh-format");
+  assert.equal(compileCalls.length, 0);
+  assert.equal(publishCalls.length, 0);
   assert.equal(result.releaseMode, "history_queue");
   assert.equal(result.dayKey, "2026-05-20");
-  assert.equal(result.published, true);
-  assert.equal(result.publishSkipped, false);
-  assert.equal(result.publishReason, null);
+  assert.equal(result.published, false);
+  assert.equal(result.publishSkipped, true);
+  assert.equal(result.publishReason, "already_published");
   assert.deepEqual(db.sot.news.runtime.releaseQueue.dayKeys, ["2026-05-21"]);
   assert.equal(db.sot.news.runtime.releaseQueue.lastReleasedDayKey, "2026-05-20");
+  assert.equal(db.sot.news.runtime.releaseQueue.skippedAlreadyPublishedCount, 1);
   assert.equal(db.sot.news.runtime.releaseQueue.lastFailedDayKey, null);
 });
 

@@ -156,7 +156,7 @@ test("evaluateVerificationRisk includes friend matches and suspicious account si
   assert.equal(result.requiresManualReview, true);
 });
 
-test("createVerificationCallbackHandler auto-approves clean OAuth result", async () => {
+test("createVerificationCallbackHandler routes clean OAuth to ready-for-review callback", async () => {
   const approvals = [];
   const manualReviews = [];
   const failures = [];
@@ -204,8 +204,8 @@ test("createVerificationCallbackHandler auto-approves clean OAuth result", async
   assert.equal(approvals[0].risk.requiresManualReview, false);
   assert.equal(manualReviews.length, 0);
   assert.equal(failures.length, 0);
-  assert.match(response.body, /Проверка завершена/);
-  assert.match(response.body, /доступ будет выдан автоматически/);
+  assert.match(response.body, /Проверка принята/);
+  assert.match(response.body, /решение будет вынесено вручную/);
 });
 
 test("createVerificationCallbackHandler treats already-consumed state as idempotent success", async () => {
@@ -291,7 +291,7 @@ test("createVerificationCallbackHandler routes risky OAuth result into manual re
   assert.match(response.body, /ручной проверки/);
 });
 
-test("createVerificationCallbackHandler routes empty OAuth guild list into manual review instead of auto-approve", async () => {
+test("createVerificationCallbackHandler routes empty OAuth guild list into manual review", async () => {
   const approvals = [];
   const manualReviews = [];
   const failures = [];
