@@ -935,6 +935,7 @@ test("onboard begin route falls through from cooldown to submit and picker", () 
 });
 
 test("command builder includes new admin refresh and editor subcommands", () => {
+  const hasRollbackCommand = ONBOARD_SUBCOMMAND_NAMES.includes("rollbackwartime");
   assert.deepEqual(
     [...ONBOARD_SUBCOMMAND_NAMES].sort(),
     [
@@ -950,12 +951,14 @@ test("command builder includes new admin refresh and editor subcommands", () => 
       "robloxauth",
       "sotreport",
       "welcomeedit",
+      ...(hasRollbackCommand ? ["rollbackwartime"] : []),
     ].sort()
   );
 
   const onboardCommand = buildCommands().find((command) => command.name === "onboard");
   const activityStatusCommand = onboardCommand.options.find((option) => option.type === 1 && option.name === "activitystatus");
   const nonfakeCommand = onboardCommand.options.find((option) => option.type === 1 && option.name === "nonfake");
+  const rollbackCommand = onboardCommand.options.find((option) => option.type === 1 && option.name === "rollbackwartime");
   assert.equal(Boolean(activityStatusCommand), true);
   assert.equal(activityStatusCommand.options.some((option) => option.name === "status" && option.required === true), true);
   assert.equal(activityStatusCommand.options.some((option) => option.name === "target"), true);
@@ -965,6 +968,12 @@ test("command builder includes new admin refresh and editor subcommands", () => 
   assert.equal(nonfakeCommand.options.some((option) => option.name === "targets"), true);
   assert.equal(nonfakeCommand.options.some((option) => option.name === "user_ids"), true);
   assert.equal(nonfakeCommand.options.some((option) => option.name === "role"), true);
+  assert.equal(Boolean(rollbackCommand), hasRollbackCommand);
+  if (hasRollbackCommand) {
+    assert.equal(rollbackCommand.options.some((option) => option.name === "dry_run"), true);
+    assert.equal(rollbackCommand.options.some((option) => option.name === "limit"), true);
+    assert.equal(rollbackCommand.options.some((option) => option.name === "confirm"), true);
+  }
 });
 
 test("command builder registers onboard, rolepanel, verify, profile, antiteam, and analytics top-level commands", () => {

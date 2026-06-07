@@ -15623,6 +15623,17 @@ async function syncApprovedAccessRoles(client, targetUserId = null, options = {}
 
     summary.processed += 1;
     const managedRoleIds = getManagedStartAccessRoleIds().filter((roleId) => roleId && member?.roles?.cache?.has(roleId));
+    if (!targetUserId && managedRoleIds.length > 0) {
+      summary.alreadyHad += 1;
+      if (!profile.accessGrantedAt) {
+        profile.accessGrantedAt = nowIso();
+        profile.updatedAt = nowIso();
+        summary.updatedProfiles += 1;
+        changed = true;
+      }
+      continue;
+    }
+
     const targetRoleId = getGrantedAccessRoleIdForMode(getCurrentOnboardMode(), member);
     const alreadyInSync = Boolean(targetRoleId && member?.roles?.cache?.has(targetRoleId) && managedRoleIds.length === 1);
     if (alreadyInSync) {
@@ -15655,6 +15666,227 @@ async function syncApprovedAccessRoles(client, targetUserId = null, options = {}
 
   if (changed) saveDb();
   return summary;
+}
+
+const WARTIME_ACCESS_ROLLBACK_SUBCOMMAND_NAME = "rollbackwartime";
+const WARTIME_ACCESS_ROLLBACK_FROM_AT = "2026-06-07T08:00:00.000Z";
+const WARTIME_ACCESS_ROLLBACK_COMMAND_EXPIRES_AT = "2026-06-08T08:00:00.000Z";
+const WARTIME_ACCESS_ROLLBACK_CONFIRM = "ROLLBACK";
+const WARTIME_ACCESS_ROLLBACK_DEFAULT_LIMIT = 500;
+const WARTIME_ACCESS_ROLLBACK_MAX_LIMIT = 1000;
+
+function normalizeWartimeAccessRollbackLimit(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return WARTIME_ACCESS_ROLLBACK_DEFAULT_LIMIT;
+  return Math.max(1, Math.min(WARTIME_ACCESS_ROLLBACK_MAX_LIMIT, Math.trunc(parsed)));
+}
+
+function isWartimeAccessRollbackCommandExpired(now = Date.now()) {
+  return now >= new Date(WARTIME_ACCESS_ROLLBACK_COMMAND_EXPIRES_AT).getTime();
+}
+
+function getRollbackAuditEntryCreatedAt(entry) {
+  const timestamp = Number(entry?.createdTimestamp);
+  if (Number.isFinite(timestamp) && timestamp > 0) return new Date(timestamp).toISOString();
+  return "";
+}
+
+function formatWartimeAccessRollbackPreview(candidates, limit = 20) {
+  const preview = candidates.slice(0, limit).map((candidate) => (
+    `<@${candidate.userId}> (${candidate.userId}, audit ${candidate.auditEntryId}, ${candidate.createdAt || "time unknown"})`
+  ));
+  const hidden = candidates.length - preview.length;
+  if (hidden > 0) preview.push(`...и ещё ${hidden}`);
+  return preview.length ? preview.join("\n") : "Кандидатов нет.";
+}
+
+async function fetchWartimeAccessRollbackAuditEntries(guild, { fromTimestamp, limit }) {
+  const entries = [];
+  let before;
+  let exhaustedByTime = false;
+
+  while (entries.length < limit && !exhaustedByTime) {
+    const pageLimit = Math.min(100, limit - entries.length);
+    const request = { type: AuditLogEvent.MemberRoleUpdate, limit: pageLimit };
+    if (before) request.before = before;
+
+    const auditLogs = await guild.fetchAuditLogs(request).catch((error) => {
+      throw new Error(`Не удалось прочитать Discord audit log: ${formatRuntimeError(error)}`);
+    });
+    const pageEntries = auditLogs?.entries ? [...auditLogs.entries.values()] : [];
+    if (!pageEntries.length) break;
+
+    for (const entry of pageEntries) {
+      before = entry?.id || before;
+      const createdTimestamp = Number(entry?.createdTimestamp);
+      if (Number.isFinite(createdTimestamp) && createdTimestamp < fromTimestamp) {
+        exhaustedByTime = true;
+        continue;
+      }
+      entries.push(entry);
+      if (entries.length >= limit) break;
+    }
+  }
+
+  return entries;
+}
+
+async function collectWartimeAccessRollbackCandidates(client, options = {}) {
+  const normalAccessRoleId = getNormalAccessRoleId();
+  const wartimeAccessRoleId = getWartimeAccessRoleId();
+  if (!normalAccessRoleId || !wartimeAccessRoleId) {
+    throw new Error("Не настроены normal/wartime access роли. Откат остановлен.");
+  }
+
+  const fromIso = String(options?.fromIso || WARTIME_ACCESS_ROLLBACK_FROM_AT).trim();
+  const fromTimestamp = new Date(fromIso).getTime();
+  if (!Number.isFinite(fromTimestamp)) {
+    throw new Error(`Некорректное время начала отката: ${fromIso}`);
+  }
+
+  const limit = normalizeWartimeAccessRollbackLimit(options?.limit);
+  const guild = await getGuild(client);
+  if (!guild) throw new Error("Guild недоступен.");
+
+  const entries = await fetchWartimeAccessRollbackAuditEntries(guild, { fromTimestamp, limit });
+  const botUserId = String(client?.user?.id || "").trim();
+  const seenUserIds = new Set();
+  const candidates = [];
+  const skipped = {
+    otherExecutor: 0,
+    noTarget: 0,
+    duplicate: 0,
+    noIncidentRoleSwap: 0,
+    memberMissing: 0,
+    noCurrentWartime: 0,
+  };
+
+  for (const entry of entries) {
+    const executorId = String(entry?.executor?.id || entry?.executorId || "").trim();
+    if (botUserId && executorId !== botUserId) {
+      skipped.otherExecutor += 1;
+      continue;
+    }
+
+    const addedRoleIds = getAutonomyGuardAuditChangeRoleIds(entry, "$add");
+    const removedRoleIds = getAutonomyGuardAuditChangeRoleIds(entry, "$remove");
+    if (!addedRoleIds.includes(wartimeAccessRoleId) || !removedRoleIds.includes(normalAccessRoleId)) {
+      skipped.noIncidentRoleSwap += 1;
+      continue;
+    }
+
+    const userId = getAutonomyGuardAuditEntryTargetId(entry);
+    if (!userId) {
+      skipped.noTarget += 1;
+      continue;
+    }
+    if (seenUserIds.has(userId)) {
+      skipped.duplicate += 1;
+      continue;
+    }
+    seenUserIds.add(userId);
+
+    const member = await fetchMember(client, userId);
+    if (!member) {
+      skipped.memberMissing += 1;
+      continue;
+    }
+    if (!member.roles?.cache?.has?.(wartimeAccessRoleId)) {
+      skipped.noCurrentWartime += 1;
+      continue;
+    }
+
+    const profile = db.profiles?.[userId] || null;
+    candidates.push({
+      userId,
+      auditEntryId: String(entry?.id || "").trim(),
+      createdAt: getRollbackAuditEntryCreatedAt(entry),
+      executorId,
+      removedRoleIds,
+      addedRoleIds,
+      profileStatus: String(profile?.lastSubmissionStatus || "").trim(),
+    });
+  }
+
+  return {
+    fromIso,
+    limit,
+    scanned: entries.length,
+    candidates,
+    skipped,
+    normalAccessRoleId,
+    wartimeAccessRoleId,
+  };
+}
+
+async function rollbackWartimeAccessIncident(client, options = {}) {
+  const dryRun = options?.dryRun !== false;
+  const actorTag = String(options?.actorTag || "unknown moderator").trim();
+  const summary = await collectWartimeAccessRollbackCandidates(client, options);
+  summary.dryRun = dryRun;
+  summary.restored = 0;
+  summary.failed = 0;
+  summary.failures = [];
+
+  if (dryRun) return summary;
+
+  for (const candidate of summary.candidates) {
+    const userId = candidate.userId;
+    const reason = `wartime access incident rollback by ${actorTag}`;
+    try {
+      const member = await fetchMember(client, userId);
+      if (!member) {
+        summary.failed += 1;
+        summary.failures.push({ userId, error: "member missing" });
+        continue;
+      }
+
+      markAutonomyGuardRoleMutationIgnore(userId);
+      if (!member.roles.cache.has(summary.normalAccessRoleId)) {
+        await member.roles.add(summary.normalAccessRoleId, reason);
+      }
+      if (member.roles.cache.has(summary.wartimeAccessRoleId)) {
+        markAutonomyGuardRoleMutationIgnore(userId);
+        await member.roles.remove(summary.wartimeAccessRoleId, reason);
+      }
+      summary.restored += 1;
+    } catch (error) {
+      summary.failed += 1;
+      summary.failures.push({ userId, error: formatRuntimeError(error) });
+      console.warn(`Wartime access incident rollback failed for ${userId}: ${formatRuntimeError(error)}`);
+    }
+  }
+
+  await logLine(
+    client,
+    `WARTIME_ACCESS_ROLLBACK: by=${actorTag} scanned=${summary.scanned} candidates=${summary.candidates.length} restored=${summary.restored} failed=${summary.failed}`
+  ).catch(() => {});
+  return summary;
+}
+
+function formatWartimeAccessRollbackSummary(summary) {
+  const skipped = summary?.skipped || {};
+  const lines = [
+    `Окно отката: с 2026-06-07 11:00 МСК (${summary.fromIso}).`,
+    `Режим: ${summary.dryRun ? "dry-run, роли не менялись" : "реальный откат"}.`,
+    `Audit log проверено: ${summary.scanned}/${summary.limit}. Кандидатов: ${summary.candidates.length}.`,
+  ];
+
+  if (!summary.dryRun) {
+    lines.push(`Восстановлено: ${summary.restored}. Ошибок: ${summary.failed}.`);
+  }
+
+  lines.push(
+    `Пропущено: другой executor ${skipped.otherExecutor || 0}, не incident-swap ${skipped.noIncidentRoleSwap || 0}, уже без wartime ${skipped.noCurrentWartime || 0}, нет участника ${skipped.memberMissing || 0}.`
+  );
+  lines.push(formatWartimeAccessRollbackPreview(summary.candidates));
+
+  if (Array.isArray(summary.failures) && summary.failures.length) {
+    lines.push("Ошибки:");
+    lines.push(summary.failures.slice(0, 10).map((item) => `<@${item.userId}>: ${String(item.error || "").slice(0, 160)}`).join("\n"));
+  }
+
+  return lines.join("\n");
 }
 
 function createAccessCompanionSyncSummary() {
@@ -17550,6 +17782,7 @@ client.on("interactionCreate", async (interaction) => {
       "deleteprofile",
       "nonfake",
       "removetier",
+      WARTIME_ACCESS_ROLLBACK_SUBCOMMAND_NAME,
     ]);
 
     if (isIsolatorCommand) {
@@ -17573,6 +17806,33 @@ client.on("interactionCreate", async (interaction) => {
       })) {
         return;
       }
+    }
+
+    if (subcommand === WARTIME_ACCESS_ROLLBACK_SUBCOMMAND_NAME) {
+      if (isWartimeAccessRollbackCommandExpired()) {
+        await interaction.editReply("Аварийная команда отката истекла и должна исчезнуть после следующей регистрации slash-команд.");
+        return;
+      }
+
+      const dryRun = interaction.options.getBoolean("dry_run") !== false;
+      const limit = normalizeWartimeAccessRollbackLimit(interaction.options.getInteger("limit"));
+      const confirm = String(interaction.options.getString("confirm") || "").trim();
+      if (!dryRun && confirm !== WARTIME_ACCESS_ROLLBACK_CONFIRM) {
+        await interaction.editReply("Для реального отката запусти с `dry_run: false` и `confirm: ROLLBACK`. Сначала лучше dry-run.");
+        return;
+      }
+
+      try {
+        const result = await rollbackWartimeAccessIncident(client, {
+          dryRun,
+          limit,
+          actorTag: interaction.user?.tag || interaction.user?.id || "unknown moderator",
+        });
+        await interaction.editReply(formatWartimeAccessRollbackSummary(result).slice(0, 1900));
+      } catch (error) {
+        await interaction.editReply(`Откат wartime access остановлен: ${String(error?.message || error || "неизвестная ошибка").slice(0, 500)}`);
+      }
+      return;
     }
 
     if (subcommand === "panel") {

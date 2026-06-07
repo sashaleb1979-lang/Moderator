@@ -73,7 +73,7 @@ function loadProcessApprovalInteraction() {
 function loadSyncApprovedAccessRoles() {
   const functionSource = sliceFunction(
     "async function syncApprovedAccessRoles(client, targetUserId = null, options = {}) {",
-    "function createAccessCompanionSyncSummary() {",
+    "const WARTIME_ACCESS_ROLLBACK_SUBCOMMAND_NAME = \"rollbackwartime\";",
     "syncApprovedAccessRoles"
   );
 
@@ -120,6 +120,16 @@ function loadGrantAccessRole() {
 test("welcome-bot wires approved access repair into startup and panel role sync flows", () => {
   assert.match(welcomeBotSource, /panel_sync_roles[\s\S]*?syncApprovedAccessRoles\(client, null,/);
   assert.match(welcomeBotSource, /runClientReadyCore\(client, \{[\s\S]*?syncApprovedAccessRoles:/);
+});
+
+test("wartime incident rollback is audit-log gated and restores normal before removing wartime", () => {
+  assert.match(welcomeBotSource, /const WARTIME_ACCESS_ROLLBACK_FROM_AT = "2026-06-07T08:00:00\.000Z";/);
+  assert.match(welcomeBotSource, /type: AuditLogEvent\.MemberRoleUpdate/);
+  assert.match(welcomeBotSource, /getAutonomyGuardAuditChangeRoleIds\(entry, "\$add"\)/);
+  assert.match(welcomeBotSource, /getAutonomyGuardAuditChangeRoleIds\(entry, "\$remove"\)/);
+  assert.match(welcomeBotSource, /!addedRoleIds\.includes\(wartimeAccessRoleId\) \|\| !removedRoleIds\.includes\(normalAccessRoleId\)/);
+  assert.match(welcomeBotSource, /member\.roles\.add\(summary\.normalAccessRoleId[\s\S]*member\.roles\.remove\(summary\.wartimeAccessRoleId/);
+  assert.match(welcomeBotSource, /subcommand === WARTIME_ACCESS_ROLLBACK_SUBCOMMAND_NAME/);
 });
 
 test("grantAccessRole in wartime grants only the wartime access role", async () => {
@@ -423,5 +433,53 @@ test("syncApprovedAccessRoles repairs approved members without onboarding access
     missingMembers: 0,
     failed: 0,
     updatedProfiles: 2,
+  });
+});
+
+test("syncApprovedAccessRoles does not convert existing normal access during wartime bulk sync", async () => {
+  const db = {
+    profiles: {
+      "user-normal": { lastSubmissionStatus: "approved" },
+    },
+  };
+  const normalRoleId = "access-normal";
+  const wartimeRoleId = "access-wartime";
+  const member = {
+    roles: {
+      cache: new Map([[normalRoleId, { id: normalRoleId }]]),
+    },
+  };
+  let saveCalls = 0;
+
+  const buildSyncApprovedAccessRoles = loadSyncApprovedAccessRoles();
+  const syncApprovedAccessRoles = buildSyncApprovedAccessRoles(
+    () => ({ processed: 0, granted: 0, alreadyHad: 0, missingMembers: 0, failed: 0, updatedProfiles: 0 }),
+    db,
+    async () => member,
+    () => [normalRoleId, wartimeRoleId],
+    () => wartimeRoleId,
+    () => ONBOARD_ACCESS_MODES.WARTIME,
+    async () => {
+      throw new Error("bulk sync must not migrate normal access to wartime");
+    },
+    () => "2026-06-07T08:30:00.000Z",
+    (error) => String(error?.message || error),
+    () => {
+      saveCalls += 1;
+    }
+  );
+
+  const result = await syncApprovedAccessRoles({}, null, { reason: "startup approved access sync" });
+
+  assert.deepEqual([...member.roles.cache.keys()], [normalRoleId]);
+  assert.equal(db.profiles["user-normal"].accessGrantedAt, "2026-06-07T08:30:00.000Z");
+  assert.equal(saveCalls, 1);
+  assert.deepEqual(result, {
+    processed: 1,
+    granted: 0,
+    alreadyHad: 1,
+    missingMembers: 0,
+    failed: 0,
+    updatedProfiles: 1,
   });
 });
