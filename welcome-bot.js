@@ -15749,29 +15749,22 @@ async function collectWartimeAccessRollbackCandidates(client, options = {}) {
   if (!guild) throw new Error("Guild недоступен.");
 
   const entries = await fetchWartimeAccessRollbackAuditEntries(guild, { fromTimestamp, limit });
-  const botUserId = String(client?.user?.id || "").trim();
   const seenUserIds = new Set();
   const candidates = [];
   const skipped = {
-    otherExecutor: 0,
     noTarget: 0,
     duplicate: 0,
-    noIncidentRoleSwap: 0,
+    noWartimeAdd: 0,
     memberMissing: 0,
     noCurrentWartime: 0,
   };
 
   for (const entry of entries) {
     const executorId = String(entry?.executor?.id || entry?.executorId || "").trim();
-    if (botUserId && executorId !== botUserId) {
-      skipped.otherExecutor += 1;
-      continue;
-    }
-
     const addedRoleIds = getAutonomyGuardAuditChangeRoleIds(entry, "$add");
     const removedRoleIds = getAutonomyGuardAuditChangeRoleIds(entry, "$remove");
-    if (!addedRoleIds.includes(wartimeAccessRoleId) || !removedRoleIds.includes(normalAccessRoleId)) {
-      skipped.noIncidentRoleSwap += 1;
+    if (!addedRoleIds.includes(wartimeAccessRoleId)) {
+      skipped.noWartimeAdd += 1;
       continue;
     }
 
@@ -15877,7 +15870,7 @@ function formatWartimeAccessRollbackSummary(summary) {
   }
 
   lines.push(
-    `Пропущено: другой executor ${skipped.otherExecutor || 0}, не incident-swap ${skipped.noIncidentRoleSwap || 0}, уже без wartime ${skipped.noCurrentWartime || 0}, нет участника ${skipped.memberMissing || 0}.`
+    `Пропущено: без выдачи wartime ${skipped.noWartimeAdd || 0}, уже без wartime ${skipped.noCurrentWartime || 0}, нет участника ${skipped.memberMissing || 0}, дубли ${skipped.duplicate || 0}.`
   );
   lines.push(formatWartimeAccessRollbackPreview(summary.candidates));
 

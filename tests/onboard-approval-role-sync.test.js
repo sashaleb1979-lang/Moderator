@@ -122,12 +122,13 @@ test("welcome-bot wires approved access repair into startup and panel role sync 
   assert.match(welcomeBotSource, /runClientReadyCore\(client, \{[\s\S]*?syncApprovedAccessRoles:/);
 });
 
-test("wartime incident rollback is audit-log gated and restores normal before removing wartime", () => {
+test("wartime incident rollback targets every post-cutoff wartime role add and restores normal before removing wartime", () => {
   assert.match(welcomeBotSource, /const WARTIME_ACCESS_ROLLBACK_FROM_AT = "2026-06-07T08:00:00\.000Z";/);
   assert.match(welcomeBotSource, /type: AuditLogEvent\.MemberRoleUpdate/);
   assert.match(welcomeBotSource, /getAutonomyGuardAuditChangeRoleIds\(entry, "\$add"\)/);
-  assert.match(welcomeBotSource, /getAutonomyGuardAuditChangeRoleIds\(entry, "\$remove"\)/);
-  assert.match(welcomeBotSource, /!addedRoleIds\.includes\(wartimeAccessRoleId\) \|\| !removedRoleIds\.includes\(normalAccessRoleId\)/);
+  assert.match(welcomeBotSource, /!addedRoleIds\.includes\(wartimeAccessRoleId\)/);
+  assert.doesNotMatch(welcomeBotSource, /executorId !== botUserId/);
+  assert.doesNotMatch(welcomeBotSource, /removedRoleIds\.includes\(normalAccessRoleId\)/);
   assert.match(welcomeBotSource, /member\.roles\.add\(summary\.normalAccessRoleId[\s\S]*member\.roles\.remove\(summary\.wartimeAccessRoleId/);
   assert.match(welcomeBotSource, /subcommand === WARTIME_ACCESS_ROLLBACK_SUBCOMMAND_NAME/);
 });
