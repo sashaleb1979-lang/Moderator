@@ -11,7 +11,9 @@
     "repair:activity-newcomers": "node scripts/repair-activity-newcomers.js",
     "repair:roblox-identities": "node scripts/repair-roblox-identities.js",
     "test": "node scripts/run-tests.js",
-    "snapshot:db": "node scripts/snapshot-db.js"
+    "snapshot:db": "node scripts/snapshot-db.js",
+    "migrate:db-sqlite": "node scripts/migrate-db-to-sqlite.js",
+    "export:db-json": "node scripts/export-sqlite-to-json.js"
   },
   "engines": {
     "node": ">=18.17.0"

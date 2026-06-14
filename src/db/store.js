@@ -1,6 +1,7 @@
 "use strict";
 
 const fs = require("node:fs");
+const fsp = require("node:fs/promises");
 const path = require("node:path");
 const { createAutonomyGuardState } = require("../moderation/autonomy-guard");
 
@@ -12,7 +13,10 @@ function replaceObjectContents(target, source) {
   for (const key of Object.keys(target || {})) {
     delete target[key];
   }
-  Object.assign(target, cloneValue(source) || {});
+  // `source` here is always the throwaway normalized snapshot produced by
+  // prepareWriteState (already a deep clone of the live db). Move its
+  // references in directly rather than deep-cloning ~20MB a second time.
+  Object.assign(target, source || {});
 }
 
 function loadJsonFile(filePath, fallbackValue) {
@@ -33,6 +37,25 @@ function saveJsonFile(filePath, value) {
   } catch (error) {
     try {
       if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+    } catch {
+      // noop
+    }
+    throw error;
+  }
+}
+
+// Async sibling of saveJsonFile: keeps the same atomic temp-file + rename
+// contract but performs the disk I/O off the event loop so a large database
+// write never blocks interaction handling.
+async function saveJsonFileAsync(filePath, value) {
+  await fsp.mkdir(path.dirname(filePath), { recursive: true });
+  const tempPath = `${filePath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;
+  try {
+    await fsp.writeFile(tempPath, JSON.stringify(value, null, 2), "utf8");
+    await fsp.rename(tempPath, filePath);
+  } catch (error) {
+    try {
+      await fsp.unlink(tempPath);
     } catch {
       // noop
     }
@@ -146,8 +169,18 @@ function createDbStore({
   syncSharedProfiles,
   dualWriteSotState,
   syncSotState,
+  persistence,
 }) {
   if (!dbPath) throw new Error("dbPath is required");
+
+  // Pluggable persistence adapter. Defaults to the JSON file backend so all
+  // existing behavior (and tests) is unchanged; a SQLite adapter can be
+  // injected without touching the normalization logic below.
+  const persistenceAdapter = persistence || {
+    readRaw: () => loadJsonFile(dbPath, undefined),
+    writeSync: (workingDb) => saveJsonFile(dbPath, workingDb),
+    writeAsync: (workingDb) => saveJsonFileAsync(dbPath, workingDb),
+  };
 
   function load() {
     const fallback = createDefaultDbState({
@@ -158,7 +191,8 @@ function createDbStore({
       normalizeCharacterCatalog,
     });
 
-    const db = loadJsonFile(dbPath, fallback);
+    const raw = persistenceAdapter.readRaw();
+    const db = (raw === undefined || raw === null) ? fallback : raw;
     db.config ||= {};
     const migrated = ensurePresentationConfig(db.config, {
       defaults: createPresentationDefaults(fileConfig, { defaultGraphicTierColors }),
@@ -235,7 +269,10 @@ function createDbStore({
     return db;
   }
 
-  function save(db) {
+  // Build the normalized snapshot that should be persisted. All mutations
+  // happen on an isolated clone so a downstream failure (SoT dual-write or the
+  // disk write itself) never leaks half-applied state into the live `db`.
+  function prepareWriteState(db) {
     const workingDb = cloneValue(db) || {};
 
     syncSharedProfiles(workingDb);
@@ -254,8 +291,39 @@ function createDbStore({
     if (typeof syncSotState === "function") syncSotState(workingDb);
     delete workingDb.__needsSaveAfterLoad;
 
+    return { workingDb, dualWriteState };
+  }
+
+  // Synchronous persist. Retained for process-exit flushing and for callers
+  // that need a durable write before returning. Blocks the event loop while
+  // serializing/writing, so the hot path uses saveAsync instead.
+  function save(db) {
+    const { workingDb, dualWriteState } = prepareWriteState(db);
+
     try {
-      saveJsonFile(dbPath, workingDb);
+      persistenceAdapter.writeSync(workingDb);
+    } catch (error) {
+      db.__needsSaveAfterLoad = true;
+      throw error;
+    }
+
+    replaceObjectContents(db, workingDb);
+
+    return {
+      db,
+      dbPath,
+      dualWriteState,
+    };
+  }
+
+  // Async persist used by the coalesced write-behind flush. The CPU-bound
+  // normalization runs synchronously (cheap relative to disk I/O), but the
+  // actual file write is awaited off the event loop.
+  async function saveAsync(db) {
+    const { workingDb, dualWriteState } = prepareWriteState(db);
+
+    try {
+      await persistenceAdapter.writeAsync(workingDb);
     } catch (error) {
       db.__needsSaveAfterLoad = true;
       throw error;
@@ -273,6 +341,7 @@ function createDbStore({
   return {
     load,
     save,
+    saveAsync,
   };
 }
 
@@ -282,4 +351,5 @@ module.exports = {
   getResolvedIntegrationSourcePathFromState,
   loadJsonFile,
   saveJsonFile,
+  saveJsonFileAsync,
 };

@@ -8,6 +8,10 @@ const DEFAULT_ROBLOX_API_BASES = {
   groups: "https://groups.roblox.com",
 };
 
+// Bound every Roblox API call so a slow/unresponsive upstream can never hang an
+// interaction handler or background job indefinitely.
+const DEFAULT_ROBLOX_REQUEST_TIMEOUT_MS = 8000;
+
 const ROBLOX_FRIENDSHIP_STATUSES = {
   0: "not_friends",
   1: "friends",
@@ -215,8 +219,32 @@ function createRobloxApiClient(options = {}) {
 
   assertFunction(fetchImpl, "fetchImpl");
 
+  const requestTimeoutMs = Math.max(
+    0,
+    Number(options.requestTimeoutMs ?? DEFAULT_ROBLOX_REQUEST_TIMEOUT_MS) || 0
+  );
+
+  async function fetchWithTimeout(url, init) {
+    if (requestTimeoutMs <= 0 || typeof AbortController !== "function" || init.signal) {
+      return fetchImpl(url, init);
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), requestTimeoutMs);
+    if (typeof timer.unref === "function") timer.unref();
+    try {
+      return await fetchImpl(url, { ...init, signal: controller.signal });
+    } catch (error) {
+      if (controller.signal.aborted) {
+        throw new RobloxApiError(`Roblox API request timed out after ${requestTimeoutMs}ms`, { url });
+      }
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   async function requestJson(url, init = {}) {
-    const response = await fetchImpl(url, init);
+    const response = await fetchWithTimeout(url, init);
     const text = typeof response?.text === "function"
       ? await response.text()
       : "";

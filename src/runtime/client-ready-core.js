@@ -400,10 +400,20 @@ function scheduleClientReadyIntervals(client, options = {}) {
   }
 
   for (const job of jobs) {
+    let jobInFlight = false;
     const runJob = () => {
-      Promise.resolve(job.run(client)).catch((error) => {
-        logError(`${job.errorLabel}:`, formatErrorText(error));
-      });
+      if (jobInFlight) {
+        logError(`${job.errorLabel}:`, "skipped: previous run still in progress");
+        return;
+      }
+      jobInFlight = true;
+      Promise.resolve(job.run(client))
+        .catch((error) => {
+          logError(`${job.errorLabel}:`, formatErrorText(error));
+        })
+        .finally(() => {
+          jobInFlight = false;
+        });
     };
 
     if (job.initialDelayMs === null || job.initialDelayMs <= 0 || job.initialDelayMs >= job.intervalMs) {
@@ -440,10 +450,20 @@ function schedulePeriodicJobs(client, options = {}) {
   const handles = [];
 
   for (const job of jobs) {
+    let jobInFlight = false;
     const runJob = () => {
-      Promise.resolve(job.run(client)).catch((error) => {
-        logError(`${job.errorLabel}:`, formatErrorText(error));
-      });
+      if (jobInFlight) {
+        logError(`${job.errorLabel}:`, "skipped: previous run still in progress");
+        return;
+      }
+      jobInFlight = true;
+      Promise.resolve(job.run(client))
+        .catch((error) => {
+          logError(`${job.errorLabel}:`, formatErrorText(error));
+        })
+        .finally(() => {
+          jobInFlight = false;
+        });
     };
 
     if (job.initialDelayMs === null || job.initialDelayMs <= 0 || job.initialDelayMs >= job.intervalMs) {

@@ -1023,6 +1023,34 @@ function logSotDrift(currentDb, reason = "save") {
   return mismatches;
 }
 
+// --- Database backend selection -----------------------------------------
+// Default backend stays the JSON file (proven). Opt into the incremental SQLite
+// backend with MODERATOR_DB_BACKEND=sqlite after running the migration script;
+// it transparently falls back to JSON (with a warning) if node:sqlite is
+// unavailable, so a misconfigured env can never take the bot down.
+const DB_BACKEND = String(process.env.MODERATOR_DB_BACKEND || process.env.DB_BACKEND || "json").trim().toLowerCase();
+const SQLITE_DB_PATH = process.env.SQLITE_DB_PATH
+  ? resolvePathFromBase(DATA_ROOT, process.env.SQLITE_DB_PATH)
+  : (/\.json$/i.test(DB_PATH) ? DB_PATH.replace(/\.json$/i, ".sqlite") : `${DB_PATH}.sqlite`);
+
+function selectDbPersistence() {
+  if (DB_BACKEND !== "sqlite") return undefined;
+  try {
+    const { isSqliteAvailable, createSqliteAdapter } = require("./src/db/sqlite-adapter");
+    if (!isSqliteAvailable()) {
+      console.warn("[db] MODERATOR_DB_BACKEND=sqlite but node:sqlite is unavailable (needs Node >= 22.5); falling back to JSON.");
+      return undefined;
+    }
+    console.log(`[db] using SQLite backend at ${SQLITE_DB_PATH}`);
+    return createSqliteAdapter(SQLITE_DB_PATH);
+  } catch (error) {
+    console.warn(`[db] SQLite backend init failed, falling back to JSON: ${formatRuntimeError(error)}`);
+    return undefined;
+  }
+}
+
+const dbPersistence = selectDbPersistence();
+
 const dbStore = createDbStore({
   dbPath: DB_PATH,
   dataRoot: DATA_ROOT,
@@ -1043,6 +1071,7 @@ const dbStore = createDbStore({
   syncSharedProfiles,
   dualWriteSotState: syncSotCoreDualWrite,
   syncSotState: syncSotShadowState,
+  persistence: dbPersistence,
 });
 
 function loadDb() {
@@ -1149,10 +1178,108 @@ function buildAnalyticsPanelReply(view = "overview", statusText = "", includeFla
   });
 }
 
+// --- Coalesced write-behind persistence ---------------------------------
+// Historically saveDb() did a synchronous 20MB+ clone/serialize/writeFileSync
+// on every call (100+ sites), freezing the event loop and causing Discord
+// "application did not respond" timeouts. We now mark the db dirty and flush
+// asynchronously, coalescing bursts of mutations into a single off-thread
+// write. In-memory reads are unaffected (mutations already applied to `db`).
+const DB_FLUSH_DEBOUNCE_MS = 150;
+let dbDirty = false;
+let dbFlushTimer = null;
+let lastSaveResult = null;
+
+function flushDbInternal() {
+  if (!dbDirty) return Promise.resolve(lastSaveResult);
+  dbDirty = false;
+  return runSerializedDbTask(async () => {
+    try {
+      lastSaveResult = await dbStore.saveAsync(db);
+      logSotDrift(db, "save");
+      return lastSaveResult;
+    } catch (error) {
+      dbDirty = true; // keep dirty so the next schedule retries
+      console.error("[db] async flush failed:", formatRuntimeError(error));
+      scheduleDbFlush();
+      throw error;
+    }
+  }, "db-flush");
+}
+
+function scheduleDbFlush() {
+  dbDirty = true;
+  if (dbFlushTimer) return undefined;
+  dbFlushTimer = setTimeout(() => {
+    dbFlushTimer = null;
+    flushDbInternal().catch(() => {});
+  }, DB_FLUSH_DEBOUNCE_MS);
+  if (typeof dbFlushTimer.unref === "function") dbFlushTimer.unref();
+  return undefined;
+}
+
+// Public persist entrypoint. Non-blocking: schedules a coalesced flush.
 function saveDb() {
-  const result = dbStore.save(db);
-  logSotDrift(db, "save");
-  return result;
+  return scheduleDbFlush();
+}
+
+// Force an immediate async flush and resolve when the write completes. Use
+// when durability must be observable before continuing (rare).
+function flushDbNow() {
+  if (dbFlushTimer) {
+    clearTimeout(dbFlushTimer);
+    dbFlushTimer = null;
+  }
+  if (!dbDirty) return Promise.resolve(lastSaveResult);
+  return flushDbInternal();
+}
+
+// Best-effort synchronous flush for process shutdown, where async I/O may not
+// get a chance to complete.
+function flushDbSync() {
+  if (dbFlushTimer) {
+    clearTimeout(dbFlushTimer);
+    dbFlushTimer = null;
+  }
+  if (!dbDirty) return;
+  dbDirty = false;
+  try {
+    lastSaveResult = dbStore.save(db);
+    logSotDrift(db, "save");
+  } catch (error) {
+    console.error("[db] sync exit flush failed:", formatRuntimeError(error));
+  }
+}
+
+let dbExitFlushed = false;
+function flushDbOnExit() {
+  if (dbExitFlushed) return;
+  dbExitFlushed = true;
+  flushDbSync();
+}
+process.once("SIGINT", () => { flushDbOnExit(); process.exit(0); });
+process.once("SIGTERM", () => { flushDbOnExit(); process.exit(0); });
+process.once("beforeExit", () => { flushDbOnExit(); });
+
+// --- Event loop lag monitor (observability) -----------------------------
+// Surfaces remaining event-loop stalls (heavy renders, big sync writes) so we
+// can find and fix the next offender. Logs only when a stall is significant.
+const EVENT_LOOP_LAG_WARN_MS = 200;
+try {
+  const { monitorEventLoopDelay } = require("node:perf_hooks");
+  const loopDelayHistogram = monitorEventLoopDelay({ resolution: 20 });
+  loopDelayHistogram.enable();
+  const loopLagTimer = setInterval(() => {
+    const maxMs = loopDelayHistogram.max / 1e6;
+    if (maxMs >= EVENT_LOOP_LAG_WARN_MS) {
+      const meanMs = loopDelayHistogram.mean / 1e6;
+      const p99Ms = loopDelayHistogram.percentile(99) / 1e6;
+      console.warn(`[loop-lag] max=${maxMs.toFixed(0)}ms p99=${p99Ms.toFixed(0)}ms mean=${meanMs.toFixed(1)}ms (last 30s)`);
+    }
+    loopDelayHistogram.reset();
+  }, 30000);
+  if (typeof loopLagTimer.unref === "function") loopLagTimer.unref();
+} catch (error) {
+  console.warn(`[loop-lag] monitor unavailable: ${formatRuntimeError(error)}`);
 }
 
 function clearStaleApproveClaims() {
@@ -3789,6 +3916,36 @@ async function runInteractionHandlerSafely(interaction, label, errorPrefix, hand
     );
     return true;
   }
+}
+
+// Safety backstop against Discord "application did not respond". If a handler
+// has not acknowledged the interaction by the time we approach the ~3s limit,
+// auto-defer so the user always gets a response. Handlers that ack promptly
+// (the norm) clear the timer before it fires; modal-opening paths ack in
+// milliseconds, far below this threshold, so they are unaffected in practice.
+const INTERACTION_ACK_WATCHDOG_MS = 2600;
+// Above this, an interaction handler is dangerously close to the 3s ACK window
+// and should be made defer-first; logged for triage.
+const INTERACTION_SLOW_WARN_MS = 1500;
+function armInteractionAckWatchdog(interaction) {
+  const timer = setTimeout(() => {
+    if (!interaction || interaction.replied || interaction.deferred) return;
+    const label = String(interaction.customId || interaction.commandName || "interaction");
+    const logWarning = (message) => console.warn(`[ack-watchdog] ${message}`);
+    const isComponent = Boolean(interaction.isButton?.() || interaction.isAnySelectMenu?.());
+    const deferral = isComponent
+      ? safeDeferComponentUpdate(interaction, { label, logWarning })
+      : safeDeferEphemeralReply(interaction, { label, logWarning });
+    Promise.resolve(deferral)
+      .then((acked) => {
+        if (acked) logWarning(`auto-deferred ${isComponent ? "update" : "reply"} for ${label}`);
+      })
+      .catch(() => {});
+  }, INTERACTION_ACK_WATCHDOG_MS);
+  if (typeof timer.unref === "function") timer.unref();
+  return function releaseInteractionAckWatchdog() {
+    clearTimeout(timer);
+  };
 }
 
 async function replyWithAsyncInteractionPayload(interaction, options = {}) {
@@ -11889,52 +12046,61 @@ async function republishRoleGrantRecord(client, moderator, record) {
 }
 
 async function grantRoleFromRolePanelMessage(client, interaction, record, buttonIndex = 0) {
+  // Acknowledge first: member/role fetches and the role add are network calls
+  // that must not run before the interaction is acked (3s Discord window).
+  if (!await safeDeferEphemeralReply(interaction, {
+    label: "rolepanel-grant",
+    logWarning: (message) => console.warn(`[rolepanel] ${message}`),
+  })) {
+    return;
+  }
+
   if (!record) {
-    await interaction.reply(ephemeralPayload({ content: "Эта выдача больше не существует." }));
+    await interaction.editReply("Эта выдача больше не существует.");
     return;
   }
 
   if (record.disabledAt) {
-    await interaction.reply(ephemeralPayload({ content: "Эта выдача уже закрыта. Попроси модератора опубликовать новое сообщение." }));
+    await interaction.editReply("Эта выдача уже закрыта. Попроси модератора опубликовать новое сообщение.");
     return;
   }
 
   const button = Array.isArray(record.buttons) ? record.buttons[Number(buttonIndex) || 0] : null;
   if (!button?.roleId) {
-    await interaction.reply(ephemeralPayload({ content: "Кнопка не найдена или роль не привязана." }));
+    await interaction.editReply("Кнопка не найдена или роль не привязана.");
     return;
   }
 
   const member = await fetchMember(client, interaction.user.id);
   if (!member) {
-    await interaction.reply(ephemeralPayload({ content: "Не удалось найти тебя на сервере. Попробуй зайти заново." }));
+    await interaction.editReply("Не удалось найти тебя на сервере. Попробуй зайти заново.");
     return;
   }
 
   const role = await fetchRoleForPanel(client, button.roleId);
   if (!role) {
-    await interaction.reply(ephemeralPayload({ content: "Эта роль уже удалена." }));
+    await interaction.editReply("Эта роль уже удалена.");
     return;
   }
 
   if (!role.editable) {
-    await interaction.reply(ephemeralPayload({ content: "Бот сейчас не может выдать эту роль. Нужны Manage Roles и позиция выше роли." }));
+    await interaction.editReply("Бот сейчас не может выдать эту роль. Нужны Manage Roles и позиция выше роли.");
     return;
   }
 
   if (member.roles.cache.has(role.id)) {
-    await interaction.reply(ephemeralPayload({ content: `У тебя уже есть роль ${formatRoleMention(role.id)}.` }));
+    await interaction.editReply(`У тебя уже есть роль ${formatRoleMention(role.id)}.`);
     return;
   }
 
   try {
     await member.roles.add(role.id, `rolepanel grant ${record.id}`);
   } catch (error) {
-    await interaction.reply(ephemeralPayload({ content: `Не удалось выдать роль: ${String(error?.message || error || "неизвестная ошибка")}` }));
+    await interaction.editReply(`Не удалось выдать роль: ${String(error?.message || error || "неизвестная ошибка")}`);
     return;
   }
 
-  await interaction.reply(ephemeralPayload({ content: `Готово. Тебе выдана роль ${formatRoleMention(role.id)}.` }));
+  await interaction.editReply(`Готово. Тебе выдана роль ${formatRoleMention(role.id)}.`);
 }
 
 async function removeRoleFromAllMembers(client, roleId, behavior, moderatorTag) {
@@ -17283,6 +17449,9 @@ client.on("messageCreate", async (message) => {
 client.on("interactionCreate", async (interaction) => {
   const customId = String(interaction.customId || "");
   recordInteractionAnalytics(interaction);
+  const releaseInteractionAckWatchdog = armInteractionAckWatchdog(interaction);
+  const interactionStartedAt = Date.now();
+  try {
   if (customId.startsWith("at:")) {
     if (!antiteamRuntimeReady) {
       await interaction.reply?.(ephemeralPayload({
@@ -24659,6 +24828,19 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.editReply(replyText).catch(() => {});
       }
       return;
+    }
+  }
+  } catch (interactionDispatchError) {
+    console.error(`interactionCreate dispatch failed (${customId}):`, formatRuntimeError(interactionDispatchError));
+    await replyWithInteractionFailureFallback(
+      interaction,
+      "Произошла ошибка, попробуй ещё раз."
+    ).catch(() => {});
+  } finally {
+    releaseInteractionAckWatchdog();
+    const interactionElapsed = Date.now() - interactionStartedAt;
+    if (interactionElapsed >= INTERACTION_SLOW_WARN_MS) {
+      console.warn(`[interaction-slow] ${customId || interaction.commandName || "interaction"} took ${interactionElapsed}ms`);
     }
   }
 });

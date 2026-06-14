@@ -565,3 +565,76 @@ test("createAutonomyGuardState normalizes ids, colors and warning buckets", () =
     "reviewMessageDeletes",
   ]);
 });
+
+test("createDbStore.saveAsync persists normalized state and returns dualWriteState", async () => {
+  let sotCalls = 0;
+  let dualWriteCalls = 0;
+  const deps = createDeps({
+    normalizeIntegrationState: () => ({
+      integrations: {
+        elo: { sourcePath: "elo-db.json" },
+        tierlist: { sourcePath: "tierlist/state.json" },
+      },
+      mutated: false,
+    }),
+    dualWriteSotState: (db) => {
+      dualWriteCalls += 1;
+      db.sot = {
+        ...(db.sot || {}),
+        channels: { review: { value: "review-channel", source: "manual", verifiedAt: null } },
+      };
+      return { mutated: true, writtenSlots: ["review"] };
+    },
+    syncSotState: (db) => {
+      sotCalls += 1;
+      db.sot = { ...(db.sot || {}), sotVersion: 1 };
+      return { mutated: false };
+    },
+  });
+  const store = createDbStore(deps);
+  const db = createDefaultDbState({
+    appConfig: deps.appConfig,
+    createDefaultIntegrationState: deps.createDefaultIntegrationState,
+    createOnboardModeState: deps.createOnboardModeState,
+    normalizeCharacterCatalog: deps.normalizeCharacterCatalog,
+  });
+  db.__needsSaveAfterLoad = true;
+
+  const result = await store.saveAsync(db);
+
+  const written = JSON.parse(fs.readFileSync(deps.dbPath, "utf8"));
+  assert.equal(dualWriteCalls, 1);
+  assert.equal(sotCalls, 1);
+  assert.equal("__needsSaveAfterLoad" in written, false);
+  assert.equal("__needsSaveAfterLoad" in db, false);
+  assert.equal(written.config.integrations.elo.sourcePath, "elo-db.json");
+  assert.equal(written.sot.sotVersion, 1);
+  assert.equal(written.sot.channels.review.value, "review-channel");
+  assert.deepEqual(result.dualWriteState.writtenSlots, ["review"]);
+});
+
+test("createDbStore.saveAsync preserves runtime state when disk write fails", async () => {
+  const blockedPath = fs.mkdtempSync(path.join(os.tmpdir(), "moderator-db-save-async-fail-"));
+  const deps = createDeps({
+    dbPath: blockedPath,
+    dualWriteSotState: (db) => {
+      db.sot = {
+        ...(db.sot || {}),
+        channels: { review: { value: "review-channel", source: "manual", verifiedAt: null } },
+      };
+      return { mutated: true, writtenSlots: ["review"] };
+    },
+  });
+  const store = createDbStore(deps);
+  const db = createDefaultDbState({
+    appConfig: deps.appConfig,
+    createDefaultIntegrationState: deps.createDefaultIntegrationState,
+    createOnboardModeState: deps.createOnboardModeState,
+    normalizeCharacterCatalog: deps.normalizeCharacterCatalog,
+  });
+  db.__needsSaveAfterLoad = true;
+
+  await assert.rejects(() => store.saveAsync(db));
+  assert.equal(db.__needsSaveAfterLoad, true);
+  assert.equal(Boolean(db.sot?.channels?.review), false);
+});

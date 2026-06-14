@@ -195,3 +195,17 @@ test("createRobloxApiClient shapes username history and friend count requests", 
   ]);
   assert.equal(friendCount, 42);
 });
+test("createRobloxApiClient aborts requests that exceed the timeout", async () => {
+  const client = createRobloxApiClient({
+    requestTimeoutMs: 20,
+    fetchImpl: (url, init) => new Promise((_resolve, reject) => {
+      init.signal?.addEventListener("abort", () => {
+        const abortError = new Error("aborted");
+        abortError.name = "AbortError";
+        reject(abortError);
+      });
+    }),
+  });
+
+  await assert.rejects(() => client.fetchUserProfile(123), /timed out/);
+});
