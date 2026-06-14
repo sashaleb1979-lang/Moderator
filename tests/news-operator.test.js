@@ -10,6 +10,8 @@ const {
   DAILY_NEWS_PANEL_CONFIG_INFRA_MODAL_ID,
   DAILY_NEWS_PANEL_OPEN_ID,
   DAILY_NEWS_PANEL_PREPARE_RANGE_MODAL_ID,
+  DAILY_NEWS_PANEL_REPUBLISH_RANGE_ID,
+  DAILY_NEWS_PANEL_REPUBLISH_RANGE_MODAL_ID,
   DAILY_NEWS_PANEL_PREVIEW_DAY_ID,
   DAILY_NEWS_PANEL_PREVIEW_DAY_MODAL_ID,
   DAILY_NEWS_PANEL_PUBLISH_DAY_ID,
@@ -589,6 +591,55 @@ test("handleDailyNewsPanelModalSubmitInteraction skips already published days in
   assert.equal(db.sot.news.runtime.releaseQueue.skippedAlreadyPublishedCount, 1);
   assert.equal(db.sot.news.runtime.releaseQueue.alreadyPublishedDayCount, 1);
   assert.match(interaction.edits[0].embeds[0].data.fields.at(-1).value, /Уже опубликованные дни пропущены: \*\*1\*\*/);
+});
+
+test("handleDailyNewsPanelModalSubmitInteraction can prepare a historical range for forced republish", async () => {
+  const buttonInteraction = createButtonInteraction(DAILY_NEWS_PANEL_REPUBLISH_RANGE_ID);
+  const modalInteraction = createModalInteraction(DAILY_NEWS_PANEL_REPUBLISH_RANGE_MODAL_ID, {
+    range_start_day_key: "2026-05-20",
+    range_end_day_key: "2026-05-22",
+  });
+  const db = {
+    sot: {
+      news: {
+        config: {},
+        dailyDigests: {
+          "2026-05-21": {
+            dayKey: "2026-05-21",
+            publish: {
+              publishMode: "public",
+              publicMessageId: "public-old",
+            },
+          },
+        },
+      },
+    },
+  };
+
+  await handleDailyNewsPanelButtonInteraction({
+    interaction: buttonInteraction,
+    db,
+    isModerator: () => true,
+    replyNoPermission: async () => {},
+    now: "2026-05-23T10:00:00.000Z",
+  });
+
+  assert.equal(buttonInteraction.shownModal.data.custom_id, DAILY_NEWS_PANEL_REPUBLISH_RANGE_MODAL_ID);
+
+  await handleDailyNewsPanelModalSubmitInteraction({
+    interaction: modalInteraction,
+    db,
+    isModerator: () => true,
+    replyNoPermission: async () => {},
+    now: "2026-05-23T10:00:00.000Z",
+  });
+
+  assert.deepEqual(db.sot.news.runtime.releaseQueue.dayKeys, ["2026-05-20", "2026-05-21", "2026-05-22"]);
+  assert.equal(db.sot.news.runtime.releaseQueue.forceRepublish, true);
+  assert.equal(db.sot.news.runtime.releaseQueue.skippedAlreadyPublishedCount, 0);
+  assert.equal(db.sot.news.runtime.releaseQueue.alreadyPublishedDayCount, 1);
+  assert.match(modalInteraction.edits[0].embeds[0].data.fields.at(-1).value, /подготовлен к повторной отправке/);
+  assert.match(modalInteraction.edits[0].embeds[0].data.fields.at(-1).value, /Уже опубликованные будут переотправлены: \*\*1\*\*/);
 });
 
 test("handleDailyNewsPanelButtonInteraction starts and stops the historical release queue", async () => {

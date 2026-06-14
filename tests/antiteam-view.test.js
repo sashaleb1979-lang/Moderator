@@ -723,6 +723,7 @@ test("close review payload paginates helper arrival toggles", () => {
 
   const firstPage = payloadJson(buildCloseReviewPayload({ id: "ticket-1", helpers }, 0));
   const secondPage = payloadJson(buildCloseReviewPayload({ id: "ticket-1", helpers }, 1));
+  const thirdPage = payloadJson(buildCloseReviewPayload({ id: "ticket-1", helpers }, 2));
 
   assert.match(firstPage, /Страница/);
   assert.match(firstPage, /Зелёная кнопка = helper пришёл/);
@@ -731,6 +732,8 @@ test("close review payload paginates helper arrival toggles", () => {
   assert.match(firstPage, /Пришёл • Helper 0/);
   assert.doesNotMatch(firstPage, /Helper 11/);
   assert.match(firstPage, /Вперёд/);
-  assert.match(secondPage, /Helper 11/);
+  assert.match(secondPage, /Helper 5/);
+  assert.doesNotMatch(secondPage, /Helper 11/);
+  assert.match(thirdPage, /Helper 11/);
   assert.match(secondPage, /Назад/);
 });

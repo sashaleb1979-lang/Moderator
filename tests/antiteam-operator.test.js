@@ -1655,8 +1655,8 @@ test("arrival toggle updates the close review before serialized persistence fini
   const pending = operator.handleButtonInteraction(interaction);
   const callsBeforePersist = await persistEntered;
 
-  assert.deepEqual(callsBeforePersist, ["update"]);
-  assert.match(JSON.stringify(interaction.calls[0][1].components[0].toJSON()), /Не пришёл • Helper/);
+  assert.deepEqual(callsBeforePersist, ["deferUpdate", "editReply"]);
+  assert.match(JSON.stringify(interaction.calls[1][1].components[0].toJSON()), /Не пришёл • Helper/);
   releasePersist();
   assert.equal(await pending, true);
   assert.equal(db.sot.antiteam.tickets["ticket-1"].helpers["helper-1"].arrived, false);

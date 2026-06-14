@@ -198,7 +198,8 @@ async function runHistoricalReleaseQueueTick({
     };
   }
 
-  if (hasStoredPublicDailyNewsPublish(state.dailyDigests?.[dayKey])) {
+  const forceRepublish = queue.forceRepublish === true;
+  if (!forceRepublish && hasStoredPublicDailyNewsPublish(state.dailyDigests?.[dayKey])) {
     const storedPublish = state.dailyDigests[dayKey].publish;
     await markHistoricalQueueDayAlreadyPublished({ queue, dayKeys, dayKey, now, saveDb });
     return {
@@ -313,7 +314,7 @@ async function runHistoricalReleaseQueueTick({
       publicChannel,
       staffChannel,
       publishMode: "public",
-      force: false,
+      force: forceRepublish,
       now,
       saveDb,
     });

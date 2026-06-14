@@ -26,6 +26,7 @@ const DAILY_NEWS_OPERATOR_ACTIONS = Object.freeze({
   PUBLISH_DAY: "publish_day",
   PUBLISH_STAFF_ONLY: "publish_staff_only",
   PREPARE_RANGE: "prepare_range",
+  REPUBLISH_RANGE: "republish_range",
   START_RELEASE_QUEUE: "start_release_queue",
   STOP_RELEASE_QUEUE: "stop_release_queue",
 });
@@ -39,6 +40,7 @@ const DAILY_NEWS_PANEL_PUBLISH_NOW_ID = "daily_news_panel_publish_now";
 const DAILY_NEWS_PANEL_PUBLISH_DAY_ID = "daily_news_panel_publish_day";
 const DAILY_NEWS_PANEL_PUBLISH_STAFF_ONLY_ID = "daily_news_panel_publish_staff_only";
 const DAILY_NEWS_PANEL_PREPARE_RANGE_ID = "daily_news_panel_prepare_range";
+const DAILY_NEWS_PANEL_REPUBLISH_RANGE_ID = "daily_news_panel_republish_range";
 const DAILY_NEWS_PANEL_START_RELEASE_QUEUE_ID = "daily_news_panel_start_release_queue";
 const DAILY_NEWS_PANEL_STOP_RELEASE_QUEUE_ID = "daily_news_panel_stop_release_queue";
 const DAILY_NEWS_PANEL_CONFIG_INFRA_ID = "daily_news_panel_config_infra";
@@ -48,6 +50,7 @@ const DAILY_NEWS_PANEL_PREVIEW_DAY_MODAL_ID = "daily_news_panel_preview_day_moda
 const DAILY_NEWS_PANEL_RERUN_DAY_MODAL_ID = "daily_news_panel_rerun_day_modal";
 const DAILY_NEWS_PANEL_PUBLISH_DAY_MODAL_ID = "daily_news_panel_publish_day_modal";
 const DAILY_NEWS_PANEL_PREPARE_RANGE_MODAL_ID = "daily_news_panel_prepare_range_modal";
+const DAILY_NEWS_PANEL_REPUBLISH_RANGE_MODAL_ID = "daily_news_panel_republish_range_modal";
 const DAILY_NEWS_PANEL_DAY_KEY_INPUT_ID = "day_key";
 const DAILY_NEWS_PANEL_RANGE_START_DAY_KEY_INPUT_ID = "range_start_day_key";
 const DAILY_NEWS_PANEL_RANGE_END_DAY_KEY_INPUT_ID = "range_end_day_key";
@@ -67,6 +70,7 @@ const DAILY_NEWS_PANEL_BUTTON_IDS = Object.freeze([
   DAILY_NEWS_PANEL_PUBLISH_DAY_ID,
   DAILY_NEWS_PANEL_PUBLISH_STAFF_ONLY_ID,
   DAILY_NEWS_PANEL_PREPARE_RANGE_ID,
+  DAILY_NEWS_PANEL_REPUBLISH_RANGE_ID,
   DAILY_NEWS_PANEL_START_RELEASE_QUEUE_ID,
   DAILY_NEWS_PANEL_STOP_RELEASE_QUEUE_ID,
   DAILY_NEWS_PANEL_CONFIG_INFRA_ID,
@@ -79,6 +83,7 @@ const DAILY_NEWS_PANEL_MODAL_IDS = Object.freeze([
   DAILY_NEWS_PANEL_RERUN_DAY_MODAL_ID,
   DAILY_NEWS_PANEL_PUBLISH_DAY_MODAL_ID,
   DAILY_NEWS_PANEL_PREPARE_RANGE_MODAL_ID,
+  DAILY_NEWS_PANEL_REPUBLISH_RANGE_MODAL_ID,
 ]);
 
 function cleanString(value, limit = 2000) {
@@ -313,7 +318,8 @@ function formatReleaseQueueSummary(queue = {}) {
     `осталось **${dayKeys.length}**`,
     Number(queue?.completedDayCount) > 0 ? `готово **${Number(queue.completedDayCount)}**` : null,
     Number(queue?.lastPreparedDayCount) > 0 ? `подготовлено **${Number(queue.lastPreparedDayCount)}**` : null,
-    Number(queue?.skippedAlreadyPublishedCount) > 0 ? `пропущено уже опубликованных **${Number(queue.skippedAlreadyPublishedCount)}**` : null,
+    queue?.forceRepublish === true ? "режим **повторной отправки**" : null,
+    queue?.forceRepublish !== true && Number(queue?.skippedAlreadyPublishedCount) > 0 ? `пропущено уже опубликованных **${Number(queue.skippedAlreadyPublishedCount)}**` : null,
     currentDayKey ? `сейчас **${currentDayKey}**` : null,
     nextDayKey ? `следующий **${nextDayKey}**` : null,
     queue?.lastFailedDayKey ? `последний сбой **${queue.lastFailedDayKey}**` : null,
@@ -332,6 +338,7 @@ async function prepareDailyNewsReleaseRange({
   endDayKey = "",
   now,
   saveDb,
+  forceRepublish = false,
 } = {}) {
   const normalizedStartDayKey = normalizeDayKey(startDayKey);
   const normalizedEndDayKey = normalizeDayKey(endDayKey);
@@ -347,7 +354,10 @@ async function prepareDailyNewsReleaseRange({
   const dayKeys = buildInclusiveDayKeyRange(normalizedStartDayKey, normalizedEndDayKey, 62);
   const state = ensureNewsState(db);
   const alreadyPublishedDayCount = dayKeys.filter((dayKey) => hasStoredPublicDailyNewsPublish(state.dailyDigests?.[dayKey])).length;
-  const pendingDayKeys = dayKeys.filter((dayKey) => !hasStoredPublicDailyNewsPublish(state.dailyDigests?.[dayKey]));
+  const shouldForceRepublish = forceRepublish === true;
+  const pendingDayKeys = shouldForceRepublish
+    ? dayKeys
+    : dayKeys.filter((dayKey) => !hasStoredPublicDailyNewsPublish(state.dailyDigests?.[dayKey]));
   state.runtime.releaseQueue = {
     ...state.runtime.releaseQueue,
     active: false,
@@ -356,8 +366,9 @@ async function prepareDailyNewsReleaseRange({
     lastPreparedRangeStartDayKey: dayKeys[0] || null,
     lastPreparedRangeEndDayKey: dayKeys[dayKeys.length - 1] || null,
     lastPreparedDayCount: dayKeys.length,
-    skippedAlreadyPublishedCount: alreadyPublishedDayCount,
+    skippedAlreadyPublishedCount: shouldForceRepublish ? 0 : alreadyPublishedDayCount,
     alreadyPublishedDayCount,
+    forceRepublish: shouldForceRepublish,
     completedDayCount: 0,
     currentDayKey: null,
     currentStartedAt: null,
@@ -374,7 +385,8 @@ async function prepareDailyNewsReleaseRange({
     dayKeys,
     pendingDayKeys,
     alreadyPublishedDayCount,
-    skippedAlreadyPublishedCount: alreadyPublishedDayCount,
+    skippedAlreadyPublishedCount: shouldForceRepublish ? 0 : alreadyPublishedDayCount,
+    forceRepublish: shouldForceRepublish,
     queue: state.runtime.releaseQueue,
   };
 }
@@ -443,6 +455,7 @@ function buildDailyNewsPanelRows(state = {}) {
     ),
     new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId(DAILY_NEWS_PANEL_CONFIG_INFRA_ID).setLabel("Настроить").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId(DAILY_NEWS_PANEL_REPUBLISH_RANGE_ID).setLabel("Заново переотправить дни").setStyle(ButtonStyle.Danger),
       new ButtonBuilder().setCustomId(DAILY_NEWS_PANEL_BACK_ID).setLabel("Назад").setStyle(ButtonStyle.Secondary)
     ),
   ];
@@ -461,7 +474,8 @@ function buildDailyNewsStatusPayload(db = {}) {
       `публикация: **${formatPublishStatusLabel(state.runtime.lastPublishStatus)}** · день **${state.runtime.lastPublishedDayKey || "—"}**`,
       `период: **${formatReleaseQueueState(queue)}** · осталось **${Array.isArray(queue.dayKeys) ? queue.dayKeys.length : 0}**${queue.currentDayKey ? ` · сейчас **${queue.currentDayKey}**` : ""}${queue.dayKeys?.[0] ? ` · следующий **${queue.dayKeys[0]}**` : ""}`,
       Number(queue.completedDayCount) > 0 ? `готово в этом запуске: **${queue.completedDayCount}**` : null,
-      Number(queue.skippedAlreadyPublishedCount) > 0 ? `уже опубликованные дни пропущены: **${queue.skippedAlreadyPublishedCount}**` : null,
+      queue.forceRepublish === true ? "период в режиме **повторной отправки**" : null,
+      queue.forceRepublish !== true && Number(queue.skippedAlreadyPublishedCount) > 0 ? `уже опубликованные дни пропущены: **${queue.skippedAlreadyPublishedCount}**` : null,
       queue.lastFailureMessage ? `сбой периода: **${queue.lastFailedDayKey || "—"}** · ${queue.lastFailureMessage} · retry на следующем тике` : null,
       `покрытие: **${coverage.partial ? "частичное" : "чистое"}${coverage.ambiguous ? " + неоднозначное" : ""}**`,
       `кандидаты: **${audit.rawCandidateCounts?.total || 0}**`,
@@ -642,10 +656,10 @@ function buildDayKeyModal(action = DAILY_NEWS_OPERATOR_ACTIONS.PREVIEW_DAY) {
     );
 }
 
-function buildPrepareRangeModal() {
+function buildPrepareRangeModal({ forceRepublish = false } = {}) {
   return new ModalBuilder()
-    .setCustomId(DAILY_NEWS_PANEL_PREPARE_RANGE_MODAL_ID)
-    .setTitle("Подготовить период Daily News")
+    .setCustomId(forceRepublish === true ? DAILY_NEWS_PANEL_REPUBLISH_RANGE_MODAL_ID : DAILY_NEWS_PANEL_PREPARE_RANGE_MODAL_ID)
+    .setTitle(forceRepublish === true ? "Переотправить период Daily News" : "Подготовить период Daily News")
     .addComponents(
       new ActionRowBuilder().addComponents(
         new TextInputBuilder()
@@ -941,14 +955,16 @@ async function handleDailyNewsPanelButtonInteraction(options = {}) {
     });
   }
 
-  if (customId === DAILY_NEWS_PANEL_PREPARE_RANGE_ID) {
+  if (customId === DAILY_NEWS_PANEL_PREPARE_RANGE_ID || customId === DAILY_NEWS_PANEL_REPUBLISH_RANGE_ID) {
     return runDailyNewsOperatorInteractionAction({
       interaction,
       replyError: options.replyError,
       customId,
       errorPrefix: "Не удалось открыть форму диапазона Daily News",
       action: async () => {
-        await interaction.showModal(buildPrepareRangeModal());
+        await interaction.showModal(buildPrepareRangeModal({
+          forceRepublish: customId === DAILY_NEWS_PANEL_REPUBLISH_RANGE_ID,
+        }));
       },
     });
   }
@@ -1164,7 +1180,7 @@ async function handleDailyNewsPanelModalSubmitInteraction(options = {}) {
     });
   }
 
-  if (customId === DAILY_NEWS_PANEL_PREPARE_RANGE_MODAL_ID) {
+  if (customId === DAILY_NEWS_PANEL_PREPARE_RANGE_MODAL_ID || customId === DAILY_NEWS_PANEL_REPUBLISH_RANGE_MODAL_ID) {
     return runDailyNewsOperatorInteractionAction({
       interaction,
       replyError: options.replyError,
@@ -1187,14 +1203,19 @@ async function handleDailyNewsPanelModalSubmitInteraction(options = {}) {
           endDayKey,
           now: options.now,
           saveDb: options.saveDb,
+          forceRepublish: customId === DAILY_NEWS_PANEL_REPUBLISH_RANGE_MODAL_ID,
         });
+        const forceRepublish = result.forceRepublish === true;
         await interaction.editReply(buildDailyNewsOperatorPanelPayload({
           db: options.db,
           statusText: [
-            `Период **${startDayKey} → ${endDayKey}** подготовлен.`,
+            forceRepublish
+              ? `Период **${startDayKey} → ${endDayKey}** подготовлен к повторной отправке.`
+              : `Период **${startDayKey} → ${endDayKey}** подготовлен.`,
             `Всего дней: **${result.dayKeys.length}**.`,
             `В очередь: **${result.pendingDayKeys.length}**.`,
-            result.alreadyPublishedDayCount > 0 ? `Уже опубликованные дни пропущены: **${result.alreadyPublishedDayCount}**.` : null,
+            forceRepublish && result.alreadyPublishedDayCount > 0 ? `Уже опубликованные будут переотправлены: **${result.alreadyPublishedDayCount}**.` : null,
+            !forceRepublish && result.alreadyPublishedDayCount > 0 ? `Уже опубликованные дни пропущены: **${result.alreadyPublishedDayCount}**.` : null,
             "Публикация остановлена до ручного запуска.",
           ].filter(Boolean).join(" "),
           includeFlags: false,
@@ -1258,6 +1279,8 @@ module.exports = {
   DAILY_NEWS_PANEL_OPEN_ID,
   DAILY_NEWS_PANEL_PREPARE_RANGE_ID,
   DAILY_NEWS_PANEL_PREPARE_RANGE_MODAL_ID,
+  DAILY_NEWS_PANEL_REPUBLISH_RANGE_ID,
+  DAILY_NEWS_PANEL_REPUBLISH_RANGE_MODAL_ID,
   DAILY_NEWS_PANEL_PUBLISH_DAY_ID,
   DAILY_NEWS_PANEL_PUBLISH_DAY_MODAL_ID,
   DAILY_NEWS_PANEL_PUBLISH_NOW_ID,

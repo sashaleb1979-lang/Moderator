@@ -107,6 +107,7 @@ function normalizeReleaseQueue(value = null) {
     lastPreparedDayCount: normalizeOptionalNonNegativeInteger(source.lastPreparedDayCount) ?? 0,
     skippedAlreadyPublishedCount: normalizeOptionalNonNegativeInteger(source.skippedAlreadyPublishedCount) ?? 0,
     alreadyPublishedDayCount: normalizeOptionalNonNegativeInteger(source.alreadyPublishedDayCount) ?? 0,
+    forceRepublish: normalizeBoolean(source.forceRepublish, false),
     completedDayCount: normalizeOptionalNonNegativeInteger(source.completedDayCount) ?? 0,
     currentDayKey: normalizeNullableString(source.currentDayKey, 40),
     currentStartedAt: normalizeNullableString(source.currentStartedAt, 80),

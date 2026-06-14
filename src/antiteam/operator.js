@@ -2380,7 +2380,8 @@ function createAntiteamOperator(options = {}) {
           },
         },
       };
-      await safeUpdate(interaction, buildCloseReviewPayload(optimisticTicket, page));
+      const ack = await safeDeferUpdate(interaction);
+      if (ack.ok) await safeEditReply(interaction, buildCloseReviewPayload(optimisticTicket, page));
       await persist("antiteam-arrival-toggle", () => setTicketHelperArrival(db, ticket.id, helperId, arrived, { now: nowIso() }));
       return true;
     }

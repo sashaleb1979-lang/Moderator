@@ -1441,7 +1441,7 @@ function buildCloseSummaryModal(ticketId) {
 function buildCloseReviewPayload(ticket = {}, page = 0) {
   const helpers = Object.values(ticket.helpers || {})
     .sort((left, right) => String(left.respondedAt || "").localeCompare(String(right.respondedAt || "")) || String(left.userId || "").localeCompare(String(right.userId || "")));
-  const pageSize = 10;
+  const pageSize = 5;
   const totalPages = Math.max(1, Math.ceil(helpers.length / pageSize));
   const currentPage = Math.min(Math.max(Number.parseInt(page, 10) || 0, 0), totalPages - 1);
   const visibleHelpers = helpers.slice(currentPage * pageSize, currentPage * pageSize + pageSize);

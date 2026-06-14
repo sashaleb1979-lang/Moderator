@@ -196,6 +196,7 @@ test("normalizeNewsState normalizes config and preserves captured runtime slices
     lastPreparedDayCount: 3,
     skippedAlreadyPublishedCount: 1,
     alreadyPublishedDayCount: 2,
+    forceRepublish: false,
     completedDayCount: 1,
     currentDayKey: "2026-05-11",
     currentStartedAt: "2026-05-14T21:05:30.000Z",

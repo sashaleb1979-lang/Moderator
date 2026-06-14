@@ -655,6 +655,67 @@ test("runDailyNewsReleaseTick skips already published historical queue items wit
   assert.equal(db.sot.news.runtime.releaseQueue.lastFailedDayKey, null);
 });
 
+test("runDailyNewsReleaseTick republishes already published historical queue items when forced", async () => {
+  const compileCalls = [];
+  const publishCalls = [];
+  const db = {
+    sot: {
+      news: {
+        config: {
+          channels: {
+            publicChannelId: "public-room",
+          },
+        },
+        dailyDigests: {
+          "2026-05-20": {
+            dayKey: "2026-05-20",
+            publish: {
+              publishMode: "public",
+              publicMessageId: "public-old",
+            },
+          },
+        },
+        runtime: {
+          releaseQueue: {
+            active: true,
+            forceRepublish: true,
+            dayKeys: ["2026-05-20", "2026-05-21"],
+          },
+        },
+      },
+    },
+  };
+
+  const result = await runDailyNewsReleaseTick({
+    db,
+    now: "2026-05-23T10:00:00.000Z",
+    compileDailyNewsDigestFn(args) {
+      compileCalls.push(args);
+      return { digest: { dayKey: args.targetDayKey, stamp: "fresh-format" } };
+    },
+    publishDailyNewsIssueFn(args) {
+      publishCalls.push(args);
+      return {
+        published: true,
+        skipped: false,
+        dayKey: args.dayKey,
+        result: { publicMessageId: "public-new" },
+      };
+    },
+  });
+
+  assert.equal(compileCalls.length, 1);
+  assert.equal(publishCalls.length, 1);
+  assert.equal(publishCalls[0].force, true);
+  assert.equal(result.releaseMode, "history_queue");
+  assert.equal(result.dayKey, "2026-05-20");
+  assert.equal(result.published, true);
+  assert.equal(result.publishSkipped, false);
+  assert.deepEqual(db.sot.news.runtime.releaseQueue.dayKeys, ["2026-05-21"]);
+  assert.equal(db.sot.news.runtime.releaseQueue.completedDayCount, 1);
+  assert.equal(db.sot.news.runtime.releaseQueue.skippedAlreadyPublishedCount, 0);
+});
+
 test("runDailyNewsReleaseTick keeps historical queue item when publish throws", async () => {
   const compileCalls = [];
   const db = {
