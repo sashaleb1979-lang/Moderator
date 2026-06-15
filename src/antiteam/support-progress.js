@@ -165,6 +165,10 @@ function listFontFiles() {
   const repoFontsDir = path.resolve(__dirname, "..", "..", "assets", "fonts");
   const windowsFontsDir = "C:\\Windows\\Fonts";
   return [
+    // The repo ships the Noto fonts with a doubled ".ttf.ttf" extension (came
+    // from a zip); list that first so renders work on hosts without system
+    // fonts (Linux/Docker). graphic-tierlist.js / tierlist-live.js do the same.
+    [path.join(repoFontsDir, "NotoSans-Regular.ttf.ttf"), path.join(repoFontsDir, "NotoSans-Bold.ttf.ttf")],
     [path.join(repoFontsDir, "NotoSans-Regular.ttf"), path.join(repoFontsDir, "NotoSans-Bold.ttf")],
     [path.join(repoFontsDir, "DejaVuSans.ttf"), path.join(repoFontsDir, "DejaVuSans-Bold.ttf")],
     [path.join(windowsFontsDir, "segoeui.ttf"), path.join(windowsFontsDir, "segoeuib.ttf")],
