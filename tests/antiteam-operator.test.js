@@ -2399,6 +2399,9 @@ test("clan draft submit publishes without photo", async () => {
   const interaction = createButtonInteraction(ANTITEAM_CUSTOM_IDS.submitDraft, { id: "caller-1", username: "Caller" });
 
   assert.equal(await operator.handleButtonInteraction(interaction), true);
+  // Friend scan + public edit now run in a detached tail after publish; let it
+  // finish before asserting the edit happened.
+  await new Promise((resolve) => setImmediate(resolve));
 
   const ticket = Object.values(db.sot.antiteam.tickets)[0];
   assert.equal(ticket.kind, "clan");

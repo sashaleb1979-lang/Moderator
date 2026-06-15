@@ -1291,12 +1291,12 @@ function createAntiteamOperator(options = {}) {
     const pingStartedAt = nowMs();
     const pingMessage = thread ? await sendTicketPingMessages(thread, ticket, config) : null;
     const pingMs = nowMs() - pingStartedAt;
-    const friendEligibleDiscordUserIds = await friendEligibleDiscordUserIdsPromise;
-    const friendEligibleMs = nowMs() - friendEligibleStartedAt;
-
+    // Persist message refs immediately so help/close can locate the post. The
+    // slow Roblox friend scan and the follow-up public edit (which only adds
+    // the friend-eligible info) move to a detached tail so the mission post and
+    // thread appear without waiting ~10-15s for the scan/re-upload.
     const refsPersistStartedAt = nowMs();
     const updatedTicket = await persist("antiteam-ticket-message-refs", () => updateAntiteamTicket(db, ticket.id, (current) => {
-      current.friendEligibleDiscordUserIds = friendEligibleDiscordUserIds;
       current.message = {
         guildId: cleanString(thread?.guildId || publicMessage.guildId || channel.guildId, 80),
         channelId: channel.id,
@@ -1312,11 +1312,23 @@ function createAntiteamOperator(options = {}) {
     }));
     const refsPersistMs = nowMs() - refsPersistStartedAt;
 
-    const publicEditStartedAt = nowMs();
-    if (typeof publicMessage.edit === "function") {
-      await publicMessage.edit(buildTicketPublicPayload(updatedTicket, config)).catch(() => {});
-    }
-    const publicEditMs = nowMs() - publicEditStartedAt;
+    runDetached(async () => {
+      const friendEligibleDiscordUserIds = await friendEligibleDiscordUserIdsPromise;
+      const ticketWithFriends = await persist("antiteam-ticket-friend-eligible", () => updateAntiteamTicket(db, ticket.id, (current) => {
+        current.friendEligibleDiscordUserIds = friendEligibleDiscordUserIds;
+        current.updatedAt = nowIso();
+        return current;
+      }));
+      if (typeof publicMessage.edit === "function") {
+        await publicMessage.edit(buildTicketPublicPayload(ticketWithFriends, config)).catch(() => {});
+      }
+      emitAntiteamLatency("submit_finalize_tail", {
+        ticketId: ticket.id,
+        friendScanMs: nowMs() - friendEligibleStartedAt,
+      });
+    }, (error) => {
+      logError("Antiteam submit finalize tail failed:", error?.message || error);
+    });
 
     ensureBattalionRoleGrantedEventually(ticket);
     runDetached(async () => {
@@ -1336,10 +1348,10 @@ function createAntiteamOperator(options = {}) {
       threadStartMs,
       threadPanelMs,
       pingMs,
-      friendScanMs: friendEligibleMs,
       refsPersistMs,
-      publicEditMs,
       totalMs: nowMs() - finalizeStartedAt,
+      friendScan: "detached",
+      publicEdit: "detached",
       roleGrant: "detached",
       panelResend: "detached",
     });
@@ -2343,7 +2355,11 @@ function createAntiteamOperator(options = {}) {
         await replyNoPermission(interaction);
         return true;
       }
-      await safeReply(interaction, buildCloseReviewPayload(ticket));
+      // Defer-first: ack immediately, then fill the (ephemeral) close panel via
+      // editReply. Avoids a missed-ack / global watchdog conflict if the event
+      // loop is momentarily busy when the panel is requested.
+      const ack = await safeDeferReply(interaction, { flags: MessageFlags.Ephemeral });
+      if (ack.ok) await safeEditReply(interaction, buildCloseReviewPayload(ticket));
       return true;
     }
 
@@ -2352,7 +2368,8 @@ function createAntiteamOperator(options = {}) {
         await replyNoPermission(interaction);
         return true;
       }
-      await safeUpdate(interaction, buildCloseReviewPayload(ticket, Number.parseInt(extra, 10) || 0));
+      const ack = await safeDeferUpdate(interaction);
+      if (ack.ok) await safeEditReply(interaction, buildCloseReviewPayload(ticket, Number.parseInt(extra, 10) || 0));
       return true;
     }
 
