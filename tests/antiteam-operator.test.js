@@ -3826,3 +3826,43 @@ test("close review toggles drive the result in memory, persisting only on close"
   assert.equal(db.sot.antiteam.stats.helpers["helper-1"].confirmedArrived, 1);
   assert.equal(db.sot.antiteam.stats.helpers["helper-2"], undefined);
 });
+
+test("direct-link modal saves the author's connect link onto the draft", async () => {
+  const db = {};
+  setAntiteamDraft(db, "user-1", {
+    userTag: "User",
+    roblox: { userId: "101", username: "Anchor" },
+    description: "Цели A/B.",
+    directJoinEnabled: true,
+  }, { now: "2026-05-16T10:00:00.000Z" });
+  const operator = createAntiteamOperator({ db, now: () => "2026-05-16T10:01:00.000Z", saveDb() {} });
+
+  const link = "https://www.roblox.com/games/start?placeId=1&gameInstanceId=2";
+  const modal = createModalInteraction("at:direct_link:modal", { direct_link: link }, { id: "user-1", username: "User" });
+  assert.equal(await operator.handleModalSubmitInteraction(modal), true);
+  assert.equal(db.sot.antiteam.drafts["user-1"].manualDirectJoinUrl, link);
+
+  // A non-URL is rejected and not stored.
+  const badModal = createModalInteraction("at:direct_link:modal", { direct_link: "не ссылка" }, { id: "user-1", username: "User" });
+  assert.equal(await operator.handleModalSubmitInteraction(badModal), true);
+  assert.equal(db.sot.antiteam.drafts["user-1"].manualDirectJoinUrl, link);
+});
+
+test("direct-join help hands out the author's manual connect link", async () => {
+  const db = {};
+  const draft = setAntiteamDraft(db, "author-1", {
+    userTag: "Author",
+    roblox: { userId: "101", username: "Anchor" },
+    level: "medium",
+    count: "3-5",
+    description: "Цели A/B.",
+    directJoinEnabled: true,
+    manualDirectJoinUrl: "https://roblox.test/join/abc",
+  }, { now: "2026-05-16T10:00:00.000Z" });
+  createAntiteamTicketFromDraft(db, draft, { id: "ticket-1", now: "2026-05-16T10:01:00.000Z" });
+  const operator = createAntiteamOperator({ db, now: () => "2026-05-16T10:02:00.000Z", saveDb() {}, fetchChannel: async () => null });
+
+  const help = createButtonInteraction("at:help:ticket-1", { id: "helper-1", username: "Helper" });
+  assert.equal(await operator.handleButtonInteraction(help), true);
+  assert.match(JSON.stringify(help.calls.at(-1)[1]), /roblox\.test\/join\/abc/);
+});

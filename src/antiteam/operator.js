@@ -35,6 +35,7 @@ const {
   buildCloseSummaryModal,
   buildConfigModal,
   buildDescriptionModal,
+  buildDirectLinkModal,
   buildHelperRewardRolesModal,
   buildHelperStatsPayload,
   buildHelpReplyPayload,
@@ -1804,9 +1805,15 @@ function createAntiteamOperator(options = {}) {
         : bridgeTarget
           ? "bridge_direct"
           : "friend_request";
+    // Prefer the author's manually-provided connect link for direct join — the
+    // presence-based template was unreliable. Fall back to it only if no manual
+    // link was set.
+    const manualDirectJoinUrl = cleanString(ticket.manualDirectJoinUrl, 2000);
     const directJoinUrl = linkKind === "bridge_direct"
       ? bridgeTarget.directJoinUrl
-      : targetRoute?.directJoinUrl || "";
+      : (ticket.directJoinEnabled && manualDirectJoinUrl)
+        ? manualDirectJoinUrl
+        : (targetRoute?.directJoinUrl || "");
     const profileUrl = getTicketProfileUrl(ticket);
     const previousHelper = ticket.helpers?.[interaction.user.id] || null;
     const alreadyResponded = Boolean(previousHelper?.respondedAt);
@@ -2282,6 +2289,24 @@ function createAntiteamOperator(options = {}) {
       return true;
     }
 
+    if (id === ANTITEAM_CUSTOM_IDS.setDirectLink) {
+      const draft = getAntiteamDraft(db, interaction.user.id);
+      if (!draft) {
+        await safeReply(interaction, { content: "Черновик истёк. Начни заново.", flags: MessageFlags.Ephemeral });
+        return true;
+      }
+      await safeShowModal(interaction, buildDirectLinkModal(draft));
+      return true;
+    }
+
+    if (id === ANTITEAM_CUSTOM_IDS.directLinkGuide) {
+      await safeReply(interaction, {
+        content: "❓ **Как взять прямую ссылку**\nПодробный гайд с картинками будет здесь позже. Пока: возьми ссылку прямого подключения к своему серверу Roblox и вставь её кнопкой «Вставить ссылку».",
+        flags: MessageFlags.Ephemeral,
+      });
+      return true;
+    }
+
     if (id === ANTITEAM_CUSTOM_IDS.cancelDraft) {
       const draft = getAntiteamDraft(db, interaction.user.id);
       if (!draft) {
@@ -2628,6 +2653,29 @@ function createAntiteamOperator(options = {}) {
       const description = interaction.fields.getTextInputValue("description");
       const updated = writeDraft(interaction.user.id, { description });
       const payload = buildTicketSetupPayload(updated, getConfig());
+      if (interaction.message && typeof interaction.update === "function") {
+        await safeUpdate(interaction, payload);
+        return true;
+      }
+      const ack = await safeDeferReply(interaction, { flags: MessageFlags.Ephemeral });
+      if (ack.ok) await safeEditReply(interaction, payload);
+      return true;
+    }
+
+    if (id === "at:direct_link:modal") {
+      const draft = getAntiteamDraft(db, interaction.user.id);
+      if (!draft) {
+        const ack = await safeDeferReply(interaction, { flags: MessageFlags.Ephemeral });
+        if (ack.ok) await safeEditReply(interaction, { content: "Черновик истёк. Начни заново.", components: [] });
+        return true;
+      }
+      const rawLink = cleanString(interaction.fields.getTextInputValue("direct_link"), 2000);
+      const link = /^(https?:\/\/|roblox:\/\/)\S+$/i.test(rawLink) ? rawLink : "";
+      const updated = link ? writeDraft(interaction.user.id, { manualDirectJoinUrl: link }) : draft;
+      const status = link
+        ? "Прямая ссылка сохранена ✅ — помощники зайдут к тебе по ней."
+        : "Это не похоже на ссылку (нужен http/https или roblox://). Попробуй ещё раз.";
+      const payload = buildTicketSetupPayload(updated, getConfig(), status);
       if (interaction.message && typeof interaction.update === "function") {
         await safeUpdate(interaction, payload);
         return true;

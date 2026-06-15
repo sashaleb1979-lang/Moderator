@@ -62,6 +62,8 @@ const ANTITEAM_CUSTOM_IDS = Object.freeze({
   clanRolesSelect: "at:clan_roles",
   toggleDirect: "at:toggle:direct",
   togglePhoto: "at:toggle:photo",
+  setDirectLink: "at:direct_link:set",
+  directLinkGuide: "at:direct_link:guide",
   editDescription: "at:desc:open",
   submitDraft: "at:submit",
   submitWithoutPhoto: "at:photo:skip",
@@ -1090,7 +1092,34 @@ function buildTicketSetupPayload(draft = {}, config = createDefaultAntiteamConfi
     ].join("\n")))
     .addActionRowComponents(buildDraftDescriptionRow(draft))
     .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
-    .addSectionComponents(...buildDraftSettingsSections(draft))
+    .addSectionComponents(...buildDraftSettingsSections(draft));
+
+  // When direct join is enabled the author pastes their own connect link so
+  // helpers can join without a friend request (Discord can't read the clipboard,
+  // so it's entered via a modal).
+  if (!isClan && draft.directJoinEnabled) {
+    const link = cleanString(draft.manualDirectJoinUrl, 2000);
+    container
+      .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
+      .addTextDisplayComponents(new TextDisplayBuilder().setContent([
+        "**🔗 Прямая ссылка для входа без друзей**",
+        link
+          ? `Текущая ссылка добавлена ✅ — помощники зайдут к тебе по ней. Можно изменить.`
+          : "Вставь сюда свою прямую ссылку на подключение — по ней помощники зайдут к тебе без добавления в друзья.",
+      ].join("\n")))
+      .addActionRowComponents(new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(ANTITEAM_CUSTOM_IDS.setDirectLink)
+          .setLabel(link ? "🔗 Изменить ссылку" : "🔗 Вставить ссылку")
+          .setStyle(link ? ButtonStyle.Secondary : ButtonStyle.Primary),
+        new ButtonBuilder()
+          .setCustomId(ANTITEAM_CUSTOM_IDS.directLinkGuide)
+          .setLabel("❓ Как взять ссылку")
+          .setStyle(ButtonStyle.Secondary)
+      ));
+  }
+
+  container
     .addSeparatorComponents(new SeparatorBuilder().setDivider(false))
     .addActionRowComponents(buildDraftSubmitRow(draft));
   return buildPayload(container, { ephemeral: true });
@@ -1438,6 +1467,24 @@ function buildCloseSummaryModal(ticketId) {
     );
 }
 
+function buildDirectLinkModal(draft = {}) {
+  return new ModalBuilder()
+    .setCustomId("at:direct_link:modal")
+    .setTitle("Прямая ссылка подключения")
+    .addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId("direct_link")
+          .setLabel("Прямая ссылка для входа без друзей")
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+          .setMaxLength(2000)
+          .setValue(cleanString(draft?.manualDirectJoinUrl, 2000))
+          .setPlaceholder("Вставь ссылку (Ctrl+V) и нажми отправить")
+      )
+    );
+}
+
 function buildCloseReviewPayload(ticket = {}, page = 0, options = {}) {
   const helpers = Object.values(ticket.helpers || {})
     .sort((left, right) => String(left.respondedAt || "").localeCompare(String(right.respondedAt || "")) || String(left.userId || "").localeCompare(String(right.userId || "")));
@@ -1532,6 +1579,7 @@ module.exports = {
   buildCloseSummaryModal,
   buildConfigModal,
   buildDescriptionModal,
+  buildDirectLinkModal,
   buildHelperRewardRolesModal,
   buildHelperStatsPayload,
   buildHelpReplyPayload,
