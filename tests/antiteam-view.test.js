@@ -282,6 +282,12 @@ test("public ticket is the main compact post and thread panel is buttons only", 
   assert.doesNotMatch(json, /🎮/);
   assert.doesNotMatch(json, /Маршрут:/);
   assert.match(json, /🟢 \*\*Лоутабельные\*\*: почти вся команда до ~2k kills\./);
+  // UX v3: Roblox avatar thumbnail on the right; direct-join is just a lock emoji
+  // (🔒 here, direct join off); the open/closed status text is gone from the card.
+  assert.match(json, /https:\/\/tr\.rbxcdn\.com\/anchor-headshot\.png/);
+  assert.match(json, /🔒/);
+  assert.doesNotMatch(json, /Вход без др/);
+  assert.doesNotMatch(json, /открыто|закрыто/);
   assert.match(json, /### Помощники/);
   assert.match(json, /Пока никто не отозвался/);
   assert.match(json, /### Описание/);

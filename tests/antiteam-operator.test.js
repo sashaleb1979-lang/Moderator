@@ -963,7 +963,9 @@ test("ticket direct-join toggle is limited to author or admin and updates the mi
   assert.equal(db.sot.antiteam.tickets["ticket-1"].directJoinEnabled, true);
   assert.deepEqual(authorToggle.calls.map((call) => call[0]), ["deferUpdate", "editReply"]);
   assert.match(JSON.stringify(authorToggle.calls.at(-1)[1].components[0].toJSON()), /🔓 Вход без др: есть/);
-  assert.match(JSON.stringify(publicEdit.components[0].toJSON()), /Вход без др: \*\*есть\*\*/);
+  // Public card now shows only the lock emoji (no "Вход без др" text, no open/closed status).
+  assert.match(JSON.stringify(publicEdit.components[0].toJSON()), /🔓/);
+  assert.doesNotMatch(JSON.stringify(publicEdit.components[0].toJSON()), /Вход без др|открыто|закрыто/);
   assert.match(JSON.stringify(panelEdit.components[0].toJSON()), /🔓 Вход без др: есть/);
   assert.equal(Object.keys(db.sot.antiteam.tickets["ticket-1"].helpers).length, 0);
   assert.deepEqual(db.sot.antiteam.stats.helpers, {});
@@ -3592,6 +3594,42 @@ test("advanced config modal updates timing and Roblox link settings", async () =
   assert.match(JSON.stringify(interaction.calls.at(-1)[1].components[0].toJSON()), /Roblox-ссылки/);
   assert.match(JSON.stringify(interaction.calls.at(-1)[1].components[0].toJSON()), /Обновлено открытых миссий: \*\*1\*\*/);
   assert.match(JSON.stringify(panelEdit.components[1].toJSON()), /Закрывать через 180 мин/);
+});
+
+test("publishing the start panel sends the new panel before deleting the old one", async () => {
+  const db = {};
+  const state = ensureAntiteamState(db).state;
+  state.config.channelId = "channel-1";
+  state.config.panelMessageId = "old-panel-1";
+
+  const order = [];
+  const channel = {
+    id: "channel-1",
+    isTextBased: () => true,
+    messages: {
+      fetch: async (id) => (id === "old-panel-1"
+        ? { id: "old-panel-1", delete: async () => { order.push("delete-old"); } }
+        : null),
+    },
+    send: async () => {
+      order.push("send-new");
+      return { id: "new-panel-1" };
+    },
+  };
+  const operator = createAntiteamOperator({
+    db,
+    now: () => "2026-05-16T10:01:00.000Z",
+    saveDb() {},
+    isModerator: () => true,
+    fetchChannel: async (channelId) => (channelId === "channel-1" ? channel : null),
+  });
+  const interaction = createButtonInteraction(ANTITEAM_CUSTOM_IDS.publishPanel, { id: "admin-1", username: "Admin" });
+
+  assert.equal(await operator.handleButtonInteraction(interaction), true);
+
+  // New panel is sent first so the "создать антитим" button never disappears.
+  assert.deepEqual(order, ["send-new", "delete-old"]);
+  assert.equal(db.sot.antiteam.config.panelMessageId, "new-panel-1");
 });
 
 test("ping config controls are available in moderator panel and save mode", async () => {

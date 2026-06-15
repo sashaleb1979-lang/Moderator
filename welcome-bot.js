@@ -6797,6 +6797,7 @@ function getAntiteamOperator() {
     resolveRobloxUserByUsername,
     fetchRobloxFriends: (robloxUserId) => robloxApiClient.fetchUserFriends(robloxUserId),
     fetchRobloxPresences: (robloxUserIds) => robloxApiClient.fetchUserPresences(robloxUserIds),
+    fetchUserAvatarHeadshots: (robloxUserIds) => robloxApiClient.fetchUserAvatarHeadshots(robloxUserIds),
     getRobloxRuntimeState: () => robloxRuntimeState,
     getProfile: (userId) => db.profiles?.[userId] ? getProfile(userId) : null,
     writeRobloxBinding: (userId, robloxUser, source = "antiteam") => {

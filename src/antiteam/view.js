@@ -15,6 +15,7 @@ const {
   TextDisplayBuilder,
   TextInputBuilder,
   TextInputStyle,
+  ThumbnailBuilder,
 } = require("discord.js");
 const {
   ANTITEAM_COUNTS,
@@ -207,13 +208,6 @@ function formatRequesterName(ticket = {}, limit = 32) {
   return name || "автор";
 }
 
-function formatDirectJoinValue(enabled) {
-  return enabled ? "есть" : "нету";
-}
-
-function formatTicketStatus(ticket = {}) {
-  return ticket.status === "closed" ? "закрыто" : "открыто";
-}
 
 function formatCountHeadline(count) {
   const meta = getCountMeta(count);
@@ -1212,18 +1206,34 @@ function buildTicketPublicPayload(ticket = {}, config = createDefaultAntiteamCon
   const dangerText = isClan
     ? `🟣 **${CLAN_WAR_LABEL}**: якорь должен оставаться в игре до завершения тревоги.`
     : formatPublicDifficulty(ticket);
-  const statusEmoji = isClosed ? "⚫" : "🟢";
+  // Direct-join shown as a bare lock emoji only (🔓 open / 🔒 closed); the
+  // open/closed status text is dropped — the title already says Завершено/Нужна
+  // помощь and the card greys out when done.
   const directEmoji = ticket.directJoinEnabled ? "🔓" : "🔒";
+  const avatarUrl = cleanString(ticket.roblox?.avatarUrl, 1000);
+  const titleDisplay = new TextDisplayBuilder().setContent(`# ${buildTicketTitle(ticket)}`);
+  const infoDisplay = new TextDisplayBuilder().setContent(joinContentLines([
+    authorLine,
+    `${dangerText} ${directEmoji}`,
+  ], "—", 1400));
   const container = new ContainerBuilder()
-    .setAccentColor(isClosed ? 0x607D8B : isClan ? CLAN_WAR_ACCENT_COLOR : level.accentColor)
-    .addTextDisplayComponents(
-      new TextDisplayBuilder().setContent(`# ${buildTicketTitle(ticket)}`),
-      new TextDisplayBuilder().setContent(joinContentLines([
-        authorLine,
-        dangerText,
-        `${directEmoji} Вход без др: **${formatDirectJoinValue(ticket.directJoinEnabled)}** • ${statusEmoji} **${formatTicketStatus(ticket)}**`,
-      ], "—", 1400))
-    )
+    .setAccentColor(isClosed ? 0x607D8B : isClan ? CLAN_WAR_ACCENT_COLOR : level.accentColor);
+  if (avatarUrl) {
+    // Roblox avatar on the right of the header (same URL-thumbnail pattern as the
+    // profile card — Discord fetches the URL itself, no bot-side download).
+    container.addSectionComponents(
+      new SectionBuilder()
+        .addTextDisplayComponents(titleDisplay, infoDisplay)
+        .setThumbnailAccessory(
+          new ThumbnailBuilder()
+            .setURL(avatarUrl)
+            .setDescription(`Аватар Roblox ${cleanString(ticket.roblox?.username, 80) || "автора"}`)
+        )
+    );
+  } else {
+    container.addTextDisplayComponents(titleDisplay, infoDisplay);
+  }
+  container
     .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
     .addTextDisplayComponents(new TextDisplayBuilder().setContent(`### Описание\n${buildQuotedDescription(ticket.description)}`))
     .addSeparatorComponents(new SeparatorBuilder().setDivider(true))

@@ -69,6 +69,8 @@ function noop() {}
 const ANTITEAM_TRANSIENT_PING_DELETE_MS = 250;
 const ANTITEAM_SUPPORT_PROGRESS_CACHE_MAX = 100;
 const ANTITEAM_SUPPORT_PROGRESS_CACHE_TTL_MS = 5 * 60 * 1000;
+const ANTITEAM_FRIEND_SCAN_DEADLINE_MS = 8000;
+const ANTITEAM_PRESENCE_CACHE_TTL_MS = 15 * 1000;
 const ANTITEAM_EDIT_PING_DELETE_MS = 5000;
 const ANTITEAM_ROLE_GRANT_RETRY_DELAYS_MS = [2000, 10000, 30000];
 const ANTITEAM_UNKNOWN_INTERACTION_CODES = new Set([10062]);
@@ -281,6 +283,7 @@ function createAntiteamOperator(options = {}) {
   const scheduleTimeout = typeof options.setTimeout === "function" ? options.setTimeout : setTimeout;
   const supportProgressCache = new Map();
   const supportProgressInFlight = new Map();
+  const apiPresentCache = new Map();
   let submitPanelResendInFlight = null;
   let submitPanelResendQueued = false;
 
@@ -317,6 +320,17 @@ function createAntiteamOperator(options = {}) {
       return;
     }
     run();
+  }
+
+  // Resolve to `fallbackValue` if `promise` doesn't settle within `ms`, so a slow
+  // Roblox call can never hang a (detached) workflow. The original promise's
+  // rejection is swallowed to the fallback too.
+  function withDeadline(promise, ms, fallbackValue) {
+    const timed = new Promise((resolve) => {
+      const timer = scheduleTimeout(() => resolve(fallbackValue), Math.max(0, Number(ms) || 0));
+      if (timer && typeof timer.unref === "function") timer.unref();
+    });
+    return Promise.race([Promise.resolve(promise).catch(() => fallbackValue), timed]);
   }
 
   function emitAntiteamLatency(event, fields = {}) {
@@ -1021,7 +1035,11 @@ function createAntiteamOperator(options = {}) {
   async function collectFriendEligibleDiscordIds(draft = {}) {
     if (!draft.roblox?.userId || typeof options.fetchRobloxFriends !== "function") return [];
     try {
-      const friends = await options.fetchRobloxFriends(draft.roblox.userId);
+      const friends = await withDeadline(
+        options.fetchRobloxFriends(draft.roblox.userId),
+        ANTITEAM_FRIEND_SCAN_DEADLINE_MS,
+        []
+      );
       return matchRobloxFriendsToDiscordProfiles(db.profiles, friends)
         .filter((userId) => userId !== draft.userId);
     } catch (error) {
@@ -1047,11 +1065,10 @@ function createAntiteamOperator(options = {}) {
     if (!channel?.isTextBased?.()) throw new Error("Канал антитима не найден или не текстовый.");
 
     const payload = buildStartPanelPayload(config);
-    let previous = null;
-    if (config.panelMessageId) {
-      previous = await channel.messages?.fetch?.(config.panelMessageId).catch(() => null);
-    }
-    if (previous) await previous.delete().catch(() => {});
+    const previousPanelMessageId = cleanString(config.panelMessageId, 80);
+    // Send the new panel FIRST, then delete the old one — so the "создать антитим"
+    // button is never missing. (A delete-before-send order left a gap of several
+    // seconds with no panel after every submit.)
     const message = await channel.send(payload);
     await persist("antiteam-panel-publish", () => {
       const current = getState();
@@ -1059,6 +1076,10 @@ function createAntiteamOperator(options = {}) {
       current.config.channelId = channel.id;
       return { mutated: true };
     });
+    if (previousPanelMessageId && previousPanelMessageId !== message.id) {
+      const previous = await channel.messages?.fetch?.(previousPanelMessageId).catch(() => null);
+      if (previous) await previous.delete().catch(() => {});
+    }
     return { message, statusText: statusText || `Стартовая панель опубликована в <#${channel.id}>.` };
   }
 
@@ -1182,10 +1203,24 @@ function createAntiteamOperator(options = {}) {
     return [...presentIds];
   }
 
-  async function syncTicketMessages(ticket) {
+  // Roblox presence is cached briefly per ticket so rapid syncs (e.g. several
+  // helpers clicking in a row) don't each hit the Roblox API.
+  async function getCachedApiPresentHelperIds(ticket = {}) {
+    const ticketId = cleanString(ticket.id, 80);
+    if (!ticketId) return collectApiPresentHelperIds(ticket);
+    const cached = apiPresentCache.get(ticketId);
+    if (cached && cached.expiresAt > nowMs()) return cached.ids;
+    const ids = await collectApiPresentHelperIds(ticket);
+    apiPresentCache.set(ticketId, { ids, expiresAt: nowMs() + ANTITEAM_PRESENCE_CACHE_TTL_MS });
+    return ids;
+  }
+
+  async function syncTicketMessages(ticket, { skipPresence = false } = {}) {
     const config = getConfig();
+    // Skip the Roblox presence lookup on bulk/background syncs (e.g. config
+    // changes refreshing every open ticket) so they don't spike Roblox load.
     const publicPayloadOptions = {
-      apiPresentHelperIds: await collectApiPresentHelperIds(ticket).catch(() => []),
+      apiPresentHelperIds: skipPresence ? [] : await getCachedApiPresentHelperIds(ticket).catch(() => []),
     };
     const publicMessageSync = (async () => {
       const channel = await fetchTextChannel(ticket.message?.channelId).catch(() => null);
@@ -1211,7 +1246,7 @@ function createAntiteamOperator(options = {}) {
   async function syncOpenTicketMessages() {
     const tickets = listOpenAntiteamTickets(db).filter((ticket) => ticket.message?.messageId || ticket.message?.threadPanelMessageId);
     if (!tickets.length) return { updatedCount: 0 };
-    const results = await Promise.allSettled(tickets.map((ticket) => syncTicketMessages(ticket)));
+    const results = await Promise.allSettled(tickets.map((ticket) => syncTicketMessages(ticket, { skipPresence: true })));
     const updatedCount = results.filter((result) => result.status === "fulfilled").length;
     return { updatedCount };
   }
@@ -1256,6 +1291,27 @@ function createAntiteamOperator(options = {}) {
     return { draft, ticket };
   }
 
+  // Best-effort Roblox avatar URL for the ticket header thumbnail. Prefers the
+  // value already on the draft/ticket (verified users have it), then the
+  // requester's stored profile avatar, then a single headshot lookup with a
+  // deadline. Never throws — returns "" if nothing is available.
+  async function ensureTicketAvatarUrl(ticket = {}, draft = {}) {
+    const existing = cleanString(ticket.roblox?.avatarUrl || draft?.roblox?.avatarUrl, 2000);
+    if (existing) return existing;
+    const stored = getStoredRobloxSnapshot(ticket.createdBy);
+    const storedAvatar = cleanString(stored?.avatarUrl, 2000);
+    if (storedAvatar) return storedAvatar;
+    const robloxUserId = cleanString(ticket.roblox?.userId || draft?.roblox?.userId, 40);
+    if (!robloxUserId || typeof options.fetchUserAvatarHeadshots !== "function") return "";
+    try {
+      const headshots = await withDeadline(options.fetchUserAvatarHeadshots([robloxUserId]), ANTITEAM_FRIEND_SCAN_DEADLINE_MS, []);
+      return cleanString(headshots?.[0]?.imageUrl, 2000);
+    } catch (error) {
+      logError("Antiteam avatar headshot fetch failed:", error?.message || error);
+      return "";
+    }
+  }
+
   async function finalizeTicketPublish(ticket, draft) {
     const finalizeStartedAt = nowMs();
     const config = getConfig();
@@ -1292,9 +1348,9 @@ function createAntiteamOperator(options = {}) {
     const pingMessage = thread ? await sendTicketPingMessages(thread, ticket, config) : null;
     const pingMs = nowMs() - pingStartedAt;
     // Persist message refs immediately so help/close can locate the post. The
-    // slow Roblox friend scan and the follow-up public edit (which only adds
-    // the friend-eligible info) move to a detached tail so the mission post and
-    // thread appear without waiting ~10-15s for the scan/re-upload.
+    // slow Roblox friend scan, the avatar lookup and the follow-up public edit
+    // (which only enrich the card) move to a detached tail so the post and thread
+    // don't wait on them.
     const refsPersistStartedAt = nowMs();
     const updatedTicket = await persist("antiteam-ticket-message-refs", () => updateAntiteamTicket(db, ticket.id, (current) => {
       current.message = {
@@ -1314,13 +1370,17 @@ function createAntiteamOperator(options = {}) {
 
     runDetached(async () => {
       const friendEligibleDiscordUserIds = await friendEligibleDiscordUserIdsPromise;
-      const ticketWithFriends = await persist("antiteam-ticket-friend-eligible", () => updateAntiteamTicket(db, ticket.id, (current) => {
+      const avatarUrl = await ensureTicketAvatarUrl(ticket, draft);
+      const enrichedTicket = await persist("antiteam-ticket-enrich", () => updateAntiteamTicket(db, ticket.id, (current) => {
         current.friendEligibleDiscordUserIds = friendEligibleDiscordUserIds;
+        if (avatarUrl && !cleanString(current.roblox?.avatarUrl, 2000)) {
+          current.roblox = { ...current.roblox, avatarUrl };
+        }
         current.updatedAt = nowIso();
         return current;
       }));
       if (typeof publicMessage.edit === "function") {
-        await publicMessage.edit(buildTicketPublicPayload(ticketWithFriends, config)).catch(() => {});
+        await publicMessage.edit(buildTicketPublicPayload(enrichedTicket, config)).catch(() => {});
       }
       emitAntiteamLatency("submit_finalize_tail", {
         ticketId: ticket.id,
@@ -1351,6 +1411,7 @@ function createAntiteamOperator(options = {}) {
       refsPersistMs,
       totalMs: nowMs() - finalizeStartedAt,
       friendScan: "detached",
+      avatar: "detached",
       publicEdit: "detached",
       roleGrant: "detached",
       panelResend: "detached",
@@ -1667,7 +1728,7 @@ function createAntiteamOperator(options = {}) {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
     const helperRoblox = getHelperRobloxSnapshot(interaction.user.id);
-    const isFriendEligible = ticket.friendEligibleDiscordUserIds.includes(interaction.user.id);
+    const isFriendEligible = (ticket.friendEligibleDiscordUserIds || []).includes(interaction.user.id);
     const targetRoute = await resolveDirectJoinTarget(ticket);
     const bridgeTarget = !ticket.directJoinEnabled && !isFriendEligible
       ? await findRuntimeBridgeTarget(ticket, helperRoblox)
@@ -2781,7 +2842,13 @@ function createAntiteamOperator(options = {}) {
       await message.delete?.().catch(() => {});
     } catch (error) {
       logError("Antiteam photo publish failed:", error?.message || error);
-      return false;
+      // Tell the requester instead of failing silently; their photo request stays
+      // active so they can just re-send a photo to retry.
+      await message.reply?.({
+        content: `Не удалось опубликовать заявку с фото: ${cleanString(error?.message || error, 200)}. Пришли фото ещё раз или собери заявку заново через панель.`,
+        allowedMentions: { repliedUser: true },
+      }).catch(() => {});
+      return true;
     }
     if (result?.ticket && typeof options.logLine === "function") {
       await options.logLine(`ANTITEAM_SUBMIT_WITH_PHOTO: <@${message.author.id}> ${result.ticket.id}`).catch(() => null);
