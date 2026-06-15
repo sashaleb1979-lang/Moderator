@@ -1065,21 +1065,49 @@ function createAntiteamOperator(options = {}) {
 
     const payload = buildStartPanelPayload(config);
     const previousPanelMessageId = cleanString(config.panelMessageId, 80);
-    // Send the new panel FIRST, then delete the old one — so the "создать антитим"
-    // button is never missing. (A delete-before-send order left a gap of several
-    // seconds with no panel after every submit.)
+    // Send the new panel FIRST so the "создать антитим" button is never missing,
+    // then delete the old one immediately — BEFORE persisting the new id — so a
+    // slow/failed state write can never leave the old panel behind.
     const message = await channel.send(payload);
+    if (previousPanelMessageId && previousPanelMessageId !== message.id) {
+      await deleteStartPanelMessage(channel, previousPanelMessageId);
+    }
     await persist("antiteam-panel-publish", () => {
       const current = getState();
       current.config.panelMessageId = message.id;
       current.config.channelId = channel.id;
       return { mutated: true };
     });
-    if (previousPanelMessageId && previousPanelMessageId !== message.id) {
-      const previous = await channel.messages?.fetch?.(previousPanelMessageId).catch(() => null);
-      if (previous) await previous.delete().catch(() => {});
-    }
     return { message, statusText: statusText || `Стартовая панель опубликована в <#${channel.id}>.` };
+  }
+
+  // Robustly remove an old start-panel message: try the direct delete (no fetch
+  // needed), fall back to fetch+delete, and log if it genuinely fails so leaked
+  // panels are visible instead of silent.
+  async function deleteStartPanelMessage(channel, messageId) {
+    const id = cleanString(messageId, 80);
+    if (!id || !channel) return;
+    if (typeof channel.messages?.delete === "function") {
+      try {
+        await channel.messages.delete(id);
+        return;
+      } catch (error) {
+        if (isUnknownMessageError(error)) return;
+        // fall through to fetch+delete
+      }
+    }
+    try {
+      const previous = channel.messages?.fetch ? await channel.messages.fetch(id).catch(() => null) : null;
+      if (previous?.delete) await previous.delete();
+    } catch (error) {
+      if (!isUnknownMessageError(error)) {
+        logError("Antiteam start-panel cleanup failed:", error?.message || error);
+      }
+    }
+  }
+
+  function isUnknownMessageError(error = {}) {
+    return getInteractionErrorCode(error) === 10008;
   }
 
   async function resendStartPanelAfterSubmit() {
