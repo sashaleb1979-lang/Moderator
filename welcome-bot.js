@@ -550,6 +550,20 @@ const {
   renderCaptchaPng,
 } = nonGgsCaptchaModule;
 
+// Offload CPU-heavy pureimage rendering to a worker thread (inline fallback on
+// any worker failure, so output is never lost).
+const { renderOffThread } = require("./src/runtime/render-pool");
+const NON_GGS_CAPTCHA_MODULE = (() => {
+  try { return require.resolve("./src/onboard/non-jjs-captcha"); } catch { return null; }
+})();
+function renderCaptchaPngOffThread(challenge, options = {}) {
+  if (!NON_GGS_CAPTCHA_MODULE) return renderCaptchaPng(challenge, options);
+  return renderOffThread(
+    { modulePath: NON_GGS_CAPTCHA_MODULE, exportName: "renderCaptchaPng", args: [challenge, options] },
+    () => renderCaptchaPng(challenge, options)
+  );
+}
+
 const DEFAULT_NON_JJS_DESCRIPTION = "Если ты не играешь в JJS, нажми кнопку ниже. Бот запустит 2 этапа капчи и после успешного прохождения выдаст отдельную роль доступа.";
 
 const {
@@ -6662,7 +6676,6 @@ let antiteamOperator = null;
 
 // Offload the antiteam support-progress PNG render to a worker thread (with an
 // inline fallback) so its CPU-heavy drawing never blocks interaction handling.
-const { renderOffThread } = require("./src/runtime/render-pool");
 const { renderSupportProgressCard: renderSupportProgressCardInline } = require("./src/antiteam/support-progress");
 const ANTITEAM_SUPPORT_PROGRESS_MODULE = require.resolve("./src/antiteam/support-progress");
 function renderSupportProgressCardOffThread(renderOptions) {
@@ -9537,7 +9550,7 @@ async function buildNonGgsCaptchaPayload(userId, noticeText = "", options = {}) 
     throw new Error("Капча уже истекла. Нажми кнопку заново.");
   }
 
-  const buffer = await renderCaptchaPng(session.challenge);
+  const buffer = await renderCaptchaPngOffThread(session.challenge);
   const stage = Number(session.stage) || 1;
   const descriptionLines = [
     `Этап **${stage} из ${NON_GGS_CAPTCHA_STAGES}**.`,
