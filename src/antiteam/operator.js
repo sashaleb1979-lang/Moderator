@@ -36,7 +36,6 @@ const {
   buildCloseSummaryModal,
   buildConfigModal,
   buildDescriptionModal,
-  buildEscalateModal,
   buildHelperRewardRolesModal,
   buildHelperStatsPayload,
   buildHelpReplyPayload,
@@ -1784,12 +1783,6 @@ function createAntiteamOperator(options = {}) {
     return true;
   }
 
-  function getNextEscalationLevel(level) {
-    if (level === "low") return "medium";
-    if (level === "medium") return "high";
-    return "";
-  }
-
   async function handleSlashCommand(interaction) {
     if (!interaction?.isChatInputCommand?.() || interaction.commandName !== ANTITEAM_COMMAND_NAME) return false;
     const subcommand = typeof interaction.options?.getSubcommand === "function"
@@ -2413,24 +2406,6 @@ function createAntiteamOperator(options = {}) {
       return true;
     }
 
-    if (action === "escalate") {
-      if (!ticket || ticket.kind === "clan" || ticket.status !== "open") {
-        await safeReply(interaction, { content: "Повысить эту миссию нельзя.", flags: MessageFlags.Ephemeral });
-        return true;
-      }
-      if (!canManageTicket(interaction, ticket)) {
-        await replyNoPermission(interaction);
-        return true;
-      }
-      const nextLevel = getNextEscalationLevel(ticket.level);
-      if (!nextLevel) {
-        await safeReply(interaction, { content: "Опасность уже на максимуме.", flags: MessageFlags.Ephemeral });
-        return true;
-      }
-      await safeShowModal(interaction, buildEscalateModal(ticketId, nextLevel));
-      return true;
-    }
-
     if (action === "close") {
       if (!ticket || ticket.status !== "open") {
         await safeReply(interaction, { content: "Миссия уже закрыта или не найдена.", flags: MessageFlags.Ephemeral });
@@ -2767,45 +2742,6 @@ function createAntiteamOperator(options = {}) {
       }
       await syncTicketMessages(updated).catch(() => {});
       await interaction.reply({ content: "Жалоба записана и передана модерации.", flags: MessageFlags.Ephemeral });
-      return true;
-    }
-
-    if (action === "escalate_modal") {
-      if (!canManageTicket(interaction, ticket)) {
-        await replyNoPermission(interaction);
-        return true;
-      }
-      const nextLevel = cleanString(extra, 40);
-      const reason = interaction.fields.getTextInputValue("reason");
-      if (!ANTITEAM_LEVELS[nextLevel]) {
-        await interaction.reply({ content: "Некорректный уровень опасности.", flags: MessageFlags.Ephemeral });
-        return true;
-      }
-      const updated = await persist("antiteam-escalate", () => updateAntiteamTicket(db, ticketId, (current) => {
-        const previousLevel = current.level;
-        current.level = nextLevel;
-        current.escalationHistory.push({
-          fromLevel: previousLevel,
-          toLevel: nextLevel,
-          reason,
-          byUserId: interaction.user.id,
-          byTag: getUserTag(interaction.user),
-          createdAt: nowIso(),
-        });
-        current.updatedAt = nowIso();
-        current.lastActivityAt = nowIso();
-        return current;
-      }));
-      await syncTicketMessages(updated);
-      const roleIds = getTicketPingRoleIds(updated, getConfig());
-      if (roleIds.length && updated.message?.threadId) {
-        const thread = await fetchTextChannel(updated.message.threadId).catch(() => null);
-        await thread?.send?.({
-          content: `${roleIds.map((roleId) => `<@&${roleId}>`).join(" ")} опасность повышена: ${cleanString(reason, 300)}`,
-          allowedMentions: { roles: roleIds },
-        }).catch(() => null);
-      }
-      await interaction.reply({ content: `Опасность повышена до ${ANTITEAM_LEVELS[nextLevel].label}.`, flags: MessageFlags.Ephemeral });
       return true;
     }
 

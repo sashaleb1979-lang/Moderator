@@ -196,7 +196,7 @@ test("draft setup renders level, count and toggles compactly", () => {
     userId: "user-1",
     roblox: { username: "Anchor", userId: "101" },
     level: "high",
-    count: "4-10",
+    count: "5-10",
     description: "Ники: A/B, примерно 5k.",
     directJoinEnabled: true,
     photoWanted: true,
@@ -206,7 +206,7 @@ test("draft setup renders level, count and toggles compactly", () => {
 
   assert.equal(payload.flags, MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral);
   assert.match(json, /Высокие/);
-  assert.match(json, /4-10/);
+  assert.match(json, /5-10/);
   assert.match(json, /Вход без друзей/);
   assert.match(json, /🔓 Есть/);
   assert.match(json, /📸 Есть/);
@@ -268,16 +268,16 @@ test("public ticket is the main compact post and thread panel is buttons only", 
       avatarUrl: "https://tr.rbxcdn.com/anchor-headshot.png",
     },
     level: "low",
-    count: "4-10",
+    count: "5-10",
     description: "Бить A/B, тимятся у центра.",
     directJoinEnabled: false,
   };
   const json = payloadJson(buildTicketPublicPayload(ticket));
   const threadJson = payloadJson(buildThreadPanelPayload(ticket));
 
-  assert.equal(buildThreadName(ticket), "🟢 4-10 тимеров • Gnom");
-  assert.equal(buildTicketTitle(ticket), "🟢 Нужна помощь • 4-10 тимеров");
-  assert.match(json, /# 🟢 Нужна помощь • 4-10 тимеров/);
+  assert.equal(buildThreadName(ticket), "🟢 5-10 тимеров • Gnom");
+  assert.equal(buildTicketTitle(ticket), "🟢 Нужна помощь • 5-10 тимеров");
+  assert.match(json, /# 🟢 Нужна помощь • 5-10 тимеров/);
   assert.match(json, /Попросил 👤 <@author-1> • \*\*Anchor\*\*/);
   assert.doesNotMatch(json, /🎮/);
   assert.doesNotMatch(json, /Маршрут:/);
@@ -296,7 +296,7 @@ test("public ticket is the main compact post and thread panel is buttons only", 
   assert.match(threadJson, /🙋 Помочь/);
   assert.match(threadJson, /🔒 Вход без др: нет/);
   assert.match(threadJson, /⚠️ Пожаловаться/);
-  assert.match(threadJson, /📈 Повысить/);
+  assert.doesNotMatch(threadJson, /Повысить/);
   assert.match(threadJson, /✅ Завершить/);
   assert.match(threadJson, /⏱ Закрывать через 120 мин/);
   assert.doesNotMatch(threadJson, /Сбор помощи|Контекст|Маршрут|Бить A\/B/);
@@ -365,7 +365,7 @@ test("public ticket and thread panel disable actions after close", () => {
     createdBy: "author-1",
     roblox: { username: "Anchor", userId: "101" },
     level: "medium",
-    count: "2-4",
+    count: "3-5",
     helpers: {
       "helper-1": { userId: "helper-1", arrived: true },
     },
@@ -373,9 +373,9 @@ test("public ticket and thread panel disable actions after close", () => {
     closeSummary: { text: "done", confirmedHelperIds: ["helper-1"] },
   };
 
-  assert.match(payloadJson(buildTicketPublicPayload(ticket)), /# ⚫ Завершено • 2-4 тимеров/);
-  assert.equal(buildTicketTitle(ticket), "⚫ Завершено • 2-4 тимеров");
-  assert.equal(buildThreadName(ticket), "⚫ 2-4 тимеров • author-1");
+  assert.match(payloadJson(buildTicketPublicPayload(ticket)), /# ⚫ Завершено • 3-5 тимеров/);
+  assert.equal(buildTicketTitle(ticket), "⚫ Завершено • 3-5 тимеров");
+  assert.equal(buildThreadName(ticket), "⚫ 3-5 тимеров • author-1");
   assert.match(payloadJson(buildTicketPublicPayload(ticket)), /⚫ \*\*Средние\*\*: команда в основном 2k-8k kills/);
   assert.doesNotMatch(payloadJson(buildTicketPublicPayload(ticket)), /Прийти на помощь/);
   assert.match(payloadJson(buildThreadPanelPayload(ticket)), /✅ Закрыто/);

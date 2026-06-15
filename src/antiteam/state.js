@@ -33,8 +33,16 @@ const ANTITEAM_LEVELS = Object.freeze({
 
 const ANTITEAM_COUNTS = Object.freeze({
   "2": { id: "2", label: "2", description: "ровно двое" },
-  "2-4": { id: "2-4", label: "2-4", description: "маленькая тима" },
-  "4-10": { id: "4-10", label: "4-10", description: "большая тима" },
+  "3-5": { id: "3-5", label: "3-5", description: "небольшая тима" },
+  "5-10": { id: "5-10", label: "5-10", description: "большая тима" },
+});
+
+// Map legacy stored counts onto the current buckets so old tickets keep rendering.
+const ANTITEAM_COUNT_ALIASES = Object.freeze({
+  "2-4": "3-5",
+  "3-4": "3-5",
+  "4-10": "5-10",
+  "5-6": "5-10",
 });
 
 const ANTITEAM_TICKET_KINDS = Object.freeze(["standard", "clan"]);
@@ -111,9 +119,12 @@ function normalizeAntiteamLevel(value, fallback = "medium") {
   return ANTITEAM_LEVELS[normalized] ? normalized : fallback;
 }
 
-function normalizeAntiteamCount(value, fallback = "2-4") {
+function normalizeAntiteamCount(value, fallback = "3-5") {
   const normalized = cleanString(value, 20);
-  return ANTITEAM_COUNTS[normalized] ? normalized : fallback;
+  if (ANTITEAM_COUNTS[normalized]) return normalized;
+  const alias = ANTITEAM_COUNT_ALIASES[normalized];
+  if (alias && ANTITEAM_COUNTS[alias]) return alias;
+  return ANTITEAM_COUNTS[fallback] ? fallback : "3-5";
 }
 
 function normalizeTicketKind(value, fallback = "standard") {

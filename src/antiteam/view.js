@@ -200,7 +200,7 @@ function getLevelMeta(level) {
 }
 
 function getCountMeta(count) {
-  return ANTITEAM_COUNTS[normalizeAntiteamCount(count, "2-4")] || ANTITEAM_COUNTS["2-4"];
+  return ANTITEAM_COUNTS[normalizeAntiteamCount(count, "3-5")] || ANTITEAM_COUNTS["3-5"];
 }
 
 function formatRequesterName(ticket = {}, limit = 32) {
@@ -1191,10 +1191,13 @@ function formatHelpersBlock(ticket = {}, options = {}) {
   const apiPresentCount = helpers.filter((helper) => apiPresentIds.has(cleanString(helper.userId, 80))).length;
   const isClosed = ticket.status === "closed";
   if (!helpers.length) return "Пока никто не отозвался.";
-  const helperLine = helpers.slice(0, 8)
+  // Show everyone who responded — no "+N" collapse. A high cap stays only to
+  // avoid blowing past Discord's text-component limit on absurd counts.
+  const HELPER_DISPLAY_CAP = 60;
+  const helperLine = helpers.slice(0, HELPER_DISPLAY_CAP)
     .map((helper) => isClosed ? `${didHelperArrive(helper, { confirmedHelperIds }) ? "✅" : "❌"} <@${helper.userId}>` : `<@${helper.userId}>`)
     .join(" • ");
-  const overflow = helpers.length > 8 ? ` +${helpers.length - 8}` : "";
+  const overflow = helpers.length > HELPER_DISPLAY_CAP ? ` +${helpers.length - HELPER_DISPLAY_CAP}` : "";
   const responseLine = isClosed
     ? `Откликнулись: **${helpers.length}** • пришли: **${confirmed.length}**`
     : `Откликнулись: **${helpers.length}**${apiPresentCount > 0 ? ` (API в игре: **${apiPresentCount}**)` : ""}`;
@@ -1313,11 +1316,6 @@ function buildThreadPanelPayload(ticket = {}, config = createDefaultAntiteamConf
       .setStyle(ButtonStyle.Secondary)
       .setDisabled(isClosed),
     new ButtonBuilder()
-      .setCustomId(ticketButtonId("escalate", ticket.id))
-      .setLabel("📈 Повысить")
-      .setStyle(ButtonStyle.Danger)
-      .setDisabled(isClosed || ticket.kind === "clan"),
-    new ButtonBuilder()
       .setCustomId(ticketButtonId("close", ticket.id))
       .setLabel(isClosed ? "✅ Закрыто" : "✅ Завершить")
       .setStyle(ButtonStyle.Success)
@@ -1424,23 +1422,6 @@ function buildReportModal(ticketId) {
     );
 }
 
-function buildEscalateModal(ticketId, nextLevel = "high") {
-  return new ModalBuilder()
-    .setCustomId(ticketButtonId("escalate_modal", ticketId, nextLevel))
-    .setTitle("Повысить опасность")
-    .addComponents(
-      new ActionRowBuilder().addComponents(
-        new TextInputBuilder()
-          .setCustomId("reason")
-          .setLabel("Причина повышения")
-          .setStyle(TextInputStyle.Paragraph)
-          .setRequired(true)
-          .setMaxLength(900)
-          .setPlaceholder("Злоупотребление повышением без причины ведёт к наказанию.")
-      )
-    );
-}
-
 function buildCloseSummaryModal(ticketId) {
   return new ModalBuilder()
     .setCustomId(ticketButtonId("close_modal", ticketId))
@@ -1520,7 +1501,6 @@ module.exports = {
   buildCloseSummaryModal,
   buildConfigModal,
   buildDescriptionModal,
-  buildEscalateModal,
   buildHelperRewardRolesModal,
   buildHelperStatsPayload,
   buildHelpReplyPayload,

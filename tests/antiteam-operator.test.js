@@ -2878,10 +2878,10 @@ test("draft toggle and select update the setup panel immediately", async () => {
   assert.equal(await operator.handleButtonInteraction(toggle), true);
   assert.deepEqual(toggle.calls.map((call) => call[0]), ["deferUpdate", "editReply"]);
 
-  const select = createSelectInteraction(ANTITEAM_CUSTOM_IDS.countSelect, ["4-10"]);
+  const select = createSelectInteraction(ANTITEAM_CUSTOM_IDS.countSelect, ["5-10"]);
   assert.equal(await operator.handleSelectMenuInteraction(select), true);
   assert.deepEqual(select.calls.map((call) => call[0]), ["deferUpdate", "editReply"]);
-  assert.equal(db.sot.antiteam.drafts["user-1"].count, "4-10");
+  assert.equal(db.sot.antiteam.drafts["user-1"].count, "5-10");
 });
 
 test("draft toggle bypasses serialized persistence queue and updates immediately", async () => {
@@ -3194,8 +3194,8 @@ test("closing ticket edits messages and renames thread with gray marker", async 
 
   assert.deepEqual(interaction.calls.map((call) => call[0]), ["deferReply", "editReply"]);
   assert.equal(interaction.calls.at(-1)[1].content, "Антитим закрыт. Итог записан в заявку.");
-  assert.equal(renamedTo, "⚫ 2-4 тимеров • Author");
-  assert.match(JSON.stringify(publicEdit.components[0].toJSON()), /⚫ Завершено • 2-4 тимеров/);
+  assert.equal(renamedTo, "⚫ 3-5 тимеров • Author");
+  assert.match(JSON.stringify(publicEdit.components[0].toJSON()), /⚫ Завершено • 3-5 тимеров/);
   assert.match(JSON.stringify(threadPanelEdit.components[0].toJSON()), /✅ Закрыто/);
 });
 
