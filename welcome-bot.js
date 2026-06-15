@@ -6660,6 +6660,18 @@ function isModerator(member) {
 let profileOperator = null;
 let antiteamOperator = null;
 
+// Offload the antiteam support-progress PNG render to a worker thread (with an
+// inline fallback) so its CPU-heavy drawing never blocks interaction handling.
+const { renderOffThread } = require("./src/runtime/render-pool");
+const { renderSupportProgressCard: renderSupportProgressCardInline } = require("./src/antiteam/support-progress");
+const ANTITEAM_SUPPORT_PROGRESS_MODULE = require.resolve("./src/antiteam/support-progress");
+function renderSupportProgressCardOffThread(renderOptions) {
+  return renderOffThread(
+    { modulePath: ANTITEAM_SUPPORT_PROGRESS_MODULE, exportName: "renderSupportProgressCard", args: [renderOptions] },
+    () => renderSupportProgressCardInline(renderOptions)
+  );
+}
+
 function getProfileOperator() {
   if (profileOperator) return profileOperator;
 
@@ -6803,6 +6815,7 @@ function getAntiteamOperator() {
     },
     logLine: (text) => logLine(client, text),
     replyNoPermission: (interaction) => interaction.reply(ephemeralPayload({ content: "Нет прав." })),
+    renderSupportProgressCard: renderSupportProgressCardOffThread,
   });
 
   return antiteamOperator;
