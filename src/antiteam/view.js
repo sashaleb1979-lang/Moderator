@@ -48,6 +48,7 @@ const ANTITEAM_CUSTOM_IDS = Object.freeze({
   config: "at:config",
   configAdvanced: "at:config:advanced",
   pingConfig: "at:ping:config",
+  toggleTestMode: "at:test_mode:toggle",
   panelText: "at:panel:text",
   publishPanel: "at:panel:publish",
   refreshPanel: "at:panel:refresh",
@@ -243,6 +244,7 @@ function buildStartPanelPayload(config = createDefaultAntiteamConfig()) {
       new TextDisplayBuilder().setContent(`# ${panel.title}`),
       new TextDisplayBuilder().setContent(panel.description),
       new TextDisplayBuilder().setContent([
+        normalized.testMode ? "🧪 **Тестовый режим включён** — новые миссии публикуются без пинга батальона." : "",
         formatStartPanelPingLine(normalized),
         panel.details,
       ].filter(Boolean).join("\n"))
@@ -524,6 +526,7 @@ function buildModeratorPanelPayload(state = {}, statusText = "") {
         `Автозакрытие обычных миссий: **${config.missionAutoCloseMinutes} мин**`,
         "Клан-вар: без автооффа по idle-таймеру",
         `Пинг-система: **${formatAntiteamPingMode(config)}**`,
+        `🧪 Тестовый режим: **${config.testMode ? "ВКЛ — миссии без пинга" : "выкл"}**`,
         `Roblox place id: ${config.roblox?.jjsPlaceId ? `\`${config.roblox.jjsPlaceId}\`` : "из общего конфига"}`,
       ].join("\n"))
     );
@@ -552,6 +555,10 @@ function buildModeratorPanelPayload(state = {}, statusText = "") {
       ),
       new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId(ANTITEAM_CUSTOM_IDS.pingConfig).setLabel("Пинг-система").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder()
+          .setCustomId(ANTITEAM_CUSTOM_IDS.toggleTestMode)
+          .setLabel(config.testMode ? "🧪 Тест: ВКЛ" : "🧪 Тест: выкл")
+          .setStyle(config.testMode ? ButtonStyle.Success : ButtonStyle.Secondary),
         new ButtonBuilder().setCustomId(ANTITEAM_CUSTOM_IDS.stats).setLabel("📊 Статистика помощи").setStyle(ButtonStyle.Secondary)
       )
     );
@@ -1111,14 +1118,16 @@ function buildPhotoRequestPayload(draft = {}, statusText = "") {
 
 function buildTicketTitle(ticket = {}) {
   const isClosed = ticket.status === "closed";
-  if (ticket.kind === "clan") return `${isClosed ? "⚫" : "🟣"} ${CLAN_WAR_LABEL}`;
-  return `${isClosed ? "⚫ Завершено" : `${getLevelMeta(ticket.level).emoji} Нужна помощь`} • ${formatCountHeadline(ticket.count)}`;
+  const testPrefix = ticket.test ? "🧪 ТЕСТ • " : "";
+  if (ticket.kind === "clan") return `${testPrefix}${isClosed ? "⚫" : "🟣"} ${CLAN_WAR_LABEL}`;
+  return `${testPrefix}${isClosed ? "⚫ Завершено" : `${getLevelMeta(ticket.level).emoji} Нужна помощь`} • ${formatCountHeadline(ticket.count)}`;
 }
 
 function buildThreadName(ticket = {}) {
   const isClosed = ticket.status === "closed";
-  if (ticket.kind === "clan") return `${isClosed ? "⚫" : "🟣"} ${CLAN_WAR_LABEL}`;
-  return `${isClosed ? "⚫" : getLevelMeta(ticket.level).emoji} ${formatCountHeadline(ticket.count)} • ${formatRequesterName(ticket)}`;
+  const testPrefix = ticket.test ? "🧪 ТЕСТ " : "";
+  if (ticket.kind === "clan") return `${testPrefix}${isClosed ? "⚫" : "🟣"} ${CLAN_WAR_LABEL}`;
+  return `${testPrefix}${isClosed ? "⚫" : getLevelMeta(ticket.level).emoji} ${formatCountHeadline(ticket.count)} • ${formatRequesterName(ticket)}`;
 }
 
 function formatPublicRobloxLink(ticket = {}) {

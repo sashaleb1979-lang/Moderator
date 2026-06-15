@@ -1287,6 +1287,7 @@ function createAntiteamOperator(options = {}) {
     const ticket = await persist("antiteam-ticket-create", () => createAntiteamTicketFromDraft(db, draft, {
       now: nowIso(),
       friendEligibleDiscordUserIds: [],
+      test: getConfig().testMode === true,
     }));
     return { draft, ticket };
   }
@@ -1345,7 +1346,8 @@ function createAntiteamOperator(options = {}) {
       : null;
     const threadPanelMs = nowMs() - threadPanelStartedAt;
     const pingStartedAt = nowMs();
-    const pingMessage = thread ? await sendTicketPingMessages(thread, ticket, config) : null;
+    // Test missions are published but never ping the battalion.
+    const pingMessage = (thread && !ticket.test) ? await sendTicketPingMessages(thread, ticket, config) : null;
     const pingMs = nowMs() - pingStartedAt;
     // Persist message refs immediately so help/close can locate the post. The
     // slow Roblox friend scan, the avatar lookup and the follow-up public edit
@@ -2083,6 +2085,28 @@ function createAntiteamOperator(options = {}) {
       } catch (error) {
         if (ack.ok) await safeEditReply(interaction, buildModeratorPanelPayload(getState(), `Ошибка: ${error?.message || error}`));
       }
+      return true;
+    }
+
+    if (id === ANTITEAM_CUSTOM_IDS.toggleTestMode) {
+      if (!isModerator(interaction.member)) {
+        await replyNoPermission(interaction);
+        return true;
+      }
+      const ack = await safeDeferUpdate(interaction);
+      await persist("antiteam-test-mode-toggle", () => {
+        const state = getState();
+        state.config.testMode = !state.config.testMode;
+        return { mutated: true };
+      });
+      const enabled = getConfig().testMode;
+      if (ack.ok) {
+        await safeEditReply(interaction, buildModeratorPanelPayload(getState(), enabled
+          ? "🧪 Тестовый режим ВКЛ: новые миссии публикуются без пинга батальона. Не забудь выключить после теста."
+          : "Тестовый режим выключен — миссии снова пингуют батальон."));
+      }
+      // Reflect the test-mode banner on the published start panel, if any.
+      await editPublishedStartPanel().catch(() => {});
       return true;
     }
 

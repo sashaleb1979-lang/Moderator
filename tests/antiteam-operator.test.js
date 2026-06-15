@@ -3632,6 +3632,80 @@ test("publishing the start panel sends the new panel before deleting the old one
   assert.equal(db.sot.antiteam.config.panelMessageId, "new-panel-1");
 });
 
+test("test mode toggle flips config and is moderator-only", async () => {
+  const db = {};
+  ensureAntiteamState(db);
+
+  const denied = createButtonInteraction(ANTITEAM_CUSTOM_IDS.toggleTestMode, { id: "any-1", username: "Any" });
+  const deniedOperator = createAntiteamOperator({ db, saveDb() {}, isModerator: () => false });
+  assert.equal(await deniedOperator.handleButtonInteraction(denied), true);
+  assert.equal(db.sot.antiteam.config.testMode, false);
+  assert.equal(denied.calls[0][0], "reply");
+
+  const operator = createAntiteamOperator({ db, saveDb() {}, isModerator: () => true });
+  const on = createButtonInteraction(ANTITEAM_CUSTOM_IDS.toggleTestMode, { id: "admin-1", username: "Admin" });
+  assert.equal(await operator.handleButtonInteraction(on), true);
+  assert.equal(db.sot.antiteam.config.testMode, true);
+
+  const off = createButtonInteraction(ANTITEAM_CUSTOM_IDS.toggleTestMode, { id: "admin-1", username: "Admin" });
+  assert.equal(await operator.handleButtonInteraction(off), true);
+  assert.equal(db.sot.antiteam.config.testMode, false);
+});
+
+test("test mode publishes a marked mission without pinging the battalion", async () => {
+  const db = {};
+  const state = ensureAntiteamState(db).state;
+  state.config.channelId = "channel-1";
+  state.config.battalionRoleId = "battalion-role";
+  state.config.testMode = true;
+  setAntiteamDraft(db, "user-1", {
+    userTag: "User",
+    roblox: { userId: "101", username: "Anchor" },
+    description: "Два ника около 4k.",
+  }, { now: "2026-05-16T10:00:00.000Z" });
+
+  const sentToChannel = [];
+  const sentToThread = [];
+  const thread = {
+    id: "thread-1",
+    isTextBased: () => true,
+    messages: { fetch: async () => null },
+    send: async (payload) => {
+      sentToThread.push(payload);
+      return { id: `thread-message-${sentToThread.length}` };
+    },
+  };
+  const channel = {
+    id: "channel-1",
+    guildId: "guild-1",
+    type: 0,
+    isTextBased: () => true,
+    messages: { fetch: async () => null },
+    send: async (payload) => {
+      sentToChannel.push(payload);
+      return { id: "message-1", guildId: "guild-1", edit: async () => {}, startThread: async () => thread };
+    },
+  };
+  const operator = createAntiteamOperator({
+    db,
+    now: () => "2026-05-16T10:01:00.000Z",
+    saveDb() {},
+    fetchChannel: async (channelId) => (channelId === "channel-1" ? channel : thread),
+  });
+  const interaction = createButtonInteraction(ANTITEAM_CUSTOM_IDS.submitDraft, { id: "user-1", username: "User" });
+
+  assert.equal(await operator.handleButtonInteraction(interaction), true);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const ticket = Object.values(db.sot.antiteam.tickets)[0];
+  assert.equal(ticket.test, true);
+  // The mission is published and marked as a test...
+  assert.match(JSON.stringify(sentToChannel[0].components[0].toJSON()), /🧪 ТЕСТ/);
+  // ...but nobody is pinged: only the thread panel was sent, no battalion mention.
+  assert.equal(sentToThread.length, 1);
+  assert.doesNotMatch(JSON.stringify(sentToThread), /<@&battalion-role>/);
+});
+
 test("ping config controls are available in moderator panel and save mode", async () => {
   const db = {};
   ensureAntiteamState(db);
