@@ -1438,31 +1438,62 @@ function buildCloseSummaryModal(ticketId) {
     );
 }
 
-function buildCloseReviewPayload(ticket = {}, page = 0) {
+function buildCloseReviewPayload(ticket = {}, page = 0, options = {}) {
   const helpers = Object.values(ticket.helpers || {})
     .sort((left, right) => String(left.respondedAt || "").localeCompare(String(right.respondedAt || "")) || String(left.userId || "").localeCompare(String(right.userId || "")));
+  // Arrived state comes from the live (in-memory) close session when provided,
+  // so toggles don't touch the database — DB is written once on "Записать итог".
+  const arrivedOverride = options.arrivedByUserId && typeof options.arrivedByUserId === "object"
+    ? options.arrivedByUserId
+    : null;
+  const isArrived = (helper) => {
+    const uid = cleanString(helper.userId, 80);
+    if (arrivedOverride && Object.prototype.hasOwnProperty.call(arrivedOverride, uid)) {
+      return Boolean(arrivedOverride[uid]);
+    }
+    return didHelperArrive(helper);
+  };
   const pageSize = 5;
   const totalPages = Math.max(1, Math.ceil(helpers.length / pageSize));
   const currentPage = Math.min(Math.max(Number.parseInt(page, 10) || 0, 0), totalPages - 1);
   const visibleHelpers = helpers.slice(currentPage * pageSize, currentPage * pageSize + pageSize);
+  const arrivedCount = helpers.filter((helper) => isArrived(helper)).length;
   const container = new ContainerBuilder()
     .setAccentColor(0x1565C0)
     .addTextDisplayComponents(
       new TextDisplayBuilder().setContent("# Завершение антитима"),
       new TextDisplayBuilder().setContent(helpers.length
-        ? "Зелёная кнопка = helper пришёл. Серая кнопка = helper не пришёл. По умолчанию все helper-ы отмечены как пришёл, поэтому переведи в серый тех, кто не пришёл."
+        ? "Зелёная кнопка = пришёл, серая = не пришёл. По умолчанию все отмечены как пришёл — переведи в серый тех, кто не пришёл. «Записать итог» сохранит результат."
         : "Пока никто не получал ссылки помощи. Можно закрыть без отметок."),
-      new TextDisplayBuilder().setContent(`Страница **${currentPage + 1}/${totalPages}** • helper-ов: **${helpers.length}**`)
+      new TextDisplayBuilder().setContent(`Страница **${currentPage + 1}/${totalPages}** • откликнулось: **${helpers.length}** • пришло: **${arrivedCount}**`)
     );
 
   for (const helper of visibleHelpers) {
-    const arrived = didHelperArrive(helper);
+    const arrived = isArrived(helper);
+    const nick = cleanString(helper.robloxUsername, 40);
+    const name = cleanString(helper.discordTag || helper.userId, 60);
+    const label = `${arrived ? "Пришёл" : "Не пришёл"} • ${name}${nick ? ` (${nick})` : ""}`.slice(0, 80);
     container.addActionRowComponents(
       new ActionRowBuilder().addComponents(
         new ButtonBuilder()
           .setCustomId(ticketButtonId("arrived", ticket.id, `${helper.userId}:${currentPage}`))
-          .setLabel(`${arrived ? "Пришёл" : "Не пришёл"} • ${helper.discordTag || helper.userId}`.slice(0, 80))
+          .setLabel(label)
           .setStyle(arrived ? ButtonStyle.Success : ButtonStyle.Secondary)
+      )
+    );
+  }
+
+  if (helpers.length) {
+    container.addActionRowComponents(
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(ticketButtonId("mark_all", ticket.id, String(currentPage)))
+          .setLabel("✅ Отметить всех")
+          .setStyle(ButtonStyle.Success),
+        new ButtonBuilder()
+          .setCustomId(ticketButtonId("unmark_all", ticket.id, String(currentPage)))
+          .setLabel("⬜ Отменить всех")
+          .setStyle(ButtonStyle.Secondary)
       )
     );
   }

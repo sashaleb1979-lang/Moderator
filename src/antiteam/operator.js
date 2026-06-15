@@ -25,7 +25,6 @@ const {
   normalizeAntiteamPingMode,
   recordAntiteamHelper,
   setAntiteamDraft,
-  setTicketHelperArrival,
   updateAntiteamTicket,
 } = require("./state");
 const {
@@ -283,6 +282,9 @@ function createAntiteamOperator(options = {}) {
   const supportProgressCache = new Map();
   const supportProgressInFlight = new Map();
   const apiPresentCache = new Map();
+  // Live (in-memory) "who arrived" state for the close-review panel, keyed by
+  // ticketId. Toggles mutate this only — the DB is written once on close.
+  const closeReviewSessions = new Map();
   let submitPanelResendInFlight = null;
   let submitPanelResendQueued = false;
 
@@ -1240,6 +1242,39 @@ function createAntiteamOperator(options = {}) {
     const ids = await collectApiPresentHelperIds(ticket);
     apiPresentCache.set(ticketId, { ids, expiresAt: nowMs() + ANTITEAM_PRESENCE_CACHE_TTL_MS });
     return ids;
+  }
+
+  // In-memory "who arrived" state for the close-review panel. Initialised from
+  // ticket.helpers (everyone defaults to arrived) and mutated by the toggle /
+  // mark-all buttons with no DB writes; read once on close.
+  function getCloseReviewSession(ticket = {}, { reset = false } = {}) {
+    const ticketId = cleanString(ticket?.id, 80);
+    if (!ticketId) return { arrivedByUserId: {} };
+    let session = closeReviewSessions.get(ticketId);
+    if (!session || reset) {
+      const arrivedByUserId = {};
+      for (const helper of Object.values(ticket.helpers || {})) {
+        const uid = cleanString(helper.userId, 80);
+        if (uid) arrivedByUserId[uid] = helper.arrived !== false;
+      }
+      session = { arrivedByUserId, updatedAt: nowMs() };
+      closeReviewSessions.set(ticketId, session);
+      while (closeReviewSessions.size > 50) {
+        const oldestKey = closeReviewSessions.keys().next().value;
+        if (!oldestKey) break;
+        closeReviewSessions.delete(oldestKey);
+      }
+    }
+    return session;
+  }
+
+  function resolveCloseReviewArrival(ticket = {}, helper = {}) {
+    const session = closeReviewSessions.get(cleanString(ticket?.id, 80));
+    const uid = cleanString(helper.userId, 80);
+    if (session && Object.prototype.hasOwnProperty.call(session.arrivedByUserId, uid)) {
+      return Boolean(session.arrivedByUserId[uid]);
+    }
+    return helper.arrived !== false;
   }
 
   async function syncTicketMessages(ticket, { skipPresence = false } = {}) {
@@ -2443,11 +2478,11 @@ function createAntiteamOperator(options = {}) {
         await replyNoPermission(interaction);
         return true;
       }
-      // Defer-first: ack immediately, then fill the (ephemeral) close panel via
-      // editReply. Avoids a missed-ack / global watchdog conflict if the event
-      // loop is momentarily busy when the panel is requested.
+      // Defer-first, then render from a fresh in-memory close session (everyone
+      // defaults to arrived). Toggles below never touch the DB.
+      const session = getCloseReviewSession(ticket, { reset: true });
       const ack = await safeDeferReply(interaction, { flags: MessageFlags.Ephemeral });
-      if (ack.ok) await safeEditReply(interaction, buildCloseReviewPayload(ticket));
+      if (ack.ok) await safeEditReply(interaction, buildCloseReviewPayload(ticket, 0, { arrivedByUserId: session.arrivedByUserId }));
       return true;
     }
 
@@ -2456,8 +2491,9 @@ function createAntiteamOperator(options = {}) {
         await replyNoPermission(interaction);
         return true;
       }
+      const session = getCloseReviewSession(ticket);
       const ack = await safeDeferUpdate(interaction);
-      if (ack.ok) await safeEditReply(interaction, buildCloseReviewPayload(ticket, Number.parseInt(extra, 10) || 0));
+      if (ack.ok) await safeEditReply(interaction, buildCloseReviewPayload(ticket, Number.parseInt(extra, 10) || 0, { arrivedByUserId: session.arrivedByUserId }));
       return true;
     }
 
@@ -2467,27 +2503,35 @@ function createAntiteamOperator(options = {}) {
         return true;
       }
       const [helperId, pageRaw = "0"] = extra.split(":");
-      const current = ticket.helpers?.[helperId];
-      if (!current) {
+      if (!ticket.helpers?.[helperId]) {
         await safeReply(interaction, { content: "Helper не найден в этой миссии.", flags: MessageFlags.Ephemeral });
         return true;
       }
       const page = Number.parseInt(pageRaw, 10) || 0;
-      const arrived = current.arrived === false;
-      const optimisticTicket = {
-        ...ticket,
-        helpers: {
-          ...(ticket.helpers || {}),
-          [helperId]: {
-            ...current,
-            arrived,
-            arrivedSetAt: nowIso(),
-          },
-        },
-      };
+      // Toggle in memory only — instant, no DB write (saved once on close).
+      const session = getCloseReviewSession(ticket);
+      session.arrivedByUserId[helperId] = !resolveCloseReviewArrival(ticket, ticket.helpers[helperId]);
+      session.updatedAt = nowMs();
       const ack = await safeDeferUpdate(interaction);
-      if (ack.ok) await safeEditReply(interaction, buildCloseReviewPayload(optimisticTicket, page));
-      await persist("antiteam-arrival-toggle", () => setTicketHelperArrival(db, ticket.id, helperId, arrived, { now: nowIso() }));
+      if (ack.ok) await safeEditReply(interaction, buildCloseReviewPayload(ticket, page, { arrivedByUserId: session.arrivedByUserId }));
+      return true;
+    }
+
+    if (action === "mark_all" || action === "unmark_all") {
+      if (!ticket || !canCloseTicket(interaction, ticket)) {
+        await replyNoPermission(interaction);
+        return true;
+      }
+      const page = Number.parseInt(extra, 10) || 0;
+      const value = action === "mark_all";
+      const session = getCloseReviewSession(ticket);
+      for (const helper of Object.values(ticket.helpers || {})) {
+        const uid = cleanString(helper.userId, 80);
+        if (uid) session.arrivedByUserId[uid] = value;
+      }
+      session.updatedAt = nowMs();
+      const ack = await safeDeferUpdate(interaction);
+      if (ack.ok) await safeEditReply(interaction, buildCloseReviewPayload(ticket, page, { arrivedByUserId: session.arrivedByUserId }));
       return true;
     }
 
@@ -2780,7 +2824,13 @@ function createAntiteamOperator(options = {}) {
       }
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       const summary = interaction.fields.getTextInputValue("summary");
-      const confirmedHelperIds = Object.values(ticket.helpers || {}).filter((helper) => helper.arrived !== false).map((helper) => helper.userId);
+      // Read the "who arrived" result from the in-memory close session (the
+      // toggles never wrote to the DB); fall back to ticket.helpers if the
+      // session was lost (e.g. a restart mid-close).
+      const confirmedHelperIds = Object.values(ticket.helpers || {})
+        .filter((helper) => resolveCloseReviewArrival(ticket, helper))
+        .map((helper) => helper.userId);
+      closeReviewSessions.delete(cleanString(ticket.id, 80));
       const updated = await persist("antiteam-close", () => {
         const closed = closeAntiteamTicket(db, ticketId, {
           now: nowIso(),

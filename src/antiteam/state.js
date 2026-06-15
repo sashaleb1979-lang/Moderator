@@ -34,15 +34,16 @@ const ANTITEAM_LEVELS = Object.freeze({
 const ANTITEAM_COUNTS = Object.freeze({
   "2": { id: "2", label: "2", description: "ровно двое" },
   "3-5": { id: "3-5", label: "3-5", description: "небольшая тима" },
-  "5-10": { id: "5-10", label: "5-10", description: "большая тима" },
+  "6-10": { id: "6-10", label: "6-10", description: "большая тима" },
 });
 
 // Map legacy stored counts onto the current buckets so old tickets keep rendering.
 const ANTITEAM_COUNT_ALIASES = Object.freeze({
   "2-4": "3-5",
   "3-4": "3-5",
-  "4-10": "5-10",
-  "5-6": "5-10",
+  "4-10": "6-10",
+  "5-10": "6-10",
+  "5-6": "6-10",
 });
 
 const ANTITEAM_TICKET_KINDS = Object.freeze(["standard", "clan"]);

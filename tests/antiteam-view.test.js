@@ -196,7 +196,7 @@ test("draft setup renders level, count and toggles compactly", () => {
     userId: "user-1",
     roblox: { username: "Anchor", userId: "101" },
     level: "high",
-    count: "5-10",
+    count: "6-10",
     description: "Ники: A/B, примерно 5k.",
     directJoinEnabled: true,
     photoWanted: true,
@@ -206,7 +206,7 @@ test("draft setup renders level, count and toggles compactly", () => {
 
   assert.equal(payload.flags, MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral);
   assert.match(json, /Высокие/);
-  assert.match(json, /5-10/);
+  assert.match(json, /6-10/);
   assert.match(json, /Вход без друзей/);
   assert.match(json, /🔓 Есть/);
   assert.match(json, /📸 Есть/);
@@ -268,16 +268,16 @@ test("public ticket is the main compact post and thread panel is buttons only", 
       avatarUrl: "https://tr.rbxcdn.com/anchor-headshot.png",
     },
     level: "low",
-    count: "5-10",
+    count: "6-10",
     description: "Бить A/B, тимятся у центра.",
     directJoinEnabled: false,
   };
   const json = payloadJson(buildTicketPublicPayload(ticket));
   const threadJson = payloadJson(buildThreadPanelPayload(ticket));
 
-  assert.equal(buildThreadName(ticket), "🟢 5-10 тимеров • Gnom");
-  assert.equal(buildTicketTitle(ticket), "🟢 Нужна помощь • 5-10 тимеров");
-  assert.match(json, /# 🟢 Нужна помощь • 5-10 тимеров/);
+  assert.equal(buildThreadName(ticket), "🟢 6-10 тимеров • Gnom");
+  assert.equal(buildTicketTitle(ticket), "🟢 Нужна помощь • 6-10 тимеров");
+  assert.match(json, /# 🟢 Нужна помощь • 6-10 тимеров/);
   assert.match(json, /Попросил 👤 <@author-1> • \*\*Anchor\*\*/);
   assert.doesNotMatch(json, /🎮/);
   assert.doesNotMatch(json, /Маршрут:/);
@@ -732,10 +732,12 @@ test("close review payload paginates helper arrival toggles", () => {
   const thirdPage = payloadJson(buildCloseReviewPayload({ id: "ticket-1", helpers }, 2));
 
   assert.match(firstPage, /Страница/);
-  assert.match(firstPage, /Зелёная кнопка = helper пришёл/);
+  assert.match(firstPage, /Зелёная кнопка = пришёл/);
   assert.match(firstPage, /Helper 0/);
-  assert.match(firstPage, /По умолчанию все helper-ы отмечены как пришёл/);
+  assert.match(firstPage, /По умолчанию все отмечены как пришёл/);
   assert.match(firstPage, /Пришёл • Helper 0/);
+  assert.match(firstPage, /✅ Отметить всех/);
+  assert.match(firstPage, /⬜ Отменить всех/);
   assert.doesNotMatch(firstPage, /Helper 11/);
   assert.match(firstPage, /Вперёд/);
   assert.match(secondPage, /Helper 5/);

@@ -1613,13 +1613,13 @@ test("close modal rejects moderator role without admin permissions", async () =>
   assert.equal(interaction.calls[0][1].content, "Нет прав.");
 });
 
-test("arrival toggle updates the close review before serialized persistence finishes", async () => {
+test("arrival toggle updates the close review in memory without a DB write", async () => {
   const db = {};
   const draft = setAntiteamDraft(db, "author-1", {
     userTag: "Author",
     roblox: { userId: "101", username: "Anchor" },
     level: "medium",
-    count: "2-4",
+    count: "3-5",
     description: "Нужна помощь.",
   }, { now: "2026-05-16T10:00:00.000Z" });
   createAntiteamTicketFromDraft(db, draft, {
@@ -1630,38 +1630,32 @@ test("arrival toggle updates the close review before serialized persistence fini
     "helper-1": {
       userId: "helper-1",
       discordTag: "Helper",
+      robloxUsername: "HelperRb",
       respondedAt: "2026-05-16T10:02:00.000Z",
       arrived: true,
     },
   };
 
-  let releasePersist = null;
-  let resolvePersistEntered = null;
-  const persistEntered = new Promise((resolve) => {
-    resolvePersistEntered = resolve;
-  });
+  let persistCalls = 0;
   const interaction = createButtonInteraction(ticketButtonId("arrived", "ticket-1", "helper-1:0"), { id: "author-1", username: "Author" });
   const operator = createAntiteamOperator({
     db,
     now: () => "2026-05-16T10:03:00.000Z",
     saveDb() {},
     runSerializedMutation: async ({ mutate }) => {
-      resolvePersistEntered(interaction.calls.map((call) => call[0]));
-      await new Promise((resolve) => {
-        releasePersist = resolve;
-      });
+      persistCalls += 1;
       return mutate();
     },
   });
 
-  const pending = operator.handleButtonInteraction(interaction);
-  const callsBeforePersist = await persistEntered;
+  assert.equal(await operator.handleButtonInteraction(interaction), true);
 
-  assert.deepEqual(callsBeforePersist, ["deferUpdate", "editReply"]);
-  assert.match(JSON.stringify(interaction.calls[1][1].components[0].toJSON()), /Не пришёл • Helper/);
-  releasePersist();
-  assert.equal(await pending, true);
-  assert.equal(db.sot.antiteam.tickets["ticket-1"].helpers["helper-1"].arrived, false);
+  assert.deepEqual(interaction.calls.map((call) => call[0]), ["deferUpdate", "editReply"]);
+  // Panel flips to "Не пришёл" and shows the Roblox nick…
+  assert.match(JSON.stringify(interaction.calls.at(-1)[1].components[0].toJSON()), /Не пришёл • Helper \(HelperRb\)/);
+  // …with no DB write — helper.arrived stays as-is until "Записать итог".
+  assert.equal(persistCalls, 0);
+  assert.equal(db.sot.antiteam.tickets["ticket-1"].helpers["helper-1"].arrived, true);
 });
 
 test("close modal counts untouched helpers as arrived by default", async () => {
@@ -2878,10 +2872,10 @@ test("draft toggle and select update the setup panel immediately", async () => {
   assert.equal(await operator.handleButtonInteraction(toggle), true);
   assert.deepEqual(toggle.calls.map((call) => call[0]), ["deferUpdate", "editReply"]);
 
-  const select = createSelectInteraction(ANTITEAM_CUSTOM_IDS.countSelect, ["5-10"]);
+  const select = createSelectInteraction(ANTITEAM_CUSTOM_IDS.countSelect, ["6-10"]);
   assert.equal(await operator.handleSelectMenuInteraction(select), true);
   assert.deepEqual(select.calls.map((call) => call[0]), ["deferUpdate", "editReply"]);
-  assert.equal(db.sot.antiteam.drafts["user-1"].count, "5-10");
+  assert.equal(db.sot.antiteam.drafts["user-1"].count, "6-10");
 });
 
 test("draft toggle bypasses serialized persistence queue and updates immediately", async () => {
@@ -3782,4 +3776,53 @@ test("panel text modal updates and edits the published start panel", async () =>
   assert.equal(db.sot.antiteam.config.panel.accentColor, 0xAA2244);
   assert.match(JSON.stringify(editedPayload.components[0].toJSON()), /Срочный антитим/);
   assert.match(JSON.stringify(interaction.calls.at(-1)[1].components[0].toJSON()), /обновлена в канале/);
+});
+
+test("close review toggles drive the result in memory, persisting only on close", async () => {
+  const db = {};
+  const draft = setAntiteamDraft(db, "author-1", {
+    userTag: "Author",
+    roblox: { userId: "101", username: "Anchor" },
+    level: "medium",
+    count: "3-5",
+    description: "Цели A/B.",
+  }, { now: "2026-05-16T10:00:00.000Z" });
+  createAntiteamTicketFromDraft(db, draft, { id: "ticket-1", now: "2026-05-16T10:01:00.000Z" });
+  db.sot.antiteam.tickets["ticket-1"].helpers = {
+    "helper-1": { userId: "helper-1", discordTag: "H1", respondedAt: "2026-05-16T10:02:00.000Z" },
+    "helper-2": { userId: "helper-2", discordTag: "H2", respondedAt: "2026-05-16T10:03:00.000Z" },
+  };
+
+  let persistCount = 0;
+  const operator = createAntiteamOperator({
+    db,
+    now: () => "2026-05-16T10:05:00.000Z",
+    saveDb() {},
+    isModerator: () => true,
+    fetchChannel: async () => null,
+    runSerializedMutation: async ({ mutate }) => { persistCount += 1; return mutate(); },
+  });
+
+  const openClose = createButtonInteraction(ticketButtonId("close", "ticket-1"), { id: "author-1", username: "Author" });
+  assert.equal(await operator.handleButtonInteraction(openClose), true);
+
+  const toggle = createButtonInteraction(ticketButtonId("arrived", "ticket-1", "helper-2:0"), { id: "author-1", username: "Author" });
+  assert.equal(await operator.handleButtonInteraction(toggle), true);
+
+  // No DB writes yet — open + toggle are purely in-memory.
+  assert.equal(persistCount, 0);
+
+  const modal = createModalInteraction(
+    ticketButtonId("close_modal", "ticket-1"),
+    { summary: "ок" },
+    { id: "author-1", username: "Author" },
+    { permissions: { has: () => true }, roles: { cache: new Map() } }
+  );
+  assert.equal(await operator.handleModalSubmitInteraction(modal), true);
+
+  const closed = db.sot.antiteam.tickets["ticket-1"];
+  assert.equal(closed.status, "closed");
+  // Only helper-1 (left green) is counted; helper-2 was toggled off in memory.
+  assert.equal(db.sot.antiteam.stats.helpers["helper-1"].confirmedArrived, 1);
+  assert.equal(db.sot.antiteam.stats.helpers["helper-2"], undefined);
 });
