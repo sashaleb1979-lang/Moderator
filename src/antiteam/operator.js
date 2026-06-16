@@ -1,5 +1,7 @@
 "use strict";
 
+const fs = require("node:fs");
+const path = require("node:path");
 const { AttachmentBuilder, ChannelType, MessageFlags, PermissionsBitField } = require("discord.js");
 const { getRobloxBindingRecoveryText } = require("../integrations/roblox-binding-status");
 const { resolveUsableVerifiedRobloxIdentity } = require("../integrations/shared-profile");
@@ -53,6 +55,7 @@ const {
   buildSupportProgressPayload,
   buildThreadName,
   buildThreadPanelPayload,
+  buildTicketDirectLinkModal,
   buildTicketPublicPayload,
   buildTicketSetupPayload,
   formatRoleMention,
@@ -1269,6 +1272,13 @@ function createAntiteamOperator(options = {}) {
     return session;
   }
 
+  // Minimal "is this even a link" gate — reject obvious non-links without being
+  // strict about the exact Roblox URL shape.
+  function isLikelyDirectJoinUrl(value = "") {
+    const url = cleanString(value, 2000);
+    return /^roblox:\/\/\S+$/i.test(url) || /^https?:\/\/[^\s/]+\.[^\s/]+/i.test(url);
+  }
+
   function resolveCloseReviewArrival(ticket = {}, helper = {}) {
     const session = closeReviewSessions.get(cleanString(ticket?.id, 80));
     const uid = cleanString(helper.userId, 80);
@@ -1386,8 +1396,6 @@ function createAntiteamOperator(options = {}) {
       throw new Error("Канал антитима должен быть обычным текстовым каналом, чтобы миссии создавали Public Thread.");
     }
 
-    const friendEligibleStartedAt = nowMs();
-    const friendEligibleDiscordUserIdsPromise = collectFriendEligibleDiscordIds(draft);
     const publicPayload = buildTicketPublicPayload(ticket, config, {
       attachPhoto: Boolean(ticket.photos?.length || ticket.photo?.url),
     });
@@ -1413,9 +1421,8 @@ function createAntiteamOperator(options = {}) {
     const pingMessage = (thread && !ticket.test) ? await sendTicketPingMessages(thread, ticket, config) : null;
     const pingMs = nowMs() - pingStartedAt;
     // Persist message refs immediately so help/close can locate the post. The
-    // slow Roblox friend scan, the avatar lookup and the follow-up public edit
-    // (which only enrich the card) move to a detached tail so the post and thread
-    // don't wait on them.
+    // avatar lookup and the follow-up public edit (which only enrich the card)
+    // move to a detached tail so the post and thread don't wait on them.
     const refsPersistStartedAt = nowMs();
     const updatedTicket = await persist("antiteam-ticket-message-refs", () => updateAntiteamTicket(db, ticket.id, (current) => {
       current.message = {
@@ -1434,23 +1441,21 @@ function createAntiteamOperator(options = {}) {
     const refsPersistMs = nowMs() - refsPersistStartedAt;
 
     runDetached(async () => {
-      const friendEligibleDiscordUserIds = await friendEligibleDiscordUserIdsPromise;
       const avatarUrl = await ensureTicketAvatarUrl(ticket, draft);
-      const enrichedTicket = await persist("antiteam-ticket-enrich", () => updateAntiteamTicket(db, ticket.id, (current) => {
-        current.friendEligibleDiscordUserIds = friendEligibleDiscordUserIds;
-        if (avatarUrl && !cleanString(current.roblox?.avatarUrl, 2000)) {
+      let finalTicket = updatedTicket;
+      if (avatarUrl && !cleanString(updatedTicket.roblox?.avatarUrl, 2000)) {
+        finalTicket = await persist("antiteam-ticket-avatar", () => updateAntiteamTicket(db, ticket.id, (current) => {
           current.roblox = { ...current.roblox, avatarUrl };
-        }
-        current.updatedAt = nowIso();
-        return current;
-      }));
-      if (typeof publicMessage.edit === "function") {
-        await publicMessage.edit(buildTicketPublicPayload(enrichedTicket, config)).catch(() => {});
+          current.updatedAt = nowIso();
+          return current;
+        }));
       }
-      emitAntiteamLatency("submit_finalize_tail", {
-        ticketId: ticket.id,
-        friendScanMs: nowMs() - friendEligibleStartedAt,
-      });
+      // Always re-render: message refs are now persisted so the public card can
+      // include the thread jump button and any freshly-fetched avatar URL.
+      if (typeof publicMessage.edit === "function") {
+        await publicMessage.edit(buildTicketPublicPayload(finalTicket, config)).catch(() => {});
+      }
+      emitAntiteamLatency("submit_finalize_tail", { ticketId: ticket.id });
     }, (error) => {
       logError("Antiteam submit finalize tail failed:", error?.message || error);
     });
@@ -1475,7 +1480,6 @@ function createAntiteamOperator(options = {}) {
       pingMs,
       refsPersistMs,
       totalMs: nowMs() - finalizeStartedAt,
-      friendScan: "detached",
       avatar: "detached",
       publicEdit: "detached",
       roleGrant: "detached",
@@ -1793,27 +1797,14 @@ function createAntiteamOperator(options = {}) {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
     const helperRoblox = getHelperRobloxSnapshot(interaction.user.id);
-    const isFriendEligible = (ticket.friendEligibleDiscordUserIds || []).includes(interaction.user.id);
-    const targetRoute = await resolveDirectJoinTarget(ticket);
-    const bridgeTarget = !ticket.directJoinEnabled && !isFriendEligible
-      ? await findRuntimeBridgeTarget(ticket, helperRoblox)
-      : null;
-    const linkKind = ticket.directJoinEnabled
-      ? "direct"
-      : isFriendEligible
-        ? "friend_direct"
-        : bridgeTarget
-          ? "bridge_direct"
-          : "friend_request";
-    // Prefer the author's manually-provided connect link for direct join — the
-    // presence-based template was unreliable. Fall back to it only if no manual
-    // link was set.
+    // No friend/presence scan anymore (it was slow): direct join is offered only
+    // when the author added a valid connect link; otherwise it's a friend request.
     const manualDirectJoinUrl = cleanString(ticket.manualDirectJoinUrl, 2000);
-    const directJoinUrl = linkKind === "bridge_direct"
-      ? bridgeTarget.directJoinUrl
-      : (ticket.directJoinEnabled && manualDirectJoinUrl)
-        ? manualDirectJoinUrl
-        : (targetRoute?.directJoinUrl || "");
+    const hasDirectLink = isLikelyDirectJoinUrl(manualDirectJoinUrl);
+    const linkKind = hasDirectLink ? "direct" : "friend_request";
+    // Direct link if the author added one; otherwise the static profile join link
+    // for the friend-request flow (no Roblox scan involved).
+    const directJoinUrl = hasDirectLink ? manualDirectJoinUrl : buildRobloxUserJoinUrl(ticket.roblox?.userId);
     const profileUrl = getTicketProfileUrl(ticket);
     const previousHelper = ticket.helpers?.[interaction.user.id] || null;
     const alreadyResponded = Boolean(previousHelper?.respondedAt);
@@ -1824,8 +1815,8 @@ function createAntiteamOperator(options = {}) {
       robloxUsername: helperRoblox.username,
       robloxUserId: helperRoblox.userId,
       linkKind,
-      bridgeDiscordUserId: bridgeTarget?.discordUserId || "",
-      bridgeRobloxUsername: bridgeTarget?.roblox?.username || "",
+      bridgeDiscordUserId: "",
+      bridgeRobloxUsername: "",
     };
 
     const updated = await persist("antiteam-helper", () => {
@@ -1844,7 +1835,7 @@ function createAntiteamOperator(options = {}) {
       directJoinUrl,
       profileUrl,
       friendRequestsUrl: getConfig().roblox.friendRequestsUrl,
-      bridgeLabel: bridgeTarget?.roblox?.username || "",
+      bridgeLabel: "",
       helperRobloxKnown: Boolean(helperRoblox.userId),
       friendRequestNotified: Boolean(updated.helpers?.[interaction.user.id]?.friendRequestNotifiedAt),
     }));
@@ -2300,10 +2291,18 @@ function createAntiteamOperator(options = {}) {
     }
 
     if (id === ANTITEAM_CUSTOM_IDS.directLinkGuide) {
-      await safeReply(interaction, {
-        content: "❓ **Как взять прямую ссылку**\nПодробный гайд с картинками будет здесь позже. Пока: возьми ссылку прямого подключения к своему серверу Roblox и вставь её кнопкой «Вставить ссылку».",
-        flags: MessageFlags.Ephemeral,
-      });
+      const guideText = [
+        "❓ **Где взять прямую ссылку (Roblox)**",
+        "**Шаг 1.** Открой меню Roblox — значок Roblox слева сверху (или клавиша Esc).",
+        "**Шаг 2.** Вкладка **People** → кнопка **Invite Friends**.",
+        "**Шаг 3.** В окне Invite Friends нажми **Copy Link** справа сверху — это и есть прямая ссылка. Вставь её кнопкой «Вставить ссылку».",
+      ].join("\n");
+      const files = [];
+      try {
+        const guidePath = path.resolve(__dirname, "..", "..", "assets", "antiteam", "direct-link-guide.png");
+        if (fs.existsSync(guidePath)) files.push(new AttachmentBuilder(guidePath, { name: "direct-link-guide.png" }));
+      } catch { /* image is optional */ }
+      await safeReply(interaction, { content: guideText, files, flags: MessageFlags.Ephemeral });
       return true;
     }
 
@@ -2438,6 +2437,19 @@ function createAntiteamOperator(options = {}) {
       }));
       if (ack.ok) await safeEditReply(interaction, buildThreadPanelPayload(updated, getConfig()));
       await syncTicketMessages(updated).catch(() => {});
+      return true;
+    }
+
+    if (action === "set_direct_link") {
+      if (!ticket || ticket.status !== "open") {
+        await safeReply(interaction, { content: "Эта миссия уже закрыта или не найдена.", flags: MessageFlags.Ephemeral });
+        return true;
+      }
+      if (interaction.user.id !== ticket.createdBy && !isModerator(interaction.member)) {
+        await replyNoPermission(interaction);
+        return true;
+      }
+      await interaction.showModal(buildTicketDirectLinkModal(ticket));
       return true;
     }
 
@@ -2670,12 +2682,17 @@ function createAntiteamOperator(options = {}) {
         return true;
       }
       const rawLink = cleanString(interaction.fields.getTextInputValue("direct_link"), 2000);
-      const link = /^(https?:\/\/|roblox:\/\/)\S+$/i.test(rawLink) ? rawLink : "";
-      const updated = link ? writeDraft(interaction.user.id, { manualDirectJoinUrl: link }) : draft;
-      const status = link
-        ? "Прямая ссылка сохранена ✅ — помощники зайдут к тебе по ней."
-        : "Это не похоже на ссылку (нужен http/https или roblox://). Попробуй ещё раз.";
-      const payload = buildTicketSetupPayload(updated, getConfig(), status);
+      if (!isLikelyDirectJoinUrl(rawLink)) {
+        // Don't save junk; show the author a private "недействительна" notice and
+        // leave the setup panel untouched.
+        await safeReply(interaction, {
+          content: "❌ Это не похоже на ссылку. Вставь прямую ссылку из Roblox (кнопка **Copy Link**). Ссылка не сохранена.",
+          flags: MessageFlags.Ephemeral,
+        });
+        return true;
+      }
+      const updated = writeDraft(interaction.user.id, { manualDirectJoinUrl: rawLink });
+      const payload = buildTicketSetupPayload(updated, getConfig(), "Прямая ссылка сохранена ✅");
       if (interaction.message && typeof interaction.update === "function") {
         await safeUpdate(interaction, payload);
         return true;
@@ -2862,6 +2879,34 @@ function createAntiteamOperator(options = {}) {
       }
       await syncTicketMessages(updated).catch(() => {});
       await interaction.reply({ content: "Жалоба записана и передана модерации.", flags: MessageFlags.Ephemeral });
+      return true;
+    }
+
+    if (action === "direct_link_modal") {
+      if (ticket.status !== "open") {
+        await interaction.reply({ content: "Эта миссия уже закрыта.", flags: MessageFlags.Ephemeral });
+        return true;
+      }
+      if (interaction.user.id !== ticket.createdBy && !isModerator(interaction.member)) {
+        await replyNoPermission(interaction);
+        return true;
+      }
+      const rawLink = cleanString(interaction.fields.getTextInputValue("direct_link"), 2000);
+      if (!isLikelyDirectJoinUrl(rawLink)) {
+        await interaction.reply({
+          content: "❌ Это не похоже на ссылку. Вставь прямую ссылку из Roblox (кнопка **Copy Link**). Ссылка не сохранена.",
+          flags: MessageFlags.Ephemeral,
+        });
+        return true;
+      }
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      const updated = await persist("antiteam-ticket-direct-link", () => updateAntiteamTicket(db, ticketId, (current) => {
+        current.manualDirectJoinUrl = rawLink;
+        current.updatedAt = nowIso();
+        return current;
+      }));
+      await syncTicketMessages(updated).catch(() => {});
+      await interaction.editReply({ content: "✅ Прямая ссылка обновлена.", components: [] });
       return true;
     }
 
