@@ -1412,8 +1412,13 @@ function createAntiteamOperator(options = {}) {
       : null;
     const threadStartMs = nowMs() - threadStartStartedAt;
     const threadPanelStartedAt = nowMs();
+    // buildThreadPanelPayload runs synchronously; if it throws the .catch() on
+    // thread.send() would not catch it — wrap in a Promise chain so any error
+    // (build or send) is absorbed here rather than killing finalizeTicketPublish.
     const threadPanel = thread
-      ? await thread.send(buildThreadPanelPayload(ticket, config)).catch(() => null)
+      ? await Promise.resolve()
+          .then(() => thread.send(buildThreadPanelPayload(ticket, config)))
+          .catch(() => null)
       : null;
     const threadPanelMs = nowMs() - threadPanelStartedAt;
     const pingStartedAt = nowMs();
@@ -1491,6 +1496,16 @@ function createAntiteamOperator(options = {}) {
   async function rollbackTicketPublish(userId, ticket, draft) {
     await persist("antiteam-ticket-publish-rollback", () => {
       const current = getState();
+      const liveTicket = current.tickets[ticket.id];
+      // The persist mutate always runs before saveDb. If saveDb failed, the
+      // in-memory ticket already has message refs set. Deleting it here would
+      // break every button on the public post that Discord already shows to
+      // users. Skip the delete and let saveDb (still called below) flush the
+      // correct in-memory state to disk.
+      if (cleanString(liveTicket?.message?.messageId, 80)) {
+        logError("Antiteam publish rollback skipped: public post already live for ticket", ticket.id);
+        return { mutated: false };
+      }
       delete current.tickets[ticket.id];
       current.drafts[userId] = draft;
       return { mutated: true };
