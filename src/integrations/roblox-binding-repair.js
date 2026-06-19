@@ -176,11 +176,26 @@ function readRawRobloxUserId(rawProfile = {}) {
   const profile = rawProfile && typeof rawProfile === "object" ? rawProfile : {};
   return cleanString(
     profile?.domains?.roblox?.userId
+      ?? profile?.domains?.roblox?.invalidUserId
+      ?? profile?.domains?.roblox?.rawUserId
       ?? profile?.domains?.roblox?.robloxUserId
       ?? profile?.robloxUserId
+      ?? profile?.robloxInvalidUserId
+      ?? profile?.rawRobloxUserId
       ?? profile?.summary?.roblox?.userId,
     40
   );
+}
+
+function shouldPersistEnsuredRobloxProfile(rawProfile = {}, ensuredProfile = {}, options = {}) {
+  const rawUserId = readRawRobloxUserId(rawProfile);
+  const ensuredUserId = cleanString(
+    ensuredProfile?.domains?.roblox?.userId
+      ?? ensuredProfile?.domains?.roblox?.invalidUserId
+      ?? ensuredProfile?.domains?.roblox?.rawUserId,
+    40
+  );
+  return !rawUserId || rawUserId === ensuredUserId || options.persistSanitizedInvalidIds === true;
 }
 
 function resolveCleanupReason(record = {}) {
@@ -323,7 +338,7 @@ function findCleanupTrailRestoreCandidates(db = {}, profiles = {}, candidatesByU
       verifiedAt: entry.lastEvaluatedAt,
     });
     if (added) {
-      if (options.dryRun !== true) {
+      if (options.dryRun !== true && shouldPersistEnsuredRobloxProfile(rawProfile, ensuredProfile, options)) {
         profiles[normalizedUserId] = ensuredProfile;
       }
       existingUserIds.add(normalizedUserId);
@@ -349,6 +364,7 @@ async function applyRobloxBindingRepairPass(options = {}) {
   const recoverFromSubmissions = options.recoverFromSubmissions === true;
   const resetSuspiciousBindings = options.resetSuspiciousBindings === true;
   const allowDestructiveSuspiciousReset = options.allowDestructiveSuspiciousReset === true;
+  const persistSanitizedInvalidIds = options.persistSanitizedInvalidIds === true;
   const nowIso = resolveNowIso(options);
   const source = cleanString(options.source, 80) || (dryRun ? "repair_dry_run" : "repair_apply");
 
@@ -375,7 +391,7 @@ async function applyRobloxBindingRepairPass(options = {}) {
       profiles,
       candidatesByUsername,
       candidateUserIds,
-      { dryRun }
+      { dryRun, persistSanitizedInvalidIds }
     );
   }
 
@@ -390,14 +406,14 @@ async function applyRobloxBindingRepairPass(options = {}) {
     summary.scannedProfiles += 1;
     if (record.hasAnyRobloxData) summary.profilesWithRobloxData += 1;
 
-    if (!dryRun) {
+    if (!dryRun && shouldPersistEnsuredRobloxProfile(rawProfile, ensuredProfile, { persistSanitizedInvalidIds })) {
       profiles[userId] = ensuredProfile;
     }
 
     if (hadSanitizedUserId) {
       summary.sanitizedCount += 1;
-      if (markDirty) markDirty(userId, "binding_sanitized");
-      if (persistTrail && !dryRun) {
+      if (persistSanitizedInvalidIds && markDirty) markDirty(userId, "binding_sanitized");
+      if (persistSanitizedInvalidIds && persistTrail && !dryRun) {
         recordRobloxCleanupOutcome(db, userId, "sanitized", {
           now: nowIso,
           source,

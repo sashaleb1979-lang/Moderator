@@ -141,7 +141,7 @@ function buildRobloxCleanupAuditRecord(rawProfile = {}, userId = "", options = {
     displayName: cleanString(ensured.displayName, 200),
     preferredDisplayName: cleanString(ensured?.summary?.preferredDisplayName, 200),
     robloxUsername: cleanString(robloxSummary.currentUsername ?? robloxSummary.username, 120),
-    robloxUserId: cleanString(robloxSummary.userId, 40),
+    robloxUserId: cleanString(robloxSummary.userId ?? robloxSummary.invalidUserId ?? robloxDomain.invalidUserId, 40),
     verificationStatus: cleanString(robloxSummary.verificationStatus, 40) || "unverified",
     trackingState: cleanString(robloxSummary.trackingState, 40) || "unverified",
     trackingBlocker: cleanString(robloxSummary.trackingBlocker, 80) || "none",

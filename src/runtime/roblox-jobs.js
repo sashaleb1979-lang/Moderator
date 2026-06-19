@@ -37,6 +37,42 @@ function normalizeCandidateUserIds(userIds = []) {
   return unique;
 }
 
+function cleanRobloxUserIdText(value) {
+  if (value === undefined || value === null) return "";
+  const text = String(value).trim();
+  return text ? text.slice(0, 40) : "";
+}
+
+function readRawRobloxUserId(rawProfile = {}) {
+  const profile = rawProfile && typeof rawProfile === "object" ? rawProfile : {};
+  return cleanRobloxUserIdText(
+    profile?.domains?.roblox?.userId
+      ?? profile?.domains?.roblox?.invalidUserId
+      ?? profile?.domains?.roblox?.rawUserId
+      ?? profile?.domains?.roblox?.robloxUserId
+      ?? profile?.robloxUserId
+      ?? profile?.robloxInvalidUserId
+      ?? profile?.rawRobloxUserId
+      ?? profile?.summary?.roblox?.userId
+  );
+}
+
+function didEnsureDropRobloxUserId(rawProfile = {}, ensuredProfile = {}) {
+  const rawUserId = readRawRobloxUserId(rawProfile);
+  const ensuredUserId = cleanRobloxUserIdText(
+    ensuredProfile?.domains?.roblox?.userId
+      ?? ensuredProfile?.domains?.roblox?.invalidUserId
+      ?? ensuredProfile?.domains?.roblox?.rawUserId
+  );
+  return Boolean(rawUserId && rawUserId !== ensuredUserId);
+}
+
+function persistEnsuredRobloxProfileIfNonDestructive(profiles, discordUserId, rawProfile, ensuredProfile) {
+  if (!didEnsureDropRobloxUserId(rawProfile, ensuredProfile)) {
+    profiles[discordUserId] = ensuredProfile;
+  }
+}
+
 const ROBLOX_RUNTIME_DIRTY_REASONS = new Set([
   "binding_sanitized",
   "binding_repaired",
@@ -171,7 +207,7 @@ function buildRobloxVerifiedCandidates(db = {}) {
 
   for (const [discordUserId, rawProfile] of Object.entries(profiles)) {
     const ensured = ensureSharedProfile(rawProfile, discordUserId).profile;
-    profiles[discordUserId] = ensured;
+    persistEnsuredRobloxProfileIfNonDestructive(profiles, discordUserId, rawProfile, ensured);
 
     const roblox = ensured?.domains?.roblox;
     const robloxUserId = Number(roblox?.userId);
@@ -198,10 +234,10 @@ function buildRobloxRepairableCandidates(db = {}) {
 
   for (const [discordUserId, rawProfile] of Object.entries(profiles)) {
     const ensured = ensureSharedProfile(rawProfile, discordUserId).profile;
-    profiles[discordUserId] = ensured;
+    persistEnsuredRobloxProfileIfNonDestructive(profiles, discordUserId, rawProfile, ensured);
 
     const roblox = ensured?.domains?.roblox;
-    const hadSanitizedUserId = String(rawProfile?.domains?.roblox?.userId || "") !== String(roblox?.userId || "");
+    const hadSanitizedUserId = didEnsureDropRobloxUserId(rawProfile, ensured);
     if (hadSanitizedUserId) {
       sanitizedDiscordUserIds.push(discordUserId);
     }
@@ -232,6 +268,7 @@ async function repairRobloxVerifiedBindings(options = {}) {
     db: options.db,
     dryRun: false,
     persistTrail: false,
+    persistSanitizedInvalidIds: false,
     source: "playtime_sync",
     fetchUsersByUsernames: options.fetchUsersByUsernames,
     logError: options.logError,

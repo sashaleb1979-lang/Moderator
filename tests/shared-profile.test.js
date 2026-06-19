@@ -181,6 +181,7 @@ test("ensureSharedProfile migrates onboarding fields into domains and summary", 
     username: "RynexV",
     displayName: null,
     userId: "123456",
+    invalidUserId: null,
     avatarUrl: null,
     profileUrl: "https://www.roblox.com/users/123456/profile",
     createdAt: null,
@@ -837,6 +838,7 @@ test("normalizeRobloxDomainState defaults to unverified when binding is missing"
     username: "RynexV",
     displayName: null,
     userId: null,
+    invalidUserId: null,
     avatarUrl: null,
     profileUrl: null,
     createdAt: null,
@@ -913,8 +915,35 @@ test("normalizeRobloxDomainState drops unsafe Roblox user ids instead of treatin
 
   assert.equal(result.username, "RynexV");
   assert.equal(result.userId, null);
+  assert.equal(result.invalidUserId, "677512130085257217");
   assert.equal(result.profileUrl, null);
   assert.equal(result.verificationStatus, "verified");
+});
+
+test("syncSharedProfiles preserves invalid Roblox ids as repair evidence instead of dropping them", () => {
+  const db = {
+    profiles: {
+      user_1: {
+        userId: "user_1",
+        domains: {
+          roblox: {
+            username: "RynexV",
+            userId: "677512130085257217",
+            verificationStatus: "verified",
+          },
+        },
+      },
+    },
+  };
+
+  const result = syncSharedProfiles(db);
+  const roblox = result.profiles.user_1.domains.roblox;
+
+  assert.equal(roblox.userId, null);
+  assert.equal(roblox.invalidUserId, "677512130085257217");
+  assert.equal(result.profiles.user_1.summary.roblox.trackingState, "repairable");
+  assert.equal(result.profiles.user_1.summary.roblox.trackingBlocker, "invalid_user_id");
+  assert.equal(result.profiles.user_1.summary.roblox.invalidUserId, "677512130085257217");
 });
 
 test("ensureSharedProfile does not leak Discord identity fields into Roblox domain without an explicit binding", () => {
@@ -1150,6 +1179,10 @@ test("ensureSharedProfile preserves verification domain and derives verification
           { id: "guild-1", name: "Safe Guild", owner: false, permissions: "1024" },
         ],
         matchedEnemyUserIds: ["enemy-user"],
+        appliedRiskRules: {
+          enemyGuildIds: ["guild-1", "guild-2"],
+          enemyUserIds: ["enemy-user"],
+        },
       },
     },
   }, "verify-100");
@@ -1158,6 +1191,7 @@ test("ensureSharedProfile preserves verification domain and derives verification
   assert.equal(result.profile.domains.verification.decision, "approved");
   assert.equal(result.profile.domains.verification.oauthUsername, "discord-user");
   assert.equal(result.profile.domains.verification.observedGuilds.length, 1);
+  assert.deepEqual(result.profile.domains.verification.appliedRiskRules.enemyGuildIds, ["guild-1", "guild-2"]);
   assert.equal(result.profile.summary.verification.status, "verified");
   assert.equal(result.profile.summary.verification.decision, "approved");
   assert.equal(result.profile.summary.verification.oauthUserId, "oauth-1");

@@ -296,6 +296,20 @@ function normalizeVerificationObservedFriends(value = []) {
   return normalized;
 }
 
+function normalizeVerificationRiskRules(value = {}) {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  return {
+    enemyGuildIds: normalizeStringArray(source.enemyGuildIds, 200, 80),
+    enemyUserIds: normalizeStringArray(source.enemyUserIds, 200, 80),
+    enemyFriendUserIds: normalizeStringArray(source.enemyFriendUserIds, 200, 80),
+    enemyInviteCodes: normalizeStringArray(source.enemyInviteCodes, 200, 80),
+    enemyInviterUserIds: normalizeStringArray(source.enemyInviterUserIds, 200, 80),
+    suspiciousAccountUserIds: normalizeStringArray(source.suspiciousAccountUserIds, 200, 80),
+    suspiciousOldAccountDays: normalizeNullableInteger(source.suspiciousOldAccountDays, { min: 0 }) || 0,
+    manualTags: normalizeStringArray(source.manualTags, 200, 80),
+  };
+}
+
 function normalizeVerificationDomainState(value = {}) {
   const source = value && typeof value === "object" ? value : {};
   return {
@@ -329,6 +343,7 @@ function normalizeVerificationDomainState(value = {}) {
     matchedEnemyInviterUserIds: normalizeStringArray(source.matchedEnemyInviterUserIds, 20, 80),
     suspiciousSignals: normalizeStringArray(source.suspiciousSignals, 20, 120),
     accountAgeDays: normalizeNullableInteger(source.accountAgeDays, { min: 0 }),
+    appliedRiskRules: normalizeVerificationRiskRules(source.appliedRiskRules || source.riskRulesApplied),
   };
 }
 
@@ -991,6 +1006,12 @@ function normalizeSupportDomainState(value = {}) {
 function normalizeRobloxPlatformUserId(value) {
   const normalized = normalizeNullableInteger(value, { min: 1 });
   return normalized ? String(normalized) : null;
+}
+
+function normalizeInvalidRobloxUserId(value) {
+  const rawUserId = normalizeNullableString(value, 40);
+  if (!rawUserId || normalizeRobloxPlatformUserId(rawUserId)) return null;
+  return rawUserId;
 }
 
 function extractRobloxProfileUrlUserId(value = "") {
@@ -1751,7 +1772,16 @@ function normalizeRobloxDomainState(value = {}) {
   const source = value && typeof value === "object" ? value : {};
   const sourceIsProfileRoot = isLikelySharedProfileRoot(source);
   const rawStatus = cleanString(source.verificationStatus || source.status, 40).toLowerCase();
-  const userId = normalizeRobloxPlatformUserId(source.robloxUserId ?? (sourceIsProfileRoot ? null : source.userId));
+  const rawUserIdSource = source.robloxUserId ?? (sourceIsProfileRoot ? null : source.userId);
+  const userId = normalizeRobloxPlatformUserId(rawUserIdSource);
+  const invalidUserId = userId
+    ? null
+    : normalizeInvalidRobloxUserId(
+      source.robloxInvalidUserId
+        ?? source.invalidUserId
+        ?? source.rawUserId
+        ?? rawUserIdSource
+    );
   const username = normalizeNullableString(source.robloxUsername ?? (sourceIsProfileRoot ? null : source.username), 120);
   const displayName = normalizeNullableString(source.robloxDisplayName ?? (sourceIsProfileRoot ? null : source.displayName), 120);
   const verifiedAt = normalizeNullableString(source.verifiedAt, 80);
@@ -1769,6 +1799,7 @@ function normalizeRobloxDomainState(value = {}) {
     username,
     displayName,
     userId,
+    invalidUserId,
     avatarUrl: normalizeNullableString(source.robloxAvatarUrl ?? source.avatarUrl, 2000),
     profileUrl: normalizeNullableString(source.robloxProfileUrl ?? source.profileUrl, 2000) || buildRobloxProfileUrl(userId),
     createdAt: normalizeNullableString(source.robloxCreatedAt ?? source.createdAt, 80),
@@ -2112,6 +2143,7 @@ function buildSharedProfileSummary(profile = {}, domains = {}) {
       username: roblox.username,
       displayName: roblox.displayName,
       userId: roblox.userId,
+      invalidUserId: roblox.invalidUserId,
       avatarUrl: roblox.avatarUrl,
       profileUrl: roblox.profileUrl,
       createdAt: roblox.createdAt,

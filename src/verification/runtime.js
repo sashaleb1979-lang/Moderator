@@ -103,6 +103,20 @@ function normalizeOauthFriendRecord(value = {}) {
   };
 }
 
+function normalizeVerificationRiskRules(value = {}) {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  return {
+    enemyGuildIds: normalizeStringArray(source.enemyGuildIds, 200, 80),
+    enemyUserIds: normalizeStringArray(source.enemyUserIds, 200, 80),
+    enemyInviteCodes: normalizeStringArray(source.enemyInviteCodes, 200, 80),
+    enemyInviterUserIds: normalizeStringArray(source.enemyInviterUserIds, 200, 80),
+    enemyFriendUserIds: normalizeStringArray(source.enemyFriendUserIds, 200, 80),
+    suspiciousAccountUserIds: normalizeStringArray(source.suspiciousAccountUserIds, 200, 80),
+    suspiciousOldAccountDays: Math.max(0, Number(source.suspiciousOldAccountDays) || 0),
+    manualTags: normalizeStringArray(source.manualTags, 200, 80),
+  };
+}
+
 function parseDiscordSnowflakeTimestamp(snowflake) {
   const text = cleanString(snowflake, 80);
   if (!/^\d{10,30}$/.test(text)) return null;
@@ -125,14 +139,15 @@ function evaluateVerificationRisk(options = {}) {
   const riskRules = source.riskRules && typeof source.riskRules === "object" && !Array.isArray(source.riskRules)
     ? source.riskRules
     : {};
+  const appliedRiskRules = normalizeVerificationRiskRules(riskRules);
 
-  const enemyGuildIds = new Set(normalizeStringArray(riskRules.enemyGuildIds, 200, 80));
-  const enemyUserIds = new Set(normalizeStringArray(riskRules.enemyUserIds, 200, 80));
-  const enemyInviteCodes = normalizeStringArray(riskRules.enemyInviteCodes, 200, 80);
-  const enemyInviterUserIds = normalizeStringArray(riskRules.enemyInviterUserIds, 200, 80);
-  const enemyFriendUserIds = new Set(normalizeStringArray(riskRules.enemyFriendUserIds, 200, 80));
-  const suspiciousAccountUserIds = new Set(normalizeStringArray(riskRules.suspiciousAccountUserIds, 200, 80));
-  const suspiciousOldAccountDays = Math.max(0, Number(riskRules.suspiciousOldAccountDays) || 0);
+  const enemyGuildIds = new Set(appliedRiskRules.enemyGuildIds);
+  const enemyUserIds = new Set(appliedRiskRules.enemyUserIds);
+  const enemyInviteCodes = appliedRiskRules.enemyInviteCodes;
+  const enemyInviterUserIds = appliedRiskRules.enemyInviterUserIds;
+  const enemyFriendUserIds = new Set(appliedRiskRules.enemyFriendUserIds);
+  const suspiciousAccountUserIds = new Set(appliedRiskRules.suspiciousAccountUserIds);
+  const suspiciousOldAccountDays = appliedRiskRules.suspiciousOldAccountDays;
 
   const observedGuilds = oauthGuilds
     .map((entry) => normalizeOauthGuildRecord(entry))
@@ -180,6 +195,7 @@ function evaluateVerificationRisk(options = {}) {
     matchedEnemyInviterUserIds: enemyInviterUserIds,
     suspiciousSignals,
     accountAgeDays: Number.isFinite(accountAgeDays) ? accountAgeDays : null,
+    appliedRiskRules,
     missingObservedGuilds: observedGuilds.length === 0,
     requiresManualReview: observedGuilds.length === 0
       || matchedEnemyGuildIds.length > 0
@@ -510,4 +526,5 @@ module.exports = {
   exchangeDiscordOAuthCode,
   fetchDiscordOAuthIdentity,
   normalizeVerificationRuntimeConfig,
+  normalizeVerificationRiskRules,
 };

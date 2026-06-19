@@ -134,6 +134,113 @@ function normalizeStringArray(value, limit = 500, itemLimit = 120) {
   return normalized;
 }
 
+function normalizeRiskRuleSnapshot(value = {}) {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  return {
+    enemyGuildIds: normalizeStringArray(source.enemyGuildIds, 200, 80),
+    enemyUserIds: normalizeStringArray(source.enemyUserIds, 200, 80),
+    enemyFriendUserIds: normalizeStringArray(source.enemyFriendUserIds, 200, 80),
+    enemyInviteCodes: normalizeStringArray(source.enemyInviteCodes, 200, 80),
+    enemyInviterUserIds: normalizeStringArray(source.enemyInviterUserIds, 200, 80),
+    suspiciousAccountUserIds: normalizeStringArray(source.suspiciousAccountUserIds, 200, 80),
+    suspiciousOldAccountDays: Math.max(0, Number(source.suspiciousOldAccountDays) || 0),
+    manualTags: normalizeStringArray(source.manualTags, 200, 80),
+  };
+}
+
+function extractDiscordSnowflakeIds(value, mode = "generic") {
+  const text = cleanString(value, 1000);
+  if (!text) return [];
+
+  const extracted = [];
+  const push = (candidate) => {
+    const id = cleanString(candidate, 80);
+    if (/^\d{5,25}$/.test(id) && !extracted.includes(id)) {
+      extracted.push(id);
+    }
+  };
+
+  const channelUrlPattern = /discord(?:app)?\.com\/channels\/(\d{5,25})(?:\/\d{5,25})*/gi;
+  let match = null;
+  while ((match = channelUrlPattern.exec(text)) !== null) {
+    push(match[1]);
+  }
+  if (mode === "guild" && extracted.length) return extracted;
+
+  const userUrlPattern = /discord(?:app)?\.com\/users\/(\d{5,25})/gi;
+  while ((match = userUrlPattern.exec(text)) !== null) {
+    push(match[1]);
+  }
+
+  const mentionPattern = /<[@#!&]*?(\d{5,25})>/g;
+  while ((match = mentionPattern.exec(text)) !== null) {
+    push(match[1]);
+  }
+
+  const snowflakePattern = /(?:^|[^\d])(\d{5,25})(?=$|[^\d])/g;
+  while ((match = snowflakePattern.exec(text)) !== null) {
+    push(match[1]);
+  }
+
+  return extracted;
+}
+
+function extractDiscordInviteCodes(value) {
+  const text = cleanString(value, 1000);
+  if (!text) return [];
+  const codes = [];
+  const push = (candidate) => {
+    const code = cleanString(candidate, 80).replace(/[)\].,;:]+$/g, "");
+    if (/^[A-Za-z0-9-]{2,80}$/.test(code) && !codes.includes(code)) {
+      codes.push(code);
+    }
+  };
+
+  const urlPattern = /(?:discord\.gg|discord(?:app)?\.com\/invite)\/([A-Za-z0-9-]{2,80})/gi;
+  let match = null;
+  while ((match = urlPattern.exec(text)) !== null) {
+    push(match[1]);
+  }
+  if (codes.length) return codes;
+
+  for (const part of text.split(/[;,\s]+/g)) {
+    push(part);
+  }
+  return codes;
+}
+
+function normalizeRiskRuleValues(value, key) {
+  const values = Array.isArray(value) ? value : [value];
+  const normalized = [];
+  const push = (candidate) => {
+    const text = cleanString(candidate, 120);
+    if (text && !normalized.includes(text)) {
+      normalized.push(text);
+    }
+  };
+
+  for (const entry of values) {
+    if (["enemyGuildIds", "enemyUserIds", "enemyFriendUserIds", "enemyInviterUserIds", "suspiciousAccountUserIds"].includes(key)) {
+      const mode = key === "enemyGuildIds" ? "guild" : "generic";
+      for (const id of extractDiscordSnowflakeIds(entry, mode)) {
+        push(id);
+      }
+      continue;
+    }
+
+    if (key === "enemyInviteCodes") {
+      for (const code of extractDiscordInviteCodes(entry)) {
+        push(code);
+      }
+      continue;
+    }
+
+    push(entry);
+  }
+
+  return normalized;
+}
+
 function formatRoleMention(roleId) {
   const value = cleanString(roleId, 80);
   return value ? `<@&${value}>` : "не настроена";
@@ -376,9 +483,9 @@ function normalizeModalValue(value, fallback = "", limit = 4000) {
   return text || cleanString(fallback, limit);
 }
 
-function parseRiskEditorInput(rawValue, parseListInput, currentList = []) {
+function parseRiskEditorInput(rawValue, parseListInput, currentList = [], key = "") {
   const rawText = String(rawValue || "").trim();
-  const baseList = normalizeStringArray(currentList, 200, 120);
+  const baseList = normalizeRiskRuleValues(currentList, key).slice(0, 200);
   if (!rawText) {
     return baseList;
   }
@@ -389,7 +496,7 @@ function parseRiskEditorInput(rawValue, parseListInput, currentList = []) {
     .filter(Boolean);
   const hasDeltaTokens = lines.some((line) => /^\s*[+-]\s*\S+/.test(line));
   if (!hasDeltaTokens) {
-    return normalizeStringArray(parseListInput(rawText), 200, 120);
+    return normalizeRiskRuleValues(parseListInput(rawText), key).slice(0, 200);
   }
 
   const result = new Set(baseList);
@@ -399,10 +506,15 @@ function parseRiskEditorInput(rawValue, parseListInput, currentList = []) {
     const sign = match[1];
     const value = cleanString(match[2], 120);
     if (!value) continue;
+    const entries = normalizeRiskRuleValues(parseListInput(value), key);
     if (sign === "+") {
-      result.add(value);
+      for (const entry of entries) {
+        result.add(entry);
+      }
     } else {
-      result.delete(value);
+      for (const entry of entries) {
+        result.delete(entry);
+      }
     }
   }
 
@@ -782,6 +894,7 @@ function buildVerificationReportPayload(options = {}) {
   const summary = profile.summary?.verification && typeof profile.summary.verification === "object"
     ? profile.summary.verification
     : {};
+  const appliedRiskRules = normalizeRiskRuleSnapshot(verification.appliedRiskRules || verification.riskRulesApplied);
   const userId = cleanString(options.userId || profile.userId, 80);
   const observedGuildEntries = normalizeObservedGuildEntries(verification);
   const observedFriendEntries = normalizeObservedFriendEntries(verification);
@@ -792,6 +905,7 @@ function buildVerificationReportPayload(options = {}) {
     `Совпадения по invite: **${Number(summary.matchedEnemyInviteCount) || 0}**`,
     `Совпадения по inviter: **${Number(summary.matchedEnemyInviterCount) || 0}**`,
     `Сигналы подозрительности: **${Number(summary.suspiciousSignalCount) || 0}**`,
+    `Blacklist серверов в сессии: **${appliedRiskRules.enemyGuildIds.length}**`,
   ];
   const detailsLines = [
     `OAuth-аккаунт: **${cleanString(summary.oauthUsername || verification.oauthUsername, 120) || "—"}**`,
@@ -807,6 +921,13 @@ function buildVerificationReportPayload(options = {}) {
     `Друзья: ${normalizeStringArray(verification.matchedEnemyFriendIds, 20, 80).join(", ") || "—"}`,
     `Invite-коды: ${normalizeStringArray(verification.matchedEnemyInviteCodes, 20, 80).join(", ") || "—"}`,
     `Inviter ID: ${normalizeStringArray(verification.matchedEnemyInviterUserIds, 20, 80).join(", ") || "—"}`,
+  ];
+  const appliedRuleLines = [
+    `Серверы blacklist: ${appliedRiskRules.enemyGuildIds.slice(0, 20).join(", ") || "—"}`,
+    `Пользователи: ${appliedRiskRules.enemyUserIds.slice(0, 20).join(", ") || "—"}`,
+    `Друзья: ${appliedRiskRules.enemyFriendUserIds.slice(0, 20).join(", ") || "—"}`,
+    `Invite-коды: ${appliedRiskRules.enemyInviteCodes.slice(0, 20).join(", ") || "—"}`,
+    `Inviter ID: ${appliedRiskRules.enemyInviterUserIds.slice(0, 20).join(", ") || "—"}`,
   ];
   const observedFriendLines = observedFriendEntries.length
     ? observedFriendEntries.slice(0, 50).map((entry, index) => formatObservedFriendLine(entry, index))
@@ -828,6 +949,11 @@ function buildVerificationReportPayload(options = {}) {
       {
         name: "Точные совпадения",
         value: buildEmbedFieldValue(exactMatchLines),
+        inline: false,
+      },
+      {
+        name: "Правила риска этой OAuth-сессии",
+        value: buildEmbedFieldValue(appliedRuleLines),
         inline: false,
       },
       {
@@ -873,9 +999,7 @@ function buildVerificationPanelPayload(options = {}) {
     ? options.integration
     : {};
   const snapshot = normalizeVerificationSnapshot(options.snapshot);
-  const riskRules = integration.riskRules && typeof integration.riskRules === "object" && !Array.isArray(integration.riskRules)
-    ? integration.riskRules
-    : {};
+  const riskRules = normalizeRiskRuleSnapshot(integration.riskRules);
   const deadline = integration.deadline && typeof integration.deadline === "object" && !Array.isArray(integration.deadline)
     ? integration.deadline
     : {};
@@ -1314,27 +1438,32 @@ async function handleVerificationPanelModalSubmitInteraction(options = {}) {
           enemyGuildIds: parseRiskEditorInput(
             interaction.fields.getTextInputValue("verification_enemy_guild_ids"),
             parseListInput,
-            currentRiskRules.enemyGuildIds
+            currentRiskRules.enemyGuildIds,
+            "enemyGuildIds"
           ),
           enemyUserIds: parseRiskEditorInput(
             interaction.fields.getTextInputValue("verification_enemy_user_ids"),
             parseListInput,
-            currentRiskRules.enemyUserIds
+            currentRiskRules.enemyUserIds,
+            "enemyUserIds"
           ),
           enemyFriendUserIds: parseRiskEditorInput(
             interaction.fields.getTextInputValue("verification_enemy_friend_user_ids"),
             parseListInput,
-            currentRiskRules.enemyFriendUserIds
+            currentRiskRules.enemyFriendUserIds,
+            "enemyFriendUserIds"
           ),
           enemyInviteCodes: parseRiskEditorInput(
             interaction.fields.getTextInputValue("verification_enemy_invite_codes"),
             parseListInput,
-            currentRiskRules.enemyInviteCodes
+            currentRiskRules.enemyInviteCodes,
+            "enemyInviteCodes"
           ),
           enemyInviterUserIds: parseRiskEditorInput(
             interaction.fields.getTextInputValue("verification_enemy_inviter_user_ids"),
             parseListInput,
-            currentRiskRules.enemyInviterUserIds
+            currentRiskRules.enemyInviterUserIds,
+            "enemyInviterUserIds"
           ),
           suspiciousAccountUserIds: normalizeStringArray(currentRiskRules.suspiciousAccountUserIds, 200, 80),
           suspiciousOldAccountDays: Math.max(0, Number(currentRiskRules.suspiciousOldAccountDays) || 0),

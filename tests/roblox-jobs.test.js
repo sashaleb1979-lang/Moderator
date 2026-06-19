@@ -406,7 +406,7 @@ test("runRobloxPlaytimeSyncJob repairs verified bindings with invalid Roblox ids
   assert.equal(runtimeState.dirtyDiscordUserIds.has("user_a"), true);
 });
 
-test("runRobloxPlaytimeSyncJob marks sanitized invalid verified bindings dirty even when username is missing", async () => {
+test("runRobloxPlaytimeSyncJob does not persist sanitized invalid verified bindings when username is missing", async () => {
   const runtimeState = createRobloxRuntimeState();
   const db = {
     profiles: {
@@ -459,7 +459,8 @@ test("runRobloxPlaytimeSyncJob marks sanitized invalid verified bindings dirty e
     skippedReason: "no_verified_candidates",
   });
   assert.equal(db.profiles.user_a.domains.roblox.userId, null);
-  assert.equal(runtimeState.dirtyDiscordUserIds.has("user_a"), true);
+  assert.equal(db.profiles.user_a.domains.roblox.invalidUserId, "711122552566579240");
+  assert.equal(runtimeState.dirtyDiscordUserIds.has("user_a"), false);
 });
 
 test("runRobloxPlaytimeSyncJob reports unresolved verified username repairs when no Roblox user match is found", async () => {
@@ -520,7 +521,8 @@ test("runRobloxPlaytimeSyncJob reports unresolved verified username repairs when
     skippedReason: "no_verified_candidates",
   });
   assert.equal(db.profiles.user_a.domains.roblox.userId, null);
-  assert.equal(runtimeState.dirtyDiscordUserIds.has("user_a"), true);
+  assert.equal(db.profiles.user_a.domains.roblox.invalidUserId, "711122552566579240");
+  assert.equal(runtimeState.dirtyDiscordUserIds.has("user_a"), false);
 });
 
 test("runRobloxPlaytimeSyncJob updates rolling JJS minutes and co-play state in memory", async () => {

@@ -715,3 +715,82 @@ test("handleVerificationPanelModalSubmitInteraction preserves current infra fiel
   assert.deepEqual(calls[2], ["writeVerifyRole", "verify-role"]);
   assert.equal(calls.some(([name]) => name === "clearVerifyRole"), false);
 });
+
+test("handleVerificationPanelModalSubmitInteraction normalizes risk rule IDs before saving", async () => {
+  const calls = [];
+  const fieldValues = {
+    verification_enemy_guild_ids: [
+      "+ Enemy Nest https://discord.com/channels/555555555555555555/777777777777777777",
+      "+ 666666666666666666",
+      "- 111111111111111111",
+    ].join("\n"),
+    verification_enemy_user_ids: "<@222222222222222222>, https://discord.com/users/333333333333333333",
+    verification_enemy_friend_user_ids: "",
+    verification_enemy_invite_codes: "https://discord.gg/risk-code, plain-code",
+    verification_enemy_inviter_user_ids: "+ <@444444444444444444>\n- 555555555555555555",
+  };
+
+  const handled = await handleVerificationPanelModalSubmitInteraction({
+    interaction: {
+      customId: VERIFY_PANEL_CONFIG_RISK_MODAL_ID,
+      member: { id: "moderator" },
+      fields: {
+        getTextInputValue(fieldId) {
+          return fieldValues[fieldId] || "";
+        },
+      },
+      async deferReply(options) {
+        calls.push(["deferReply", options]);
+      },
+      async editReply(payload) {
+        calls.push(["editReply", payload]);
+      },
+    },
+    client: { id: "client" },
+    isModerator: () => true,
+    replyNoPermission: async () => {
+      throw new Error("should not run");
+    },
+    buildPanelReply: async (view, statusText) => ({ view, statusText }),
+    getCurrentIntegration: () => ({
+      riskRules: {
+        enemyGuildIds: ["111111111111111111"],
+        enemyFriendUserIds: ["999999999999999999"],
+        enemyInviterUserIds: ["555555555555555555"],
+        suspiciousAccountUserIds: ["888888888888888888"],
+        suspiciousOldAccountDays: 30,
+      },
+    }),
+    parseBooleanInput: () => true,
+    parseListInput: (value) => String(value || "").split(/\r?\n|,/).map((entry) => entry.trim()).filter(Boolean),
+    parseRequestedRoleId: (value) => String(value || "").trim(),
+    parseRequestedChannelId: (value) => String(value || "").trim(),
+    parseRequestedUserId: (value) => String(value || "").trim(),
+    cleanText: (value) => String(value || "").trim(),
+    nowIso: () => "2026-05-10T00:00:00.000Z",
+    writeIntegrationSnapshot: (patch) => {
+      calls.push(["writeIntegrationSnapshot", patch]);
+    },
+    writeVerifyRole: () => {},
+    clearVerifyRole: () => {},
+    saveDb: () => {
+      calls.push(["saveDb"]);
+    },
+    startRuntime: async () => ({ callbackStarted: false, entryPublished: false }),
+    ensureEntryMessage: async () => {},
+    ensurePendingProfile: () => {},
+    postManualReport: async () => ({ channel: { id: "report-room" }, profile: { domains: { verification: {} } } }),
+    updateProfile: () => {},
+    computeReportDueAt: () => "2026-05-17T00:00:00.000Z",
+  });
+
+  assert.equal(handled, true);
+  const riskPatch = calls.find(([name]) => name === "writeIntegrationSnapshot")[1];
+  assert.deepEqual(riskPatch.riskRules.enemyGuildIds, ["555555555555555555", "666666666666666666"]);
+  assert.deepEqual(riskPatch.riskRules.enemyUserIds, ["222222222222222222", "333333333333333333"]);
+  assert.deepEqual(riskPatch.riskRules.enemyFriendUserIds, ["999999999999999999"]);
+  assert.deepEqual(riskPatch.riskRules.enemyInviteCodes, ["risk-code", "plain-code"]);
+  assert.deepEqual(riskPatch.riskRules.enemyInviterUserIds, ["444444444444444444"]);
+  assert.deepEqual(riskPatch.riskRules.suspiciousAccountUserIds, ["888888888888888888"]);
+  assert.equal(riskPatch.riskRules.suspiciousOldAccountDays, 30);
+});

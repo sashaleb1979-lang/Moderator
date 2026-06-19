@@ -120,7 +120,6 @@ test("applyRobloxBindingRepairPass repairs safe candidates and persists cleanup 
   assert.equal(db.profiles["suspicious-user"].domains.roblox.userId, "202");
   assert.equal(db.profiles["suspicious-user"].domains.roblox.verificationStatus, "verified");
   assert.deepEqual(dirtyCalls, [
-    "repair-user:binding_sanitized",
     "repair-user:binding_repaired",
     "suspicious-user:binding_repaired",
   ]);
@@ -128,7 +127,7 @@ test("applyRobloxBindingRepairPass repairs safe candidates and persists cleanup 
   const repairEntry = getRobloxCleanupTrailEntry(db, "repair-user");
   assert.equal(repairEntry.lastOutcome, "repaired");
   assert.equal(repairEntry.lastReason, "invalid_user_id");
-  assert.deepEqual(repairEntry.history.map((entry) => entry.outcome), ["repaired", "sanitized"]);
+  assert.deepEqual(repairEntry.history.map((entry) => entry.outcome), ["repaired"]);
 
   assert.equal(getRobloxCleanupTrailEntry(db, "suspicious-user").lastOutcome, "repaired");
   assert.equal(getRobloxCleanupTrailEntry(db, "manual-user").lastOutcome, "rebind_required");
@@ -184,6 +183,50 @@ test("applyRobloxBindingRepairPass keeps dry-run non-destructive while still rep
 
   assert.equal(db.profiles["repair-user"].domains.roblox.userId, undefined);
   assert.equal(getRobloxCleanupTrailEntry(db, "repair-user"), null);
+});
+
+test("applyRobloxBindingRepairPass preserves invalid raw user id when username lookup is unresolved", async () => {
+  const dirtyCalls = [];
+  const db = {
+    profiles: {
+      "repair-user": {
+        userId: "repair-user",
+        username: "discord-repair",
+        displayName: "Repair User",
+        domains: {
+          roblox: {
+            username: "RepairableRb",
+            userId: "711122552566579240",
+            verificationStatus: "verified",
+          },
+        },
+      },
+    },
+  };
+
+  const result = await applyRobloxBindingRepairPass({
+    db,
+    dryRun: false,
+    persistTrail: true,
+    now: "2026-05-20T11:45:00.000Z",
+    source: "repair_script_apply",
+    fetchUsersByUsernames: async (usernames) => {
+      assert.deepEqual(usernames, ["repairablerb"]);
+      return [];
+    },
+    markDirty(userId, reason) {
+      dirtyCalls.push(`${userId}:${reason}`);
+    },
+  });
+
+  assert.equal(result.sanitizedCount, 1);
+  assert.equal(result.unresolvedCount, 1);
+  assert.equal(db.profiles["repair-user"].domains.roblox.userId, null);
+  assert.equal(db.profiles["repair-user"].domains.roblox.invalidUserId, "711122552566579240");
+  assert.deepEqual(dirtyCalls, []);
+  const cleanupEntry = getRobloxCleanupTrailEntry(db, "repair-user");
+  assert.equal(cleanupEntry.lastOutcome, "unresolved");
+  assert.equal(cleanupEntry.robloxUserId, "711122552566579240");
 });
 
 test("applyRobloxBindingRepairPass restores suspicious bindings from proven submissions", async () => {

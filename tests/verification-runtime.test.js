@@ -121,6 +121,8 @@ test("evaluateVerificationRisk flags enemy guild and user matches for manual rev
   assert.deepEqual(result.matchedEnemyGuildIds, ["guild-2"]);
   assert.deepEqual(result.matchedEnemyUserIds, ["user-1"]);
   assert.deepEqual(result.matchedEnemyInviteCodes, ["invite-1"]);
+  assert.deepEqual(result.appliedRiskRules.enemyGuildIds, ["guild-2"]);
+  assert.deepEqual(result.appliedRiskRules.enemyUserIds, ["user-1"]);
   assert.equal(result.requiresManualReview, true);
   assert.equal(result.missingObservedGuilds, false);
 });

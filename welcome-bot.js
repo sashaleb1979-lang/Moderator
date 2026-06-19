@@ -7642,6 +7642,7 @@ function stopVerificationCycle(userId, reason = "verify role removed", options =
     matchedEnemyInviterUserIds: [],
     suspiciousSignals: [],
     accountAgeDays: null,
+    appliedRiskRules: {},
     stoppedAt,
     stopReason,
   }, options);
@@ -7784,6 +7785,7 @@ async function assignUserToVerification(client, userId, options = {}) {
     matchedEnemyInviterUserIds: [],
     suspiciousSignals: [],
     accountAgeDays: null,
+    appliedRiskRules: {},
   });
 
   const verificationChannelId = cleanVerificationText(getVerificationIntegrationState().verificationChannelId, 80);
@@ -8026,6 +8028,9 @@ function buildVerificationAuditMarkdown(userId, profile = {}, statusNote = "") {
     : {};
   const observedGuilds = normalizeVerificationObservedGuilds(verification.observedGuilds);
   const observedFriends = normalizeVerificationObservedFriends(verification.observedFriends);
+  const appliedRiskRules = verification.appliedRiskRules && typeof verification.appliedRiskRules === "object" && !Array.isArray(verification.appliedRiskRules)
+    ? verification.appliedRiskRules
+    : {};
   const serverFriendIds = Array.isArray(robloxSummary.serverFriendsUserIds) ? robloxSummary.serverFriendsUserIds : [];
   const topCoPlayPeers = Array.isArray(robloxSummary.topCoPlayPeers) ? robloxSummary.topCoPlayPeers : [];
   const usernameHistory = Array.isArray(roblox.usernameHistory) ? roblox.usernameHistory : [];
@@ -8088,6 +8093,13 @@ function buildVerificationAuditMarkdown(userId, profile = {}, statusNote = "") {
     `- Invite-коды: ${normalizeVerificationTextArray(verification.matchedEnemyInviteCodes, 20, 80).join(", ") || "—"}`,
     `- Inviter ID: ${normalizeVerificationTextArray(verification.matchedEnemyInviterUserIds, 20, 80).join(", ") || "—"}`,
     `- Подозрительные сигналы: ${normalizeVerificationTextArray(verification.suspiciousSignals, 20, 120).join(", ") || "—"}`,
+    "",
+    "### Правила риска этой OAuth-сессии",
+    `- Серверы blacklist: ${normalizeVerificationTextArray(appliedRiskRules.enemyGuildIds, 20, 80).join(", ") || "—"}`,
+    `- Пользователи: ${normalizeVerificationTextArray(appliedRiskRules.enemyUserIds, 20, 80).join(", ") || "—"}`,
+    `- Друзья: ${normalizeVerificationTextArray(appliedRiskRules.enemyFriendUserIds, 20, 80).join(", ") || "—"}`,
+    `- Invite-коды: ${normalizeVerificationTextArray(appliedRiskRules.enemyInviteCodes, 20, 80).join(", ") || "—"}`,
+    `- Inviter ID: ${normalizeVerificationTextArray(appliedRiskRules.enemyInviterUserIds, 20, 80).join(", ") || "—"}`,
     ""
   );
 
@@ -8532,6 +8544,9 @@ async function handleVerificationApprovedCallback(client, payload = {}) {
       ? [...new Set(risk.suspiciousSignals.map((entry) => cleanVerificationText(entry, 120)).filter(Boolean))].slice(0, 20)
       : [],
     accountAgeDays: Number.isFinite(Number(risk.accountAgeDays)) ? Math.max(0, Number(risk.accountAgeDays)) : null,
+    appliedRiskRules: risk.appliedRiskRules && typeof risk.appliedRiskRules === "object" && !Array.isArray(risk.appliedRiskRules)
+      ? risk.appliedRiskRules
+      : {},
   });
 
   updateVerificationProfile(userId, {
@@ -8626,6 +8641,9 @@ async function handleVerificationManualReviewCallback(client, payload = {}) {
       ? [...new Set(risk.suspiciousSignals.map((entry) => cleanVerificationText(entry, 120)).filter(Boolean))].slice(0, 20)
       : [],
     accountAgeDays: Number.isFinite(Number(risk.accountAgeDays)) ? Math.max(0, Number(risk.accountAgeDays)) : null,
+    appliedRiskRules: risk.appliedRiskRules && typeof risk.appliedRiskRules === "object" && !Array.isArray(risk.appliedRiskRules)
+      ? risk.appliedRiskRules
+      : {},
     decisionReason,
     lastError: "",
   });
