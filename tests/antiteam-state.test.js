@@ -25,6 +25,7 @@ test("antiteam state normalizes config, drafts, tickets and helper stats", () =>
       antiteam: {
         config: {
           battalionRoleId: "battalion-role",
+          panelMessageIds: ["panel-1", "", "panel-1", "panel-2"],
           battalionPingRoleIds: ["extra-ping-1", "", "extra-ping-1", "extra-ping-2"],
           editPingRoleIds: ["edit-ping-1", "", "edit-ping-1", "edit-ping-2"],
           battalionLeadRoleId: "lead-role",
@@ -58,6 +59,7 @@ test("antiteam state normalizes config, drafts, tickets and helper stats", () =>
   assert.equal(state.config.extraPingRoleId, "extra-role");
   assert.equal(state.config.panel.title, "Custom");
   assert.equal(state.config.panel.accentColor, 0x112233);
+  assert.deepEqual(state.config.panelMessageIds, ["panel-1", "panel-2"]);
   assert.deepEqual(ANTITEAM_HELPER_REWARD_THRESHOLDS, [1, 5, 10, 20, 50]);
   assert.equal(state.config.helperRewardRoles["1"], "role-one");
   assert.equal(state.config.helperRewardRoles["5"], "<@&role-five>");

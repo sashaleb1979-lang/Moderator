@@ -3427,6 +3427,55 @@ test("publishing the start panel sends the new panel before deleting the old one
   assert.equal(db.sot.antiteam.config.panelMessageId, "new-panel-1");
 });
 
+test("publishing the start panel cleans leaked previous-day panels discovered in recent messages", async () => {
+  const db = {};
+  const state = ensureAntiteamState(db).state;
+  state.config.channelId = "channel-1";
+  state.config.panelMessageId = "known-panel";
+  state.config.panelMessageIds = ["older-known-panel"];
+
+  const deleted = [];
+  const channel = {
+    id: "channel-1",
+    isTextBased: () => true,
+    messages: {
+      fetch: async (arg) => {
+        if (arg && typeof arg === "object") {
+          return new Map([
+            ["yesterday-panel", {
+              id: "yesterday-panel",
+              components: [{ components: [{ custom_id: ANTITEAM_CUSTOM_IDS.open }] }],
+            }],
+            ["ticket-message", {
+              id: "ticket-message",
+              components: [{ components: [{ custom_id: ticketButtonId("help", "ticket-1") }] }],
+            }],
+          ]);
+        }
+        return null;
+      },
+      delete: async (messageId) => {
+        deleted.push(messageId);
+      },
+    },
+    send: async () => ({ id: "new-panel-1" }),
+  };
+  const operator = createAntiteamOperator({
+    db,
+    now: () => "2026-05-17T00:05:00.000Z",
+    saveDb() {},
+    isModerator: () => true,
+    fetchChannel: async (channelId) => (channelId === "channel-1" ? channel : null),
+  });
+  const interaction = createButtonInteraction(ANTITEAM_CUSTOM_IDS.publishPanel, { id: "admin-1", username: "Admin" });
+
+  assert.equal(await operator.handleButtonInteraction(interaction), true);
+
+  assert.deepEqual(deleted, ["known-panel", "older-known-panel", "yesterday-panel"]);
+  assert.equal(db.sot.antiteam.config.panelMessageId, "new-panel-1");
+  assert.deepEqual(db.sot.antiteam.config.panelMessageIds, ["new-panel-1"]);
+});
+
 test("test mode toggle flips config and is moderator-only", async () => {
   const db = {};
   ensureAntiteamState(db);

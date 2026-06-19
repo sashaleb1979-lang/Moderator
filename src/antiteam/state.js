@@ -212,6 +212,7 @@ function createDefaultAntiteamConfig(value = {}) {
   const config = {
     channelId: cleanString(source.channelId, 80),
     panelMessageId: cleanString(source.panelMessageId, 80),
+    panelMessageIds: normalizeUniqueStringArray(source.panelMessageIds, 20, 80),
     battalionRoleId: cleanString(source.battalionRoleId, 80),
     battalionPingRoleIds: normalizeUniqueStringArray(
       source.battalionPingRoleIds ?? source.basePingRoleIds ?? source.extraBattalionPingRoleIds,

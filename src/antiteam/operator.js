@@ -78,6 +78,7 @@ const ANTITEAM_ROLE_GRANT_RETRY_DELAYS_MS = [2000, 10000, 30000];
 const ANTITEAM_UNKNOWN_INTERACTION_CODES = new Set([10062]);
 const ANTITEAM_ALREADY_ACK_CODES = new Set([40060]);
 const ANTITEAM_MANUAL_POINTS_TARGET_LIMIT = 100;
+const ANTITEAM_START_PANEL_SCAN_LIMIT = 100;
 
 function normalizeUsernameInput(value) {
   const username = cleanString(value, 40);
@@ -1070,17 +1071,30 @@ function createAntiteamOperator(options = {}) {
     if (!channel?.isTextBased?.()) throw new Error("Канал антитима не найден или не текстовый.");
 
     const payload = buildStartPanelPayload(config);
-    const previousPanelMessageId = cleanString(config.panelMessageId, 80);
+    const knownPanelMessageIds = collectKnownStartPanelMessageIds(config);
     // Send the new panel FIRST so the "создать антитим" button is never missing,
     // then delete the old one immediately — BEFORE persisting the new id — so a
     // slow/failed state write can never leave the old panel behind.
     const message = await channel.send(payload);
-    if (previousPanelMessageId && previousPanelMessageId !== message.id) {
-      await deleteStartPanelMessage(channel, previousPanelMessageId);
+    const recentPanelMessageIds = await collectRecentStartPanelMessageIds(channel, message.id);
+    const stalePanelMessageIds = [
+      ...new Set([
+        ...knownPanelMessageIds,
+        ...recentPanelMessageIds,
+      ].filter((messageId) => messageId && messageId !== message.id)),
+    ];
+    const failedCleanupMessageIds = [];
+    for (const staleMessageId of stalePanelMessageIds) {
+      const cleaned = await deleteStartPanelMessage(channel, staleMessageId);
+      if (!cleaned) failedCleanupMessageIds.push(staleMessageId);
     }
     await persist("antiteam-panel-publish", () => {
       const current = getState();
       current.config.panelMessageId = message.id;
+      current.config.panelMessageIds = [
+        message.id,
+        ...failedCleanupMessageIds,
+      ].slice(0, 20);
       current.config.channelId = channel.id;
       return { mutated: true };
     });
@@ -1090,25 +1104,94 @@ function createAntiteamOperator(options = {}) {
   // Robustly remove an old start-panel message: try the direct delete (no fetch
   // needed), fall back to fetch+delete, and log if it genuinely fails so leaked
   // panels are visible instead of silent.
+  function collectKnownStartPanelMessageIds(config = {}) {
+    return [
+      ...new Set([
+        cleanString(config.panelMessageId, 80),
+        ...(Array.isArray(config.panelMessageIds) ? config.panelMessageIds.map((messageId) => cleanString(messageId, 80)) : []),
+      ].filter(Boolean)),
+    ];
+  }
+
+  function toMessageArray(value) {
+    if (!value) return [];
+    if (Array.isArray(value)) return value;
+    if (typeof value.values === "function") return [...value.values()];
+    if (value.cache && typeof value.cache.values === "function") return [...value.cache.values()];
+    if (typeof value === "object") return Object.values(value);
+    return [];
+  }
+
+  function getComponentSnapshot(component) {
+    if (!component) return component;
+    if (typeof component.toJSON === "function") {
+      try {
+        return component.toJSON();
+      } catch {
+        return component;
+      }
+    }
+    return component;
+  }
+
+  function containsCustomId(value, expectedCustomId) {
+    if (!value) return false;
+    if (Array.isArray(value)) return value.some((entry) => containsCustomId(entry, expectedCustomId));
+    if (typeof value !== "object") return false;
+
+    const snapshot = getComponentSnapshot(value);
+    if (snapshot !== value) return containsCustomId(snapshot, expectedCustomId);
+
+    if (cleanString(value.custom_id || value.customId, 120) === expectedCustomId) return true;
+    return Object.values(value).some((entry) => containsCustomId(entry, expectedCustomId));
+  }
+
+  function isStartPanelMessage(message = {}) {
+    return containsCustomId(message.components, ANTITEAM_CUSTOM_IDS.open);
+  }
+
+  async function collectRecentStartPanelMessageIds(channel, currentMessageId = "") {
+    if (typeof channel?.messages?.fetch !== "function") return [];
+    let recentMessages = null;
+    try {
+      recentMessages = await channel.messages.fetch({ limit: ANTITEAM_START_PANEL_SCAN_LIMIT });
+    } catch (error) {
+      logError("Antiteam start-panel scan failed:", error?.message || error);
+      return [];
+    }
+
+    const keepMessageId = cleanString(currentMessageId, 80);
+    return toMessageArray(recentMessages)
+      .filter((message) => cleanString(message?.id, 80) && cleanString(message.id, 80) !== keepMessageId)
+      .filter(isStartPanelMessage)
+      .map((message) => cleanString(message.id, 80));
+  }
+
   async function deleteStartPanelMessage(channel, messageId) {
     const id = cleanString(messageId, 80);
-    if (!id || !channel) return;
+    if (!id || !channel) return true;
     if (typeof channel.messages?.delete === "function") {
       try {
         await channel.messages.delete(id);
-        return;
+        return true;
       } catch (error) {
-        if (isUnknownMessageError(error)) return;
+        if (isUnknownMessageError(error)) return true;
         // fall through to fetch+delete
       }
     }
     try {
       const previous = channel.messages?.fetch ? await channel.messages.fetch(id).catch(() => null) : null;
-      if (previous?.delete) await previous.delete();
+      if (previous?.delete) {
+        await previous.delete();
+        return true;
+      }
+      return true;
     } catch (error) {
       if (!isUnknownMessageError(error)) {
         logError("Antiteam start-panel cleanup failed:", error?.message || error);
+        return false;
       }
+      return true;
     }
   }
 
