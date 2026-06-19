@@ -219,6 +219,7 @@ const {
   isApocalypseMode,
   normalizeOnboardAccessMode,
   resolveGrantedAccessRoleId,
+  resolveSelfServiceAccessGrantBlockReason,
 } = require("./src/onboard/access-mode");
 const {
   collectAccessCompanionCandidateUserIds,
@@ -8936,6 +8937,26 @@ function getNonJjsCaptchaStartText(modeState) {
   return "Пройди 2 этапа. В каждой картинке нужно нажать номер лишнего персонажа.";
 }
 
+function getSelfServiceAccessRoleGrantBlockText(roleId) {
+  const reason = resolveSelfServiceAccessGrantBlockReason({
+    mode: getCurrentOnboardMode(),
+    roleId,
+    normalAccessRoleId: getNormalAccessRoleId(),
+    nonJjsAccessRoleId: getNonJjsAccessRoleId(),
+    accessCompanionRoleId: getAccessCompanionRoleId(),
+  });
+
+  if (reason === "wartime_access_self_service") {
+    return "Сейчас включено военное время: self-service выдача роли человека отключена. Используй обычный onboarding/verification путь или обратись к модератору.";
+  }
+  return "";
+}
+
+function getNonJjsSelfServiceAccessBlockText(modeState = {}) {
+  if (modeState?.mode === "practice") return "";
+  return getSelfServiceAccessRoleGrantBlockText(getNonJjsAccessRoleId() || getAccessCompanionRoleId());
+}
+
 function getRolePoolSnapshot(member, roleIds) {
   if (!member?.roles?.cache || !Array.isArray(roleIds)) return [];
   return roleIds.filter((roleId) => roleId && member.roles.cache.has(roleId));
@@ -9249,6 +9270,11 @@ function normalizeApprovedRoleSyncWarnings(roleSync) {
 async function grantNonGgsAccessRole(client, userId, reason = "non-JJS captcha passed") {
   const member = await fetchMember(client, userId);
   if (!member) return false;
+
+  const blockText = getNonJjsSelfServiceAccessBlockText({ mode: "grant" });
+  if (blockText) {
+    throw new Error(blockText);
+  }
 
   const roleId = getNonJjsAccessRoleId();
   if (!roleId) {
@@ -12095,6 +12121,12 @@ async function grantRoleFromRolePanelMessage(client, interaction, record, button
   const button = Array.isArray(record.buttons) ? record.buttons[Number(buttonIndex) || 0] : null;
   if (!button?.roleId) {
     await interaction.editReply("Кнопка не найдена или роль не привязана.");
+    return;
+  }
+
+  const selfServiceAccessBlockText = getSelfServiceAccessRoleGrantBlockText(button.roleId);
+  if (selfServiceAccessBlockText) {
+    await interaction.editReply(selfServiceAccessBlockText);
     return;
   }
 
@@ -21870,6 +21902,17 @@ client.on("interactionCreate", async (interaction) => {
       }
 
       const captchaMode = getNonJjsCaptchaModeForMember(member);
+      const wartimeBlockText = getNonJjsSelfServiceAccessBlockText(captchaMode);
+      if (wartimeBlockText) {
+        clearNonGgsCaptchaSession(interaction.user.id);
+        await interaction.update({
+          content: wartimeBlockText,
+          embeds: [],
+          components: [],
+          attachments: [],
+        });
+        return;
+      }
 
       if (captchaMode.mode !== "practice" && !getNonJjsAccessRoleId()) {
         await interaction.update({
@@ -22297,6 +22340,18 @@ client.on("interactionCreate", async (interaction) => {
       }
 
       try {
+        const wartimeBlockText = getNonJjsSelfServiceAccessBlockText(session);
+        if (wartimeBlockText) {
+          clearNonGgsCaptchaSession(interaction.user.id);
+          await interaction.update({
+            content: `Капча остановлена. ${wartimeBlockText}`,
+            embeds: [],
+            components: [],
+            attachments: [],
+          });
+          return;
+        }
+
         if (session.mode === "practice") {
           clearNonGgsCaptchaSession(interaction.user.id);
           await interaction.update({

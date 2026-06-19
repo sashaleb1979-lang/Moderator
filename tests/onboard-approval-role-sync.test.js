@@ -117,6 +117,43 @@ function loadGrantAccessRole() {
   );
 }
 
+function loadGrantRoleFromRolePanelMessage() {
+  const functionSource = sliceFunction(
+    "async function grantRoleFromRolePanelMessage(client, interaction, record, buttonIndex = 0) {",
+    "async function removeRoleFromAllMembers(client, roleId, behavior, moderatorTag) {",
+    "grantRoleFromRolePanelMessage"
+  );
+
+  return new Function(
+    "safeDeferEphemeralReply",
+    "console",
+    "getSelfServiceAccessRoleGrantBlockText",
+    "fetchMember",
+    "fetchRoleForPanel",
+    "formatRoleMention",
+    `return (${functionSource});`
+  );
+}
+
+function loadGrantNonGgsAccessRole() {
+  const functionSource = sliceFunction(
+    "async function grantNonGgsAccessRole(client, userId, reason = \"non-JJS captcha passed\") {",
+    "async function revokeAccessRole(client, userId, reason = \"profile purge\") {",
+    "grantNonGgsAccessRole"
+  );
+
+  return new Function(
+    "fetchMember",
+    "getNonJjsSelfServiceAccessBlockText",
+    "getNonJjsAccessRoleId",
+    "getAccessCompanionRoleId",
+    "getRolePoolSnapshot",
+    "ensureAccessCompanionRoleForMemberBestEffort",
+    "restoreRolePoolSnapshot",
+    `return (${functionSource});`
+  );
+}
+
 test("welcome-bot wires approved access repair into startup and panel role sync flows", () => {
   assert.match(welcomeBotSource, /panel_sync_roles[\s\S]*?syncApprovedAccessRoles\(client, null,/);
   assert.match(welcomeBotSource, /runClientReadyCore\(client, \{[\s\S]*?syncApprovedAccessRoles:/);
@@ -174,6 +211,74 @@ test("grantAccessRole in wartime grants only the wartime access role", async () 
     ["remove", "companion-role", "wartime auto grant"],
     ["add", "wartime-role", "wartime auto grant"],
   ]);
+});
+
+test("role panel blocks self-service human access role during wartime before granting", async () => {
+  const replies = [];
+  let fetchedMember = false;
+  const buildGrantRoleFromRolePanelMessage = loadGrantRoleFromRolePanelMessage();
+  const grantRoleFromRolePanelMessage = buildGrantRoleFromRolePanelMessage(
+    async () => true,
+    console,
+    (roleId) => roleId === "human-role" ? "Сейчас включено военное время: self-service выдача роли человека отключена." : "",
+    async () => {
+      fetchedMember = true;
+      return {
+        roles: {
+          cache: new Map(),
+          async add() {
+            throw new Error("role add should not run");
+          },
+        },
+      };
+    },
+    async () => ({ id: "human-role", editable: true }),
+    (roleId) => `<@&${roleId}>`
+  );
+
+  await grantRoleFromRolePanelMessage({}, {
+    user: { id: "user-1" },
+    async editReply(message) {
+      replies.push(message);
+    },
+  }, {
+    id: "record-1",
+    buttons: [{ roleId: "human-role", label: "Человек" }],
+  });
+
+  assert.deepEqual(replies, ["Сейчас включено военное время: self-service выдача роли человека отключена."]);
+  assert.equal(fetchedMember, false);
+});
+
+test("non-JJS access grant is blocked internally during wartime before adding roles", async () => {
+  let addCalled = false;
+  const buildGrantNonGgsAccessRole = loadGrantNonGgsAccessRole();
+  const grantNonGgsAccessRole = buildGrantNonGgsAccessRole(
+    async () => ({
+      roles: {
+        cache: new Map(),
+        async add() {
+          addCalled = true;
+        },
+      },
+    }),
+    () => "Сейчас включено военное время: self-service выдача роли человека отключена.",
+    () => "nonjjs-role",
+    () => "human-role",
+    () => [],
+    async () => {
+      throw new Error("companion grant should not run");
+    },
+    async () => {
+      throw new Error("rollback should not run");
+    }
+  );
+
+  await assert.rejects(
+    () => grantNonGgsAccessRole({}, "user-1"),
+    /self-service выдача роли человека отключена/
+  );
+  assert.equal(addCalled, false);
 });
 
 test("approveSubmission saves approval state before best-effort role sync warnings", async () => {

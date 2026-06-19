@@ -17,6 +17,7 @@ const {
   isApocalypseMode,
   normalizeOnboardAccessMode,
   resolveGrantedAccessRoleId,
+  resolveSelfServiceAccessGrantBlockReason,
 } = require("../src/onboard/access-mode");
 const { commitMutation } = require("../src/onboard/refresh-runner");
 const {
@@ -877,6 +878,41 @@ test("resolveGrantedAccessRoleId follows the active access mode", () => {
     wartimeAccessRoleId: "",
     heldRoleIds: [],
   }), "base-role");
+});
+
+test("self-service access grants are blocked for human access roles during wartime", () => {
+  const base = {
+    mode: ONBOARD_ACCESS_MODES.WARTIME,
+    normalAccessRoleId: "base-role",
+    nonJjsAccessRoleId: "nonjjs-role",
+    accessCompanionRoleId: "human-role",
+  };
+
+  assert.equal(resolveSelfServiceAccessGrantBlockReason({
+    ...base,
+    roleId: "base-role",
+  }), "wartime_access_self_service");
+
+  assert.equal(resolveSelfServiceAccessGrantBlockReason({
+    ...base,
+    roleId: "nonjjs-role",
+  }), "wartime_access_self_service");
+
+  assert.equal(resolveSelfServiceAccessGrantBlockReason({
+    ...base,
+    roleId: "human-role",
+  }), "wartime_access_self_service");
+
+  assert.equal(resolveSelfServiceAccessGrantBlockReason({
+    ...base,
+    roleId: "wartime-role",
+  }), "");
+
+  assert.equal(resolveSelfServiceAccessGrantBlockReason({
+    ...base,
+    mode: ONBOARD_ACCESS_MODES.NORMAL,
+    roleId: "human-role",
+  }), "");
 });
 
 test("access grant mode state normalizes persisted values and exposes readable labels", () => {

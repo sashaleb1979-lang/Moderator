@@ -39,6 +39,10 @@ function isApocalypseMode(value) {
   return normalizeOnboardAccessMode(value) === ONBOARD_ACCESS_MODES.APOCALYPSE;
 }
 
+function isWartimeMode(value) {
+  return normalizeOnboardAccessMode(value) === ONBOARD_ACCESS_MODES.WARTIME;
+}
+
 function cleanRoleId(value) {
   return String(value || "").trim();
 }
@@ -71,12 +75,35 @@ function resolveGrantedAccessRoleId({
   return normalRoleId || (wartimeRoleId && heldRoleIdSet.has(wartimeRoleId) ? wartimeRoleId : "");
 }
 
+function resolveSelfServiceAccessGrantBlockReason({
+  mode = ONBOARD_ACCESS_MODES.NORMAL,
+  roleId = "",
+  normalAccessRoleId = "",
+  nonJjsAccessRoleId = "",
+  accessCompanionRoleId = "",
+} = {}) {
+  if (!isWartimeMode(mode)) return "";
+
+  const targetRoleId = cleanRoleId(roleId);
+  if (!targetRoleId) return "";
+
+  const blockedRoleIds = normalizeHeldRoleIds([
+    normalAccessRoleId,
+    nonJjsAccessRoleId,
+    accessCompanionRoleId,
+  ]);
+
+  return blockedRoleIds.has(targetRoleId) ? "wartime_access_self_service" : "";
+}
+
 module.exports = {
   ONBOARD_ACCESS_MODES,
   ONBOARD_ACCESS_MODE_LABELS,
   createOnboardModeState,
   getOnboardAccessModeLabel,
   isApocalypseMode,
+  isWartimeMode,
   normalizeOnboardAccessMode,
   resolveGrantedAccessRoleId,
+  resolveSelfServiceAccessGrantBlockReason,
 };
