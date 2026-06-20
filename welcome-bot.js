@@ -9926,12 +9926,20 @@ async function findExistingNonGgsPanelMessage(channel) {
   );
 }
 
-async function findExistingBotHelperPanelMessage(channel) {
+async function findExistingBotHelperPanelMessages(channel, limit = 100) {
   const botId = client.user?.id;
-  return findManagedMessageInChannel(
-    channel,
-    (message) => message.author?.id === botId && messageHasRequiredCustomIds(message, getBotHelperPanelRequiredCustomIds())
-  );
+  if (!channel?.isTextBased() || !botId) return [];
+
+  const recent = await channel.messages.fetch({ limit }).catch(() => null);
+  if (!recent?.size) return [];
+
+  return [...recent.values()]
+    .filter((message) => message.author?.id === botId && messageHasRequiredCustomIds(message, getBotHelperPanelRequiredCustomIds()))
+    .sort((left, right) => Number(right.createdTimestamp || 0) - Number(left.createdTimestamp || 0));
+}
+
+async function findExistingBotHelperPanelMessage(channel) {
+  return (await findExistingBotHelperPanelMessages(channel, 100))[0] || null;
 }
 
 async function findExistingGraphicTierlistMessage(channel) {
@@ -10124,6 +10132,58 @@ async function resolveBotHelperPanelManagedMessage(client, channel, state) {
   return message;
 }
 
+let botHelperPanelMutationChain = null;
+
+function runBotHelperPanelMutation(task) {
+  const run = () => {
+    try {
+      return Promise.resolve(task());
+    } catch (error) {
+      return Promise.reject(error);
+    }
+  };
+  const previous = botHelperPanelMutationChain;
+  const next = previous ? previous.catch(() => {}).then(run) : run();
+  botHelperPanelMutationChain = next;
+  next.catch(() => {}).then(() => {
+    if (botHelperPanelMutationChain === next) {
+      botHelperPanelMutationChain = null;
+    }
+  });
+  return next;
+}
+
+async function cleanupBotHelperPanelMessages(channel, keepMessageId = "") {
+  const keepId = String(keepMessageId || "").trim();
+  const messages = await findExistingBotHelperPanelMessages(channel, 100);
+  let deletedCount = 0;
+
+  for (const message of messages) {
+    if (keepId && message.id === keepId) continue;
+    if (!message.deletable) continue;
+    const deleted = await message.delete().then(() => true).catch(() => false);
+    if (deleted) deletedCount += 1;
+  }
+
+  return deletedCount;
+}
+
+async function cleanupBotHelperPanelMessagesByChannelId(client, channelId = "", keepMessageId = "") {
+  const normalizedChannelId = String(channelId || "").trim();
+  if (!normalizedChannelId || isPlaceholder(normalizedChannelId)) return 0;
+  const channel = await client.channels.fetch(normalizedChannelId).catch(() => null);
+  if (!channel?.isTextBased()) return 0;
+  return cleanupBotHelperPanelMessages(channel, keepMessageId);
+}
+
+function scheduleBotHelperPanelCleanup(channel, keepMessageId = "") {
+  Promise.resolve()
+    .then(() => cleanupBotHelperPanelMessages(channel, keepMessageId))
+    .catch((error) => {
+      console.warn("Bot helper duplicate cleanup failed:", error?.message || error);
+    });
+}
+
 async function getBotHelperPanelRuntimeSnapshot(client) {
   const state = syncLegacyPanelSnapshot(getBotHelperPanelState(), getResolvedBotHelperPanelSnapshot());
   const channelId = String(state.channelId || "").trim();
@@ -10221,6 +10281,10 @@ async function buildBotHelperSettingsReplySafe(client, statusText = "", includeF
 }
 
 async function refreshBotHelperPanel(client, options = {}) {
+  return runBotHelperPanelMutation(() => refreshBotHelperPanelUnlocked(client, options));
+}
+
+async function refreshBotHelperPanelUnlocked(client, options = {}) {
   const state = syncLegacyPanelSnapshot(getBotHelperPanelState(), getResolvedBotHelperPanelSnapshot());
   const channelId = String(options.channelId || state.channelId || "").trim();
   if (!channelId || isPlaceholder(channelId)) return null;
@@ -10236,9 +10300,7 @@ async function refreshBotHelperPanel(client, options = {}) {
 
   let message = null;
 
-  if (!options.forceRecreate) {
-    message = await resolveBotHelperPanelManagedMessage(client, channel, state);
-  }
+  message = await resolveBotHelperPanelManagedMessage(client, channel, state);
 
   if (message && (options.bump || options.forceRecreate)) {
     await deleteManagedChannelMessage(client, channel.id, message.id);
@@ -10260,11 +10322,22 @@ async function refreshBotHelperPanel(client, options = {}) {
 
   state.channelId = channel.id;
   saveDb();
+  scheduleBotHelperPanelCleanup(channel, message.id);
   return { message, channel };
 }
 
 async function repostBotHelperPanelToChannel(client, targetChannelId) {
-  const state = syncLegacyPanelSnapshot(getBotHelperPanelState(), getResolvedBotHelperPanelSnapshot());
+  return runBotHelperPanelMutation(() => repostBotHelperPanelToChannelUnlocked(client, targetChannelId));
+}
+
+async function repostBotHelperPanelToChannelUnlocked(client, targetChannelId) {
+  const state = getBotHelperPanelState();
+  const previousState = {
+    channelId: String(state.channelId || "").trim(),
+    messageId: String(state.messageId || "").trim(),
+    lastSentAt: String(state.lastSentAt || "").trim(),
+  };
+  syncLegacyPanelSnapshot(state, getResolvedBotHelperPanelSnapshot());
   const nextChannelId = String(targetChannelId || "").trim();
   if (!nextChannelId || isPlaceholder(nextChannelId)) {
     throw new Error("Нужно указать текстовый канал для helper-панели.");
@@ -10275,23 +10348,20 @@ async function repostBotHelperPanelToChannel(client, targetChannelId) {
     throw new Error("Указанный канал helper-панели не является текстовым.");
   }
 
-  const previousState = {
-    channelId: String(state.channelId || "").trim(),
-    messageId: String(state.messageId || "").trim(),
-    lastSentAt: String(state.lastSentAt || "").trim(),
-  };
-
   state.channelId = nextChannelId;
   state.messageId = "";
   state.lastSentAt = "";
   saveDb();
 
   try {
-    const result = await refreshBotHelperPanel(client, { forceRecreate: true, strict: true });
+    const result = await refreshBotHelperPanelUnlocked(client, { forceRecreate: true, strict: true });
     const nextMessageId = result?.message?.id || "";
 
     if (previousState.messageId && (previousState.channelId !== nextChannelId || previousState.messageId !== nextMessageId)) {
       await deleteManagedChannelMessage(client, previousState.channelId || nextChannelId, previousState.messageId);
+    }
+    if (previousState.channelId && previousState.channelId !== nextChannelId) {
+      await cleanupBotHelperPanelMessagesByChannelId(client, previousState.channelId, "");
     }
 
     return {
@@ -10309,6 +10379,10 @@ async function repostBotHelperPanelToChannel(client, targetChannelId) {
 }
 
 async function clearBotHelperManagedPanel(client) {
+  return runBotHelperPanelMutation(() => clearBotHelperManagedPanelUnlocked(client));
+}
+
+async function clearBotHelperManagedPanelUnlocked(client) {
   const state = getBotHelperPanelState();
   const previousChannelId = String(state.channelId || "").trim();
   const previousMessageId = String(state.messageId || "").trim();
@@ -10321,16 +10395,22 @@ async function clearBotHelperManagedPanel(client) {
   const deleted = previousMessageId
     ? await deleteManagedChannelMessage(client, previousChannelId, previousMessageId)
     : false;
+  const duplicateDeletedCount = await cleanupBotHelperPanelMessagesByChannelId(client, previousChannelId, "");
 
   return {
     ok: true,
     channelId: "",
     messageId: "",
     deletedMessageId: deleted ? previousMessageId : "",
+    duplicateDeletedCount,
   };
 }
 
 async function autoResendBotHelperPanelIfNeeded(client) {
+  return runBotHelperPanelMutation(() => autoResendBotHelperPanelIfNeededUnlocked(client));
+}
+
+async function autoResendBotHelperPanelIfNeededUnlocked(client) {
   const snapshot = await getBotHelperPanelRuntimeSnapshot(client);
   if (!snapshot.channelId || isPlaceholder(snapshot.channelId)) {
     return { resent: false, reason: "unconfigured" };
@@ -10339,7 +10419,7 @@ async function autoResendBotHelperPanelIfNeeded(client) {
     return { resent: false, reason: "invalid-channel" };
   }
   if (!snapshot.message) {
-    const refreshed = await refreshBotHelperPanel(client, { forceRecreate: true, strict: true });
+    const refreshed = await refreshBotHelperPanelUnlocked(client, { channelId: snapshot.channelId, strict: true });
     return {
       resent: Boolean(refreshed?.message),
       restored: true,
@@ -10354,7 +10434,7 @@ async function autoResendBotHelperPanelIfNeeded(client) {
     };
   }
 
-  const refreshed = await refreshBotHelperPanel(client, {
+  const refreshed = await refreshBotHelperPanelUnlocked(client, {
     forceRecreate: true,
     channelId: snapshot.channelId,
     strict: true,

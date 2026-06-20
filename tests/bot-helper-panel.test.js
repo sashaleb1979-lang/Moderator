@@ -124,16 +124,50 @@ test("bot helper resend disposition waits for both activity below and the 12-hou
   assert.equal(noActivity.needsResend, false);
 });
 
-test("bot helper force resend resolves and deletes the managed message before sending a new one", () => {
+test("bot helper force resend resolves, deletes and dedupes the managed message", () => {
   const functionStart = welcomeBotSource.indexOf("async function refreshBotHelperPanel");
   const functionEnd = welcomeBotSource.indexOf("async function repostBotHelperPanelToChannel", functionStart);
   const body = welcomeBotSource.slice(functionStart, functionEnd);
 
   assert.ok(functionStart > 0, "refreshBotHelperPanel must exist");
-  assert.match(body, /if \(!options\.forceRecreate\)\s*{\s*message = await resolveBotHelperPanelManagedMessage/);
+  assert.match(body, /return runBotHelperPanelMutation\(\(\) => refreshBotHelperPanelUnlocked\(client, options\)\)/);
+  assert.doesNotMatch(body, /if \(!options\.forceRecreate\)/);
   assert.ok(
     body.indexOf("message = await resolveBotHelperPanelManagedMessage(client, channel, state);")
       < body.indexOf("if (message && (options.bump || options.forceRecreate))"),
     "force resend should resolve the old managed message before delete/send"
   );
+  assert.match(body, /scheduleBotHelperPanelCleanup\(channel, message\.id\)/);
+});
+
+test("bot helper panel publish paths share one serialized mutation queue", () => {
+  assert.match(welcomeBotSource, /let botHelperPanelMutationChain = null;/);
+  assert.match(welcomeBotSource, /function runBotHelperPanelMutation\(task\)/);
+  assert.match(welcomeBotSource, /const next = previous \? previous\.catch\(\(\) => \{\}\)\.then\(run\) : run\(\);/);
+  assert.match(
+    welcomeBotSource,
+    /async function repostBotHelperPanelToChannel\(client, targetChannelId\) \{\s*return runBotHelperPanelMutation\(\(\) => repostBotHelperPanelToChannelUnlocked\(client, targetChannelId\)\);/
+  );
+  assert.match(
+    welcomeBotSource,
+    /async function clearBotHelperManagedPanel\(client\) \{\s*return runBotHelperPanelMutation\(\(\) => clearBotHelperManagedPanelUnlocked\(client\)\);/
+  );
+  assert.match(
+    welcomeBotSource,
+    /async function autoResendBotHelperPanelIfNeeded\(client\) \{\s*return runBotHelperPanelMutation\(\(\) => autoResendBotHelperPanelIfNeededUnlocked\(client\)\);/
+  );
+});
+
+test("bot helper channel repost captures the old legacy message before syncing the new SoT channel", () => {
+  const functionStart = welcomeBotSource.indexOf("async function repostBotHelperPanelToChannelUnlocked");
+  const functionEnd = welcomeBotSource.indexOf("async function clearBotHelperManagedPanel", functionStart);
+  const body = welcomeBotSource.slice(functionStart, functionEnd);
+
+  assert.ok(functionStart > 0, "repostBotHelperPanelToChannelUnlocked must exist");
+  assert.ok(
+    body.indexOf("const previousState = {")
+      < body.indexOf("syncLegacyPanelSnapshot(state, getResolvedBotHelperPanelSnapshot());"),
+    "old helper panel state must be captured before resolved SoT channel is applied"
+  );
+  assert.match(body, /await cleanupBotHelperPanelMessagesByChannelId\(client, previousState\.channelId, ""\)/);
 });
