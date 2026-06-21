@@ -750,10 +750,10 @@ function buildRobloxUsernameModal({
     .setLabel(cleanString(label, 45) || "Roblox ник")
     .setPlaceholder(cleanString(placeholder, 100) || "Например Builderman")
     .setStyle(TextInputStyle.Short)
-    .setMinLength(3)
-    .setMaxLength(20)
+    .setMinLength(1)
+    .setMaxLength(200)
     .setRequired(true);
-  const value = cleanString(initialValue, 20);
+  const value = cleanString(initialValue, 200);
   if (value) input.setValue(value);
 
   return new ModalBuilder()
@@ -771,8 +771,8 @@ function buildTwinkRobloxModal({ customId = "at:twink_modal", initialValue = "" 
   return buildRobloxUsernameModal({
     customId,
     title: "Другой Roblox на эту заявку",
-    label: "Roblox ник твинка",
-    placeholder: "Ник действующего аккаунта",
+    label: "Username, userId или ссылка",
+    placeholder: "Ник, userId или ссылка на профиль",
     initialValue,
   });
 }
@@ -1590,9 +1590,9 @@ function buildTicketRobloxModal(ticket = {}) {
   return buildRobloxUsernameModal({
     customId: ticketButtonId("change_roblox_modal", ticket.id),
     title: ticket.kind === "clan" ? "Сменить якорь-Roblox" : "Сменить Roblox заявки",
-    label: "Действующий Roblox ник",
-    placeholder: "Ник аккаунта",
-    initialValue: cleanString(ticket.roblox?.username, 20),
+    label: "Username, userId или ссылка",
+    placeholder: "Ник, userId или ссылка на профиль",
+    initialValue: cleanString(ticket.roblox?.username, 200),
   });
 }
 

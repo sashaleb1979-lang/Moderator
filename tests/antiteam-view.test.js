@@ -170,7 +170,7 @@ test("start guide and panel text modal expose polished setup copy", () => {
   assert.equal(buildPanelTextModal(config).data.custom_id, "at:panel_text:modal");
 });
 
-test("roblox username modal does not send an empty value below min length", () => {
+test("roblox username modal accepts username userId or profile link inputs", () => {
   const modal = buildRobloxUsernameModal({ customId: "at:roblox" }).toJSON();
   const emptyInput = buildRobloxUsernameModal({ customId: "at:roblox" }).toJSON().components[0].components[0];
   const filledInput = buildRobloxUsernameModal({ customId: "at:roblox", initialValue: "Builderman" }).toJSON().components[0].components[0];
@@ -183,7 +183,8 @@ test("roblox username modal does not send an empty value below min length", () =
 
   assert.equal(modal.title, "Roblox не найден в профиле");
   assert.equal(emptyInput.label, "Roblox ник аккаунта");
-  assert.equal(emptyInput.min_length, 3);
+  assert.equal(emptyInput.min_length, 1);
+  assert.equal(emptyInput.max_length, 200);
   assert.equal(Object.prototype.hasOwnProperty.call(emptyInput, "value"), false);
   assert.equal(filledInput.value, "Builderman");
   assert.equal(clanInput.label, "Roblox ник игрока-якоря");

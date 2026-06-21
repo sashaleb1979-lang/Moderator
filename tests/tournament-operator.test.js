@@ -44,6 +44,11 @@ function createModalInteraction(customId, values = {}, calls = []) {
       this.followUpPayload = payload;
       return payload;
     },
+    async showModal(payload) {
+      calls.push("showModal");
+      this.shownModal = payload;
+      return payload;
+    },
   };
 }
 
@@ -282,4 +287,87 @@ test("tournament manage refresh republishes the announcement when no editable me
   assert.match(JSON.stringify(channel.sentPayload), /# \*\*6 \/ 16\*\*/);
   assert.match(JSON.stringify(interaction.editedPayload), /Анонс: republished/);
   assert.ok(logs.some((line) => /TOURNAMENT_MANAGE_REFRESH:/.test(line) && /announcement=republished/.test(line)));
+});
+
+test("tournament Roblox modal accepts id/name API results and opens kill selection for alt accounts", async () => {
+  const calls = [];
+  const db = {};
+  const tournament = state.createTournamentFromDraft(
+    db,
+    {
+      name: "Тестовый турнир",
+      slots: 16,
+      startsAtIso: "2026-06-21T20:00:00.000Z",
+      announceChannelId: "channel-1",
+    },
+    { id: "tour-1", now: "2026-06-21T18:00:00.000Z" }
+  );
+  const operator = createTournamentOperator({
+    db,
+    resolveRobloxUser: async () => ({ id: "4242", name: "ZavozAccount", displayName: "Zavoz" }),
+  });
+  const interaction = createModalInteraction(
+    buildCustomId(ACTIONS.REG_LINK_ROBLOX, tournament.id, "alt"),
+    { nick: "https://www.roblox.com/users/4242/profile" },
+    calls
+  );
+
+  const handled = await operator.handleModalSubmitInteraction(interaction);
+
+  assert.equal(handled, true);
+  assert.deepEqual(calls, ["deferUpdate", "editReply"]);
+  const payloadJson = JSON.stringify(interaction.editedPayload);
+  assert.match(payloadJson, /ZavozAccount/);
+  assert.match(payloadJson, /Реальное количество килов/);
+  assert.match(payloadJson, new RegExp(buildCustomId(ACTIONS.REG_PICK_KILLS, tournament.id, "alt").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+});
+
+test("tournament Roblox modal writes main account lookups back into the shared nickname base", async () => {
+  const calls = [];
+  const writes = [];
+  const db = {};
+  const tournament = state.createTournamentFromDraft(
+    db,
+    {
+      name: "Тестовый турнир",
+      slots: 16,
+      startsAtIso: "2026-06-21T20:00:00.000Z",
+      announceChannelId: "channel-1",
+    },
+    { id: "tour-1", now: "2026-06-21T18:00:00.000Z" }
+  );
+  const operator = createTournamentOperator({
+    db,
+    resolveRobloxUser: async () => ({ id: "5151", name: "MainZavoz", avatarUrl: "https://example.test/avatar.png" }),
+    writeRobloxBinding: async (userId, robloxUser, source) => writes.push({ userId, robloxUser, source }),
+  });
+  const interaction = createModalInteraction(
+    buildCustomId(ACTIONS.REG_LINK_ROBLOX, tournament.id, "main"),
+    { nick: "MainZavoz" },
+    calls
+  );
+  interaction.user = { id: "user-1", tag: "user#0001" };
+
+  const handled = await operator.handleModalSubmitInteraction(interaction);
+
+  assert.equal(handled, true);
+  assert.equal(writes.length, 1);
+  assert.deepEqual(writes[0], {
+    userId: "user-1",
+    source: "tournament",
+    robloxUser: {
+      userId: "5151",
+      id: "5151",
+      username: "MainZavoz",
+      name: "MainZavoz",
+      displayName: "MainZavoz",
+      avatarUrl: "https://example.test/avatar.png",
+      profileUrl: null,
+      createdAt: null,
+      description: null,
+      hasVerifiedBadge: undefined,
+      accountStatus: null,
+    },
+  });
+  assert.match(JSON.stringify(interaction.editedPayload), /MainZavoz/);
 });

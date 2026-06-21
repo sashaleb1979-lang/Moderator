@@ -504,12 +504,12 @@ function buildRobloxNickModal(tournamentId, kind = "main") {
       new ActionRowBuilder().addComponents(
         new TextInputBuilder()
           .setCustomId("nick")
-          .setLabel("Точный Roblox ник")
+          .setLabel("Username, userId или ссылка")
           .setStyle(TextInputStyle.Short)
           .setRequired(true)
-          .setMinLength(3)
-          .setMaxLength(20)
-          .setPlaceholder("3–20 символов: буквы, цифры, _")
+          .setMinLength(1)
+          .setMaxLength(200)
+          .setPlaceholder("Ryomen_One, 123456789 или ссылка на профиль")
       )
     );
 }

@@ -46,6 +46,7 @@ function createTournamentOperator(deps = {}) {
     renderImage = null, // (exportName, model) => Promise<Buffer>  (v2 art, off-thread)
     fetchAvatarHeadshots = null, // (robloxUserIds) => Promise<[{targetId,imageUrl}]>  (test harness)
     logLine = async () => {},
+    writeRobloxBinding = async () => null,
   } = deps;
 
   // Short-lived, in-memory registration sessions (not persisted — if the bot
@@ -238,6 +239,27 @@ function createTournamentOperator(deps = {}) {
 
   function serverCount(tournament) {
     return seeding.serverCountForSlots(tournament.slots);
+  }
+
+  function normalizeResolvedRobloxUser(value = {}, fallbackUsername = "") {
+    const source = value && typeof value === "object" ? value : {};
+    const userId = String(source.userId ?? source.id ?? source.robloxUserId ?? "").trim();
+    const username = String(source.username ?? source.name ?? source.robloxUsername ?? fallbackUsername ?? "").trim();
+    const displayName = String(source.displayName ?? source.robloxDisplayName ?? username).trim();
+    if (!userId || !username) return null;
+    return {
+      userId,
+      id: userId,
+      username,
+      name: username,
+      displayName,
+      avatarUrl: source.avatarUrl || source.robloxAvatarUrl || null,
+      profileUrl: source.profileUrl || source.robloxProfileUrl || null,
+      createdAt: source.createdAt || null,
+      description: source.description || null,
+      hasVerifiedBadge: source.hasVerifiedBadge,
+      accountStatus: source.accountStatus || null,
+    };
   }
 
   // ---- v2 image art (graceful: returns null / falls back to embeds) -------
@@ -745,18 +767,22 @@ function createTournamentOperator(deps = {}) {
       await safeReply(interaction, ephemeralText(`Не удалось проверить аккаунт: ${error?.message || "ошибка"}.`));
       return true;
     }
-    if (!resolved?.userId) {
+    const robloxUser = normalizeResolvedRobloxUser(resolved, nick);
+    if (!robloxUser?.userId) {
       await safeReply(interaction, ephemeralText("Такой Roblox аккаунт не найден. Проверь ник."));
       return true;
     }
 
     const userId = interaction.user.id;
     const session = pending.get(pendingKey(tournamentId, userId)) || { approvedKills: 0 };
-    session.robloxUsername = resolved.username || nick;
-    session.robloxUserId = resolved.userId;
-    session.robloxAvatarUrl = resolved.avatarUrl || null;
+    session.robloxUsername = robloxUser.username;
+    session.robloxUserId = robloxUser.userId;
+    session.robloxAvatarUrl = robloxUser.avatarUrl || null;
 
     if (kind === "main") {
+      await Promise.resolve(writeRobloxBinding(userId, robloxUser, "tournament")).catch((error) => {
+        logError("tournament: Roblox binding write failed", error?.message || error);
+      });
       session.accountKind = "main";
       session.effectiveKills = session.approvedKills;
       pending.set(pendingKey(tournamentId, userId), session);

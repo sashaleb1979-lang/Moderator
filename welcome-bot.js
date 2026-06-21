@@ -316,6 +316,8 @@ const {
   deriveProfileMainView,
   ensureSharedProfile,
   normalizeIntegrationState,
+  normalizeRobloxDomainState,
+  resolveUsableVerifiedRobloxIdentity,
   syncSharedProfiles,
 } = require("./src/integrations/shared-profile");
 const {
@@ -5103,8 +5105,9 @@ function buildRobloxUsernameModal(customId, initialValue = "") {
     .setRequired(true)
     .setMinLength(1)
     .setMaxLength(200)
-    .setPlaceholder("Например Ryomen_One или https://www.roblox.com/users/1/profile")
-    .setValue(String(initialValue || "").trim().slice(0, 200));
+    .setPlaceholder("Например Ryomen_One или https://www.roblox.com/users/1/profile");
+  const trimmedInitialValue = String(initialValue || "").trim().slice(0, 200);
+  if (trimmedInitialValue) input.setValue(trimmedInitialValue);
 
   modal.addComponents(new ActionRowBuilder().addComponents(input));
   return modal;
@@ -6874,16 +6877,41 @@ let tournamentOperator = null;
 function getTournamentPlayerSnapshot(userId) {
   const profile = db.profiles?.[userId] ? getProfile(userId) : null;
   if (!profile) return { hasRobloxAccount: false, approvedKills: 0 };
-  const roblox = profile.domains?.roblox && typeof profile.domains.roblox === "object" ? profile.domains.roblox : {};
-  const approvedKills = Number(profile.approvedKills);
+  const robloxCandidates = [
+    profile.domains?.roblox,
+    profile.summary?.roblox,
+    {
+      robloxUsername: profile.robloxUsername,
+      robloxUserId: profile.robloxUserId,
+      robloxDisplayName: profile.robloxDisplayName,
+      robloxAvatarUrl: profile.robloxAvatarUrl,
+      robloxProfileUrl: profile.robloxProfileUrl,
+      verificationStatus: profile.verificationStatus,
+      verifiedAt: profile.robloxVerifiedAt || profile.verifiedAt,
+      hasVerifiedAccount: profile.hasVerifiedAccount,
+    },
+  ]
+    .filter((entry) => entry && typeof entry === "object")
+    .map((entry) => normalizeRobloxDomainState(entry));
+  const usableRoblox = robloxCandidates.map((entry) => resolveUsableVerifiedRobloxIdentity(entry)).find(Boolean);
+  const fallbackRoblox = robloxCandidates.find((entry) => entry.userId && entry.username) || {};
+  const roblox = usableRoblox || fallbackRoblox;
+  const approvedKills = Number(
+    profile.approvedKills
+      ?? profile.domains?.onboarding?.approvedKills
+      ?? profile.summary?.approvedKills
+      ?? profile.summary?.onboarding?.approvedKills
+  );
   const robloxUserId = roblox.userId ? String(roblox.userId) : null;
   const robloxUsername = roblox.username || null;
   const robloxAvatarUrl = roblox.avatarUrl || null;
-  const verified =
-    roblox.verificationStatus === "verified" || Boolean(roblox.verifiedAt) || Boolean(roblox.hasVerifiedAccount);
+  const verified = Boolean(usableRoblox)
+    || roblox.verificationStatus === "verified"
+    || Boolean(roblox.verifiedAt)
+    || Boolean(roblox.hasVerifiedAccount);
 
   let lastScreenshotUrl = null;
-  const lastSubmissionId = profile.lastSubmissionId;
+  const lastSubmissionId = profile.lastSubmissionId || profile.domains?.onboarding?.lastSubmissionId;
   if (lastSubmissionId && db.submissions?.[lastSubmissionId]) {
     const submission = db.submissions[lastSubmissionId];
     const candidate = submission.screenshotUrl || submission.reviewAttachmentUrl || null;
@@ -6931,6 +6959,15 @@ function getTournamentOperator() {
     renderImage: renderTournamentImageOffThread,
     fetchAvatarHeadshots: (robloxUserIds) => robloxApiClient.fetchUserAvatarHeadshots(robloxUserIds),
     logLine: (text) => logLine(client, text),
+    writeRobloxBinding: (userId, robloxUser, source = "tournament") => {
+      const profile = getProfile(userId);
+      return writeCanonicalRobloxBinding(userId, profile, robloxUser, {
+        verificationStatus: "verified",
+        verifiedAt: nowIso(),
+        updatedAt: nowIso(),
+        source,
+      });
+    },
   });
   return tournamentOperator;
 }

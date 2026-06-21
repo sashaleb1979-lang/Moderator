@@ -176,3 +176,15 @@ test("welcome-bot no longer blocks regular users from reopening the Roblox usern
 
   assert.doesNotMatch(source, /robloxIdentityLockText\) \{[\s\S]*?может только админ/i);
 });
+
+test("welcome-bot Roblox modal does not submit an empty default value", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "welcome-bot.js"), "utf8");
+  const functionStart = source.indexOf("function buildRobloxUsernameModal");
+  const functionEnd = source.indexOf("function getOnboardingProofExampleImagePath", functionStart);
+  const block = source.slice(functionStart, functionEnd);
+
+  assert.match(block, /\.setMinLength\(1\)/);
+  assert.match(block, /const trimmedInitialValue = String\(initialValue \|\| ""\)\.trim\(\)\.slice\(0, 200\);/);
+  assert.match(block, /if \(trimmedInitialValue\) input\.setValue\(trimmedInitialValue\);/);
+  assert.doesNotMatch(block, /\.setValue\(String\(initialValue \|\| ""\)\.trim\(\)\.slice\(0, 200\)\)/);
+});

@@ -189,6 +189,54 @@ test("roblox modal promotes resolved Roblox into profile binding and antiteam co
   assert.equal(interaction.calls.at(-1)[1].flags, MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral);
 });
 
+test("roblox modal accepts profile links and user ids through the shared resolver", async () => {
+  const db = {};
+  ensureAntiteamState(db).state.config.battalionRoleId = "battalion-role";
+  let lookupInput = "";
+  const operator = createAntiteamOperator({
+    db,
+    now: () => "2026-05-16T10:00:00.000Z",
+    saveDb() {},
+    resolveRobloxUserByUsername: async (input) => {
+      lookupInput = input;
+      return { id: "101", name: "Anchor", displayName: "Anchor Display" };
+    },
+    writeRobloxBinding: async () => {},
+    grantRole: async () => {},
+  });
+  const profileUrl = "https://www.roblox.com/users/101/profile";
+  const interaction = createModalInteraction("at:roblox", { roblox_username: profileUrl });
+
+  assert.equal(await operator.handleModalSubmitInteraction(interaction), true);
+
+  assert.equal(lookupInput, profileUrl);
+  assert.equal(db.sot.antiteam.drafts["user-1"].roblox.userId, "101");
+  assert.equal(db.sot.antiteam.drafts["user-1"].roblox.username, "Anchor");
+  assert.match(JSON.stringify(interaction.calls.at(-1)[1].components[0].toJSON()), /Roblox: \*\*Anchor\*\* \(101\) • подтверждён/);
+});
+
+test("roblox modal reports API failures without falling into the generic interaction error", async () => {
+  const db = {};
+  ensureAntiteamState(db);
+  const errors = [];
+  const operator = createAntiteamOperator({
+    db,
+    now: () => "2026-05-16T10:00:00.000Z",
+    saveDb() {},
+    logError: (...args) => errors.push(args.join(" ")),
+    resolveRobloxUserByUsername: async () => {
+      throw new Error("Roblox API timeout");
+    },
+  });
+  const interaction = createModalInteraction("at:roblox", { roblox_username: "101" });
+
+  assert.equal(await operator.handleModalSubmitInteraction(interaction), true);
+
+  assert.equal(interaction.calls[0][0], "deferReply");
+  assert.match(String(interaction.calls.at(-1)[1]), /Не удалось проверить Roblox через API: Roblox API timeout/);
+  assert.match(errors.join("\n"), /Antiteam Roblox lookup failed/);
+});
+
 test("clan roblox modal verifies anchor without rebinding caller profile", async () => {
   const db = {};
   ensureAntiteamState(db);

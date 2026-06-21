@@ -513,7 +513,7 @@ test("welcome-bot clientReady auto-repairs fresh newcomers without a manual comm
       const member = {
         id: "fresh-user",
         displayName: "Fresh User",
-        joinedAt: new Date("2026-06-05T10:00:00.000Z"),
+        joinedAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000),
         user: {
           id: "fresh-user",
           bot: false,

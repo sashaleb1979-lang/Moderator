@@ -84,11 +84,11 @@ const ANTITEAM_MANUAL_POINTS_TARGET_LIMIT = 100;
 const ANTITEAM_START_PANEL_SCAN_LIMIT = 100;
 
 function normalizeUsernameInput(value) {
-  const username = cleanString(value, 40);
-  if (!/^[A-Za-z0-9_]{3,20}$/.test(username)) {
-    throw new Error("Roblox ник должен содержать 3-20 символов: буквы, цифры или _.");
+  const input = cleanString(value, 200);
+  if (!input) {
+    throw new Error("Укажи Roblox username, userId или ссылку на профиль.");
   }
-  return username;
+  return input;
 }
 
 function getUserTag(user = {}) {
@@ -2812,11 +2812,24 @@ function createAntiteamOperator(options = {}) {
   }
 
   async function handleRobloxModal(interaction, kind = "standard") {
-    const username = normalizeUsernameInput(interaction.fields.getTextInputValue("roblox_username"));
     const ack = await safeDeferReply(interaction, { flags: MessageFlags.Ephemeral });
-    const robloxUser = await fetchRobloxUserByUsername(username);
+    let username = "";
+    try {
+      username = normalizeUsernameInput(interaction.fields.getTextInputValue("roblox_username"));
+    } catch (error) {
+      if (ack.ok) await safeEditReply(interaction, error?.message || "Укажи Roblox username, userId или ссылку на профиль.");
+      return true;
+    }
+    let robloxUser = null;
+    try {
+      robloxUser = await fetchRobloxUserByUsername(username);
+    } catch (error) {
+      logError("Antiteam Roblox lookup failed:", error?.message || error);
+      if (ack.ok) await safeEditReply(interaction, `Не удалось проверить Roblox через API: ${error?.message || "ошибка"}.`);
+      return true;
+    }
     if (!robloxUser?.userId && !robloxUser?.id) {
-      if (ack.ok) await safeEditReply(interaction, "Такой Roblox ник не найден через Roblox API.");
+      if (ack.ok) await safeEditReply(interaction, "Такой Roblox аккаунт не найден через Roblox API. Проверь username, userId или ссылку.");
       return true;
     }
 
@@ -2857,8 +2870,14 @@ function createAntiteamOperator(options = {}) {
       if (ack.ok) await safeEditReply(interaction, { content: "Черновик истёк. Начни заново.", components: [] });
       return true;
     }
-    const username = normalizeUsernameInput(interaction.fields.getTextInputValue("roblox_username"));
     const ack = await safeDeferUpdate(interaction);
+    let username = "";
+    try {
+      username = normalizeUsernameInput(interaction.fields.getTextInputValue("roblox_username"));
+    } catch (error) {
+      if (ack.ok) await safeEditReply(interaction, buildTicketSetupPayload(draft, getConfig(), error?.message || "Укажи Roblox username, userId или ссылку на профиль."));
+      return true;
+    }
     let robloxUser = null;
     try {
       robloxUser = await fetchRobloxUserByUsername(username);
@@ -2868,7 +2887,7 @@ function createAntiteamOperator(options = {}) {
     if (!robloxUser?.userId && !robloxUser?.id) {
       if (ack.ok) {
         await safeEditReply(interaction, buildTicketSetupPayload(draft, getConfig(),
-          `❌ Ник «${cleanString(username, 120)}» не найден через Roblox API. Твинк не привязан.`));
+          `❌ Roblox «${cleanString(username, 120)}» не найден через Roblox API. Твинк не привязан.`));
       }
       return true;
     }
@@ -3154,8 +3173,14 @@ function createAntiteamOperator(options = {}) {
         await replyNoPermission(interaction);
         return true;
       }
-      const username = normalizeUsernameInput(interaction.fields.getTextInputValue("roblox_username"));
       const ack = await safeDeferReply(interaction, { flags: MessageFlags.Ephemeral });
+      let username = "";
+      try {
+        username = normalizeUsernameInput(interaction.fields.getTextInputValue("roblox_username"));
+      } catch (error) {
+        if (ack.ok) await safeEditReply(interaction, { content: error?.message || "Укажи Roblox username, userId или ссылку на профиль.", components: [] });
+        return true;
+      }
       let robloxUser = null;
       try {
         robloxUser = await fetchRobloxUserByUsername(username);
@@ -3163,7 +3188,7 @@ function createAntiteamOperator(options = {}) {
         logError("Antiteam ticket roblox swap lookup failed:", error?.message || error);
       }
       if (!robloxUser?.userId && !robloxUser?.id) {
-        if (ack.ok) await safeEditReply(interaction, { content: `❌ Ник «${cleanString(username, 120)}» не найден через Roblox API. Roblox заявки не изменён.`, components: [] });
+        if (ack.ok) await safeEditReply(interaction, { content: `❌ Roblox «${cleanString(username, 120)}» не найден через Roblox API. Roblox заявки не изменён.`, components: [] });
         return true;
       }
       const snapshot = {
