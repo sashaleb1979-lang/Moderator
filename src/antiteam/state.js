@@ -249,6 +249,14 @@ function createDefaultAntiteamConfig(value = {}) {
   return config;
 }
 
+function normalizePendingTwink(value = null) {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : null;
+  if (!source) return null;
+  const userId = cleanString(source.userId ?? source.id ?? source.robloxUserId, 40);
+  if (!userId) return null;
+  return normalizeRobloxSnapshot(source);
+}
+
 function normalizeRobloxSnapshot(value = {}) {
   const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
   const userId = cleanString(source.userId ?? source.id ?? source.robloxUserId, 40);
@@ -289,6 +297,11 @@ function normalizeAntiteamDraft(value = {}, config = createDefaultAntiteamConfig
     anchorUserId,
     anchorUserTag,
     roblox: normalizeRobloxSnapshot(source.roblox),
+    // A twink/alt Roblox bound just for this mission — it never touches the
+    // author's profile binding. Set when the requester confirms a temporary nick.
+    robloxTemporary: normalizeBoolean(source.robloxTemporary, false),
+    // Candidate twink awaiting the requester's confirmation in the setup panel.
+    pendingTwink: normalizePendingTwink(source.pendingTwink),
     level: kind === "clan" ? "clan" : normalizeAntiteamLevel(source.level, "medium"),
     count: kind === "clan" ? "clan" : normalizeAntiteamCount(source.count, "3-5"),
     description: cleanString(source.description, 900),
@@ -388,6 +401,7 @@ function normalizeAntiteamTicket(value = {}, config = createDefaultAntiteamConfi
     anchorUserId,
     anchorUserTag,
     roblox: normalizeRobloxSnapshot(source.roblox),
+    robloxTemporary: normalizeBoolean(source.robloxTemporary, false),
     level: kind === "clan" ? "clan" : normalizeAntiteamLevel(source.level, "medium"),
     count: kind === "clan" ? "clan" : normalizeAntiteamCount(source.count, "3-5"),
     description: cleanString(source.description, 1200),
@@ -615,6 +629,7 @@ function createAntiteamTicketFromDraft(db = {}, draft = {}, options = {}) {
     anchorUserId: normalizedDraft.anchorUserId,
     anchorUserTag: normalizedDraft.anchorUserTag,
     roblox: normalizedDraft.roblox,
+    robloxTemporary: normalizedDraft.robloxTemporary,
     level: normalizedDraft.level,
     count: normalizedDraft.count,
     description: normalizedDraft.description,

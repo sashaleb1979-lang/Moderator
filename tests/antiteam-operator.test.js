@@ -243,7 +243,7 @@ test("clan slash command uses target profile as anchor without opening username 
   assert.match(JSON.stringify(interaction.calls.at(-1)[1].components[0].toJSON()), /Якорь: <@anchor-1>/);
 });
 
-test("clan slash command rejects target without verified Roblox profile", async () => {
+test("clan slash command opens a draft and prompts for an anchor twink when no profile Roblox", async () => {
   const db = {};
   ensureAntiteamState(db);
   const operator = createAntiteamOperator({
@@ -257,9 +257,39 @@ test("clan slash command rejects target without verified Roblox profile", async 
 
   assert.equal(await operator.handleSlashCommand(interaction), true);
 
-  assert.equal(interaction.calls[0][0], "reply");
-  assert.match(interaction.calls[0][1].content, /нет проверенного Roblox/);
-  assert.equal(db.sot.antiteam.drafts["mod-1"], undefined);
+  // It now opens the draft instead of rejecting, and nudges the caller to set
+  // the anchor Roblox via the twink button.
+  assert.equal(interaction.calls[0][0], "deferReply");
+  const editCall = interaction.calls.find((call) => call[0] === "editReply");
+  assert.ok(editCall, "clan setup panel was sent");
+  const draft = db.sot.antiteam.drafts["mod-1"];
+  assert.ok(draft, "clan draft was created");
+  assert.equal(draft.kind, "clan");
+  assert.equal(draft.anchorUserId, "anchor-1");
+  assert.equal(draft.roblox?.userId, "");
+});
+
+test("clan draft without an anchor Roblox cannot publish", async () => {
+  const db = {};
+  ensureAntiteamState(db).state.config.channelId = "channel-1";
+  setAntiteamDraft(db, "mod-1", {
+    kind: "clan",
+    userTag: "Mod",
+    anchorUserId: "anchor-1",
+    anchorUserTag: "Anchor",
+    description: "Клан держит центр, нужны все.",
+  }, { now: "2026-05-16T10:00:00.000Z" });
+  const operator = createAntiteamOperator({
+    db,
+    now: () => "2026-05-16T10:01:00.000Z",
+    saveDb() {},
+  });
+  const interaction = createButtonInteraction(ANTITEAM_CUSTOM_IDS.submitDraft, { id: "mod-1", username: "Mod" });
+  assert.equal(await operator.handleButtonInteraction(interaction), true);
+  // No ticket gets created without an anchor Roblox.
+  assert.equal(Object.keys(db.sot.antiteam.tickets).length, 0);
+  const lastPayload = interaction.calls.at(-1)?.[1];
+  assert.match(JSON.stringify(lastPayload), /Roblox якоря/);
 });
 
 test("points slash command adjusts multiple antiteam helpers and syncs reward roles", async () => {
@@ -3715,4 +3745,250 @@ test("direct-join help hands out the author's manual connect link", async () => 
   const help = createButtonInteraction("at:help:ticket-1", { id: "helper-1", username: "Helper" });
   assert.equal(await operator.handleButtonInteraction(help), true);
   assert.match(JSON.stringify(help.calls.at(-1)[1]), /roblox\.test\/join\/abc/);
+});
+
+test("twink binds an alt Roblox to the draft only, never the profile", async () => {
+  const db = {};
+  ensureAntiteamState(db).state.config.channelId = "channel-1";
+  setAntiteamDraft(db, "user-1", {
+    userTag: "User",
+    roblox: { userId: "100", username: "MainAcc" },
+    description: "Тимятся у центра.",
+    level: "medium",
+    count: "3-5",
+  }, { now: "2026-06-21T10:00:00.000Z" });
+
+  let profileWrites = 0;
+  const operator = createAntiteamOperator({
+    db,
+    now: () => "2026-06-21T10:01:00.000Z",
+    saveDb() {},
+    writeRobloxBinding() { profileWrites += 1; },
+    resolveRobloxUserByUsername: async () => ({
+      userId: "999",
+      username: "TwinkAcc",
+      displayName: "Twink",
+      profileUrl: "https://www.roblox.com/users/999/profile",
+    }),
+  });
+
+  const modal = {
+    calls: [],
+    customId: "at:twink_modal",
+    user: { id: "user-1", username: "User" },
+    message: { id: "panel-1" },
+    isModalSubmit: () => true,
+    fields: { getTextInputValue: () => "TwinkAcc" },
+    async deferUpdate() { this.deferred = true; this.calls.push(["deferUpdate"]); },
+    async editReply(payload) { this.calls.push(["editReply", payload]); },
+    async reply(payload) { this.replied = true; this.calls.push(["reply", payload]); },
+  };
+  assert.equal(await operator.handleModalSubmitInteraction(modal), true);
+  assert.equal(db.sot.antiteam.drafts["user-1"].pendingTwink.userId, "999");
+  assert.equal(db.sot.antiteam.drafts["user-1"].roblox.userId, "100", "main roblox unchanged before confirm");
+  assert.match(JSON.stringify(modal.calls.at(-1)[1]), /Проверь твинк/);
+
+  const confirm = createButtonInteraction(ANTITEAM_CUSTOM_IDS.twinkConfirm, { id: "user-1", username: "User" });
+  confirm.message = { id: "panel-1" };
+  assert.equal(await operator.handleButtonInteraction(confirm), true);
+
+  const draft = db.sot.antiteam.drafts["user-1"];
+  assert.equal(draft.roblox.userId, "999", "draft now uses the twink");
+  assert.equal(draft.robloxTemporary, true);
+  assert.equal(draft.pendingTwink, null);
+  assert.equal(profileWrites, 0, "profile binding never written for a twink");
+});
+
+test("twink modal reports a clear error when the nick is not found", async () => {
+  const db = {};
+  ensureAntiteamState(db).state.config.channelId = "channel-1";
+  setAntiteamDraft(db, "user-1", {
+    userTag: "User",
+    roblox: { userId: "100", username: "MainAcc" },
+    description: "desc",
+  }, { now: "2026-06-21T10:00:00.000Z" });
+  const operator = createAntiteamOperator({
+    db,
+    now: () => "2026-06-21T10:01:00.000Z",
+    saveDb() {},
+    resolveRobloxUserByUsername: async () => null,
+  });
+  const modal = {
+    calls: [],
+    customId: "at:twink_modal",
+    user: { id: "user-1", username: "User" },
+    message: { id: "panel-1" },
+    isModalSubmit: () => true,
+    fields: { getTextInputValue: () => "ghost" },
+    async deferUpdate() { this.deferred = true; this.calls.push(["deferUpdate"]); },
+    async editReply(payload) { this.calls.push(["editReply", payload]); },
+    async reply(payload) { this.replied = true; this.calls.push(["reply", payload]); },
+  };
+  assert.equal(await operator.handleModalSubmitInteraction(modal), true);
+  assert.equal(db.sot.antiteam.drafts["user-1"].pendingTwink, null);
+  assert.match(JSON.stringify(modal.calls.at(-1)[1]), /не найден через Roblox API/);
+});
+
+test("photo mode deletes a non-image message and keeps the request open", async () => {
+  const db = {};
+  ensureAntiteamState(db).state.config.channelId = "channel-1";
+  setAntiteamDraft(db, "user-1", {
+    userTag: "User",
+    roblox: { userId: "100", username: "Main" },
+    description: "desc",
+    photoWanted: true,
+  }, { now: "2026-06-21T10:00:00.000Z" });
+  const state = ensureAntiteamState(db).state;
+  state.photoRequests["user-1"] = { userId: "user-1", channelId: "channel-1", createdAt: "2026-06-21T10:00:10.000Z" };
+
+  const operator = createAntiteamOperator({ db, now: () => "2026-06-21T10:01:00.000Z", saveDb() {} });
+
+  let deleted = false;
+  let hintSent = null;
+  const textMessage = {
+    author: { id: "user-1", bot: false },
+    channelId: "channel-1",
+    content: "вот сейчас скину",
+    attachments: new Map(),
+    delete: async () => { deleted = true; },
+    channel: { send: async (payload) => { hintSent = payload; return { id: "hint-1", delete: async () => {} }; } },
+  };
+  assert.equal(await operator.handlePhotoMessage(textMessage), true);
+  assert.equal(deleted, true);
+  assert.match(hintSent.content, /изображение/);
+  // The request stays open so the user can still send the real screenshot.
+  assert.ok(db.sot.antiteam.photoRequests["user-1"]);
+});
+
+test("photo mode leaves an empty message untouched (possible missing intent)", async () => {
+  const db = {};
+  ensureAntiteamState(db).state.config.channelId = "channel-1";
+  setAntiteamDraft(db, "user-1", {
+    userTag: "User",
+    roblox: { userId: "100", username: "Main" },
+    description: "desc",
+    photoWanted: true,
+  }, { now: "2026-06-21T10:00:00.000Z" });
+  const state = ensureAntiteamState(db).state;
+  state.photoRequests["user-1"] = { userId: "user-1", channelId: "channel-1", createdAt: "2026-06-21T10:00:10.000Z" };
+
+  const logs = [];
+  const operator = createAntiteamOperator({
+    db,
+    now: () => "2026-06-21T10:01:00.000Z",
+    saveDb() {},
+    logError: (...parts) => logs.push(parts.join(" ")),
+  });
+
+  let deleted = false;
+  const emptyMessage = {
+    author: { id: "user-1", bot: false },
+    channelId: "channel-1",
+    content: "",
+    attachments: new Map(),
+    delete: async () => { deleted = true; },
+    channel: { send: async () => ({ id: "x", delete: async () => {} }) },
+  };
+  assert.equal(await operator.handlePhotoMessage(emptyMessage), false);
+  assert.equal(deleted, false);
+  assert.ok(logs.some((line) => /MESSAGE CONTENT/.test(line)));
+});
+
+test("closed lock always shows the notify-author button, even with a direct link", async () => {
+  const db = {};
+  const state = ensureAntiteamState(db).state;
+  state.config.channelId = "channel-1";
+  state.config.roblox.jjsPlaceId = "place-1";
+  const draft = setAntiteamDraft(db, "author-1", {
+    userTag: "Author",
+    roblox: { userId: "101", username: "Anchor", profileUrl: "https://www.roblox.com/users/101/profile" },
+    level: "medium",
+    count: "3-5",
+    directJoinEnabled: false,
+    manualDirectJoinUrl: "https://www.roblox.com/share?code=abc&type=Server",
+  }, { now: "2026-06-21T10:00:00.000Z" });
+  createAntiteamTicketFromDraft(db, draft, { id: "ticket-lock", now: "2026-06-21T10:01:00.000Z" });
+  db.sot.antiteam.tickets["ticket-lock"].message.threadId = "thread-1";
+
+  const operator = createAntiteamOperator({
+    db,
+    now: () => "2026-06-21T10:02:00.000Z",
+    saveDb() {},
+    getProfile: () => ({ domains: { roblox: { userId: "202", username: "HelperRoblox", verificationStatus: "verified" } } }),
+  });
+  const interaction = createButtonInteraction("at:help:ticket-lock");
+  assert.equal(await operator.handleButtonInteraction(interaction), true);
+
+  assert.equal(db.sot.antiteam.tickets["ticket-lock"].helpers["helper-1"].linkKind, "friend_request");
+  const json = JSON.stringify(interaction.calls.at(-1)[1].components[0].toJSON());
+  assert.match(json, /Отправил др, пусть примет/, "notify-author button present");
+  assert.match(json, /share\?code=abc/, "author direct link still offered");
+  assert.match(json, /🔗 Подключиться/);
+});
+
+test("open lock offers a straight join without the friend-request button", async () => {
+  const db = {};
+  const state = ensureAntiteamState(db).state;
+  state.config.channelId = "channel-1";
+  state.config.roblox.jjsPlaceId = "place-1";
+  const draft = setAntiteamDraft(db, "author-2", {
+    userTag: "Author2",
+    roblox: { userId: "303", username: "OpenAcc", profileUrl: "https://www.roblox.com/users/303/profile" },
+    level: "low",
+    count: "2",
+    directJoinEnabled: true,
+  }, { now: "2026-06-21T10:00:00.000Z" });
+  createAntiteamTicketFromDraft(db, draft, { id: "ticket-open", now: "2026-06-21T10:01:00.000Z" });
+  db.sot.antiteam.tickets["ticket-open"].message.threadId = "thread-2";
+
+  const operator = createAntiteamOperator({
+    db,
+    now: () => "2026-06-21T10:02:00.000Z",
+    saveDb() {},
+    getProfile: () => ({ domains: { roblox: { userId: "202", username: "HelperRoblox", verificationStatus: "verified" } } }),
+  });
+  const interaction = createButtonInteraction("at:help:ticket-open");
+  assert.equal(await operator.handleButtonInteraction(interaction), true);
+
+  assert.equal(db.sot.antiteam.tickets["ticket-open"].helpers["helper-1"].linkKind, "direct");
+  const json = JSON.stringify(interaction.calls.at(-1)[1].components[0].toJSON());
+  assert.doesNotMatch(json, /Отправил др, пусть примет/, "no friend-request button when lock is open");
+  assert.match(json, /Прямой вход включён/);
+});
+
+test("ticket creation persists durably to survive a deploy/crash window", async () => {
+  const db = {};
+  ensureAntiteamState(db).state.config.channelId = "channel-1";
+  setAntiteamDraft(db, "user-1", {
+    userTag: "User",
+    roblox: { userId: "101", username: "Anchor" },
+    description: "Тимятся у центра, нужны бойцы.",
+    level: "medium",
+    count: "3-5",
+  }, { now: "2026-06-21T10:00:00.000Z" });
+
+  let durableSaves = 0;
+  let scheduledSaves = 0;
+  const thread = { id: "thread-1", isTextBased: () => true, messages: { fetch: async () => null }, send: async () => ({ id: "tp-1" }) };
+  const channel = {
+    id: "channel-1",
+    isTextBased: () => true,
+    messages: { fetch: async () => null },
+    send: async () => ({ id: "message-1", startThread: async () => thread }),
+  };
+  const operator = createAntiteamOperator({
+    db,
+    now: () => "2026-06-21T10:01:00.000Z",
+    saveDb() { scheduledSaves += 1; },
+    saveDbDurable() { durableSaves += 1; },
+    fetchChannel: async () => channel,
+  });
+
+  const submit = createButtonInteraction(ANTITEAM_CUSTOM_IDS.submitDraft, { id: "user-1", username: "User" });
+  assert.equal(await operator.handleButtonInteraction(submit), true);
+  // Let the detached finalize tail run.
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  assert.equal(Object.keys(db.sot.antiteam.tickets).length, 1, "ticket created");
+  assert.ok(durableSaves >= 1, "ticket lifecycle used a durable flush");
 });

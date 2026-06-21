@@ -1248,6 +1248,16 @@ function flushDbNow() {
   return flushDbInternal();
 }
 
+// Durable persist for rare, high-value mutations (e.g. antiteam ticket
+// create/finalize/close): mark dirty, then flush right away instead of waiting
+// out the debounce. This shrinks the "lost during deploy/crash" window for
+// state that has a live Discord message pointing at it, without slowing the hot
+// path — the off-thread write is the same one the debounce would have done.
+function saveDbDurable() {
+  scheduleDbFlush();
+  return flushDbNow();
+}
+
 // Best-effort synchronous flush for process shutdown, where async I/O may not
 // get a chance to complete.
 function flushDbSync() {
@@ -6791,6 +6801,7 @@ function getAntiteamOperator() {
     db,
     now: nowIso,
     saveDb,
+    saveDbDurable,
     runSerializedMutation: runSerializedDbMutation,
     isModerator,
     logError: (...args) => console.error(...args),
