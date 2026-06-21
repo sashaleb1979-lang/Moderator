@@ -44,6 +44,7 @@ function createTournamentOperator(deps = {}) {
     fetchImageBuffer = null, // (url) => Promise<Buffer|null>  (v2 art)
     renderImage = null, // (exportName, model) => Promise<Buffer>  (v2 art, off-thread)
     fetchAvatarHeadshots = null, // (robloxUserIds) => Promise<[{targetId,imageUrl}]>  (test harness)
+    logLine = async () => {},
   } = deps;
 
   // Short-lived, in-memory registration sessions (not persisted — if the bot
@@ -101,16 +102,48 @@ function createTournamentOperator(deps = {}) {
     });
   }
 
+  async function safeLogLine(text) {
+    try {
+      await logLine(text);
+    } catch (error) {
+      logError("tournament: log line failed", error?.message || error);
+    }
+  }
+
   // ---- announcement upkeep ------------------------------------------------
 
-  async function refreshAnnouncement(tournament) {
+  async function refreshAnnouncement(tournament, reason = "update") {
+    if (!tournament) return false;
     const announce = tournament.announce || {};
-    if (!announce.channelId || !announce.messageId) return;
-    const channel = await fetchChannel(announce.channelId).catch(() => null);
-    if (!channel?.messages?.fetch) return;
-    const message = await channel.messages.fetch(announce.messageId).catch(() => null);
-    if (!message?.edit) return;
-    await message.edit(view.buildAnnouncementPayload(tournament, { ping: false })).catch(() => {});
+    const context = `id=${tournament.id || "unknown"} reason=${reason} channel=${announce.channelId || "none"} message=${announce.messageId || "none"}`;
+    if (!announce.channelId || !announce.messageId) {
+      logError(`tournament: announcement refresh skipped (${context}) missing announcement binding`);
+      return false;
+    }
+    const channel = await fetchChannel(announce.channelId).catch((error) => {
+      logError(`tournament: announcement channel fetch failed (${context})`, error?.message || error);
+      return null;
+    });
+    if (!channel?.messages?.fetch) {
+      logError(`tournament: announcement refresh skipped (${context}) channel cannot fetch messages`);
+      return false;
+    }
+    const message = await channel.messages.fetch(announce.messageId).catch((error) => {
+      logError(`tournament: announcement message fetch failed (${context})`, error?.message || error);
+      return null;
+    });
+    if (!message?.edit) {
+      logError(`tournament: announcement refresh skipped (${context}) message cannot be edited`);
+      return false;
+    }
+    try {
+      await message.edit(view.buildAnnouncementPayload(tournament, { ping: false }));
+      return true;
+    } catch (error) {
+      logError(`tournament: announcement edit failed (${context})`, error?.message || error);
+      await safeLogLine(`TOURNAMENT_ANNOUNCE_REFRESH_FAILED: ${context} error=${error?.message || error}`);
+      return false;
+    }
   }
 
   function serverCount(tournament) {
@@ -477,6 +510,7 @@ function createTournamentOperator(deps = {}) {
   }
 
   async function submitRewards(interaction) {
+    await safeDeferUpdate(interaction);
     const rewards = {
       first: interaction.fields.getTextInputValue("first"),
       second: interaction.fields.getTextInputValue("second"),
@@ -531,6 +565,7 @@ function createTournamentOperator(deps = {}) {
     });
 
     const fresh = state.getTournament(db, tournament.id);
+    await safeLogLine(`TOURNAMENT_PUBLISH: ${fresh.name} id=${fresh.id} channel=<#${channel.id}> message=${message.id} by=<@${interaction.user.id}>`);
     const payload = view.buildManagePanelPayload(fresh, {
       statusText: "Турнир опубликован ✅",
       serverCount: serverCount(fresh),
@@ -715,6 +750,7 @@ function createTournamentOperator(deps = {}) {
     }
 
     const userId = interaction.user.id;
+    await safeDeferUpdate(interaction);
     await persist("tournament-register", async () => {
       const fresh = state.getTournament(db, tournamentId);
       state.upsertRegistration(fresh, {
@@ -731,20 +767,32 @@ function createTournamentOperator(deps = {}) {
     pending.delete(pendingKey(tournamentId, userId));
 
     const fresh = state.getTournament(db, tournamentId);
-    await refreshAnnouncement(fresh);
+    const refreshed = await refreshAnnouncement(fresh, "register");
+    const registration = state.getRegistration(fresh, userId) || {};
+    await safeLogLine(
+      `TOURNAMENT_REGISTER: <@${userId}> tournament="${fresh.name}" id=${fresh.id} player=${registration.robloxUsername || "unknown"} account=${registration.accountKind || "unknown"} kills=${registration.effectiveKills || 0} count=${state.registrationCount(fresh)}/${fresh.slots} announcement=${refreshed ? "updated" : "not-updated"}`
+    );
     await safeUpdate(interaction, view.buildRegisteredPayload(fresh, { seatNumber: registrationSeat(fresh, userId) }));
     return true;
   }
 
   async function withdrawRegistration(interaction, tournamentId) {
     const userId = interaction.user.id;
-    await persist("tournament-withdraw", async () => {
+    await safeDeferUpdate(interaction);
+    const removed = await persist("tournament-withdraw", async () => {
       const fresh = state.getTournament(db, tournamentId);
+      const existing = fresh ? state.getRegistration(fresh, userId) : null;
       if (fresh) state.removeRegistration(fresh, userId);
+      return existing;
     });
     pending.delete(pendingKey(tournamentId, userId));
     const fresh = state.getTournament(db, tournamentId);
-    if (fresh) await refreshAnnouncement(fresh);
+    const refreshed = fresh ? await refreshAnnouncement(fresh, "withdraw") : false;
+    if (fresh) {
+      await safeLogLine(
+        `TOURNAMENT_WITHDRAW: <@${userId}> tournament="${fresh.name}" id=${fresh.id} player=${removed?.robloxUsername || "unknown"} count=${state.registrationCount(fresh)}/${fresh.slots} announcement=${refreshed ? "updated" : "not-updated"}`
+      );
+    }
     await safeUpdate(interaction, { content: "Заявка отозвана.", embeds: [], components: [], flags: MessageFlags.Ephemeral });
     return true;
   }
@@ -783,7 +831,12 @@ function createTournamentOperator(deps = {}) {
       state.updateTournament(db, tournamentId, { registrationOpen: open });
     });
     const tournament = state.getTournament(db, tournamentId);
-    await refreshAnnouncement(tournament);
+    const refreshed = await refreshAnnouncement(tournament, open ? "open-registration" : "close-registration");
+    if (tournament) {
+      await safeLogLine(
+        `TOURNAMENT_REGISTRATION_${open ? "OPEN" : "CLOSE"}: tournament="${tournament.name}" id=${tournament.id} count=${state.registrationCount(tournament)}/${tournament.slots} announcement=${refreshed ? "updated" : "not-updated"} by=<@${interaction.user.id}>`
+      );
+    }
     return renderManage(interaction, tournamentId, { edit: true, statusText: open ? "Набор открыт." : "Набор закрыт." });
   }
 

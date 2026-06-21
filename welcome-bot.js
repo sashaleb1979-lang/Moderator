@@ -6930,6 +6930,7 @@ function getTournamentOperator() {
     fetchImageBuffer: (url) => downloadToBuffer(url).catch(() => null),
     renderImage: renderTournamentImageOffThread,
     fetchAvatarHeadshots: (robloxUserIds) => robloxApiClient.fetchUserAvatarHeadshots(robloxUserIds),
+    logLine: (text) => logLine(client, text),
   });
   return tournamentOperator;
 }
