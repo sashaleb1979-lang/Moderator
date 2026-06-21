@@ -56,6 +56,9 @@ const {
   buildThreadName,
   buildThreadPanelPayload,
   buildTicketDirectLinkModal,
+  buildTicketRobloxModal,
+  buildTwinkRobloxModal,
+  buildTwinkConfirmPayload,
   buildTicketPublicPayload,
   buildTicketSetupPayload,
   formatRoleMention,
@@ -422,17 +425,24 @@ function createAntiteamOperator(options = {}) {
     return { image: await renderPromise, cache: "miss" };
   }
 
-  async function persist(label, mutate, { shouldSave = true } = {}) {
+  // `durable: true` forces the write to land immediately (used for rare,
+  // high-value ticket lifecycle changes that a live Discord message depends on),
+  // instead of riding the coalesced debounce. Falls back to the normal saveDb
+  // when no durable saver is wired.
+  async function persist(label, mutate, { shouldSave = true, durable = false } = {}) {
+    const saver = durable && typeof options.saveDbDurable === "function"
+      ? options.saveDbDurable
+      : options.saveDb;
     if (typeof options.runSerializedMutation === "function") {
       return options.runSerializedMutation({
         label,
         mutate,
         shouldPersist: shouldSave,
-        persist: options.saveDb,
+        persist: saver,
       });
     }
     const result = await Promise.resolve().then(mutate);
-    if (shouldSave && typeof options.saveDb === "function") options.saveDb();
+    if (shouldSave && typeof saver === "function") await saver();
     return result;
   }
 
@@ -1362,6 +1372,19 @@ function createAntiteamOperator(options = {}) {
     return /^roblox:\/\/\S+$/i.test(url) || /^https?:\/\/[^\s/]+\.[^\s/]+/i.test(url);
   }
 
+  // A clear, private explanation of WHY a pasted direct link was rejected, so the
+  // author isn't left with a vague "ссылка не привязана".
+  function buildInvalidDirectLinkText(rawLink = "") {
+    const sample = cleanString(rawLink, 120);
+    return [
+      "❌ Ссылка не прикреплена к заявке.",
+      "Причина: то, что ты вставил, не похоже на ссылку — она должна начинаться с `https://` или `roblox://`.",
+      sample ? `Ты прислал: \`${sample}\`` : "Поле пришло пустым.",
+      "Где взять: в Roblox меню → **People** → **Invite Friends** → кнопка **Copy Link**, и вставь сюда целиком (Ctrl+V).",
+      "Прежняя ссылка (если была) осталась без изменений.",
+    ].filter(Boolean).join("\n");
+  }
+
   function resolveCloseReviewArrival(ticket = {}, helper = {}) {
     const session = closeReviewSessions.get(cleanString(ticket?.id, 80));
     const uid = cleanString(helper.userId, 80);
@@ -1413,6 +1436,11 @@ function createAntiteamOperator(options = {}) {
         ? "Для ФАЙТ С КЛАНОМ нужно описание врагов и ситуации."
         : "Описание обязательно: укажи, кто тимится, кого бить, ники/kills или ситуацию любым понятным способом.";
     }
+    // Clan war can be opened for an anchor who has no profile binding — but it
+    // can't publish until an anchor Roblox is set (helpers connect by it).
+    if (draft.kind === "clan" && !cleanString(draft.roblox?.userId, 40)) {
+      return "Укажи Roblox якоря кнопкой «🎭 Другой Roblox на эту заявку» — без него помощники не подключатся.";
+    }
     return "";
   }
 
@@ -1444,7 +1472,7 @@ function createAntiteamOperator(options = {}) {
       now: nowIso(),
       friendEligibleDiscordUserIds: [],
       test: getConfig().testMode === true,
-    }));
+    }), { durable: true });
     return { draft, ticket };
   }
 
@@ -1520,7 +1548,7 @@ function createAntiteamOperator(options = {}) {
       };
       current.updatedAt = nowIso();
       return current;
-    }));
+    }), { durable: true });
     const refsPersistMs = nowMs() - refsPersistStartedAt;
 
     runDetached(async () => {
@@ -1880,11 +1908,16 @@ function createAntiteamOperator(options = {}) {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
     const helperRoblox = getHelperRobloxSnapshot(interaction.user.id);
-    // No friend/presence scan anymore (it was slow): direct join is offered only
-    // when the author added a valid connect link; otherwise it's a friend request.
+    // No friend/presence scan anymore (it was cut for speed), so we trust the
+    // author's "вход без друзей" lock. While the lock is closed
+    // (directJoinEnabled === false) joining requires friendship, so we ALWAYS
+    // run the friend-request flow — the notify-author button shows up next to
+    // the connect link / profile, no exceptions. Only an explicitly open lock
+    // skips it and offers a straight join.
     const manualDirectJoinUrl = cleanString(ticket.manualDirectJoinUrl, 2000);
     const hasDirectLink = isLikelyDirectJoinUrl(manualDirectJoinUrl);
-    const linkKind = hasDirectLink ? "direct" : "friend_request";
+    const friendsRequired = ticket.directJoinEnabled === false;
+    const linkKind = friendsRequired ? "friend_request" : "direct";
     // Direct link if the author added one; otherwise the static profile join link
     // for the friend-request flow (no Roblox scan involved).
     const directJoinUrl = hasDirectLink ? manualDirectJoinUrl : buildRobloxUserJoinUrl(ticket.roblox?.userId);
@@ -1958,19 +1991,17 @@ function createAntiteamOperator(options = {}) {
         await interaction.reply({ content: "Якорем должен быть живой участник сервера, не бот.", flags: MessageFlags.Ephemeral });
         return true;
       }
-      const storedRoblox = getStoredRobloxSnapshot(anchorUser.id);
-      if (!storedRoblox) {
-        await interaction.reply({
-          content: `У <@${anchorUser.id}> нет проверенного Roblox в профиле. Сначала привяжите ему Roblox, потом вызывай ФАЙТ С КЛАНОМ.`,
-          flags: MessageFlags.Ephemeral,
-        });
-        return true;
-      }
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-      return await openTicketDraftWithRoblox(interaction, storedRoblox, "clan", {
+      // An anchor without a profile binding no longer blocks the call — open the
+      // draft anyway and let the caller set a temporary/twink Roblox for the
+      // anchor via the 🎭 button. Publishing is still gated on having one.
+      const storedRoblox = getStoredRobloxSnapshot(anchorUser.id);
+      return await openTicketDraftWithRoblox(interaction, storedRoblox || {}, "clan", {
         response: "editReply",
         anchorUser,
-        statusText: `Якорь: <@${anchorUser.id}> • Roblox: ${storedRoblox.username}. Он должен оставаться на сервере.`,
+        statusText: storedRoblox
+          ? `Якорь: <@${anchorUser.id}> • Roblox: ${storedRoblox.username}. Он должен оставаться на сервере.`
+          : `Якорь: <@${anchorUser.id}> • Roblox в профиле не найден — нажми «🎭 Другой Roblox на эту заявку» и укажи действующий ник якоря.`,
       });
     }
 
@@ -2172,6 +2203,58 @@ function createAntiteamOperator(options = {}) {
         response: "editReply",
         statusText: `Roblox подтверждён: ${storedRoblox.username}.`,
       });
+    }
+
+    // Twink / alt Roblox for the current mission only. The setup panel opens a
+    // modal, the modal shows a private confirmation, and confirming binds the
+    // account to the draft WITHOUT touching the author's profile binding.
+    if (id === ANTITEAM_CUSTOM_IDS.twinkOpen) {
+      const draft = getAntiteamDraft(db, interaction.user.id);
+      if (!draft) {
+        await safeReply(interaction, { content: "Черновик истёк. Начни заново.", flags: MessageFlags.Ephemeral });
+        return true;
+      }
+      await safeShowModal(interaction, buildTwinkRobloxModal({
+        initialValue: draft.robloxTemporary ? cleanString(draft.roblox?.username, 20) : "",
+      }));
+      return true;
+    }
+
+    if (id === ANTITEAM_CUSTOM_IDS.twinkConfirm) {
+      const draft = getAntiteamDraft(db, interaction.user.id);
+      if (!draft) {
+        await safeReply(interaction, { content: "Черновик истёк. Начни заново.", flags: MessageFlags.Ephemeral });
+        return true;
+      }
+      const pending = draft.pendingTwink;
+      if (!pending?.userId) {
+        const ack = await safeDeferUpdate(interaction);
+        if (ack.ok) await safeEditReply(interaction, buildTicketSetupPayload(draft, getConfig(), "Твинк не выбран — введи ник заново через «🎭 Другой Roblox»."));
+        return true;
+      }
+      const ack = await safeDeferUpdate(interaction);
+      const updated = writeDraft(interaction.user.id, {
+        roblox: pending,
+        robloxTemporary: true,
+        pendingTwink: null,
+      });
+      if (ack.ok) {
+        await safeEditReply(interaction, buildTicketSetupPayload(updated, getConfig(),
+          `🎭 Roblox для этой заявки: ${cleanString(pending.username, 120)}. Основная привязка профиля не тронута.`));
+      }
+      return true;
+    }
+
+    if (id === ANTITEAM_CUSTOM_IDS.twinkCancel) {
+      const draft = getAntiteamDraft(db, interaction.user.id);
+      const ack = await safeDeferUpdate(interaction);
+      if (!draft) {
+        if (ack.ok) await safeEditReply(interaction, { content: "Черновик истёк. Начни заново.", components: [], flags: MessageFlags.Ephemeral });
+        return true;
+      }
+      const updated = draft.pendingTwink ? writeDraft(interaction.user.id, { pendingTwink: null }) : draft;
+      if (ack.ok) await safeEditReply(interaction, buildTicketSetupPayload(updated, getConfig(), "Привязка твинка отменена."));
+      return true;
     }
 
     if (id === ANTITEAM_CUSTOM_IDS.config) {
@@ -2536,6 +2619,23 @@ function createAntiteamOperator(options = {}) {
       return true;
     }
 
+    // On-the-spot Roblox/twink swap from a published ticket thread (author or mod).
+    if (action === "change_roblox") {
+      if (!ticket || ticket.status !== "open") {
+        await safeReply(interaction, { content: "Эта миссия уже закрыта или не найдена.", flags: MessageFlags.Ephemeral });
+        return true;
+      }
+      const allowedToEdit = ticket.kind === "clan"
+        ? (canCallClan(interaction.member) || interaction.user.id === ticket.anchorUserId)
+        : (interaction.user.id === ticket.createdBy || isModerator(interaction.member));
+      if (!allowedToEdit) {
+        await replyNoPermission(interaction);
+        return true;
+      }
+      await interaction.showModal(buildTicketRobloxModal(ticket));
+      return true;
+    }
+
     if (action === "friend_request_sent") {
       if (!ticket || ticket.status !== "open") {
         await safeReply(interaction, { content: "Эта миссия уже закрыта или не найдена.", flags: MessageFlags.Ephemeral });
@@ -2731,12 +2831,46 @@ function createAntiteamOperator(options = {}) {
     });
   }
 
+  // Twink/alt nick entered from the setup panel. Looks the account up through the
+  // Roblox API and parks it on the draft as a pending candidate; the requester
+  // confirms it on the private confirmation panel before it's attached. The
+  // author's profile binding is never written here.
+  async function handleTwinkModal(interaction) {
+    const draft = getAntiteamDraft(db, interaction.user.id);
+    if (!draft) {
+      const ack = await safeDeferReply(interaction, { flags: MessageFlags.Ephemeral });
+      if (ack.ok) await safeEditReply(interaction, { content: "Черновик истёк. Начни заново.", components: [] });
+      return true;
+    }
+    const username = normalizeUsernameInput(interaction.fields.getTextInputValue("roblox_username"));
+    const ack = await safeDeferUpdate(interaction);
+    let robloxUser = null;
+    try {
+      robloxUser = await fetchRobloxUserByUsername(username);
+    } catch (error) {
+      logError("Antiteam twink lookup failed:", error?.message || error);
+    }
+    if (!robloxUser?.userId && !robloxUser?.id) {
+      if (ack.ok) {
+        await safeEditReply(interaction, buildTicketSetupPayload(draft, getConfig(),
+          `❌ Ник «${cleanString(username, 120)}» не найден через Roblox API. Твинк не привязан.`));
+      }
+      return true;
+    }
+    const updated = writeDraft(interaction.user.id, { pendingTwink: robloxUser });
+    if (ack.ok) {
+      await safeEditReply(interaction, buildTwinkConfirmPayload(updated.pendingTwink || robloxUser, { kind: draft.kind }));
+    }
+    return true;
+  }
+
   async function handleModalSubmitInteraction(interaction) {
     if (!interaction?.isModalSubmit?.() || !cleanString(interaction.customId, 100).startsWith("at:")) return false;
     const id = interaction.customId;
 
     if (id === "at:roblox") return handleRobloxModal(interaction, "standard");
     if (id === "at:clan_roblox") return handleRobloxModal(interaction, "clan");
+    if (id === "at:twink_modal") return handleTwinkModal(interaction);
 
     if (id === "at:desc:modal") {
       const draft = getAntiteamDraft(db, interaction.user.id);
@@ -2766,10 +2900,10 @@ function createAntiteamOperator(options = {}) {
       }
       const rawLink = cleanString(interaction.fields.getTextInputValue("direct_link"), 2000);
       if (!isLikelyDirectJoinUrl(rawLink)) {
-        // Don't save junk; show the author a private "недействительна" notice and
-        // leave the setup panel untouched.
+        // Don't save junk; show the author a private, specific notice and leave
+        // the setup panel untouched.
         await safeReply(interaction, {
-          content: "❌ Это не похоже на ссылку. Вставь прямую ссылку из Roblox (кнопка **Copy Link**). Ссылка не сохранена.",
+          content: buildInvalidDirectLinkText(rawLink),
           flags: MessageFlags.Ephemeral,
         });
         return true;
@@ -2977,7 +3111,7 @@ function createAntiteamOperator(options = {}) {
       const rawLink = cleanString(interaction.fields.getTextInputValue("direct_link"), 2000);
       if (!isLikelyDirectJoinUrl(rawLink)) {
         await interaction.reply({
-          content: "❌ Это не похоже на ссылку. Вставь прямую ссылку из Roblox (кнопка **Copy Link**). Ссылка не сохранена.",
+          content: buildInvalidDirectLinkText(rawLink),
           flags: MessageFlags.Ephemeral,
         });
         return true;
@@ -2990,6 +3124,49 @@ function createAntiteamOperator(options = {}) {
       }));
       await syncTicketMessages(updated).catch(() => {});
       await interaction.editReply({ content: "✅ Прямая ссылка обновлена.", components: [] });
+      return true;
+    }
+
+    if (action === "change_roblox_modal") {
+      if (ticket.status !== "open") {
+        await interaction.reply({ content: "Эта миссия уже закрыта.", flags: MessageFlags.Ephemeral });
+        return true;
+      }
+      const allowedToEdit = ticket.kind === "clan"
+        ? (canCallClan(interaction.member) || interaction.user.id === ticket.anchorUserId)
+        : (interaction.user.id === ticket.createdBy || isModerator(interaction.member));
+      if (!allowedToEdit) {
+        await replyNoPermission(interaction);
+        return true;
+      }
+      const username = normalizeUsernameInput(interaction.fields.getTextInputValue("roblox_username"));
+      const ack = await safeDeferReply(interaction, { flags: MessageFlags.Ephemeral });
+      let robloxUser = null;
+      try {
+        robloxUser = await fetchRobloxUserByUsername(username);
+      } catch (error) {
+        logError("Antiteam ticket roblox swap lookup failed:", error?.message || error);
+      }
+      if (!robloxUser?.userId && !robloxUser?.id) {
+        if (ack.ok) await safeEditReply(interaction, { content: `❌ Ник «${cleanString(username, 120)}» не найден через Roblox API. Roblox заявки не изменён.`, components: [] });
+        return true;
+      }
+      const snapshot = {
+        userId: cleanString(robloxUser.userId || robloxUser.id, 40),
+        username: cleanString(robloxUser.username || robloxUser.name, 120),
+        displayName: cleanString(robloxUser.displayName, 120),
+        avatarUrl: cleanString(robloxUser.avatarUrl, 2000),
+        profileUrl: cleanString(robloxUser.profileUrl, 500),
+      };
+      const updated = await persist("antiteam-ticket-change-roblox", () => updateAntiteamTicket(db, ticketId, (current) => {
+        current.roblox = snapshot;
+        current.robloxTemporary = true;
+        current.updatedAt = nowIso();
+        current.lastActivityAt = nowIso();
+        return current;
+      }));
+      await syncTicketMessages(updated).catch(() => {});
+      if (ack.ok) await safeEditReply(interaction, { content: `✅ Roblox заявки изменён на **${snapshot.username}**.`, components: [] });
       return true;
     }
 
@@ -3021,7 +3198,7 @@ function createAntiteamOperator(options = {}) {
           }, { now: nowIso() });
         }
         return closed;
-      });
+      }, { durable: true });
       await syncHelperRewardRoles(confirmedHelperIds).catch((error) => {
         logError("Antiteam helper reward sync after close failed:", error?.message || error);
       });
@@ -3042,7 +3219,26 @@ function createAntiteamOperator(options = {}) {
 
     const attachments = message.attachments?.values ? [...message.attachments.values()] : [];
     const photoAttachments = attachments.filter(isImageAttachment).slice(0, 10);
-    if (!photoAttachments.length) return false;
+    if (!photoAttachments.length) {
+      const hasVisibleContent = Boolean(cleanString(message.content, 1)) || attachments.length > 0;
+      if (!hasVisibleContent) {
+        // The message looks empty from the bot's side. The usual cause is the
+        // MESSAGE CONTENT privileged intent being off, which strips attachments
+        // off other users' messages — so a real screenshot arrives blank. Don't
+        // delete it (it may BE the photo) and surface the likely root cause.
+        logError(`Antiteam photo capture saw an empty message from ${message.author.id} while a photo was requested. If users report photos not attaching, enable the MESSAGE CONTENT privileged intent for the bot in the Discord Developer Portal.`);
+        return false;
+      }
+      // The requester is in photo mode but sent text/non-image content. Keep the
+      // antiteam channel clean: remove it and nudge them to send a real image.
+      await message.delete?.().catch(() => {});
+      const hint = await message.channel?.send?.({
+        content: `<@${message.author.id}> для заявки антитима жду именно изображение — текст и файлы в этом канале я удаляю. Скинь скрин одним сообщением.`,
+        allowedMentions: { users: [message.author.id] },
+      }).catch(() => null);
+      if (hint?.id) scheduleTimeout(() => { hint.delete?.().catch(() => {}); }, 12000);
+      return true;
+    }
 
     const capturedAt = nowIso();
     const photos = photoAttachments.map((attachment) => normalizeAttachmentPhoto(attachment, capturedAt));
@@ -3081,7 +3277,7 @@ function createAntiteamOperator(options = {}) {
         summaryText: formatAutoCloseSummaryText(autoCloseMinutes),
         confirmedHelperIds: Object.values(ticket.helpers || {}).filter((helper) => helper.arrived !== false).map((helper) => helper.userId),
         autoClosed: true,
-      }));
+      }), { durable: true });
       await finalizeClosedTicket(updated).catch(() => {});
       closed.push(updated);
     }

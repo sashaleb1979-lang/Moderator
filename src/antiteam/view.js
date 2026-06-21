@@ -44,6 +44,10 @@ const ANTITEAM_CUSTOM_IDS = Object.freeze({
   requestRobloxNick: "at:roblox:request",
   confirmRoblox: "at:roblox:confirm",
   changeRoblox: "at:roblox:change",
+  // Twink / alt Roblox bound only for the current mission (profile untouched).
+  twinkOpen: "at:twink_open",
+  twinkConfirm: "at:twink_confirm",
+  twinkCancel: "at:twink_cancel",
   joinBattalion: "at:battalion:join",
   config: "at:config",
   configAdvanced: "at:config:advanced",
@@ -760,6 +764,56 @@ function buildRobloxUsernameModal({
     );
 }
 
+// Modal for binding a twink/alt Roblox to one mission only. customId differs per
+// surface: "at:twink_modal" on the setup panel, "at:change_roblox_modal:<id>" in
+// a published ticket thread.
+function buildTwinkRobloxModal({ customId = "at:twink_modal", initialValue = "" } = {}) {
+  return buildRobloxUsernameModal({
+    customId,
+    title: "Другой Roblox на эту заявку",
+    label: "Roblox ник твинка",
+    placeholder: "Ник действующего аккаунта",
+    initialValue,
+  });
+}
+
+// Private confirmation step after a twink nick is found through the Roblox API.
+// Lets the requester eyeball the account before it's attached to the mission.
+function buildTwinkConfirmPayload(roblox = {}, { kind = "standard" } = {}) {
+  const username = cleanString(roblox.username || roblox.name, 120) || "Roblox";
+  const userId = cleanString(roblox.userId || roblox.id, 40);
+  const profileUrl = cleanString(roblox.profileUrl, 500) || (userId ? `https://www.roblox.com/users/${userId}/profile` : "");
+  const targetLine = kind === "clan"
+    ? "Этот аккаунт будет показан как якорь ФАЙТ С КЛАНОМ."
+    : "Этот аккаунт будет показан в заявке вместо основного.";
+  const buttons = [
+    new ButtonBuilder()
+      .setCustomId(ANTITEAM_CUSTOM_IDS.twinkConfirm)
+      .setLabel("✅ Привязать к заявке")
+      .setStyle(ButtonStyle.Success),
+    new ButtonBuilder()
+      .setCustomId(ANTITEAM_CUSTOM_IDS.twinkCancel)
+      .setLabel("✖️ Отмена")
+      .setStyle(ButtonStyle.Secondary),
+  ];
+  if (profileUrl) {
+    buttons.push(new ButtonBuilder().setLabel("👤 Профиль").setStyle(ButtonStyle.Link).setURL(profileUrl));
+  }
+  const container = new ContainerBuilder()
+    .setAccentColor(0x6A1B9A)
+    .addTextDisplayComponents(
+      new TextDisplayBuilder().setContent("# 🎭 Проверь твинк"),
+      new TextDisplayBuilder().setContent([
+        `Аккаунт найден через Roblox API: **${username}**${userId ? ` (${userId})` : ""}.`,
+        targetLine,
+        "Основная привязка Roblox в твоём профиле **не изменится** — это только на эту заявку.",
+      ].join("\n"))
+    )
+    .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
+    .addActionRowComponents(new ActionRowBuilder().addComponents(...buttons.slice(0, 5)));
+  return buildPayload(container, { ephemeral: true });
+}
+
 function buildConfigModal(config = createDefaultAntiteamConfig()) {
   const clanRolesText = config.clanPingRoles
     .map((entry) => `${entry.label}=${entry.roleId || ""}:${entry.defaultEnabled ? "on" : "off"}`)
@@ -1002,6 +1056,7 @@ function buildClanRolesSelect(draft = {}, config = createDefaultAntiteamConfig()
 
 function getDraftRobloxLine(draft = {}, statusText = "") {
   const robloxLabel = `Roblox: **${draft.roblox?.username || "—"}**${draft.roblox?.userId ? ` (${draft.roblox.userId})` : ""}`;
+  if (draft.robloxTemporary) return `${robloxLabel} • 🎭 твинк на эту заявку`;
   const status = cleanString(statusText, 240);
   if (/взят из твоего профиля/i.test(status)) return `${robloxLabel} • взят из профиля`;
   if (/подтвержд[её]н|найден через API/i.test(status)) return `${robloxLabel} • подтверждён`;
@@ -1084,6 +1139,15 @@ function buildTicketSetupPayload(draft = {}, config = createDefaultAntiteamConfi
     container.addActionRowComponents(buildLevelSelect(draft), buildCountSelect(draft));
   }
 
+  // Twink / alt Roblox just for this mission — handy for players whose main isn't
+  // online. It only changes the account shown on the mission, never the profile.
+  container.addActionRowComponents(new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(ANTITEAM_CUSTOM_IDS.twinkOpen)
+      .setLabel(draft.robloxTemporary ? "🎭 Сменить твинк заявки" : "🎭 Другой Roblox на эту заявку")
+      .setStyle(draft.robloxTemporary ? ButtonStyle.Success : ButtonStyle.Secondary)
+  ));
+
   container
     .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
     .addTextDisplayComponents(new TextDisplayBuilder().setContent([
@@ -1093,16 +1157,18 @@ function buildTicketSetupPayload(draft = {}, config = createDefaultAntiteamConfi
     .addActionRowComponents(buildDraftDescriptionRow(draft));
 
   // Optional direct connect link — its OWN option, fully separate from the lock.
-  // Always visible; if left empty it simply isn't offered to helpers.
-  if (!isClan) {
+  // Always visible (clan war included); if left empty it simply isn't offered to
+  // helpers, who then fall back to a friend request.
+  {
     const link = cleanString(draft.manualDirectJoinUrl, 2000);
+    const joinTarget = isClan ? "к якорю" : "к тебе";
     container
       .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
       .addTextDisplayComponents(new TextDisplayBuilder().setContent([
         "**🔗 Добавить прямую ссылку**",
         link
-          ? "Прямая ссылка добавлена ✅ — помощники смогут зайти к тебе по ней. Можно изменить."
-          : "Необязательно: вставь прямую ссылку подключения — помощники смогут зайти по ней. Не добавишь — её просто не будет.",
+          ? `Прямая ссылка добавлена ✅ — помощники смогут зайти ${joinTarget} по ней. Можно изменить.`
+          : `Необязательно: вставь прямую ссылку подключения — помощники смогут зайти ${joinTarget} по ней. Не добавишь — её просто не будет.`,
       ].join("\n")))
       .addActionRowComponents(new ActionRowBuilder().addComponents(
         new ButtonBuilder()
@@ -1132,6 +1198,7 @@ function buildPhotoRequestPayload(draft = {}, statusText = "") {
       new TextDisplayBuilder().setContent([
         "Отправь следующим сообщением в антитим-канал один или несколько скринов.",
         "Можно кинуть несколько изображений сразу одним сообщением. Бот прикрепит их к заявке и удалит исходное сообщение.",
+        "⚠️ Пока ждём фото, любое твоё сообщение без картинки в этом канале бот удалит — кидай именно изображение.",
         statusText,
       ].filter(Boolean).join("\n"))
     )
@@ -1350,23 +1417,33 @@ function buildThreadPanelPayload(ticket = {}, config = createDefaultAntiteamConf
       .setDisabled(isClosed)
   )];
 
+  const hasDirectLink = Boolean(cleanString(ticket.manualDirectJoinUrl, 2000));
+  const secondRow = new ActionRowBuilder();
+  // Auto-close toggle is meaningless for clan war (it has no idle auto-close).
   if (ticket.kind !== "clan") {
-    const hasDirectLink = Boolean(cleanString(ticket.manualDirectJoinUrl, 2000));
-    components.push(
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId(ticketButtonId("toggle_auto_close", ticket.id))
-          .setLabel(autoCloseEnabled ? `⏱ Закрывать через ${autoCloseMinutes} мин` : "⏸ Не закрывать автоматически")
-          .setStyle(autoCloseEnabled ? ButtonStyle.Success : ButtonStyle.Secondary)
-          .setDisabled(isClosed),
-        new ButtonBuilder()
-          .setCustomId(ticketButtonId("set_direct_link", ticket.id))
-          .setLabel(hasDirectLink ? "🔗 Изменить ссылку" : "🔗 Добавить ссылку")
-          .setStyle(hasDirectLink ? ButtonStyle.Success : ButtonStyle.Secondary)
-          .setDisabled(isClosed)
-      )
+    secondRow.addComponents(
+      new ButtonBuilder()
+        .setCustomId(ticketButtonId("toggle_auto_close", ticket.id))
+        .setLabel(autoCloseEnabled ? `⏱ Закрывать через ${autoCloseMinutes} мин` : "⏸ Не закрывать автоматически")
+        .setStyle(autoCloseEnabled ? ButtonStyle.Success : ButtonStyle.Secondary)
+        .setDisabled(isClosed)
     );
   }
+  // Direct link + on-the-spot Roblox/twink swap — now available for clan war too,
+  // so the anti-clan flow has parity with regular antiteam.
+  secondRow.addComponents(
+    new ButtonBuilder()
+      .setCustomId(ticketButtonId("set_direct_link", ticket.id))
+      .setLabel(hasDirectLink ? "🔗 Изменить ссылку" : "🔗 Добавить ссылку")
+      .setStyle(hasDirectLink ? ButtonStyle.Success : ButtonStyle.Secondary)
+      .setDisabled(isClosed),
+    new ButtonBuilder()
+      .setCustomId(ticketButtonId("change_roblox", ticket.id))
+      .setLabel(ticket.kind === "clan" ? "🎭 Сменить якорь-Roblox" : "🎭 Сменить Roblox")
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(isClosed)
+  );
+  components.push(secondRow);
 
   return {
     components,
@@ -1508,6 +1585,17 @@ function buildTicketDirectLinkModal(ticket = {}) {
     );
 }
 
+// On-the-spot Roblox/twink swap from inside a published ticket thread.
+function buildTicketRobloxModal(ticket = {}) {
+  return buildRobloxUsernameModal({
+    customId: ticketButtonId("change_roblox_modal", ticket.id),
+    title: ticket.kind === "clan" ? "Сменить якорь-Roblox" : "Сменить Roblox заявки",
+    label: "Действующий Roblox ник",
+    placeholder: "Ник аккаунта",
+    initialValue: cleanString(ticket.roblox?.username, 20),
+  });
+}
+
 function buildCloseReviewPayload(ticket = {}, page = 0, options = {}) {
   const helpers = Object.values(ticket.helpers || {})
     .sort((left, right) => String(left.respondedAt || "").localeCompare(String(right.respondedAt || "")) || String(left.userId || "").localeCompare(String(right.userId || "")));
@@ -1604,6 +1692,9 @@ module.exports = {
   buildDescriptionModal,
   buildDirectLinkModal,
   buildTicketDirectLinkModal,
+  buildTicketRobloxModal,
+  buildTwinkRobloxModal,
+  buildTwinkConfirmPayload,
   buildHelperRewardRolesModal,
   buildHelperStatsPayload,
   buildHelpReplyPayload,
