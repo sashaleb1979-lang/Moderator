@@ -8,6 +8,7 @@ const path = require("node:path");
 const {
   ONBOARD_ACCESS_MODES,
   normalizeOnboardAccessMode,
+  shouldPreserveNormalAccessDuringWartime,
 } = require("../src/onboard/access-mode");
 
 const welcomeBotSource = fs.readFileSync(path.join(__dirname, "..", "welcome-bot.js"), "utf8");
@@ -37,6 +38,7 @@ function loadApproveSubmission() {
     "writeCanonicalRobloxBinding",
     "appendProofWindowSnapshot",
     "saveDb",
+    "flushDbNow",
     "restoreRecordValue",
     "db",
     "fetchReviewMessage",
@@ -113,6 +115,8 @@ function loadGrantAccessRole() {
     "restoreRolePoolSnapshot",
     "ensureAccessCompanionRoleForMemberBestEffort",
     "formatRuntimeError",
+    "getNormalAccessRoleId",
+    "shouldPreserveNormalAccessDuringWartime",
     `return (${functionSource});`
   );
 }
@@ -122,29 +126,9 @@ test("welcome-bot wires approved access repair into startup and panel role sync 
   assert.match(welcomeBotSource, /runClientReadyCore\(client, \{[\s\S]*?syncApprovedAccessRoles:/);
 });
 
-test("grantAccessRole in wartime grants only the wartime access role", async () => {
-  const calls = [];
-  const roleState = new Map([
-    ["base-role", { id: "base-role" }],
-    ["nonjjs-role", { id: "nonjjs-role" }],
-    ["companion-role", { id: "companion-role" }],
-  ]);
-  const member = {
-    id: "user-1",
-    roles: {
-      cache: roleState,
-      async remove(roleId, reason) {
-        calls.push(["remove", roleId, reason]);
-        roleState.delete(roleId);
-      },
-      async add(roleId, reason) {
-        calls.push(["add", roleId, reason]);
-        roleState.set(roleId, { id: roleId });
-      },
-    },
-  };
+function buildWartimeGrantAccessRole(member, calls) {
   const buildGrantAccessRole = loadGrantAccessRole();
-  const grantAccessRole = buildGrantAccessRole(
+  return buildGrantAccessRole(
     async () => member,
     () => ONBOARD_ACCESS_MODES.WARTIME,
     () => "",
@@ -161,19 +145,61 @@ test("grantAccessRole in wartime grants only the wartime access role", async () 
     async () => {
       calls.push(["companion"]);
     },
-    (error) => String(error?.message || error)
+    (error) => String(error?.message || error),
+    () => "base-role",
+    shouldPreserveNormalAccessDuringWartime
   );
+}
+
+function buildRoleMember(roleIds, calls) {
+  const roleState = new Map(roleIds.map((roleId) => [roleId, { id: roleId }]));
+  return {
+    id: "user-1",
+    roleState,
+    roles: {
+      cache: roleState,
+      async remove(roleId, reason) {
+        calls.push(["remove", roleId, reason]);
+        roleState.delete(roleId);
+      },
+      async add(roleId, reason) {
+        calls.push(["add", roleId, reason]);
+        roleState.set(roleId, { id: roleId });
+      },
+    },
+  };
+}
+
+test("grantAccessRole in wartime grants only the wartime access role for new members", async () => {
+  const calls = [];
+  // Newcomer arriving during wartime: holds no full access role yet.
+  const member = buildRoleMember(["nonjjs-role", "companion-role"], calls);
+  const grantAccessRole = buildWartimeGrantAccessRole(member, calls);
 
   const granted = await grantAccessRole({}, "user-1", "wartime auto grant");
 
   assert.equal(granted, true);
-  assert.deepEqual([...roleState.keys()].sort(), ["wartime-role"]);
+  assert.deepEqual([...member.roleState.keys()].sort(), ["wartime-role"]);
   assert.deepEqual(calls, [
-    ["remove", "base-role", "wartime auto grant"],
     ["remove", "nonjjs-role", "wartime auto grant"],
     ["remove", "companion-role", "wartime auto grant"],
     ["add", "wartime-role", "wartime auto grant"],
   ]);
+});
+
+test("grantAccessRole in wartime never downgrades an established normal-access holder", async () => {
+  const calls = [];
+  // Long-standing member who already passed onboarding and holds the full normal access
+  // role — resubmitting kills during wartime must not strip it or swap to the wartime role.
+  const member = buildRoleMember(["base-role", "companion-role"], calls);
+  const grantAccessRole = buildWartimeGrantAccessRole(member, calls);
+
+  const granted = await grantAccessRole({}, "user-1", "kills refresh");
+
+  assert.equal(granted, true);
+  // Roles are untouched apart from the best-effort companion ensure (a no-op add here).
+  assert.deepEqual([...member.roleState.keys()].sort(), ["base-role", "companion-role"]);
+  assert.deepEqual(calls, [["companion"]]);
 });
 
 test("approveSubmission saves approval state before best-effort role sync warnings", async () => {
@@ -217,6 +243,7 @@ test("approveSubmission saves approval state before best-effort role sync warnin
         profileStatus: profile.lastSubmissionStatus,
       });
     },
+    async () => {},
     (collection, key, value) => {
       collection[key] = value;
     },
@@ -300,6 +327,7 @@ test("approveSubmission preserves an already verified Roblox binding during kill
       proofSnapshots.push(snapshot);
     },
     () => {},
+    async () => {},
     (collection, key, value) => {
       collection[key] = value;
     },

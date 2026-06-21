@@ -71,6 +71,22 @@ function resolveGrantedAccessRoleId({
   return normalRoleId || (wartimeRoleId && heldRoleIdSet.has(wartimeRoleId) ? wartimeRoleId : "");
 }
 
+// Wartime mode grants the restricted "wartime" access role to *new* members instead of
+// the full normal access role. An established member who already holds the full normal
+// access role must never be downgraded to the wartime role — e.g. when they merely
+// resubmit kills to refresh their stats while wartime is active. Returns true when such a
+// member should keep their existing normal access untouched.
+function shouldPreserveNormalAccessDuringWartime({
+  mode = ONBOARD_ACCESS_MODES.NORMAL,
+  normalAccessRoleId = "",
+  heldRoleIds = [],
+} = {}) {
+  if (normalizeOnboardAccessMode(mode) !== ONBOARD_ACCESS_MODES.WARTIME) return false;
+  const normalRoleId = cleanRoleId(normalAccessRoleId);
+  if (!normalRoleId) return false;
+  return normalizeHeldRoleIds(heldRoleIds).has(normalRoleId);
+}
+
 module.exports = {
   ONBOARD_ACCESS_MODES,
   ONBOARD_ACCESS_MODE_LABELS,
@@ -79,4 +95,5 @@ module.exports = {
   isApocalypseMode,
   normalizeOnboardAccessMode,
   resolveGrantedAccessRoleId,
+  shouldPreserveNormalAccessDuringWartime,
 };
