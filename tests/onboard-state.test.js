@@ -27,6 +27,7 @@ const {
   PROFILE_COMMAND_NAME,
   ROLE_PANEL_COMMAND_NAME,
   TOP_LEVEL_COMMAND_NAMES,
+  TOURNAMENT_COMMAND_NAME,
   VERIFY_COMMAND_NAME,
   VERIFY_SUBCOMMAND_NAMES,
   buildCommands,
@@ -1003,7 +1004,7 @@ test("command builder includes new admin refresh and editor subcommands", () => 
   assert.equal(nonfakeCommand.options.some((option) => option.name === "role"), true);
 });
 
-test("command builder registers onboard, rolepanel, verify, profile, antiteam, and analytics top-level commands", () => {
+test("command builder registers onboard, rolepanel, verify, profile, antiteam, analytics, and tournament top-level commands", () => {
   const expectedTopLevelCommands = [
     "onboard",
     ROLE_PANEL_COMMAND_NAME,
@@ -1011,6 +1012,7 @@ test("command builder registers onboard, rolepanel, verify, profile, antiteam, a
     PROFILE_COMMAND_NAME,
     ANTITEAM_COMMAND_NAME,
     ANALYTICS_COMMAND_NAME,
+    TOURNAMENT_COMMAND_NAME,
   ];
   assert.deepEqual([...TOP_LEVEL_COMMAND_NAMES].sort(), expectedTopLevelCommands.sort());
   assert.deepEqual(buildCommands().map((command) => command.name).sort(), expectedTopLevelCommands.sort());
@@ -1019,6 +1021,8 @@ test("command builder registers onboard, rolepanel, verify, profile, antiteam, a
   const profileCommand = buildCommands().find((command) => command.name === PROFILE_COMMAND_NAME);
   const antiteamCommand = buildCommands().find((command) => command.name === ANTITEAM_COMMAND_NAME);
   const analyticsCommand = buildCommands().find((command) => command.name === ANALYTICS_COMMAND_NAME);
+  const tournamentCommand = buildCommands().find((command) => command.name === TOURNAMENT_COMMAND_NAME);
+  assert.equal(tournamentCommand.options.some((option) => option.type === 1 && option.name === "панель"), true);
   assert.equal(onboardCommand.options.some((option) => option.type === 1 && option.name === "sotreport"), true);
   assert.equal(verifyCommand.options.some((option) => option.type === 1 && option.name === "panel"), true);
   assert.equal(verifyCommand.options.some((option) => option.type === 1 && option.name === "add"), true);

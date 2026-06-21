@@ -1,0 +1,448 @@
+"use strict";
+
+// Tournament data layer. Operates directly on the shared `db` object (the same
+// object the rest of the bot persists via the coalesced `saveDb`). No Discord
+// objects here — the operator wraps mutating calls in the serialized runner and
+// calls `saveDb()` after.
+
+const crypto = require("node:crypto");
+const { BASE_KILL_TIER_THRESHOLDS, killTierFor } = require("../onboard/kill-tiers");
+
+const TOURNAMENT_STATE_VERSION = 1;
+
+// A player may self-declare a twink/alt only when their main account is at or
+// below this many kills (i.e. tier 1-2). Above it we trust the stored kills.
+const TWINK_THRESHOLD = 3000;
+
+const TOURNAMENT_STATUSES = Object.freeze([
+  "draft",
+  "registration",
+  "seeded",
+  "running",
+  "completed",
+  "cancelled",
+]);
+
+const ACCOUNT_KINDS = Object.freeze(["main", "alt", "twink"]);
+
+// Representative kills for a declared tier, used for seeding when a player gives
+// a tier instead of an exact count. Uses the tier's lower bound.
+const TIER_REPRESENTATIVE_KILLS = Object.freeze({
+  1: 0,
+  2: BASE_KILL_TIER_THRESHOLDS[2], // 1000
+  3: BASE_KILL_TIER_THRESHOLDS[3], // 4000
+  4: BASE_KILL_TIER_THRESHOLDS[4], // 9000
+  5: BASE_KILL_TIER_THRESHOLDS[5], // 15000
+});
+
+function cleanString(value, limit = 2000) {
+  return String(value == null ? "" : value).trim().slice(0, Math.max(0, Number(limit) || 0));
+}
+
+function nullableString(value, limit = 2000) {
+  return cleanString(value, limit) || null;
+}
+
+function nonNegativeInt(value, fallback = 0) {
+  const number = Number(value);
+  return Number.isSafeInteger(number) && number >= 0 ? number : fallback;
+}
+
+function positiveInt(value, fallback = 1) {
+  const number = Number(value);
+  return Number.isSafeInteger(number) && number > 0 ? number : fallback;
+}
+
+function isoTimestamp(value, fallback = null) {
+  const text = cleanString(value, 80);
+  if (!text) return fallback;
+  const ms = Date.parse(text);
+  return Number.isFinite(ms) ? new Date(ms).toISOString() : fallback;
+}
+
+function stringList(value, { limit = 40, max = 25 } = {}) {
+  if (!Array.isArray(value)) return [];
+  const out = [];
+  for (const entry of value) {
+    const text = cleanString(entry, limit);
+    if (text && !out.includes(text)) out.push(text);
+    if (out.length >= max) break;
+  }
+  return out;
+}
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function makeId() {
+  return crypto.randomUUID().replace(/-/g, "").slice(0, 16);
+}
+
+// ---------------------------------------------------------------------------
+// Schema
+// ---------------------------------------------------------------------------
+
+function ensureTournamentState(db = {}) {
+  const previous = db.tournament && typeof db.tournament === "object" && !Array.isArray(db.tournament)
+    ? db.tournament
+    : {};
+  const state = {
+    version: TOURNAMENT_STATE_VERSION,
+    config: {
+      defaultChannelId: cleanString(previous.config?.defaultChannelId, 40),
+    },
+    drafts: previous.drafts && typeof previous.drafts === "object" ? previous.drafts : {},
+    tournaments: previous.tournaments && typeof previous.tournaments === "object" ? previous.tournaments : {},
+  };
+  const mutated = JSON.stringify(db.tournament || null) !== JSON.stringify(state);
+  db.tournament = state;
+  return { state, mutated };
+}
+
+// ---------------------------------------------------------------------------
+// Drafts (in-progress setup, one per moderator)
+// ---------------------------------------------------------------------------
+
+function getDraft(db, userId) {
+  const { state } = ensureTournamentState(db);
+  const id = cleanString(userId, 40);
+  return id ? state.drafts[id] || null : null;
+}
+
+function setDraft(db, userId, patch = {}) {
+  const { state } = ensureTournamentState(db);
+  const id = cleanString(userId, 40);
+  if (!id) throw new Error("userId is required");
+  const previous = state.drafts[id] || {};
+  const draft = {
+    ...previous,
+    ...patch,
+    userId: id,
+    updatedAt: nowIso(),
+  };
+  state.drafts[id] = draft;
+  return draft;
+}
+
+function clearDraft(db, userId) {
+  const { state } = ensureTournamentState(db);
+  const id = cleanString(userId, 40);
+  if (!id) return false;
+  const existed = Object.prototype.hasOwnProperty.call(state.drafts, id);
+  delete state.drafts[id];
+  return existed;
+}
+
+// ---------------------------------------------------------------------------
+// Tournaments
+// ---------------------------------------------------------------------------
+
+function normalizeRewards(value = {}) {
+  const source = value && typeof value === "object" ? value : {};
+  return {
+    first: nullableString(source.first, 200),
+    second: nullableString(source.second, 200),
+    third: nullableString(source.third, 200),
+    extra: nullableString(source.extra, 400),
+  };
+}
+
+function createTournamentFromDraft(db, draft = {}, options = {}) {
+  const { state } = ensureTournamentState(db);
+  const now = isoTimestamp(options.now, nowIso());
+  const id = cleanString(options.id, 40) || makeId();
+  const slots = positiveInt(draft.slots, 16);
+  const tournament = {
+    id,
+    name: cleanString(draft.name, 120) || "Турнир",
+    status: "registration",
+    isTest: Boolean(draft.isTest),
+    createdBy: cleanString(draft.createdBy || draft.userId, 40),
+    createdByTag: nullableString(draft.createdByTag, 80),
+    createdAt: now,
+    updatedAt: now,
+    seedingMode: draft.seedingMode === "seed" ? "seed" : "similar",
+    plannedPlayers: positiveInt(draft.plannedPlayers, slots),
+    slots,
+    startsAtIso: isoTimestamp(draft.startsAtIso, null),
+    pingRoleIds: stringList(draft.pingRoleIds, { limit: 40, max: 15 }),
+    rewards: normalizeRewards(draft.rewards),
+    conditions: nullableString(draft.conditions, 1000),
+    announce: { channelId: cleanString(draft.announceChannelId, 40), messageId: "" },
+    managePanel: { channelId: "", messageId: "" },
+    registrationOpen: true,
+    registrations: {},
+    servers: {},
+    results: { first: null, second: null, third: null, organizerComment: null },
+  };
+  state.tournaments[id] = tournament;
+  return tournament;
+}
+
+function getTournament(db, id) {
+  const { state } = ensureTournamentState(db);
+  const key = cleanString(id, 40);
+  return key ? state.tournaments[key] || null : null;
+}
+
+function listTournaments(db, { status = null } = {}) {
+  const { state } = ensureTournamentState(db);
+  const all = Object.values(state.tournaments);
+  const filtered = status ? all.filter((t) => t.status === status) : all;
+  return filtered.sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+}
+
+function updateTournament(db, id, patch = {}) {
+  const tournament = getTournament(db, id);
+  if (!tournament) return null;
+  Object.assign(tournament, patch, { updatedAt: nowIso() });
+  return tournament;
+}
+
+function deleteTournament(db, id) {
+  const { state } = ensureTournamentState(db);
+  const key = cleanString(id, 40);
+  if (!key) return false;
+  const existed = Object.prototype.hasOwnProperty.call(state.tournaments, key);
+  delete state.tournaments[key];
+  return existed;
+}
+
+// ---------------------------------------------------------------------------
+// Test harness helpers
+// ---------------------------------------------------------------------------
+
+function listTestTournaments(db) {
+  return listTournaments(db).filter((t) => t.isTest);
+}
+
+// Reset a tournament back to a fresh registration state (quick rollback) while
+// keeping its config + announcement message.
+function clearTournamentPlay(tournament) {
+  tournament.registrations = {};
+  tournament.servers = {};
+  tournament.status = "registration";
+  tournament.registrationOpen = true;
+  tournament.summaryPosted = false;
+  tournament.results = { first: null, second: null, third: null, organizerComment: null };
+  return tournament;
+}
+
+// Generate fake registration inputs spanning the kill range so seeding has
+// something interesting to distribute. Avatars are filled in by the operator.
+function buildFakeRegistrations(count, { maxKills = 16000 } = {}) {
+  const total = Math.max(2, positiveInt(count, 2));
+  const out = [];
+  for (let i = 1; i <= total; i += 1) {
+    // descending spread with mild deterministic jitter
+    const base = Math.round((maxKills * (total - i + 1)) / total);
+    const jitter = ((i * 37) % 11) * 25;
+    out.push({
+      userId: `test:${i}`,
+      discordName: `Тест-${i}`,
+      robloxUserId: String(i), // low Roblox IDs are real accounts → real avatars
+      robloxUsername: `Тест-${i}`,
+      accountKind: "main",
+      approvedKills: Math.max(50, base - jitter),
+    });
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Effective kills (seeding metric)
+// ---------------------------------------------------------------------------
+
+function tierRepresentativeKills(tier) {
+  const normalized = Number(tier);
+  return TIER_REPRESENTATIVE_KILLS[normalized] != null ? TIER_REPRESENTATIVE_KILLS[normalized] : 0;
+}
+
+// Resolve the kills value used for seeding from a registration's declarations.
+//   main  → stored approvedKills
+//   alt   → declaredKills if given, else representative kills for declaredTier,
+//           else fall back to approvedKills
+//   twink → declared true strength (declaredKills or declaredTier); never below
+//           the stored approvedKills
+function resolveEffectiveKills({ accountKind, approvedKills = 0, declaredKills = null, declaredTier = null } = {}) {
+  const base = nonNegativeInt(approvedKills, 0);
+  const declared = declaredKills == null ? null : nonNegativeInt(declaredKills, null);
+  const tierKills = declaredTier == null ? null : tierRepresentativeKills(declaredTier);
+
+  if (accountKind === "twink") {
+    return Math.max(base, declared != null ? declared : (tierKills != null ? tierKills : base));
+  }
+  if (accountKind === "alt") {
+    if (declared != null) return declared;
+    if (tierKills != null) return tierKills;
+    return base;
+  }
+  return base; // main
+}
+
+function canSelfDeclareTwink(approvedKills) {
+  return nonNegativeInt(approvedKills, 0) <= TWINK_THRESHOLD;
+}
+
+// ---------------------------------------------------------------------------
+// Registrations
+// ---------------------------------------------------------------------------
+
+function normalizeRegistration(value = {}, { now } = {}) {
+  const accountKind = ACCOUNT_KINDS.includes(value.accountKind) ? value.accountKind : "main";
+  const approvedKills = nonNegativeInt(value.approvedKills, 0);
+  const declaredTier = value.declaredTier == null ? null : positiveInt(value.declaredTier, null);
+  const declaredKills = value.declaredKills == null ? null : nonNegativeInt(value.declaredKills, null);
+  const effectiveKills = value.effectiveKills != null
+    ? nonNegativeInt(value.effectiveKills, 0)
+    : resolveEffectiveKills({ accountKind, approvedKills, declaredKills, declaredTier });
+  return {
+    userId: cleanString(value.userId, 40),
+    discordName: nullableString(value.discordName, 80),
+    robloxUserId: nullableString(value.robloxUserId, 40),
+    robloxUsername: nullableString(value.robloxUsername, 40),
+    robloxAvatarUrl: nullableString(value.robloxAvatarUrl, 400),
+    accountKind,
+    isAltMemory: accountKind !== "main",
+    approvedKills,
+    declaredTier,
+    declaredKills,
+    effectiveKills,
+    effectiveTier: killTierFor(effectiveKills),
+    registeredAt: isoTimestamp(value.registeredAt, isoTimestamp(now, nowIso())),
+    serverIndex: value.serverIndex == null ? null : nonNegativeInt(value.serverIndex, null),
+    seedNumber: value.seedNumber == null ? null : positiveInt(value.seedNumber, null),
+  };
+}
+
+function ensureRegistrations(tournament) {
+  if (!tournament.registrations || typeof tournament.registrations !== "object") {
+    tournament.registrations = {};
+  }
+  return tournament.registrations;
+}
+
+function upsertRegistration(tournament, registration, options = {}) {
+  const registrations = ensureRegistrations(tournament);
+  const normalized = normalizeRegistration(registration, options);
+  if (!normalized.userId) throw new Error("registration.userId is required");
+  const previous = registrations[normalized.userId];
+  if (previous) normalized.registeredAt = previous.registeredAt; // preserve original join time
+  registrations[normalized.userId] = normalized;
+  return normalized;
+}
+
+function removeRegistration(tournament, userId) {
+  const registrations = ensureRegistrations(tournament);
+  const id = cleanString(userId, 40);
+  const existed = Object.prototype.hasOwnProperty.call(registrations, id);
+  delete registrations[id];
+  return existed;
+}
+
+function getRegistration(tournament, userId) {
+  const registrations = ensureRegistrations(tournament);
+  const id = cleanString(userId, 40);
+  return id ? registrations[id] || null : null;
+}
+
+function listRegistrations(tournament) {
+  const registrations = ensureRegistrations(tournament);
+  return Object.values(registrations).sort((a, b) =>
+    String(a.registeredAt).localeCompare(String(b.registeredAt))
+  );
+}
+
+function registrationCount(tournament) {
+  return Object.keys(ensureRegistrations(tournament)).length;
+}
+
+function isFull(tournament) {
+  return registrationCount(tournament) >= positiveInt(tournament?.slots, 16);
+}
+
+// Player objects for the seeding engine.
+function tournamentPlayers(tournament, { serverIndex = null } = {}) {
+  return listRegistrations(tournament)
+    .filter((reg) => serverIndex == null || reg.serverIndex === serverIndex)
+    .map((reg) => ({
+      id: reg.userId,
+      userId: reg.userId,
+      kills: reg.effectiveKills,
+      discordName: reg.discordName,
+      robloxUsername: reg.robloxUsername,
+      robloxUserId: reg.robloxUserId,
+      robloxAvatarUrl: reg.robloxAvatarUrl,
+      accountKind: reg.accountKind,
+    }));
+}
+
+// ---------------------------------------------------------------------------
+// Servers (per 16-player bracket)
+// ---------------------------------------------------------------------------
+
+function ensureServers(tournament) {
+  if (!tournament.servers || typeof tournament.servers !== "object") tournament.servers = {};
+  return tournament.servers;
+}
+
+function getServer(tournament, index) {
+  const servers = ensureServers(tournament);
+  return servers[String(index)] || null;
+}
+
+function ensureServer(tournament, index) {
+  const servers = ensureServers(tournament);
+  const key = String(nonNegativeInt(index, 0));
+  if (!servers[key]) {
+    servers[key] = {
+      index: Number(key),
+      launched: false,
+      launchMessageId: "",
+      threadId: "",
+      stageNumber: 1,
+      currentStage: null, // computed stage plan (from seeding)
+      decisions: {}, // matchKey -> { winnerId, noShowIds }
+      semifinalLosers: [],
+      champion: null,
+      placement: { first: null, second: null, third: null },
+      done: false,
+    };
+  }
+  return servers[key];
+}
+
+module.exports = {
+  TOURNAMENT_STATE_VERSION,
+  TOURNAMENT_STATUSES,
+  ACCOUNT_KINDS,
+  TWINK_THRESHOLD,
+  ensureTournamentState,
+  getDraft,
+  setDraft,
+  clearDraft,
+  createTournamentFromDraft,
+  getTournament,
+  listTournaments,
+  updateTournament,
+  deleteTournament,
+  listTestTournaments,
+  clearTournamentPlay,
+  buildFakeRegistrations,
+  resolveEffectiveKills,
+  tierRepresentativeKills,
+  canSelfDeclareTwink,
+  normalizeRegistration,
+  upsertRegistration,
+  removeRegistration,
+  getRegistration,
+  listRegistrations,
+  registrationCount,
+  isFull,
+  tournamentPlayers,
+  getServer,
+  ensureServer,
+  makeId,
+  nowIso,
+};

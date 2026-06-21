@@ -335,6 +335,9 @@ const {
 } = require("./src/profile/synergy-snapshots");
 const { createAntiteamOperator } = require("./src/antiteam/operator");
 const { ANTITEAM_COMMAND_NAME } = require("./src/antiteam/view");
+const { createTournamentOperator } = require("./src/tournament/operator");
+const { TOURNAMENT_COMMAND_NAME } = require("./src/tournament/commands");
+const { ensureTournamentState } = require("./src/tournament/state");
 const { buildComboCommands } = require("./src/combo-guide/commands");
 const {
   addCharacterToGuide,
@@ -6846,6 +6849,91 @@ async function handleAntiteamInteractionSafely(interaction, methodName) {
     await replyWithInteractionFailureFallback(
       interaction,
       "Не удалось обработать антитим-действие. Попробуй ещё раз или попроси модератора обновить панель."
+    );
+    return true;
+  }
+}
+
+let tournamentOperator = null;
+
+// Adapter that exposes just what the tournament module needs from a profile:
+// the linked Roblox identity, approved kills, and the last proof screenshot.
+function getTournamentPlayerSnapshot(userId) {
+  const profile = db.profiles?.[userId] ? getProfile(userId) : null;
+  if (!profile) return { hasRobloxAccount: false, approvedKills: 0 };
+  const roblox = profile.domains?.roblox && typeof profile.domains.roblox === "object" ? profile.domains.roblox : {};
+  const approvedKills = Number(profile.approvedKills);
+  const robloxUserId = roblox.userId ? String(roblox.userId) : null;
+  const robloxUsername = roblox.username || null;
+  const robloxAvatarUrl = roblox.avatarUrl || null;
+  const verified =
+    roblox.verificationStatus === "verified" || Boolean(roblox.verifiedAt) || Boolean(roblox.hasVerifiedAccount);
+
+  let lastScreenshotUrl = null;
+  const lastSubmissionId = profile.lastSubmissionId;
+  if (lastSubmissionId && db.submissions?.[lastSubmissionId]) {
+    const submission = db.submissions[lastSubmissionId];
+    const candidate = submission.screenshotUrl || submission.reviewAttachmentUrl || null;
+    if (typeof candidate === "string" && /^https?:\/\//i.test(candidate)) lastScreenshotUrl = candidate;
+  }
+
+  return {
+    hasRobloxAccount: Boolean(robloxUserId && robloxUsername),
+    verified,
+    robloxUserId,
+    robloxUsername,
+    robloxAvatarUrl,
+    approvedKills: Number.isFinite(approvedKills) ? approvedKills : 0,
+    lastScreenshotUrl,
+  };
+}
+
+// Offload the tournament bracket/summary PNG renders to the worker pool, with an
+// inline fallback (mirrors renderSupportProgressCardOffThread).
+const tournamentImageInline = require("./src/tournament/bracket-image");
+const TOURNAMENT_IMAGE_MODULE = require.resolve("./src/tournament/bracket-image");
+function renderTournamentImageOffThread(exportName, model) {
+  return renderOffThread(
+    { modulePath: TOURNAMENT_IMAGE_MODULE, exportName, args: [model] },
+    () => tournamentImageInline[exportName](model)
+  );
+}
+
+function getTournamentOperator() {
+  if (tournamentOperator) return tournamentOperator;
+  tournamentOperator = createTournamentOperator({
+    db,
+    saveDb,
+    runSerializedMutation: runSerializedDbMutation,
+    isModerator,
+    logError: (...args) => console.error(...args),
+    resolveRobloxUser: resolveRobloxUserByUsername,
+    getPlayerSnapshot: getTournamentPlayerSnapshot,
+    fetchChannel: async (channelId) => {
+      const cachedChannel = client.channels?.cache?.get?.(channelId) || null;
+      if (cachedChannel) return cachedChannel;
+      return client.channels.fetch(channelId).catch(() => null);
+    },
+    fetchImageBuffer: (url) => downloadToBuffer(url).catch(() => null),
+    renderImage: renderTournamentImageOffThread,
+    fetchAvatarHeadshots: (robloxUserIds) => robloxApiClient.fetchUserAvatarHeadshots(robloxUserIds),
+  });
+  return tournamentOperator;
+}
+
+async function handleTournamentInteractionSafely(interaction, methodName) {
+  try {
+    const operator = getTournamentOperator();
+    if (typeof operator?.[methodName] !== "function") return false;
+    return await operator[methodName](interaction);
+  } catch (error) {
+    console.error(
+      `Tournament interaction failed (${interaction?.customId || interaction?.commandName || methodName}):`,
+      error?.message || error
+    );
+    await replyWithInteractionFailureFallback(
+      interaction,
+      "Не удалось обработать действие турнира. Попробуй ещё раз или обнови панель."
     );
     return true;
   }
@@ -16555,6 +16643,7 @@ client.once("clientReady", async () => {
   console.log(`DB path: ${DB_PATH}`);
   console.log(`Analytics DB path: ${ANALYTICS_DB_PATH}`);
   console.log(buildRobloxStartupAuditLine(db));
+  if (ensureTournamentState(db).mutated) saveDb();
   let generated = {
     characterRoles: 0,
     resolvedCharacters: 0,
@@ -17630,7 +17719,26 @@ client.on("interactionCreate", async (interaction) => {
     }
   }
 
+  if (customId.startsWith("t:")) {
+    const tournamentMethod = interaction.isButton?.()
+      ? "handleButtonInteraction"
+      : interaction.isStringSelectMenu?.() || interaction.isRoleSelectMenu?.() || interaction.isChannelSelectMenu?.()
+        ? "handleSelectMenuInteraction"
+        : interaction.isModalSubmit?.()
+          ? "handleModalSubmitInteraction"
+          : "";
+    if (tournamentMethod && await handleTournamentInteractionSafely(interaction, tournamentMethod)) {
+      return;
+    }
+  }
+
   if (interaction.isChatInputCommand()) {
+    if (interaction.commandName === TOURNAMENT_COMMAND_NAME) {
+      if (await handleTournamentInteractionSafely(interaction, "handleSlashCommand")) {
+        return;
+      }
+    }
+
     if (interaction.commandName === ANTITEAM_COMMAND_NAME) {
       if (await handleAntiteamInteractionSafely(interaction, "handleSlashCommand")) {
         return;
