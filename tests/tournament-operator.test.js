@@ -168,3 +168,118 @@ test("tournament registration refreshes the public announcement and writes a log
   assert.match(logs[0], /TOURNAMENT_REGISTER:/);
   assert.match(logs[0], /announcement=updated/);
 });
+
+test("tournament registration relinks and edits a visible announcement when stored message id is stale", async () => {
+  const calls = [];
+  const logs = [];
+  const db = {};
+  const tournament = state.createTournamentFromDraft(
+    db,
+    {
+      name: "Тестовый турнир",
+      slots: 16,
+      startsAtIso: "2026-06-21T20:00:00.000Z",
+      announceChannelId: "channel-1",
+    },
+    { id: "tour-1", now: "2026-06-21T18:00:00.000Z" }
+  );
+  state.updateTournament(db, tournament.id, {
+    announce: { channelId: "channel-1", messageId: "stale-message" },
+  });
+  const visibleMessage = {
+    id: "visible-message",
+    channelId: "channel-1",
+    components: [{ components: [{ customId: buildCustomId(ACTIONS.REGISTER_OPEN, tournament.id) }] }],
+    async edit(payload) {
+      calls.push("visibleAnnouncementEdit");
+      this.editedPayload = payload;
+      return payload;
+    },
+  };
+  const channel = {
+    id: "channel-1",
+    messages: {
+      async fetch(arg) {
+        if (arg === "stale-message") {
+          calls.push("staleFetch");
+          return null;
+        }
+        calls.push("recentSearch");
+        return new Map([[visibleMessage.id, visibleMessage]]);
+      },
+    },
+  };
+  const operator = createTournamentOperator({
+    db,
+    saveDb: () => calls.push("saveDb"),
+    runSerializedMutation: async ({ mutate }) => mutate(),
+    fetchChannel: async () => channel,
+    logLine: async (line) => logs.push(line),
+  });
+  const interaction = createButtonInteraction(buildCustomId(ACTIONS.REG_USE_MAIN, tournament.id), calls);
+
+  const handled = await operator.handleButtonInteraction(interaction);
+
+  assert.equal(handled, true);
+  assert.ok(calls.includes("visibleAnnouncementEdit"), "expected recent visible announcement to be edited");
+  assert.equal(state.getTournament(db, tournament.id).announce.messageId, "visible-message");
+  assert.match(JSON.stringify(visibleMessage.editedPayload), /# \*\*1 \/ 16\*\*/);
+  assert.ok(logs.some((line) => /TOURNAMENT_ANNOUNCE_RELINK/.test(line)));
+  assert.ok(logs.some((line) => /TOURNAMENT_REGISTER:/.test(line) && /announcement=relinked/.test(line)));
+});
+
+test("tournament manage refresh republishes the announcement when no editable message is found", async () => {
+  const calls = [];
+  const logs = [];
+  const db = {};
+  const tournament = state.createTournamentFromDraft(
+    db,
+    {
+      name: "Тестовый турнир",
+      slots: 16,
+      startsAtIso: "2026-06-21T20:00:00.000Z",
+      announceChannelId: "channel-1",
+    },
+    { id: "tour-1", now: "2026-06-21T18:00:00.000Z" }
+  );
+  state.updateTournament(db, tournament.id, {
+    announce: { channelId: "channel-1", messageId: "missing-message" },
+  });
+  for (let i = 1; i <= 6; i += 1) {
+    state.upsertRegistration(tournament, { userId: `user-${i}`, discordName: `user-${i}` });
+  }
+  const channel = {
+    id: "channel-1",
+    messages: {
+      async fetch(arg) {
+        calls.push(typeof arg === "string" ? `fetch:${arg}` : "recentSearch");
+        return typeof arg === "string" ? null : new Map();
+      },
+    },
+    async send(payload) {
+      calls.push("announcementSend");
+      this.sentPayload = payload;
+      return { id: "new-message", channelId: "channel-1" };
+    },
+  };
+  const operator = createTournamentOperator({
+    db,
+    saveDb: () => calls.push("saveDb"),
+    runSerializedMutation: async ({ mutate }) => mutate(),
+    isModerator: (member) => Boolean(member?.mod),
+    fetchChannel: async () => channel,
+    logLine: async (line) => logs.push(line),
+  });
+  const interaction = createButtonInteraction(buildCustomId(ACTIONS.MANAGE_REFRESH, tournament.id), calls);
+  interaction.member = { mod: true };
+  interaction.user = { id: "mod-1", tag: "mod#0001" };
+
+  const handled = await operator.handleButtonInteraction(interaction);
+
+  assert.equal(handled, true);
+  assert.ok(calls.includes("announcementSend"), "expected manage refresh to republish missing announcement");
+  assert.equal(state.getTournament(db, tournament.id).announce.messageId, "new-message");
+  assert.match(JSON.stringify(channel.sentPayload), /# \*\*6 \/ 16\*\*/);
+  assert.match(JSON.stringify(interaction.editedPayload), /Анонс: republished/);
+  assert.ok(logs.some((line) => /TOURNAMENT_MANAGE_REFRESH:/.test(line) && /announcement=republished/.test(line)));
+});
