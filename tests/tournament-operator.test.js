@@ -371,3 +371,58 @@ test("tournament Roblox modal writes main account lookups back into the shared n
   });
   assert.match(JSON.stringify(interaction.editedPayload), /MainZavoz/);
 });
+
+test("tournament form hydrates zero-kill main registrations before seeding", async () => {
+  const calls = [];
+  const logs = [];
+  const db = {};
+  const tournament = state.createTournamentFromDraft(
+    db,
+    {
+      name: "Тестовый турнир",
+      slots: 16,
+      startsAtIso: "2026-06-21T20:00:00.000Z",
+      announceChannelId: "channel-1",
+    },
+    { id: "tour-1", now: "2026-06-21T18:00:00.000Z" }
+  );
+  state.upsertRegistration(tournament, {
+    userId: "zero-main",
+    discordName: "zero#0001",
+    robloxUsername: "ZeroMain",
+    accountKind: "main",
+    approvedKills: 0,
+    effectiveKills: 0,
+  });
+  state.upsertRegistration(tournament, {
+    userId: "known-main",
+    discordName: "known#0001",
+    robloxUsername: "KnownMain",
+    accountKind: "main",
+    approvedKills: 3200,
+    effectiveKills: 3200,
+  });
+  const operator = createTournamentOperator({
+    db,
+    saveDb: () => calls.push("saveDb"),
+    runSerializedMutation: async ({ mutate }) => mutate(),
+    isModerator: (member) => Boolean(member?.mod),
+    getPlayerSnapshot: async (userId) => (
+      userId === "zero-main" ? { approvedKills: 8275 } : { approvedKills: 0 }
+    ),
+    logLine: async (line) => logs.push(line),
+  });
+  const interaction = createButtonInteraction(buildCustomId(ACTIONS.MANAGE_FORM_DUELS, tournament.id), calls);
+  interaction.member = { mod: true };
+  interaction.user = { id: "mod-1", tag: "mod#0001" };
+
+  const handled = await operator.handleButtonInteraction(interaction);
+
+  assert.equal(handled, true);
+  const repaired = state.getRegistration(state.getTournament(db, tournament.id), "zero-main");
+  assert.equal(repaired.approvedKills, 8275);
+  assert.equal(repaired.effectiveKills, 8275);
+  assert.equal(repaired.seedNumber, 1);
+  assert.match(JSON.stringify(interaction.replyPayload), /ZeroMain \(8\s*275\)/);
+  assert.ok(logs.some((line) => /TOURNAMENT_KILLS_HYDRATE:/.test(line) && /repaired=1/.test(line)));
+});

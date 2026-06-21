@@ -6874,6 +6874,60 @@ let tournamentOperator = null;
 
 // Adapter that exposes just what the tournament module needs from a profile:
 // the linked Roblox identity, approved kills, and the last proof screenshot.
+function normalizeTournamentApprovedKills(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const amount = Number(value);
+  if (!Number.isFinite(amount) || amount < 0) return null;
+  return Math.round(amount);
+}
+
+function submissionTournamentRecency(submission = {}) {
+  return Date.parse(submission.reviewedAt || "")
+    || Date.parse(submission.createdAt || "")
+    || 0;
+}
+
+function pickTournamentApprovedSubmissionKills(profile = {}) {
+  const userId = String(profile?.userId || "").trim();
+  if (!userId || !db.submissions || typeof db.submissions !== "object") return null;
+  const approved = Object.values(db.submissions)
+    .filter((submission) => (
+      submission
+      && typeof submission === "object"
+      && submission.status === "approved"
+      && String(submission.userId || "").trim() === userId
+      && normalizeTournamentApprovedKills(submission.kills) !== null
+    ));
+  if (!approved.length) return null;
+
+  const submissionIds = [
+    profile.lastSubmissionId,
+    profile.domains?.onboarding?.lastSubmissionId,
+    profile.summary?.onboarding?.lastSubmissionId,
+  ].map((value) => String(value || "").trim()).filter(Boolean);
+  const pinned = submissionIds.length
+    ? approved.find((submission) => submissionIds.includes(String(submission.id || "").trim()))
+    : null;
+  const source = pinned || approved.reduce((best, submission) => (
+    !best || submissionTournamentRecency(submission) >= submissionTournamentRecency(best) ? submission : best
+  ), null);
+  return normalizeTournamentApprovedKills(source?.kills);
+}
+
+function pickTournamentApprovedKills(profile = {}) {
+  const candidates = [
+    profile.approvedKills,
+    profile.domains?.onboarding?.approvedKills,
+    profile.summary?.onboarding?.approvedKills,
+    profile.summary?.approvedKills,
+  ].map((value) => normalizeTournamentApprovedKills(value)).filter((value) => value !== null);
+  const positiveProfileKills = candidates.find((value) => value > 0);
+  if (positiveProfileKills !== undefined) return positiveProfileKills;
+  const submissionKills = pickTournamentApprovedSubmissionKills(profile);
+  if (submissionKills !== null && submissionKills > 0) return submissionKills;
+  return candidates.length ? candidates[0] : (submissionKills ?? 0);
+}
+
 function getTournamentPlayerSnapshot(userId) {
   const profile = db.profiles?.[userId] ? getProfile(userId) : null;
   if (!profile) return { hasRobloxAccount: false, approvedKills: 0 };
@@ -6896,12 +6950,7 @@ function getTournamentPlayerSnapshot(userId) {
   const usableRoblox = robloxCandidates.map((entry) => resolveUsableVerifiedRobloxIdentity(entry)).find(Boolean);
   const fallbackRoblox = robloxCandidates.find((entry) => entry.userId && entry.username) || {};
   const roblox = usableRoblox || fallbackRoblox;
-  const approvedKills = Number(
-    profile.approvedKills
-      ?? profile.domains?.onboarding?.approvedKills
-      ?? profile.summary?.approvedKills
-      ?? profile.summary?.onboarding?.approvedKills
-  );
+  const approvedKills = pickTournamentApprovedKills(profile);
   const robloxUserId = roblox.userId ? String(roblox.userId) : null;
   const robloxUsername = roblox.username || null;
   const robloxAvatarUrl = roblox.avatarUrl || null;

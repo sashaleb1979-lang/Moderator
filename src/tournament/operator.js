@@ -20,6 +20,7 @@ const { parseMskDateTime } = require("./time");
 const seeding = require("./seeding");
 const state = require("./state");
 const bracketImage = require("./bracket-image");
+const { killTierFor } = require("../onboard/kill-tiers");
 
 const UNKNOWN_INTERACTION_CODES = new Set([10062, 40060]);
 
@@ -29,6 +30,11 @@ function isUnknownInteractionError(error) {
 
 function toPositiveIntOrNull(value) {
   const number = Number(String(value).replace(/[^\d]/g, ""));
+  return Number.isSafeInteger(number) && number > 0 ? number : null;
+}
+
+function toPositiveKills(value) {
+  const number = Number(value);
   return Number.isSafeInteger(number) && number > 0 ? number : null;
 }
 
@@ -851,6 +857,41 @@ function createTournamentOperator(deps = {}) {
     return finalizeRegistration(interaction, tournamentId, session);
   }
 
+  function registrationNeedsKillHydration(reg = {}) {
+    if (!reg || typeof reg !== "object") return false;
+    const effectiveKills = Number(reg.effectiveKills);
+    if (Number.isSafeInteger(effectiveKills) && effectiveKills > 0) return false;
+    const declaredKills = toPositiveKills(reg.declaredKills);
+    const approvedKills = toPositiveKills(reg.approvedKills);
+    return declaredKills === null && approvedKills === null;
+  }
+
+  async function hydrateZeroKillRegistrations(tournament) {
+    const registrations = state.listRegistrations(tournament);
+    let changed = 0;
+
+    for (const reg of registrations) {
+      if (!registrationNeedsKillHydration(reg)) continue;
+      const snapshot = (await Promise.resolve(getPlayerSnapshot(reg.userId)).catch((error) => {
+        logError("tournament: player kill hydration failed", reg.userId, error?.message || error);
+        return {};
+      })) || {};
+      const approvedKills = toPositiveKills(snapshot.approvedKills);
+      if (approvedKills === null) continue;
+      reg.approvedKills = approvedKills;
+      reg.effectiveKills = state.resolveEffectiveKills({
+        accountKind: reg.accountKind,
+        approvedKills,
+        declaredKills: reg.declaredKills,
+        declaredTier: reg.declaredTier,
+      });
+      reg.effectiveTier = killTierFor(reg.effectiveKills);
+      changed += 1;
+    }
+
+    return changed;
+  }
+
   async function finalizeRegistration(interaction, tournamentId, session) {
     const tournament = state.getTournament(db, tournamentId);
     if (!tournament) {
@@ -988,8 +1029,9 @@ function createTournamentOperator(deps = {}) {
       return true;
     }
     // persist seed numbers + server assignment (single server for v1)
-    await persist("tournament-form", async () => {
+    const hydratedCount = await persist("tournament-form", async () => {
       const fresh = state.getTournament(db, tournamentId);
+      const repaired = await hydrateZeroKillRegistrations(fresh);
       const seeded = seeding.assignSeedNumbers(state.tournamentPlayers(fresh));
       for (const player of seeded) {
         const reg = state.getRegistration(fresh, player.userId || player.id);
@@ -999,9 +1041,15 @@ function createTournamentOperator(deps = {}) {
         }
       }
       state.updateTournament(db, tournamentId, { status: "seeded" });
+      return repaired;
     });
     const fresh = state.getTournament(db, tournamentId);
     const plan = seeding.buildStage(state.tournamentPlayers(fresh), fresh.seedingMode, 1);
+    if (hydratedCount > 0) {
+      await safeLogLine(
+        `TOURNAMENT_KILLS_HYDRATE: tournament="${fresh.name}" id=${fresh.id} repaired=${hydratedCount} by=<@${interaction.user.id}>`
+      );
+    }
     await safeReply(interaction, view.buildRosterPayload(fresh, plan, { serverIndex: 0 }));
     return true;
   }
