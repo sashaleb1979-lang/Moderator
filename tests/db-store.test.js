@@ -23,6 +23,7 @@ const {
 } = require("../src/onboard/presentation");
 const { normalizeIntegrationState } = require("../src/integrations/shared-profile");
 const { syncSotShadowState } = require("../src/sot/loader");
+const { buildComboPanelPayload } = require("../src/combo-guide/editor");
 
 function createDeps(overrides = {}) {
   const defaultCharacters = [
@@ -244,6 +245,8 @@ test("createDbStore.load normalizes legacy db state and marks dirty migrations",
     },
   });
   assert.deepEqual(db.comboGuide.editorRoleIds, ["combo-editor"]);
+  assert.deepEqual(db.comboGuide.generalTechsMessageIds, []);
+  assert.deepEqual(db.comboGuide.characters, []);
   assert.equal(db.profiles.synced, true);
   assert.deepEqual(db.sot, { sotVersion: 1 });
   assert.equal(db.__needsSaveAfterLoad, true);
@@ -251,6 +254,51 @@ test("createDbStore.load normalizes legacy db state and marks dirty migrations",
   assert.equal(calls.sot, 1);
   assert.equal(calls.elo.options.baseDir.length > 0, true);
   assert.deepEqual(calls.tierlist.options.characterCatalog, [{ id: "gojo", label: "Годжо" }]);
+});
+
+test("createDbStore.load normalizes partial combo guide message arrays", () => {
+  const dbPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "moderator-db-load-combo-guide-")), "welcome-db.json");
+  fs.writeFileSync(dbPath, JSON.stringify({
+    config: {
+      integrations: {
+        elo: { sourcePath: "elo-db.json" },
+        tierlist: { sourcePath: "tierlist/state.json" },
+      },
+    },
+    comboGuide: {
+      generalTechsThreadId: "789",
+      characters: [
+        {
+          id: "gojo",
+          name: "Gojo",
+          comboMessageIds: ["100", "", "101"],
+        },
+        {
+          id: "megumi",
+          name: "Megumi",
+          techMessageIds: ["200"],
+        },
+        null,
+      ],
+    },
+  }, null, 2), "utf8");
+
+  const store = createDbStore(createDeps({ dbPath }));
+  const db = store.load();
+
+  assert.deepEqual(db.comboGuide.generalTechsMessageIds, []);
+  assert.equal(db.comboGuide.characters.length, 2);
+  assert.deepEqual(db.comboGuide.characters[0].comboMessageIds, ["100", "101"]);
+  assert.deepEqual(db.comboGuide.characters[0].techMessageIds, []);
+  assert.deepEqual(db.comboGuide.characters[1].comboMessageIds, []);
+  assert.deepEqual(db.comboGuide.characters[1].techMessageIds, ["200"]);
+  assert.equal(db.__needsSaveAfterLoad, true);
+
+  const payload = buildComboPanelPayload(db.comboGuide, "ok", {
+    canManage: true,
+    canEdit: true,
+  });
+  assert.equal(payload.components[0].toJSON().components[0].custom_id, "combo_select_character");
 });
 
 test("createDbStore.load keeps stored config.characters normalized without merging appConfig additions", () => {

@@ -21,6 +21,7 @@ const ACTIONS = Object.freeze({
   SETUP_MODE: "smode", // select: similar | seed
   SETUP_PING: "sping", // role select
   SETUP_CHANNEL: "schan", // channel select
+  SETUP_ROLE: "srole", // role select: participant role
   SETUP_PUBLISH: "spub",
   SETUP_CANCEL: "scancel",
 
@@ -44,11 +45,22 @@ const ACTIONS = Object.freeze({
   MANAGE_REFRESH: "mref",
   MANAGE_CLOSE_REG: "mclose",
   MANAGE_OPEN_REG: "mopen",
-  MANAGE_FORM_DUELS: "mform", // compute seeding / roster
-  MANAGE_LAUNCH_SERVER: "mlaunch", // launch server N -> thread + preliminary bracket
+  MANAGE_FORM_DUELS: "mform", // (re)compute seeding / roster — works anytime
+  MANAGE_LAUNCH_SERVER: "mlaunch", // launch server N -> persist bracket, then side-effects
+  MANAGE_RETRY_THREAD: "mthr", // re-run thread/ping side-effects for a server
   MANAGE_START: "mstart", // open match-result panel
   MANAGE_CANCEL: "mcancel",
-  MANAGE_REMOVE_PLAYER: "mrm",
+
+  // roster / participants
+  MANAGE_ROSTER: "mrost", // open the "who registered" viewer
+  ROSTER_PAGE: "rpg", // extra: page index
+  ROSTER_KILLS_REFRESH: "rkr", // re-hydrate kills for everyone
+  MANAGE_ADD_PLAYER: "madd", // open add-player (user select)
+  ADD_PLAYER_SELECT: "madds", // user select submitted
+  ADD_PLAYER_MODAL: "maddm", // modal: nick + kills (no profile on file)
+  MANAGE_REMOVE_PLAYER: "mrm", // open remove-player (user select)
+  REMOVE_PLAYER_SELECT: "mrms", // user select submitted
+  MANAGE_SYNC_ROLES: "msync", // grant participant role to all registrants
 
   // match-result panel
   MATCH_WIN: "mw", // a side won
@@ -72,6 +84,10 @@ const COLORS = Object.freeze({
   green: 0x57f287,
   gold: 0xfee75c,
   neutral: 0x2b2d31,
+  purple: 0x9b59b6,
+  slate: 0x4e5d94,
+  orange: 0xe67e22,
+  teal: 0x1abc9c,
 });
 
 // build a custom id: t:<action>:<tournamentId>:<...extra>

@@ -167,6 +167,7 @@ function createTournamentFromDraft(db, draft = {}, options = {}) {
     slots,
     startsAtIso: isoTimestamp(draft.startsAtIso, null),
     pingRoleIds: stringList(draft.pingRoleIds, { limit: 40, max: 15 }),
+    participantRoleId: cleanString(draft.participantRoleId, 40),
     rewards: normalizeRewards(draft.rewards),
     conditions: nullableString(draft.conditions, 1000),
     announce: { channelId: cleanString(draft.announceChannelId, 40), messageId: "" },
@@ -310,10 +311,34 @@ function normalizeRegistration(value = {}, { now } = {}) {
     declaredKills,
     effectiveKills,
     effectiveTier: killTierFor(effectiveKills),
+    killsSource: nullableString(value.killsSource, 40),
+    addedManually: Boolean(value.addedManually),
     registeredAt: isoTimestamp(value.registeredAt, isoTimestamp(now, nowIso())),
     serverIndex: value.serverIndex == null ? null : nonNegativeInt(value.serverIndex, null),
     seedNumber: value.seedNumber == null ? null : positiveInt(value.seedNumber, null),
   };
+}
+
+// Roblox profile URL for a registration/player (clickable in V2 TextDisplay).
+function robloxProfileUrl(robloxUserId) {
+  const id = cleanString(robloxUserId, 40);
+  return /^\d+$/.test(id) ? `https://www.roblox.com/users/${id}/profile` : null;
+}
+
+const KILLS_SOURCE_LABELS = Object.freeze({
+  profile: "профиль",
+  "profile-domain": "профиль",
+  submission: "пруф",
+  "recent-submission": "пруф",
+  tierlist: "тир-лист",
+  declared: "заявлено",
+  manual: "вручную",
+  session: "заявка",
+});
+
+function killsSourceLabel(source) {
+  const key = cleanString(source, 40);
+  return KILLS_SOURCE_LABELS[key] || (key || "—");
 }
 
 function ensureRegistrations(tournament) {
@@ -362,7 +387,8 @@ function isFull(tournament) {
   return registrationCount(tournament) >= positiveInt(tournament?.slots, 16);
 }
 
-// Player objects for the seeding engine.
+// Player objects for the seeding engine + panels (carries roster metadata so
+// every nick can be rendered as a Roblox link with kills/source).
 function tournamentPlayers(tournament, { serverIndex = null } = {}) {
   return listRegistrations(tournament)
     .filter((reg) => serverIndex == null || reg.serverIndex === serverIndex)
@@ -370,11 +396,17 @@ function tournamentPlayers(tournament, { serverIndex = null } = {}) {
       id: reg.userId,
       userId: reg.userId,
       kills: reg.effectiveKills,
+      effectiveKills: reg.effectiveKills,
+      effectiveTier: reg.effectiveTier,
+      killsSource: reg.killsSource,
       discordName: reg.discordName,
       robloxUsername: reg.robloxUsername,
       robloxUserId: reg.robloxUserId,
       robloxAvatarUrl: reg.robloxAvatarUrl,
+      robloxProfileUrl: robloxProfileUrl(reg.robloxUserId),
       accountKind: reg.accountKind,
+      seedNumber: reg.seedNumber,
+      addedManually: reg.addedManually,
     }));
 }
 
@@ -433,6 +465,8 @@ module.exports = {
   resolveEffectiveKills,
   tierRepresentativeKills,
   canSelfDeclareTwink,
+  robloxProfileUrl,
+  killsSourceLabel,
   normalizeRegistration,
   upsertRegistration,
   removeRegistration,

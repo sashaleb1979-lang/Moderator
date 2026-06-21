@@ -334,11 +334,36 @@ async function renderBracketCard(model = {}) {
   text(ctx, titleFit.text, PAD, 50, titleFit.px, "#ffffff", "bold");
   text(ctx, model.subtitle || "", PAD, 80, 18, "#aeb5c2", "regular");
 
+  // classic bracket connectors between cleanly-halving rounds (8→4→2)
+  const colX = (ci) => PAD + ci * (COL_W + COL_GAP);
+  const matchCenterY = (m) => HEADER_H + 14 + m * (MATCH_H + MATCH_GAP) + Math.floor(MATCH_H / 2);
+  for (let ci = 0; ci < columns.length - 1; ci += 1) {
+    const here = (columns[ci].matches || []).length;
+    const next = (columns[ci + 1].matches || []).length;
+    if (!next || here !== next * 2) continue;
+    const rightX = colX(ci) + COL_W;
+    const nextLeftX = colX(ci + 1);
+    const midX = rightX + Math.floor(COL_GAP / 2);
+    for (let j = 0; j < next; j += 1) {
+      const yA = matchCenterY(2 * j);
+      const yB = matchCenterY(2 * j + 1);
+      const yT = matchCenterY(j);
+      ctx.strokeStyle = "#3a4150";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(rightX, yA); ctx.lineTo(midX, yA);
+      ctx.moveTo(rightX, yB); ctx.lineTo(midX, yB);
+      ctx.moveTo(midX, yA); ctx.lineTo(midX, yB);
+      ctx.moveTo(midX, Math.floor((yA + yB) / 2)); ctx.lineTo(nextLeftX, yT);
+      ctx.stroke();
+    }
+  }
+
   columns.forEach((column, ci) => {
-    const x = PAD + ci * (COL_W + COL_GAP);
+    const x = colX(ci);
     rect(ctx, x, HEADER_H - 28, COL_W, 26, PANEL_HEX);
     strokeRect(ctx, x, HEADER_H - 28, COL_W, 26, BORDER_HEX, 1);
-    centered(ctx, column.label, x, HEADER_H - 9, COL_W, 18, "#dfe3ea", "bold", 12);
+    centered(ctx, `${column.label} · ${(column.matches || []).length} боёв`, x, HEADER_H - 9, COL_W, 18, "#dfe3ea", "bold", 11);
 
     let y = HEADER_H + 14;
     for (const match of column.matches || []) {

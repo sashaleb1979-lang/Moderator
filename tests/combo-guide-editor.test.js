@@ -7,6 +7,7 @@ const {
   buildComboPanelPayload,
   buildMessageSelectPayload,
   normalizeComboGuideEditorRoleIds,
+  normalizeComboGuideState,
 } = require("../src/combo-guide/editor");
 
 function makeGuideState() {
@@ -69,4 +70,63 @@ test("message picker hides remove button for extra editors", () => {
 
   assert.equal(payload.components.length, 1);
   assert.equal(payload.components[0].toJSON().components[0].custom_id, "combo_select_message");
+});
+
+test("combo panel payload tolerates partial guide state", () => {
+  const payload = buildComboPanelPayload({
+    channelId: "456",
+    generalTechsThreadId: "789",
+    characters: [
+      {
+        id: "gojo",
+        name: "Gojo",
+        emoji: "⚪",
+      },
+    ],
+  }, "ok", {
+    canManage: true,
+    canEdit: true,
+  });
+
+  assert.equal(payload.components.length, 4);
+  const selectOptions = payload.components[0].toJSON().components[0].options;
+  assert.equal(selectOptions.length, 2);
+  assert.equal(selectOptions[0].value, "__general_techs__");
+  assert.equal(selectOptions[0].description, "0 сообщений");
+  assert.equal(selectOptions[1].description, "0 комбо, 0 тех");
+});
+
+test("message picker tolerates partial character and guide state", () => {
+  const payload = buildMessageSelectPayload({
+    id: "gojo",
+    name: "Gojo",
+    emoji: "⚪",
+  }, {
+    channelId: "456",
+  }, {
+    canManage: true,
+  });
+
+  assert.equal(payload.content, "У этого персонажа нет сообщений для редактирования.");
+  assert.equal(payload.ephemeral, true);
+});
+
+test("combo guide state normalization fills missing arrays", () => {
+  const normalized = normalizeComboGuideState({
+    editorRoleIds: ["111", "", "111"],
+    generalTechsThreadId: "789",
+    characters: [
+      {
+        id: "gojo",
+        name: "Gojo",
+      },
+      null,
+    ],
+  });
+
+  assert.deepEqual(normalized.editorRoleIds, ["111"]);
+  assert.deepEqual(normalized.generalTechsMessageIds, []);
+  assert.equal(normalized.characters.length, 1);
+  assert.deepEqual(normalized.characters[0].comboMessageIds, []);
+  assert.deepEqual(normalized.characters[0].techMessageIds, []);
 });

@@ -3,9 +3,15 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
+const { MessageFlags } = require("discord.js");
 const { createTournamentOperator } = require("../src/tournament/operator");
 const { ACTIONS, buildCustomId } = require("../src/tournament/commands");
 const state = require("../src/tournament/state");
+
+// announcement refreshes are debounced (~1.5s) and launch side-effects are
+// fire-and-forget; wait long enough for them to settle.
+const delay = (ms = 1700) => new Promise((r) => setTimeout(r, ms));
+const isV2 = (payload) => Boolean(Number(payload && payload.flags) & MessageFlags.IsComponentsV2);
 
 function createModalInteraction(customId, values = {}, calls = []) {
   return {
@@ -158,6 +164,8 @@ test("tournament registration refreshes the public announcement and writes a log
       calls.push(`channelFetch:${channelId}`);
       return channel;
     },
+    // authoritative kills come from the profile snapshot now
+    getPlayerSnapshot: async () => ({ approvedKills: 4200, killsSource: "profile", hasRobloxAccount: true }),
     logLine: async (line) => logs.push(line),
   });
   const interaction = createButtonInteraction(buildCustomId(ACTIONS.REG_USE_MAIN, tournament.id), calls);
@@ -166,12 +174,14 @@ test("tournament registration refreshes the public announcement and writes a log
 
   assert.equal(handled, true);
   assert.equal(state.registrationCount(state.getTournament(db, tournament.id)), 1);
+  const reg = state.getRegistration(state.getTournament(db, tournament.id), "user-1");
+  assert.equal(reg.effectiveKills, 4200, "authoritative kills resolved (never zero)");
   assert.ok(calls.indexOf("deferUpdate") < calls.indexOf("saveDb"), "expected interaction ack before save");
-  assert.ok(calls.includes("announcementEdit"), "expected announcement message edit after registration");
-  assert.match(JSON.stringify(message.editedPayload), /# \*\*1 \/ 16\*\*/);
-  assert.equal(logs.length, 1);
-  assert.match(logs[0], /TOURNAMENT_REGISTER:/);
-  assert.match(logs[0], /announcement=updated/);
+  assert.ok(logs.some((line) => /TOURNAMENT_REGISTER:/.test(line)), "expected register log");
+  // announcement refresh is debounced — fires shortly after, not synchronously
+  await delay();
+  assert.ok(calls.includes("announcementEdit"), "expected debounced announcement edit");
+  assert.match(JSON.stringify(message.editedPayload), /Занято мест: 1 \/ 16/);
 });
 
 test("tournament registration relinks and edits a visible announcement when stored message id is stale", async () => {
@@ -219,6 +229,7 @@ test("tournament registration relinks and edits a visible announcement when stor
     saveDb: () => calls.push("saveDb"),
     runSerializedMutation: async ({ mutate }) => mutate(),
     fetchChannel: async () => channel,
+    getPlayerSnapshot: async () => ({ approvedKills: 4200, killsSource: "profile", hasRobloxAccount: true }),
     logLine: async (line) => logs.push(line),
   });
   const interaction = createButtonInteraction(buildCustomId(ACTIONS.REG_USE_MAIN, tournament.id), calls);
@@ -226,11 +237,13 @@ test("tournament registration relinks and edits a visible announcement when stor
   const handled = await operator.handleButtonInteraction(interaction);
 
   assert.equal(handled, true);
+  assert.ok(logs.some((line) => /TOURNAMENT_REGISTER:/.test(line)), "expected register log");
+  // the (debounced) announcement refresh relinks to the visible message
+  await delay();
   assert.ok(calls.includes("visibleAnnouncementEdit"), "expected recent visible announcement to be edited");
   assert.equal(state.getTournament(db, tournament.id).announce.messageId, "visible-message");
-  assert.match(JSON.stringify(visibleMessage.editedPayload), /# \*\*1 \/ 16\*\*/);
+  assert.match(JSON.stringify(visibleMessage.editedPayload), /Занято мест: 1 \/ 16/);
   assert.ok(logs.some((line) => /TOURNAMENT_ANNOUNCE_RELINK/.test(line)));
-  assert.ok(logs.some((line) => /TOURNAMENT_REGISTER:/.test(line) && /announcement=relinked/.test(line)));
 });
 
 test("tournament manage refresh republishes the announcement when no editable message is found", async () => {
@@ -284,9 +297,11 @@ test("tournament manage refresh republishes the announcement when no editable me
   assert.equal(handled, true);
   assert.ok(calls.includes("announcementSend"), "expected manage refresh to republish missing announcement");
   assert.equal(state.getTournament(db, tournament.id).announce.messageId, "new-message");
-  assert.match(JSON.stringify(channel.sentPayload), /# \*\*6 \/ 16\*\*/);
+  assert.match(JSON.stringify(channel.sentPayload), /Занято мест: 6 \/ 16/);
   assert.match(JSON.stringify(interaction.editedPayload), /Анонс: republished/);
-  assert.equal(Object.prototype.hasOwnProperty.call(interaction.editedPayload, "flags"), false);
+  // management panel is now a Components V2 message (ephemeral flag stripped on update, V2 flag kept)
+  assert.ok(isV2(interaction.editedPayload), "expected V2 management panel");
+  assert.equal(Number(interaction.editedPayload.flags) & MessageFlags.Ephemeral, 0, "ephemeral flag stripped on update");
   assert.ok(logs.some((line) => /TOURNAMENT_MANAGE_REFRESH:/.test(line) && /announcement=republished/.test(line)));
 });
 
@@ -427,7 +442,10 @@ test("tournament form hydrates zero-kill main registrations before seeding", asy
   assert.equal(repaired.effectiveKills, 8275);
   assert.equal(repaired.seedNumber, 1);
   assert.equal(snapshotCalls[0].context.registration.robloxUsername, "ZeroMain");
-  assert.match(JSON.stringify(interaction.replyPayload), /ZeroMain \(8\s*275\)/);
+  // form duels now defers, so the roster (V2) lands in editedPayload
+  const rosterJson = JSON.stringify(interaction.editedPayload);
+  assert.match(rosterJson, /ZeroMain/);
+  assert.match(rosterJson, /8[\s ]?275/);
   assert.ok(logs.some((line) => /TOURNAMENT_KILLS_HYDRATE:/.test(line) && /repaired=1/.test(line)));
 });
 
@@ -482,11 +500,13 @@ test("tournament withdraw resets stale seeded roster before play is launched", a
   assert.deepEqual(fresh.servers, {});
   assert.equal(state.getRegistration(fresh, "user-2").seedNumber, null);
   assert.equal(state.getRegistration(fresh, "user-2").serverIndex, null);
-  assert.match(interaction.editedPayload.content, /распределение сброшено/i);
+  // withdrawal notice is now a Components V2 message (text lives in components)
+  assert.ok(isV2(interaction.editedPayload), "expected V2 withdrawal notice");
+  assert.match(JSON.stringify(interaction.editedPayload), /распределение сброшено/i);
   assert.ok(logs.some((line) => /TOURNAMENT_WITHDRAW:/.test(line) && /playReset=yes/.test(line)));
 });
 
-test("tournament launch refuses to mark server running when private thread cannot be created", async () => {
+test("tournament launch persists a runnable bracket even when the private thread fails", async () => {
   const calls = [];
   const logs = [];
   const db = {};
@@ -537,10 +557,14 @@ test("tournament launch refuses to mark server running when private thread canno
   const handled = await operator.handleButtonInteraction(interaction);
 
   assert.equal(handled, true);
-  assert.deepEqual(calls, ["deferUpdate", "threadCreate", "editReply"]);
-  assert.equal(state.getServer(state.getTournament(db, tournament.id), 0), null);
-  assert.equal(state.getTournament(db, tournament.id).status, "registration");
-  assert.match(JSON.stringify(interaction.editedPayload), /Сервер не запущен/i);
+  // bracket is persisted + runnable immediately, regardless of the thread
+  const server = state.getServer(state.getTournament(db, tournament.id), 0);
+  assert.ok(server && server.launched && server.currentStage, "bracket persisted on launch");
+  assert.equal(state.getTournament(db, tournament.id).status, "running");
+  assert.match(JSON.stringify(interaction.editedPayload), /Панель боёв готова/i);
+  // thread failure is recorded by the background side-effects (not fatal)
+  await delay(60);
+  assert.equal(state.getServer(state.getTournament(db, tournament.id), 0).threadFailed, true);
   assert.ok(logs.some((line) => /private thread create failed/.test(line)));
 });
 
@@ -610,11 +634,16 @@ test("tournament launch creates an unlocked private thread and adds real Discord
   const handled = await operator.handleButtonInteraction(interaction);
 
   assert.equal(handled, true);
+  // bracket persists synchronously; thread/ping happen in the background
   const server = state.getServer(state.getTournament(db, tournament.id), 0);
   assert.equal(server.launched, true);
-  assert.equal(server.threadId, "thread-1");
-  assert.equal(server.launchMessageId, "launch-message-1");
+  assert.ok(server.currentStage, "bracket persisted");
+  assert.match(JSON.stringify(interaction.editedPayload), /Панель боёв готова/i);
+  await delay(60);
+  const settled = state.getServer(state.getTournament(db, tournament.id), 0);
+  assert.equal(settled.threadId, "thread-1");
+  assert.equal(settled.launchMessageId, "launch-message-1");
+  assert.equal(settled.threadFailed, false);
   assert.deepEqual(addedMembers, ["100000000000000001", "100000000000000002"]);
-  assert.equal(lockedValue, null);
-  assert.match(JSON.stringify(interaction.editedPayload), /приватная ветка создана/i);
+  assert.equal(lockedValue, true, "participant thread is locked so players can't chat");
 });

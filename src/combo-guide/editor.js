@@ -14,6 +14,14 @@ const {
 const DISCORD_HARD_LIMIT = 2000;
 const MODAL_TEXT_LIMIT = 4000;
 
+function normalizeComboGuideMessageIds(value) {
+  if (!Array.isArray(value)) return [];
+
+  return value
+    .map((entry) => String(entry || "").trim())
+    .filter(Boolean);
+}
+
 function normalizeComboGuideEditorRoleIds(value) {
   if (!Array.isArray(value)) return [];
 
@@ -35,27 +43,62 @@ function formatComboGuideEditorRoleList(roleIds) {
   return roleIds.map((roleId) => `<@&${roleId}>`).join("\n");
 }
 
+function normalizeComboGuideCharacterState(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+
+  return {
+    ...value,
+    comboMessageIds: normalizeComboGuideMessageIds(value.comboMessageIds),
+    techMessageIds: normalizeComboGuideMessageIds(value.techMessageIds),
+  };
+}
+
+function normalizeComboGuideState(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+
+  return {
+    ...value,
+    editorRoleIds: normalizeComboGuideEditorRoleIds(value.editorRoleIds),
+    generalTechsMessageIds: normalizeComboGuideMessageIds(value.generalTechsMessageIds),
+    characters: Array.isArray(value.characters)
+      ? value.characters
+        .map((character) => normalizeComboGuideCharacterState(character))
+        .filter(Boolean)
+      : [],
+  };
+}
+
+function formatComboGuideCharacterTitle(charState) {
+  const emoji = String(charState?.emoji || "").trim();
+  const name = String(charState?.name || "").trim();
+  const label = [emoji, name].filter(Boolean).join(" ").trim();
+  if (label) return label;
+  const id = String(charState?.id || "").trim();
+  return id || "Без названия";
+}
+
 // ── Panel ──
 
 /**
  * Build the combo guide moderator panel payload.
  */
 function buildComboPanelPayload(guideState, statusText, options = {}) {
+  const normalizedGuideState = normalizeComboGuideState(guideState);
   const canManage = options.canManage !== false;
   const canEdit = options.canEdit !== false;
-  const editorRoleIds = normalizeComboGuideEditorRoleIds(guideState?.editorRoleIds);
+  const editorRoleIds = normalizedGuideState?.editorRoleIds || [];
   const embed = new EmbedBuilder()
     .setTitle("🗺️ Combo Guide — Панель управления")
     .setColor(0x2f3136);
 
-  if (guideState && guideState.characters && guideState.characters.length) {
-    const charList = guideState.characters
-      .map((c) => `${c.emoji} ${c.name}`)
+  if (normalizedGuideState?.characters.length) {
+    const charList = normalizedGuideState.characters
+      .map((c) => formatComboGuideCharacterTitle(c))
       .join("\n");
     embed.addFields({ name: "Персонажи", value: charList, inline: true });
     embed.addFields({
       name: "Канал",
-      value: guideState.channelId ? `<#${guideState.channelId}>` : "Не задан",
+      value: normalizedGuideState.channelId ? `<#${normalizedGuideState.channelId}>` : "Не задан",
       inline: true,
     });
   } else {
@@ -72,24 +115,24 @@ function buildComboPanelPayload(guideState, statusText, options = {}) {
     embed.setFooter({ text: statusText });
   }
 
-  const hasGuide = guideState && guideState.characters && guideState.characters.length > 0;
+  const hasGuide = normalizedGuideState?.characters.length > 0;
 
   const components = [];
 
   if (hasGuide && canEdit) {
     // Character select menu
-    const charOptions = guideState.characters.map((c) => ({
-      label: `${c.emoji} ${c.name}`.slice(0, 100),
+    const charOptions = normalizedGuideState.characters.map((c) => ({
+      label: formatComboGuideCharacterTitle(c).slice(0, 100),
       value: c.id,
       description: `${c.comboMessageIds.length} комбо, ${c.techMessageIds.length} тех`,
     }));
 
     // Add general techs option if exists
-    if (guideState.generalTechsThreadId) {
+    if (normalizedGuideState.generalTechsThreadId) {
       charOptions.unshift({
         label: "🛠️ Общие техи",
         value: "__general_techs__",
-        description: `${guideState.generalTechsMessageIds.length} сообщений`,
+        description: `${normalizedGuideState.generalTechsMessageIds.length} сообщений`,
       });
     }
 
@@ -153,32 +196,39 @@ function buildComboPanelPayload(guideState, statusText, options = {}) {
  * Returns an ephemeral reply with a select menu of all messages.
  */
 function buildMessageSelectPayload(charState, guideState, options = {}) {
+  const normalizedGuideState = normalizeComboGuideState(guideState) || {
+    generalTechsMessageIds: [],
+    characters: [],
+  };
+  const normalizedCharState = charState === "__general_techs__"
+    ? "__general_techs__"
+    : normalizeComboGuideCharacterState(charState);
   const canManage = options.canManage !== false;
-  const isGeneral = charState === "__general_techs__";
+  const isGeneral = normalizedCharState === "__general_techs__";
   const messageOptions = [];
 
   if (isGeneral) {
-    for (let i = 0; i < guideState.generalTechsMessageIds.length; i++) {
+    for (let i = 0; i < normalizedGuideState.generalTechsMessageIds.length; i++) {
       messageOptions.push({
         label: `Общие техи — сообщение ${i + 1}`,
-        value: `general_tech:${guideState.generalTechsMessageIds[i]}`,
+        value: `general_tech:${normalizedGuideState.generalTechsMessageIds[i]}`,
       });
     }
-  } else {
+  } else if (normalizedCharState) {
     // Combo messages
-    for (let i = 0; i < charState.comboMessageIds.length; i++) {
+    for (let i = 0; i < normalizedCharState.comboMessageIds.length; i++) {
       messageOptions.push({
         label: `Комбо — сообщение ${i + 1}`,
-        value: `combo:${charState.comboMessageIds[i]}`,
+        value: `combo:${normalizedCharState.comboMessageIds[i]}`,
         description: `В канале`,
       });
     }
 
     // Tech messages in thread
-    for (let i = 0; i < charState.techMessageIds.length; i++) {
+    for (let i = 0; i < normalizedCharState.techMessageIds.length; i++) {
       messageOptions.push({
         label: `Тех — сообщение ${i + 1}`,
-        value: `tech:${charState.techMessageIds[i]}:${charState.threadId}`,
+        value: `tech:${normalizedCharState.techMessageIds[i]}:${normalizedCharState.threadId}`,
         description: `В ветке`,
       });
     }
@@ -191,7 +241,7 @@ function buildMessageSelectPayload(charState, guideState, options = {}) {
     };
   }
 
-  const title = isGeneral ? "🛠️ Общие техи" : `${charState.emoji} ${charState.name}`;
+  const title = isGeneral ? "🛠️ Общие техи" : formatComboGuideCharacterTitle(normalizedCharState);
 
   const components = [
     new ActionRowBuilder().addComponents(
@@ -207,8 +257,8 @@ function buildMessageSelectPayload(charState, guideState, options = {}) {
     components.push(
       new ActionRowBuilder().addComponents(
         new ButtonBuilder()
-          .setCustomId(`combo_panel_remove_char:${charState.id}`)
-          .setLabel(`Удалить ${charState.name}`)
+          .setCustomId(`combo_panel_remove_char:${normalizedCharState.id}`)
+          .setLabel(`Удалить ${String(normalizedCharState.name || normalizedCharState.id || "персонажа")}`)
           .setStyle(ButtonStyle.Danger)
           .setEmoji("🗑️")
       )
@@ -287,5 +337,6 @@ module.exports = {
   buildMessageSelectPayload,
   buildEditModal,
   handleEditSubmission,
+  normalizeComboGuideState,
   normalizeComboGuideEditorRoleIds,
 };

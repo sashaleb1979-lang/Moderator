@@ -1,13 +1,12 @@
 "use strict";
 
-// All Discord payload builders for the tournament module: setup/hub panels,
-// public announcement, management panel, registration-flow screens, and the
-// match-result panel. Each function returns a plain payload object
-// ({ content?, embeds?, components?, files?, allowedMentions? }); the operator
-// decides where to send it.
+// All Discord payload builders for the tournament module, built on Components V2
+// (rich ContainerBuilder panels — see ui.js). Interactive panels return
+// V2 payloads ({ components, flags: IsComponentsV2 [| Ephemeral] }); modals stay
+// regular ModalBuilders. Nicks render as clickable Roblox profile links with
+// kills everywhere.
 
 const {
-  EmbedBuilder,
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
@@ -17,25 +16,33 @@ const {
   StringSelectMenuBuilder,
   RoleSelectMenuBuilder,
   ChannelSelectMenuBuilder,
-  MessageFlags,
+  UserSelectMenuBuilder,
+  SectionBuilder,
+  ThumbnailBuilder,
   ChannelType,
 } = require("discord.js");
 
 const { ACTIONS, COLORS, buildCustomId } = require("./commands");
 const { formatStartTime } = require("./time");
-const { TWINK_THRESHOLD } = require("./state");
+const { TWINK_THRESHOLD, robloxProfileUrl, killsSourceLabel } = require("./state");
 const seeding = require("./seeding");
+const ui = require("./ui");
 
 const TWINK_WARNING =
   "⚠️ Твинки без согласования с админами и реального количества килов — быстрая дисквалификация при подозрении. " +
   "В заявке должно фигурировать примерно истинное количество килов.";
 
 const SEEDING_MODE_LABELS = Object.freeze({
-  similar: "Близкие килы (равные бои)",
-  seed: "Посевная сетка (сильный vs слабый)",
+  similar: "🎯 Близкие килы (равные бои)",
+  seed: "🏅 Посевная сетка (сильный vs слабый)",
 });
 
-// Representative kills buckets for self-declared strength.
+const ACCOUNT_KIND_LABELS = Object.freeze({
+  main: "основной",
+  alt: "доп. аккаунт",
+  twink: "твинк",
+});
+
 const KILLS_BUCKETS = Object.freeze([
   { value: 500, label: "до 1k килов", min: 0 },
   { value: 2000, label: "1k–3k килов", min: 0 },
@@ -45,9 +52,11 @@ const KILLS_BUCKETS = Object.freeze([
   { value: 18000, label: "15k+ килов", min: 3001 },
 ]);
 
-function ephemeral(payload) {
-  return { ...payload, flags: MessageFlags.Ephemeral };
-}
+const ROSTER_PAGE_SIZE = 8;
+
+// --------------------------------------------------------------------------
+// text/render helpers
+// --------------------------------------------------------------------------
 
 function fmtNumber(value) {
   const number = Number(value);
@@ -56,141 +65,108 @@ function fmtNumber(value) {
 
 function playerName(player) {
   if (!player) return "—";
-  return player.robloxUsername || player.discordName || `<@${player.userId || player.id}>`;
+  return player.robloxUsername || player.discordName || `игрок ${player.userId || player.id || "?"}`;
 }
 
+// plain "Nick (kills)" — used in logs and the summary fallback.
 function playerLabel(player) {
   if (!player) return "—";
-  return `${playerName(player)} (${fmtNumber(player.kills)})`;
+  return `${playerName(player)} (${fmtNumber(player.kills != null ? player.kills : player.effectiveKills)})`;
+}
+
+// markdown: clickable Roblox link + kills (+ optional source) for V2 panels.
+function playerMd(player, { withKills = true, withSource = false } = {}) {
+  if (!player) return "—";
+  const name = playerName(player);
+  const url = player.robloxProfileUrl || robloxProfileUrl(player.robloxUserId);
+  const linked = url ? `[${name}](${url})` : `**${name}**`;
+  if (!withKills) return linked;
+  const kills = fmtNumber(player.kills != null ? player.kills : player.effectiveKills);
+  const src = withSource && player.killsSource ? ` · ${killsSourceLabel(player.killsSource)}` : "";
+  return `${linked} — **${kills}** килов${src}`;
 }
 
 function colorDot(color) {
   return color === seeding.COLOR_RED ? "🔴" : "🔵";
 }
 
-// ---------------------------------------------------------------------------
-// Moderator hub
-// ---------------------------------------------------------------------------
-
-function buildHubPayload(tournaments = [], { statusText = "" } = {}) {
-  const active = tournaments.filter((t) => t.status !== "completed" && t.status !== "cancelled");
-  const embed = new EmbedBuilder()
-    .setTitle("🏆 Панель турниров")
-    .setColor(COLORS.primary)
-    .setDescription(
-      active.length
-        ? active
-            .map(
-              (t) =>
-                `• **${t.name}** — ${statusLabel(t.status)} · ${fmtNumber(
-                  Object.keys(t.registrations || {}).length
-                )}/${fmtNumber(t.slots)} · ${t.startsAtIso ? formatStartTime(t.startsAtIso) : "время не задано"}`
-            )
-            .join("\n")
-        : "Активных турниров нет. Создай новый."
-    );
-  if (statusText) embed.addFields({ name: "Последнее действие", value: statusText });
-
-  const rows = [
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId(buildCustomId(ACTIONS.SETUP_OPEN, "new"))
-        .setLabel("Создать турнир")
-        .setStyle(ButtonStyle.Success),
-      new ButtonBuilder()
-        .setCustomId(buildCustomId(ACTIONS.HUB_REFRESH))
-        .setLabel("Обновить")
-        .setStyle(ButtonStyle.Secondary)
-    ),
-  ];
-  for (const t of active.slice(0, 4)) {
-    rows.push(
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId(buildCustomId(ACTIONS.MANAGE_OPEN, t.id))
-          .setLabel(`Управление: ${t.name}`.slice(0, 80))
-          .setStyle(ButtonStyle.Primary)
-      )
-    );
-  }
-
-  return ephemeral({ embeds: [embed], components: rows });
-}
-
 function statusLabel(status) {
   return (
     {
       draft: "черновик",
-      registration: "идёт набор",
-      seeded: "распределён",
-      running: "идёт",
-      completed: "завершён",
-      cancelled: "отменён",
+      registration: "🟢 идёт набор",
+      seeded: "🧩 распределён",
+      running: "⚔️ идёт",
+      completed: "🏁 завершён",
+      cancelled: "✖ отменён",
     }[status] || status
   );
 }
 
-// ---------------------------------------------------------------------------
-// Test harness panel
-// ---------------------------------------------------------------------------
-
-function buildTestPanelPayload(testTournaments = [], { statusText = "" } = {}) {
-  const embed = new EmbedBuilder()
-    .setTitle("🧪 Тестовая песочница турниров")
-    .setColor(COLORS.neutral)
-    .setDescription(
-      [
-        "Быстро создавай учебный турнир с ботами, прогоняй сетку и откатывай в один клик.",
-        "Тестовые турниры помечены и не мешают боевым.",
-        "",
-        testTournaments.length
-          ? testTournaments
-              .map(
-                (t) =>
-                  `• **${t.name}** — ${statusLabel(t.status)} · ${fmtNumber(
-                    Object.keys(t.registrations || {}).length
-                  )}/${fmtNumber(t.slots)}`
-              )
-              .join("\n")
-          : "_Активных тестов нет._",
-      ].join("\n")
-    );
-  if (statusText) embed.addFields({ name: "Последнее действие", value: statusText });
-
-  const rows = [
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(buildCustomId(ACTIONS.TEST_CREATE, "", "16")).setLabel("Создать тест (16)").setStyle(ButtonStyle.Success),
-      new ButtonBuilder().setCustomId(buildCustomId(ACTIONS.TEST_CREATE, "", "8")).setLabel("Создать тест (8)").setStyle(ButtonStyle.Success),
-      new ButtonBuilder().setCustomId(buildCustomId(ACTIONS.TEST_CREATE, "", "15")).setLabel("Создать тест (15, байи)").setStyle(ButtonStyle.Success),
-      new ButtonBuilder().setCustomId(buildCustomId(ACTIONS.TEST_REFRESH)).setLabel("Обновить").setStyle(ButtonStyle.Secondary)
-    ),
-  ];
-
-  for (const t of testTournaments.slice(0, 3)) {
-    rows.push(
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(buildCustomId(ACTIONS.TEST_FILL, t.id, "full")).setLabel(`Заполнить ботами`).setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId(buildCustomId(ACTIONS.MANAGE_OPEN, t.id)).setLabel("Управление").setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId(buildCustomId(ACTIONS.TEST_RESET, t.id)).setLabel("Сброс").setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId(buildCustomId(ACTIONS.TEST_DELETE, t.id)).setLabel("Удалить").setStyle(ButtonStyle.Danger)
-      )
-    );
-  }
-
-  if (testTournaments.length) {
-    rows.push(
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(buildCustomId(ACTIONS.TEST_PURGE)).setLabel("Удалить ВСЕ тесты").setStyle(ButtonStyle.Danger)
-      )
-    );
-  }
-
-  return ephemeral({ embeds: [embed], components: rows });
+function btn(action, tournamentId, extra = [], { label, style = ButtonStyle.Secondary, emoji, disabled = false } = {}) {
+  const b = new ButtonBuilder()
+    .setCustomId(buildCustomId(action, tournamentId, ...(Array.isArray(extra) ? extra : [extra])))
+    .setStyle(style)
+    .setDisabled(disabled);
+  if (label) b.setLabel(label.slice(0, 80));
+  if (emoji) b.setEmoji(emoji);
+  return b;
 }
 
-// ---------------------------------------------------------------------------
+function linkBtn(url, label, emoji) {
+  const b = new ButtonBuilder().setStyle(ButtonStyle.Link).setURL(url);
+  if (label) b.setLabel(label.slice(0, 80));
+  if (emoji) b.setEmoji(emoji);
+  return b;
+}
+
+// --------------------------------------------------------------------------
+// Moderator hub
+// --------------------------------------------------------------------------
+
+function buildHubPayload(tournaments = [], { statusText = "" } = {}) {
+  const active = tournaments.filter((t) => t.status !== "completed" && t.status !== "cancelled");
+  const c = ui.container(COLORS.primary, (container) => {
+    container.addTextDisplayComponents(ui.td("# 🏆 Панель турниров"));
+    container.addSeparatorComponents(ui.separator());
+    if (active.length) {
+      container.addTextDisplayComponents(
+        ui.td(
+          active
+            .map(
+              (t) =>
+                `• **${t.name}** — ${statusLabel(t.status)} · ${fmtNumber(Object.keys(t.registrations || {}).length)}/${fmtNumber(t.slots)}` +
+                (t.startsAtIso ? ` · ${formatStartTime(t.startsAtIso)}` : "")
+            )
+            .join("\n")
+        )
+      );
+      for (const t of active.slice(0, 4)) {
+        container.addActionRowComponents(
+          ui.row(btn(ACTIONS.MANAGE_OPEN, t.id, [], { label: `Управление: ${t.name}`, style: ButtonStyle.Primary, emoji: "🛠" }))
+        );
+      }
+    } else {
+      container.addTextDisplayComponents(ui.td("_Активных турниров нет. Создай новый._"));
+    }
+    container.addSeparatorComponents(ui.separator());
+    container.addActionRowComponents(
+      ui.row(
+        btn(ACTIONS.SETUP_OPEN, "new", [], { label: "Создать турнир", style: ButtonStyle.Success, emoji: "➕" }),
+        btn(ACTIONS.HUB_REFRESH, "", [], { label: "Обновить", emoji: "🔄" })
+      )
+    );
+    if (statusText) {
+      container.addSeparatorComponents(ui.separator());
+      container.addTextDisplayComponents(ui.td(`-# ${statusText}`));
+    }
+  });
+  return ui.v2Ephemeral(c);
+}
+
+// --------------------------------------------------------------------------
 // Setup panel (draft)
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------
 
 function setupReady(draft) {
   return Boolean(
@@ -206,78 +182,66 @@ function buildSetupPanelPayload(draft = {}, { statusText = "" } = {}) {
   const mode = draft.seedingMode === "seed" ? "seed" : "similar";
   const pingRoles = Array.isArray(draft.pingRoleIds) ? draft.pingRoleIds : [];
   const rewards = draft.rewards || {};
-  const embed = new EmbedBuilder()
-    .setTitle("⚙️ Новый турнир — настройка")
-    .setColor(COLORS.primary)
-    .addFields(
-      { name: "Название", value: String(draft.name || "—").slice(0, 256), inline: true },
-      { name: "Открытых мест", value: draft.slots ? fmtNumber(draft.slots) : "—", inline: true },
-      { name: "Планируется", value: draft.plannedPlayers ? fmtNumber(draft.plannedPlayers) : "—", inline: true },
-      { name: "Время (МСК)", value: draft.startsAtIso ? formatStartTime(draft.startsAtIso) : "—", inline: false },
-      { name: "Режим распределения", value: SEEDING_MODE_LABELS[mode], inline: false },
-      {
-        name: "Пинг-роли",
-        value: pingRoles.length ? pingRoles.map((id) => `<@&${id}>`).join(" ") : "—",
-        inline: false,
-      },
-      {
-        name: "Награды",
-        value:
-          [rewards.first && `🥇 ${rewards.first}`, rewards.second && `🥈 ${rewards.second}`, rewards.third && `🥉 ${rewards.third}`, rewards.extra]
-            .filter(Boolean)
-            .join("\n") || "—",
-        inline: false,
-      },
-      { name: "Условия", value: String(draft.conditions || "—").slice(0, 1024), inline: false },
-      {
-        name: "Канал анонса",
-        value: draft.announceChannelId ? `<#${draft.announceChannelId}>` : "—",
-        inline: false,
-      }
-    )
-    .setFooter({ text: setupReady(draft) ? "Готово к публикации." : "Заполни название, места, время и канал." });
-  if (statusText) embed.addFields({ name: "—", value: statusText });
+  const ready = setupReady(draft);
 
-  const rows = [
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(buildCustomId(ACTIONS.SETUP_BASICS)).setLabel("Основное").setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId(buildCustomId(ACTIONS.SETUP_TIME)).setLabel("Время МСК").setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId(buildCustomId(ACTIONS.SETUP_REWARDS)).setLabel("Награды").setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId(buildCustomId(ACTIONS.SETUP_CONDITIONS)).setLabel("Условия").setStyle(ButtonStyle.Primary)
-    ),
-    new ActionRowBuilder().addComponents(
-      new StringSelectMenuBuilder()
-        .setCustomId(buildCustomId(ACTIONS.SETUP_MODE))
-        .setPlaceholder("Режим распределения пар")
-        .addOptions(
-          { label: SEEDING_MODE_LABELS.similar, value: "similar", default: mode === "similar" },
-          { label: SEEDING_MODE_LABELS.seed, value: "seed", default: mode === "seed" }
-        )
-    ),
-    new ActionRowBuilder().addComponents(
-      new RoleSelectMenuBuilder()
-        .setCustomId(buildCustomId(ACTIONS.SETUP_PING))
-        .setPlaceholder("Роли для пинга")
-        .setMinValues(0)
-        .setMaxValues(10)
-    ),
-    new ActionRowBuilder().addComponents(
-      new ChannelSelectMenuBuilder()
-        .setCustomId(buildCustomId(ACTIONS.SETUP_CHANNEL))
-        .setPlaceholder("Канал для анонса")
-        .addChannelTypes(ChannelType.GuildText)
-    ),
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId(buildCustomId(ACTIONS.SETUP_PUBLISH))
-        .setLabel("Опубликовать анонс")
-        .setStyle(ButtonStyle.Success)
-        .setDisabled(!setupReady(draft)),
-      new ButtonBuilder().setCustomId(buildCustomId(ACTIONS.SETUP_CANCEL)).setLabel("Отмена").setStyle(ButtonStyle.Danger)
-    ),
-  ];
-
-  return ephemeral({ embeds: [embed], components: rows });
+  const c = ui.container(COLORS.purple, (container) => {
+    container.addTextDisplayComponents(ui.td("# ⚙️ Новый турнир — настройка"));
+    container.addSeparatorComponents(ui.separator());
+    container.addTextDisplayComponents(
+      ui.td(
+        [
+          `**Название:** ${draft.name || "—"}`,
+          `**Мест:** ${draft.slots ? fmtNumber(draft.slots) : "—"} · **планируется:** ${draft.plannedPlayers ? fmtNumber(draft.plannedPlayers) : "—"}`,
+          `**Время (МСК):** ${draft.startsAtIso ? formatStartTime(draft.startsAtIso) : "—"}`,
+          `**Режим:** ${SEEDING_MODE_LABELS[mode]}`,
+          `**Пинг-роли:** ${pingRoles.length ? pingRoles.map((id) => `<@&${id}>`).join(" ") : "—"}`,
+          `**Роль участника:** ${draft.participantRoleId ? `<@&${draft.participantRoleId}>` : "—"}`,
+          `**Канал анонса:** ${draft.announceChannelId ? `<#${draft.announceChannelId}>` : "—"}`,
+          `**Награды:** ${[rewards.first && `🥇 ${rewards.first}`, rewards.second && `🥈 ${rewards.second}`, rewards.third && `🥉 ${rewards.third}`, rewards.extra].filter(Boolean).join(" · ") || "—"}`,
+          `**Условия:** ${draft.conditions ? String(draft.conditions).slice(0, 300) : "—"}`,
+        ].join("\n")
+      )
+    );
+    container.addSeparatorComponents(ui.separator());
+    container.addActionRowComponents(
+      ui.row(
+        btn(ACTIONS.SETUP_BASICS, "", [], { label: "Основное", style: ButtonStyle.Primary, emoji: "📝" }),
+        btn(ACTIONS.SETUP_TIME, "", [], { label: "Время МСК", style: ButtonStyle.Primary, emoji: "🕒" }),
+        btn(ACTIONS.SETUP_REWARDS, "", [], { label: "Награды", style: ButtonStyle.Primary, emoji: "🎁" }),
+        btn(ACTIONS.SETUP_CONDITIONS, "", [], { label: "Условия", style: ButtonStyle.Primary, emoji: "📋" })
+      )
+    );
+    container.addActionRowComponents(
+      ui.row(
+        new StringSelectMenuBuilder()
+          .setCustomId(buildCustomId(ACTIONS.SETUP_MODE))
+          .setPlaceholder("Режим распределения пар")
+          .addOptions(
+            { label: "Близкие килы (равные бои)", value: "similar", default: mode === "similar", emoji: "🎯" },
+            { label: "Посевная сетка (сильный vs слабый)", value: "seed", default: mode === "seed", emoji: "🏅" }
+          )
+      )
+    );
+    container.addActionRowComponents(
+      ui.row(new RoleSelectMenuBuilder().setCustomId(buildCustomId(ACTIONS.SETUP_PING)).setPlaceholder("Роли для пинга").setMinValues(0).setMaxValues(10))
+    );
+    container.addActionRowComponents(
+      ui.row(new RoleSelectMenuBuilder().setCustomId(buildCustomId(ACTIONS.SETUP_ROLE)).setPlaceholder("Роль участника турнира (выдаётся при заявке)").setMinValues(0).setMaxValues(1))
+    );
+    container.addActionRowComponents(
+      ui.row(new ChannelSelectMenuBuilder().setCustomId(buildCustomId(ACTIONS.SETUP_CHANNEL)).setPlaceholder("Канал для анонса").addChannelTypes(ChannelType.GuildText))
+    );
+    container.addSeparatorComponents(ui.separator());
+    container.addActionRowComponents(
+      ui.row(
+        btn(ACTIONS.SETUP_PUBLISH, "", [], { label: "Опубликовать анонс", style: ButtonStyle.Success, emoji: "🚀", disabled: !ready }),
+        btn(ACTIONS.SETUP_CANCEL, "", [], { label: "Отмена", style: ButtonStyle.Danger, emoji: "🗑" })
+      )
+    );
+    container.addTextDisplayComponents(ui.td(ready ? "-# ✅ Готово к публикации." : "-# Заполни название, места, время и канал."));
+    if (statusText) container.addTextDisplayComponents(ui.td(`-# ${statusText}`));
+  });
+  return ui.v2Ephemeral(c);
 }
 
 function buildBasicsModal(draft = {}) {
@@ -286,31 +250,13 @@ function buildBasicsModal(draft = {}) {
     .setTitle("Основное")
     .addComponents(
       new ActionRowBuilder().addComponents(
-        new TextInputBuilder()
-          .setCustomId("name")
-          .setLabel("Название турнира")
-          .setStyle(TextInputStyle.Short)
-          .setRequired(true)
-          .setMaxLength(120)
-          .setValue(String(draft.name || ""))
+        new TextInputBuilder().setCustomId("name").setLabel("Название турнира").setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(120).setValue(String(draft.name || ""))
       ),
       new ActionRowBuilder().addComponents(
-        new TextInputBuilder()
-          .setCustomId("slots")
-          .setLabel("Сколько открытых мест (16, 32, …)")
-          .setStyle(TextInputStyle.Short)
-          .setRequired(true)
-          .setMaxLength(4)
-          .setValue(draft.slots ? String(draft.slots) : "16")
+        new TextInputBuilder().setCustomId("slots").setLabel("Сколько открытых мест (16, 32, …)").setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(4).setValue(draft.slots ? String(draft.slots) : "16")
       ),
       new ActionRowBuilder().addComponents(
-        new TextInputBuilder()
-          .setCustomId("planned")
-          .setLabel("Сколько человек планируется (необязательно)")
-          .setStyle(TextInputStyle.Short)
-          .setRequired(false)
-          .setMaxLength(4)
-          .setValue(draft.plannedPlayers ? String(draft.plannedPlayers) : "")
+        new TextInputBuilder().setCustomId("planned").setLabel("Сколько человек планируется (необязательно)").setStyle(TextInputStyle.Short).setRequired(false).setMaxLength(4).setValue(draft.plannedPlayers ? String(draft.plannedPlayers) : "")
       )
     );
 }
@@ -321,13 +267,7 @@ function buildTimeModal(draft = {}) {
     .setTitle("Время по МСК")
     .addComponents(
       new ActionRowBuilder().addComponents(
-        new TextInputBuilder()
-          .setCustomId("time")
-          .setLabel("Дата и время МСК")
-          .setStyle(TextInputStyle.Short)
-          .setRequired(true)
-          .setPlaceholder("25.06 20:00  или  25.06.2026 20:00")
-          .setMaxLength(40)
+        new TextInputBuilder().setCustomId("time").setLabel("Дата и время МСК").setStyle(TextInputStyle.Short).setRequired(true).setPlaceholder("25.06 20:00  или  25.06.2026 20:00").setMaxLength(40)
       )
     );
 }
@@ -340,23 +280,11 @@ function buildRewardsModal(draft = {}) {
     .addComponents(
       ...["first", "second", "third"].map((place, idx) =>
         new ActionRowBuilder().addComponents(
-          new TextInputBuilder()
-            .setCustomId(place)
-            .setLabel(`${idx + 1} место`)
-            .setStyle(TextInputStyle.Short)
-            .setRequired(false)
-            .setMaxLength(200)
-            .setValue(String(rewards[place] || ""))
+          new TextInputBuilder().setCustomId(place).setLabel(`${idx + 1} место`).setStyle(TextInputStyle.Short).setRequired(false).setMaxLength(200).setValue(String(rewards[place] || ""))
         )
       ),
       new ActionRowBuilder().addComponents(
-        new TextInputBuilder()
-          .setCustomId("extra")
-          .setLabel("Доп. награды / примечание")
-          .setStyle(TextInputStyle.Paragraph)
-          .setRequired(false)
-          .setMaxLength(400)
-          .setValue(String(rewards.extra || ""))
+        new TextInputBuilder().setCustomId("extra").setLabel("Доп. награды / примечание").setStyle(TextInputStyle.Paragraph).setRequired(false).setMaxLength(400).setValue(String(rewards.extra || ""))
       )
     );
 }
@@ -367,42 +295,21 @@ function buildConditionsModal(draft = {}) {
     .setTitle("Условия участия")
     .addComponents(
       new ActionRowBuilder().addComponents(
-        new TextInputBuilder()
-          .setCustomId("conditions")
-          .setLabel("Условия (персонажи не забанены и т.д.)")
-          .setStyle(TextInputStyle.Paragraph)
-          .setRequired(false)
-          .setMaxLength(1000)
-          .setValue(String(draft.conditions || ""))
+        new TextInputBuilder().setCustomId("conditions").setLabel("Условия (персонажи не забанены и т.д.)").setStyle(TextInputStyle.Paragraph).setRequired(false).setMaxLength(1000).setValue(String(draft.conditions || ""))
       )
     );
 }
 
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------
 // Public announcement
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------
 
 function buildAnnouncementPayload(tournament, { ping = false } = {}) {
   const taken = Object.keys(tournament.registrations || {}).length;
   const slots = tournament.slots || 16;
   const rewards = tournament.rewards || {};
   const open = tournament.registrationOpen !== false;
-
-  const embed = new EmbedBuilder()
-    .setTitle(`🏆 ${tournament.name}`)
-    .setColor(COLORS.gold)
-    .setDescription(
-      [
-        "Формат: **1 на 1, FT6** (6 боёв на пару).",
-        tournament.startsAtIso ? `🗓 Старт: ${formatStartTime(tournament.startsAtIso)}` : null,
-      ]
-        .filter(Boolean)
-        .join("\n")
-    )
-    .addFields(
-      { name: "Занято мест", value: `# **${fmtNumber(taken)} / ${fmtNumber(slots)}**`, inline: true },
-      { name: "Статус", value: open ? "🟢 Набор открыт" : "🔴 Набор закрыт", inline: true }
-    );
+  const pingRoles = Array.isArray(tournament.pingRoleIds) ? tournament.pingRoleIds : [];
 
   const rewardLines = [
     rewards.first && `🥇 ${rewards.first}`,
@@ -410,89 +317,107 @@ function buildAnnouncementPayload(tournament, { ping = false } = {}) {
     rewards.third && `🥉 ${rewards.third}`,
     rewards.extra,
   ].filter(Boolean);
-  if (rewardLines.length) embed.addFields({ name: "Награды", value: rewardLines.join("\n") });
-  if (tournament.conditions) embed.addFields({ name: "Условия", value: String(tournament.conditions).slice(0, 1024) });
-  embed.addFields({ name: "Важно", value: TWINK_WARNING });
 
-  const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId(buildCustomId(ACTIONS.REGISTER_OPEN, tournament.id))
-      .setLabel(open ? "Записаться" : "Набор закрыт")
-      .setEmoji("✍️")
-      .setStyle(ButtonStyle.Success)
-      .setDisabled(!open)
-  );
-
-  const pingRoles = Array.isArray(tournament.pingRoleIds) ? tournament.pingRoleIds : [];
-  const payload = {
-    content: ping && pingRoles.length ? pingRoles.map((id) => `<@&${id}>`).join(" ") : "",
-    embeds: [embed],
-    components: [row],
-    allowedMentions: ping ? { roles: pingRoles } : { parse: [] },
-  };
-  return payload;
-}
-
-// ---------------------------------------------------------------------------
-// Registration flow (player-facing, ephemeral)
-// ---------------------------------------------------------------------------
-
-function backRow(tournamentId, extraComponents = []) {
-  return new ActionRowBuilder().addComponents(
-    ...extraComponents,
-    new ButtonBuilder().setCustomId(buildCustomId(ACTIONS.REG_BACK, tournamentId)).setLabel("Назад").setStyle(ButtonStyle.Secondary)
-  );
-}
-
-function regBaseEmbed(tournament, title) {
-  return new EmbedBuilder().setTitle(title).setColor(COLORS.primary).setFooter({ text: TWINK_WARNING.slice(0, 2048) });
-}
-
-// Player has a verified main + known kills.
-function buildRegMainConfirmPayload(tournament, info = {}) {
-  const embed = regBaseEmbed(tournament, `Заявка — ${tournament.name}`).setDescription(
-    [
-      `У нас сохранён твой Roblox: **${info.robloxUsername || "—"}**`,
-      `Зарегистрировано килов: **${fmtNumber(info.kills)}**`,
-      "",
-      "На этом аккаунте будешь играть?",
-    ].join("\n")
-  );
-  if (info.avatarUrl) embed.setThumbnail(info.avatarUrl);
-  if (info.screenshotUrl) embed.setImage(info.screenshotUrl);
-
-  const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(buildCustomId(ACTIONS.REG_USE_MAIN, tournament.id)).setLabel("Да, на этом").setStyle(ButtonStyle.Success),
-    new ButtonBuilder().setCustomId(buildCustomId(ACTIONS.REG_USE_OTHER, tournament.id)).setLabel("Буду с другого").setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId(buildCustomId(ACTIONS.REG_WITHDRAW, tournament.id)).setLabel("Отмена").setStyle(ButtonStyle.Secondary)
-  );
-  return ephemeral({ embeds: [embed], components: [row] });
-}
-
-// No Roblox account on file.
-function buildRegNoAccountPayload(tournament, info = {}) {
-  const embed = regBaseEmbed(tournament, `Заявка — ${tournament.name}`).setDescription(
-    [
-      "У нас нет привязанного Roblox-аккаунта.",
-      `Зарегистрировано килов: **${fmtNumber(info.kills)}**`,
-      "",
-      "Укажи точный ник своего аккаунта (мы проверим и подвяжем), либо отметь, что это твинк.",
-    ].join("\n")
-  );
-  if (info.screenshotUrl) embed.setImage(info.screenshotUrl);
-
-  const buttons = [
-    new ButtonBuilder().setCustomId(buildCustomId(ACTIONS.REG_LINK_ROBLOX, tournament.id, "main")).setLabel("Зарегать Roblox ник").setStyle(ButtonStyle.Success),
-  ];
-  if (info.canTwink) {
-    buttons.push(
-      new ButtonBuilder().setCustomId(buildCustomId(ACTIONS.REG_DECLARE_TWINK, tournament.id)).setLabel("Это твинк").setStyle(ButtonStyle.Primary)
+  const c = ui.container(COLORS.gold, (container) => {
+    container.addTextDisplayComponents(ui.td(`# 🏆 ${tournament.name}`));
+    container.addTextDisplayComponents(
+      ui.td(
+        ["Формат: **1 на 1, FT6** (6 боёв на пару).", tournament.startsAtIso ? `🗓 Старт: ${formatStartTime(tournament.startsAtIso)}` : null]
+          .filter(Boolean)
+          .join("\n")
+      )
     );
-  }
-  buttons.push(
-    new ButtonBuilder().setCustomId(buildCustomId(ACTIONS.REG_WITHDRAW, tournament.id)).setLabel("Отмена").setStyle(ButtonStyle.Secondary)
-  );
-  return ephemeral({ embeds: [embed], components: [new ActionRowBuilder().addComponents(...buttons)] });
+    container.addSeparatorComponents(ui.separator());
+    container.addTextDisplayComponents(
+      ui.td(`## Занято мест: ${taken} / ${slots}\n${open ? "🟢 **Набор открыт**" : "🔴 **Набор закрыт**"}`)
+    );
+    if (rewardLines.length) {
+      container.addSeparatorComponents(ui.separator());
+      container.addTextDisplayComponents(ui.td(`**Награды**\n${rewardLines.join("\n")}`));
+    }
+    if (tournament.conditions) {
+      container.addTextDisplayComponents(ui.td(`**Условия**\n${String(tournament.conditions).slice(0, 800)}`));
+    }
+    container.addSeparatorComponents(ui.separator());
+    container.addSectionComponents(
+      new SectionBuilder()
+        .addTextDisplayComponents(ui.td(open ? "Жми, чтобы подать заявку на участие." : "Набор на этот турнир закрыт."))
+        .setButtonAccessory(
+          btn(ACTIONS.REGISTER_OPEN, tournament.id, [], { label: open ? "Записаться" : "Набор закрыт", style: ButtonStyle.Success, emoji: "✍️", disabled: !open })
+        )
+    );
+    container.addTextDisplayComponents(ui.td(`-# ${TWINK_WARNING}`));
+  });
+
+  return ui.v2Public(c, {
+    content: ping && pingRoles.length ? pingRoles.map((id) => `<@&${id}>`).join(" ") : undefined,
+    allowedMentions: ping ? { roles: pingRoles } : { parse: [] },
+  });
+}
+
+// --------------------------------------------------------------------------
+// Registration flow (player-facing, ephemeral)
+// --------------------------------------------------------------------------
+
+function regBackButton(tournamentId) {
+  return btn(ACTIONS.REG_BACK, tournamentId, [], { label: "Назад", emoji: "↩" });
+}
+
+function buildRegMainConfirmPayload(tournament, info = {}) {
+  const profileUrl = robloxProfileUrl(info.robloxUserId);
+  const c = ui.container(COLORS.primary, (container) => {
+    container.addTextDisplayComponents(ui.td(`# Заявка · ${tournament.name}`));
+    container.addSeparatorComponents(ui.separator());
+    const headText = ui.td(
+      [
+        `Сохранённый Roblox: ${profileUrl ? `[${info.robloxUsername || "—"}](${profileUrl})` : `**${info.robloxUsername || "—"}**`}`,
+        `Зарегистрировано килов: **${fmtNumber(info.kills)}**`,
+        "",
+        "**На этом аккаунте будешь играть?**",
+      ].join("\n")
+    );
+    if (info.avatarUrl) {
+      container.addSectionComponents(
+        new SectionBuilder().addTextDisplayComponents(headText).setThumbnailAccessory(new ThumbnailBuilder().setURL(info.avatarUrl))
+      );
+    } else {
+      container.addTextDisplayComponents(headText);
+    }
+    if (info.screenshotUrl) container.addMediaGalleryComponents(ui.mediaImage(info.screenshotUrl, "Последний скрин-пруф"));
+    container.addActionRowComponents(
+      ui.row(
+        btn(ACTIONS.REG_USE_MAIN, tournament.id, [], { label: "Да, на этом", style: ButtonStyle.Success, emoji: "✅" }),
+        btn(ACTIONS.REG_USE_OTHER, tournament.id, [], { label: "Буду с другого", style: ButtonStyle.Primary, emoji: "🔁" }),
+        btn(ACTIONS.REG_WITHDRAW, tournament.id, [], { label: "Отмена", emoji: "✖" })
+      )
+    );
+    container.addTextDisplayComponents(ui.td(`-# ${TWINK_WARNING}`));
+  });
+  return ui.v2Ephemeral(c);
+}
+
+function buildRegNoAccountPayload(tournament, info = {}) {
+  const c = ui.container(COLORS.primary, (container) => {
+    container.addTextDisplayComponents(ui.td(`# Заявка · ${tournament.name}`));
+    container.addSeparatorComponents(ui.separator());
+    container.addTextDisplayComponents(
+      ui.td(
+        [
+          "У нас нет привязанного Roblox-аккаунта.",
+          `Зарегистрировано килов: **${fmtNumber(info.kills)}**`,
+          "",
+          "Укажи точный ник своего аккаунта (мы проверим и подвяжем), либо отметь, что это твинк.",
+        ].join("\n")
+      )
+    );
+    if (info.screenshotUrl) container.addMediaGalleryComponents(ui.mediaImage(info.screenshotUrl, "Последний скрин-пруф"));
+    const buttons = [btn(ACTIONS.REG_LINK_ROBLOX, tournament.id, ["main"], { label: "Зарегать Roblox ник", style: ButtonStyle.Success, emoji: "🔗" })];
+    if (info.canTwink) buttons.push(btn(ACTIONS.REG_DECLARE_TWINK, tournament.id, [], { label: "Это твинк", style: ButtonStyle.Primary, emoji: "🥸" }));
+    buttons.push(btn(ACTIONS.REG_WITHDRAW, tournament.id, [], { label: "Отмена", emoji: "✖" }));
+    container.addActionRowComponents(ui.row(...buttons));
+    container.addTextDisplayComponents(ui.td(`-# ${TWINK_WARNING}`));
+  });
+  return ui.v2Ephemeral(c);
 }
 
 function buildRobloxNickModal(tournamentId, kind = "main") {
@@ -502,186 +427,348 @@ function buildRobloxNickModal(tournamentId, kind = "main") {
     .setTitle(isAlt ? "Доп. аккаунт Roblox" : "Твой Roblox ник")
     .addComponents(
       new ActionRowBuilder().addComponents(
-        new TextInputBuilder()
-          .setCustomId("nick")
-          .setLabel("Username, userId или ссылка")
-          .setStyle(TextInputStyle.Short)
-          .setRequired(true)
-          .setMinLength(1)
-          .setMaxLength(200)
-          .setPlaceholder("Ryomen_One, 123456789 или ссылка на профиль")
+        new TextInputBuilder().setCustomId("nick").setLabel("Точный Roblox ник").setStyle(TextInputStyle.Short).setRequired(true).setMinLength(3).setMaxLength(20).setPlaceholder("3–20 символов: буквы, цифры, _")
       )
     );
 }
 
-// Pick declared real strength (kills bucket). minKills filters buckets (twinks
-// declaring true power must pick a bucket above the twink band).
 function buildDeclareStrengthPayload(tournament, { robloxUsername, kind = "alt", minKills = 0 } = {}) {
-  const embed = regBaseEmbed(tournament, `Заявка — ${tournament.name}`).setDescription(
-    [
-      robloxUsername ? `Аккаунт **${robloxUsername}** подтверждён ✅` : "Аккаунт подтверждён ✅",
-      "",
-      kind === "twink"
-        ? "Укажи свою **истинную силу** (реальное количество килов)."
-        : "Укажи примерно своё реальное количество килов на этом аккаунте.",
-    ].join("\n")
-  );
-
-  const options = KILLS_BUCKETS.filter((bucket) => bucket.value >= minKills).map((bucket) => ({
-    label: bucket.label,
-    value: String(bucket.value),
-  }));
-
-  const select = new StringSelectMenuBuilder()
-    .setCustomId(buildCustomId(ACTIONS.REG_PICK_KILLS, tournament.id, kind))
-    .setPlaceholder("Реальное количество килов")
-    .addOptions(options);
-
-  return ephemeral({
-    embeds: [embed],
-    components: [new ActionRowBuilder().addComponents(select), backRow(tournament.id)],
+  const options = KILLS_BUCKETS.filter((bucket) => bucket.value >= minKills).map((bucket) => ({ label: bucket.label, value: String(bucket.value) }));
+  const c = ui.container(COLORS.orange, (container) => {
+    container.addTextDisplayComponents(ui.td(`# Заявка · ${tournament.name}`));
+    container.addSeparatorComponents(ui.separator());
+    container.addTextDisplayComponents(
+      ui.td(
+        [
+          robloxUsername ? `Аккаунт **${robloxUsername}** подтверждён ✅` : "Аккаунт подтверждён ✅",
+          "",
+          kind === "twink" ? "Укажи свою **истинную силу** (реальное количество килов)." : "Укажи примерно своё реальное количество килов на этом аккаунте.",
+        ].join("\n")
+      )
+    );
+    container.addActionRowComponents(
+      ui.row(new StringSelectMenuBuilder().setCustomId(buildCustomId(ACTIONS.REG_PICK_KILLS, tournament.id, kind)).setPlaceholder("Реальное количество килов").addOptions(options))
+    );
+    container.addActionRowComponents(ui.row(regBackButton(tournament.id)));
+    container.addTextDisplayComponents(ui.td(`-# ${TWINK_WARNING}`));
   });
+  return ui.v2Ephemeral(c);
 }
 
 function buildRegFinalConfirmPayload(tournament, registration = {}) {
-  const embed = regBaseEmbed(tournament, `Подтверждение заявки — ${tournament.name}`).setDescription(
-    [
-      `Roblox: **${registration.robloxUsername || "—"}**`,
-      `Аккаунт: **${{ main: "основной", alt: "доп. аккаунт", twink: "твинк" }[registration.accountKind] || registration.accountKind}**`,
-      `Сила (килы для распределения): **${fmtNumber(registration.effectiveKills)}**`,
-      "",
-      "Всё верно? Жми «Подтвердить заявку».",
-    ].join("\n")
-  );
-  if (registration.robloxAvatarUrl) embed.setThumbnail(registration.robloxAvatarUrl);
+  const profileUrl = robloxProfileUrl(registration.robloxUserId);
+  const c = ui.container(COLORS.green, (container) => {
+    container.addTextDisplayComponents(ui.td(`# Подтверждение · ${tournament.name}`));
+    container.addSeparatorComponents(ui.separator());
+    const text = ui.td(
+      [
+        `Roblox: ${profileUrl ? `[${registration.robloxUsername || "—"}](${profileUrl})` : `**${registration.robloxUsername || "—"}**`}`,
+        `Аккаунт: **${ACCOUNT_KIND_LABELS[registration.accountKind] || registration.accountKind}**`,
+        `Сила (килы для распределения): **${fmtNumber(registration.effectiveKills)}**`,
+        "",
+        "Всё верно? Жми «Подтвердить заявку».",
+      ].join("\n")
+    );
+    if (registration.robloxAvatarUrl) {
+      container.addSectionComponents(new SectionBuilder().addTextDisplayComponents(text).setThumbnailAccessory(new ThumbnailBuilder().setURL(registration.robloxAvatarUrl)));
+    } else {
+      container.addTextDisplayComponents(text);
+    }
+    container.addActionRowComponents(
+      ui.row(
+        btn(ACTIONS.REG_CONFIRM, tournament.id, [], { label: "Подтвердить заявку", style: ButtonStyle.Success, emoji: "✅" }),
+        regBackButton(tournament.id)
+      )
+    );
+    container.addTextDisplayComponents(ui.td(`-# ${TWINK_WARNING}`));
+  });
+  return ui.v2Ephemeral(c);
+}
 
-  const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(buildCustomId(ACTIONS.REG_CONFIRM, tournament.id)).setLabel("Подтвердить заявку").setStyle(ButtonStyle.Success),
-    new ButtonBuilder().setCustomId(buildCustomId(ACTIONS.REG_BACK, tournament.id)).setLabel("Назад").setStyle(ButtonStyle.Secondary)
-  );
-  return ephemeral({ embeds: [embed], components: [row] });
+// A minimal V2 ephemeral notice (used to replace a V2 panel with a short message).
+function buildNoticePayload(text, { accent = COLORS.neutral } = {}) {
+  return ui.v2Ephemeral(ui.container(accent, (c) => c.addTextDisplayComponents(ui.td(text))));
 }
 
 function buildRegisteredPayload(tournament, { seatNumber } = {}) {
-  const embed = new EmbedBuilder()
-    .setTitle("✅ Ты в заявке!")
-    .setColor(COLORS.green)
-    .setDescription(
-      [
-        `Турнир: **${tournament.name}**`,
-        seatNumber ? `Твоё место: **№${seatNumber}**` : null,
-        tournament.startsAtIso ? `Старт: ${formatStartTime(tournament.startsAtIso)}` : null,
-      ]
-        .filter(Boolean)
-        .join("\n")
+  const c = ui.container(COLORS.green, (container) => {
+    container.addTextDisplayComponents(ui.td("# ✅ Ты в заявке!"));
+    container.addTextDisplayComponents(
+      ui.td(
+        [
+          `Турнир: **${tournament.name}**`,
+          seatNumber ? `Твоё место: **№${seatNumber}**` : null,
+          tournament.startsAtIso ? `Старт: ${formatStartTime(tournament.startsAtIso)}` : null,
+        ]
+          .filter(Boolean)
+          .join("\n")
+      )
     );
-  const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(buildCustomId(ACTIONS.REG_WITHDRAW, tournament.id)).setLabel("Отозвать заявку").setStyle(ButtonStyle.Danger)
-  );
-  return ephemeral({ embeds: [embed], components: [row] });
+    container.addActionRowComponents(ui.row(btn(ACTIONS.REG_WITHDRAW, tournament.id, [], { label: "Отозвать заявку", style: ButtonStyle.Danger, emoji: "🚪" })));
+  });
+  return ui.v2Ephemeral(c);
 }
 
-function buildSimpleEphemeral(text) {
-  return ephemeral({ content: text, components: [], embeds: [] });
-}
-
-// ---------------------------------------------------------------------------
-// Management panel
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------
+// Management hub
+// --------------------------------------------------------------------------
 
 function buildManagePanelPayload(tournament, { statusText = "", serverCount = 1 } = {}) {
   const taken = Object.keys(tournament.registrations || {}).length;
   const open = tournament.registrationOpen !== false;
-  const embed = new EmbedBuilder()
-    .setTitle(`${tournament.isTest ? "🧪 " : "🛠 "}Управление — ${tournament.name}${tournament.isTest ? " (ТЕСТ)" : ""}`)
-    .setColor(tournament.isTest ? COLORS.neutral : COLORS.primary)
-    .addFields(
-      { name: "Статус", value: statusLabel(tournament.status), inline: true },
-      { name: "Заявок", value: `${fmtNumber(taken)} / ${fmtNumber(tournament.slots)}`, inline: true },
-      { name: "Набор", value: open ? "🟢 открыт" : "🔴 закрыт", inline: true },
-      { name: "Серверов", value: fmtNumber(serverCount), inline: true },
-      { name: "Режим", value: SEEDING_MODE_LABELS[tournament.seedingMode] || tournament.seedingMode, inline: true },
-      { name: "Старт", value: tournament.startsAtIso ? formatStartTime(tournament.startsAtIso) : "—", inline: false }
+  const servers = tournament.servers || {};
+  const anyThreadFailed = Object.values(servers).some((s) => s && s.launched && s.threadFailed);
+  const accent = tournament.isTest ? COLORS.neutral : COLORS.primary;
+
+  const c = ui.container(accent, (container) => {
+    container.addTextDisplayComponents(ui.td(`# ${tournament.isTest ? "🧪 " : "🛠 "}${tournament.name}${tournament.isTest ? " · ТЕСТ" : ""}`));
+    container.addTextDisplayComponents(
+      ui.td(
+        [
+          `Статус: ${statusLabel(tournament.status)} · Набор: ${open ? "🟢 открыт" : "🔴 закрыт"}`,
+          `Заявок: **${fmtNumber(taken)} / ${fmtNumber(tournament.slots)}** · Серверов: **${fmtNumber(serverCount)}**`,
+          `Режим: ${SEEDING_MODE_LABELS[tournament.seedingMode] || tournament.seedingMode}`,
+          `Роль участника: ${tournament.participantRoleId ? `<@&${tournament.participantRoleId}>` : "—"}`,
+          `Старт: ${tournament.startsAtIso ? formatStartTime(tournament.startsAtIso) : "—"}`,
+        ].join("\n")
+      )
     );
-  if (statusText) embed.addFields({ name: "Последнее действие", value: statusText });
 
-  const rows = [
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(buildCustomId(ACTIONS.MANAGE_REFRESH, tournament.id)).setLabel("Обновить").setStyle(ButtonStyle.Secondary),
-      open
-        ? new ButtonBuilder().setCustomId(buildCustomId(ACTIONS.MANAGE_CLOSE_REG, tournament.id)).setLabel("Закрыть заявки").setStyle(ButtonStyle.Danger)
-        : new ButtonBuilder().setCustomId(buildCustomId(ACTIONS.MANAGE_OPEN_REG, tournament.id)).setLabel("Открыть заявки").setStyle(ButtonStyle.Success),
-      new ButtonBuilder().setCustomId(buildCustomId(ACTIONS.MANAGE_FORM_DUELS, tournament.id)).setLabel("Сформировать дуэты").setStyle(ButtonStyle.Primary)
-    ),
-  ];
-
-  // launch buttons (v1: typically a single server)
-  const launchButtons = [];
-  for (let i = 0; i < Math.min(serverCount, 4); i += 1) {
-    const server = tournament.servers?.[String(i)];
-    launchButtons.push(
-      new ButtonBuilder()
-        .setCustomId(buildCustomId(ACTIONS.MANAGE_LAUNCH_SERVER, tournament.id, String(i)))
-        .setLabel(`Запустить сервер ${i + 1}`)
-        .setStyle(server?.launched ? ButtonStyle.Secondary : ButtonStyle.Success)
-        .setDisabled(Boolean(server?.launched))
+    container.addSeparatorComponents(ui.separator());
+    container.addTextDisplayComponents(ui.td("**Набор**"));
+    container.addActionRowComponents(
+      ui.row(
+        btn(ACTIONS.MANAGE_REFRESH, tournament.id, [], { label: "Обновить", emoji: "🔄" }),
+        open
+          ? btn(ACTIONS.MANAGE_CLOSE_REG, tournament.id, [], { label: "Закрыть заявки", style: ButtonStyle.Danger, emoji: "🔒" })
+          : btn(ACTIONS.MANAGE_OPEN_REG, tournament.id, [], { label: "Открыть заявки", style: ButtonStyle.Success, emoji: "🔓" })
+      )
     );
-  }
-  if (launchButtons.length) rows.push(new ActionRowBuilder().addComponents(...launchButtons));
 
-  rows.push(
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(buildCustomId(ACTIONS.MANAGE_START, tournament.id, "0")).setLabel("Открыть панель боёв").setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId(buildCustomId(ACTIONS.MANAGE_CANCEL, tournament.id)).setLabel("Отменить турнир").setStyle(ButtonStyle.Danger)
-    )
-  );
+    container.addTextDisplayComponents(ui.td("**Состав**"));
+    container.addActionRowComponents(
+      ui.row(
+        btn(ACTIONS.MANAGE_ROSTER, tournament.id, [], { label: "Кто записался", style: ButtonStyle.Primary, emoji: "📋" }),
+        btn(ACTIONS.MANAGE_ADD_PLAYER, tournament.id, [], { label: "Добавить игрока", style: ButtonStyle.Success, emoji: "➕" }),
+        btn(ACTIONS.MANAGE_REMOVE_PLAYER, tournament.id, [], { label: "Убрать игрока", emoji: "➖" }),
+        btn(ACTIONS.MANAGE_SYNC_ROLES, tournament.id, [], { label: "Синхр. роли", emoji: "🎭", disabled: !tournament.participantRoleId })
+      )
+    );
 
-  return ephemeral({ embeds: [embed], components: rows });
+    container.addTextDisplayComponents(ui.td("**Сетка и сервера**"));
+    const launchRow = [btn(ACTIONS.MANAGE_FORM_DUELS, tournament.id, [], { label: "Пересобрать дуэты", style: ButtonStyle.Primary, emoji: "🧩" })];
+    for (let i = 0; i < Math.min(serverCount, 3); i += 1) {
+      const server = servers[String(i)];
+      launchRow.push(
+        btn(ACTIONS.MANAGE_LAUNCH_SERVER, tournament.id, [String(i)], {
+          label: server?.launched ? `Сервер ${i + 1} ✓` : `Запустить сервер ${i + 1}`,
+          style: server?.launched ? ButtonStyle.Secondary : ButtonStyle.Success,
+          emoji: "🖥",
+          disabled: Boolean(server?.launched),
+        })
+      );
+    }
+    container.addActionRowComponents(ui.row(...launchRow.slice(0, 5)));
+
+    const bottom = [
+      btn(ACTIONS.MANAGE_START, tournament.id, ["0"], { label: "Панель боёв", style: ButtonStyle.Primary, emoji: "⚔️" }),
+    ];
+    if (anyThreadFailed) {
+      const failedIdx = Object.keys(servers).find((k) => servers[k]?.threadFailed) || "0";
+      bottom.push(btn(ACTIONS.MANAGE_RETRY_THREAD, tournament.id, [failedIdx], { label: "Ветка и пинг заново", emoji: "🧵" }));
+    }
+    bottom.push(btn(ACTIONS.MANAGE_CANCEL, tournament.id, [], { label: "Отменить турнир", style: ButtonStyle.Danger, emoji: "🗑" }));
+    container.addSeparatorComponents(ui.separator());
+    container.addActionRowComponents(ui.row(...bottom.slice(0, 5)));
+
+    if (statusText) container.addTextDisplayComponents(ui.td(`-# ${statusText}`));
+  });
+  return ui.v2Ephemeral(c);
 }
 
-// Roster / duel-formation table: number, nick, color, target stage-1 cell.
+// --------------------------------------------------------------------------
+// Roster viewer ("who registered")
+// --------------------------------------------------------------------------
+
+function buildRosterViewerPayload(tournament, players = [], { page = 0, statusText = "" } = {}) {
+  const pageCount = Math.max(1, Math.ceil(players.length / ROSTER_PAGE_SIZE));
+  const current = Math.min(Math.max(0, page), pageCount - 1);
+  const slice = players.slice(current * ROSTER_PAGE_SIZE, current * ROSTER_PAGE_SIZE + ROSTER_PAGE_SIZE);
+
+  const c = ui.container(COLORS.teal, (container) => {
+    container.addTextDisplayComponents(ui.td(`# 📋 Состав · ${tournament.name}`));
+    container.addTextDisplayComponents(ui.td(`Записано: **${players.length} / ${fmtNumber(tournament.slots)}** · страница ${current + 1}/${pageCount}`));
+    container.addSeparatorComponents(ui.separator());
+
+    if (!slice.length) {
+      container.addTextDisplayComponents(ui.td("_Пока никто не записался._"));
+    }
+    slice.forEach((p, idx) => {
+      const num = current * ROSTER_PAGE_SIZE + idx + 1;
+      const tierBadge = p.effectiveTier ? ` · T${p.effectiveTier}` : "";
+      const kindBadge = p.accountKind && p.accountKind !== "main" ? ` · ${ACCOUNT_KIND_LABELS[p.accountKind]}` : "";
+      const manual = p.addedManually ? " · ✋" : "";
+      const lineText = ui.td(
+        `**${num}.** ${playerMd(p, { withKills: true, withSource: true })}${tierBadge}${kindBadge}${manual}\n-# <@${p.userId}>`
+      );
+      const url = p.robloxProfileUrl || robloxProfileUrl(p.robloxUserId);
+      if (url) {
+        container.addSectionComponents(new SectionBuilder().addTextDisplayComponents(lineText).setButtonAccessory(linkBtn(url, "Roblox", "🔗")));
+      } else if (p.robloxAvatarUrl) {
+        container.addSectionComponents(new SectionBuilder().addTextDisplayComponents(lineText).setThumbnailAccessory(new ThumbnailBuilder().setURL(p.robloxAvatarUrl)));
+      } else {
+        container.addTextDisplayComponents(lineText);
+      }
+    });
+
+    container.addSeparatorComponents(ui.separator());
+    container.addActionRowComponents(
+      ui.row(
+        btn(ACTIONS.ROSTER_PAGE, tournament.id, [String(current - 1)], { label: "‹ Назад", disabled: current <= 0 }),
+        btn(ACTIONS.ROSTER_PAGE, tournament.id, [String(current + 1)], { label: "Вперёд ›", disabled: current >= pageCount - 1 }),
+        btn(ACTIONS.ROSTER_KILLS_REFRESH, tournament.id, [], { label: "Обновить килы", emoji: "🔁" }),
+        btn(ACTIONS.MANAGE_OPEN, tournament.id, [], { label: "К управлению", emoji: "🛠" })
+      )
+    );
+    if (statusText) container.addTextDisplayComponents(ui.td(`-# ${statusText}`));
+  });
+  return ui.v2Ephemeral(c);
+}
+
+function buildAddPlayerPayload(tournament) {
+  const c = ui.container(COLORS.green, (container) => {
+    container.addTextDisplayComponents(ui.td(`# ➕ Добавить игрока · ${tournament.name}`));
+    container.addTextDisplayComponents(ui.td("Выбери участника сервера — подтянем его Roblox и килы автоматически."));
+    container.addActionRowComponents(
+      ui.row(new UserSelectMenuBuilder().setCustomId(buildCustomId(ACTIONS.ADD_PLAYER_SELECT, tournament.id)).setPlaceholder("Кого добавить").setMinValues(1).setMaxValues(1))
+    );
+    container.addActionRowComponents(
+      ui.row(
+        btn(ACTIONS.ADD_PLAYER_MODAL, tournament.id, [], { label: "Ввести вручную (ник + килы)", emoji: "✍️" }),
+        btn(ACTIONS.MANAGE_OPEN, tournament.id, [], { label: "Назад", emoji: "↩" })
+      )
+    );
+  });
+  return ui.v2Ephemeral(c);
+}
+
+function buildRemovePlayerPayload(tournament) {
+  const c = ui.container(COLORS.red, (container) => {
+    container.addTextDisplayComponents(ui.td(`# ➖ Убрать игрока · ${tournament.name}`));
+    container.addActionRowComponents(
+      ui.row(new UserSelectMenuBuilder().setCustomId(buildCustomId(ACTIONS.REMOVE_PLAYER_SELECT, tournament.id)).setPlaceholder("Кого убрать").setMinValues(1).setMaxValues(1))
+    );
+    container.addActionRowComponents(ui.row(btn(ACTIONS.MANAGE_OPEN, tournament.id, [], { label: "Назад", emoji: "↩" })));
+  });
+  return ui.v2Ephemeral(c);
+}
+
+function buildAddPlayerModal(tournamentId) {
+  return new ModalBuilder()
+    .setCustomId(buildCustomId(ACTIONS.ADD_PLAYER_MODAL, tournamentId))
+    .setTitle("Добавить игрока вручную")
+    .addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId("nick").setLabel("Roblox ник").setStyle(TextInputStyle.Short).setRequired(true).setMinLength(3).setMaxLength(20)
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId("kills").setLabel("Килы (число)").setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(7).setPlaceholder("например 4200")
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId("discord").setLabel("Discord ID (необязательно, для роли/пинга)").setStyle(TextInputStyle.Short).setRequired(false).setMaxLength(25)
+      )
+    );
+}
+
+// --------------------------------------------------------------------------
+// Duel-formation roster (cell layout) + bracket posts
+// --------------------------------------------------------------------------
+
+function matchLine(idx, match, { withRun = false } = {}) {
+  const runTag = withRun && match.runIndex != null ? ` · прогон ${match.runIndex + 1}` : "";
+  return [
+    `**Бой ${idx + 1}**${runTag} · ячейки ${match.cellRed}–${match.cellBlue}`,
+    `${colorDot("red")} [яч.${match.cellRed}] ${playerMd(match.red)}`,
+    `${colorDot("blue")} [яч.${match.cellBlue}] ${playerMd(match.blue)}`,
+  ].join("\n");
+}
+
 function buildRosterPayload(tournament, stagePlan, { serverIndex = 0 } = {}) {
-  const lines = [];
   const matches = seeding.listStageMatches(stagePlan);
-  matches.forEach((match, idx) => {
-    const runTag = stagePlan.runs.length > 1 ? ` · прогон ${match.runIndex + 1}` : "";
-    lines.push(`**Бой ${idx + 1}**${runTag}`);
-    lines.push(`  ${colorDot("red")} ячейка ${match.cellRed} — ${playerLabel(match.red)}`);
-    lines.push(`  ${colorDot("blue")} ячейка ${match.cellBlue} — ${playerLabel(match.blue)}`);
+  const multiRun = stagePlan.runs.length > 1;
+  const c = ui.container(COLORS.primary, (container) => {
+    container.addTextDisplayComponents(ui.td(`# 🧩 Распределение · сервер ${serverIndex + 1}`));
+    container.addTextDisplayComponents(ui.td("Красные ячейки нечётные, синие чётные. Этап 1."));
+    container.addSeparatorComponents(ui.separator());
+    // group text to stay under component budget
+    const chunks = [];
+    matches.forEach((match, idx) => chunks.push(matchLine(idx, match, { withRun: multiRun })));
+    if (stagePlan.bye) chunks.push(`🎟 ${playerMd(stagePlan.bye)} — проходит дальше (бай)`);
+    // up to ~8 matches per text block
+    for (let i = 0; i < chunks.length; i += 6) {
+      container.addTextDisplayComponents(ui.td(chunks.slice(i, i + 6).join("\n\n")));
+    }
+    container.addSeparatorComponents(ui.separator());
+    container.addActionRowComponents(ui.row(btn(ACTIONS.MANAGE_OPEN, tournament.id, [], { label: "К управлению", emoji: "🛠" })));
   });
-  if (stagePlan.bye) lines.push(`🎟 ${playerLabel(stagePlan.bye)} — проходит дальше (бай)`);
-
-  const embed = new EmbedBuilder()
-    .setTitle(`📋 Распределение — сервер ${serverIndex + 1}`)
-    .setColor(COLORS.primary)
-    .setDescription(lines.join("\n").slice(0, 4000) || "Нет игроков.")
-    .setFooter({ text: "Красные ячейки нечётные, синие чётные. Этап 1." });
-  return ephemeral({ embeds: [embed] });
+  return ui.v2Ephemeral(c);
 }
 
-// ---------------------------------------------------------------------------
-// Preliminary placement bracket (posted publicly; v1 = embed, v2 = PNG)
-// ---------------------------------------------------------------------------
+// Public bracket post (V2 container). When `imageFilename` is given the caller
+// attaches the PNG; otherwise the pairings are listed as text.
+function buildBracketPostPayload(tournament, stagePlan, { serverIndex = 0, imageFilename = "", title = "🗺 Предварительное размещение", headline = "" } = {}) {
+  const matches = seeding.listStageMatches(stagePlan);
+  const multiRun = stagePlan.runs.length > 1;
+  const c = ui.container(COLORS.gold, (container) => {
+    if (headline) container.addTextDisplayComponents(ui.td(headline));
+    container.addTextDisplayComponents(ui.td(`# ${title} · сервер ${serverIndex + 1}`));
+    container.addTextDisplayComponents(ui.td(`-# ${tournament.name} · FT6`));
+    if (imageFilename) {
+      container.addMediaGalleryComponents(ui.mediaImage(`attachment://${imageFilename}`, "Сетка турнира"));
+    } else {
+      container.addSeparatorComponents(ui.separator());
+      const lines = matches.map((match, idx) => {
+        const runTag = multiRun && match.runIndex != null ? ` (прогон ${match.runIndex + 1})` : "";
+        return `**${idx + 1}.**${runTag} ${colorDot("red")} ${playerMd(match.red)}  🆚  ${colorDot("blue")} ${playerMd(match.blue)}`;
+      });
+      if (stagePlan.bye) lines.push(`🎟 ${playerMd(stagePlan.bye)} — бай`);
+      for (let i = 0; i < lines.length; i += 6) container.addTextDisplayComponents(ui.td(lines.slice(i, i + 6).join("\n")));
+    }
+  });
+  return ui.v2Public(c);
+}
 
+// kept for backwards compat with operator calls (embed-style fallback no longer
+// used — returns the V2 text bracket).
 function buildPreliminaryBracketPayload(tournament, stagePlan, { serverIndex = 0 } = {}) {
-  const matches = seeding.listStageMatches(stagePlan);
-  const lines = matches.map((match, idx) => {
-    const runTag = stagePlan.runs.length > 1 ? ` (прогон ${match.runIndex + 1})` : "";
-    return `**${idx + 1}.**${runTag} ${colorDot("red")} ${playerLabel(match.red)}  🆚  ${colorDot("blue")} ${playerLabel(match.blue)}`;
-  });
-  if (stagePlan.bye) lines.push(`🎟 ${playerLabel(stagePlan.bye)} — бай`);
-
-  const embed = new EmbedBuilder()
-    .setTitle(`🗺 Предварительное размещение — сервер ${serverIndex + 1}`)
-    .setColor(COLORS.gold)
-    .setDescription(lines.join("\n").slice(0, 4000) || "—")
-    .setFooter({ text: `${tournament.name} · FT6` });
-  return { embeds: [embed] };
+  return buildBracketPostPayload(tournament, stagePlan, { serverIndex });
 }
 
-// ---------------------------------------------------------------------------
-// Match-result panel
-// ---------------------------------------------------------------------------
+// Public grand-summary post (V2). Image attached by caller when available.
+function buildSummaryPostPayload(tournament, { imageFilename = "" } = {}) {
+  const r = tournament.results || {};
+  const c = ui.container(COLORS.gold, (container) => {
+    container.addTextDisplayComponents(ui.td(`# 🏆 Итоги турнира · ${tournament.name}`));
+    if (imageFilename) {
+      container.addMediaGalleryComponents(ui.mediaImage(`attachment://${imageFilename}`, "Итоги турнира"));
+    } else {
+      container.addSeparatorComponents(ui.separator());
+      container.addTextDisplayComponents(
+        ui.td(
+          [r.first && `🥇 ${playerMd(r.first)}`, r.second && `🥈 ${playerMd(r.second)}`, r.third && `🥉 ${playerMd(r.third)}`]
+            .filter(Boolean)
+            .join("\n") || "Результаты записаны."
+        )
+      );
+    }
+    if (r.organizerComment) container.addTextDisplayComponents(ui.td(`-# 💬 ${String(r.organizerComment).slice(0, 500)}`));
+  });
+  return ui.v2Public(c);
+}
+
+// --------------------------------------------------------------------------
+// Match-result panel (the star: buttons inside the panel, per pairing)
+// --------------------------------------------------------------------------
 
 function stageTitle(stagePlan) {
   if (stagePlan.kind === "placement") return "Финал и матч за 3-е место";
@@ -689,12 +776,29 @@ function stageTitle(stagePlan) {
   return `Этап ${stagePlan.stage}`;
 }
 
+function shortName(player) {
+  return String(playerName(player)).slice(0, 18);
+}
+
+function idOf(player) {
+  return player ? String(player.userId || player.id || "") : "";
+}
+
+function resolveDecidedWinnerId(match, decision) {
+  const outcome = seeding.resolveMatchOutcome(match, decision);
+  return outcome.winner ? idOf(outcome.winner) : null;
+}
+
 function buildMatchPanelPayload(tournament, server, { statusText = "" } = {}) {
   const stagePlan = server.currentStage;
   if (!stagePlan) {
-    return ephemeral({ content: "Сервер ещё не запущен или этап не сформирован.", components: [] });
+    return ui.v2Ephemeral(
+      ui.container(COLORS.neutral, (c) => {
+        c.addTextDisplayComponents(ui.td("Сервер ещё не запущен или этап не сформирован."));
+        c.addActionRowComponents(ui.row(btn(ACTIONS.MANAGE_OPEN, tournament.id, [], { label: "К управлению", emoji: "🛠" })));
+      })
+    );
   }
-
   if (server.done) return buildServerDonePayload(tournament, server);
 
   const decisions = server.decisions || {};
@@ -703,128 +807,142 @@ function buildMatchPanelPayload(tournament, server, { statusText = "" } = {}) {
   const currentRun = runs[runIndex] || { matches: [] };
   const matches = Array.isArray(currentRun.matches) ? currentRun.matches : [];
   const multiRun = runs.length > 1;
+  const decidedCount = matches.filter((m) => Boolean(resolveDecidedWinnerId(m, decisions[m.key] || {})) || (decisions[m.key] || {}).void).length;
 
-  const embed = new EmbedBuilder()
-    .setTitle(
-      `⚔️ Сервер ${server.index + 1} — ${stageTitle(stagePlan)}${multiRun ? ` · прогон ${runIndex + 1}/${runs.length}` : ""}`
-    )
-    .setColor(COLORS.primary);
+  const c = ui.container(COLORS.primary, (container) => {
+    container.addTextDisplayComponents(
+      ui.td(`# ⚔️ Сервер ${server.index + 1} · ${stageTitle(stagePlan)}${multiRun ? ` · прогон ${runIndex + 1}/${runs.length}` : ""}`)
+    );
+    container.addTextDisplayComponents(ui.td(`Решено: **${decidedCount} / ${matches.length}** боёв · нажми победителя по цвету`));
+    container.addSeparatorComponents(ui.separator());
 
-  const rows = [];
-  matches.forEach((match, idx) => {
-    const decision = decisions[match.key] || {};
-    const winnerId = resolveDecidedWinnerId(match, decision);
-    const placementTag = match.placement === "bronze" ? " · за 3-е место" : match.placement === "final" ? " · ФИНАЛ" : "";
-    embed.addFields({
-      name: `Бой ${idx + 1}${placementTag}`,
-      value: [
-        `${colorDot("red")} [яч.${match.cellRed}] ${playerLabel(match.red)}${winnerId && winnerId === idOf(match.red) ? " — ✅ победил" : ""}`,
-        `${colorDot("blue")} [яч.${match.cellBlue}] ${playerLabel(match.blue)}${winnerId && winnerId === idOf(match.blue) ? " — ✅ победил" : ""}`,
-      ].join("\n"),
+    matches.forEach((match, idx) => {
+      const decision = decisions[match.key] || {};
+      const winnerId = resolveDecidedWinnerId(match, decision);
+      const decided = Boolean(winnerId) || decision.void;
+      const placementTag = match.placement === "bronze" ? " · 🥉 за 3-е место" : match.placement === "final" ? " · 🏆 ФИНАЛ" : "";
+      const redWon = winnerId && winnerId === idOf(match.red);
+      const blueWon = winnerId && winnerId === idOf(match.blue);
+
+      container.addTextDisplayComponents(
+        ui.td(
+          [
+            `**Бой ${idx + 1}**${placementTag} · ячейки ${match.cellRed}–${match.cellBlue}`,
+            `${colorDot("red")} ${playerMd(match.red)}${redWon ? " ✓" : decision.void ? " ∅" : ""}`,
+            `${colorDot("blue")} ${playerMd(match.blue)}${blueWon ? " ✓" : decision.void ? " ∅" : ""}`,
+          ].join("\n")
+        )
+      );
+      container.addActionRowComponents(
+        ui.row(
+          btn(ACTIONS.MATCH_WIN, tournament.id, [String(server.index), match.key, idOf(match.red)], { label: `🔴 ${shortName(match.red)}`, style: ButtonStyle.Danger, disabled: decided }),
+          btn(ACTIONS.MATCH_WIN, tournament.id, [String(server.index), match.key, idOf(match.blue)], { label: `🔵 ${shortName(match.blue)}`, style: ButtonStyle.Primary, disabled: decided }),
+          btn(ACTIONS.MATCH_NOSHOW, tournament.id, [String(server.index), match.key, idOf(match.red)], { label: "🔴 ✖", disabled: decided }),
+          btn(ACTIONS.MATCH_NOSHOW, tournament.id, [String(server.index), match.key, idOf(match.blue)], { label: "🔵 ✖", disabled: decided }),
+          btn(ACTIONS.MATCH_UNDO, tournament.id, [String(server.index), match.key], { label: "↺", disabled: !decided })
+        )
+      );
     });
 
-    const decided = Boolean(winnerId) || decision.void;
-    rows.push(
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId(buildCustomId(ACTIONS.MATCH_WIN, tournament.id, String(server.index), match.key, idOf(match.red)))
-          .setLabel(`🔴 ${shortName(match.red)}`)
-          .setStyle(ButtonStyle.Danger)
-          .setDisabled(decided),
-        new ButtonBuilder()
-          .setCustomId(buildCustomId(ACTIONS.MATCH_WIN, tournament.id, String(server.index), match.key, idOf(match.blue)))
-          .setLabel(`🔵 ${shortName(match.blue)}`)
-          .setStyle(ButtonStyle.Primary)
-          .setDisabled(decided),
-        new ButtonBuilder()
-          .setCustomId(buildCustomId(ACTIONS.MATCH_NOSHOW, tournament.id, String(server.index), match.key, idOf(match.red)))
-          .setLabel("🔴 не пришёл")
-          .setStyle(ButtonStyle.Secondary)
-          .setDisabled(decided),
-        new ButtonBuilder()
-          .setCustomId(buildCustomId(ACTIONS.MATCH_NOSHOW, tournament.id, String(server.index), match.key, idOf(match.blue)))
-          .setLabel("🔵 не пришёл")
-          .setStyle(ButtonStyle.Secondary)
-          .setDisabled(decided),
-        decided
-          ? new ButtonBuilder()
-              .setCustomId(buildCustomId(ACTIONS.MATCH_UNDO, tournament.id, String(server.index), match.key))
-              .setLabel("↺")
-              .setStyle(ButtonStyle.Secondary)
-          : new ButtonBuilder()
-              .setCustomId(buildCustomId(ACTIONS.MATCH_UNDO, tournament.id, String(server.index), match.key, "noop"))
-              .setLabel("·")
-              .setStyle(ButtonStyle.Secondary)
-              .setDisabled(true)
+    const runComplete = matches.every((m) => {
+      const o = seeding.resolveMatchOutcome(m, decisions[m.key] || {});
+      return Boolean(o.winner) || o.void;
+    });
+    const isLastRun = runIndex >= runs.length - 1;
+    let advanceLabel = "Следующий прогон ▶";
+    if (isLastRun) advanceLabel = stagePlan.kind === "placement" ? "Завершить турнир 🏁" : "Дальше ▶";
+
+    container.addSeparatorComponents(ui.separator({ big: true }));
+    container.addActionRowComponents(
+      ui.row(
+        btn(ACTIONS.STAGE_ADVANCE, tournament.id, [String(server.index)], { label: advanceLabel, style: ButtonStyle.Success, disabled: !runComplete }),
+        btn(ACTIONS.MANAGE_OPEN, tournament.id, [], { label: "Управление", emoji: "🛠" })
       )
     );
+    if (statusText) container.addTextDisplayComponents(ui.td(`-# ${statusText}`));
   });
-
-  const runComplete = matches.every((match) => {
-    const outcome = seeding.resolveMatchOutcome(match, decisions[match.key] || {});
-    return Boolean(outcome.winner) || outcome.void;
-  });
-  const isLastRun = runIndex >= runs.length - 1;
-  let advanceLabel = "Следующий прогон ▶";
-  if (isLastRun) advanceLabel = stagePlan.kind === "placement" ? "Завершить турнир ▶" : "Дальше ▶";
-  rows.push(
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId(buildCustomId(ACTIONS.STAGE_ADVANCE, tournament.id, String(server.index)))
-        .setLabel(advanceLabel)
-        .setStyle(ButtonStyle.Success)
-        .setDisabled(!runComplete)
-    )
-  );
-
-  if (statusText) embed.setFooter({ text: statusText.slice(0, 2048) });
-  // Discord caps at 5 action rows; with ≤4 matches + advance row we are within limits.
-  return ephemeral({ embeds: [embed], components: rows.slice(0, 5) });
+  return ui.v2Ephemeral(c);
 }
 
 function buildServerDonePayload(tournament, server) {
   const placement = server.placement || {};
-  const embed = new EmbedBuilder()
-    .setTitle(`🏁 Сервер ${server.index + 1} — завершён`)
-    .setColor(COLORS.gold)
-    .setDescription(
-      [
-        placement.first ? `🥇 ${playerLabel(placement.first)}` : null,
-        placement.second ? `🥈 ${playerLabel(placement.second)}` : null,
-        placement.third ? `🥉 ${playerLabel(placement.third)}` : null,
-      ]
-        .filter(Boolean)
-        .join("\n") || "Результаты записаны."
+  const c = ui.container(COLORS.gold, (container) => {
+    container.addTextDisplayComponents(ui.td(`# 🏁 Сервер ${server.index + 1} — завершён`));
+    container.addTextDisplayComponents(
+      ui.td(
+        [
+          placement.first ? `🥇 ${playerMd(placement.first)}` : null,
+          placement.second ? `🥈 ${playerMd(placement.second)}` : null,
+          placement.third ? `🥉 ${playerMd(placement.third)}` : null,
+        ]
+          .filter(Boolean)
+          .join("\n") || "Результаты записаны."
+      )
     );
-  return ephemeral({ embeds: [embed], components: [] });
-}
-
-function idOf(player) {
-  return player ? String(player.userId || player.id || "") : "";
-}
-
-function shortName(player) {
-  return String(playerName(player)).slice(0, 24);
-}
-
-function resolveDecidedWinnerId(match, decision) {
-  const outcome = seeding.resolveMatchOutcome(match, decision);
-  return outcome.winner ? idOf(outcome.winner) : null;
+    container.addActionRowComponents(ui.row(btn(ACTIONS.MANAGE_OPEN, tournament.id, [], { label: "К управлению", emoji: "🛠" })));
+  });
+  return ui.v2Ephemeral(c);
 }
 
 function buildServerThreadName(tournament, serverIndex) {
   return `${tournament.name} · сервер ${serverIndex + 1}`.slice(0, 100);
 }
 
+// --------------------------------------------------------------------------
+// Test harness panel
+// --------------------------------------------------------------------------
+
+function buildTestPanelPayload(testTournaments = [], { statusText = "" } = {}) {
+  const c = ui.container(COLORS.neutral, (container) => {
+    container.addTextDisplayComponents(ui.td("# 🧪 Тестовая песочница турниров"));
+    container.addTextDisplayComponents(
+      ui.td(
+        [
+          "Быстро создавай учебный турнир с ботами, прогоняй сетку и откатывай в один клик.",
+          "",
+          testTournaments.length
+            ? testTournaments.map((t) => `• **${t.name}** — ${statusLabel(t.status)} · ${fmtNumber(Object.keys(t.registrations || {}).length)}/${fmtNumber(t.slots)}`).join("\n")
+            : "_Активных тестов нет._",
+        ].join("\n")
+      )
+    );
+    container.addSeparatorComponents(ui.separator());
+    container.addActionRowComponents(
+      ui.row(
+        btn(ACTIONS.TEST_CREATE, "", ["16"], { label: "Создать тест (16)", style: ButtonStyle.Success }),
+        btn(ACTIONS.TEST_CREATE, "", ["8"], { label: "Создать тест (8)", style: ButtonStyle.Success }),
+        btn(ACTIONS.TEST_CREATE, "", ["15"], { label: "Создать тест (15, байи)", style: ButtonStyle.Success }),
+        btn(ACTIONS.TEST_REFRESH, "", [], { label: "Обновить", emoji: "🔄" })
+      )
+    );
+    for (const t of testTournaments.slice(0, 3)) {
+      container.addActionRowComponents(
+        ui.row(
+          btn(ACTIONS.TEST_FILL, t.id, ["full"], { label: "Заполнить ботами", style: ButtonStyle.Primary, emoji: "🤖" }),
+          btn(ACTIONS.MANAGE_OPEN, t.id, [], { label: "Управление", style: ButtonStyle.Primary, emoji: "🛠" }),
+          btn(ACTIONS.TEST_RESET, t.id, [], { label: "Сброс", emoji: "♻" }),
+          btn(ACTIONS.TEST_DELETE, t.id, [], { label: "Удалить", style: ButtonStyle.Danger, emoji: "🗑" })
+        )
+      );
+    }
+    if (testTournaments.length) {
+      container.addActionRowComponents(ui.row(btn(ACTIONS.TEST_PURGE, "", [], { label: "Удалить ВСЕ тесты", style: ButtonStyle.Danger, emoji: "💥" })));
+    }
+    if (statusText) container.addTextDisplayComponents(ui.td(`-# ${statusText}`));
+  });
+  return ui.v2Ephemeral(c);
+}
+
 module.exports = {
   TWINK_WARNING,
   SEEDING_MODE_LABELS,
+  ACCOUNT_KIND_LABELS,
   KILLS_BUCKETS,
-  ephemeral,
+  ROSTER_PAGE_SIZE,
   playerName,
   playerLabel,
+  playerMd,
   buildHubPayload,
-  buildTestPanelPayload,
   buildSetupPanelPayload,
   setupReady,
   buildBasicsModal,
@@ -838,11 +956,18 @@ module.exports = {
   buildDeclareStrengthPayload,
   buildRegFinalConfirmPayload,
   buildRegisteredPayload,
-  buildSimpleEphemeral,
+  buildNoticePayload,
   buildManagePanelPayload,
+  buildRosterViewerPayload,
+  buildAddPlayerPayload,
+  buildRemovePlayerPayload,
+  buildAddPlayerModal,
   buildRosterPayload,
+  buildBracketPostPayload,
+  buildSummaryPostPayload,
   buildPreliminaryBracketPayload,
   buildMatchPanelPayload,
   buildServerDonePayload,
   buildServerThreadName,
+  buildTestPanelPayload,
 };

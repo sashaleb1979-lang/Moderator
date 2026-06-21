@@ -9,6 +9,37 @@ function cloneValue(value) {
   return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
 }
 
+function normalizeComboGuideMessageIds(value) {
+  if (!Array.isArray(value)) return [];
+
+  return value
+    .map((entry) => String(entry || "").trim())
+    .filter(Boolean);
+}
+
+function normalizeComboGuideCharacters(value) {
+  if (!Array.isArray(value)) return [];
+
+  return value
+    .filter((entry) => entry && typeof entry === "object" && !Array.isArray(entry))
+    .map((entry) => ({
+      ...entry,
+      comboMessageIds: normalizeComboGuideMessageIds(entry.comboMessageIds),
+      techMessageIds: normalizeComboGuideMessageIds(entry.techMessageIds),
+    }));
+}
+
+function normalizeComboGuideState(value, normalizeComboGuideEditorRoleIds) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+
+  return {
+    ...value,
+    editorRoleIds: normalizeComboGuideEditorRoleIds(value.editorRoleIds),
+    generalTechsMessageIds: normalizeComboGuideMessageIds(value.generalTechsMessageIds),
+    characters: normalizeComboGuideCharacters(value.characters),
+  };
+}
+
 function replaceObjectContents(target, source) {
   for (const key of Object.keys(target || {})) {
     delete target[key];
@@ -225,13 +256,12 @@ function createDbStore({
     const normalizedStoredCharacters = normalizeCharacterCatalog(db.config.characters);
     const runtimeCharacters = normalizeCharacterCatalog(appConfig.characters);
     const charactersChanged = JSON.stringify(Array.isArray(db.config.characters) ? db.config.characters : []) !== JSON.stringify(normalizedStoredCharacters);
-    const comboGuideEditorRoleIds = normalizeComboGuideEditorRoleIds(db.comboGuide?.editorRoleIds);
-    const comboGuideEditorRoleIdsChanged = Boolean(db.comboGuide && typeof db.comboGuide === "object") && (
-      !Array.isArray(db.comboGuide.editorRoleIds)
-      || JSON.stringify(comboGuideEditorRoleIds) !== JSON.stringify(db.comboGuide.editorRoleIds)
-    );
-    if (db.comboGuide && typeof db.comboGuide === "object") {
-      db.comboGuide.editorRoleIds = comboGuideEditorRoleIds;
+    const rawComboGuide = db.comboGuide;
+    const normalizedComboGuide = normalizeComboGuideState(rawComboGuide, normalizeComboGuideEditorRoleIds);
+    const comboGuideChanged = Boolean(rawComboGuide && typeof rawComboGuide === "object" && !Array.isArray(rawComboGuide))
+      && JSON.stringify(normalizedComboGuide) !== JSON.stringify(rawComboGuide);
+    if (normalizedComboGuide && typeof normalizedComboGuide === "object" && !Array.isArray(normalizedComboGuide)) {
+      db.comboGuide = normalizedComboGuide;
     }
     db.config.characters = normalizedStoredCharacters;
     const dormantEloImport = importDormantEloSyncFromFile(db, {
@@ -257,7 +287,7 @@ function createDbStore({
     db.__needsSaveAfterLoad = migrated.mutated
       || charactersChanged
       || roleGrantRegistry.mutated
-      || comboGuideEditorRoleIdsChanged
+      || comboGuideChanged
       || onboardModeChanged
       || accessGrantChanged
       || autonomyGuardChanged
@@ -285,6 +315,9 @@ function createDbStore({
     });
     workingDb.config.autonomyGuard = createAutonomyGuardState(workingDb.config.autonomyGuard);
     workingDb.config.integrations = normalizeIntegrationState(workingDb.config.integrations).integrations;
+    if (workingDb.comboGuide && typeof workingDb.comboGuide === "object" && !Array.isArray(workingDb.comboGuide)) {
+      workingDb.comboGuide = normalizeComboGuideState(workingDb.comboGuide, normalizeComboGuideEditorRoleIds);
+    }
     const dualWriteState = typeof dualWriteSotState === "function"
       ? dualWriteSotState(workingDb)
       : { mutated: false, writtenSlots: [] };

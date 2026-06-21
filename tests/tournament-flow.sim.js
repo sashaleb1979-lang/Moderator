@@ -7,6 +7,7 @@ const { createTournamentOperator } = require("../src/tournament/operator");
 const { buildCustomId, ACTIONS, TOURNAMENT_COMMAND_NAME } = require("../src/tournament/commands");
 const state = require("../src/tournament/state");
 const seeding = require("../src/tournament/seeding");
+const view = require("../src/tournament/view");
 
 const db = {};
 let lastChannelMessageId = 1000;
@@ -14,23 +15,30 @@ let lastChannelMessageId = 1000;
 function makeMessage(id) {
   return { id: String(id), edit: async () => {}, delete: async () => {} };
 }
+let threadCreateThrows = false;
 const channel = {
   id: "chan1",
   send: async () => makeMessage(++lastChannelMessageId),
   messages: { fetch: async () => makeMessage(1) },
   delete: async () => {},
   threads: {
-    create: async () => ({
-      id: "thread1",
-      send: async () => makeMessage(++lastChannelMessageId),
-      setLocked: async () => {},
-      delete: async () => {},
-    }),
+    create: async () => {
+      if (threadCreateThrows) throw new Error("missing perms");
+      return {
+        id: "thread1",
+        send: async () => makeMessage(++lastChannelMessageId),
+        setLocked: async () => {},
+        delete: async () => {},
+        members: { add: async () => {} },
+      };
+    },
   },
 };
 
 const snapshots = new Map();
 function setSnapshot(userId, snap) { snapshots.set(userId, snap); }
+
+const roleCalls = []; // { op: 'grant'|'remove', userId, roleId }
 
 const op = createTournamentOperator({
   db,
@@ -40,9 +48,15 @@ const op = createTournamentOperator({
   logError: (...a) => console.error("[err]", ...a),
   resolveRobloxUser: async (nick) => ({ userId: "rb_" + nick, username: nick, avatarUrl: "http://avatar/" + nick }),
   getPlayerSnapshot: (userId) => snapshots.get(userId) || {},
-  fetchChannel: async () => channel,
+  fetchChannel: async (id) => (id === "thread1" ? { id: "thread1", send: async () => makeMessage(++lastChannelMessageId), setLocked: async () => {}, members: { add: async () => {} } } : channel),
   fetchAvatarHeadshots: async (ids) => ids.map((id) => ({ targetId: id, imageUrl: "http://avatar/" + id })),
+  grantRole: async (userId, roleId) => { roleCalls.push({ op: "grant", userId, roleId }); return { granted: true, roleId }; },
+  removeRole: async (userId, roleId) => { roleCalls.push({ op: "remove", userId, roleId }); return { removed: true, roleId }; },
+  fetchMember: async (userId) => ({ user: { id: userId, tag: userId + "#0001" }, roles: { cache: new Map() } }),
 });
+
+// let fire-and-forget side-effects (launch thread/ping, announcement throttle) settle
+const settle = () => new Promise((r) => setTimeout(r, 30));
 
 function makeInteraction({ customId, userId = "u1", tag, mod = false, fields = {}, values = [], commandName, sub }) {
   const recorded = { replies: [], updates: [], modals: [] };
@@ -81,10 +95,12 @@ async function main() {
   await op.handleModalSubmitInteraction(makeInteraction({ customId: buildCustomId(ACTIONS.SETUP_TIME), userId: MOD, mod: true, fields: { time: "25.06.2026 20:00" } }));
   await op.handleSelectMenuInteraction(makeInteraction({ customId: buildCustomId(ACTIONS.SETUP_CHANNEL), userId: MOD, mod: true, values: ["chan1"] }));
   await op.handleSelectMenuInteraction(makeInteraction({ customId: buildCustomId(ACTIONS.SETUP_MODE), userId: MOD, mod: true, values: ["similar"] }));
+  await op.handleSelectMenuInteraction(makeInteraction({ customId: buildCustomId(ACTIONS.SETUP_ROLE), userId: MOD, mod: true, values: ["role-participant"] }));
 
   const draft = state.getDraft(db, MOD);
   assert.ok(draft.startsAtIso, "time saved");
   assert.equal(draft.announceChannelId, "chan1", "channel saved");
+  assert.equal(draft.participantRoleId, "role-participant", "participant role saved");
 
   // 3) publish
   await op.handleButtonInteraction(makeInteraction({ customId: buildCustomId(ACTIONS.SETUP_PUBLISH), userId: MOD, mod: true }));
@@ -124,18 +140,32 @@ async function main() {
   assert.equal(state.registrationCount(state.getTournament(db, t.id)), 16, "16 registered");
   console.log("✓ 16 registrations (main accounts)");
 
-  // 5) close reg, form duels
+  // participant role granted on registration
+  assert.ok(roleCalls.some((c) => c.op === "grant" && c.roleId === "role-participant"), "participant role granted on registration");
+  console.log("✓ participant role auto-granted");
+
+  // 5) close reg (snappy), form duels
   await op.handleButtonInteraction(makeInteraction({ customId: buildCustomId(ACTIONS.MANAGE_CLOSE_REG, t.id), userId: MOD, mod: true }));
   await op.handleButtonInteraction(makeInteraction({ customId: buildCustomId(ACTIONS.MANAGE_FORM_DUELS, t.id), userId: MOD, mod: true }));
   assert.equal(state.getTournament(db, t.id).status, "seeded");
   console.log("✓ formed duels");
 
-  // 6) launch server 0
+  // 5b) roster viewer renders with Roblox links
+  await op.handleButtonInteraction(makeInteraction({ customId: buildCustomId(ACTIONS.MANAGE_ROSTER, t.id), userId: MOD, mod: true }));
+  console.log("✓ roster viewer opened");
+
+  // 6) launch server 0 — bracket must persist immediately (decoupled from thread)
   await op.handleButtonInteraction(makeInteraction({ customId: buildCustomId(ACTIONS.MANAGE_LAUNCH_SERVER, t.id, "0"), userId: MOD, mod: true }));
   let server = state.getServer(state.getTournament(db, t.id), 0);
-  assert.ok(server.launched && server.currentStage, "server launched with stage 1");
-  assert.equal(server.threadId, "thread1", "private thread created");
-  console.log("✓ launched server (stage 1, 2 runs)");
+  assert.ok(server.launched && server.currentStage, "bracket persisted synchronously on launch");
+  // match panel is reachable immediately (has interactive components)
+  const panelNow = view.buildMatchPanelPayload(state.getTournament(db, t.id), server);
+  assert.ok(panelNow.components && panelNow.components.length, "match panel reachable right after launch");
+  await settle(); // let fire-and-forget side-effects finish
+  server = state.getServer(state.getTournament(db, t.id), 0);
+  assert.equal(server.threadId, "thread1", "private thread created by side-effects");
+  assert.equal(server.threadFailed, false, "thread did not fail");
+  console.log("✓ launched server (decoupled: bracket first, thread async)");
 
   // 7) walk the whole bracket: red wins every match, advancing runs then stages
   for (let guard = 0; guard < 30; guard += 1) {
@@ -189,6 +219,52 @@ async function main() {
     const summaryPath = pathMod.join(outDir, "tournament_sim_summary.png");
     fs.writeFileSync(summaryPath, summaryBuf);
     console.log(`✓ rendered result + summary from real operator state → ${outDir}`);
+  }
+
+  // ---- launch survives thread-creation failure --------------------------------
+  {
+    const tf = state.createTournamentFromDraft(db, { name: "NoThread", slots: 16, seedingMode: "similar", createdBy: MOD, announceChannelId: "chan1", participantRoleId: "role-x" }, { id: state.makeId() });
+    state.updateTournament(db, tf.id, { announce: { channelId: "chan1", messageId: "m1" } });
+    for (let i = 1; i <= 8; i += 1) {
+      setSnapshot("n" + i, { hasRobloxAccount: true, robloxUsername: "N" + i, robloxUserId: "r" + i, approvedKills: i * 500 });
+      await op.handleButtonInteraction(makeInteraction({ customId: buildCustomId(ACTIONS.REGISTER_OPEN, tf.id), userId: "n" + i }));
+      await op.handleButtonInteraction(makeInteraction({ customId: buildCustomId(ACTIONS.REG_USE_MAIN, tf.id), userId: "n" + i }));
+    }
+    threadCreateThrows = true;
+    await op.handleButtonInteraction(makeInteraction({ customId: buildCustomId(ACTIONS.MANAGE_LAUNCH_SERVER, tf.id, "0"), userId: MOD, mod: true }));
+    let s = state.getServer(state.getTournament(db, tf.id), 0);
+    assert.ok(s.launched && s.currentStage, "bracket persists even when thread fails");
+    await settle();
+    s = state.getServer(state.getTournament(db, tf.id), 0);
+    assert.equal(s.threadFailed, true, "threadFailed flagged");
+    const panel = view.buildMatchPanelPayload(state.getTournament(db, tf.id), s);
+    assert.ok(panel.components && panel.components.length, "match panel still reachable when thread failed");
+    threadCreateThrows = false;
+    console.log("✓ launch survives thread failure (bracket still runnable)");
+  }
+
+  // ---- manual add / remove + kills never zero --------------------------------
+  {
+    const tm = state.createTournamentFromDraft(db, { name: "Manual", slots: 16, seedingMode: "similar", createdBy: MOD, announceChannelId: "chan1", participantRoleId: "role-m" }, { id: state.makeId() });
+    state.updateTournament(db, tm.id, { announce: { channelId: "chan1", messageId: "m2" } });
+    // manual add via user-select (snapshot has roblox + kills)
+    setSnapshot("123456789", { hasRobloxAccount: true, robloxUsername: "AddedGuy", robloxUserId: "rb999", approvedKills: 7777, killsSource: "profile" });
+    await op.handleSelectMenuInteraction(makeInteraction({ customId: buildCustomId(ACTIONS.ADD_PLAYER_SELECT, tm.id), userId: MOD, mod: true, values: ["123456789"] }));
+    const added = state.getRegistration(state.getTournament(db, tm.id), "123456789");
+    assert.ok(added && added.effectiveKills === 7777 && added.addedManually, "manual add resolved kills + flagged");
+    assert.ok(roleCalls.some((c) => c.op === "grant" && c.roleId === "role-m" && c.userId === "123456789"), "role granted on manual add");
+    // manual add via modal (nick + kills, no discord)
+    await op.handleModalSubmitInteraction(makeInteraction({ customId: buildCustomId(ACTIONS.ADD_PLAYER_MODAL, tm.id), userId: MOD, mod: true, fields: { nick: "ByNick", kills: "3300", discord: "" } }));
+    assert.equal(state.registrationCount(state.getTournament(db, tm.id)), 2, "modal add registered");
+    // remove player
+    await op.handleSelectMenuInteraction(makeInteraction({ customId: buildCustomId(ACTIONS.REMOVE_PLAYER_SELECT, tm.id), userId: MOD, mod: true, values: ["123456789"] }));
+    assert.equal(state.registrationCount(state.getTournament(db, tm.id)), 1, "remove player worked");
+    assert.ok(roleCalls.some((c) => c.op === "remove" && c.userId === "123456789"), "role removed on player removal");
+    // no registrant has zero kills
+    for (const r of state.listRegistrations(state.getTournament(db, tm.id))) assert.ok(r.effectiveKills > 0, "no zero-kill registrant");
+    // sync roles
+    await op.handleButtonInteraction(makeInteraction({ customId: buildCustomId(ACTIONS.MANAGE_SYNC_ROLES, tm.id), userId: MOD, mod: true }));
+    console.log("✓ manual add/remove + role grant/remove + sync + no zero kills");
   }
 
   // ---- test harness scenario -------------------------------------------------

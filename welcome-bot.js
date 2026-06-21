@@ -7092,13 +7092,15 @@ function getTournamentPlayerSnapshot(userId, options = {}) {
     if (typeof candidate === "string" && /^https?:\/\//i.test(candidate)) lastScreenshotUrl = candidate;
   }
 
+  const normalizedKills = Number.isFinite(approvedKills) ? approvedKills : 0;
   return {
     hasRobloxAccount: Boolean(robloxUserId && robloxUsername),
     verified,
     robloxUserId,
     robloxUsername,
     robloxAvatarUrl,
-    approvedKills: Number.isFinite(approvedKills) ? approvedKills : 0,
+    approvedKills: normalizedKills,
+    killsSource: normalizedKills > 0 ? "profile" : null,
     lastScreenshotUrl,
   };
 }
@@ -7132,6 +7134,23 @@ function getTournamentOperator() {
     fetchImageBuffer: (url) => downloadToBuffer(url).catch(() => null),
     renderImage: renderTournamentImageOffThread,
     fetchAvatarHeadshots: (robloxUserIds) => robloxApiClient.fetchUserAvatarHeadshots(robloxUserIds),
+    fetchMember: (userId) => fetchMember(client, userId),
+    grantRole: async (userId, roleId, reason) => {
+      if (!roleId) return { skipped: "missing-role" };
+      const member = await fetchMember(client, userId);
+      if (!member) return { skipped: "missing-member" };
+      if (member.roles?.cache?.has?.(roleId)) return { skipped: "already-has-role", roleId };
+      await member.roles.add(roleId, reason);
+      return { granted: true, roleId };
+    },
+    removeRole: async (userId, roleId, reason) => {
+      if (!roleId) return { skipped: "missing-role" };
+      const member = await fetchMember(client, userId);
+      if (!member) return { skipped: "missing-member" };
+      if (!member.roles?.cache?.has?.(roleId)) return { skipped: "no-role", roleId };
+      await member.roles.remove(roleId, reason);
+      return { removed: true, roleId };
+    },
     logLine: (text) => logLine(client, text),
     writeRobloxBinding: (userId, robloxUser, source = "tournament") => {
       const profile = getProfile(userId);
