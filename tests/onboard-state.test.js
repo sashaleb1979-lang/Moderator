@@ -18,6 +18,7 @@ const {
   normalizeOnboardAccessMode,
   resolveGrantedAccessRoleId,
   resolveSelfServiceAccessGrantBlockReason,
+  shouldPreserveNormalAccessDuringWartime,
 } = require("../src/onboard/access-mode");
 const { commitMutation } = require("../src/onboard/refresh-runner");
 const {
@@ -914,6 +915,36 @@ test("self-service access grants are blocked for human access roles during warti
     mode: ONBOARD_ACCESS_MODES.NORMAL,
     roleId: "human-role",
   }), "");
+});
+
+test("wartime mode never downgrades an established normal-access holder", () => {
+  // Established member already holds the full normal access role → preserve it.
+  assert.equal(shouldPreserveNormalAccessDuringWartime({
+    mode: ONBOARD_ACCESS_MODES.WARTIME,
+    normalAccessRoleId: "base-role",
+    heldRoleIds: ["base-role", "wartime-role"],
+  }), true);
+
+  // New member without the normal access role → wartime grant proceeds as usual.
+  assert.equal(shouldPreserveNormalAccessDuringWartime({
+    mode: ONBOARD_ACCESS_MODES.WARTIME,
+    normalAccessRoleId: "base-role",
+    heldRoleIds: ["wartime-role"],
+  }), false);
+
+  // Outside wartime the swap logic does not apply, so nothing is preserved here.
+  assert.equal(shouldPreserveNormalAccessDuringWartime({
+    mode: ONBOARD_ACCESS_MODES.NORMAL,
+    normalAccessRoleId: "base-role",
+    heldRoleIds: ["base-role"],
+  }), false);
+
+  // No configured normal role → nothing to preserve.
+  assert.equal(shouldPreserveNormalAccessDuringWartime({
+    mode: ONBOARD_ACCESS_MODES.WARTIME,
+    normalAccessRoleId: "",
+    heldRoleIds: ["base-role"],
+  }), false);
 });
 
 test("access grant mode state normalizes persisted values and exposes readable labels", () => {

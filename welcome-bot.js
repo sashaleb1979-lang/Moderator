@@ -220,6 +220,7 @@ const {
   normalizeOnboardAccessMode,
   resolveGrantedAccessRoleId,
   resolveSelfServiceAccessGrantBlockReason,
+  shouldPreserveNormalAccessDuringWartime,
 } = require("./src/onboard/access-mode");
 const {
   collectAccessCompanionCandidateUserIds,
@@ -238,6 +239,7 @@ const {
   getOnboardAccessGrantModeLabel,
   normalizeOnboardAccessGrantMode,
 } = require("./src/onboard/access-grant-mode");
+const { recoverApprovedProfileKillsForDb } = require("./src/onboard/kill-recovery");
 const { buildCommands } = require("./src/onboard/commands");
 const { ONBOARD_BEGIN_ROUTES, resolveOnboardBeginRoute } = require("./src/onboard/begin-state");
 const {
@@ -9308,6 +9310,19 @@ async function grantAccessRole(client, userId, reason = "welcome application sub
     throw new Error("Не настроена роль стартового доступа для текущего режима.");
   }
   const isWartimeMode = normalizeOnboardAccessMode(mode) === ONBOARD_ACCESS_MODES.WARTIME;
+
+  // Never downgrade an established member who already holds the full normal access role.
+  // Wartime mode only swaps NEW members onto the restricted wartime role; resubmitting
+  // kills to refresh stats must keep an existing normal-access holder exactly as-is.
+  if (shouldPreserveNormalAccessDuringWartime({
+    mode,
+    normalAccessRoleId: getNormalAccessRoleId(),
+    heldRoleIds: [...member.roles.cache.keys()],
+  })) {
+    await ensureAccessCompanionRoleForMemberBestEffort(member, reason, "managed access grant");
+    return true;
+  }
+
   const managedRoleIds = getManagedStartAccessRoleIds();
   const exclusiveRoleIds = isWartimeMode
     ? [...new Set([...getVerificationQuarantineRoleIds(), getAccessCompanionRoleId()].filter(Boolean))]
@@ -11502,11 +11517,18 @@ async function approveSubmission(client, submission, moderatorTag) {
   });
 
   delete submission.approveClaim;
+  saveDb();
+  // Durability barrier: the kill-tier role is changed below based on this approval, so the
+  // approval MUST be on disk first. saveDb() is now a non-blocking coalesced flush, so a
+  // crash between the role change and the debounced write would lose the approval on disk
+  // while keeping the Discord role — and the next startup sync would revert the role and
+  // kills "from nothing". Force the write and roll back the in-memory approval if it fails.
   try {
-    saveDb();
+    await flushDbNow();
   } catch (error) {
     restoreRecordValue(db.submissions, submission.id, previousSubmission, true);
     restoreRecordValue(db.profiles, submission.userId, previousProfile, true);
+    saveDb();
     throw error;
   }
 
@@ -16665,6 +16687,21 @@ client.once("clientReady", async () => {
   };
   let startupDegraded = [];
 
+  try {
+    const recovery = recoverApprovedProfileKillsForDb(db, { killTierFor, now: nowIso });
+    if (recovery.changed) {
+      saveDb();
+      console.log(
+        `[startup] Recovered approved kill stats for ${recovery.recovered.length} profile(s) whose kills/tier went missing: `
+        + recovery.recovered.map((entry) => `${entry.userId}->${entry.approvedKills}/t${entry.killTier}`).join(", ")
+      );
+    }
+  } catch (error) {
+    const message = formatRuntimeError(error);
+    startupDegraded.push({ step: "recoverApprovedProfileKills", message });
+    console.warn(`Startup approved kill recovery failed: ${message}`);
+  }
+
   await Promise.resolve(reconcileApprovedPendingSubmissions(client)).then((result) => {
     if (result.reviewFailed > 0) {
       const message = `approved ${result.approved}, reviewUpdated ${result.reviewUpdated}, reviewFailed ${result.reviewFailed}`;
@@ -18648,7 +18685,19 @@ client.on("interactionCreate", async (interaction) => {
 
       profile.approvedKills = null;
       profile.killTier = null;
+      profile.lastSubmissionStatus = "cleared";
       profile.updatedAt = nowIso();
+      // Retire the approved submissions too, otherwise the startup kill self-heal would
+      // resurrect the kills this moderator just cleared (the submission is the source of
+      // truth the recovery reads from).
+      for (const submission of Object.values(db.submissions || {})) {
+        if (submission?.userId === targetId && submission.status === "approved") {
+          submission.status = "superseded";
+          submission.reviewedAt = nowIso();
+          submission.reviewedBy = interaction.user.tag;
+          submission.rejectReason = "Kill-tier очищен модератором";
+        }
+      }
       saveDb();
 
       await clearTierRoles(client, targetId, "moderator removed kill tier");
