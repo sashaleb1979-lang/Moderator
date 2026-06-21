@@ -375,6 +375,7 @@ test("tournament Roblox modal writes main account lookups back into the shared n
 test("tournament form hydrates zero-kill main registrations before seeding", async () => {
   const calls = [];
   const logs = [];
+  const snapshotCalls = [];
   const db = {};
   const tournament = state.createTournamentFromDraft(
     db,
@@ -407,9 +408,10 @@ test("tournament form hydrates zero-kill main registrations before seeding", asy
     saveDb: () => calls.push("saveDb"),
     runSerializedMutation: async ({ mutate }) => mutate(),
     isModerator: (member) => Boolean(member?.mod),
-    getPlayerSnapshot: async (userId) => (
-      userId === "zero-main" ? { approvedKills: 8275 } : { approvedKills: 0 }
-    ),
+    getPlayerSnapshot: async (userId, context) => {
+      snapshotCalls.push({ userId, context });
+      return userId === "zero-main" ? { approvedKills: 8275 } : { approvedKills: 0 };
+    },
     logLine: async (line) => logs.push(line),
   });
   const interaction = createButtonInteraction(buildCustomId(ACTIONS.MANAGE_FORM_DUELS, tournament.id), calls);
@@ -423,6 +425,62 @@ test("tournament form hydrates zero-kill main registrations before seeding", asy
   assert.equal(repaired.approvedKills, 8275);
   assert.equal(repaired.effectiveKills, 8275);
   assert.equal(repaired.seedNumber, 1);
+  assert.equal(snapshotCalls[0].context.registration.robloxUsername, "ZeroMain");
   assert.match(JSON.stringify(interaction.replyPayload), /ZeroMain \(8\s*275\)/);
   assert.ok(logs.some((line) => /TOURNAMENT_KILLS_HYDRATE:/.test(line) && /repaired=1/.test(line)));
+});
+
+test("tournament withdraw resets stale seeded roster before play is launched", async () => {
+  const calls = [];
+  const logs = [];
+  const db = {};
+  const tournament = state.createTournamentFromDraft(
+    db,
+    {
+      name: "Тестовый турнир",
+      slots: 16,
+      startsAtIso: "2026-06-21T20:00:00.000Z",
+      announceChannelId: "channel-1",
+    },
+    { id: "tour-1", now: "2026-06-21T18:00:00.000Z" }
+  );
+  state.upsertRegistration(tournament, {
+    userId: "user-1",
+    discordName: "one#0001",
+    robloxUsername: "One",
+    approvedKills: 7000,
+    effectiveKills: 7000,
+    seedNumber: 1,
+    serverIndex: 0,
+  });
+  state.upsertRegistration(tournament, {
+    userId: "user-2",
+    discordName: "two#0001",
+    robloxUsername: "Two",
+    approvedKills: 5000,
+    effectiveKills: 5000,
+    seedNumber: 2,
+    serverIndex: 0,
+  });
+  state.updateTournament(db, tournament.id, { status: "seeded" });
+  const operator = createTournamentOperator({
+    db,
+    saveDb: () => calls.push("saveDb"),
+    runSerializedMutation: async ({ mutate }) => mutate(),
+    logLine: async (line) => logs.push(line),
+  });
+  const interaction = createButtonInteraction(buildCustomId(ACTIONS.REG_WITHDRAW, tournament.id), calls);
+  interaction.user = { id: "user-1", tag: "one#0001" };
+
+  const handled = await operator.handleButtonInteraction(interaction);
+
+  assert.equal(handled, true);
+  const fresh = state.getTournament(db, tournament.id);
+  assert.equal(state.getRegistration(fresh, "user-1"), null);
+  assert.equal(fresh.status, "registration");
+  assert.deepEqual(fresh.servers, {});
+  assert.equal(state.getRegistration(fresh, "user-2").seedNumber, null);
+  assert.equal(state.getRegistration(fresh, "user-2").serverIndex, null);
+  assert.match(interaction.editedPayload.content, /распределение сброшено/i);
+  assert.ok(logs.some((line) => /TOURNAMENT_WITHDRAW:/.test(line) && /playReset=yes/.test(line)));
 });

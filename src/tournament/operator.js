@@ -872,7 +872,10 @@ function createTournamentOperator(deps = {}) {
 
     for (const reg of registrations) {
       if (!registrationNeedsKillHydration(reg)) continue;
-      const snapshot = (await Promise.resolve(getPlayerSnapshot(reg.userId)).catch((error) => {
+      const snapshot = (await Promise.resolve(getPlayerSnapshot(reg.userId, {
+        registration: reg,
+        tournamentId: tournament?.id || "",
+      })).catch((error) => {
         logError("tournament: player kill hydration failed", reg.userId, error?.message || error);
         return {};
       })) || {};
@@ -890,6 +893,23 @@ function createTournamentOperator(deps = {}) {
     }
 
     return changed;
+  }
+
+  function hasLaunchedTournamentPlay(tournament) {
+    return Object.values(tournament?.servers || {}).some((server) => (
+      server && (server.launched || server.currentStage || server.done)
+    ));
+  }
+
+  function resetSeededTournamentAfterRosterChange(tournament) {
+    if (!tournament || tournament.status !== "seeded" || hasLaunchedTournamentPlay(tournament)) return false;
+    tournament.servers = {};
+    for (const reg of state.listRegistrations(tournament)) {
+      reg.serverIndex = null;
+      reg.seedNumber = null;
+    }
+    tournament.status = "registration";
+    return true;
   }
 
   async function finalizeRegistration(interaction, tournamentId, session) {
@@ -940,18 +960,29 @@ function createTournamentOperator(deps = {}) {
     const removed = await persist("tournament-withdraw", async () => {
       const fresh = state.getTournament(db, tournamentId);
       const existing = fresh ? state.getRegistration(fresh, userId) : null;
-      if (fresh) state.removeRegistration(fresh, userId);
-      return existing;
+      let playReset = false;
+      if (fresh) {
+        state.removeRegistration(fresh, userId);
+        playReset = resetSeededTournamentAfterRosterChange(fresh);
+      }
+      return { existing, playReset };
     });
     pending.delete(pendingKey(tournamentId, userId));
     const fresh = state.getTournament(db, tournamentId);
     const refreshed = fresh ? await refreshAnnouncement(fresh, "withdraw") : announcementRefreshResult("failed");
     if (fresh) {
       await safeLogLine(
-        `TOURNAMENT_WITHDRAW: <@${userId}> tournament="${fresh.name}" id=${fresh.id} player=${removed?.robloxUsername || "unknown"} count=${state.registrationCount(fresh)}/${fresh.slots} announcement=${announcementStatusText(refreshed)}`
+        `TOURNAMENT_WITHDRAW: <@${userId}> tournament="${fresh.name}" id=${fresh.id} player=${removed?.existing?.robloxUsername || "unknown"} count=${state.registrationCount(fresh)}/${fresh.slots} announcement=${announcementStatusText(refreshed)} playReset=${removed?.playReset ? "yes" : "no"}`
       );
     }
-    await safeUpdate(interaction, { content: "Заявка отозвана.", embeds: [], components: [], flags: MessageFlags.Ephemeral });
+    await safeUpdate(interaction, {
+      content: removed?.playReset
+        ? "Заявка отозвана. Старое распределение сброшено, потому что состав изменился."
+        : "Заявка отозвана.",
+      embeds: [],
+      components: [],
+      flags: MessageFlags.Ephemeral,
+    });
     return true;
   }
 

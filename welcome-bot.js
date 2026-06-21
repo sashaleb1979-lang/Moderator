@@ -6881,21 +6881,120 @@ function normalizeTournamentApprovedKills(value) {
   return Math.round(amount);
 }
 
+function normalizeTournamentRobloxUsername(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function normalizeTournamentMatchKey(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "");
+}
+
 function submissionTournamentRecency(submission = {}) {
   return Date.parse(submission.reviewedAt || "")
     || Date.parse(submission.createdAt || "")
     || 0;
 }
 
-function pickTournamentApprovedSubmissionKills(profile = {}) {
-  const userId = String(profile?.userId || "").trim();
-  if (!userId || !db.submissions || typeof db.submissions !== "object") return null;
+function tournamentProfileRobloxIdentity(profile = {}) {
+  const candidates = [
+    profile.domains?.roblox,
+    profile.summary?.roblox,
+    {
+      username: profile.robloxUsername,
+      userId: profile.robloxUserId,
+      currentUsername: profile.robloxUsername,
+      robloxUsername: profile.robloxUsername,
+      robloxUserId: profile.robloxUserId,
+      displayName: profile.robloxDisplayName,
+      avatarUrl: profile.robloxAvatarUrl,
+      profileUrl: profile.robloxProfileUrl,
+      verificationStatus: profile.verificationStatus,
+      verifiedAt: profile.robloxVerifiedAt || profile.verifiedAt,
+      hasVerifiedAccount: profile.hasVerifiedAccount,
+    },
+  ].filter((entry) => entry && typeof entry === "object");
+  const normalized = candidates.map((entry) => normalizeRobloxDomainState(entry));
+  const usable = normalized.map((entry) => resolveUsableVerifiedRobloxIdentity(entry)).find(Boolean);
+  const fallback = normalized.find((entry) => entry.userId || entry.username) || {};
+  return usable || fallback;
+}
+
+function findTournamentProfileByRegistration(registration = {}) {
+  const targetRobloxUserId = String(registration?.robloxUserId || "").trim();
+  const targetRobloxUsername = normalizeTournamentRobloxUsername(registration?.robloxUsername);
+  const targetNameKey = normalizeTournamentMatchKey(registration?.robloxUsername);
+  if (!targetRobloxUserId && !targetRobloxUsername) return null;
+  for (const profile of Object.values(db.profiles || {})) {
+    if (!profile || typeof profile !== "object") continue;
+    const identity = tournamentProfileRobloxIdentity(profile);
+    const profileRobloxUserId = String(identity.userId || "").trim();
+    const profileRobloxUsername = normalizeTournamentRobloxUsername(identity.username || identity.currentUsername);
+    if (targetRobloxUserId && profileRobloxUserId && profileRobloxUserId === targetRobloxUserId) return profile;
+    if (targetRobloxUsername && profileRobloxUsername && profileRobloxUsername === targetRobloxUsername) return profile;
+    const profileNameKeys = [
+      profile.displayName,
+      profile.username,
+      profile.globalName,
+      profile.robloxUsername,
+      profile.summary?.roblox?.username,
+      profile.summary?.roblox?.currentUsername,
+      profile.domains?.roblox?.username,
+      profile.domains?.roblox?.currentUsername,
+    ].map((value) => normalizeTournamentMatchKey(value)).filter(Boolean);
+    if (targetNameKey && profileNameKeys.includes(targetNameKey)) return profile;
+  }
+  return null;
+}
+
+function pickTournamentTextTierlistProfileKills(registration = {}) {
+  const targetRobloxUsername = normalizeTournamentRobloxUsername(registration?.robloxUsername);
+  const targetNameKey = normalizeTournamentMatchKey(registration?.robloxUsername);
+  if (!targetRobloxUsername && !targetNameKey) return null;
+
+  const entries = getApprovedTierlistEntries();
+  for (const entry of entries) {
+    const profile = entry.profile || {};
+    const identity = tournamentProfileRobloxIdentity(profile);
+    const names = [
+      entry.displayName,
+      profile.displayName,
+      profile.username,
+      profile.robloxUsername,
+      identity.username,
+      identity.currentUsername,
+    ];
+    const robloxNames = names.map((value) => normalizeTournamentRobloxUsername(value)).filter(Boolean);
+    const nameKeys = names.map((value) => normalizeTournamentMatchKey(value)).filter(Boolean);
+    if ((targetRobloxUsername && robloxNames.includes(targetRobloxUsername))
+      || (targetNameKey && nameKeys.includes(targetNameKey))) {
+      return normalizeTournamentApprovedKills(entry.approvedKills);
+    }
+  }
+  return null;
+}
+
+function pickTournamentApprovedSubmissionKills(profile = {}, registration = {}) {
+  const userIds = [
+    profile?.userId,
+    registration?.userId,
+  ].map((value) => String(value || "").trim()).filter(Boolean);
+  const targetRobloxUserId = String(registration?.robloxUserId || "").trim();
+  const targetRobloxUsername = normalizeTournamentRobloxUsername(registration?.robloxUsername);
+  if (!userIds.length && !targetRobloxUserId && !targetRobloxUsername) return null;
+  if (!db.submissions || typeof db.submissions !== "object") return null;
   const approved = Object.values(db.submissions)
     .filter((submission) => (
       submission
       && typeof submission === "object"
       && submission.status === "approved"
-      && String(submission.userId || "").trim() === userId
+      && (
+        userIds.includes(String(submission.userId || "").trim())
+        || (targetRobloxUserId && String(submission.robloxUserId || "").trim() === targetRobloxUserId)
+        || (targetRobloxUsername && normalizeTournamentRobloxUsername(submission.robloxUsername) === targetRobloxUsername)
+      )
       && normalizeTournamentApprovedKills(submission.kills) !== null
     ));
   if (!approved.length) return null;
@@ -6914,7 +7013,7 @@ function pickTournamentApprovedSubmissionKills(profile = {}) {
   return normalizeTournamentApprovedKills(source?.kills);
 }
 
-function pickTournamentApprovedKills(profile = {}) {
+function pickTournamentApprovedKills(profile = {}, registration = {}) {
   const candidates = [
     profile.approvedKills,
     profile.domains?.onboarding?.approvedKills,
@@ -6923,34 +7022,23 @@ function pickTournamentApprovedKills(profile = {}) {
   ].map((value) => normalizeTournamentApprovedKills(value)).filter((value) => value !== null);
   const positiveProfileKills = candidates.find((value) => value > 0);
   if (positiveProfileKills !== undefined) return positiveProfileKills;
-  const submissionKills = pickTournamentApprovedSubmissionKills(profile);
+  const submissionKills = pickTournamentApprovedSubmissionKills(profile, registration);
   if (submissionKills !== null && submissionKills > 0) return submissionKills;
+  const textTierlistKills = pickTournamentTextTierlistProfileKills(registration);
+  if (textTierlistKills !== null && textTierlistKills > 0) return textTierlistKills;
   return candidates.length ? candidates[0] : (submissionKills ?? 0);
 }
 
-function getTournamentPlayerSnapshot(userId) {
-  const profile = db.profiles?.[userId] ? getProfile(userId) : null;
+function getTournamentPlayerSnapshot(userId, options = {}) {
+  const registration = options?.registration && typeof options.registration === "object" ? options.registration : {};
+  const profile = db.profiles?.[userId]
+    ? getProfile(userId)
+    : findTournamentProfileByRegistration(registration);
   if (!profile) return { hasRobloxAccount: false, approvedKills: 0 };
-  const robloxCandidates = [
-    profile.domains?.roblox,
-    profile.summary?.roblox,
-    {
-      robloxUsername: profile.robloxUsername,
-      robloxUserId: profile.robloxUserId,
-      robloxDisplayName: profile.robloxDisplayName,
-      robloxAvatarUrl: profile.robloxAvatarUrl,
-      robloxProfileUrl: profile.robloxProfileUrl,
-      verificationStatus: profile.verificationStatus,
-      verifiedAt: profile.robloxVerifiedAt || profile.verifiedAt,
-      hasVerifiedAccount: profile.hasVerifiedAccount,
-    },
-  ]
-    .filter((entry) => entry && typeof entry === "object")
-    .map((entry) => normalizeRobloxDomainState(entry));
-  const usableRoblox = robloxCandidates.map((entry) => resolveUsableVerifiedRobloxIdentity(entry)).find(Boolean);
-  const fallbackRoblox = robloxCandidates.find((entry) => entry.userId && entry.username) || {};
-  const roblox = usableRoblox || fallbackRoblox;
-  const approvedKills = pickTournamentApprovedKills(profile);
+  const profileRoblox = tournamentProfileRobloxIdentity(profile);
+  const usableRoblox = resolveUsableVerifiedRobloxIdentity(profileRoblox);
+  const roblox = usableRoblox || profileRoblox;
+  const approvedKills = pickTournamentApprovedKills(profile, registration);
   const robloxUserId = roblox.userId ? String(roblox.userId) : null;
   const robloxUsername = roblox.username || null;
   const robloxAvatarUrl = roblox.avatarUrl || null;
