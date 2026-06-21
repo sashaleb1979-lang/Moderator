@@ -6983,7 +6983,8 @@ function pickTournamentApprovedSubmissionKills(profile = {}, registration = {}) 
   ].map((value) => String(value || "").trim()).filter(Boolean);
   const targetRobloxUserId = String(registration?.robloxUserId || "").trim();
   const targetRobloxUsername = normalizeTournamentRobloxUsername(registration?.robloxUsername);
-  if (!userIds.length && !targetRobloxUserId && !targetRobloxUsername) return null;
+  const targetNameKey = normalizeTournamentMatchKey(registration?.robloxUsername);
+  if (!userIds.length && !targetRobloxUserId && !targetRobloxUsername && !targetNameKey) return null;
   if (!db.submissions || typeof db.submissions !== "object") return null;
   const approved = Object.values(db.submissions)
     .filter((submission) => (
@@ -6994,6 +6995,11 @@ function pickTournamentApprovedSubmissionKills(profile = {}, registration = {}) 
         userIds.includes(String(submission.userId || "").trim())
         || (targetRobloxUserId && String(submission.robloxUserId || "").trim() === targetRobloxUserId)
         || (targetRobloxUsername && normalizeTournamentRobloxUsername(submission.robloxUsername) === targetRobloxUsername)
+        || (targetNameKey && [
+          submission.username,
+          submission.displayName,
+          submission.robloxUsername,
+        ].map((value) => normalizeTournamentMatchKey(value)).includes(targetNameKey))
       )
       && normalizeTournamentApprovedKills(submission.kills) !== null
     ));
@@ -7013,6 +7019,35 @@ function pickTournamentApprovedSubmissionKills(profile = {}, registration = {}) 
   return normalizeTournamentApprovedKills(source?.kills);
 }
 
+function pickTournamentRecentSubmissionKills(registration = {}) {
+  const targetRobloxUserId = String(registration?.robloxUserId || "").trim();
+  const targetRobloxUsername = normalizeTournamentRobloxUsername(registration?.robloxUsername);
+  const targetNameKey = normalizeTournamentMatchKey(registration?.robloxUsername);
+  if (!targetRobloxUserId && !targetRobloxUsername && !targetNameKey) return null;
+  if (!db.submissions || typeof db.submissions !== "object") return null;
+
+  const matched = Object.values(db.submissions)
+    .filter((submission) => {
+      if (!submission || typeof submission !== "object") return false;
+      if (submission.status === "rejected") return false;
+      if (normalizeTournamentApprovedKills(submission.kills) === null) return false;
+      const submissionNameKeys = [
+        submission.username,
+        submission.displayName,
+        submission.robloxUsername,
+      ].map((value) => normalizeTournamentMatchKey(value)).filter(Boolean);
+      return (targetRobloxUserId && String(submission.robloxUserId || "").trim() === targetRobloxUserId)
+        || (targetRobloxUsername && normalizeTournamentRobloxUsername(submission.robloxUsername) === targetRobloxUsername)
+        || (targetNameKey && submissionNameKeys.includes(targetNameKey));
+    });
+  if (!matched.length) return null;
+
+  const source = matched.reduce((best, submission) => (
+    !best || submissionTournamentRecency(submission) >= submissionTournamentRecency(best) ? submission : best
+  ), null);
+  return normalizeTournamentApprovedKills(source?.kills);
+}
+
 function pickTournamentApprovedKills(profile = {}, registration = {}) {
   const candidates = [
     profile.approvedKills,
@@ -7026,7 +7061,9 @@ function pickTournamentApprovedKills(profile = {}, registration = {}) {
   if (submissionKills !== null && submissionKills > 0) return submissionKills;
   const textTierlistKills = pickTournamentTextTierlistProfileKills(registration);
   if (textTierlistKills !== null && textTierlistKills > 0) return textTierlistKills;
-  return candidates.length ? candidates[0] : (submissionKills ?? 0);
+  const recentSubmissionKills = pickTournamentRecentSubmissionKills(registration);
+  if (recentSubmissionKills !== null && recentSubmissionKills > 0) return recentSubmissionKills;
+  return candidates.length ? candidates[0] : (submissionKills ?? recentSubmissionKills ?? 0);
 }
 
 function getTournamentPlayerSnapshot(userId, options = {}) {

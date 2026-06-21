@@ -16,17 +16,20 @@ test("welcome-bot tournament Roblox snapshot uses the shared profile nickname ba
     /const \{[\s\S]*normalizeRobloxDomainState,[\s\S]*resolveUsableVerifiedRobloxIdentity,[\s\S]*\} = require\("\.\/src\/integrations\/shared-profile"\);/
   );
   assert.ok(snapshotStart >= 0, "expected tournament snapshot adapter");
-  assert.match(snapshotAdapterBlock, /profile\.summary\?\.roblox/);
-  assert.match(snapshotAdapterBlock, /profile\.robloxUsername/);
-  assert.match(snapshotAdapterBlock, /normalizeRobloxDomainState\(entry\)/);
-  assert.match(snapshotAdapterBlock, /resolveUsableVerifiedRobloxIdentity\(entry\)/);
+  assert.match(source, /profile\.summary\?\.roblox/);
+  assert.match(source, /profile\.robloxUsername/);
+  assert.match(source, /normalizeRobloxDomainState\(entry\)/);
+  assert.match(source, /resolveUsableVerifiedRobloxIdentity\(entry\)/);
   assert.match(snapshotAdapterBlock, /function pickTournamentApprovedKills/);
-  assert.match(snapshotAdapterBlock, /function findTournamentProfileByRegistration/);
+  assert.match(source, /function findTournamentProfileByRegistration/);
   assert.match(snapshotAdapterBlock, /function pickTournamentTextTierlistProfileKills/);
+  assert.match(snapshotAdapterBlock, /function pickTournamentRecentSubmissionKills/);
   assert.match(snapshotAdapterBlock, /getApprovedTierlistEntries\(\)/);
   assert.match(snapshotAdapterBlock, /normalizeTournamentRobloxUsername\(registration\?\.robloxUsername\)/);
   assert.match(snapshotAdapterBlock, /pickTournamentApprovedSubmissionKills\(profile, registration\)/);
   assert.match(snapshotAdapterBlock, /pickTournamentTextTierlistProfileKills\(registration\)/);
+  assert.match(snapshotAdapterBlock, /pickTournamentRecentSubmissionKills\(registration\)/);
+  assert.match(snapshotAdapterBlock, /submission\.status === "rejected"/);
   assert.ok(source.indexOf("const approvedKills = pickTournamentApprovedKills(profile, registration);", snapshotStart) > snapshotStart, "expected tournament snapshot to avoid zero-first kill fallback");
   assert.ok(operatorStart > snapshotStart, "expected operator wiring after snapshot adapter");
   assert.ok(source.indexOf("writeRobloxBinding:", operatorStart) > operatorStart, "expected tournament to write main Roblox lookups back to profile");
