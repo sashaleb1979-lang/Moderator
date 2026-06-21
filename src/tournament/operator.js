@@ -62,10 +62,26 @@ function createTournamentOperator(deps = {}) {
 
   // ---- response helpers (tolerate expired interactions) -------------------
 
+  function withoutEphemeralFlag(payload) {
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) return payload;
+    if (payload.flags == null) return payload;
+    const next = { ...payload };
+    const numericFlags = Number(next.flags);
+    if (Number.isFinite(numericFlags)) {
+      const stripped = numericFlags & ~MessageFlags.Ephemeral;
+      if (stripped > 0) next.flags = stripped;
+      else delete next.flags;
+      return next;
+    }
+    delete next.flags;
+    return next;
+  }
+
   async function safeUpdate(interaction, payload) {
+    const updatePayload = withoutEphemeralFlag(payload);
     try {
-      if (interaction.deferred || interaction.replied) return await interaction.editReply(payload);
-      return await interaction.update(payload);
+      if (interaction.deferred || interaction.replied) return await interaction.editReply(updatePayload);
+      return await interaction.update(updatePayload);
     } catch (error) {
       if (isUnknownInteractionError(error)) return null;
       throw error;
@@ -328,6 +344,31 @@ function createTournamentOperator(deps = {}) {
       return { ...extra, files: [new AttachmentBuilder(buffer, { name: filename })], embeds: [] };
     }
     return { ...extra, embeds: fallbackPayload.embeds || [] };
+  }
+
+  function realDiscordUserIds(players = []) {
+    return players
+      .map((p) => String(p?.userId || p?.id || "").trim())
+      .filter((id) => /^\d{5,25}$/.test(id))
+      .filter((id, index, ids) => ids.indexOf(id) === index);
+  }
+
+  async function addPlayersToPrivateThread(thread, players = []) {
+    const ids = realDiscordUserIds(players);
+    if (!ids.length || typeof thread?.members?.add !== "function") return { ids, added: 0, failed: 0 };
+
+    let added = 0;
+    let failed = 0;
+    for (const id of ids) {
+      try {
+        await thread.members.add(id);
+        added += 1;
+      } catch (error) {
+        failed += 1;
+        logError(`tournament: private thread member add failed user=${id}`, error?.message || error);
+      }
+    }
+    return { ids, added, failed };
   }
 
   // Post a server's result bracket + the grand summary once finished (idempotent
@@ -1122,42 +1163,51 @@ function createTournamentOperator(deps = {}) {
 
     // Post the preliminary bracket and open a private participant thread.
     const channel = await fetchChannel(tournament.announce.channelId).catch(() => null);
+    if (!channel?.send || !channel.threads?.create) {
+      return renderManage(interaction, tournamentId, {
+        edit: acked,
+        statusText: "Сервер не запущен: не могу создать приватную ветку в канале анонса. Проверь права Create Private Threads / Send Messages.",
+      });
+    }
+
     let threadId = "";
     let launchMessageId = "";
-    if (channel?.send) {
-      const announceMsg = await channel
-        .send({ ...bracketPayload, content: `🚀 Сервер ${serverIndex + 1} начинает работу!` })
-        .catch(() => null);
-      launchMessageId = announceMsg?.id || "";
-
-      if (channel.threads?.create) {
-        const thread = await channel.threads
-          .create({
-            name: view.buildServerThreadName(tournament, serverIndex),
-            type: ChannelType.PrivateThread,
-            invitable: false,
-            autoArchiveDuration: 1440,
-          })
-          .catch((error) => {
-            logError("tournament: private thread create failed", error?.message || error);
-            return null;
-          });
-        if (thread) {
-          threadId = thread.id;
-          // re-attach a fresh buffer copy for the thread message
-          const threadBuffer = bracketBuffer || (await renderServerBracketBuffer(tournament, transientServer, avatars));
-          await thread.send(imageOrEmbed(threadBuffer, `bracket-server-${serverIndex + 1}.png`, fallback, { allowedMentions: { parse: [] } })).catch(() => {});
-          // only real Discord snowflakes get pinged (test "bot" players have synthetic ids)
-          const ids = players.map((p) => String(p.userId || p.id)).filter((id) => /^\d+$/.test(id));
-          if (ids.length) {
-            await thread
-              .send({ content: ids.map((id) => `<@${id}>`).join(" "), allowedMentions: { users: ids } })
-              .catch(() => {});
-          }
-          await thread.setLocked(true).catch(() => {});
-        }
-      }
+    const thread = await channel.threads
+      .create({
+        name: view.buildServerThreadName(tournament, serverIndex),
+        type: ChannelType.PrivateThread,
+        invitable: false,
+        autoArchiveDuration: 1440,
+      })
+      .catch((error) => {
+        logError("tournament: private thread create failed", error?.message || error);
+        return null;
+      });
+    if (!thread?.id) {
+      return renderManage(interaction, tournamentId, {
+        edit: acked,
+        statusText: "Сервер не запущен: Discord не дал создать приватную ветку. Проверь права бота в канале анонса.",
+      });
     }
+    threadId = thread.id;
+
+    // re-attach a fresh buffer copy for the thread message
+    const threadBuffer = bracketBuffer || (await renderServerBracketBuffer(tournament, transientServer, avatars));
+    await thread.send(imageOrEmbed(threadBuffer, `bracket-server-${serverIndex + 1}.png`, fallback, { allowedMentions: { parse: [] } })).catch(() => {});
+    const memberResult = await addPlayersToPrivateThread(thread, players);
+    if (memberResult.ids.length) {
+      await thread
+        .send({ content: memberResult.ids.map((id) => `<@${id}>`).join(" "), allowedMentions: { users: memberResult.ids } })
+        .catch(() => {});
+    }
+
+    const announceMsg = await channel
+      .send({ ...bracketPayload, content: `🚀 Сервер ${serverIndex + 1} начинает работу!` })
+      .catch((error) => {
+        logError("tournament: server launch announcement failed", error?.message || error);
+        return null;
+      });
+    launchMessageId = announceMsg?.id || "";
 
     await persist("tournament-launch", async () => {
       const fresh = state.getTournament(db, tournamentId);
@@ -1175,7 +1225,7 @@ function createTournamentOperator(deps = {}) {
 
     return renderManage(interaction, tournamentId, {
       edit: acked,
-      statusText: `Сервер ${serverIndex + 1} запущен${threadId ? " · ветка создана" : ""}.`,
+      statusText: `Сервер ${serverIndex + 1} запущен · приватная ветка создана.`,
     });
   }
 

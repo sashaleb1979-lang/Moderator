@@ -286,6 +286,7 @@ test("tournament manage refresh republishes the announcement when no editable me
   assert.equal(state.getTournament(db, tournament.id).announce.messageId, "new-message");
   assert.match(JSON.stringify(channel.sentPayload), /# \*\*6 \/ 16\*\*/);
   assert.match(JSON.stringify(interaction.editedPayload), /Анонс: republished/);
+  assert.equal(Object.prototype.hasOwnProperty.call(interaction.editedPayload, "flags"), false);
   assert.ok(logs.some((line) => /TOURNAMENT_MANAGE_REFRESH:/.test(line) && /announcement=republished/.test(line)));
 });
 
@@ -483,4 +484,137 @@ test("tournament withdraw resets stale seeded roster before play is launched", a
   assert.equal(state.getRegistration(fresh, "user-2").serverIndex, null);
   assert.match(interaction.editedPayload.content, /распределение сброшено/i);
   assert.ok(logs.some((line) => /TOURNAMENT_WITHDRAW:/.test(line) && /playReset=yes/.test(line)));
+});
+
+test("tournament launch refuses to mark server running when private thread cannot be created", async () => {
+  const calls = [];
+  const logs = [];
+  const db = {};
+  const tournament = state.createTournamentFromDraft(
+    db,
+    {
+      name: "Тестовый турнир",
+      slots: 16,
+      startsAtIso: "2026-06-21T20:00:00.000Z",
+      announceChannelId: "channel-1",
+    },
+    { id: "tour-1", now: "2026-06-21T18:00:00.000Z" }
+  );
+  for (let i = 1; i <= 2; i += 1) {
+    state.upsertRegistration(tournament, {
+      userId: `10000000000000000${i}`,
+      discordName: `user-${i}`,
+      robloxUsername: `Player${i}`,
+      approvedKills: i * 1000,
+      effectiveKills: i * 1000,
+    });
+  }
+  const channel = {
+    id: "channel-1",
+    async send() {
+      calls.push("send");
+      return { id: "message-1" };
+    },
+    threads: {
+      async create() {
+        calls.push("threadCreate");
+        throw new Error("Missing Permissions");
+      },
+    },
+  };
+  const operator = createTournamentOperator({
+    db,
+    saveDb: () => calls.push("saveDb"),
+    runSerializedMutation: async ({ mutate }) => mutate(),
+    isModerator: (member) => Boolean(member?.mod),
+    fetchChannel: async () => channel,
+    logError: (...args) => logs.push(args.join(" ")),
+  });
+  const interaction = createButtonInteraction(buildCustomId(ACTIONS.MANAGE_LAUNCH_SERVER, tournament.id, "0"), calls);
+  interaction.member = { mod: true };
+  interaction.user = { id: "mod-1", tag: "mod#0001" };
+
+  const handled = await operator.handleButtonInteraction(interaction);
+
+  assert.equal(handled, true);
+  assert.deepEqual(calls, ["deferUpdate", "threadCreate", "editReply"]);
+  assert.equal(state.getServer(state.getTournament(db, tournament.id), 0), null);
+  assert.equal(state.getTournament(db, tournament.id).status, "registration");
+  assert.match(JSON.stringify(interaction.editedPayload), /Сервер не запущен/i);
+  assert.ok(logs.some((line) => /private thread create failed/.test(line)));
+});
+
+test("tournament launch creates an unlocked private thread and adds real Discord players", async () => {
+  const calls = [];
+  const addedMembers = [];
+  let lockedValue = null;
+  const db = {};
+  const tournament = state.createTournamentFromDraft(
+    db,
+    {
+      name: "Тестовый турнир",
+      slots: 16,
+      startsAtIso: "2026-06-21T20:00:00.000Z",
+      announceChannelId: "channel-1",
+    },
+    { id: "tour-1", now: "2026-06-21T18:00:00.000Z" }
+  );
+  for (let i = 1; i <= 2; i += 1) {
+    state.upsertRegistration(tournament, {
+      userId: `10000000000000000${i}`,
+      discordName: `user-${i}`,
+      robloxUsername: `Player${i}`,
+      approvedKills: i * 1000,
+      effectiveKills: i * 1000,
+    });
+  }
+  const thread = {
+    id: "thread-1",
+    async send(payload) {
+      calls.push(payload.content ? "threadPing" : "threadBracket");
+      return { id: `thread-message-${calls.length}` };
+    },
+    members: {
+      async add(userId) {
+        addedMembers.push(userId);
+      },
+    },
+    async setLocked(value) {
+      lockedValue = value;
+    },
+  };
+  const channel = {
+    id: "channel-1",
+    async send() {
+      calls.push("announceSend");
+      return { id: "launch-message-1" };
+    },
+    threads: {
+      async create(options) {
+        calls.push(`threadCreate:${options.type}`);
+        return thread;
+      },
+    },
+  };
+  const operator = createTournamentOperator({
+    db,
+    saveDb: () => calls.push("saveDb"),
+    runSerializedMutation: async ({ mutate }) => mutate(),
+    isModerator: (member) => Boolean(member?.mod),
+    fetchChannel: async () => channel,
+  });
+  const interaction = createButtonInteraction(buildCustomId(ACTIONS.MANAGE_LAUNCH_SERVER, tournament.id, "0"), calls);
+  interaction.member = { mod: true };
+  interaction.user = { id: "mod-1", tag: "mod#0001" };
+
+  const handled = await operator.handleButtonInteraction(interaction);
+
+  assert.equal(handled, true);
+  const server = state.getServer(state.getTournament(db, tournament.id), 0);
+  assert.equal(server.launched, true);
+  assert.equal(server.threadId, "thread-1");
+  assert.equal(server.launchMessageId, "launch-message-1");
+  assert.deepEqual(addedMembers, ["100000000000000001", "100000000000000002"]);
+  assert.equal(lockedValue, null);
+  assert.match(JSON.stringify(interaction.editedPayload), /приватная ветка создана/i);
 });
