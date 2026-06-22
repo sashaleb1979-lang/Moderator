@@ -750,10 +750,10 @@ function buildRobloxUsernameModal({
     .setLabel(cleanString(label, 45) || "Roblox ник")
     .setPlaceholder(cleanString(placeholder, 100) || "Например Builderman")
     .setStyle(TextInputStyle.Short)
-    .setMinLength(1)
-    .setMaxLength(200)
+    .setMinLength(3)
+    .setMaxLength(20)
     .setRequired(true);
-  const value = cleanString(initialValue, 200);
+  const value = cleanString(initialValue, 20);
   if (value) input.setValue(value);
 
   return new ModalBuilder()
@@ -771,8 +771,8 @@ function buildTwinkRobloxModal({ customId = "at:twink_modal", initialValue = "" 
   return buildRobloxUsernameModal({
     customId,
     title: "Другой Roblox на эту заявку",
-    label: "Username, userId или ссылка",
-    placeholder: "Ник, userId или ссылка на профиль",
+    label: "Roblox ник твинка",
+    placeholder: "Ник действующего аккаунта",
     initialValue,
   });
 }
@@ -1482,9 +1482,8 @@ function buildHelpReplyPayload({
       lines.push("На всякий случай можно уведомить автора, что ты кинул friend request.");
     }
     if (directJoinUrl) lines.push(`[Ссылка подключения](${directJoinUrl}) станет рабочей после добавления в друзья.`);
-    if (profileUrl) lines.push(`[Roblox профиль ${targetLabel}](${profileUrl})`);
     if (friendRequestsUrl) lines.push(`[Где принимают заявки Roblox](${friendRequestsUrl})`);
-    if (directJoinUrl && profileUrl) lines.push("Если ссылка не пустила после принятия др, открой профиль и нажми **Join**.");
+    if (directJoinUrl) lines.push("Если ссылка не пустила после принятия др, открой профиль и нажми **Join**.");
     lines.push(friendRequestNotified
       ? "Автор уже получил уведомление в ветке."
       : "После отправки friend request нажми кнопку ниже, чтобы пингануть автора в ветке.");
@@ -1590,9 +1589,9 @@ function buildTicketRobloxModal(ticket = {}) {
   return buildRobloxUsernameModal({
     customId: ticketButtonId("change_roblox_modal", ticket.id),
     title: ticket.kind === "clan" ? "Сменить якорь-Roblox" : "Сменить Roblox заявки",
-    label: "Username, userId или ссылка",
-    placeholder: "Ник, userId или ссылка на профиль",
-    initialValue: cleanString(ticket.roblox?.username, 200),
+    label: "Действующий Roblox ник",
+    placeholder: "Ник аккаунта",
+    initialValue: cleanString(ticket.roblox?.username, 20),
   });
 }
 

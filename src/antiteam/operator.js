@@ -84,11 +84,11 @@ const ANTITEAM_MANUAL_POINTS_TARGET_LIMIT = 100;
 const ANTITEAM_START_PANEL_SCAN_LIMIT = 100;
 
 function normalizeUsernameInput(value) {
-  const input = cleanString(value, 200);
-  if (!input) {
-    throw new Error("Укажи Roblox username, userId или ссылку на профиль.");
+  const username = cleanString(value, 40);
+  if (!/^[A-Za-z0-9_]{3,20}$/.test(username)) {
+    throw new Error("Roblox ник должен содержать 3-20 символов: буквы, цифры или _.");
   }
-  return input;
+  return username;
 }
 
 function getUserTag(user = {}) {
@@ -1372,6 +1372,14 @@ function createAntiteamOperator(options = {}) {
     return /^roblox:\/\/\S+$/i.test(url) || /^https?:\/\/[^\s/]+\.[^\s/]+/i.test(url);
   }
 
+  // Returns the author's manually added direct join URL if it looks valid, or "".
+  // Used for friend_request mode where auto-resolved Roblox profile URLs are not
+  // meaningful (you can't click them before the friend request is accepted).
+  function getManualDirectJoinUrl(ticket = {}) {
+    const url = cleanString(ticket.manualDirectJoinUrl, 2000);
+    return isLikelyDirectJoinUrl(url) ? url : "";
+  }
+
   // A clear, private explanation of WHY a pasted direct link was rejected, so the
   // author isn't left with a vague "ссылка не привязана".
   function buildInvalidDirectLinkText(rawLink = "") {
@@ -1523,13 +1531,8 @@ function createAntiteamOperator(options = {}) {
       : null;
     const threadStartMs = nowMs() - threadStartStartedAt;
     const threadPanelStartedAt = nowMs();
-    // buildThreadPanelPayload runs synchronously; if it throws the .catch() on
-    // thread.send() would not catch it — wrap in a Promise chain so any error
-    // (build or send) is absorbed here rather than killing finalizeTicketPublish.
     const threadPanel = thread
-      ? await Promise.resolve()
-          .then(() => thread.send(buildThreadPanelPayload(ticket, config)))
-          .catch(() => null)
+      ? await thread.send(buildThreadPanelPayload(ticket, config)).catch(() => null)
       : null;
     const threadPanelMs = nowMs() - threadPanelStartedAt;
     const pingStartedAt = nowMs();
@@ -1607,16 +1610,6 @@ function createAntiteamOperator(options = {}) {
   async function rollbackTicketPublish(userId, ticket, draft) {
     await persist("antiteam-ticket-publish-rollback", () => {
       const current = getState();
-      const liveTicket = current.tickets[ticket.id];
-      // The persist mutate always runs before saveDb. If saveDb failed, the
-      // in-memory ticket already has message refs set. Deleting it here would
-      // break every button on the public post that Discord already shows to
-      // users. Skip the delete and let saveDb (still called below) flush the
-      // correct in-memory state to disk.
-      if (cleanString(liveTicket?.message?.messageId, 80)) {
-        logError("Antiteam publish rollback skipped: public post already live for ticket", ticket.id);
-        return { mutated: false };
-      }
       delete current.tickets[ticket.id];
       current.drafts[userId] = draft;
       return { mutated: true };
@@ -1935,7 +1928,12 @@ function createAntiteamOperator(options = {}) {
     const linkKind = friendsRequired ? "friend_request" : "direct";
     // Direct link if the author added one; otherwise the static profile join link
     // for the friend-request flow (no Roblox scan involved).
-    const directJoinUrl = hasDirectLink ? manualDirectJoinUrl : buildRobloxUserJoinUrl(ticket.roblox?.userId);
+    // In friend_request mode there is no fallback join URL — the profile URL
+    // (buildRobloxUserJoinUrl) does not become clickable before friendship, so
+    // only pass a URL when the author explicitly added a manual direct link.
+    const directJoinUrl = hasDirectLink
+      ? manualDirectJoinUrl
+      : (linkKind === "direct" ? buildRobloxUserJoinUrl(ticket.roblox?.userId) : "");
     const profileUrl = getTicketProfileUrl(ticket);
     const previousHelper = ticket.helpers?.[interaction.user.id] || null;
     const alreadyResponded = Boolean(previousHelper?.respondedAt);
@@ -2666,7 +2664,7 @@ function createAntiteamOperator(options = {}) {
         if (ack.ok) await safeEditReply(interaction, buildHelpReplyPayload({
           ticket,
           linkKind: "friend_request",
-          directJoinUrl: await resolveDirectJoinUrl(ticket),
+          directJoinUrl: getManualDirectJoinUrl(ticket),
           profileUrl: getTicketProfileUrl(ticket),
           friendRequestsUrl: getConfig().roblox.friendRequestsUrl,
           helperRobloxKnown: Boolean(helper.robloxUserId),
@@ -2686,7 +2684,7 @@ function createAntiteamOperator(options = {}) {
       if (ack.ok) await safeEditReply(interaction, buildHelpReplyPayload({
         ticket: updated,
         linkKind: "friend_request",
-        directJoinUrl: await resolveDirectJoinUrl(updated),
+        directJoinUrl: getManualDirectJoinUrl(updated),
         profileUrl: getTicketProfileUrl(updated),
         friendRequestsUrl: getConfig().roblox.friendRequestsUrl,
         helperRobloxKnown: Boolean(updated.helpers?.[interaction.user.id]?.robloxUserId),
@@ -2812,24 +2810,11 @@ function createAntiteamOperator(options = {}) {
   }
 
   async function handleRobloxModal(interaction, kind = "standard") {
+    const username = normalizeUsernameInput(interaction.fields.getTextInputValue("roblox_username"));
     const ack = await safeDeferReply(interaction, { flags: MessageFlags.Ephemeral });
-    let username = "";
-    try {
-      username = normalizeUsernameInput(interaction.fields.getTextInputValue("roblox_username"));
-    } catch (error) {
-      if (ack.ok) await safeEditReply(interaction, error?.message || "Укажи Roblox username, userId или ссылку на профиль.");
-      return true;
-    }
-    let robloxUser = null;
-    try {
-      robloxUser = await fetchRobloxUserByUsername(username);
-    } catch (error) {
-      logError("Antiteam Roblox lookup failed:", error?.message || error);
-      if (ack.ok) await safeEditReply(interaction, `Не удалось проверить Roblox через API: ${error?.message || "ошибка"}.`);
-      return true;
-    }
+    const robloxUser = await fetchRobloxUserByUsername(username);
     if (!robloxUser?.userId && !robloxUser?.id) {
-      if (ack.ok) await safeEditReply(interaction, "Такой Roblox аккаунт не найден через Roblox API. Проверь username, userId или ссылку.");
+      if (ack.ok) await safeEditReply(interaction, "Такой Roblox ник не найден через Roblox API.");
       return true;
     }
 
@@ -2870,14 +2855,8 @@ function createAntiteamOperator(options = {}) {
       if (ack.ok) await safeEditReply(interaction, { content: "Черновик истёк. Начни заново.", components: [] });
       return true;
     }
+    const username = normalizeUsernameInput(interaction.fields.getTextInputValue("roblox_username"));
     const ack = await safeDeferUpdate(interaction);
-    let username = "";
-    try {
-      username = normalizeUsernameInput(interaction.fields.getTextInputValue("roblox_username"));
-    } catch (error) {
-      if (ack.ok) await safeEditReply(interaction, buildTicketSetupPayload(draft, getConfig(), error?.message || "Укажи Roblox username, userId или ссылку на профиль."));
-      return true;
-    }
     let robloxUser = null;
     try {
       robloxUser = await fetchRobloxUserByUsername(username);
@@ -2887,7 +2866,7 @@ function createAntiteamOperator(options = {}) {
     if (!robloxUser?.userId && !robloxUser?.id) {
       if (ack.ok) {
         await safeEditReply(interaction, buildTicketSetupPayload(draft, getConfig(),
-          `❌ Roblox «${cleanString(username, 120)}» не найден через Roblox API. Твинк не привязан.`));
+          `❌ Ник «${cleanString(username, 120)}» не найден через Roblox API. Твинк не привязан.`));
       }
       return true;
     }
@@ -3173,14 +3152,8 @@ function createAntiteamOperator(options = {}) {
         await replyNoPermission(interaction);
         return true;
       }
+      const username = normalizeUsernameInput(interaction.fields.getTextInputValue("roblox_username"));
       const ack = await safeDeferReply(interaction, { flags: MessageFlags.Ephemeral });
-      let username = "";
-      try {
-        username = normalizeUsernameInput(interaction.fields.getTextInputValue("roblox_username"));
-      } catch (error) {
-        if (ack.ok) await safeEditReply(interaction, { content: error?.message || "Укажи Roblox username, userId или ссылку на профиль.", components: [] });
-        return true;
-      }
       let robloxUser = null;
       try {
         robloxUser = await fetchRobloxUserByUsername(username);
@@ -3188,7 +3161,7 @@ function createAntiteamOperator(options = {}) {
         logError("Antiteam ticket roblox swap lookup failed:", error?.message || error);
       }
       if (!robloxUser?.userId && !robloxUser?.id) {
-        if (ack.ok) await safeEditReply(interaction, { content: `❌ Roblox «${cleanString(username, 120)}» не найден через Roblox API. Roblox заявки не изменён.`, components: [] });
+        if (ack.ok) await safeEditReply(interaction, { content: `❌ Ник «${cleanString(username, 120)}» не найден через Roblox API. Roblox заявки не изменён.`, components: [] });
         return true;
       }
       const snapshot = {

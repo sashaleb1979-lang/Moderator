@@ -189,54 +189,6 @@ test("roblox modal promotes resolved Roblox into profile binding and antiteam co
   assert.equal(interaction.calls.at(-1)[1].flags, MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral);
 });
 
-test("roblox modal accepts profile links and user ids through the shared resolver", async () => {
-  const db = {};
-  ensureAntiteamState(db).state.config.battalionRoleId = "battalion-role";
-  let lookupInput = "";
-  const operator = createAntiteamOperator({
-    db,
-    now: () => "2026-05-16T10:00:00.000Z",
-    saveDb() {},
-    resolveRobloxUserByUsername: async (input) => {
-      lookupInput = input;
-      return { id: "101", name: "Anchor", displayName: "Anchor Display" };
-    },
-    writeRobloxBinding: async () => {},
-    grantRole: async () => {},
-  });
-  const profileUrl = "https://www.roblox.com/users/101/profile";
-  const interaction = createModalInteraction("at:roblox", { roblox_username: profileUrl });
-
-  assert.equal(await operator.handleModalSubmitInteraction(interaction), true);
-
-  assert.equal(lookupInput, profileUrl);
-  assert.equal(db.sot.antiteam.drafts["user-1"].roblox.userId, "101");
-  assert.equal(db.sot.antiteam.drafts["user-1"].roblox.username, "Anchor");
-  assert.match(JSON.stringify(interaction.calls.at(-1)[1].components[0].toJSON()), /Roblox: \*\*Anchor\*\* \(101\) • подтверждён/);
-});
-
-test("roblox modal reports API failures without falling into the generic interaction error", async () => {
-  const db = {};
-  ensureAntiteamState(db);
-  const errors = [];
-  const operator = createAntiteamOperator({
-    db,
-    now: () => "2026-05-16T10:00:00.000Z",
-    saveDb() {},
-    logError: (...args) => errors.push(args.join(" ")),
-    resolveRobloxUserByUsername: async () => {
-      throw new Error("Roblox API timeout");
-    },
-  });
-  const interaction = createModalInteraction("at:roblox", { roblox_username: "101" });
-
-  assert.equal(await operator.handleModalSubmitInteraction(interaction), true);
-
-  assert.equal(interaction.calls[0][0], "deferReply");
-  assert.match(String(interaction.calls.at(-1)[1]), /Не удалось проверить Roblox через API: Roblox API timeout/);
-  assert.match(errors.join("\n"), /Antiteam Roblox lookup failed/);
-});
-
 test("clan roblox modal verifies anchor without rebinding caller profile", async () => {
   const db = {};
   ensureAntiteamState(db);
@@ -872,9 +824,12 @@ test("help button records friend-request path and notifies author only after hel
   assert.equal(dm.length, 0);
   const helpJson = JSON.stringify(interaction.calls.at(-1)[1].components[0].toJSON());
   assert.match(helpJson, /Отправил др, пусть примет/);
-  assert.match(helpJson, /станет рабочей после добавления в друзья/);
-  assert.match(helpJson, /games\/start\?userId=101/);
-  assert.match(helpJson, /🔗 Подключиться/);
+  // No manual direct link was added — the auto-generated profile URL is NOT shown
+  // in friend_request mode (it's useless before the friend request is accepted).
+  assert.doesNotMatch(helpJson, /Ссылка подключения/);
+  assert.doesNotMatch(helpJson, /🔗 Подключиться/);
+  // Profile button is still offered (helper visits it to send the friend request).
+  assert.match(helpJson, /👤 Профиль/);
 
   const sentInteraction = createButtonInteraction(ticketButtonId("friend_request_sent", "ticket-1"));
   assert.equal(await operator.handleButtonInteraction(sentInteraction), true);
@@ -940,7 +895,7 @@ test("help button does not persist repairable helper Roblox username as a usable
   assert.match(JSON.stringify(interaction.calls.at(-1)[1].components[0].toJSON()), /уведомить автора/);
 });
 
-test("friend-request help always includes a direct Roblox user join link", async () => {
+test("friend-request help omits connection URL when no manual direct link is set", async () => {
   const db = {};
   const state = ensureAntiteamState(db).state;
   state.config.channelId = "channel-1";
@@ -969,11 +924,14 @@ test("friend-request help always includes a direct Roblox user join link", async
   const ticket = db.sot.antiteam.tickets["ticket-user-link"];
   assert.equal(ticket.helpers["helper-1"].linkKind, "friend_request");
   const json = JSON.stringify(interaction.calls.at(-1)[1].components[0].toJSON());
-  assert.match(json, /Ссылка подключения/);
-  assert.match(json, /games\/start\?userId=101/);
-  assert.match(json, /станет рабочей после добавления в друзья/);
+  // No manual direct link — the auto-generated profile URL must NOT appear in the
+  // friend_request flow (it's useless before the friend request is accepted).
+  assert.doesNotMatch(json, /Ссылка подключения/);
+  assert.doesNotMatch(json, /games\/start\?userId=101/);
+  assert.doesNotMatch(json, /🔗 Подключиться/);
   assert.match(json, /Roblox у тебя не привязан/);
-  assert.match(json, /🔗 Подключиться/);
+  // Profile button is still shown so the helper can open the profile and send fr.
+  assert.match(json, /👤 Профиль/);
 });
 
 test("ticket direct-join toggle is limited to author or admin and updates the mission", async () => {
