@@ -13,3 +13,9 @@ test("welcome-bot combo publish wiring imports publisher owners and cleans same-
   assert.match(source, /if \(existingGuideState\) \{[\s\S]*await deleteFullGuide\(\{[\s\S]*channel: targetChannel,[\s\S]*guideState: existingGuideState,[\s\S]*\}\);[\s\S]*\}/);
   assert.match(source, /const state = await publishGuideOrdered\(\{/);
 });
+
+test("welcome-bot combo panel slash path has a local error boundary", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "welcome-bot.js"), "utf8");
+
+  assert.match(source, /if \(sub === "panel"\) \{[\s\S]*await interaction\.reply\(ephemeralPayload\(buildComboPanelForMember\(interaction\.member\)\)\);[\s\S]*console\.error\("combo panel open failed:", formatRuntimeError\(error\)\);[\s\S]*Не удалось открыть combo panel/);
+});

@@ -13,6 +13,40 @@ const {
 
 const DISCORD_HARD_LIMIT = 2000;
 const MODAL_TEXT_LIMIT = 4000;
+const EMBED_FIELD_VALUE_LIMIT = 1024;
+const SELECT_OPTION_VALUE_LIMIT = 100;
+const BUTTON_LABEL_LIMIT = 80;
+
+function truncateDiscordText(value, limit, fallback = "") {
+  const text = String(value || "").trim() || fallback;
+  const maxLength = Math.max(0, Number(limit) || 0);
+  if (!maxLength || text.length <= maxLength) return text;
+  if (maxLength <= 1) return text.slice(0, maxLength);
+  return `${text.slice(0, maxLength - 1)}…`;
+}
+
+function formatEmbedFieldList(lines, emptyText = "—") {
+  const normalizedLines = (Array.isArray(lines) ? lines : [])
+    .map((line) => String(line || "").trim())
+    .filter(Boolean);
+  if (!normalizedLines.length) return emptyText;
+
+  let output = "";
+  for (let index = 0; index < normalizedLines.length; index += 1) {
+    const line = normalizedLines[index];
+    const next = output ? `${output}\n${line}` : line;
+    if (next.length > EMBED_FIELD_VALUE_LIMIT) {
+      const remaining = normalizedLines.length - index;
+      const suffix = `\n…ещё ${remaining}`;
+      const baseLimit = Math.max(0, EMBED_FIELD_VALUE_LIMIT - suffix.length);
+      const base = truncateDiscordText(output || line, baseLimit, emptyText);
+      return truncateDiscordText(`${base}${suffix}`, EMBED_FIELD_VALUE_LIMIT, emptyText);
+    }
+    output = next;
+  }
+
+  return output || emptyText;
+}
 
 function normalizeComboGuideMessageIds(value) {
   if (!Array.isArray(value)) return [];
@@ -48,6 +82,7 @@ function normalizeComboGuideCharacterState(value) {
 
   return {
     ...value,
+    id: String(value.id || "").trim(),
     comboMessageIds: normalizeComboGuideMessageIds(value.comboMessageIds),
     techMessageIds: normalizeComboGuideMessageIds(value.techMessageIds),
   };
@@ -77,6 +112,24 @@ function formatComboGuideCharacterTitle(charState) {
   return id || "Без названия";
 }
 
+function buildComboGuideCharacterSelectOptions(characters) {
+  const options = [];
+  const seenValues = new Set();
+
+  for (const character of Array.isArray(characters) ? characters : []) {
+    const value = String(character?.id || "").trim();
+    if (!value || value.length > SELECT_OPTION_VALUE_LIMIT || seenValues.has(value)) continue;
+    seenValues.add(value);
+    options.push({
+      label: truncateDiscordText(formatComboGuideCharacterTitle(character), 100, "Без названия"),
+      value,
+      description: `${character.comboMessageIds.length} комбо, ${character.techMessageIds.length} тех`,
+    });
+  }
+
+  return options;
+}
+
 // ── Panel ──
 
 /**
@@ -92,9 +145,9 @@ function buildComboPanelPayload(guideState, statusText, options = {}) {
     .setColor(0x2f3136);
 
   if (normalizedGuideState?.characters.length) {
-    const charList = normalizedGuideState.characters
-      .map((c) => formatComboGuideCharacterTitle(c))
-      .join("\n");
+    const charList = formatEmbedFieldList(
+      normalizedGuideState.characters.map((c) => formatComboGuideCharacterTitle(c))
+    );
     embed.addFields({ name: "Персонажи", value: charList, inline: true });
     embed.addFields({
       name: "Канал",
@@ -121,11 +174,7 @@ function buildComboPanelPayload(guideState, statusText, options = {}) {
 
   if (hasGuide && canEdit) {
     // Character select menu
-    const charOptions = normalizedGuideState.characters.map((c) => ({
-      label: formatComboGuideCharacterTitle(c).slice(0, 100),
-      value: c.id,
-      description: `${c.comboMessageIds.length} комбо, ${c.techMessageIds.length} тех`,
-    }));
+    const charOptions = buildComboGuideCharacterSelectOptions(normalizedGuideState.characters);
 
     // Add general techs option if exists
     if (normalizedGuideState.generalTechsThreadId) {
@@ -136,14 +185,16 @@ function buildComboPanelPayload(guideState, statusText, options = {}) {
       });
     }
 
-    components.push(
-      new ActionRowBuilder().addComponents(
-        new StringSelectMenuBuilder()
-          .setCustomId("combo_select_character")
-          .setPlaceholder("Выбери персонажа для редактирования…")
-          .addOptions(charOptions.slice(0, 25))
-      )
-    );
+    if (charOptions.length) {
+      components.push(
+        new ActionRowBuilder().addComponents(
+          new StringSelectMenuBuilder()
+            .setCustomId("combo_select_character")
+            .setPlaceholder("Выбери персонажа для редактирования…")
+            .addOptions(charOptions.slice(0, 25))
+        )
+      );
+    }
   }
 
   if (hasGuide && canManage) {
@@ -258,7 +309,11 @@ function buildMessageSelectPayload(charState, guideState, options = {}) {
       new ActionRowBuilder().addComponents(
         new ButtonBuilder()
           .setCustomId(`combo_panel_remove_char:${normalizedCharState.id}`)
-          .setLabel(`Удалить ${String(normalizedCharState.name || normalizedCharState.id || "персонажа")}`)
+          .setLabel(truncateDiscordText(
+            `Удалить ${String(normalizedCharState.name || normalizedCharState.id || "персонажа")}`,
+            BUTTON_LABEL_LIMIT,
+            "Удалить персонажа"
+          ))
           .setStyle(ButtonStyle.Danger)
           .setEmoji("🗑️")
       )

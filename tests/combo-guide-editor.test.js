@@ -96,6 +96,65 @@ test("combo panel payload tolerates partial guide state", () => {
   assert.equal(selectOptions[1].description, "0 комбо, 0 тех");
 });
 
+test("combo panel payload skips invalid select values instead of building an invalid reply", () => {
+  const payload = buildComboPanelPayload({
+    channelId: "456",
+    characters: [
+      {
+        id: "",
+        name: "Missing Id",
+        comboMessageIds: ["100"],
+        techMessageIds: ["200"],
+      },
+      {
+        id: "gojo",
+        name: "Gojo",
+        comboMessageIds: ["101"],
+        techMessageIds: ["201"],
+      },
+      {
+        id: "gojo",
+        name: "Duplicate Gojo",
+        comboMessageIds: ["102"],
+        techMessageIds: ["202"],
+      },
+      {
+        id: "x".repeat(101),
+        name: "Too Long",
+        comboMessageIds: ["103"],
+        techMessageIds: ["203"],
+      },
+    ],
+  }, "ok", {
+    canManage: true,
+    canEdit: true,
+  });
+
+  const selectOptions = payload.components[0].toJSON().components[0].options;
+  assert.deepEqual(selectOptions.map((option) => option.value), ["gojo"]);
+});
+
+test("combo panel payload keeps the character field within Discord embed limits", () => {
+  const payload = buildComboPanelPayload({
+    channelId: "456",
+    characters: Array.from({ length: 80 }, (_, index) => ({
+      id: `char_${index}`,
+      name: `Very Long Character Name ${index} ${"x".repeat(40)}`,
+      comboMessageIds: [],
+      techMessageIds: [],
+    })),
+  }, "ok", {
+    canManage: true,
+    canEdit: true,
+  });
+
+  const embed = payload.embeds[0].toJSON();
+  const characterField = embed.fields.find((field) => field.name === "Персонажи");
+  assert.ok(characterField);
+  assert.equal(characterField.value.length <= 1024, true);
+  assert.match(characterField.value, /ещё/);
+});
+
 test("message picker tolerates partial character and guide state", () => {
   const payload = buildMessageSelectPayload({
     id: "gojo",

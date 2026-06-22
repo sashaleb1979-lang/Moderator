@@ -18150,7 +18150,15 @@ client.on("interactionCreate", async (interaction) => {
           return;
         }
 
-        await interaction.reply(ephemeralPayload(buildComboPanelForMember(interaction.member)));
+        try {
+          await interaction.reply(ephemeralPayload(buildComboPanelForMember(interaction.member)));
+        } catch (error) {
+          console.error("combo panel open failed:", formatRuntimeError(error));
+          await replyWithInteractionFailureFallback(
+            interaction,
+            `Не удалось открыть combo panel: ${formatInteractionErrorText(error)}`
+          );
+        }
         return;
       }
 
