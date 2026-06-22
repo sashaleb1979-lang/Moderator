@@ -5,7 +5,6 @@
 
 const TOURNAMENT_COMMAND_NAME = "турнир";
 const TOURNAMENT_PANEL_SUBCOMMAND = "панель";
-const TOURNAMENT_TEST_SUBCOMMAND = "тест";
 
 const CUSTOM_ID_PREFIX = "t";
 
@@ -47,6 +46,7 @@ const ACTIONS = Object.freeze({
   MANAGE_OPEN_REG: "mopen",
   MANAGE_FORM_DUELS: "mform", // (re)compute seeding / roster — works anytime
   MANAGE_LAUNCH_SERVER: "mlaunch", // launch server N -> persist bracket, then side-effects
+  MANAGE_LAUNCH_FINAL: "mfinal", // launch the cross-server final (top-4 from each)
   MANAGE_RETRY_THREAD: "mthr", // re-run thread/ping side-effects for a server
   MANAGE_START: "mstart", // open match-result panel
   MANAGE_CANCEL: "mcancel",
@@ -61,20 +61,14 @@ const ACTIONS = Object.freeze({
   MANAGE_REMOVE_PLAYER: "mrm", // open remove-player (user select)
   REMOVE_PLAYER_SELECT: "mrms", // user select submitted
   MANAGE_SYNC_ROLES: "msync", // grant participant role to all registrants
+  MANAGE_FILL_ALL: "mfill", // fill empty slots with one-off phantom players (→ tournament becomes phantom)
+  MANAGE_CLEAR_PHANTOMS: "mclr", // remove only the phantom players (keep real ones)
 
   // match-result panel
   MATCH_WIN: "mw", // a side won
   MATCH_NOSHOW: "mns", // a side did not show
   MATCH_UNDO: "mu",
   STAGE_ADVANCE: "adv", // proceed to next run / stage
-
-  // test harness (mod-only, isolated, quick rollback)
-  TEST_REFRESH: "tref",
-  TEST_CREATE: "tcreate", // extra: slots
-  TEST_FILL: "tfill", // extra: tournamentId, count ("full" | N)
-  TEST_RESET: "treset", // clear bracket + registrations, keep tournament
-  TEST_DELETE: "tdel", // delete tournament + best-effort message/thread cleanup
-  TEST_PURGE: "tpurge", // delete ALL test tournaments
 });
 
 const COLORS = Object.freeze({
@@ -122,9 +116,6 @@ function buildTournamentCommands() {
       .setDescription("Турниры — создание, заявки и проведение")
       .addSubcommand((sub) =>
         sub.setName(TOURNAMENT_PANEL_SUBCOMMAND).setDescription("Открыть панель управления турнирами")
-      )
-      .addSubcommand((sub) =>
-        sub.setName(TOURNAMENT_TEST_SUBCOMMAND).setDescription("Тестовая песочница: запустить и быстро откатить турнир")
       ),
   ].map((command) => command.toJSON());
 }
@@ -132,7 +123,6 @@ function buildTournamentCommands() {
 module.exports = {
   TOURNAMENT_COMMAND_NAME,
   TOURNAMENT_PANEL_SUBCOMMAND,
-  TOURNAMENT_TEST_SUBCOMMAND,
   CUSTOM_ID_PREFIX,
   ACTIONS,
   COLORS,

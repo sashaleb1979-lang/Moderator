@@ -267,25 +267,100 @@ async function main() {
     console.log("✓ manual add/remove + role grant/remove + sync + no zero kills");
   }
 
-  // ---- test harness scenario -------------------------------------------------
-  // open test panel
-  await op.handleSlashCommand(makeInteraction({ commandName: TOURNAMENT_COMMAND_NAME, userId: MOD, mod: true, sub: "тест" }));
-  // create a 16-bot test tournament
-  await op.handleButtonInteraction(makeInteraction({ customId: buildCustomId(ACTIONS.TEST_CREATE, "", "16"), userId: MOD, mod: true }));
-  const testT = state.listTestTournaments(db)[0];
-  assert.ok(testT && testT.isTest, "test tournament created and flagged");
-  // fill with bots
-  await op.handleButtonInteraction(makeInteraction({ customId: buildCustomId(ACTIONS.TEST_FILL, testT.id, "full"), userId: MOD, mod: true }));
-  assert.equal(state.registrationCount(state.getTournament(db, testT.id)), 16, "test filled with 16 bots");
-  const botReg = Object.values(state.getTournament(db, testT.id).registrations)[0];
-  assert.ok(botReg.robloxAvatarUrl, "bots got avatar urls");
-  // reset (rollback)
-  await op.handleButtonInteraction(makeInteraction({ customId: buildCustomId(ACTIONS.TEST_RESET, testT.id), userId: MOD, mod: true }));
-  assert.equal(state.registrationCount(state.getTournament(db, testT.id)), 0, "reset cleared bots");
-  // delete
-  await op.handleButtonInteraction(makeInteraction({ customId: buildCustomId(ACTIONS.TEST_DELETE, testT.id), userId: MOD, mod: true }));
-  assert.equal(state.getTournament(db, testT.id), null, "test tournament deleted");
-  console.log("✓ test harness: create → fill bots → reset → delete");
+  // ---- multi-server (2 servers → cross-server final) -------------------------
+  {
+    const tms = state.createTournamentFromDraft(db, { name: "MultiCup", slots: 32, seedingMode: "similar", createdBy: MOD, announceChannelId: "chan1", participantRoleId: "role-ms" }, { id: state.makeId() });
+    state.updateTournament(db, tms.id, { announce: { channelId: "chan1", messageId: "m3" } });
+    for (let i = 1; i <= 32; i += 1) {
+      state.upsertRegistration(state.getTournament(db, tms.id), { userId: "ms" + i, discordName: "MS" + i, robloxUsername: "MS" + i, robloxUserId: String(i), accountKind: "main", approvedKills: (33 - i) * 500 });
+    }
+    // form duels → snake split across 2 servers
+    await op.handleButtonInteraction(makeInteraction({ customId: buildCustomId(ACTIONS.MANAGE_FORM_DUELS, tms.id), userId: MOD, mod: true }));
+    const idxs = new Set(state.listRegistrations(state.getTournament(db, tms.id)).map((r) => r.serverIndex));
+    assert.deepEqual([...idxs].sort(), [0, 1], "players split across 2 servers");
+
+    // drive a server's bracket (red wins) until it is done
+    async function driveServer(tid, sIdx) {
+      for (let guard = 0; guard < 40; guard += 1) {
+        const srv = state.getServer(state.getTournament(db, tid), sIdx);
+        if (!srv || srv.done) break;
+        const run = srv.currentStage.runs[srv.runIndex || 0];
+        for (const m of run.matches) {
+          await op.handleButtonInteraction(makeInteraction({ customId: buildCustomId(ACTIONS.MATCH_WIN, tid, String(sIdx), m.key, String(m.red.userId || m.red.id)), userId: MOD, mod: true }));
+        }
+        await op.handleButtonInteraction(makeInteraction({ customId: buildCustomId(ACTIONS.STAGE_ADVANCE, tid, String(sIdx)), userId: MOD, mod: true }));
+      }
+    }
+
+    // launch + run both base servers to qualification (top-4 each)
+    for (const sIdx of [0, 1]) {
+      await op.handleButtonInteraction(makeInteraction({ customId: buildCustomId(ACTIONS.MANAGE_LAUNCH_SERVER, tms.id, String(sIdx)), userId: MOD, mod: true }));
+      await driveServer(tms.id, sIdx);
+      const srv = state.getServer(state.getTournament(db, tms.id), sIdx);
+      assert.ok(srv.qualifying && srv.qualified.length === 4, `server ${sIdx} qualified top-4`);
+    }
+    console.log("✓ both base servers qualified top-4 each");
+
+    // launch the cross-server final (8 finalists) and run to completion
+    await op.handleButtonInteraction(makeInteraction({ customId: buildCustomId(ACTIONS.MANAGE_LAUNCH_FINAL, tms.id), userId: MOD, mod: true }));
+    const finalSrv0 = state.getServer(state.getTournament(db, tms.id), 90);
+    assert.ok(finalSrv0 && finalSrv0.launched && finalSrv0.role === "final", "final server launched");
+    await driveServer(tms.id, 90);
+    const finalT2 = state.getTournament(db, tms.id);
+    assert.equal(finalT2.status, "completed", "multi-server tournament completed via final");
+    assert.ok(finalT2.results.first && finalT2.results.second && finalT2.results.third, "overall 1/2/3 decided on final server");
+    console.log("✓ cross-server final → champion:", finalT2.results.first.robloxUsername);
+  }
+
+  // ---- phantom auto-fill (combine real players + made-up ones) ----------------
+  {
+    const tp = state.createTournamentFromDraft(db, { name: "PhantomCup", slots: 16, seedingMode: "similar", createdBy: MOD, announceChannelId: "chan1", participantRoleId: "role-p" }, { id: state.makeId() });
+    state.updateTournament(db, tp.id, { announce: { channelId: "chan1", messageId: "m4" } });
+    // 2 REAL players
+    for (const uid of ["111111111", "222222222"]) {
+      setSnapshot(uid, { hasRobloxAccount: true, robloxUsername: "Real" + uid.slice(0, 2), robloxUserId: "rb" + uid, approvedKills: 5000 });
+      await op.handleButtonInteraction(makeInteraction({ customId: buildCustomId(ACTIONS.REGISTER_OPEN, tp.id), userId: uid }));
+      await op.handleButtonInteraction(makeInteraction({ customId: buildCustomId(ACTIONS.REG_USE_MAIN, tp.id), userId: uid }));
+    }
+    assert.equal(state.registrationCount(state.getTournament(db, tp.id)), 2, "2 real players");
+    const grantsBefore = roleCalls.filter((c) => c.op === "grant").length;
+
+    // fill all → 14 phantoms, tournament becomes phantom
+    await op.handleButtonInteraction(makeInteraction({ customId: buildCustomId(ACTIONS.MANAGE_FILL_ALL, tp.id), userId: MOD, mod: true }));
+    const tpf = state.getTournament(db, tp.id);
+    assert.equal(state.registrationCount(tpf), 16, "filled to 16 (2 real + 14 phantom)");
+    assert.equal(tpf.isPhantom, true, "tournament flagged phantom");
+    assert.equal(state.phantomCount(tpf), 14, "14 phantoms");
+    assert.ok(state.getRegistration(tpf, "111111111") && state.getRegistration(tpf, "222222222"), "real players untouched");
+    // SAFETY: phantoms never trigger real role grants (synthetic ids skip fetchMember)
+    assert.equal(roleCalls.filter((c) => c.op === "grant").length, grantsBefore, "no role grants for phantoms");
+    // every registrant has positive kills
+    for (const r of state.listRegistrations(tpf)) assert.ok(r.effectiveKills > 0, "no zero-kill in phantom fill");
+    console.log("✓ phantom fill: 2 real + 14 phantom, flagged, no role leakage");
+
+    // run it fully (real + phantom) to a champion
+    await op.handleButtonInteraction(makeInteraction({ customId: buildCustomId(ACTIONS.MANAGE_FORM_DUELS, tp.id), userId: MOD, mod: true }));
+    await op.handleButtonInteraction(makeInteraction({ customId: buildCustomId(ACTIONS.MANAGE_LAUNCH_SERVER, tp.id, "0"), userId: MOD, mod: true }));
+    for (let guard = 0; guard < 30; guard += 1) {
+      const srv = state.getServer(state.getTournament(db, tp.id), 0);
+      if (!srv || srv.done) break;
+      const run = srv.currentStage.runs[srv.runIndex || 0];
+      for (const m of run.matches) {
+        await op.handleButtonInteraction(makeInteraction({ customId: buildCustomId(ACTIONS.MATCH_WIN, tp.id, "0", m.key, String(m.red.userId || m.red.id)), userId: MOD, mod: true }));
+      }
+      await op.handleButtonInteraction(makeInteraction({ customId: buildCustomId(ACTIONS.STAGE_ADVANCE, tp.id, "0"), userId: MOD, mod: true }));
+    }
+    assert.equal(state.getTournament(db, tp.id).status, "completed", "phantom tournament ran to completion");
+    console.log("✓ phantom tournament ran A→B to completion");
+
+    // clear phantoms → only real players remain
+    await op.handleButtonInteraction(makeInteraction({ customId: buildCustomId(ACTIONS.MANAGE_CLEAR_PHANTOMS, tp.id), userId: MOD, mod: true }));
+    const tpc = state.getTournament(db, tp.id);
+    assert.equal(state.registrationCount(tpc), 2, "clear phantoms keeps the 2 real players");
+    assert.equal(state.phantomCount(tpc), 0, "no phantoms remain");
+    assert.equal(tpc.isPhantom, false, "phantom flag cleared");
+    console.log("✓ clear phantoms → real players intact, flag cleared");
+  }
 
   console.log("\nALL SIM CHECKS PASSED");
 }

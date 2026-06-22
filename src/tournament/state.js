@@ -157,7 +157,7 @@ function createTournamentFromDraft(db, draft = {}, options = {}) {
     id,
     name: cleanString(draft.name, 120) || "Турнир",
     status: "registration",
-    isTest: Boolean(draft.isTest),
+    isPhantom: Boolean(draft.isPhantom), // set true when auto-fill is used → not counted anywhere
     createdBy: cleanString(draft.createdBy || draft.userId, 40),
     createdByTag: nullableString(draft.createdByTag, 80),
     createdAt: now,
@@ -211,44 +211,37 @@ function deleteTournament(db, id) {
 }
 
 // ---------------------------------------------------------------------------
-// Test harness helpers
+// Phantom (auto-fill) helpers
 // ---------------------------------------------------------------------------
 
-function listTestTournaments(db) {
-  return listTournaments(db).filter((t) => t.isTest);
-}
-
-// Reset a tournament back to a fresh registration state (quick rollback) while
-// keeping its config + announcement message.
-function clearTournamentPlay(tournament) {
-  tournament.registrations = {};
-  tournament.servers = {};
-  tournament.status = "registration";
-  tournament.registrationOpen = true;
-  tournament.summaryPosted = false;
-  tournament.results = { first: null, second: null, third: null, organizerComment: null };
-  return tournament;
-}
-
-// Generate fake registration inputs spanning the kill range so seeding has
-// something interesting to distribute. Avatars are filled in by the operator.
-function buildFakeRegistrations(count, { maxKills = 16000 } = {}) {
-  const total = Math.max(2, positiveInt(count, 2));
+// Generate one-off PHANTOM registration inputs to fill empty slots so a
+// tournament can be run end-to-end with made-up players. They use synthetic,
+// non-Discord ids (so they can never be pinged or get real roles) and a unique
+// run tag (so two fills never collide). Avatars are attached by the operator.
+function buildPhantomRegistrations(count, { startIndex = 1, runTag = "x", maxKills = 16000 } = {}) {
+  const total = Math.max(0, positiveInt(count, 0));
   const out = [];
-  for (let i = 1; i <= total; i += 1) {
-    // descending spread with mild deterministic jitter
-    const base = Math.round((maxKills * (total - i + 1)) / total);
+  for (let k = 0; k < total; k += 1) {
+    const i = startIndex + k;
+    const base = Math.round((maxKills * (total - k + 1)) / (total + 1));
     const jitter = ((i * 37) % 11) * 25;
+    const robloxId = String(1 + ((i * 7) % 200)); // low real Roblox ids → real avatars
     out.push({
-      userId: `test:${i}`,
-      discordName: `Тест-${i}`,
-      robloxUserId: String(i), // low Roblox IDs are real accounts → real avatars
-      robloxUsername: `Тест-${i}`,
+      userId: `phantom:${runTag}:${i}`, // never a real Discord snowflake
+      discordName: `Бот-${i}`,
+      robloxUserId: robloxId,
+      robloxUsername: `Бот-${i}`,
       accountKind: "main",
       approvedKills: Math.max(50, base - jitter),
+      killsSource: "phantom",
+      isPhantom: true,
     });
   }
   return out;
+}
+
+function isPhantomUserId(userId) {
+  return String(userId || "").startsWith("phantom:");
 }
 
 // ---------------------------------------------------------------------------
@@ -313,6 +306,7 @@ function normalizeRegistration(value = {}, { now } = {}) {
     effectiveTier: killTierFor(effectiveKills),
     killsSource: nullableString(value.killsSource, 40),
     addedManually: Boolean(value.addedManually),
+    isPhantom: Boolean(value.isPhantom) || isPhantomUserId(value.userId),
     registeredAt: isoTimestamp(value.registeredAt, isoTimestamp(now, nowIso())),
     serverIndex: value.serverIndex == null ? null : nonNegativeInt(value.serverIndex, null),
     seedNumber: value.seedNumber == null ? null : positiveInt(value.seedNumber, null),
@@ -407,7 +401,25 @@ function tournamentPlayers(tournament, { serverIndex = null } = {}) {
       accountKind: reg.accountKind,
       seedNumber: reg.seedNumber,
       addedManually: reg.addedManually,
+      isPhantom: reg.isPhantom,
     }));
+}
+
+function phantomCount(tournament) {
+  return listRegistrations(tournament).filter((r) => r.isPhantom).length;
+}
+
+// Remove only the phantom (auto-fill) registrations, keep real players.
+function removePhantomRegistrations(tournament) {
+  const registrations = ensureRegistrations(tournament);
+  let removed = 0;
+  for (const id of Object.keys(registrations)) {
+    if (registrations[id]?.isPhantom) {
+      delete registrations[id];
+      removed += 1;
+    }
+  }
+  return removed;
 }
 
 // ---------------------------------------------------------------------------
@@ -459,9 +471,10 @@ module.exports = {
   listTournaments,
   updateTournament,
   deleteTournament,
-  listTestTournaments,
-  clearTournamentPlay,
-  buildFakeRegistrations,
+  buildPhantomRegistrations,
+  isPhantomUserId,
+  phantomCount,
+  removePhantomRegistrations,
   resolveEffectiveKills,
   tierRepresentativeKills,
   canSelfDeclareTwink,

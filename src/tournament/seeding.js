@@ -300,7 +300,33 @@ function serverCountForSlots(slots) {
   return Math.max(1, Math.ceil(normalized / MAX_PLAYERS_PER_SERVER));
 }
 
+// How many survivors a base server keeps before its players qualify to the
+// cross-server final (the spec's "по четыре с каждого сервера").
+const QUALIFY_PER_SERVER = 4;
+
+// Distribute players across `serverCount` servers using a snake draft by kills,
+// so every server is comparably strong. Returns an array of player arrays.
+function splitIntoServers(players, serverCount) {
+  const n = Math.max(1, Math.floor(serverCount) || 1);
+  const buckets = Array.from({ length: n }, () => []);
+  const sorted = sortBySeed(players);
+  if (n === 1) {
+    buckets[0] = sorted;
+    return buckets;
+  }
+  let i = 0;
+  let dir = 1;
+  for (const player of sorted) {
+    buckets[i].push(player);
+    i += dir;
+    if (i >= n) { i = n - 1; dir = -1; } else if (i < 0) { i = 0; dir = 1; }
+  }
+  return buckets;
+}
+
 module.exports = {
+  QUALIFY_PER_SERVER,
+  splitIntoServers,
   MAX_PLAYERS_PER_SERVER,
   CELLS_PER_SERVER,
   MATCHES_PER_RUN,

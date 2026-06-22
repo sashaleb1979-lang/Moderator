@@ -24,7 +24,7 @@ const {
 
 const { ACTIONS, COLORS, buildCustomId } = require("./commands");
 const { formatStartTime } = require("./time");
-const { TWINK_THRESHOLD, robloxProfileUrl, killsSourceLabel } = require("./state");
+const { TWINK_THRESHOLD, robloxProfileUrl, killsSourceLabel, phantomCount } = require("./state");
 const seeding = require("./seeding");
 const ui = require("./ui");
 
@@ -513,24 +513,27 @@ function buildRegisteredPayload(tournament, { seatNumber } = {}) {
 // Management hub
 // --------------------------------------------------------------------------
 
-function buildManagePanelPayload(tournament, { statusText = "", serverCount = 1 } = {}) {
+function buildManagePanelPayload(tournament, { statusText = "", serverCount = 1, finalReady = false, finalServer = null, finalIndex = 90 } = {}) {
   const taken = Object.keys(tournament.registrations || {}).length;
+  const phantoms = phantomCount(tournament);
   const open = tournament.registrationOpen !== false;
   const servers = tournament.servers || {};
   const anyThreadFailed = Object.values(servers).some((s) => s && s.launched && s.threadFailed);
-  const accent = tournament.isTest ? COLORS.neutral : COLORS.primary;
+  const phantom = Boolean(tournament.isPhantom);
+  const accent = phantom ? COLORS.orange : COLORS.primary;
 
   const c = ui.container(accent, (container) => {
-    container.addTextDisplayComponents(ui.td(`# ${tournament.isTest ? "🧪 " : "🛠 "}${tournament.name}${tournament.isTest ? " · ТЕСТ" : ""}`));
+    container.addTextDisplayComponents(ui.td(`# ${phantom ? "👻 " : "🛠 "}${tournament.name}${phantom ? " · ФАНТОМ" : ""}`));
     container.addTextDisplayComponents(
       ui.td(
         [
           `Статус: ${statusLabel(tournament.status)} · Набор: ${open ? "🟢 открыт" : "🔴 закрыт"}`,
-          `Заявок: **${fmtNumber(taken)} / ${fmtNumber(tournament.slots)}** · Серверов: **${fmtNumber(serverCount)}**`,
+          `Заявок: **${fmtNumber(taken)} / ${fmtNumber(tournament.slots)}**${phantoms ? ` (из них фантомов: **${phantoms}**)` : ""} · Серверов: **${fmtNumber(serverCount)}**`,
           `Режим: ${SEEDING_MODE_LABELS[tournament.seedingMode] || tournament.seedingMode}`,
           `Роль участника: ${tournament.participantRoleId ? `<@&${tournament.participantRoleId}>` : "—"}`,
           `Старт: ${tournament.startsAtIso ? formatStartTime(tournament.startsAtIso) : "—"}`,
-        ].join("\n")
+          phantom ? "-# 👻 Фантомный турнир: автозаполненные игроки нигде не учитываются." : null,
+        ].filter((x) => x != null).join("\n")
       )
     );
 
@@ -554,14 +557,24 @@ function buildManagePanelPayload(tournament, { statusText = "", serverCount = 1 
         btn(ACTIONS.MANAGE_SYNC_ROLES, tournament.id, [], { label: "Синхр. роли", emoji: "🎭", disabled: !tournament.participantRoleId })
       )
     );
+    container.addActionRowComponents(
+      ui.row(
+        btn(ACTIONS.MANAGE_FILL_ALL, tournament.id, [], { label: "Заполнить всё (фантом)", style: ButtonStyle.Secondary, emoji: "👻" }),
+        ...(phantoms ? [btn(ACTIONS.MANAGE_CLEAR_PHANTOMS, tournament.id, [], { label: `Убрать фантомов (${phantoms})`, style: ButtonStyle.Danger, emoji: "🧹" })] : [])
+      )
+    );
 
-    container.addTextDisplayComponents(ui.td("**Сетка и сервера**"));
+    const multi = serverCount > 1;
+    container.addTextDisplayComponents(ui.td(multi ? `**Сетка и сервера** (мультисервер ×${serverCount})` : "**Сетка и сервера**"));
+
+    // launch row: rebuild duels + per-server launch buttons
     const launchRow = [btn(ACTIONS.MANAGE_FORM_DUELS, tournament.id, [], { label: "Пересобрать дуэты", style: ButtonStyle.Primary, emoji: "🧩" })];
     for (let i = 0; i < Math.min(serverCount, 3); i += 1) {
       const server = servers[String(i)];
+      const qual = server?.qualifying;
       launchRow.push(
         btn(ACTIONS.MANAGE_LAUNCH_SERVER, tournament.id, [String(i)], {
-          label: server?.launched ? `Сервер ${i + 1} ✓` : `Запустить сервер ${i + 1}`,
+          label: qual ? `Сервер ${i + 1}: топ-${(server.qualified || []).length}` : server?.launched ? `Сервер ${i + 1} ✓` : `Запустить сервер ${i + 1}`,
           style: server?.launched ? ButtonStyle.Secondary : ButtonStyle.Success,
           emoji: "🖥",
           disabled: Boolean(server?.launched),
@@ -570,9 +583,29 @@ function buildManagePanelPayload(tournament, { statusText = "", serverCount = 1 
     }
     container.addActionRowComponents(ui.row(...launchRow.slice(0, 5)));
 
-    const bottom = [
-      btn(ACTIONS.MANAGE_START, tournament.id, ["0"], { label: "Панель боёв", style: ButtonStyle.Primary, emoji: "⚔️" }),
-    ];
+    // match-panel row: one "Бои" button per launched server (+ final)
+    const matchRow = [];
+    for (let i = 0; i < Math.min(serverCount, 3); i += 1) {
+      if (servers[String(i)]?.launched) {
+        matchRow.push(btn(ACTIONS.MANAGE_START, tournament.id, [String(i)], { label: multi ? `Бои · сервер ${i + 1}` : "Панель боёв", style: ButtonStyle.Primary, emoji: "⚔️" }));
+      }
+    }
+    if (multi) {
+      if (finalServer?.launched) {
+        matchRow.push(btn(ACTIONS.MANAGE_START, tournament.id, [String(finalIndex)], { label: "Бои · ФИНАЛ", style: ButtonStyle.Danger, emoji: "🏆" }));
+      } else if (finalReady) {
+        matchRow.push(btn(ACTIONS.MANAGE_LAUNCH_FINAL, tournament.id, [], { label: "Запустить ФИНАЛ", style: ButtonStyle.Success, emoji: "🏆" }));
+      }
+    }
+    if (!matchRow.length) {
+      matchRow.push(btn(ACTIONS.MANAGE_START, tournament.id, ["0"], { label: "Панель боёв", style: ButtonStyle.Secondary, emoji: "⚔️", disabled: true }));
+    }
+    container.addActionRowComponents(ui.row(...matchRow.slice(0, 5)));
+    if (multi && !finalReady && Object.values(servers).some((s) => s?.launched)) {
+      container.addTextDisplayComponents(ui.td(`-# Финал откроется, когда все ${serverCount} сервера выведут топ-4.`));
+    }
+
+    const bottom = [];
     if (anyThreadFailed) {
       const failedIdx = Object.keys(servers).find((k) => servers[k]?.threadFailed) || "0";
       bottom.push(btn(ACTIONS.MANAGE_RETRY_THREAD, tournament.id, [failedIdx], { label: "Ветка и пинг заново", emoji: "🧵" }));
@@ -629,6 +662,9 @@ function buildRosterViewerPayload(tournament, players = [], { page = 0, statusTe
         btn(ACTIONS.ROSTER_KILLS_REFRESH, tournament.id, [], { label: "Обновить килы", emoji: "🔁" }),
         btn(ACTIONS.MANAGE_OPEN, tournament.id, [], { label: "К управлению", emoji: "🛠" })
       )
+    );
+    container.addActionRowComponents(
+      ui.row(btn(ACTIONS.MANAGE_FILL_ALL, tournament.id, [], { label: "👻 Заполнить всё фантомами", style: ButtonStyle.Secondary }))
     );
     if (statusText) container.addTextDisplayComponents(ui.td(`-# ${statusText}`));
   });
@@ -716,12 +752,13 @@ function buildRosterPayload(tournament, stagePlan, { serverIndex = 0 } = {}) {
 
 // Public bracket post (V2 container). When `imageFilename` is given the caller
 // attaches the PNG; otherwise the pairings are listed as text.
-function buildBracketPostPayload(tournament, stagePlan, { serverIndex = 0, imageFilename = "", title = "🗺 Предварительное размещение", headline = "" } = {}) {
+function buildBracketPostPayload(tournament, stagePlan, { serverIndex = 0, serverLabel = "", imageFilename = "", title = "🗺 Предварительное размещение", headline = "" } = {}) {
   const matches = seeding.listStageMatches(stagePlan);
   const multiRun = stagePlan.runs.length > 1;
+  const label = serverLabel || `сервер ${serverIndex + 1}`;
   const c = ui.container(COLORS.gold, (container) => {
     if (headline) container.addTextDisplayComponents(ui.td(headline));
-    container.addTextDisplayComponents(ui.td(`# ${title} · сервер ${serverIndex + 1}`));
+    container.addTextDisplayComponents(ui.td(`# ${title} · ${label}`));
     container.addTextDisplayComponents(ui.td(`-# ${tournament.name} · FT6`));
     if (imageFilename) {
       container.addMediaGalleryComponents(ui.mediaImage(`attachment://${imageFilename}`, "Сетка турнира"));
@@ -888,51 +925,6 @@ function buildServerThreadName(tournament, serverIndex) {
   return `${tournament.name} · сервер ${serverIndex + 1}`.slice(0, 100);
 }
 
-// --------------------------------------------------------------------------
-// Test harness panel
-// --------------------------------------------------------------------------
-
-function buildTestPanelPayload(testTournaments = [], { statusText = "" } = {}) {
-  const c = ui.container(COLORS.neutral, (container) => {
-    container.addTextDisplayComponents(ui.td("# 🧪 Тестовая песочница турниров"));
-    container.addTextDisplayComponents(
-      ui.td(
-        [
-          "Быстро создавай учебный турнир с ботами, прогоняй сетку и откатывай в один клик.",
-          "",
-          testTournaments.length
-            ? testTournaments.map((t) => `• **${t.name}** — ${statusLabel(t.status)} · ${fmtNumber(Object.keys(t.registrations || {}).length)}/${fmtNumber(t.slots)}`).join("\n")
-            : "_Активных тестов нет._",
-        ].join("\n")
-      )
-    );
-    container.addSeparatorComponents(ui.separator());
-    container.addActionRowComponents(
-      ui.row(
-        btn(ACTIONS.TEST_CREATE, "", ["16"], { label: "Создать тест (16)", style: ButtonStyle.Success }),
-        btn(ACTIONS.TEST_CREATE, "", ["8"], { label: "Создать тест (8)", style: ButtonStyle.Success }),
-        btn(ACTIONS.TEST_CREATE, "", ["15"], { label: "Создать тест (15, байи)", style: ButtonStyle.Success }),
-        btn(ACTIONS.TEST_REFRESH, "", [], { label: "Обновить", emoji: "🔄" })
-      )
-    );
-    for (const t of testTournaments.slice(0, 3)) {
-      container.addActionRowComponents(
-        ui.row(
-          btn(ACTIONS.TEST_FILL, t.id, ["full"], { label: "Заполнить ботами", style: ButtonStyle.Primary, emoji: "🤖" }),
-          btn(ACTIONS.MANAGE_OPEN, t.id, [], { label: "Управление", style: ButtonStyle.Primary, emoji: "🛠" }),
-          btn(ACTIONS.TEST_RESET, t.id, [], { label: "Сброс", emoji: "♻" }),
-          btn(ACTIONS.TEST_DELETE, t.id, [], { label: "Удалить", style: ButtonStyle.Danger, emoji: "🗑" })
-        )
-      );
-    }
-    if (testTournaments.length) {
-      container.addActionRowComponents(ui.row(btn(ACTIONS.TEST_PURGE, "", [], { label: "Удалить ВСЕ тесты", style: ButtonStyle.Danger, emoji: "💥" })));
-    }
-    if (statusText) container.addTextDisplayComponents(ui.td(`-# ${statusText}`));
-  });
-  return ui.v2Ephemeral(c);
-}
-
 module.exports = {
   TWINK_WARNING,
   SEEDING_MODE_LABELS,
@@ -969,5 +961,4 @@ module.exports = {
   buildMatchPanelPayload,
   buildServerDonePayload,
   buildServerThreadName,
-  buildTestPanelPayload,
 };
