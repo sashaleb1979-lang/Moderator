@@ -1475,18 +1475,13 @@ function buildHelpReplyPayload({
     if (profileUrl) lines.push(`[Roblox профиль ${targetLabel}](${profileUrl})`);
     if (directJoinUrl && profileUrl) lines.push("Если подключение не работает, открой профиль и нажми **Join**.");
   } else {
-    if (helperRobloxKnown) {
-      lines.push(`Отправь ${targetLabel} friend request в Roblox.`);
-    } else {
-      lines.push(`Roblox у тебя не привязан, поэтому бот не знает, друзья ли вы с ${targetLabel}.`);
-      lines.push("На всякий случай можно уведомить автора, что ты кинул friend request.");
-    }
-    if (directJoinUrl) lines.push(`[Ссылка подключения](${directJoinUrl}) станет рабочей после добавления в друзья.`);
-    if (friendRequestsUrl) lines.push(`[Где принимают заявки Roblox](${friendRequestsUrl})`);
-    if (directJoinUrl) lines.push("Если ссылка не пустила после принятия др, открой профиль и нажми **Join**.");
+    lines.push(helperRobloxKnown
+      ? `Открой профиль ${targetLabel} ниже и кинь friend request.`
+      : `Roblox у тебя не привязан — бот не знает, друзья ли вы с ${targetLabel}. Открой профиль ниже и кинь заявку.`);
+    if (directJoinUrl) lines.push(`[Прямая ссылка](${directJoinUrl}) заработает после добавления в друзья.`);
     lines.push(friendRequestNotified
-      ? "Автор уже получил уведомление в ветке."
-      : "После отправки friend request нажми кнопку ниже, чтобы пингануть автора в ветке.");
+      ? "Автор уже получил пинг в ветке."
+      : "Добавился — жми кнопку ниже, чтобы автор принял.");
   }
 
   const container = new ContainerBuilder()

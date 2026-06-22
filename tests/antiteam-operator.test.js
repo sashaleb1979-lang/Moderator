@@ -841,7 +841,7 @@ test("help button records friend-request path and notifies author only after hel
   assert.deepEqual(threadNotices[0].allowedMentions.users, ["author-1", "helper-1"]);
   const sentJson = JSON.stringify(sentInteraction.calls.at(-1)[1].components[0].toJSON());
   assert.match(sentJson, /Помощь принята/);
-  assert.match(sentJson, /Автор уже получил уведомление/);
+  assert.match(sentJson, /Автор уже получил пинг в ветке/);
   assert.match(sentJson, /"disabled":true/);
 
   assert.equal(await operator.handleButtonInteraction(createButtonInteraction(ticketButtonId("friend_request_sent", "ticket-1"))), true);
@@ -892,7 +892,7 @@ test("help button does not persist repairable helper Roblox username as a usable
   const helper = db.sot.antiteam.tickets["ticket-1"].helpers["helper-1"];
   assert.equal(helper.robloxUsername, "");
   assert.equal(helper.robloxUserId, "");
-  assert.match(JSON.stringify(interaction.calls.at(-1)[1].components[0].toJSON()), /уведомить автора/);
+  assert.match(JSON.stringify(interaction.calls.at(-1)[1].components[0].toJSON()), /Roblox у тебя не привязан/);
 });
 
 test("friend-request help omits connection URL when no manual direct link is set", async () => {
