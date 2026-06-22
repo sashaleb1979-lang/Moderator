@@ -226,16 +226,22 @@ function stageEntryFromPlan(stagePlan, decisions = {}) {
 // Build the full bracket-card model for a server. `history` is the list of
 // completed stage entries; `livePlan`/`liveDecisions` render the in-progress
 // stage. avatars: { [id]: Buffer }.
-function buildBracketModel({ tournament, server, history = [], livePlan = null, liveDecisions = {}, avatars = {} } = {}) {
+function buildBracketModel({ tournament, server, history = [], livePlan = null, liveDecisions = {}, avatars = {}, totalPlayers = 0 } = {}) {
   const entries = [...history];
   if (livePlan) entries.push(stageEntryFromPlan(livePlan, liveDecisions));
   const columns = entries.map(columnFromStageEntry);
 
+  // total field size — used to project the full bracket shape (empty future boxes)
+  const firstCol = columns[0];
+  const derivedN = firstCol ? firstCol.matches.length * 2 + (firstCol.bye ? 1 : 0) : 0;
+  const n = Math.max(Number(totalPlayers) || 0, derivedN, 2);
+
   const placement = server?.placement || {};
   return {
-    title: `${tournament?.name || "Турнир"} · сервер ${(server?.index || 0) + 1}`,
-    subtitle: server?.done ? "Итоги сервера" : "Сетка · FT6",
+    title: `${tournament?.name || "Турнир"}${server && server.role === "final" ? " · ФИНАЛ" : server ? ` · сервер ${(server.index || 0) + 1}` : ""}`,
+    subtitle: server?.done ? "Итоги" : "Сетка · FT6",
     seedingMode: tournament?.seedingMode || "similar",
+    totalPlayers: n,
     columns,
     podium: server?.done
       ? {
@@ -267,12 +273,12 @@ function buildSummaryModel({ tournament, avatars = {} } = {}) {
 // --------------------------------------------------------------------------
 
 const PAD = 28;
-const COL_W = 330;
-const COL_GAP = 26;
-const HEADER_H = 96;
-const MATCH_H = 96;
-const MATCH_GAP = 14;
-const FOOTER_H = 44;
+const COL_W = 244;
+const COL_GAP = 30;
+const HEADER_H = 100;
+const MATCH_H = 78;
+const MATCH_GAP = 22;
+const FOOTER_H = 40;
 
 async function decodeAvatars(avatars) {
   const decoded = new Map();
@@ -302,14 +308,68 @@ function drawPlayerRow(ctx, node, avatarImage, x, y, w, h, side, isWinner) {
 
 function drawMatchBox(ctx, match, decoded, x, y, w) {
   const rowH = Math.floor((MATCH_H - 6) / 2);
-  const cellTag = match.placement === "final" ? "ФИНАЛ" : match.placement === "bronze" ? "3-е место" : match.tag || "";
-  if (cellTag) {
-    centered(ctx, cellTag, x, y - 4, w, 14, "#8b93a3", "bold", 10);
-  }
   const redWin = match.winnerId && match.red && match.winnerId === match.red.id;
   const blueWin = match.winnerId && match.blue && match.winnerId === match.blue.id;
   drawPlayerRow(ctx, match.red, decoded.get(match.red?.id), x, y, w, rowH, "red", redWin);
   drawPlayerRow(ctx, match.blue, decoded.get(match.blue?.id), x, y + rowH + 6, w, rowH, "blue", blueWin);
+}
+
+function drawEmptyBox(ctx, x, y, w) {
+  const rowH = Math.floor((MATCH_H - 6) / 2);
+  rect(ctx, x, y, w, rowH, "#0d0f14");
+  strokeRect(ctx, x, y, w, rowH, BORDER_HEX, 1);
+  rect(ctx, x, y + rowH + 6, w, rowH, "#0d0f14");
+  strokeRect(ctx, x, y + rowH + 6, w, rowH, BORDER_HEX, 1);
+}
+
+// Build the round structure for the symmetric tree. Returns rounds[] where
+// rounds[0] is the outermost (most matches) and the last is the single final.
+// Actual played matches come from model.columns; remaining rounds are projected
+// as empty boxes down to one final, so the bracket always funnels to the center.
+function buildTreeRounds(model) {
+  const columns = Array.isArray(model.columns) ? model.columns : [];
+  const rounds = [];
+  let bronze = null;
+  for (const col of columns) {
+    const matches = Array.isArray(col.matches) ? col.matches : [];
+    const placementMatch = matches.find((m) => m.placement);
+    if (placementMatch) {
+      const finalM = matches.find((m) => m.placement === "final") || matches[0] || null;
+      bronze = matches.find((m) => m.placement === "bronze") || null;
+      rounds.push([finalM]);
+    } else {
+      rounds.push(matches);
+    }
+  }
+  // seed an empty first round if nothing played yet
+  if (!rounds.length) {
+    const n = Math.max(2, Number(model.totalPlayers) || 2);
+    rounds.push(new Array(Math.ceil(n / 2)).fill(null));
+  }
+  // project forward until a single final
+  let guard = 0;
+  while (rounds[rounds.length - 1].length > 1 && guard < 12) {
+    const len = rounds[rounds.length - 1].length;
+    rounds.push(new Array(Math.ceil(len / 2)).fill(null));
+    guard += 1;
+  }
+  return { rounds, bronze };
+}
+
+function computeSideYs(leafYs, levels) {
+  // leafYs: Y centers for the outermost round's matches (this side).
+  const ys = [leafYs];
+  for (let l = 1; l < levels; l += 1) {
+    const prev = ys[l - 1];
+    const cur = [];
+    for (let k = 0; k < Math.ceil(prev.length / 2); k += 1) {
+      const a = prev[2 * k];
+      const b = prev[2 * k + 1];
+      cur.push(b == null ? a : (a + b) / 2);
+    }
+    ys.push(cur);
+  }
+  return ys;
 }
 
 async function renderBracketCard(model = {}) {
@@ -317,13 +377,46 @@ async function renderBracketCard(model = {}) {
   ensureFonts();
   const decoded = await decodeAvatars(model.avatars);
 
-  const columns = Array.isArray(model.columns) ? model.columns : [];
-  const colCount = Math.max(1, columns.length);
-  const maxRows = Math.max(1, ...columns.map((c) => (c.matches ? c.matches.length : 0) + (c.bye ? 1 : 0)));
-  const width = PAD * 2 + colCount * COL_W + (colCount - 1) * COL_GAP;
-  const bodyH = maxRows * (MATCH_H + MATCH_GAP);
-  const podiumH = model.podium ? 60 : 0;
-  const height = HEADER_H + bodyH + podiumH + FOOTER_H + PAD;
+  const { rounds, bronze } = buildTreeRounds(model);
+  const L = rounds.length; // total levels including the final
+  const feeders = Math.max(0, L - 1); // levels that split into left/right halves
+
+  // split every feeder round into left / right halves
+  const leftRounds = [];
+  const rightRounds = [];
+  for (let r = 0; r < feeders; r += 1) {
+    const m = rounds[r];
+    const half = Math.ceil(m.length / 2);
+    leftRounds.push(m.slice(0, half));
+    rightRounds.push(m.slice(half));
+  }
+  const finalMatch = rounds[L - 1] ? rounds[L - 1][0] : null;
+
+  const leftLeaves = leftRounds[0] ? leftRounds[0].length : 0;
+  const rightLeaves = rightRounds[0] ? rightRounds[0].length : 0;
+  const maxLeaves = Math.max(1, leftLeaves, rightLeaves);
+
+  const topY = HEADER_H + 18;
+  const step = MATCH_H + MATCH_GAP;
+  const centerY = (n) => topY + n * step + Math.floor(MATCH_H / 2);
+  const leftLeafYs = Array.from({ length: leftLeaves }, (_, j) => centerY(j));
+  const rightLeafYs = Array.from({ length: rightLeaves }, (_, j) => centerY(j));
+  const leftYs = computeSideYs(leftLeafYs, feeders);
+  const rightYs = computeSideYs(rightLeafYs, feeders);
+  const finalY = feeders > 0
+    ? ((leftYs[feeders - 1][0] ?? topY) + (rightYs[feeders - 1][0] ?? topY)) / 2
+    : centerY(0);
+
+  const totalCols = feeders > 0 ? 2 * feeders + 1 : 1;
+  const leftX = (r) => PAD + r * (COL_W + COL_GAP);
+  const finalX = PAD + feeders * (COL_W + COL_GAP);
+  const rightX = (r) => PAD + (2 * feeders - r) * (COL_W + COL_GAP);
+
+  const width = PAD * 2 + totalCols * COL_W + (totalCols - 1) * COL_GAP;
+  const bodyH = maxLeaves * step;
+  const bronzeH = bronze ? MATCH_H + 30 : 0;
+  const podiumH = model.podium ? 56 : 0;
+  const height = HEADER_H + Math.max(bodyH, finalY - HEADER_H + MATCH_H) + bronzeH + podiumH + FOOTER_H;
 
   const image = PImage.make(width, height);
   const ctx = image.getContext("2d");
@@ -334,51 +427,71 @@ async function renderBracketCard(model = {}) {
   text(ctx, titleFit.text, PAD, 50, titleFit.px, "#ffffff", "bold");
   text(ctx, model.subtitle || "", PAD, 80, 18, "#aeb5c2", "regular");
 
-  // classic bracket connectors between cleanly-halving rounds (8→4→2)
-  const colX = (ci) => PAD + ci * (COL_W + COL_GAP);
-  const matchCenterY = (m) => HEADER_H + 14 + m * (MATCH_H + MATCH_GAP) + Math.floor(MATCH_H / 2);
-  for (let ci = 0; ci < columns.length - 1; ci += 1) {
-    const here = (columns[ci].matches || []).length;
-    const next = (columns[ci + 1].matches || []).length;
-    if (!next || here !== next * 2) continue;
-    const rightX = colX(ci) + COL_W;
-    const nextLeftX = colX(ci + 1);
-    const midX = rightX + Math.floor(COL_GAP / 2);
-    for (let j = 0; j < next; j += 1) {
-      const yA = matchCenterY(2 * j);
-      const yB = matchCenterY(2 * j + 1);
-      const yT = matchCenterY(j);
-      ctx.strokeStyle = "#3a4150";
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.moveTo(rightX, yA); ctx.lineTo(midX, yA);
-      ctx.moveTo(rightX, yB); ctx.lineTo(midX, yB);
-      ctx.moveTo(midX, yA); ctx.lineTo(midX, yB);
-      ctx.moveTo(midX, Math.floor((yA + yB) / 2)); ctx.lineTo(nextLeftX, yT);
-      ctx.stroke();
+  ctx.strokeStyle = "#3a4150";
+  ctx.lineWidth = 2;
+  const connect = (x1, y1, x2, y2) => {
+    ctx.beginPath();
+    if (Math.abs(y1 - y2) < 1) {
+      ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); // straight (avoid degenerate elbow)
+    } else {
+      const midX = (x1 + x2) / 2;
+      ctx.moveTo(x1, y1); ctx.lineTo(midX, y1); ctx.lineTo(midX, y2); ctx.lineTo(x2, y2);
+    }
+    ctx.stroke();
+  };
+
+  // connectors — left half (children feed parents toward center)
+  for (let r = 0; r < feeders; r += 1) {
+    const parentY = r < feeders - 1 ? leftYs[r + 1] : [finalY];
+    const parentLeftX = r < feeders - 1 ? leftX(r + 1) : finalX;
+    for (let k = 0; k < parentY.length; k += 1) {
+      const yP = parentY[k];
+      for (const childIdx of [2 * k, 2 * k + 1]) {
+        if (childIdx >= leftYs[r].length) continue;
+        connect(leftX(r) + COL_W, leftYs[r][childIdx], parentLeftX, yP);
+      }
+    }
+  }
+  // connectors — right half (mirrored)
+  for (let r = 0; r < feeders; r += 1) {
+    const parentY = r < feeders - 1 ? rightYs[r + 1] : [finalY];
+    const parentRightX = r < feeders - 1 ? rightX(r + 1) + COL_W : finalX + COL_W;
+    for (let k = 0; k < parentY.length; k += 1) {
+      const yP = parentY[k];
+      for (const childIdx of [2 * k, 2 * k + 1]) {
+        if (childIdx >= rightYs[r].length) continue;
+        connect(rightX(r), rightYs[r][childIdx], parentRightX, yP);
+      }
     }
   }
 
-  columns.forEach((column, ci) => {
-    const x = colX(ci);
-    rect(ctx, x, HEADER_H - 28, COL_W, 26, PANEL_HEX);
-    strokeRect(ctx, x, HEADER_H - 28, COL_W, 26, BORDER_HEX, 1);
-    centered(ctx, `${column.label} · ${(column.matches || []).length} боёв`, x, HEADER_H - 9, COL_W, 18, "#dfe3ea", "bold", 11);
+  const placeBox = (match, x, y) => {
+    const boxTop = Math.round(y - MATCH_H / 2);
+    if (match) drawMatchBox(ctx, match, decoded, x, boxTop, COL_W);
+    else drawEmptyBox(ctx, x, boxTop, COL_W);
+  };
 
-    let y = HEADER_H + 14;
-    for (const match of column.matches || []) {
-      drawMatchBox(ctx, match, decoded, x, y, COL_W);
-      y += MATCH_H + MATCH_GAP;
-    }
-    if (column.bye) {
-      rect(ctx, x, y, COL_W, 34, "#11141b");
-      strokeRect(ctx, x, y, COL_W, 34, BORDER_HEX, 1);
-      centered(ctx, `BYE: ${column.bye.name} — проходит дальше`, x, y + 22, COL_W, 16, "#cdd3dd", "bold", 11);
-    }
-  });
+  // draw boxes — left, right, final
+  for (let r = 0; r < feeders; r += 1) {
+    leftRounds[r].forEach((m, j) => placeBox(m, leftX(r), leftYs[r][j]));
+    rightRounds[r].forEach((m, j) => placeBox(m, rightX(r), rightYs[r][j]));
+  }
+  // final box (gold frame)
+  const finalTop = Math.round(finalY - MATCH_H / 2);
+  rect(ctx, finalX - 4, finalTop - 18, COL_W + 8, MATCH_H + 24, "#1a1d25");
+  strokeRect(ctx, finalX - 4, finalTop - 18, COL_W + 8, MATCH_H + 24, GOLD_HEX, 2);
+  centered(ctx, "ФИНАЛ", finalX, finalTop - 4, COL_W, 14, GOLD_HEX, "bold", 11);
+  placeBox(finalMatch, finalX, finalY);
+
+  // bronze under the final
+  if (bronze) {
+    const by = finalY + MATCH_H + 36;
+    centered(ctx, "За 3-е место", finalX, by - MATCH_H / 2 - 6, COL_W, 14, "#cd7f32", "bold", 11);
+    placeBox(bronze, finalX, by);
+  }
 
   if (model.podium) {
-    const py = HEADER_H + bodyH + 6;
+    const py = height - FOOTER_H - podiumH + 4;
     const parts = [
       model.podium.first && `1 место: ${model.podium.first.name}`,
       model.podium.second && `2 место: ${model.podium.second.name}`,
@@ -390,7 +503,7 @@ async function renderBracketCard(model = {}) {
   }
 
   const modeLabel = model.seedingMode === "seed" ? "посевная сетка" : "близкие килы";
-  text(ctx, `Распределение: ${modeLabel}`, PAD, height - 16, 16, "#7e8696", "regular");
+  text(ctx, `Распределение: ${modeLabel} · ${model.totalPlayers || ""} игроков`, PAD, height - 14, 15, "#7e8696", "regular");
   return encodePng(image);
 }
 
