@@ -48,7 +48,7 @@ function createModalInteraction(customId, values = {}, calls = []) {
     async followUp(payload) {
       calls.push("followUp");
       this.followUpPayload = payload;
-      return payload;
+      return { id: "fu" };
     },
     async showModal(payload) {
       calls.push("showModal");
@@ -69,6 +69,14 @@ function createButtonInteraction(customId, calls = []) {
       calls.push("deferUpdate");
       this.deferred = true;
     },
+    async deferReply() {
+      calls.push("deferReply");
+      this.deferred = true;
+    },
+    async deleteReply() {
+      calls.push("deleteReply");
+      this.deleted = true;
+    },
     async editReply(payload) {
       calls.push("editReply");
       this.editedPayload = payload;
@@ -87,7 +95,7 @@ function createButtonInteraction(customId, calls = []) {
     async followUp(payload) {
       calls.push("followUp");
       this.followUpPayload = payload;
-      return payload;
+      return { id: "fu" };
     },
   };
 }
@@ -698,16 +706,16 @@ test("match panel acks each tap and repaints via a single coalesced render; supp
   const redId = String(match.red.userId || match.red.id);
   const blueId = String(match.blue.userId || match.blue.id);
 
-  // click RED winner — the tap is ack'd instantly with deferUpdate() (so Discord
-  // never shows "interaction failed"), then the panel is repainted from
-  // authoritative state via the coalescing renderer's editReply(). No racing
-  // per-tap interaction.update() that could land out of order.
+  // click RED winner — ack'd instantly with deferUpdate() (panel stays in place,
+  // never "interaction failed"); a transient "думает" followUp is shown, the panel
+  // is repainted in place from authoritative state, then the "думает" is deleted.
+  // No per-tap update() race (edits are serialized per panel).
   const redCalls = [];
   const clickRed = createButtonInteraction(buildCustomId(ACTIONS.MATCH_WIN, tournament.id, "0", match.key, "r"), redCalls);
   clickRed.member = { mod: true };
   clickRed.user = { id: "mod-1", tag: "mod#0001" };
   await operator.handleButtonInteraction(clickRed);
-  assert.deepEqual(redCalls, ["deferUpdate", "editReply"], "winner tap: instant ack, then a single coalesced repaint");
+  assert.deepEqual(redCalls, ["deferUpdate", "followUp", "editReply", "deleteReply"], "winner tap: in-place ack, думает shown then removed");
   assert.equal(state.getServer(state.getTournament(db, tournament.id), 0).decisions[match.key].winnerId, redId);
 
   // re-pick the OTHER side in one tap (buttons stay enabled — no undo dance)
@@ -716,17 +724,17 @@ test("match panel acks each tap and repaints via a single coalesced render; supp
   clickBlue.member = { mod: true };
   clickBlue.user = { id: "mod-1", tag: "mod#0001" };
   await operator.handleButtonInteraction(clickBlue);
-  assert.deepEqual(blueCalls, ["deferUpdate", "editReply"], "re-pick: ack + single repaint");
+  assert.deepEqual(blueCalls, ["deferUpdate", "followUp", "editReply", "deleteReply"], "re-pick: in-place repaint with думает");
   assert.equal(state.getServer(state.getTournament(db, tournament.id), 0).decisions[match.key].winnerId, blueId, "winner switched in one tap");
   assert.match(JSON.stringify(clickBlue.editedPayload), /✅/, "chosen winner highlighted");
 
-  // advancing the (placement) stage acks first, then repaints + completes
+  // advancing the (placement) stage acks in place with думает, then completes
   const advCalls = [];
   const advance = createButtonInteraction(buildCustomId(ACTIONS.STAGE_ADVANCE, tournament.id, "0"), advCalls);
   advance.member = { mod: true };
   advance.user = { id: "mod-1", tag: "mod#0001" };
   await operator.handleButtonInteraction(advance);
-  assert.deepEqual(advCalls, ["deferUpdate", "editReply"], "advance: instant ack, then a single repaint");
+  assert.deepEqual(advCalls, ["deferUpdate", "followUp", "editReply", "deleteReply"], "advance: in-place ack with думает");
   assert.equal(state.getTournament(db, tournament.id).status, "completed");
   const champ = state.getServer(state.getTournament(db, tournament.id), 0).placement.first;
   assert.equal(String(champ.userId || champ.id), blueId, "the re-picked winner took the final");

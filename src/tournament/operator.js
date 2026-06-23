@@ -1773,63 +1773,46 @@ function createTournamentOperator(deps = {}) {
   // Match results + advancement
   // =========================================================================
 
-  // ---- match panel: coalescing single-writer renderer ---------------------
-  // The match panel is ONE ephemeral V2 message. A moderator taps win/no-show/
-  // undo in quick succession; each tap is its own component interaction. If every
-  // tap fired its own interaction.update(), Discord would apply them in network
-  // ARRIVAL order — so a panel rendered from an EARLIER snapshot could land last
-  // and visually wipe out later taps (the "I mark one, it un-marks two" bug).
-  //
-  // Fix: every tap deferUpdate()s instantly (Discord never shows "interaction
-  // failed") and renders NOTHING itself. A single renderer per panel then edits
-  // the message from the AUTHORITATIVE in-memory state. Only ONE edit is ever in
-  // flight per panel (the `running` flag); if taps arrive mid-edit we loop and
-  // re-render once more from fresh state. So the final frame always reflects every
-  // decision, a burst of taps coalesces into ~one edit, and a stale render can
-  // never overwrite a newer one.
-  const matchPanelRenderers = new Map(); // `${tournamentId}:${serverIndex}` -> renderer
+  // ---- match panel: ONE in-place panel + transient "думает" ----------------
+  // A tap is acked with deferUpdate() — the SAME panel is edited IN PLACE (no new
+  // messages, no cascade of panels). While we work we show a tiny ephemeral
+  // "думает" message and remove it the instant the panel is repainted. Per-panel
+  // edits are serialized so rapid taps can never land out of order (the old "mark
+  // one, un-mark two" race stays impossible) — each repaint reads authoritative
+  // in-memory state.
+  const panelChains = new Map(); // `${tournamentId}:${serverIndex}` -> tail Promise
 
-  function requestMatchPanelRender(tournamentId, serverIndex, interaction, statusText) {
-    const key = `${tournamentId}:${serverIndex}`;
-    let r = matchPanelRenderers.get(key);
-    if (!r) {
-      r = { interaction: null, statusText: "", dirty: false, running: false };
-      matchPanelRenderers.set(key, r);
-    }
-    r.interaction = interaction; // always edit through the freshest interaction token
-    if (statusText) r.statusText = statusText;
-    r.dirty = true;
-    if (!r.running) runMatchPanelRenderer(key, r);
+  function serializePanelEdit(key, fn) {
+    const prev = panelChains.get(key) || Promise.resolve();
+    const next = prev.then(fn, fn);
+    panelChains.set(key, next.catch(() => {}));
+    return next;
   }
 
-  async function runMatchPanelRenderer(key, r) {
-    r.running = true;
-    try {
-      while (r.dirty) {
-        r.dirty = false;
-        const interaction = r.interaction;
-        const statusText = r.statusText;
-        r.statusText = "";
-        const [tournamentId, serverIndexStr] = key.split(":");
-        const tournament = state.getTournament(db, tournamentId);
-        const server = tournament ? state.getServer(tournament, Number(serverIndexStr)) : null;
-        if (!interaction || !tournament || !server) continue;
-        const payload = withoutEphemeralFlag(view.buildMatchPanelPayload(tournament, server, { statusText }));
-        try {
-          await interaction.editReply(payload);
-        } catch (error) {
-          if (!isUnknownInteractionError(error)) logError("tournament: match panel render failed", error?.message || error);
-        }
+  async function paintPanel(interaction, tournamentId, serverIndex, statusText = "") {
+    // transient "думает" — shows now, removed the instant the panel is repainted
+    let thinking = null;
+    try { thinking = await interaction.followUp({ content: "⏳ Модератор думает…", flags: MessageFlags.Ephemeral }); } catch { /* ignore */ }
+    const key = `${tournamentId}:${serverIndex}`;
+    await serializePanelEdit(key, async () => {
+      const tournament = state.getTournament(db, tournamentId);
+      const server = tournament ? state.getServer(tournament, serverIndex) : null;
+      if (!tournament || !server) return;
+      const payload = withoutEphemeralFlag(view.buildMatchPanelPayload(tournament, server, { statusText }));
+      try {
+        await interaction.editReply(payload);
+      } catch (error) {
+        if (!isUnknownInteractionError(error)) logError("tournament: match panel render failed", error?.message || error);
       }
-    } finally {
-      r.running = false;
+    });
+    if (thinking && thinking.id) {
+      try { await interaction.deleteReply(thinking.id); } catch { /* already gone — fine */ }
     }
   }
 
   async function recordMatch(interaction, tournamentId, extra, kind) {
-    // Ack FIRST — before requireMod or any other work — so Discord never shows
-    // "interaction failed" even if the event loop is briefly busy. No per-tap
-    // interaction.update() race; the coalescing renderer repaints below.
+    // Ack instantly (panel stays in place, NOT a new message). paintPanel shows
+    // the "думает" loader and removes it when the panel refreshes.
     const acked = await safeDeferUpdate(interaction);
     if (!requireMod(interaction)) return true;
     const serverIndex = Number(extra[0]) || 0;
@@ -1863,7 +1846,7 @@ function createTournamentOperator(deps = {}) {
       server.decisions[matchKey] = current;
     });
 
-    if (acked) requestMatchPanelRender(tournamentId, serverIndex, interaction);
+    if (acked) await paintPanel(interaction, tournamentId, serverIndex);
     return true;
   }
 
@@ -1939,9 +1922,9 @@ function createTournamentOperator(deps = {}) {
       statusText = `Этап ${server.stageNumber}`;
     });
 
-    // Repaint the panel through the SAME coalescing renderer the taps use, so an
-    // advance can never race a still-in-flight tap render on the same message.
-    if (acked) requestMatchPanelRender(tournamentId, serverIndex, interaction, statusText);
+    // Repaint the SAME panel in place (with the transient "думает") for the next
+    // run/stage.
+    if (acked) await paintPanel(interaction, tournamentId, serverIndex, statusText);
     // Edit the server's single bracket image in place (and post the grand summary
     // once when the whole tournament finishes) — coalesced + off-tick so it never
     // blocks the click ack.
