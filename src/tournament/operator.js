@@ -121,6 +121,20 @@ function createTournamentOperator(deps = {}) {
     }
   }
 
+  // Ack a click with a VISIBLE ephemeral "Бот думает…" loader (Discord's native
+  // deferred-reply state). Used on the match panel so every tap shows instant
+  // feedback before the panel is rebuilt.
+  async function safeDeferReply(interaction) {
+    if (interaction.deferred || interaction.replied) return true;
+    try {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      return true;
+    } catch (error) {
+      if (isUnknownInteractionError(error)) return false;
+      throw error;
+    }
+  }
+
   function ephemeralText(text) {
     return { content: text, flags: MessageFlags.Ephemeral };
   }
@@ -1580,6 +1594,8 @@ function createTournamentOperator(deps = {}) {
       return true;
     }
     await safeReply(interaction, view.buildMatchPanelPayload(tournament, server));
+    // own the rolling panel for this server so the first tap refreshes in place
+    matchPanelLast.set(`${tournamentId}:${serverIndex}`, interaction);
     return true;
   }
 
@@ -1773,64 +1789,39 @@ function createTournamentOperator(deps = {}) {
   // Match results + advancement
   // =========================================================================
 
-  // ---- match panel: coalescing single-writer renderer ---------------------
-  // The match panel is ONE ephemeral V2 message. A moderator taps win/no-show/
-  // undo in quick succession; each tap is its own component interaction. If every
-  // tap fired its own interaction.update(), Discord would apply them in network
-  // ARRIVAL order — so a panel rendered from an EARLIER snapshot could land last
-  // and visually wipe out later taps (the "I mark one, it un-marks two" bug).
-  //
-  // Fix: every tap deferUpdate()s instantly (Discord never shows "interaction
-  // failed") and renders NOTHING itself. A single renderer per panel then edits
-  // the message from the AUTHORITATIVE in-memory state. Only ONE edit is ever in
-  // flight per panel (the `running` flag); if taps arrive mid-edit we loop and
-  // re-render once more from fresh state. So the final frame always reflects every
-  // decision, a burst of taps coalesces into ~one edit, and a stale render can
-  // never overwrite a newer one.
-  const matchPanelRenderers = new Map(); // `${tournamentId}:${serverIndex}` -> renderer
+  // ---- match panel: per-tap "Бот думает" + one rolling panel ---------------
+  // Every tap is acked with deferReply({ephemeral}) → Discord shows its native
+  // "Бот думает…" loader INSTANTLY, so the moderator always sees the tap land and
+  // never an "interaction failed". We then editReply that loader into the freshly
+  // rebuilt panel (from AUTHORITATIVE in-memory state) and delete the PREVIOUS
+  // panel message — so there is exactly one live panel that "thinks" then refreshes
+  // on every tap. Each reply is its own message, so a late render can NEVER
+  // overwrite a newer one (the old "mark one, un-mark two" race is impossible).
+  const matchPanelLast = new Map(); // `${tournamentId}:${serverIndex}` -> interaction owning the live panel
 
-  function requestMatchPanelRender(tournamentId, serverIndex, interaction, statusText) {
-    const key = `${tournamentId}:${serverIndex}`;
-    let r = matchPanelRenderers.get(key);
-    if (!r) {
-      r = { interaction: null, statusText: "", dirty: false, running: false };
-      matchPanelRenderers.set(key, r);
-    }
-    r.interaction = interaction; // always edit through the freshest interaction token
-    if (statusText) r.statusText = statusText;
-    r.dirty = true;
-    if (!r.running) runMatchPanelRenderer(key, r);
-  }
-
-  async function runMatchPanelRenderer(key, r) {
-    r.running = true;
+  async function renderMatchPanelReply(interaction, tournamentId, serverIndex, statusText = "") {
+    const tournament = state.getTournament(db, tournamentId);
+    const server = tournament ? state.getServer(tournament, serverIndex) : null;
+    if (!tournament || !server) return;
+    const payload = withoutEphemeralFlag(view.buildMatchPanelPayload(tournament, server, { statusText }));
     try {
-      while (r.dirty) {
-        r.dirty = false;
-        const interaction = r.interaction;
-        const statusText = r.statusText;
-        r.statusText = "";
-        const [tournamentId, serverIndexStr] = key.split(":");
-        const tournament = state.getTournament(db, tournamentId);
-        const server = tournament ? state.getServer(tournament, Number(serverIndexStr)) : null;
-        if (!interaction || !tournament || !server) continue;
-        const payload = withoutEphemeralFlag(view.buildMatchPanelPayload(tournament, server, { statusText }));
-        try {
-          await interaction.editReply(payload);
-        } catch (error) {
-          if (!isUnknownInteractionError(error)) logError("tournament: match panel render failed", error?.message || error);
-        }
-      }
-    } finally {
-      r.running = false;
+      await interaction.editReply(payload);
+    } catch (error) {
+      if (!isUnknownInteractionError(error)) logError("tournament: match panel render failed", error?.message || error);
+      return;
+    }
+    const key = `${tournamentId}:${serverIndex}`;
+    const prev = matchPanelLast.get(key);
+    matchPanelLast.set(key, interaction);
+    if (prev && prev !== interaction) {
+      try { await prev.deleteReply(); } catch { /* expired / already gone — fine */ }
     }
   }
 
   async function recordMatch(interaction, tournamentId, extra, kind) {
-    // Ack FIRST — before requireMod or any other work — so Discord never shows
-    // "interaction failed" even if the event loop is briefly busy. No per-tap
-    // interaction.update() race; the coalescing renderer repaints below.
-    const acked = await safeDeferUpdate(interaction);
+    // Ack FIRST with a visible "Бот думает…" ephemeral (deferReply) — instant
+    // per-tap feedback, and Discord never shows "interaction failed".
+    const acked = await safeDeferReply(interaction);
     if (!requireMod(interaction)) return true;
     const serverIndex = Number(extra[0]) || 0;
     const matchKey = extra[1];
@@ -1863,7 +1854,7 @@ function createTournamentOperator(deps = {}) {
       server.decisions[matchKey] = current;
     });
 
-    if (acked) requestMatchPanelRender(tournamentId, serverIndex, interaction);
+    if (acked) await renderMatchPanelReply(interaction, tournamentId, serverIndex);
     return true;
   }
 
@@ -1872,7 +1863,7 @@ function createTournamentOperator(deps = {}) {
   }
 
   async function advanceStage(interaction, tournamentId, serverIndex) {
-    const acked = await safeDeferUpdate(interaction);
+    const acked = await safeDeferReply(interaction);
     if (!requireMod(interaction)) return true;
 
     let statusText = "";
@@ -1939,9 +1930,9 @@ function createTournamentOperator(deps = {}) {
       statusText = `Этап ${server.stageNumber}`;
     });
 
-    // Repaint the panel through the SAME coalescing renderer the taps use, so an
-    // advance can never race a still-in-flight tap render on the same message.
-    if (acked) requestMatchPanelRender(tournamentId, serverIndex, interaction, statusText);
+    // Repaint the (rolling) panel from the same path the taps use, so the advance
+    // shows its "Бот думает…" loader and a fresh panel for the next run/stage.
+    if (acked) await renderMatchPanelReply(interaction, tournamentId, serverIndex, statusText);
     // Edit the server's single bracket image in place (and post the grand summary
     // once when the whole tournament finishes) — coalesced + off-tick so it never
     // blocks the click ack.

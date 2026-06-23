@@ -78,6 +78,7 @@ function makeInteraction({ customId, userId = "u1", tag, mod = false, fields = {
     async editReply(p) { recorded.updates.push(p); return p; },
     async deferUpdate() { this.deferred = true; },
     async deferReply() { this.deferred = true; },
+    async deleteReply() { this.deleted = true; },
     async showModal(m) { recorded.modals.push(m); },
     recorded,
   };
