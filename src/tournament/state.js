@@ -83,20 +83,34 @@ function makeId() {
 // Schema
 // ---------------------------------------------------------------------------
 
+// Cheap, O(1) structural ensure. This runs on EVERY state access (getTournament,
+// listRegistrations, …) — dozens of times per interaction — so it must not do
+// any heavy work (the old version JSON.stringified the whole tournament state
+// twice on each call, which starved interaction handling on a busy event loop).
 function ensureTournamentState(db = {}) {
-  const previous = db.tournament && typeof db.tournament === "object" && !Array.isArray(db.tournament)
-    ? db.tournament
-    : {};
-  const state = {
-    version: TOURNAMENT_STATE_VERSION,
-    config: {
-      defaultChannelId: cleanString(previous.config?.defaultChannelId, 40),
-    },
-    drafts: previous.drafts && typeof previous.drafts === "object" ? previous.drafts : {},
-    tournaments: previous.tournaments && typeof previous.tournaments === "object" ? previous.tournaments : {},
-  };
-  const mutated = JSON.stringify(db.tournament || null) !== JSON.stringify(state);
-  db.tournament = state;
+  let state = db.tournament;
+  let mutated = false;
+  if (!state || typeof state !== "object" || Array.isArray(state)) {
+    state = { version: TOURNAMENT_STATE_VERSION, config: { defaultChannelId: "" }, drafts: {}, tournaments: {} };
+    db.tournament = state;
+    return { state, mutated: true };
+  }
+  if (!state.config || typeof state.config !== "object" || Array.isArray(state.config)) {
+    state.config = { defaultChannelId: cleanString(state.config?.defaultChannelId, 40) };
+    mutated = true;
+  }
+  if (!state.drafts || typeof state.drafts !== "object" || Array.isArray(state.drafts)) {
+    state.drafts = {};
+    mutated = true;
+  }
+  if (!state.tournaments || typeof state.tournaments !== "object" || Array.isArray(state.tournaments)) {
+    state.tournaments = {};
+    mutated = true;
+  }
+  if (state.version !== TOURNAMENT_STATE_VERSION) {
+    state.version = TOURNAMENT_STATE_VERSION;
+    mutated = true;
+  }
   return { state, mutated };
 }
 
