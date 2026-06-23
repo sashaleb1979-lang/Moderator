@@ -478,6 +478,37 @@ function createTournamentOperator(deps = {}) {
   // extra post, made once when the whole tournament finishes. Runs after the
   // advance mutation, outside the serialized lock, so rendering never blocks the
   // click handler.
+  // Coalescing wrapper around the bracket-art render. The render is heavy (PNG +
+  // avatar fetch) and, if the off-thread worker is unavailable, falls back to an
+  // INLINE render that blocks the event loop. To stop that from stacking up (rapid
+  // advances) and starving interaction acks, we keep at most ONE art render in
+  // flight per server, coalesce extra requests into a single trailing re-render,
+  // and kick it off on a `setImmediate` so the click's ack always lands first.
+  const artJobs = new Map(); // `${tid}:${serverIndex}` -> { running, pending }
+  function scheduleServerArtUpdate(tournamentId, serverIndex) {
+    const key = `${tournamentId}:${serverIndex}`;
+    let job = artJobs.get(key);
+    if (!job) {
+      job = { running: false, pending: false };
+      artJobs.set(key, job);
+    }
+    job.pending = true;
+    if (job.running) return;
+    job.running = true;
+    const pump = () => {
+      job.pending = false;
+      setImmediate(() => {
+        updateServerArtIfNeeded(tournamentId, serverIndex)
+          .catch((error) => logError("tournament: bracket art update failed", error?.message || error))
+          .finally(() => {
+            if (job.pending) pump();
+            else job.running = false;
+          });
+      });
+    };
+    pump();
+  }
+
   async function updateServerArtIfNeeded(tournamentId, serverIndex) {
     const tournament = state.getTournament(db, tournamentId);
     if (!tournament) return;
@@ -1796,11 +1827,11 @@ function createTournamentOperator(deps = {}) {
   }
 
   async function recordMatch(interaction, tournamentId, extra, kind) {
-    if (!requireMod(interaction)) return true;
-    // Ack the tap instantly — Discord never shows "interaction failed", and no
-    // per-tap interaction.update() races on the message. The coalescing renderer
-    // repaints from authoritative state below.
+    // Ack FIRST — before requireMod or any other work — so Discord never shows
+    // "interaction failed" even if the event loop is briefly busy. No per-tap
+    // interaction.update() race; the coalescing renderer repaints below.
     const acked = await safeDeferUpdate(interaction);
+    if (!requireMod(interaction)) return true;
     const serverIndex = Number(extra[0]) || 0;
     const matchKey = extra[1];
     const side = extra[2]; // "r" | "b"
@@ -1841,8 +1872,8 @@ function createTournamentOperator(deps = {}) {
   }
 
   async function advanceStage(interaction, tournamentId, serverIndex) {
-    if (!requireMod(interaction)) return true;
     const acked = await safeDeferUpdate(interaction);
+    if (!requireMod(interaction)) return true;
 
     let statusText = "";
     quickMutate(() => {
@@ -1912,10 +1943,9 @@ function createTournamentOperator(deps = {}) {
     // advance can never race a still-in-flight tap render on the same message.
     if (acked) requestMatchPanelRender(tournamentId, serverIndex, interaction, statusText);
     // Edit the server's single bracket image in place (and post the grand summary
-    // once when the whole tournament finishes) — never blocks the UI.
-    updateServerArtIfNeeded(tournamentId, serverIndex).catch((error) =>
-      logError("tournament: bracket art update failed", error?.message || error)
-    );
+    // once when the whole tournament finishes) — coalesced + off-tick so it never
+    // blocks the click ack.
+    scheduleServerArtUpdate(tournamentId, serverIndex);
     return true;
   }
 
