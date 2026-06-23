@@ -358,6 +358,7 @@ function createTournamentOperator(deps = {}) {
         history: server.history || [],
         livePlan: server.done ? null : server.currentStage,
         liveDecisions: server.decisions || {},
+        liveRunIndex: server.runIndex || 0,
         avatars,
       });
       return await renderImage("renderBracketCard", model);
@@ -1741,8 +1742,65 @@ function createTournamentOperator(deps = {}) {
   // Match results + advancement
   // =========================================================================
 
+  // ---- match panel: coalescing single-writer renderer ---------------------
+  // The match panel is ONE ephemeral V2 message. A moderator taps win/no-show/
+  // undo in quick succession; each tap is its own component interaction. If every
+  // tap fired its own interaction.update(), Discord would apply them in network
+  // ARRIVAL order — so a panel rendered from an EARLIER snapshot could land last
+  // and visually wipe out later taps (the "I mark one, it un-marks two" bug).
+  //
+  // Fix: every tap deferUpdate()s instantly (Discord never shows "interaction
+  // failed") and renders NOTHING itself. A single renderer per panel then edits
+  // the message from the AUTHORITATIVE in-memory state. Only ONE edit is ever in
+  // flight per panel (the `running` flag); if taps arrive mid-edit we loop and
+  // re-render once more from fresh state. So the final frame always reflects every
+  // decision, a burst of taps coalesces into ~one edit, and a stale render can
+  // never overwrite a newer one.
+  const matchPanelRenderers = new Map(); // `${tournamentId}:${serverIndex}` -> renderer
+
+  function requestMatchPanelRender(tournamentId, serverIndex, interaction, statusText) {
+    const key = `${tournamentId}:${serverIndex}`;
+    let r = matchPanelRenderers.get(key);
+    if (!r) {
+      r = { interaction: null, statusText: "", dirty: false, running: false };
+      matchPanelRenderers.set(key, r);
+    }
+    r.interaction = interaction; // always edit through the freshest interaction token
+    if (statusText) r.statusText = statusText;
+    r.dirty = true;
+    if (!r.running) runMatchPanelRenderer(key, r);
+  }
+
+  async function runMatchPanelRenderer(key, r) {
+    r.running = true;
+    try {
+      while (r.dirty) {
+        r.dirty = false;
+        const interaction = r.interaction;
+        const statusText = r.statusText;
+        r.statusText = "";
+        const [tournamentId, serverIndexStr] = key.split(":");
+        const tournament = state.getTournament(db, tournamentId);
+        const server = tournament ? state.getServer(tournament, Number(serverIndexStr)) : null;
+        if (!interaction || !tournament || !server) continue;
+        const payload = withoutEphemeralFlag(view.buildMatchPanelPayload(tournament, server, { statusText }));
+        try {
+          await interaction.editReply(payload);
+        } catch (error) {
+          if (!isUnknownInteractionError(error)) logError("tournament: match panel render failed", error?.message || error);
+        }
+      }
+    } finally {
+      r.running = false;
+    }
+  }
+
   async function recordMatch(interaction, tournamentId, extra, kind) {
     if (!requireMod(interaction)) return true;
+    // Ack the tap instantly — Discord never shows "interaction failed", and no
+    // per-tap interaction.update() races on the message. The coalescing renderer
+    // repaints from authoritative state below.
+    const acked = await safeDeferUpdate(interaction);
     const serverIndex = Number(extra[0]) || 0;
     const matchKey = extra[1];
     const side = extra[2]; // "r" | "b"
@@ -1774,13 +1832,7 @@ function createTournamentOperator(deps = {}) {
       server.decisions[matchKey] = current;
     });
 
-    const tournament = state.getTournament(db, tournamentId);
-    const server = state.getServer(tournament, serverIndex);
-    // The mutation above is synchronous (saveDb is a non-blocking coalesced
-    // flush), so we answer the click with a SINGLE interaction.update() — one
-    // round-trip instead of deferUpdate()+editReply(). That removes the visible
-    // lag/flicker between taps. Mirrors the snappy path in toggleRegistration().
-    await safeUpdate(interaction, view.buildMatchPanelPayload(tournament, server));
+    if (acked) requestMatchPanelRender(tournamentId, serverIndex, interaction);
     return true;
   }
 
@@ -1790,6 +1842,7 @@ function createTournamentOperator(deps = {}) {
 
   async function advanceStage(interaction, tournamentId, serverIndex) {
     if (!requireMod(interaction)) return true;
+    const acked = await safeDeferUpdate(interaction);
 
     let statusText = "";
     quickMutate(() => {
@@ -1855,11 +1908,9 @@ function createTournamentOperator(deps = {}) {
       statusText = `Этап ${server.stageNumber}`;
     });
 
-    const tournament = state.getTournament(db, tournamentId);
-    const server = state.getServer(tournament, serverIndex);
-    const panel = view.buildMatchPanelPayload(tournament, server, { statusText });
-    // Single round-trip (synchronous mutation) — same fast path as recordMatch().
-    await safeUpdate(interaction, panel);
+    // Repaint the panel through the SAME coalescing renderer the taps use, so an
+    // advance can never race a still-in-flight tap render on the same message.
+    if (acked) requestMatchPanelRender(tournamentId, serverIndex, interaction, statusText);
     // Edit the server's single bracket image in place (and post the grand summary
     // once when the whole tournament finishes) — never blocks the UI.
     updateServerArtIfNeeded(tournamentId, serverIndex).catch((error) =>

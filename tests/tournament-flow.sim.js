@@ -167,6 +167,13 @@ async function main() {
   assert.equal(server.threadFailed, false, "thread did not fail");
   console.log("✓ launched server (decoupled: bracket first, thread async)");
 
+  // render helpers (also used for the mid-stage live snapshot below)
+  const bi = require("../src/tournament/bracket-image");
+  const fs = require("node:fs");
+  const os = require("node:os");
+  const pathMod = require("node:path");
+  let midStageRendered = false;
+
   // 7) walk the whole bracket: red wins every match, advancing runs then stages
   for (let guard = 0; guard < 30; guard += 1) {
     const fresh = state.getTournament(db, t.id);
@@ -187,6 +194,17 @@ async function main() {
     }
     // advance (run or stage)
     await op.handleButtonInteraction(makeInteraction({ customId: buildCustomId(ACTIONS.STAGE_ADVANCE, t.id, "0"), userId: MOD, mod: true }));
+
+    // after the FIRST run advance, snapshot the LIVE image: run-1 winners are
+    // decided and run-2 pairings still pending → proves the picture shows who
+    // fights next, in each run.
+    if (!midStageRendered && bi.hasRenderer()) {
+      midStageRendered = true;
+      const srv = state.getServer(state.getTournament(db, t.id), 0);
+      const mbuf = await bi.renderBracketCard(bi.buildBracketModel({ tournament: state.getTournament(db, t.id), server: srv, history: srv.history, livePlan: srv.done ? null : srv.currentStage, liveDecisions: srv.decisions || {}, liveRunIndex: srv.runIndex || 0, avatars: {} }));
+      fs.writeFileSync(pathMod.join(os.tmpdir(), "tournament_sim_midstage.png"), mbuf);
+      console.log(`  ↳ mid-stage live bracket → ${pathMod.join(os.tmpdir(), "tournament_sim_midstage.png")}`);
+    }
   }
 
   server = state.getServer(state.getTournament(db, t.id), 0);
@@ -206,10 +224,6 @@ async function main() {
   console.log("✓ stage history snapshots:", server.history.map((h) => h.kind === "placement" ? "placement" : (h.isSemifinal ? "semifinal" : "stage" + h.stage)).join(" → "));
 
   // render the result bracket + summary from the real post-tournament state
-  const bi = require("../src/tournament/bracket-image");
-  const fs = require("node:fs");
-  const os = require("node:os");
-  const pathMod = require("node:path");
   if (bi.hasRenderer()) {
     const outDir = os.tmpdir();
     const resultBuf = await bi.renderBracketCard(bi.buildBracketModel({ tournament: finalT, server, history: server.history, livePlan: null, avatars: {} }));
@@ -301,15 +315,43 @@ async function main() {
     }
     console.log("✓ both base servers qualified top-4 each");
 
+    // preview: base-server qualifier bracket → named top-4 → final panel
+    try {
+      const qsrv = state.getServer(state.getTournament(db, tms.id), 0);
+      const qbuf = await bi.renderBracketCard(bi.buildBracketModel({ tournament: state.getTournament(db, tms.id), server: qsrv, history: qsrv.history, livePlan: null, avatars: {} }));
+      const qpath = pathMod.join(os.tmpdir(), "tournament_sim_base_qualifier.png");
+      fs.writeFileSync(qpath, qbuf);
+      console.log(`  ↳ base qualifier bracket → ${qpath}`);
+    } catch (e) { console.log("  ↳ base qualifier render skipped:", e.message); }
+
     // launch the cross-server final (8 finalists) and run to completion
     await op.handleButtonInteraction(makeInteraction({ customId: buildCustomId(ACTIONS.MANAGE_LAUNCH_FINAL, tms.id), userId: MOD, mod: true }));
     const finalSrv0 = state.getServer(state.getTournament(db, tms.id), 90);
     assert.ok(finalSrv0 && finalSrv0.launched && finalSrv0.role === "final", "final server launched");
+
+    // preview: final-server bracket at entry — 8 finalists funnelling to the
+    // high/low league split (before any result).
+    try {
+      const fbuf = await bi.renderBracketCard(bi.buildBracketModel({ tournament: state.getTournament(db, tms.id), server: finalSrv0, history: finalSrv0.history, livePlan: finalSrv0.currentStage, liveDecisions: finalSrv0.decisions || {}, avatars: {} }));
+      const fpath = pathMod.join(os.tmpdir(), "tournament_sim_final_entry.png");
+      fs.writeFileSync(fpath, fbuf);
+      console.log(`  ↳ final-server entry bracket → ${fpath}`);
+    } catch (e) { console.log("  ↳ final entry render skipped:", e.message); }
+
     await driveServer(tms.id, 90);
     const finalT2 = state.getTournament(db, tms.id);
     assert.equal(finalT2.status, "completed", "multi-server tournament completed via final");
     assert.ok(finalT2.results.first && finalT2.results.second && finalT2.results.third, "overall 1/2/3 decided on final server");
     console.log("✓ cross-server final → champion:", finalT2.results.first.robloxUsername);
+
+    // preview: final-server result — full tree to high (1–2) / low (3rd) league
+    try {
+      const fdone = state.getServer(state.getTournament(db, tms.id), 90);
+      const fbuf2 = await bi.renderBracketCard(bi.buildBracketModel({ tournament: state.getTournament(db, tms.id), server: fdone, history: fdone.history, livePlan: null, avatars: {} }));
+      const fpath2 = pathMod.join(os.tmpdir(), "tournament_sim_final_done.png");
+      fs.writeFileSync(fpath2, fbuf2);
+      console.log(`  ↳ final-server result (high/low league) → ${fpath2}`);
+    } catch (e) { console.log("  ↳ final result render skipped:", e.message); }
   }
 
   // ---- phantom auto-fill (combine real players + made-up ones) ----------------

@@ -226,10 +226,18 @@ function stageEntryFromPlan(stagePlan, decisions = {}) {
 // Build the full bracket-card model for a server. `history` is the list of
 // completed stage entries; `livePlan`/`liveDecisions` render the in-progress
 // stage. avatars: { [id]: Buffer }.
-function buildBracketModel({ tournament, server, history = [], livePlan = null, liveDecisions = {}, avatars = {}, totalPlayers = 0 } = {}) {
+function buildBracketModel({ tournament, server, history = [], livePlan = null, liveDecisions = {}, liveRunIndex = 0, avatars = {}, totalPlayers = 0 } = {}) {
   const entries = [...history];
   if (livePlan) entries.push(stageEntryFromPlan(livePlan, liveDecisions));
   const columns = entries.map(columnFromStageEntry);
+
+  // current-run indicator for the live stage: each run is up to 4 simultaneous
+  // FT6 fights; surfacing "прогон k/n · 4 боя" makes the per-run progression
+  // explicit on the public picture.
+  const liveRunCount = livePlan && Array.isArray(livePlan.runs) ? livePlan.runs.length : 1;
+  const runTag = livePlan && liveRunCount > 1 && !server?.done
+    ? ` · прогон ${Math.min(liveRunCount, (Number(liveRunIndex) || 0) + 1)}/${liveRunCount} · до 4 боёв`
+    : "";
 
   // total field size — used to project the full bracket shape (empty future boxes)
   const firstCol = columns[0];
@@ -239,13 +247,20 @@ function buildBracketModel({ tournament, server, history = [], livePlan = null, 
   const placement = server?.placement || {};
   // base (qualifying) servers don't have a final — they only send their top-4 on
   const qualifier = server?.role === "base";
+  // the actual qualified players (named, with avatars) once the base server is
+  // done; before that the centre shows an empty top-4 projection.
+  const finalists = qualifier
+    ? (Array.isArray(server?.qualified) ? server.qualified : []).map(playerNode).filter(Boolean)
+    : [];
   return {
     title: `${tournament?.name || "Турнир"}${server && server.role === "final" ? " · ФИНАЛ" : server ? ` · сервер ${(server.index || 0) + 1}` : ""}`,
-    subtitle: qualifier ? "Отбор в финал · топ-4" : server?.done ? "Итоги" : "Сетка · FT6",
+    subtitle: qualifier ? `Отбор в финал · топ-4${runTag}` : server?.done ? "Итоги" : `Сетка · FT6${runTag}`,
     seedingMode: tournament?.seedingMode || "similar",
     totalPlayers: n,
     qualifier,
     qualifyCount: qualifier ? Math.min(4, Math.max(2, Math.floor(n / 2))) : 0,
+    finalists,
+    serverNumber: (Number(server?.index) || 0) + 1,
     columns,
     podium: qualifier
       ? null
@@ -326,6 +341,36 @@ function drawEmptyBox(ctx, x, y, w) {
   strokeRect(ctx, x, y, w, rowH, BORDER_HEX, 1);
   rect(ctx, x, y + rowH + 6, w, rowH, "#0d0f14");
   strokeRect(ctx, x, y + rowH + 6, w, rowH, BORDER_HEX, 1);
+}
+
+// Gold-framed panel that names the four players a base server sends to the final
+// (the "top-4 → final" funnel). Each known finalist is a green, checked row with
+// avatar + kills; unfilled slots render as empty placeholders.
+function drawFinalistsPanel(ctx, finalists, decoded, x, centerY, w, count) {
+  const rows = Math.max(1, count || finalists.length || 4);
+  const headerH = 30;
+  const rowH = 46;
+  const gap = 8;
+  const totalH = headerH + rows * rowH + (rows - 1) * gap;
+  let y = Math.round(centerY - totalH / 2);
+  rect(ctx, x - 6, y - 6, w + 12, totalH + 12, "#161922");
+  strokeRect(ctx, x - 6, y - 6, w + 12, totalH + 12, GOLD_HEX, 2);
+  centered(ctx, "ТОП-4 → ФИНАЛ", x, y + 20, w, 16, GOLD_HEX, "bold", 11);
+  y += headerH;
+  for (let i = 0; i < rows; i += 1) {
+    const node = finalists[i] || null;
+    rect(ctx, x, y, w, rowH, node ? WIN_HEX : "#11141b");
+    strokeRect(ctx, x, y, w, rowH, node ? "#3ea76a" : BORDER_HEX, 2);
+    const av = rowH - 10;
+    drawAvatar(ctx, node ? decoded.get(node.id) : null, node ? node.name : "", x + 6, y + 5, av, GOLD_HEX);
+    const tx = x + 6 + av + 10;
+    const tw = w - (tx - x) - 10;
+    const nameFit = fitText(ctx, node ? node.name : "—", tw, 18, 11, "bold");
+    text(ctx, nameFit.text, tx, y + 20, nameFit.px, "#ffffff", "bold");
+    if (node) text(ctx, `${Number(node.kills).toLocaleString("ru-RU")} килов`, tx, y + 38, 13, "#d8ffe6", "regular");
+    if (node) drawCheck(ctx, x + w - 24, y + Math.floor(rowH / 2) - 8, 15, "#d8ffe6");
+    y += rowH + gap;
+  }
 }
 
 // Build the round structure for the symmetric tree. Returns rounds[] where
@@ -414,9 +459,15 @@ async function renderBracketCard(model = {}) {
   const rightLeafYs = Array.from({ length: rightLeaves }, (_, j) => centerY(j));
   const leftYs = computeSideYs(leftLeafYs, feeders);
   const rightYs = computeSideYs(rightLeafYs, feeders);
-  const finalY = feeders > 0
+  let finalY = feeders > 0
     ? ((leftYs[feeders - 1][0] ?? topY) + (rightYs[feeders - 1][0] ?? topY)) / 2
     : centerY(0);
+
+  // the qualifier centre is a NAMED top-4 panel — size it and keep it on-canvas
+  // (below the header) even when the base-server tree is short.
+  const finalistCount = qualifier ? Math.max(1, Math.min(4, (model.finalists || []).length || model.qualifyCount || 4)) : 0;
+  const qualifierPanelH = qualifier ? 36 + finalistCount * 54 : 0;
+  if (qualifier) finalY = Math.max(finalY, topY + qualifierPanelH / 2);
 
   const totalCols = feeders > 0 ? 2 * feeders + 1 : 1;
   const leftX = (r) => PAD + r * (COL_W + COL_GAP);
@@ -427,7 +478,8 @@ async function renderBracketCard(model = {}) {
   const bodyH = maxLeaves * step;
   const bronzeH = bronze ? MATCH_H + 30 : 0;
   const podiumH = model.podium ? 56 : 0;
-  const height = HEADER_H + Math.max(bodyH, finalY - HEADER_H + MATCH_H) + bronzeH + podiumH + FOOTER_H;
+  const centerHalf = qualifier ? qualifierPanelH / 2 : MATCH_H;
+  const height = HEADER_H + Math.max(bodyH, finalY - HEADER_H + centerHalf + 8) + bronzeH + podiumH + FOOTER_H;
 
   const image = PImage.make(width, height);
   const ctx = image.getContext("2d");
@@ -494,10 +546,14 @@ async function renderBracketCard(model = {}) {
   }
 
   if (qualifier) {
-    // base server: no central final — the top-4 winners advance to the cross-server final
-    const cy = Math.round(finalY);
-    centered(ctx, "↑ ТОП-4 ↑", finalX, cy - 8, COL_W, 20, GOLD_HEX, "bold", 14);
-    centered(ctx, "в ФИНАЛ", finalX, cy + 16, COL_W, 18, "#aeb5c2", "bold", 12);
+    // base server: the innermost round funnels into a NAMED top-4 panel — the four
+    // players who advance to the cross-server final (avatars + kills + check).
+    const inner = feeders - 1;
+    if (inner >= 0) {
+      for (let k = 0; k < (leftYs[inner] ? leftYs[inner].length : 0); k += 1) connect(leftX(inner) + COL_W, leftYs[inner][k], finalX, finalY);
+      for (let k = 0; k < (rightYs[inner] ? rightYs[inner].length : 0); k += 1) connect(rightX(inner), rightYs[inner][k], finalX + COL_W, finalY);
+    }
+    drawFinalistsPanel(ctx, model.finalists || [], decoded, finalX, finalY, COL_W, finalistCount);
   } else {
     // higher league: the central final decides 1st / 2nd place (gold frame)
     const finalTop = Math.round(finalY - MATCH_H / 2);

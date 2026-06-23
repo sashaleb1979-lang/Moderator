@@ -648,7 +648,7 @@ test("tournament launch creates an unlocked private thread and adds real Discord
   assert.equal(lockedValue, true, "participant thread is locked so players can't chat");
 });
 
-test("match panel records winners in a single round-trip and supports one-tap re-pick", async () => {
+test("match panel acks each tap and repaints via a single coalesced render; supports one-tap re-pick", async () => {
   const seeding = require("../src/tournament/seeding");
   const db = {};
   const tournament = state.createTournamentFromDraft(
@@ -698,14 +698,16 @@ test("match panel records winners in a single round-trip and supports one-tap re
   const redId = String(match.red.userId || match.red.id);
   const blueId = String(match.blue.userId || match.blue.id);
 
-  // click RED winner — handled with a single interaction.update(), never
-  // deferUpdate()+editReply() (the snappy single round-trip).
+  // click RED winner — the tap is ack'd instantly with deferUpdate() (so Discord
+  // never shows "interaction failed"), then the panel is repainted from
+  // authoritative state via the coalescing renderer's editReply(). No racing
+  // per-tap interaction.update() that could land out of order.
   const redCalls = [];
   const clickRed = createButtonInteraction(buildCustomId(ACTIONS.MATCH_WIN, tournament.id, "0", match.key, "r"), redCalls);
   clickRed.member = { mod: true };
   clickRed.user = { id: "mod-1", tag: "mod#0001" };
   await operator.handleButtonInteraction(clickRed);
-  assert.deepEqual(redCalls, ["update"], "winner click is a single update(), no defer/editReply");
+  assert.deepEqual(redCalls, ["deferUpdate", "editReply"], "winner tap: instant ack, then a single coalesced repaint");
   assert.equal(state.getServer(state.getTournament(db, tournament.id), 0).decisions[match.key].winnerId, redId);
 
   // re-pick the OTHER side in one tap (buttons stay enabled — no undo dance)
@@ -714,17 +716,17 @@ test("match panel records winners in a single round-trip and supports one-tap re
   clickBlue.member = { mod: true };
   clickBlue.user = { id: "mod-1", tag: "mod#0001" };
   await operator.handleButtonInteraction(clickBlue);
-  assert.deepEqual(blueCalls, ["update"], "re-pick is also a single update()");
+  assert.deepEqual(blueCalls, ["deferUpdate", "editReply"], "re-pick: ack + single repaint");
   assert.equal(state.getServer(state.getTournament(db, tournament.id), 0).decisions[match.key].winnerId, blueId, "winner switched in one tap");
-  assert.match(JSON.stringify(clickBlue.updatedPayload), /✅/, "chosen winner highlighted");
+  assert.match(JSON.stringify(clickBlue.editedPayload), /✅/, "chosen winner highlighted");
 
-  // advancing the (placement) stage is also a single update() and completes
+  // advancing the (placement) stage acks first, then repaints + completes
   const advCalls = [];
   const advance = createButtonInteraction(buildCustomId(ACTIONS.STAGE_ADVANCE, tournament.id, "0"), advCalls);
   advance.member = { mod: true };
   advance.user = { id: "mod-1", tag: "mod#0001" };
   await operator.handleButtonInteraction(advance);
-  assert.deepEqual(advCalls, ["update"], "advance is a single update()");
+  assert.deepEqual(advCalls, ["deferUpdate", "editReply"], "advance: instant ack, then a single repaint");
   assert.equal(state.getTournament(db, tournament.id).status, "completed");
   const champ = state.getServer(state.getTournament(db, tournament.id), 0).placement.first;
   assert.equal(String(champ.userId || champ.id), blueId, "the re-picked winner took the final");
