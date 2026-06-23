@@ -647,3 +647,178 @@ test("tournament launch creates an unlocked private thread and adds real Discord
   assert.deepEqual(addedMembers, ["100000000000000001", "100000000000000002"]);
   assert.equal(lockedValue, true, "participant thread is locked so players can't chat");
 });
+
+test("match panel records winners in a single round-trip and supports one-tap re-pick", async () => {
+  const seeding = require("../src/tournament/seeding");
+  const db = {};
+  const tournament = state.createTournamentFromDraft(
+    db,
+    {
+      name: "Тестовый турнир",
+      slots: 16,
+      startsAtIso: "2026-06-21T20:00:00.000Z",
+      announceChannelId: "channel-1",
+    },
+    { id: "tour-1", now: "2026-06-21T18:00:00.000Z" }
+  );
+  for (let i = 1; i <= 2; i += 1) {
+    state.upsertRegistration(tournament, {
+      userId: `10000000000000000${i}`,
+      discordName: `user-${i}`,
+      robloxUsername: `Player${i}`,
+      accountKind: "main",
+      approvedKills: i * 1000,
+      effectiveKills: i * 1000,
+    });
+  }
+  const channel = {
+    id: "channel-1",
+    async send() { return { id: "m1" }; },
+    threads: {
+      async create() {
+        return { id: "th", async send() { return { id: "x" }; }, members: { async add() {} }, async setLocked() {} };
+      },
+    },
+  };
+  const operator = createTournamentOperator({
+    db,
+    saveDb: () => {},
+    runSerializedMutation: async ({ mutate }) => mutate(),
+    isModerator: (member) => Boolean(member?.mod),
+    fetchChannel: async () => channel,
+  });
+
+  const launch = createButtonInteraction(buildCustomId(ACTIONS.MANAGE_LAUNCH_SERVER, tournament.id, "0"));
+  launch.member = { mod: true };
+  launch.user = { id: "mod-1", tag: "mod#0001" };
+  await operator.handleButtonInteraction(launch);
+
+  const server = state.getServer(state.getTournament(db, tournament.id), 0);
+  const match = seeding.listStageMatches(server.currentStage)[0];
+  const redId = String(match.red.userId || match.red.id);
+  const blueId = String(match.blue.userId || match.blue.id);
+
+  // click RED winner — handled with a single interaction.update(), never
+  // deferUpdate()+editReply() (the snappy single round-trip).
+  const redCalls = [];
+  const clickRed = createButtonInteraction(buildCustomId(ACTIONS.MATCH_WIN, tournament.id, "0", match.key, "r"), redCalls);
+  clickRed.member = { mod: true };
+  clickRed.user = { id: "mod-1", tag: "mod#0001" };
+  await operator.handleButtonInteraction(clickRed);
+  assert.deepEqual(redCalls, ["update"], "winner click is a single update(), no defer/editReply");
+  assert.equal(state.getServer(state.getTournament(db, tournament.id), 0).decisions[match.key].winnerId, redId);
+
+  // re-pick the OTHER side in one tap (buttons stay enabled — no undo dance)
+  const blueCalls = [];
+  const clickBlue = createButtonInteraction(buildCustomId(ACTIONS.MATCH_WIN, tournament.id, "0", match.key, "b"), blueCalls);
+  clickBlue.member = { mod: true };
+  clickBlue.user = { id: "mod-1", tag: "mod#0001" };
+  await operator.handleButtonInteraction(clickBlue);
+  assert.deepEqual(blueCalls, ["update"], "re-pick is also a single update()");
+  assert.equal(state.getServer(state.getTournament(db, tournament.id), 0).decisions[match.key].winnerId, blueId, "winner switched in one tap");
+  assert.match(JSON.stringify(clickBlue.updatedPayload), /✅/, "chosen winner highlighted");
+
+  // advancing the (placement) stage is also a single update() and completes
+  const advCalls = [];
+  const advance = createButtonInteraction(buildCustomId(ACTIONS.STAGE_ADVANCE, tournament.id, "0"), advCalls);
+  advance.member = { mod: true };
+  advance.user = { id: "mod-1", tag: "mod#0001" };
+  await operator.handleButtonInteraction(advance);
+  assert.deepEqual(advCalls, ["update"], "advance is a single update()");
+  assert.equal(state.getTournament(db, tournament.id).status, "completed");
+  const champ = state.getServer(state.getTournament(db, tournament.id), 0).placement.first;
+  assert.equal(String(champ.userId || champ.id), blueId, "the re-picked winner took the final");
+});
+
+test("the single bracket image is edited in place across advances; one run advance never finishes the server", async () => {
+  const db = {};
+  const tournament = state.createTournamentFromDraft(
+    db,
+    {
+      name: "Кубок",
+      slots: 16,
+      startsAtIso: "2026-06-21T20:00:00.000Z",
+      announceChannelId: "channel-1",
+    },
+    { id: "tour-1", now: "2026-06-21T18:00:00.000Z" }
+  );
+  for (let i = 1; i <= 16; i += 1) {
+    state.upsertRegistration(tournament, {
+      userId: `1000000000000000${i}`,
+      discordName: `user-${i}`,
+      robloxUsername: `Player${i}`,
+      accountKind: "main",
+      approvedKills: i * 1000,
+      effectiveKills: i * 1000,
+    });
+  }
+
+  // A channel that distinguishes a fresh post (send) from an in-place update
+  // (edit) and serves the stored bracket message back through messages.fetch.
+  const sends = [];
+  const edits = [];
+  let bracketMsg = null;
+  const channel = {
+    id: "channel-1",
+    async send(payload) {
+      sends.push(payload);
+      if (!bracketMsg) bracketMsg = { id: "bracket-1", channelId: "channel-1", async edit(p) { edits.push(p); return this; } };
+      return bracketMsg;
+    },
+    messages: { async fetch(id) { return id === "bracket-1" ? bracketMsg : null; } },
+    threads: {
+      async create() {
+        return { id: "th", async send() { return { id: "th-msg" }; }, members: { async add() {} }, async setLocked() {} };
+      },
+    },
+  };
+  const operator = createTournamentOperator({
+    db,
+    saveDb: () => {},
+    runSerializedMutation: async ({ mutate }) => mutate(),
+    isModerator: (member) => Boolean(member?.mod),
+    fetchChannel: async (id) => (id === "channel-1" ? channel : null),
+  });
+  const asMod = (interaction) => {
+    interaction.member = { mod: true };
+    interaction.user = { id: "mod-1", tag: "mod#0001" };
+    return interaction;
+  };
+
+  await operator.handleButtonInteraction(asMod(createButtonInteraction(buildCustomId(ACTIONS.MANAGE_LAUNCH_SERVER, tournament.id, "0"))));
+  await delay(80); // launch side-effects post the initial bracket in the background
+  const sendsAfterLaunch = sends.length;
+  assert.equal(sendsAfterLaunch, 1, "exactly one bracket is published at launch");
+  const launched = state.getServer(state.getTournament(db, tournament.id), 0);
+  assert.equal(launched.launchMessageId, "bracket-1");
+  assert.ok(launched.currentStage.runs.length >= 2, "16-player stage 1 has multiple runs");
+
+  const decideCurrentRunAndAdvance = async () => {
+    const srv = state.getServer(state.getTournament(db, tournament.id), 0);
+    const run = srv.currentStage.runs[srv.runIndex || 0];
+    for (const match of run.matches) {
+      await operator.handleButtonInteraction(asMod(createButtonInteraction(buildCustomId(ACTIONS.MATCH_WIN, tournament.id, "0", match.key, "r"))));
+    }
+    await operator.handleButtonInteraction(asMod(createButtonInteraction(buildCustomId(ACTIONS.STAGE_ADVANCE, tournament.id, "0"))));
+    await delay(40); // bracket art update is fire-and-forget
+  };
+
+  // closing ONE run only moves the run cursor — the server stays alive
+  await decideCurrentRunAndAdvance();
+  const afterRun = state.getServer(state.getTournament(db, tournament.id), 0);
+  assert.equal(afterRun.done, false, "one run advance must NOT finish the server");
+  assert.equal(afterRun.runIndex, 1, "run cursor advanced to the next run");
+  assert.equal(sends.length, sendsAfterLaunch, "no new image posted on advance — the first one is edited");
+  assert.ok(edits.length >= 1, "the published bracket image was edited in place");
+
+  // drive the rest to completion
+  for (let guard = 0; guard < 30; guard += 1) {
+    if (state.getServer(state.getTournament(db, tournament.id), 0).done) break;
+    await decideCurrentRunAndAdvance();
+  }
+  const finished = state.getServer(state.getTournament(db, tournament.id), 0);
+  assert.ok(finished.done, "server finished");
+  assert.equal(state.getTournament(db, tournament.id).status, "completed");
+  assert.ok(edits.length >= 2, "bracket kept being edited in place across advances");
+  assert.equal(sends.length, sendsAfterLaunch + 1, "the only extra post is the grand summary — never a per-advance repost");
+});

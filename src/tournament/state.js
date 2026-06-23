@@ -443,7 +443,8 @@ function ensureServer(tournament, index) {
     servers[key] = {
       index: Number(key),
       launched: false,
-      launchMessageId: "",
+      launchMessageId: "", // the ONE public bracket message — edited in place each advance
+      threadBracketMessageId: "", // the same bracket, mirrored inside the private thread
       threadId: "",
       stageNumber: 1,
       currentStage: null, // computed stage plan (from seeding)

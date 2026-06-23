@@ -821,11 +821,6 @@ function idOf(player) {
   return player ? String(player.userId || player.id || "") : "";
 }
 
-function resolveDecidedWinnerId(match, decision) {
-  const outcome = seeding.resolveMatchOutcome(match, decision);
-  return outcome.winner ? idOf(outcome.winner) : null;
-}
-
 function buildMatchPanelPayload(tournament, server, { statusText = "" } = {}) {
   const stagePlan = server.currentStage;
   if (!stagePlan) {
@@ -844,50 +839,67 @@ function buildMatchPanelPayload(tournament, server, { statusText = "" } = {}) {
   const currentRun = runs[runIndex] || { matches: [] };
   const matches = Array.isArray(currentRun.matches) ? currentRun.matches : [];
   const multiRun = runs.length > 1;
-  const decidedCount = matches.filter((m) => Boolean(resolveDecidedWinnerId(m, decisions[m.key] || {})) || (decisions[m.key] || {}).void).length;
+
+  // Resolve each match's outcome ONCE (winner / no-show / void) and reuse it for
+  // the text line, the buttons, the progress counter and the advance gate —
+  // instead of re-resolving the same outcome several times per render.
+  const cells = matches.map((match) => {
+    const decision = decisions[match.key] || {};
+    const outcome = seeding.resolveMatchOutcome(match, decision);
+    const noShow = new Set((decision.noShowIds || []).map((id) => String(id)));
+    const winnerId = outcome.winner ? idOf(outcome.winner) : null;
+    return { match, outcome, noShow, winnerId, hasDecision: Boolean(winnerId) || outcome.void || noShow.size > 0 };
+  });
+  const decidedCount = cells.filter((cell) => Boolean(cell.winnerId) || cell.outcome.void).length;
+  const runComplete = cells.every((cell) => Boolean(cell.outcome.winner) || cell.outcome.void);
 
   const c = ui.container(COLORS.primary, (container) => {
     container.addTextDisplayComponents(
       ui.td(`# ⚔️ Сервер ${server.index + 1} · ${stageTitle(stagePlan)}${multiRun ? ` · прогон ${runIndex + 1}/${runs.length}` : ""}`)
     );
-    container.addTextDisplayComponents(ui.td(`Решено: **${decidedCount} / ${matches.length}** боёв · нажми победителя по цвету`));
+    container.addTextDisplayComponents(
+      ui.td(
+        `Решено: **${decidedCount} / ${matches.length}** · жми по цвету победителя\n` +
+          "-# ✖ — не пришёл (тех. победа сопернику) · ↺ — сброс · выбор можно менять в один тап"
+      )
+    );
     container.addSeparatorComponents(ui.separator());
 
-    matches.forEach((match, idx) => {
-      const decision = decisions[match.key] || {};
-      const winnerId = resolveDecidedWinnerId(match, decision);
-      const decided = Boolean(winnerId) || decision.void;
+    cells.forEach(({ match, outcome, noShow, winnerId, hasDecision }, idx) => {
       const placementTag = match.placement === "bronze" ? " · 🥉 за 3-е место" : match.placement === "final" ? " · 🏆 ФИНАЛ" : "";
-      const redWon = winnerId && winnerId === idOf(match.red);
-      const blueWon = winnerId && winnerId === idOf(match.blue);
+      const redId = idOf(match.red);
+      const blueId = idOf(match.blue);
+      const redWon = Boolean(winnerId) && winnerId === redId;
+      const blueWon = Boolean(winnerId) && winnerId === blueId;
+      const redNoShow = Boolean(redId) && noShow.has(redId);
+      const blueNoShow = Boolean(blueId) && noShow.has(blueId);
+      const sideSuffix = (won, missed) => (won ? (outcome.byNoShow ? " ✅ тех. победа" : " ✅") : missed ? " 🚫 не пришёл" : "");
 
       container.addTextDisplayComponents(
         ui.td(
           [
             `**Бой ${idx + 1}**${placementTag} · ячейки ${match.cellRed}–${match.cellBlue}`,
-            `${colorDot("red")} ${playerMd(match.red)}${redWon ? " ✓" : decision.void ? " ∅" : ""}`,
-            `${colorDot("blue")} ${playerMd(match.blue)}${blueWon ? " ✓" : decision.void ? " ∅" : ""}`,
+            `${colorDot("red")} ${playerMd(match.red)}${sideSuffix(redWon, redNoShow)}`,
+            `${colorDot("blue")} ${playerMd(match.blue)}${sideSuffix(blueWon, blueNoShow)}`,
           ].join("\n")
         )
       );
       // custom_id encodes only the SIDE ("r"/"b") — never a player id (player ids
       // can contain ':' which is our separator). The operator resolves the actual
-      // winner from the match by key + side.
+      // winner from the match by key + side. Buttons stay ENABLED after a pick so
+      // a mis-click is corrected in a single tap (no undo dance); the chosen
+      // winner is highlighted green with ✅.
       container.addActionRowComponents(
         ui.row(
-          btn(ACTIONS.MATCH_WIN, tournament.id, [String(server.index), match.key, "r"], { label: `🔴 ${shortName(match.red)}`, style: ButtonStyle.Danger, disabled: decided }),
-          btn(ACTIONS.MATCH_WIN, tournament.id, [String(server.index), match.key, "b"], { label: `🔵 ${shortName(match.blue)}`, style: ButtonStyle.Primary, disabled: decided }),
-          btn(ACTIONS.MATCH_NOSHOW, tournament.id, [String(server.index), match.key, "r"], { label: "🔴 ✖", disabled: decided }),
-          btn(ACTIONS.MATCH_NOSHOW, tournament.id, [String(server.index), match.key, "b"], { label: "🔵 ✖", disabled: decided }),
-          btn(ACTIONS.MATCH_UNDO, tournament.id, [String(server.index), match.key], { label: "↺", disabled: !decided })
+          btn(ACTIONS.MATCH_WIN, tournament.id, [String(server.index), match.key, "r"], { label: `${redWon ? "✅ " : ""}🔴 ${shortName(match.red)}`, style: redWon ? ButtonStyle.Success : ButtonStyle.Danger }),
+          btn(ACTIONS.MATCH_WIN, tournament.id, [String(server.index), match.key, "b"], { label: `${blueWon ? "✅ " : ""}🔵 ${shortName(match.blue)}`, style: blueWon ? ButtonStyle.Success : ButtonStyle.Primary }),
+          btn(ACTIONS.MATCH_NOSHOW, tournament.id, [String(server.index), match.key, "r"], { label: redNoShow ? "🔴 🚫" : "🔴 ✖", style: ButtonStyle.Secondary }),
+          btn(ACTIONS.MATCH_NOSHOW, tournament.id, [String(server.index), match.key, "b"], { label: blueNoShow ? "🔵 🚫" : "🔵 ✖", style: ButtonStyle.Secondary }),
+          btn(ACTIONS.MATCH_UNDO, tournament.id, [String(server.index), match.key], { label: "↺", disabled: !hasDecision })
         )
       );
     });
 
-    const runComplete = matches.every((m) => {
-      const o = seeding.resolveMatchOutcome(m, decisions[m.key] || {});
-      return Boolean(o.winner) || o.void;
-    });
     const isLastRun = runIndex >= runs.length - 1;
     let advanceLabel = "Следующий прогон ▶";
     if (isLastRun) advanceLabel = stagePlan.kind === "placement" ? "Завершить турнир 🏁" : "Дальше ▶";

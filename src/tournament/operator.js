@@ -410,53 +410,102 @@ function createTournamentOperator(deps = {}) {
     return { ids, added, failed };
   }
 
-  // Post a server's result bracket + the grand summary once finished (idempotent
-  // via stored flags). Runs after the advance mutation, outside the serialized
-  // lock, so rendering never blocks the click handler.
-  async function postCompletionArtIfNeeded(tournamentId, serverIndex) {
+  // Edit a server's existing bracket message in place when we know its id, else
+  // post a fresh one (only when allowed). Returns the message id to remember.
+  // Replacing an attachment requires dropping the old one (attachments: []); we
+  // keep the SAME filename so the attachment:// reference stays stable on edit.
+  async function editOrSendBracketMessage(target, storedId, payload, buffer, filename, { allowCreate = true } = {}) {
+    if (!target) return storedId || "";
+    const files = buffer ? [new AttachmentBuilder(buffer, { name: filename })] : [];
+    if (storedId && typeof target.messages?.fetch === "function") {
+      const message = await target.messages.fetch(storedId).catch(() => null);
+      if (message?.edit) {
+        const edited = await message
+          .edit({ ...payload, files, attachments: [], allowedMentions: { parse: [] } })
+          .catch((error) => {
+            logError("tournament: bracket edit failed", error?.message || error);
+            return null;
+          });
+        if (edited) return String(edited.id || storedId);
+      }
+    }
+    if (!allowCreate || typeof target.send !== "function") return storedId || "";
+    const sent = await target
+      .send({ ...payload, files, allowedMentions: { parse: [] } })
+      .catch((error) => {
+        logError("tournament: bracket send failed", error?.message || error);
+        return null;
+      });
+    return sent?.id ? String(sent.id) : storedId || "";
+  }
+
+  // Build the live bracket payload + PNG for a server in its CURRENT state
+  // (completed stages + the in-progress stage, or the final podium when done).
+  async function buildServerBracketArt(tournament, server, serverIndex, avatars) {
+    const isFinal = serverIndex === FINAL_SERVER_INDEX;
+    const label = isFinal ? "ФИНАЛ" : `сервер ${serverIndex + 1}`;
+    const filename = isFinal ? "bracket-final.png" : `bracket-server-${serverIndex + 1}.png`;
+    const buffer = await renderServerBracketBuffer(tournament, server, avatars);
+    const qualifying = server.qualifying;
+    let title;
+    let headline;
+    if (server.done) {
+      title = qualifying ? "✅ Квалификация" : isFinal ? "🏆 Итоги финала" : "🏁 Итоги сервера";
+      headline = qualifying
+        ? `Сервер ${serverIndex + 1}: топ-${(server.qualified || []).length} вышли в финал`
+        : isFinal
+        ? "Финал завершён"
+        : `Сервер ${serverIndex + 1} завершён`;
+    } else {
+      title = isFinal ? "🏆 ФИНАЛ" : "🗺 Сетка";
+      headline = isFinal ? "🏆 Финал идёт" : `⚔️ Сервер ${serverIndex + 1} · идёт игра`;
+    }
+    const payload = view.buildBracketPostPayload(tournament, server.currentStage, {
+      serverIndex,
+      serverLabel: label,
+      imageFilename: buffer ? filename : "",
+      title,
+      headline,
+    });
+    return { payload, buffer, filename };
+  }
+
+  // Keep the SINGLE bracket message per server up to date: it is published once at
+  // launch and then EDITED in place on every advance (run → run, stage → stage,
+  // completion) so the picture the moderator first posted is the one that always
+  // reflects the live state — never a fresh repost. The grand summary is the only
+  // extra post, made once when the whole tournament finishes. Runs after the
+  // advance mutation, outside the serialized lock, so rendering never blocks the
+  // click handler.
+  async function updateServerArtIfNeeded(tournamentId, serverIndex) {
     const tournament = state.getTournament(db, tournamentId);
     if (!tournament) return;
     const server = state.getServer(tournament, serverIndex);
-    const channel = await fetchChannel(tournament.announce?.channelId).catch(() => null);
-    const thread = server?.threadId
-      ? await fetchChannel(server.threadId).catch(() => null)
-      : null;
 
-    let avatars = null;
-    const getAvatars = async () => {
-      if (!avatars) avatars = await collectTournamentAvatars(tournament);
-      return avatars;
-    };
-
-    if (server?.done && !server.resultImagePosted) {
-      const isFinal = serverIndex === FINAL_SERVER_INDEX;
-      const label = isFinal ? "ФИНАЛ" : `сервер ${serverIndex + 1}`;
-      const qualifying = server.qualifying;
-      const filename = isFinal ? "bracket-final.png" : `bracket-server-${serverIndex + 1}.png`;
-      const buffer = await renderServerBracketBuffer(tournament, server, await getAvatars());
-      const payload = view.buildBracketPostPayload(tournament, server.currentStage, {
-        serverIndex,
-        serverLabel: label,
-        imageFilename: buffer ? filename : "",
-        title: qualifying ? "✅ Квалификация" : isFinal ? "🏆 Итоги финала" : "🏁 Итоги сервера",
-        headline: qualifying
-          ? `Сервер ${serverIndex + 1}: топ-${(server.qualified || []).length} вышли в финал`
-          : isFinal
-          ? "Финал завершён"
-          : `Сервер ${serverIndex + 1} завершён`,
-      });
-      const sendable = { ...attachImage(payload, buffer, filename), allowedMentions: { parse: [] } };
-      if (channel?.send) await channel.send(sendable).catch(() => {});
-      if (thread?.send) await thread.send(sendable).catch(() => {});
-      await persist("tournament-result-posted", async () => {
-        const fresh = state.getServer(state.getTournament(db, tournamentId), serverIndex);
-        if (fresh) fresh.resultImagePosted = true;
-      });
+    if (server && server.launched) {
+      const avatars = await collectTournamentAvatars(tournament);
+      const { payload, buffer, filename } = await buildServerBracketArt(tournament, server, serverIndex, avatars);
+      const channel = await fetchChannel(tournament.announce?.channelId).catch(() => null);
+      const thread = server.threadId ? await fetchChannel(server.threadId).catch(() => null) : null;
+      // Edit-only during play: launch owns the initial post, so a mid-tournament
+      // advance never creates a duplicate image.
+      const channelMsgId = await editOrSendBracketMessage(channel, server.launchMessageId, payload, buffer, filename, { allowCreate: false });
+      const threadMsgId = await editOrSendBracketMessage(thread, server.threadBracketMessageId, payload, buffer, filename, { allowCreate: false });
+      if ((channelMsgId && channelMsgId !== server.launchMessageId) || (threadMsgId && threadMsgId !== server.threadBracketMessageId)) {
+        await persist("tournament-bracket-refresh", async () => {
+          const fresh = state.getServer(state.getTournament(db, tournamentId), serverIndex);
+          if (fresh) {
+            if (channelMsgId) fresh.launchMessageId = channelMsgId;
+            if (threadMsgId) fresh.threadBracketMessageId = threadMsgId;
+          }
+        });
+      }
     }
 
     if (tournament.status === "completed" && !tournament.summaryPosted) {
+      const channel = await fetchChannel(tournament.announce?.channelId).catch(() => null);
       const filename = "tournament-summary.png";
-      const buffer = await renderSummaryBuffer(tournament, await getAvatars());
+      const buffer = await renderSummaryBuffer(tournament, await collectTournamentAvatars(tournament));
       const payload = view.buildSummaryPostPayload(tournament, { imageFilename: buffer ? filename : "" });
       const sendable = { ...attachImage(payload, buffer, filename), allowedMentions: { parse: [] } };
       if (channel?.send) await channel.send(sendable).catch(() => {});
@@ -1340,7 +1389,7 @@ function createTournamentOperator(deps = {}) {
       server.threadFailed = false;
       server.threadId = "";
       server.launchMessageId = "";
-      server.resultImagePosted = false;
+      server.threadBracketMessageId = "";
       state.updateTournament(db, tournamentId, { status: "running" });
     });
 
@@ -1405,7 +1454,7 @@ function createTournamentOperator(deps = {}) {
       server.threadFailed = false;
       server.threadId = "";
       server.launchMessageId = "";
-      server.resultImagePosted = false;
+      server.threadBracketMessageId = "";
     });
 
     await safeLogLine(`TOURNAMENT_FINAL_LAUNCH: id=${tournamentId} finalists=${finalists.length} by=<@${interaction.user.id}>`);
@@ -1426,33 +1475,20 @@ function createTournamentOperator(deps = {}) {
     const server = tournament ? state.getServer(tournament, serverIndex) : null;
     if (!tournament || !server || !server.currentStage) return;
 
-    const isFinal = serverIndex === FINAL_SERVER_INDEX;
-    const label = isFinal ? "ФИНАЛ" : `сервер ${serverIndex + 1}`;
     const players = state.tournamentPlayers(tournament, serverCount(tournament) > 1 ? { serverIndex } : {});
-    const filename = isFinal ? "bracket-final.png" : `bracket-server-${serverIndex + 1}.png`;
     const avatars = await collectTournamentAvatars(tournament);
-    const transient = { index: serverIndex, role: server.role, currentStage: server.currentStage, decisions: {}, history: [], done: false };
-    const buffer = await renderServerBracketBuffer(tournament, transient, avatars);
-    const bracketPayload = view.buildBracketPostPayload(tournament, server.currentStage, {
-      serverIndex,
-      serverLabel: label,
-      imageFilename: buffer ? filename : "",
-      headline: isFinal ? "🏆 ФИНАЛ начинается!" : `🚀 Сервер ${serverIndex + 1} начинает работу!`,
-    });
+    // Render the server's live state (at launch: stage 1, no decisions yet). The
+    // very same message is edited in place on every later advance.
+    const { payload: bracketPayload, buffer, filename } = await buildServerBracketArt(tournament, server, serverIndex, avatars);
 
     const channel = await fetchChannel(tournament.announce?.channelId).catch(() => null);
     let launchMessageId = server.launchMessageId || "";
-    if (postChannel && channel?.send) {
-      const msg = await channel
-        .send({ ...attachImage(bracketPayload, buffer, filename), allowedMentions: { parse: [] } })
-        .catch((error) => {
-          logError("tournament: launch announce failed", error?.message || error);
-          return null;
-        });
-      launchMessageId = msg?.id || launchMessageId;
+    if (postChannel && channel) {
+      launchMessageId = await editOrSendBracketMessage(channel, launchMessageId, bracketPayload, buffer, filename, { allowCreate: true });
     }
 
     let threadId = server.threadId || "";
+    let threadBracketMessageId = server.threadBracketMessageId || "";
     let threadFailed = false;
     let existingThread = threadId ? await fetchChannel(threadId).catch(() => null) : null;
     if (!existingThread && channel?.threads?.create) {
@@ -1465,12 +1501,13 @@ function createTournamentOperator(deps = {}) {
       existingThread = thread || null;
       threadId = thread?.id || "";
       if (!thread?.id) threadFailed = true;
+      else threadBracketMessageId = ""; // fresh thread → its bracket message is new
     } else if (!channel?.threads?.create) {
       threadFailed = true;
     }
 
     if (existingThread?.send) {
-      await existingThread.send({ ...attachImage(bracketPayload, buffer, filename), allowedMentions: { parse: [] } }).catch(() => {});
+      threadBracketMessageId = await editOrSendBracketMessage(existingThread, threadBracketMessageId, bracketPayload, buffer, filename, { allowCreate: true });
       const memberResult = await addPlayersToPrivateThread(existingThread, players);
       if (memberResult.ids.length) {
         await existingThread.send({ content: memberResult.ids.map((id) => `<@${id}>`).join(" "), allowedMentions: { users: memberResult.ids } }).catch(() => {});
@@ -1483,6 +1520,7 @@ function createTournamentOperator(deps = {}) {
       if (s) {
         s.launchMessageId = launchMessageId;
         s.threadId = threadId;
+        s.threadBracketMessageId = threadBracketMessageId;
         s.threadFailed = threadFailed;
       }
     });
@@ -1705,9 +1743,6 @@ function createTournamentOperator(deps = {}) {
 
   async function recordMatch(interaction, tournamentId, extra, kind) {
     if (!requireMod(interaction)) return true;
-    // Ack instantly so Discord never shows "Ошибка взаимодействия" while we
-    // resolve + re-render; the panel update follows via editReply.
-    const acked = await safeDeferUpdate(interaction);
     const serverIndex = Number(extra[0]) || 0;
     const matchKey = extra[1];
     const side = extra[2]; // "r" | "b"
@@ -1741,8 +1776,11 @@ function createTournamentOperator(deps = {}) {
 
     const tournament = state.getTournament(db, tournamentId);
     const server = state.getServer(tournament, serverIndex);
-    if (acked) await safeUpdate(interaction, view.buildMatchPanelPayload(tournament, server));
-    else await safeReply(interaction, view.buildMatchPanelPayload(tournament, server));
+    // The mutation above is synchronous (saveDb is a non-blocking coalesced
+    // flush), so we answer the click with a SINGLE interaction.update() — one
+    // round-trip instead of deferUpdate()+editReply(). That removes the visible
+    // lag/flicker between taps. Mirrors the snappy path in toggleRegistration().
+    await safeUpdate(interaction, view.buildMatchPanelPayload(tournament, server));
     return true;
   }
 
@@ -1752,7 +1790,6 @@ function createTournamentOperator(deps = {}) {
 
   async function advanceStage(interaction, tournamentId, serverIndex) {
     if (!requireMod(interaction)) return true;
-    const acked = await safeDeferUpdate(interaction);
 
     let statusText = "";
     quickMutate(() => {
@@ -1821,11 +1858,12 @@ function createTournamentOperator(deps = {}) {
     const tournament = state.getTournament(db, tournamentId);
     const server = state.getServer(tournament, serverIndex);
     const panel = view.buildMatchPanelPayload(tournament, server, { statusText });
-    if (acked) await safeUpdate(interaction, panel);
-    else await safeReply(interaction, panel);
-    // Post result/summary art after the click is answered (never blocks the UI).
-    postCompletionArtIfNeeded(tournamentId, serverIndex).catch((error) =>
-      logError("tournament: completion art failed", error?.message || error)
+    // Single round-trip (synchronous mutation) — same fast path as recordMatch().
+    await safeUpdate(interaction, panel);
+    // Edit the server's single bracket image in place (and post the grand summary
+    // once when the whole tournament finishes) — never blocks the UI.
+    updateServerArtIfNeeded(tournamentId, serverIndex).catch((error) =>
+      logError("tournament: bracket art update failed", error?.message || error)
     );
     return true;
   }
