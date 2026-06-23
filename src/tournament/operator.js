@@ -1639,7 +1639,7 @@ function createTournamentOperator(deps = {}) {
       await safeReply(interaction, ephemeralText("Такой Roblox аккаунт не найден."));
       return true;
     }
-    const userId = discordId || `manual:${resolved.userId}`;
+    const userId = discordId || `manual-${resolved.userId}`; // no ':' (our custom-id separator)
     await persist("tournament-add-player-manual", async () => {
       const fresh = state.getTournament(db, tournamentId);
       state.upsertRegistration(fresh, {
@@ -1705,23 +1705,31 @@ function createTournamentOperator(deps = {}) {
 
   async function recordMatch(interaction, tournamentId, extra, kind) {
     if (!requireMod(interaction)) return true;
+    // Ack instantly so Discord never shows "Ошибка взаимодействия" while we
+    // resolve + re-render; the panel update follows via editReply.
+    const acked = await safeDeferUpdate(interaction);
     const serverIndex = Number(extra[0]) || 0;
     const matchKey = extra[1];
-    const targetId = extra[2];
+    const side = extra[2]; // "r" | "b"
 
     quickMutate(() => {
       const fresh = state.getTournament(db, tournamentId);
       const server = fresh ? state.getServer(fresh, serverIndex) : null;
-      if (!server) return;
+      if (!server || !server.currentStage) return;
       server.decisions = server.decisions || {};
-      const current = server.decisions[matchKey] || { winnerId: null, noShowIds: [] };
-
       if (kind === "undo") {
         delete server.decisions[matchKey];
         return;
       }
+      // resolve the actual winner/loser from the match (never trust an id in the
+      // custom_id — player ids may contain our ':' separator)
+      const match = seeding.listStageMatches(server.currentStage).find((m) => m.key === matchKey);
+      if (!match) return;
+      const targetId = side === "b" ? matchSideId(match.blue) : matchSideId(match.red);
+      const current = server.decisions[matchKey] || { winnerId: null, noShowIds: [] };
       if (kind === "win") {
         current.winnerId = targetId;
+        current.noShowIds = [];
       } else if (kind === "noshow") {
         const set = new Set(current.noShowIds || []);
         set.add(String(targetId));
@@ -1733,12 +1741,18 @@ function createTournamentOperator(deps = {}) {
 
     const tournament = state.getTournament(db, tournamentId);
     const server = state.getServer(tournament, serverIndex);
-    await safeUpdate(interaction, view.buildMatchPanelPayload(tournament, server));
+    if (acked) await safeUpdate(interaction, view.buildMatchPanelPayload(tournament, server));
+    else await safeReply(interaction, view.buildMatchPanelPayload(tournament, server));
     return true;
+  }
+
+  function matchSideId(player) {
+    return player ? String(player.userId || player.id || "") : "";
   }
 
   async function advanceStage(interaction, tournamentId, serverIndex) {
     if (!requireMod(interaction)) return true;
+    const acked = await safeDeferUpdate(interaction);
 
     let statusText = "";
     quickMutate(() => {
@@ -1806,7 +1820,9 @@ function createTournamentOperator(deps = {}) {
 
     const tournament = state.getTournament(db, tournamentId);
     const server = state.getServer(tournament, serverIndex);
-    await safeUpdate(interaction, view.buildMatchPanelPayload(tournament, server, { statusText }));
+    const panel = view.buildMatchPanelPayload(tournament, server, { statusText });
+    if (acked) await safeUpdate(interaction, panel);
+    else await safeReply(interaction, panel);
     // Post result/summary art after the click is answered (never blocks the UI).
     postCompletionArtIfNeeded(tournamentId, serverIndex).catch((error) =>
       logError("tournament: completion art failed", error?.message || error)

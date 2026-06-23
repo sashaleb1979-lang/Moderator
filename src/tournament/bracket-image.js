@@ -237,13 +237,19 @@ function buildBracketModel({ tournament, server, history = [], livePlan = null, 
   const n = Math.max(Number(totalPlayers) || 0, derivedN, 2);
 
   const placement = server?.placement || {};
+  // base (qualifying) servers don't have a final — they only send their top-4 on
+  const qualifier = server?.role === "base";
   return {
     title: `${tournament?.name || "Турнир"}${server && server.role === "final" ? " · ФИНАЛ" : server ? ` · сервер ${(server.index || 0) + 1}` : ""}`,
-    subtitle: server?.done ? "Итоги" : "Сетка · FT6",
+    subtitle: qualifier ? "Отбор в финал · топ-4" : server?.done ? "Итоги" : "Сетка · FT6",
     seedingMode: tournament?.seedingMode || "similar",
     totalPlayers: n,
+    qualifier,
+    qualifyCount: qualifier ? Math.min(4, Math.max(2, Math.floor(n / 2))) : 0,
     columns,
-    podium: server?.done
+    podium: qualifier
+      ? null
+      : server?.done
       ? {
           first: playerNode(placement.first),
           second: playerNode(placement.second),
@@ -333,7 +339,7 @@ function buildTreeRounds(model) {
   for (const col of columns) {
     const matches = Array.isArray(col.matches) ? col.matches : [];
     const placementMatch = matches.find((m) => m.placement);
-    if (placementMatch) {
+    if (placementMatch && !model.qualifier) {
       const finalM = matches.find((m) => m.placement === "final") || matches[0] || null;
       bronze = matches.find((m) => m.placement === "bronze") || null;
       rounds.push([finalM]);
@@ -346,9 +352,11 @@ function buildTreeRounds(model) {
     const n = Math.max(2, Number(model.totalPlayers) || 2);
     rounds.push(new Array(Math.ceil(n / 2)).fill(null));
   }
-  // project forward until a single final
+  // Qualifier (base server): the tree funnels only down to the top-4 qualifying
+  // round (no central final). Otherwise project all the way to a single final.
+  const stopAt = model.qualifier ? Math.max(2, Number(model.qualifyCount) || 4) : 1;
   let guard = 0;
-  while (rounds[rounds.length - 1].length > 1 && guard < 12) {
+  while (rounds[rounds.length - 1].length > stopAt && guard < 12) {
     const len = rounds[rounds.length - 1].length;
     rounds.push(new Array(Math.ceil(len / 2)).fill(null));
     guard += 1;
@@ -378,8 +386,11 @@ async function renderBracketCard(model = {}) {
   const decoded = await decodeAvatars(model.avatars);
 
   const { rounds, bronze } = buildTreeRounds(model);
-  const L = rounds.length; // total levels including the final
-  const feeders = Math.max(0, L - 1); // levels that split into left/right halves
+  const qualifier = Boolean(model.qualifier);
+  const L = rounds.length; // total round levels
+  // non-qualifier: last round is the single central final → feeders = L-1.
+  // qualifier: every round splits L/R, no central final → feeders = L.
+  const feeders = qualifier ? L : Math.max(0, L - 1);
 
   // split every feeder round into left / right halves
   const leftRounds = [];
@@ -390,7 +401,7 @@ async function renderBracketCard(model = {}) {
     leftRounds.push(m.slice(0, half));
     rightRounds.push(m.slice(half));
   }
-  const finalMatch = rounds[L - 1] ? rounds[L - 1][0] : null;
+  const finalMatch = qualifier ? null : rounds[L - 1] ? rounds[L - 1][0] : null;
 
   const leftLeaves = leftRounds[0] ? leftRounds[0].length : 0;
   const rightLeaves = rightRounds[0] ? rightRounds[0].length : 0;
@@ -440,10 +451,13 @@ async function renderBracketCard(model = {}) {
     ctx.stroke();
   };
 
-  // connectors — left half (children feed parents toward center)
+  // connectors — left half (children feed parents toward center). The innermost
+  // round connects to the central final only when there IS one (not a qualifier).
   for (let r = 0; r < feeders; r += 1) {
-    const parentY = r < feeders - 1 ? leftYs[r + 1] : [finalY];
-    const parentLeftX = r < feeders - 1 ? leftX(r + 1) : finalX;
+    const isInnermost = r === feeders - 1;
+    if (isInnermost && qualifier) continue; // qualifier: top-4 round has no final to feed
+    const parentY = isInnermost ? [finalY] : leftYs[r + 1];
+    const parentLeftX = isInnermost ? finalX : leftX(r + 1);
     for (let k = 0; k < parentY.length; k += 1) {
       const yP = parentY[k];
       for (const childIdx of [2 * k, 2 * k + 1]) {
@@ -454,8 +468,10 @@ async function renderBracketCard(model = {}) {
   }
   // connectors — right half (mirrored)
   for (let r = 0; r < feeders; r += 1) {
-    const parentY = r < feeders - 1 ? rightYs[r + 1] : [finalY];
-    const parentRightX = r < feeders - 1 ? rightX(r + 1) + COL_W : finalX + COL_W;
+    const isInnermost = r === feeders - 1;
+    if (isInnermost && qualifier) continue;
+    const parentY = isInnermost ? [finalY] : rightYs[r + 1];
+    const parentRightX = isInnermost ? finalX + COL_W : rightX(r + 1) + COL_W;
     for (let k = 0; k < parentY.length; k += 1) {
       const yP = parentY[k];
       for (const childIdx of [2 * k, 2 * k + 1]) {
@@ -471,23 +487,31 @@ async function renderBracketCard(model = {}) {
     else drawEmptyBox(ctx, x, boxTop, COL_W);
   };
 
-  // draw boxes — left, right, final
+  // draw boxes — left, right, then the centre
   for (let r = 0; r < feeders; r += 1) {
     leftRounds[r].forEach((m, j) => placeBox(m, leftX(r), leftYs[r][j]));
     rightRounds[r].forEach((m, j) => placeBox(m, rightX(r), rightYs[r][j]));
   }
-  // final box (gold frame)
-  const finalTop = Math.round(finalY - MATCH_H / 2);
-  rect(ctx, finalX - 4, finalTop - 18, COL_W + 8, MATCH_H + 24, "#1a1d25");
-  strokeRect(ctx, finalX - 4, finalTop - 18, COL_W + 8, MATCH_H + 24, GOLD_HEX, 2);
-  centered(ctx, "ФИНАЛ", finalX, finalTop - 4, COL_W, 14, GOLD_HEX, "bold", 11);
-  placeBox(finalMatch, finalX, finalY);
 
-  // bronze under the final
-  if (bronze) {
-    const by = finalY + MATCH_H + 36;
-    centered(ctx, "За 3-е место", finalX, by - MATCH_H / 2 - 6, COL_W, 14, "#cd7f32", "bold", 11);
-    placeBox(bronze, finalX, by);
+  if (qualifier) {
+    // base server: no central final — the top-4 winners advance to the cross-server final
+    const cy = Math.round(finalY);
+    centered(ctx, "↑ ТОП-4 ↑", finalX, cy - 8, COL_W, 20, GOLD_HEX, "bold", 14);
+    centered(ctx, "в ФИНАЛ", finalX, cy + 16, COL_W, 18, "#aeb5c2", "bold", 12);
+  } else {
+    // higher league: the central final decides 1st / 2nd place (gold frame)
+    const finalTop = Math.round(finalY - MATCH_H / 2);
+    rect(ctx, finalX - 4, finalTop - 22, COL_W + 8, MATCH_H + 28, "#1a1d25");
+    strokeRect(ctx, finalX - 4, finalTop - 22, COL_W + 8, MATCH_H + 28, GOLD_HEX, 2);
+    centered(ctx, "ФИНАЛ · высшая лига (1–2 место)", finalX, finalTop - 6, COL_W, 13, GOLD_HEX, "bold", 9);
+    placeBox(finalMatch, finalX, finalY);
+
+    // lower league: the two semifinal losers play for 3rd place
+    if (bronze) {
+      const by = finalY + MATCH_H + 40;
+      centered(ctx, "Низшая лига · за 3-е место", finalX, by - MATCH_H / 2 - 8, COL_W, 13, "#cd7f32", "bold", 9);
+      placeBox(bronze, finalX, by);
+    }
   }
 
   if (model.podium) {

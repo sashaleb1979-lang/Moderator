@@ -179,7 +179,7 @@ async function main() {
     for (const match of run.matches) {
       await op.handleButtonInteraction(
         makeInteraction({
-          customId: buildCustomId(ACTIONS.MATCH_WIN, t.id, "0", match.key, String(match.red.userId || match.red.id)),
+          customId: buildCustomId(ACTIONS.MATCH_WIN, t.id, "0", match.key, "r"),
           userId: MOD,
           mod: true,
         })
@@ -286,7 +286,7 @@ async function main() {
         if (!srv || srv.done) break;
         const run = srv.currentStage.runs[srv.runIndex || 0];
         for (const m of run.matches) {
-          await op.handleButtonInteraction(makeInteraction({ customId: buildCustomId(ACTIONS.MATCH_WIN, tid, String(sIdx), m.key, String(m.red.userId || m.red.id)), userId: MOD, mod: true }));
+          await op.handleButtonInteraction(makeInteraction({ customId: buildCustomId(ACTIONS.MATCH_WIN, tid, String(sIdx), m.key, "r"), userId: MOD, mod: true }));
         }
         await op.handleButtonInteraction(makeInteraction({ customId: buildCustomId(ACTIONS.STAGE_ADVANCE, tid, String(sIdx)), userId: MOD, mod: true }));
       }
@@ -346,7 +346,7 @@ async function main() {
       if (!srv || srv.done) break;
       const run = srv.currentStage.runs[srv.runIndex || 0];
       for (const m of run.matches) {
-        await op.handleButtonInteraction(makeInteraction({ customId: buildCustomId(ACTIONS.MATCH_WIN, tp.id, "0", m.key, String(m.red.userId || m.red.id)), userId: MOD, mod: true }));
+        await op.handleButtonInteraction(makeInteraction({ customId: buildCustomId(ACTIONS.MATCH_WIN, tp.id, "0", m.key, "r"), userId: MOD, mod: true }));
       }
       await op.handleButtonInteraction(makeInteraction({ customId: buildCustomId(ACTIONS.STAGE_ADVANCE, tp.id, "0"), userId: MOD, mod: true }));
     }

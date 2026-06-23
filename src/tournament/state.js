@@ -227,7 +227,7 @@ function buildPhantomRegistrations(count, { startIndex = 1, runTag = "x", maxKil
     const jitter = ((i * 37) % 11) * 25;
     const robloxId = String(1 + ((i * 7) % 200)); // low real Roblox ids → real avatars
     out.push({
-      userId: `phantom:${runTag}:${i}`, // never a real Discord snowflake
+      userId: `phantom-${runTag}-${i}`, // never a real Discord snowflake; no ':' (our custom-id separator)
       discordName: `Бот-${i}`,
       robloxUserId: robloxId,
       robloxUsername: `Бот-${i}`,
@@ -241,7 +241,7 @@ function buildPhantomRegistrations(count, { startIndex = 1, runTag = "x", maxKil
 }
 
 function isPhantomUserId(userId) {
-  return String(userId || "").startsWith("phantom:");
+  return String(userId || "").startsWith("phantom-");
 }
 
 // ---------------------------------------------------------------------------

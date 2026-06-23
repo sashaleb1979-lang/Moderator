@@ -870,12 +870,15 @@ function buildMatchPanelPayload(tournament, server, { statusText = "" } = {}) {
           ].join("\n")
         )
       );
+      // custom_id encodes only the SIDE ("r"/"b") — never a player id (player ids
+      // can contain ':' which is our separator). The operator resolves the actual
+      // winner from the match by key + side.
       container.addActionRowComponents(
         ui.row(
-          btn(ACTIONS.MATCH_WIN, tournament.id, [String(server.index), match.key, idOf(match.red)], { label: `🔴 ${shortName(match.red)}`, style: ButtonStyle.Danger, disabled: decided }),
-          btn(ACTIONS.MATCH_WIN, tournament.id, [String(server.index), match.key, idOf(match.blue)], { label: `🔵 ${shortName(match.blue)}`, style: ButtonStyle.Primary, disabled: decided }),
-          btn(ACTIONS.MATCH_NOSHOW, tournament.id, [String(server.index), match.key, idOf(match.red)], { label: "🔴 ✖", disabled: decided }),
-          btn(ACTIONS.MATCH_NOSHOW, tournament.id, [String(server.index), match.key, idOf(match.blue)], { label: "🔵 ✖", disabled: decided }),
+          btn(ACTIONS.MATCH_WIN, tournament.id, [String(server.index), match.key, "r"], { label: `🔴 ${shortName(match.red)}`, style: ButtonStyle.Danger, disabled: decided }),
+          btn(ACTIONS.MATCH_WIN, tournament.id, [String(server.index), match.key, "b"], { label: `🔵 ${shortName(match.blue)}`, style: ButtonStyle.Primary, disabled: decided }),
+          btn(ACTIONS.MATCH_NOSHOW, tournament.id, [String(server.index), match.key, "r"], { label: "🔴 ✖", disabled: decided }),
+          btn(ACTIONS.MATCH_NOSHOW, tournament.id, [String(server.index), match.key, "b"], { label: "🔵 ✖", disabled: decided }),
           btn(ACTIONS.MATCH_UNDO, tournament.id, [String(server.index), match.key], { label: "↺", disabled: !decided })
         )
       );
