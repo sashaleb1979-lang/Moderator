@@ -148,6 +148,15 @@ function createTournamentOperator(deps = {}) {
     return result;
   }
 
+  // In-memory only mutation — does NOT trigger a DB flush. Used for the very hot
+  // match-result clicks: persisting the whole DB (a multi-MB serialize) on every
+  // single click is what froze the panel. Decisions live in memory during a run
+  // and are committed to disk once on the confirmed run/stage advance. Worst case
+  // on a crash mid-run: the mod re-enters the current run's few clicks.
+  function mutateLocal(mutate) {
+    return mutate();
+  }
+
   async function safeLogLine(text) {
     try {
       await logLine(text);
@@ -1789,10 +1798,11 @@ function createTournamentOperator(deps = {}) {
     return next;
   }
 
+  // Repaint the match panel in place. The deferUpdate that already ran is the
+  // ack (Discord shows its own loading state), so this is a single editReply —
+  // no extra "thinking" message, no delete round-trips. Serialized per panel so
+  // rapid clicks can't race their edits.
   async function paintPanel(interaction, tournamentId, serverIndex, statusText = "") {
-    // transient "думает" — shows now, removed the instant the panel is repainted
-    let thinking = null;
-    try { thinking = await interaction.followUp({ content: "⏳ Модератор думает…", flags: MessageFlags.Ephemeral }); } catch { /* ignore */ }
     const key = `${tournamentId}:${serverIndex}`;
     await serializePanelEdit(key, async () => {
       const tournament = state.getTournament(db, tournamentId);
@@ -1805,9 +1815,6 @@ function createTournamentOperator(deps = {}) {
         if (!isUnknownInteractionError(error)) logError("tournament: match panel render failed", error?.message || error);
       }
     });
-    if (thinking && thinking.id) {
-      try { await interaction.deleteReply(thinking.id); } catch { /* already gone — fine */ }
-    }
   }
 
   async function recordMatch(interaction, tournamentId, extra, kind) {
@@ -1819,7 +1826,8 @@ function createTournamentOperator(deps = {}) {
     const matchKey = extra[1];
     const side = extra[2]; // "r" | "b"
 
-    quickMutate(() => {
+    // in-memory only — NO DB flush per click (committed on run/stage advance)
+    mutateLocal(() => {
       const fresh = state.getTournament(db, tournamentId);
       const server = fresh ? state.getServer(fresh, serverIndex) : null;
       if (!server || !server.currentStage) return;
