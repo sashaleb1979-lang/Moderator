@@ -14,8 +14,14 @@ const ROBLOX_COPLAY_PEER_LIMIT = 50;
 const ROBLOX_TOP_COPLAY_PEER_LIMIT = 5;
 const ROBLOX_FREQUENT_NON_FRIEND_MINUTES = 60;
 const ROBLOX_FREQUENT_NON_FRIEND_SESSIONS = 2;
-const ROBLOX_PLAYTIME_BUCKET_LIMIT = 40;
-const ROBLOX_PLAYTIME_HOURLY_BUCKET_LIMIT = ROBLOX_PLAYTIME_BUCKET_LIMIT * 24;
+// Daily buckets keep ~4 months of day-level detail (was 40 days). Weekly buckets
+// keep a long, compact history (~3 years of week-level totals) for "how much in
+// which week" reporting — cheap because there are only ~52 entries per year.
+// Hourly retention is decoupled so growing the daily window does not blow up the
+// (much larger) hourly map.
+const ROBLOX_PLAYTIME_BUCKET_LIMIT = 120;
+const ROBLOX_PLAYTIME_HOURLY_BUCKET_LIMIT = 40 * 24;
+const ROBLOX_PLAYTIME_WEEKLY_BUCKET_LIMIT = 156;
 const ROBLOX_SESSION_HISTORY_LIMIT = 120;
 const PROFILE_PROOF_WINDOW_LIMIT = 10;
 const PROFILE_SEASON_ARCHIVE_LIMIT = 120;
@@ -425,6 +431,19 @@ function normalizeRobloxPlaytimeHourlyBuckets(value = {}) {
   );
 }
 
+// Weekly buckets are keyed by ISO week (e.g. "2026-W26") -> minutes played that
+// week. The zero-padded "YYYY-Www" form sorts chronologically as text.
+function normalizeRobloxPlaytimeWeeklyBuckets(value = {}) {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  return Object.fromEntries(
+    Object.entries(source)
+      .map(([weekKey, minutes]) => [cleanString(weekKey, 16), normalizeNonNegativeInteger(minutes, 0)])
+      .filter(([weekKey, minutes]) => /^\d{4}-W\d{2}$/.test(weekKey) && minutes > 0)
+      .sort((left, right) => left[0].localeCompare(right[0]))
+      .slice(-ROBLOX_PLAYTIME_WEEKLY_BUCKET_LIMIT)
+  );
+}
+
 function normalizeRobloxSessionHistoryEntry(value = {}) {
   const source = value && typeof value === "object" ? value : {};
   const startedAt = normalizeNullableString(source.startedAt, 80);
@@ -473,6 +492,7 @@ function normalizeRobloxSessionHistory(value = [], limit = ROBLOX_SESSION_HISTOR
 function normalizeRobloxPlaytimeState(value = {}) {
   const source = value && typeof value === "object" ? value : {};
   const sessionHistory = normalizeRobloxSessionHistory(source.sessionHistory);
+  const weeklyBuckets = normalizeRobloxPlaytimeWeeklyBuckets(source.weeklyBuckets);
   return {
     totalJjsMinutes: normalizeNonNegativeInteger(source.totalJjsMinutes, 0),
     jjsMinutes7d: normalizeNonNegativeInteger(source.jjsMinutes7d, 0),
@@ -482,6 +502,9 @@ function normalizeRobloxPlaytimeState(value = {}) {
     lastSeenInJjsAt: normalizeNullableString(source.lastSeenInJjsAt, 80),
     dailyBuckets: normalizeRobloxPlaytimeDailyBuckets(source.dailyBuckets),
     hourlyBucketsMsk: normalizeRobloxPlaytimeHourlyBuckets(source.hourlyBucketsMsk),
+    // Included only when non-empty (like sessionHistory) so the normalized shape
+    // of an untracked profile is unchanged.
+    ...(Object.keys(weeklyBuckets).length ? { weeklyBuckets } : {}),
     ...(sessionHistory.length ? { sessionHistory } : {}),
   };
 }

@@ -3077,10 +3077,21 @@ async function runDailyActivityRoleSync({
   saveDb,
   runSerialized,
 } = {}) {
-  const execute = async () => {
-    const syncedAt = resolveNowIso(now);
-    const explicitUserIdScope = normalizeStringArray(userIds, 5000);
-    const explicitUserIdFilter = explicitUserIdScope.length ? new Set(explicitUserIdScope) : null;
+  // Run a phase inside the serialized db queue when one is provided, otherwise
+  // inline (tests). Splitting the work into serialized db-mutation phases plus
+  // an UNserialized Discord phase is what keeps the ~minute-long role apply loop
+  // from blocking every other db write (voice events, onboarding confirms, etc).
+  const maybeSerialized = (fn, label) => (typeof runSerialized === "function"
+    ? runSerialized(fn, label)
+    : fn());
+
+  const syncedAt = resolveNowIso(now);
+  const explicitUserIdScope = normalizeStringArray(userIds, 5000);
+  const explicitUserIdFilter = explicitUserIdScope.length ? new Set(explicitUserIdScope) : null;
+
+  // Phase 1 (serialized): rebuild snapshots from local history. Mutates the db,
+  // so it must stay isolated from concurrent mutations.
+  const phase1 = await maybeSerialized(async () => {
     const rebuildTargetUserIds = collectActivityHistoryTargetUserIds(db, userIds);
     const managedRoleUserIds = typeof listManagedActivityRoleUserIds === "function"
       ? await Promise.resolve(listManagedActivityRoleUserIds())
@@ -3099,20 +3110,36 @@ async function runDailyActivityRoleSync({
       ...roleTargetUserIds.filter((userId) => !rebuildTargetUserIdSet.has(userId)),
       ...normalizedManagedRoleUserIds.filter((userId) => !rebuildTargetUserIdSet.has(userId)),
     ], 5000);
-    const roleAssignment = await applyInitialActivityRoleAssignments({
-      db,
-      userIds: roleTargetUserIds,
-      resolveMemberRoleIds,
-      applyRoleChanges,
-      now: syncedAt,
-    });
+    return {
+      rebuildTargetUserIds,
+      normalizedManagedRoleUserIds,
+      rebuildResult,
+      roleTargetUserIds,
+      missingLocalHistoryUserIds,
+    };
+  }, "activity-daily-role-sync");
+
+  // Phase 2 (NOT serialized): apply role changes over Discord. This is the slow
+  // part (hundreds of sequential Discord API calls). Each user's metadata write
+  // touches only that user's own profile, so it is safe to run concurrently with
+  // unrelated db mutations — and keeping it out of the queue is the whole point.
+  const roleAssignment = await applyInitialActivityRoleAssignments({
+    db,
+    userIds: phase1.roleTargetUserIds,
+    resolveMemberRoleIds,
+    applyRoleChanges,
+    now: syncedAt,
+  });
+
+  // Phase 3 (serialized): promote mirrors, record runtime stats, persist.
+  await maybeSerialized(async () => {
     promotePersistedActivityMirrorsToSnapshots({ db, userIds });
     const persistedTargetUserIds = collectActivitySnapshotTargetUserIds(db, userIds);
     const recoveryBuckets = summarizeActivityRecoveryBuckets({
       db,
       persistedTargetUserIds,
-      historyTargetUserIds: rebuildTargetUserIds,
-      managedRoleUserIds: normalizedManagedRoleUserIds,
+      historyTargetUserIds: phase1.rebuildTargetUserIds,
+      managedRoleUserIds: phase1.normalizedManagedRoleUserIds,
     });
 
     const state = ensureActivityState(db);
@@ -3120,14 +3147,14 @@ async function runDailyActivityRoleSync({
     state.runtime.lastRebuildAndRoleSyncAt = syncedAt;
     state.runtime.lastDailyRoleSyncAt = syncedAt;
     state.runtime.lastDailyRoleSyncStats = {
-      targetUserCount: roleTargetUserIds.length,
-      managedRoleHolderCount: normalizedManagedRoleUserIds.length,
-      localActivityTargetCount: rebuildTargetUserIds.length,
-      missingLocalHistoryUserCount: missingLocalHistoryUserIds.length,
+      targetUserCount: phase1.roleTargetUserIds.length,
+      managedRoleHolderCount: phase1.normalizedManagedRoleUserIds.length,
+      localActivityTargetCount: phase1.rebuildTargetUserIds.length,
+      missingLocalHistoryUserCount: phase1.missingLocalHistoryUserIds.length,
       snapshotWithoutLocalHistoryUserCount: recoveryBuckets.snapshotWithoutLocalHistoryUserCount,
       mirrorOnlyPersistedUserCount: recoveryBuckets.mirrorOnlyPersistedUserCount,
       managedRoleHolderWithoutPersistedActivityUserCount: recoveryBuckets.managedRoleHolderWithoutPersistedActivityUserCount,
-      rebuiltUserCount: rebuildResult.rebuiltUserCount,
+      rebuiltUserCount: phase1.rebuildResult.rebuiltUserCount,
       appliedCount: roleAssignment.appliedCount,
       skippedCount: roleAssignment.skippedCount,
       skipReasonCounts: summarizeActivitySkipReasonCounts(roleAssignment.skippedReasons),
@@ -3138,22 +3165,17 @@ async function runDailyActivityRoleSync({
     if (typeof saveDb === "function") {
       saveDb();
     }
+  }, "activity-daily-role-sync");
 
-    return {
-      syncedAt,
-      targetUserCount: roleTargetUserIds.length,
-      localActivityTargetCount: rebuildTargetUserIds.length,
-      missingLocalHistoryUserCount: missingLocalHistoryUserIds.length,
-      rebuiltUserCount: rebuildResult.rebuiltUserCount,
-      rebuiltUsers: rebuildResult.rebuiltUsers,
-      roleAssignment,
-    };
+  return {
+    syncedAt,
+    targetUserCount: phase1.roleTargetUserIds.length,
+    localActivityTargetCount: phase1.rebuildTargetUserIds.length,
+    missingLocalHistoryUserCount: phase1.missingLocalHistoryUserIds.length,
+    rebuiltUserCount: phase1.rebuildResult.rebuiltUserCount,
+    rebuiltUsers: phase1.rebuildResult.rebuiltUsers,
+    roleAssignment,
   };
-
-  if (typeof runSerialized === "function") {
-    return runSerialized(execute, "activity-daily-role-sync");
-  }
-  return execute();
 }
 
 async function runActivityRoleSyncFromSnapshots({

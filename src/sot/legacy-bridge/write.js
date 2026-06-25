@@ -23,6 +23,24 @@ function clone(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
+// Each syncLegacy*Writes call used to re-run normalizeSotState(db.sot) — a full
+// deep clone/normalize of the whole SoT tree. With 7 writers per dual-write that
+// is 7 redundant normalizations of the same ~8MB tree on every db flush, which
+// on a CPU-throttled host turns into multi-second event-loop stalls. When the
+// orchestrator passes a pre-normalized `sot`, the writers reuse it (mutating it
+// in place) and let the orchestrator own the single db.sot assignment. Without
+// it, behavior is exactly as before (standalone callers / tests).
+function resolveNextSot(db, providedSot) {
+  return providedSot || normalizeSotState(db?.sot || {});
+}
+
+function commitNextSot(db, nextSot, providedSot, changed) {
+  if (providedSot) return; // orchestrator owns the shared assignment
+  if (changed || !db?.sot) {
+    db.sot = nextSot;
+  }
+}
+
 function cleanString(value, limit = 200) {
   return String(value || "").trim().slice(0, limit);
 }
@@ -329,9 +347,9 @@ function buildLegacyInfluenceState({ db = {}, influence } = {}) {
   return buildInfluenceState(db, { influence });
 }
 
-function syncLegacyChannelWrites(db = {}, { appConfig = {}, slots = CHANNEL_SLOTS } = {}) {
+function syncLegacyChannelWrites(db = {}, { appConfig = {}, slots = CHANNEL_SLOTS, sot } = {}) {
   const normalizedSlots = normalizeChannelSlots(slots);
-  const nextSot = normalizeSotState(db?.sot || {});
+  const nextSot = resolveNextSot(db, sot);
   const nextChannels = buildLegacyChannelRecords({ db, appConfig, slots: normalizedSlots });
   const writtenSlots = [];
 
@@ -342,19 +360,17 @@ function syncLegacyChannelWrites(db = {}, { appConfig = {}, slots = CHANNEL_SLOT
     writtenSlots.push(slot);
   }
 
-  if (writtenSlots.length || !db?.sot) {
-    db.sot = nextSot;
-  }
+  commitNextSot(db, nextSot, sot, writtenSlots.length > 0);
 
   return {
     mutated: writtenSlots.length > 0,
     writtenSlots,
-    sot: db.sot || nextSot,
+    sot: sot || db.sot || nextSot,
   };
 }
 
-function syncLegacyRoleWrites(db = {}, { appConfig = {} } = {}) {
-  const nextSot = normalizeSotState(db?.sot || {});
+function syncLegacyRoleWrites(db = {}, { appConfig = {}, sot } = {}) {
+  const nextSot = resolveNextSot(db, sot);
   const nextRoles = buildLegacyRoleRecords({ db, appConfig });
   const writtenSlots = [];
 
@@ -386,19 +402,17 @@ function syncLegacyRoleWrites(db = {}, { appConfig = {} } = {}) {
     writtenSlots.push(`legacyEloTier.${tier}`);
   }
 
-  if (writtenSlots.length || !db?.sot) {
-    db.sot = nextSot;
-  }
+  commitNextSot(db, nextSot, sot, writtenSlots.length > 0);
 
   return {
     mutated: writtenSlots.length > 0,
     writtenSlots,
-    sot: db.sot || nextSot,
+    sot: sot || db.sot || nextSot,
   };
 }
 
-function syncLegacyCharacterWrites(db = {}, { appConfig = {}, excludedCharacterIds = [] } = {}) {
-  const nextSot = normalizeSotState(db?.sot || {});
+function syncLegacyCharacterWrites(db = {}, { appConfig = {}, excludedCharacterIds = [], sot } = {}) {
+  const nextSot = resolveNextSot(db, sot);
   const nextCharacters = buildLegacyCharacterRecords({ db, appConfig, excludedCharacterIds });
   const writtenSlots = [];
   const keys = new Set([
@@ -414,19 +428,17 @@ function syncLegacyCharacterWrites(db = {}, { appConfig = {}, excludedCharacterI
     writtenSlots.push(characterId);
   }
 
-  if (writtenSlots.length || !db?.sot) {
-    db.sot = nextSot;
-  }
+  commitNextSot(db, nextSot, sot, writtenSlots.length > 0);
 
   return {
     mutated: writtenSlots.length > 0,
     writtenSlots,
-    sot: db.sot || nextSot,
+    sot: sot || db.sot || nextSot,
   };
 }
 
-function syncLegacyPanelWrites(db = {}) {
-  const nextSot = normalizeSotState(db?.sot || {});
+function syncLegacyPanelWrites(db = {}, { sot } = {}) {
+  const nextSot = resolveNextSot(db, sot);
   const nextPanels = buildLegacyPanelRecords({ db });
   const writtenSlots = [];
   const keys = new Set([
@@ -442,19 +454,17 @@ function syncLegacyPanelWrites(db = {}) {
     writtenSlots.push(slot);
   }
 
-  if (writtenSlots.length || !db?.sot) {
-    db.sot = nextSot;
-  }
+  commitNextSot(db, nextSot, sot, writtenSlots.length > 0);
 
   return {
     mutated: writtenSlots.length > 0,
     writtenSlots,
-    sot: db.sot || nextSot,
+    sot: sot || db.sot || nextSot,
   };
 }
 
-function syncLegacyIntegrationWrites(db = {}) {
-  const nextSot = normalizeSotState(db?.sot || {});
+function syncLegacyIntegrationWrites(db = {}, { sot } = {}) {
+  const nextSot = resolveNextSot(db, sot);
   const nextIntegrations = buildLegacyIntegrationState({ db });
   const writtenSlots = [];
 
@@ -465,19 +475,17 @@ function syncLegacyIntegrationWrites(db = {}) {
     writtenSlots.push(slot);
   }
 
-  if (writtenSlots.length || !db?.sot) {
-    db.sot = nextSot;
-  }
+  commitNextSot(db, nextSot, sot, writtenSlots.length > 0);
 
   return {
     mutated: writtenSlots.length > 0,
     writtenSlots,
-    sot: db.sot || nextSot,
+    sot: sot || db.sot || nextSot,
   };
 }
 
-function syncLegacyPresentationWrites(db = {}, { presentation, nonGgsPresentation } = {}) {
-  const nextSot = normalizeSotState(db?.sot || {});
+function syncLegacyPresentationWrites(db = {}, { presentation, nonGgsPresentation, sot } = {}) {
+  const nextSot = resolveNextSot(db, sot);
   const nextPresentation = buildLegacyPresentationState({ db, presentation, nonGgsPresentation });
   const writtenSlots = [];
   const keys = new Set([
@@ -492,19 +500,17 @@ function syncLegacyPresentationWrites(db = {}, { presentation, nonGgsPresentatio
     writtenSlots.push(slot);
   }
 
-  if (writtenSlots.length || !db?.sot) {
-    db.sot = nextSot;
-  }
+  commitNextSot(db, nextSot, sot, writtenSlots.length > 0);
 
   return {
     mutated: writtenSlots.length > 0,
     writtenSlots,
-    sot: db.sot || nextSot,
+    sot: sot || db.sot || nextSot,
   };
 }
 
-function syncLegacyInfluenceWrites(db = {}, { influence } = {}) {
-  const nextSot = normalizeSotState(db?.sot || {});
+function syncLegacyInfluenceWrites(db = {}, { influence, sot } = {}) {
+  const nextSot = resolveNextSot(db, sot);
   const nextInfluence = buildLegacyInfluenceState({ db, influence });
   const writtenSlots = [];
 
@@ -514,14 +520,12 @@ function syncLegacyInfluenceWrites(db = {}, { influence } = {}) {
     writtenSlots.push("current");
   }
 
-  if (writtenSlots.length || !db?.sot) {
-    db.sot = nextSot;
-  }
+  commitNextSot(db, nextSot, sot, writtenSlots.length > 0);
 
   return {
     mutated: writtenSlots.length > 0,
     writtenSlots,
-    sot: db.sot || nextSot,
+    sot: sot || db.sot || nextSot,
   };
 }
 

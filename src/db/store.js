@@ -63,7 +63,10 @@ function saveJsonFile(filePath, value) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
   try {
-    fs.writeFileSync(tempPath, JSON.stringify(value, null, 2), "utf8");
+    // Compact (non-pretty) JSON: the db file is machine-read only, and on the
+    // ~20MB prod database the indentation roughly doubles serialize time and
+    // file size. Dropping it shrinks the event-loop stall on every flush.
+    fs.writeFileSync(tempPath, JSON.stringify(value), "utf8");
     fs.renameSync(tempPath, filePath);
   } catch (error) {
     try {
@@ -82,7 +85,10 @@ async function saveJsonFileAsync(filePath, value) {
   await fsp.mkdir(path.dirname(filePath), { recursive: true });
   const tempPath = `${filePath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;
   try {
-    await fsp.writeFile(tempPath, JSON.stringify(value, null, 2), "utf8");
+    // Compact JSON (see saveJsonFile): halves serialize cost and file size on
+    // the large prod db, which is the synchronous part of this write that still
+    // runs on the event loop before the awaited disk I/O.
+    await fsp.writeFile(tempPath, JSON.stringify(value), "utf8");
     await fsp.rename(tempPath, filePath);
   } catch (error) {
     try {

@@ -18,6 +18,7 @@ const {
   getLegacyInfluenceConfig: getSotLegacyInfluenceConfig,
   getPanel: getSotPanel,
   getPresentation: getSotPresentation,
+  normalizeSotState,
 } = require("./src/sot");
 const { syncSotShadowState: syncSotShadowStateCore } = require("./src/sot/loader");
 const {
@@ -972,12 +973,26 @@ if (startupValidationWarnings.length) {
   console.warn(`[startup] Продолжаю в degraded mode:\n- ${startupValidationWarnings.join("\n- ")}`);
 }
 
+// Per-flush memo for the legacy-bridge options. prepareWriteState calls this
+// twice on the SAME throwaway workingDb clone (dual-write + shadow-sync), and
+// each call re-reads the legacy tierlist file from disk + rebuilds the options.
+// We memoize per workingDb object so it happens once per flush. The live `db`
+// (registered in liveDbObjects after load) is deliberately NEVER memoized — it
+// is long-lived and on-demand diagnostics must always recompute fresh, so an
+// admin edit can never be served a stale options snapshot.
+const sotLegacyOptionsByDb = new WeakMap();
+const liveDbObjects = new WeakSet();
 function buildSotLegacyOptions(currentDb) {
+  const cacheable = currentDb && typeof currentDb === "object" && !liveDbObjects.has(currentDb);
+  if (cacheable) {
+    const cached = sotLegacyOptionsByDb.get(currentDb);
+    if (cached) return cached;
+  }
   const liveTierlistState = getLiveLegacyTierlistState(currentDb);
   const legacyTierlistCustomCharacterIds = liveTierlistState.ok
     ? listLegacyTierlistCustomCharacterIds(liveTierlistState)
     : [];
-  return {
+  const options = {
     appConfig,
     legacyTierlistCustomCharacterIds,
     presentation: resolvePresentation(currentDb?.config || {}, fileConfig, { defaultGraphicTierColors: DEFAULT_GRAPHIC_TIER_COLORS }),
@@ -989,6 +1004,10 @@ function buildSotLegacyOptions(currentDb) {
           tiers: LEGACY_TIERLIST_ROLE_INFLUENCE,
         },
   };
+  if (cacheable) {
+    sotLegacyOptionsByDb.set(currentDb, options);
+  }
+  return options;
 }
 
 function syncSotShadowState(currentDb) {
@@ -997,16 +1016,29 @@ function syncSotShadowState(currentDb) {
 
 function syncSotCoreDualWrite(currentDb) {
   const legacyOptions = buildSotLegacyOptions(currentDb);
-  const channelState = syncLegacyChannelWrites(currentDb, { appConfig: legacyOptions.appConfig });
-  const roleState = syncLegacyRoleWrites(currentDb, { appConfig: legacyOptions.appConfig });
+  // Normalize the SoT tree ONCE and share it across every legacy writer, instead
+  // of each writer re-normalizing the whole ~8MB tree. The writers mutate this
+  // shared object in place; we own the single db.sot assignment below.
+  const sharedSot = normalizeSotState(currentDb?.sot || {});
+  const channelState = syncLegacyChannelWrites(currentDb, { appConfig: legacyOptions.appConfig, sot: sharedSot });
+  const roleState = syncLegacyRoleWrites(currentDb, { appConfig: legacyOptions.appConfig, sot: sharedSot });
   const characterState = syncLegacyCharacterWrites(currentDb, {
     appConfig: legacyOptions.appConfig,
     excludedCharacterIds: legacyOptions.legacyTierlistCustomCharacterIds,
+    sot: sharedSot,
   });
-  const panelState = syncLegacyPanelWrites(currentDb);
-  const integrationState = syncLegacyIntegrationWrites(currentDb);
-  const presentationState = syncLegacyPresentationWrites(currentDb, legacyOptions);
-  const influenceState = syncLegacyInfluenceWrites(currentDb, legacyOptions);
+  const panelState = syncLegacyPanelWrites(currentDb, { sot: sharedSot });
+  const integrationState = syncLegacyIntegrationWrites(currentDb, { sot: sharedSot });
+  const presentationState = syncLegacyPresentationWrites(currentDb, { ...legacyOptions, sot: sharedSot });
+  const influenceState = syncLegacyInfluenceWrites(currentDb, { ...legacyOptions, sot: sharedSot });
+
+  const anyMutated = Boolean(channelState.mutated || roleState.mutated || characterState.mutated
+    || panelState.mutated || integrationState.mutated || presentationState.mutated || influenceState.mutated);
+  // Match the previous behavior: only swap in the normalized tree when something
+  // actually changed (or when there was no sot yet).
+  if (anyMutated || !currentDb.sot) {
+    currentDb.sot = sharedSot;
+  }
 
   return {
     mutated: Boolean(channelState.mutated || roleState.mutated || characterState.mutated || panelState.mutated || integrationState.mutated || presentationState.mutated || influenceState.mutated),
@@ -1043,6 +1075,20 @@ function logSotDrift(currentDb, reason = "save") {
   const preview = summary.preview.join(", ");
   console.warn(`[sot] drift after ${reason}: total=${summary.total} ${domainSummary}${preview ? ` ${preview}` : ""}`);
   return mismatches;
+}
+
+// `logSotDrift` runs a full SoT-vs-legacy comparison (plus buildSotLegacyOptions,
+// which reads the legacy tierlist file from disk). That is fine for the one-shot
+// startup/shutdown calls, but running it after EVERY coalesced flush added a
+// heavy, purely-diagnostic synchronous pass to the hot save path. Throttle the
+// per-save drift check so it still surfaces drift, just not on every write.
+const SOT_DRIFT_LOG_MIN_INTERVAL_MS = 5 * 60 * 1000;
+let lastSotDriftLogAt = 0;
+function maybeLogSotDriftAfterSave(currentDb) {
+  const nowMs = Date.now();
+  if (nowMs - lastSotDriftLogAt < SOT_DRIFT_LOG_MIN_INTERVAL_MS) return;
+  lastSotDriftLogAt = nowMs;
+  logSotDrift(currentDb, "save");
 }
 
 // --- Database backend selection -----------------------------------------
@@ -1101,6 +1147,10 @@ function loadDb() {
 }
 
 const db = loadDb();
+// Mark the long-lived db so buildSotLegacyOptions never memoizes against it
+// (only the per-flush workingDb clones are cached). Registered after load so the
+// `db` const is no longer in its temporal dead zone.
+liveDbObjects.add(db);
 const analyticsStore = createAnalyticsStore({ analyticsPath: ANALYTICS_DB_PATH });
 if (appConfig?.moderation?.primaryAdminUserId) {
   setAutonomyGuardPrimaryAdminUserId(db, appConfig.moderation.primaryAdminUserId);
@@ -1217,7 +1267,7 @@ function flushDbInternal() {
   return runSerializedDbTask(async () => {
     try {
       lastSaveResult = await dbStore.saveAsync(db);
-      logSotDrift(db, "save");
+      maybeLogSotDriftAfterSave(db);
       return lastSaveResult;
     } catch (error) {
       dbDirty = true; // keep dirty so the next schedule retries
@@ -2420,7 +2470,7 @@ async function resolveTierlistNonFakeRoleTargetIds(client, role) {
     return { roleId, roleName: String(role?.name || roleId), targetIds: [] };
   }
 
-  await guild.members.fetch().catch(() => null);
+  await ensureGuildMembersFetched(guild).catch(() => null);
   const targetIds = [...guild.members.cache.values()]
     .filter((member) => member?.user && !member.user.bot && member.roles?.cache?.has(roleId))
     .map((member) => String(member.id || "").trim())
@@ -2603,6 +2653,23 @@ async function maybeRefreshLiveCharacterStatsMembers(guild, options = {}) {
       cooldownUntil: Date.now() + retryAfterMs,
     };
     console.warn("guild.members.fetch failed:", error?.message || error);
+    return false;
+  }
+}
+
+// Shared entrypoint for "make sure the guild member cache is populated" used by
+// every code path that needs to read guild.members.cache. It reuses the same
+// TTL + rate-limit cooldown state as the live-character refresh, so the several
+// callers that previously each did their own unconditional guild.members.fetch()
+// no longer hammer the gateway (which was triggering "rate limited, retry after
+// 21s" and large startup loop-lag). Individual role changes still arrive via
+// gateway events, so a cache populated within the TTL is correct to read.
+async function ensureGuildMembersFetched(guild, options = {}) {
+  if (!guild?.members?.fetch) return false;
+  try {
+    return await maybeRefreshLiveCharacterStatsMembers(guild, options);
+  } catch (error) {
+    console.warn("ensureGuildMembersFetched failed:", error?.message || error);
     return false;
   }
 }
@@ -4438,7 +4505,7 @@ async function reconcileCharacterRolesFromGuild(guild) {
     };
   }
   await guild.roles.fetch().catch(() => null);
-  try { await guild.members.fetch(); } catch { /* best-effort */ }
+  try { await ensureGuildMembersFetched(guild); } catch { /* best-effort */ }
 
   const managedCharacters = getManagedCharacterCatalog();
   const configuredCharacterMap = new Map(getConfiguredManagedCharacterCatalog().map((entry) => [entry.id, entry]));
@@ -6135,7 +6202,7 @@ async function listActivityRoleHolderUserIds(client, guildHint = null) {
   const guild = guildHint || await getGuild(client).catch(() => null);
   if (!guild) return [];
 
-  await guild.members.fetch().catch(() => null);
+  await ensureGuildMembersFetched(guild).catch(() => null);
 
   const managedRoleIds = Object.values(ensureActivityState(db).config?.activityRoleIds || {})
     .map((roleId) => String(roleId || "").trim())
@@ -6152,7 +6219,7 @@ async function listActivityFreshNewcomerRepairMembers(client, guildHint = null) 
   const guild = guildHint || await getGuild(client).catch(() => null);
   if (!guild) return [];
 
-  await guild.members.fetch().catch(() => null);
+  await ensureGuildMembersFetched(guild).catch(() => null);
 
   return [...guild.members.cache.values()]
     .map((member) => ({
@@ -7320,7 +7387,7 @@ async function getMembersMissingTierlist(client) {
   const guild = await getGuild(client);
   if (!guild) return [];
 
-  await guild.members.fetch();
+  await ensureGuildMembersFetched(guild);
   const tierRoleIds = new Set(getAllTierRoleIds());
 
   return guild.members.cache.filter((member) => {
@@ -16631,7 +16698,8 @@ async function syncAccessCompanionRoles(client, options = {}) {
     throw new Error("Не удалось получить guild для синхронизации доп. access-роли.");
   }
 
-  let members = await guild.members.fetch().catch(() => null);
+  await ensureGuildMembersFetched(guild).catch(() => null);
+  let members = guild.members?.cache && guild.members.cache.size > 1 ? guild.members.cache : null;
   if (!members) {
     await guild.roles.fetch().catch(() => null);
     const fallbackUserIds = collectAccessCompanionFallbackUserIds(guild);
@@ -16725,7 +16793,8 @@ async function syncResidentChatAccessRoles(client, options = {}) {
     throw new Error("Не удалось получить guild для синхронизации роли чата постояльцев.");
   }
 
-  let members = await guild.members.fetch().catch(() => null);
+  await ensureGuildMembersFetched(guild).catch(() => null);
+  let members = guild.members?.cache && guild.members.cache.size > 1 ? guild.members.cache : null;
   if (!members) {
     await guild.roles.fetch().catch(() => null);
     const fallbackUserIds = collectResidentChatAccessFallbackUserIds(guild);

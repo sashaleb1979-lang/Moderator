@@ -83,6 +83,13 @@ const ROBLOX_RUNTIME_DIRTY_REASONS = new Set([
 ]);
 const ROBLOX_SESSION_HISTORY_LIMIT = 120;
 const ROBLOX_PRESENCE_BATCH_SIZE = 50;
+// Retention for playtime buckets. Daily keeps ~4 months of day-level detail;
+// hourly is decoupled at 40 days; weekly keeps ~3 years of compact week totals.
+// Must match the same constants in src/integrations/shared-profile.js so the
+// append step and the normalization step agree on trimming.
+const ROBLOX_PLAYTIME_DAILY_BUCKET_LIMIT = 120;
+const ROBLOX_PLAYTIME_HOURLY_BUCKET_LIMIT = 40 * 24;
+const ROBLOX_PLAYTIME_WEEKLY_BUCKET_LIMIT = 156;
 
 function normalizeRuntimeDiscordUserId(value = "") {
   return String(value || "").trim().slice(0, 80);
@@ -303,6 +310,23 @@ function toMskHourKey(isoValue) {
   return new Date(timestamp + (3 * 60 * 60 * 1000)).toISOString().slice(0, 13);
 }
 
+// ISO-8601 week key in UTC, "YYYY-Www" (week starts Monday, week-year is the
+// year of the week's Thursday — handles the Dec/Jan boundary correctly).
+function toIsoWeekKey(isoValue) {
+  const timestamp = Date.parse(isoValue || "");
+  if (!Number.isFinite(timestamp)) return null;
+  const date = new Date(timestamp);
+  const utc = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+  const dayNum = (utc.getUTCDay() + 6) % 7; // Mon=0 .. Sun=6
+  utc.setUTCDate(utc.getUTCDate() - dayNum + 3); // shift to the week's Thursday
+  const weekYear = utc.getUTCFullYear();
+  const firstThursday = new Date(Date.UTC(weekYear, 0, 4));
+  const firstThursdayDayNum = (firstThursday.getUTCDay() + 6) % 7;
+  firstThursday.setUTCDate(firstThursday.getUTCDate() - firstThursdayDayNum + 3);
+  const weekNum = 1 + Math.round((utc.getTime() - firstThursday.getTime()) / (7 * 24 * 60 * 60 * 1000));
+  return `${weekYear}-W${String(weekNum).padStart(2, "0")}`;
+}
+
 function canContinueTrackedSession(lastSeenAt, nowIso, maxGapMs) {
   const previousTs = Date.parse(lastSeenAt || "");
   const nowTs = Date.parse(nowIso || "");
@@ -318,7 +342,7 @@ function calculateTrackedMinutes(lastSeenAt, nowIso) {
   return Math.max(0, Math.round((nowTs - previousTs) / 60000));
 }
 
-function appendDailyMinutes(dailyBuckets = {}, nowIso, minutes, limit = 40) {
+function appendDailyMinutes(dailyBuckets = {}, nowIso, minutes, limit = ROBLOX_PLAYTIME_DAILY_BUCKET_LIMIT) {
   if (!Number.isFinite(minutes) || minutes <= 0) return { ...(dailyBuckets || {}) };
   const dateKey = toDateKey(nowIso);
   if (!dateKey) return { ...(dailyBuckets || {}) };
@@ -334,7 +358,25 @@ function appendDailyMinutes(dailyBuckets = {}, nowIso, minutes, limit = 40) {
   );
 }
 
-function appendHourlyMinutes(hourlyBucketsMsk = {}, nowIso, minutes, limit = 40 * 24) {
+// Weekly totals keyed by ISO week ("YYYY-Www"). Same incremental append + trim
+// pattern as the daily buckets, just a coarser, longer-lived segment.
+function appendWeeklyMinutes(weeklyBuckets = {}, nowIso, minutes, limit = ROBLOX_PLAYTIME_WEEKLY_BUCKET_LIMIT) {
+  if (!Number.isFinite(minutes) || minutes <= 0) return { ...(weeklyBuckets || {}) };
+  const weekKey = toIsoWeekKey(nowIso);
+  if (!weekKey) return { ...(weeklyBuckets || {}) };
+
+  const next = { ...(weeklyBuckets || {}) };
+  next[weekKey] = Number(next[weekKey] || 0) + minutes;
+
+  return Object.fromEntries(
+    Object.entries(next)
+      .filter(([bucketKey, value]) => /^\d{4}-W\d{2}$/.test(bucketKey) && Number(value) > 0)
+      .sort((left, right) => left[0].localeCompare(right[0]))
+      .slice(-Math.max(1, limit))
+  );
+}
+
+function appendHourlyMinutes(hourlyBucketsMsk = {}, nowIso, minutes, limit = ROBLOX_PLAYTIME_HOURLY_BUCKET_LIMIT) {
   if (!Number.isFinite(minutes) || minutes <= 0) return { ...(hourlyBucketsMsk || {}) };
   const hourKey = toMskHourKey(nowIso);
   if (!hourKey) return { ...(hourlyBucketsMsk || {}) };
@@ -840,6 +882,7 @@ async function runRobloxPlaytimeSyncJob(options = {}) {
         playtime.totalJjsMinutes += deltaMinutes;
         playtime.dailyBuckets = appendDailyMinutes(playtime.dailyBuckets, nowIso, deltaMinutes);
         playtime.hourlyBucketsMsk = appendHourlyMinutes(playtime.hourlyBucketsMsk, nowIso, deltaMinutes);
+        playtime.weeklyBuckets = appendWeeklyMinutes(playtime.weeklyBuckets, nowIso, deltaMinutes);
         markRobloxRuntimeDirty(runtimeState, candidate.discordUserId, "playtime_updated");
       }
 

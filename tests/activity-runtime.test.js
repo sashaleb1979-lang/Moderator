@@ -1404,3 +1404,57 @@ test("resumeActivityRuntime hydrates current voice occupants and closes stale op
   assert.equal(db.sot.activity.globalVoiceSessions[0].incompleteReason, "ended_while_offline");
   assert.equal(db.sot.activity.globalVoiceSessions[0].durationSeconds, 3600);
 });
+
+test("rebuildActivitySnapshots never mutates the persisted source arrays (no-deep-clone safety guard)", async () => {
+  const db = {
+    profiles: {
+      "user-1": { userId: "user-1", domains: { activity: {} } },
+      "user-2": { userId: "user-2", domains: { activity: {} } },
+    },
+    sot: {
+      activity: {
+        config: { sessionGapMinutes: 45, scoreWindowDays: 30 },
+        watchedChannels: [
+          { channelId: "main-1", channelType: "main_chat", channelWeight: 1, enabled: true, countMessages: true, countSessions: true, countForTrust: true, countForRoles: true },
+        ],
+        globalUserSessions: [
+          { id: "s-1", guildId: "g-1", userId: "user-1", startedAt: "2026-05-07T12:00:00.000Z", endedAt: "2026-05-07T12:20:00.000Z", messageCount: 4, weightedMessageCount: 4, effectiveValue: 0.75, mainChannelId: "main-1", channelBreakdown: { "main-1": { messageCount: 4, weightedMessageCount: 4, sessionMessageCount: 4, channelWeight: 1 } } },
+          { id: "s-2", guildId: "g-1", userId: "user-2", startedAt: "2026-05-06T12:00:00.000Z", endedAt: "2026-05-06T12:10:00.000Z", messageCount: 2, weightedMessageCount: 2, effectiveValue: 0.7, mainChannelId: "main-1", channelBreakdown: { "main-1": { messageCount: 2, weightedMessageCount: 2, sessionMessageCount: 2, channelWeight: 1 } } },
+        ],
+        globalVoiceSessions: [
+          { id: "v-1", guildId: "g-1", userId: "user-1", joinedAt: "2026-05-07T10:00:00.000Z", endedAt: "2026-05-07T11:00:00.000Z", durationSeconds: 3600, activeVoiceDurationSeconds: 3000, streamingDurationSeconds: 0, videoDurationSeconds: 0, dayBreakdown: { "2026-05-07": { voiceDurationSeconds: 3600, activeVoiceDurationSeconds: 3000, streamingDurationSeconds: 0, videoDurationSeconds: 0, firstJoinedAt: "2026-05-07T10:00:00.000Z", lastLeftAt: "2026-05-07T11:00:00.000Z" } } },
+        ],
+        channelDailyStats: [],
+        userChannelDailyStats: [
+          { guildId: "g-1", channelId: "main-1", userId: "user-1", date: "2026-05-07", messagesCount: 4, weightedMessagesCount: 4, sessionsCount: 1, effectiveSessionsCount: 0.75, firstMessageAt: "2026-05-07T12:00:00.000Z", lastMessageAt: "2026-05-07T12:20:00.000Z" },
+          { guildId: "g-1", channelId: "main-1", userId: "user-2", date: "2026-05-06", messagesCount: 2, weightedMessagesCount: 2, sessionsCount: 1, effectiveSessionsCount: 0.7, firstMessageAt: "2026-05-06T12:00:00.000Z", lastMessageAt: "2026-05-06T12:10:00.000Z" },
+        ],
+        userVoiceDailyStats: [
+          { guildId: "g-1", userId: "user-1", date: "2026-05-07", voiceDurationSeconds: 3600, activeVoiceDurationSeconds: 3000, streamingDurationSeconds: 0, videoDurationSeconds: 0, sessionsCount: 1, firstJoinedAt: "2026-05-07T10:00:00.000Z", lastLeftAt: "2026-05-07T11:00:00.000Z" },
+        ],
+        userSnapshots: {},
+        calibrationRuns: [],
+        ops: { moderationAuditLog: [] },
+        runtime: { openSessions: {}, openVoiceSessions: {}, dirtyUsers: [] },
+      },
+    },
+  };
+
+  const before = {
+    globalUserSessions: JSON.stringify(db.sot.activity.globalUserSessions),
+    globalVoiceSessions: JSON.stringify(db.sot.activity.globalVoiceSessions),
+    userChannelDailyStats: JSON.stringify(db.sot.activity.userChannelDailyStats),
+    userVoiceDailyStats: JSON.stringify(db.sot.activity.userVoiceDailyStats),
+  };
+
+  await rebuildActivitySnapshots({ db, userIds: ["user-1", "user-2"], now: "2026-05-09T12:00:00.000Z" });
+
+  // The rebuild shares state rows by reference (shallow-copied for reads). It
+  // must never write through to the persisted arrays — assert they are unchanged.
+  assert.equal(JSON.stringify(db.sot.activity.globalUserSessions), before.globalUserSessions);
+  assert.equal(JSON.stringify(db.sot.activity.globalVoiceSessions), before.globalVoiceSessions);
+  assert.equal(JSON.stringify(db.sot.activity.userChannelDailyStats), before.userChannelDailyStats);
+  assert.equal(JSON.stringify(db.sot.activity.userVoiceDailyStats), before.userVoiceDailyStats);
+  // And the rebuild actually produced snapshots for both users.
+  assert.equal(Object.keys(db.sot.activity.userSnapshots).length, 2);
+});

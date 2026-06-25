@@ -1026,10 +1026,55 @@ function buildSnapshotCutoff(now, days) {
   return current.getTime();
 }
 
-function collectUserSessionRows(state, userId) {
-  const rows = (Array.isArray(state.globalUserSessions) ? state.globalUserSessions : [])
-    .filter((entry) => entry.userId === userId)
-    .map((entry) => clone(entry));
+// Rebuilding a single user's snapshot needs that user's rows out of four large
+// global arrays (sessions, voice sessions, channel-daily, voice-daily). Doing a
+// full `.filter()` per array per user makes a rebuild of N users O(N * rows) —
+// quadratic, and it grows with both member count and history. When many users
+// are rebuilt at once (daily sync, 5-minute flush) we build a userId -> rows
+// index ONCE up front and hand it down; the per-user lookup is then O(1).
+// Single-user callers (on-demand inspection) pass no index and keep the filter
+// path, so behavior is identical either way.
+function buildActivityRebuildIndex(state) {
+  const group = (arrayKey) => {
+    const map = new Map();
+    for (const entry of Array.isArray(state[arrayKey]) ? state[arrayKey] : []) {
+      const userId = entry?.userId;
+      if (!userId) continue;
+      let bucket = map.get(userId);
+      if (!bucket) {
+        bucket = [];
+        map.set(userId, bucket);
+      }
+      bucket.push(entry);
+    }
+    return map;
+  };
+
+  return {
+    globalUserSessions: group("globalUserSessions"),
+    userChannelDailyStats: group("userChannelDailyStats"),
+    globalVoiceSessions: group("globalVoiceSessions"),
+    userVoiceDailyStats: group("userVoiceDailyStats"),
+  };
+}
+
+// Returns a fresh array of this user's rows, each row a SHALLOW copy ({...row}).
+// The shallow copy is the defensive guarantee: the persisted state objects are
+// never handed out by reference, so any accidental top-level write during the
+// snapshot aggregation (now or after a future refactor) lands on a throwaway
+// copy and can never corrupt the saved arrays. It is much cheaper than the old
+// per-row JSON deep clone (no recursion / serialization) because the rebuild
+// only reads flat fields. The protection is verified by a regression test that
+// asserts the state arrays are byte-identical before/after a rebuild.
+function selectUserRows(state, arrayKey, userId, index) {
+  const source = (index && index[arrayKey] instanceof Map)
+    ? (index[arrayKey].get(userId) || [])
+    : (Array.isArray(state[arrayKey]) ? state[arrayKey] : []).filter((entry) => entry.userId === userId);
+  return source.map((entry) => ({ ...entry }));
+}
+
+function collectUserSessionRows(state, userId, index) {
+  const rows = selectUserRows(state, "globalUserSessions", userId, index);
   const openSession = ensureOpenSessionMap(state)[userId];
   if (openSession) {
     rows.push(buildPersistedSessionRecord(openSession, state.config));
@@ -1037,10 +1082,8 @@ function collectUserSessionRows(state, userId) {
   return rows;
 }
 
-function collectUserDailyRows(state, userId) {
-  const rows = (Array.isArray(state.userChannelDailyStats) ? state.userChannelDailyStats : [])
-    .filter((entry) => entry.userId === userId)
-    .map((entry) => clone(entry));
+function collectUserDailyRows(state, userId, index) {
+  const rows = selectUserRows(state, "userChannelDailyStats", userId, index);
 
   const openSession = ensureOpenSessionMap(state)[userId];
   if (!openSession) return rows;
@@ -1068,10 +1111,8 @@ function collectUserDailyRows(state, userId) {
   return rows;
 }
 
-function collectUserVoiceSessionRows(state, userId, now) {
-  const rows = (Array.isArray(state.globalVoiceSessions) ? state.globalVoiceSessions : [])
-    .filter((entry) => entry.userId === userId)
-    .map((entry) => clone(entry));
+function collectUserVoiceSessionRows(state, userId, now, index) {
+  const rows = selectUserRows(state, "globalVoiceSessions", userId, index);
   const openVoiceSession = ensureOpenVoiceSessionMap(state)[userId];
   if (openVoiceSession && now) {
     rows.push(finalizeOpenVoiceSession(openVoiceSession, now, state.config || {}));
@@ -1079,10 +1120,8 @@ function collectUserVoiceSessionRows(state, userId, now) {
   return rows;
 }
 
-function collectUserVoiceDailyRows(state, userId, now) {
-  const rows = (Array.isArray(state.userVoiceDailyStats) ? state.userVoiceDailyStats : [])
-    .filter((entry) => entry.userId === userId)
-    .map((entry) => clone(entry));
+function collectUserVoiceDailyRows(state, userId, now, index) {
+  const rows = selectUserRows(state, "userVoiceDailyStats", userId, index);
 
   const openVoiceSession = ensureOpenVoiceSessionMap(state)[userId];
   if (!openVoiceSession || !now) return rows;
@@ -1307,7 +1346,7 @@ function resolveDesiredActivityRoleKey(score, config = {}) {
   return "dead";
 }
 
-function rebuildActivityUserSnapshot({ db = {}, userId = "", now, memberActivityMeta } = {}) {
+function rebuildActivityUserSnapshot({ db = {}, userId = "", now, memberActivityMeta, index } = {}) {
   const normalizedUserId = cleanString(userId, 80);
   if (!normalizedUserId) {
     throw new Error("userId is required");
@@ -1318,10 +1357,10 @@ function rebuildActivityUserSnapshot({ db = {}, userId = "", now, memberActivity
   const currentTime = getActivityRuntimeNow({ now });
   const profile = db.profiles?.[normalizedUserId] || { userId: normalizedUserId };
   const existingActivity = profile?.domains?.activity || {};
-  const sessionRows = collectUserSessionRows(state, normalizedUserId);
-  const dailyRows = collectUserDailyRows(state, normalizedUserId);
-  const voiceSessionRows = collectUserVoiceSessionRows(state, normalizedUserId, currentTime);
-  const voiceDailyRows = collectUserVoiceDailyRows(state, normalizedUserId, currentTime);
+  const sessionRows = collectUserSessionRows(state, normalizedUserId, index);
+  const dailyRows = collectUserDailyRows(state, normalizedUserId, index);
+  const voiceSessionRows = collectUserVoiceSessionRows(state, normalizedUserId, currentTime, index);
+  const voiceDailyRows = collectUserVoiceDailyRows(state, normalizedUserId, currentTime, index);
 
   const messageWindowSums = new Map([[7, 0], [30, 0], [90, 0]]);
   const sessionWindowCounts = new Map([[7, 0], [30, 0], [90, 0]]);
@@ -1850,6 +1889,7 @@ async function rebuildActivitySnapshots({ db = {}, userIds = [], now, saveDb, ru
         .filter(Boolean)
     )];
 
+    const rebuildIndex = buildActivityRebuildIndex(ensureActivityState(db));
     for (const userId of targetUserIds) {
       const { memberActivityMeta, error } = await safelyResolveMemberActivityMeta(resolveMemberActivityMeta, userId);
       if (error) {
@@ -1865,6 +1905,7 @@ async function rebuildActivitySnapshots({ db = {}, userIds = [], now, saveDb, ru
         userId,
         now: currentTime,
         memberActivityMeta,
+        index: rebuildIndex,
       });
       mirrorActivitySnapshotToProfile(db, userId, snapshot);
       rebuiltUsers.push(userId);
@@ -2016,6 +2057,10 @@ async function flushActivityRuntime({ db = {}, now, saveDb, runSerialized, resol
 
     const rebuiltUsers = [];
     const rebuildUserIds = new Set([...dirtyUsers, ...Object.keys(openVoiceSessions)]);
+    // Built after the finalize loop above (which mutates the global arrays) so
+    // the index reflects the just-finalized sessions, and once for the whole
+    // rebuild loop instead of re-scanning per user.
+    const rebuildIndex = buildActivityRebuildIndex(state);
     for (const userId of rebuildUserIds) {
       const { memberActivityMeta, error } = await safelyResolveMemberActivityMeta(resolveMemberActivityMeta, userId);
       if (error) {
@@ -2026,7 +2071,7 @@ async function flushActivityRuntime({ db = {}, now, saveDb, runSerialized, resol
           reason: error?.message || error,
         });
       }
-      const snapshot = rebuildActivityUserSnapshot({ db, userId, now: currentTime, memberActivityMeta });
+      const snapshot = rebuildActivityUserSnapshot({ db, userId, now: currentTime, memberActivityMeta, index: rebuildIndex });
       mirrorActivitySnapshotToProfile(db, userId, snapshot);
       rebuiltUsers.push(userId);
     }

@@ -573,7 +573,10 @@ async function applyRobloxBindingRepairPass(options = {}) {
     return summary;
   }
 
-  for (const batchUsernames of splitIntoBatches([...candidatesByUsername.keys()], 100)) {
+  // Smaller batches keep each username->id lookup well under the Roblox API
+  // request timeout (8s). 100-name batches were timing out and discarding the
+  // whole batch as unresolved; 30 names respond comfortably in time.
+  for (const batchUsernames of splitIntoBatches([...candidatesByUsername.keys()], 30)) {
     try {
       const matches = await fetchUsersByUsernames(batchUsernames, {
         excludeBannedUsers: false,
