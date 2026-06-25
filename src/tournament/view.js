@@ -396,6 +396,22 @@ function buildRegMainConfirmPayload(tournament, info = {}) {
   return ui.v2Ephemeral(c);
 }
 
+function buildRegCollectingPayload(tournament) {
+  const c = ui.container(COLORS.primary, (container) => {
+    container.addTextDisplayComponents(ui.td(`# Заявка · ${tournament?.name || "турнир"}`));
+    container.addSeparatorComponents(ui.separator());
+    container.addTextDisplayComponents(
+      ui.td(
+        [
+          "Модератор собирает вашу заявку…",
+          "-# Ищу профиль, Roblox и последний скрин с киллами. Это сообщение само заменится формой.",
+        ].join("\n")
+      )
+    );
+  });
+  return ui.v2Ephemeral(c);
+}
+
 function buildRegNoAccountPayload(tournament, info = {}) {
   const c = ui.container(COLORS.primary, (container) => {
     container.addTextDisplayComponents(ui.td(`# Заявка · ${tournament.name}`));
@@ -566,6 +582,18 @@ function buildManagePanelPayload(tournament, { statusText = "", serverCount = 1,
 
     const multi = serverCount > 1;
     container.addTextDisplayComponents(ui.td(multi ? `**Сетка и сервера** (мультисервер ×${serverCount})` : "**Сетка и сервера**"));
+    const serverLines = [];
+    for (let i = 0; i < Math.min(serverCount, 3); i += 1) {
+      const server = servers[String(i)];
+      const playerCount = Object.values(tournament.registrations || {}).filter((reg) => !multi || reg?.serverIndex === i).length;
+      const threadState = server?.threadFailed ? "ветка требует повтора" : server?.threadId ? "ветка закрыта" : server?.launched ? "ветка открывается" : "готов к запуску";
+      serverLines.push(`сервер ${i + 1}: **${fmtNumber(playerCount)}** игроков · ${threadState}`);
+    }
+    if (multi && finalServer?.launched) {
+      const finalistCount = Object.values(tournament.registrations || {}).filter((reg) => reg?.serverIndex === finalIndex).length;
+      serverLines.push(`финал: **${fmtNumber(finalistCount)}** игроков · ${finalServer.threadFailed ? "ветка требует повтора" : finalServer.threadId ? "ветка закрыта" : "ветка открывается"}`);
+    }
+    if (serverLines.length) container.addTextDisplayComponents(ui.td(`-# ${serverLines.join("\n-# ")}`));
 
     // launch row: rebuild duels + per-server launch buttons
     const launchRow = [btn(ACTIONS.MANAGE_FORM_DUELS, tournament.id, [], { label: "Пересобрать дуэты", style: ButtonStyle.Primary, emoji: "🧩" })];
@@ -606,6 +634,9 @@ function buildManagePanelPayload(tournament, { statusText = "", serverCount = 1,
     }
 
     const bottom = [];
+    if (tournament.status === "completed") {
+      bottom.push(btn(ACTIONS.SUMMARY_OPEN, tournament.id, [], { label: tournament.summaryPosted ? "Итоги опубликованы" : "Окно итогов", style: ButtonStyle.Primary, emoji: "🏁" }));
+    }
     if (anyThreadFailed) {
       const failedIdx = Object.keys(servers).find((k) => servers[k]?.threadFailed) || "0";
       bottom.push(btn(ACTIONS.MANAGE_RETRY_THREAD, tournament.id, [failedIdx], { label: "Ветка и пинг заново", emoji: "🧵" }));
@@ -803,6 +834,65 @@ function buildSummaryPostPayload(tournament, { imageFilename = "" } = {}) {
   return ui.v2Public(c);
 }
 
+function buildCompletionPanelPayload(tournament, { imageFilename = "", statusText = "" } = {}) {
+  const r = tournament.results || {};
+  const posted = Boolean(tournament.summaryPosted);
+  const comment = String(r.organizerComment || "").trim();
+  const c = ui.container(COLORS.gold, (container) => {
+    container.addTextDisplayComponents(ui.td(`# 🏁 Финальное окно · ${tournament.name}`));
+    container.addTextDisplayComponents(
+      ui.td(
+        [
+          r.first ? `🥇 ${playerMd(r.first)}` : null,
+          r.second ? `🥈 ${playerMd(r.second)}` : null,
+          r.third ? `🥉 ${playerMd(r.third)}` : null,
+        ]
+          .filter(Boolean)
+          .join("\n") || "Результаты записаны."
+      )
+    );
+    if (imageFilename) {
+      container.addSeparatorComponents(ui.separator());
+      container.addMediaGalleryComponents(ui.mediaImage(`attachment://${imageFilename}`, "Финальная карточка турнира"));
+    }
+    container.addSeparatorComponents(ui.separator());
+    container.addTextDisplayComponents(
+      ui.td(comment ? `**Комментарий ведущего**\n${comment.slice(0, 700)}` : "_Комментарий ведущего ещё не добавлен._")
+    );
+    container.addActionRowComponents(
+      ui.row(
+        btn(ACTIONS.SUMMARY_COMMENT, tournament.id, [], { label: comment ? "Изменить комментарий" : "Добавить комментарий", style: ButtonStyle.Primary, emoji: "💬", disabled: posted }),
+        btn(ACTIONS.SUMMARY_PUBLISH, tournament.id, [], { label: posted ? "Итоги опубликованы" : "Опубликовать итоги", style: ButtonStyle.Success, emoji: "📣", disabled: posted }),
+        btn(ACTIONS.MANAGE_OPEN, tournament.id, [], { label: "К управлению", emoji: "🛠" })
+      )
+    );
+    container.addTextDisplayComponents(
+      ui.td(posted ? "-# Публичный пост уже отправлен в канал анонса." : "-# Проверь картинку и комментарий, затем опубликуй итоги.")
+    );
+    if (statusText) container.addTextDisplayComponents(ui.td(`-# ${statusText}`));
+  });
+  return ui.v2Ephemeral(c);
+}
+
+function buildSummaryCommentModal(tournament) {
+  const comment = String(tournament?.results?.organizerComment || "");
+  return new ModalBuilder()
+    .setCustomId(buildCustomId(ACTIONS.SUMMARY_COMMENT, tournament?.id || ""))
+    .setTitle("Комментарий к итогам")
+    .addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId("comment")
+          .setLabel("Комментарий ведущего")
+          .setStyle(TextInputStyle.Paragraph)
+          .setRequired(false)
+          .setMaxLength(700)
+          .setPlaceholder("Коротко: как прошёл финал, кого отметить, что сказать победителям")
+          .setValue(comment.slice(0, 700))
+      )
+    );
+}
+
 // --------------------------------------------------------------------------
 // Match-result panel (the star: buttons inside the panel, per pairing)
 // --------------------------------------------------------------------------
@@ -958,6 +1048,7 @@ module.exports = {
   buildConditionsModal,
   buildAnnouncementPayload,
   buildRegMainConfirmPayload,
+  buildRegCollectingPayload,
   buildRegNoAccountPayload,
   buildRobloxNickModal,
   buildDeclareStrengthPayload,
@@ -972,6 +1063,8 @@ module.exports = {
   buildRosterPayload,
   buildBracketPostPayload,
   buildSummaryPostPayload,
+  buildCompletionPanelPayload,
+  buildSummaryCommentModal,
   buildPreliminaryBracketPayload,
   buildMatchPanelPayload,
   buildServerDonePayload,

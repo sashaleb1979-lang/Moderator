@@ -50,6 +50,9 @@ const ACTIONS = Object.freeze({
   MANAGE_RETRY_THREAD: "mthr", // re-run thread/ping side-effects for a server
   MANAGE_START: "mstart", // open match-result panel
   MANAGE_CANCEL: "mcancel",
+  SUMMARY_OPEN: "msum", // open completed tournament summary panel
+  SUMMARY_COMMENT: "scom", // modal: organizer comment for final summary
+  SUMMARY_PUBLISH: "spost", // publish final summary to announcement channel
 
   // roster / participants
   MANAGE_ROSTER: "mrost", // open the "who registered" viewer

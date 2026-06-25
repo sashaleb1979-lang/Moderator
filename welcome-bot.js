@@ -6965,6 +6965,74 @@ function submissionTournamentRecency(submission = {}) {
     || 0;
 }
 
+function tournamentSubmissionImageUrl(submission = {}) {
+  for (const value of [submission.reviewAttachmentUrl, submission.screenshotUrl, submission.reviewImage]) {
+    if (typeof value === "string" && /^https?:\/\//i.test(value.trim())) return value.trim();
+  }
+  return null;
+}
+
+function buildTournamentSubmissionMatchContext(profile = {}, registration = {}) {
+  const identity = tournamentProfileRobloxIdentity(profile);
+  const userIds = [
+    profile?.userId,
+    profile?.discordId,
+    registration?.userId,
+  ].map((value) => String(value || "").trim()).filter(Boolean);
+  const targetRobloxUserId = String(registration?.robloxUserId || identity.userId || "").trim();
+  const targetRobloxUsername = normalizeTournamentRobloxUsername(
+    registration?.robloxUsername || identity.username || identity.currentUsername
+  );
+  const targetNameKey = normalizeTournamentMatchKey(
+    registration?.robloxUsername || identity.username || identity.currentUsername
+  );
+  const preferredIds = [
+    profile.lastSubmissionId,
+    profile.domains?.onboarding?.lastSubmissionId,
+    profile.summary?.onboarding?.lastSubmissionId,
+  ].map((value) => String(value || "").trim()).filter(Boolean);
+  return { userIds, targetRobloxUserId, targetRobloxUsername, targetNameKey, preferredIds };
+}
+
+function tournamentSubmissionMatchesContext(submission = {}, context = {}) {
+  if (!submission || typeof submission !== "object") return false;
+  const submissionUserId = String(submission.userId || "").trim();
+  const submissionRobloxUserId = String(submission.robloxUserId || "").trim();
+  const submissionRobloxUsername = normalizeTournamentRobloxUsername(submission.robloxUsername);
+  const submissionNameKeys = [
+    submission.username,
+    submission.displayName,
+    submission.robloxUsername,
+  ].map((value) => normalizeTournamentMatchKey(value)).filter(Boolean);
+  return context.userIds.includes(submissionUserId)
+    || (context.targetRobloxUserId && submissionRobloxUserId === context.targetRobloxUserId)
+    || (context.targetRobloxUsername && submissionRobloxUsername === context.targetRobloxUsername)
+    || (context.targetNameKey && submissionNameKeys.includes(context.targetNameKey));
+}
+
+function pickTournamentProofSubmission(profile = {}, registration = {}) {
+  if (!db.submissions || typeof db.submissions !== "object") return null;
+  const context = buildTournamentSubmissionMatchContext(profile, registration);
+  const candidates = Object.values(db.submissions)
+    .filter((submission) => {
+      if (!submission || typeof submission !== "object") return false;
+      if (submission.status === "rejected") return false;
+      if (!tournamentSubmissionImageUrl(submission)) return false;
+      const id = String(submission.id || "").trim();
+      return (id && context.preferredIds.includes(id)) || tournamentSubmissionMatchesContext(submission, context);
+    })
+    .sort((left, right) => {
+      const leftPinned = context.preferredIds.includes(String(left.id || "").trim()) ? 1 : 0;
+      const rightPinned = context.preferredIds.includes(String(right.id || "").trim()) ? 1 : 0;
+      if (leftPinned !== rightPinned) return rightPinned - leftPinned;
+      const leftApproved = left.status === "approved" ? 1 : 0;
+      const rightApproved = right.status === "approved" ? 1 : 0;
+      if (leftApproved !== rightApproved) return rightApproved - leftApproved;
+      return submissionTournamentRecency(right) - submissionTournamentRecency(left);
+    });
+  return candidates[0] || null;
+}
+
 function tournamentProfileRobloxIdentity(profile = {}) {
   const candidates = [
     profile.domains?.roblox,
@@ -7044,41 +7112,21 @@ function pickTournamentTextTierlistProfileKills(registration = {}) {
 }
 
 function pickTournamentApprovedSubmissionKills(profile = {}, registration = {}) {
-  const userIds = [
-    profile?.userId,
-    registration?.userId,
-  ].map((value) => String(value || "").trim()).filter(Boolean);
-  const targetRobloxUserId = String(registration?.robloxUserId || "").trim();
-  const targetRobloxUsername = normalizeTournamentRobloxUsername(registration?.robloxUsername);
-  const targetNameKey = normalizeTournamentMatchKey(registration?.robloxUsername);
-  if (!userIds.length && !targetRobloxUserId && !targetRobloxUsername && !targetNameKey) return null;
+  const context = buildTournamentSubmissionMatchContext(profile, registration);
+  if (!context.userIds.length && !context.targetRobloxUserId && !context.targetRobloxUsername && !context.targetNameKey) return null;
   if (!db.submissions || typeof db.submissions !== "object") return null;
   const approved = Object.values(db.submissions)
     .filter((submission) => (
       submission
       && typeof submission === "object"
       && submission.status === "approved"
-      && (
-        userIds.includes(String(submission.userId || "").trim())
-        || (targetRobloxUserId && String(submission.robloxUserId || "").trim() === targetRobloxUserId)
-        || (targetRobloxUsername && normalizeTournamentRobloxUsername(submission.robloxUsername) === targetRobloxUsername)
-        || (targetNameKey && [
-          submission.username,
-          submission.displayName,
-          submission.robloxUsername,
-        ].map((value) => normalizeTournamentMatchKey(value)).includes(targetNameKey))
-      )
+      && tournamentSubmissionMatchesContext(submission, context)
       && normalizeTournamentApprovedKills(submission.kills) !== null
     ));
   if (!approved.length) return null;
 
-  const submissionIds = [
-    profile.lastSubmissionId,
-    profile.domains?.onboarding?.lastSubmissionId,
-    profile.summary?.onboarding?.lastSubmissionId,
-  ].map((value) => String(value || "").trim()).filter(Boolean);
-  const pinned = submissionIds.length
-    ? approved.find((submission) => submissionIds.includes(String(submission.id || "").trim()))
+  const pinned = context.preferredIds.length
+    ? approved.find((submission) => context.preferredIds.includes(String(submission.id || "").trim()))
     : null;
   const source = pinned || approved.reduce((best, submission) => (
     !best || submissionTournamentRecency(submission) >= submissionTournamentRecency(best) ? submission : best
@@ -7087,10 +7135,8 @@ function pickTournamentApprovedSubmissionKills(profile = {}, registration = {}) 
 }
 
 function pickTournamentRecentSubmissionKills(registration = {}) {
-  const targetRobloxUserId = String(registration?.robloxUserId || "").trim();
-  const targetRobloxUsername = normalizeTournamentRobloxUsername(registration?.robloxUsername);
-  const targetNameKey = normalizeTournamentMatchKey(registration?.robloxUsername);
-  if (!targetRobloxUserId && !targetRobloxUsername && !targetNameKey) return null;
+  const context = buildTournamentSubmissionMatchContext({}, registration);
+  if (!context.targetRobloxUserId && !context.targetRobloxUsername && !context.targetNameKey && !context.userIds.length) return null;
   if (!db.submissions || typeof db.submissions !== "object") return null;
 
   const matched = Object.values(db.submissions)
@@ -7098,14 +7144,7 @@ function pickTournamentRecentSubmissionKills(registration = {}) {
       if (!submission || typeof submission !== "object") return false;
       if (submission.status === "rejected") return false;
       if (normalizeTournamentApprovedKills(submission.kills) === null) return false;
-      const submissionNameKeys = [
-        submission.username,
-        submission.displayName,
-        submission.robloxUsername,
-      ].map((value) => normalizeTournamentMatchKey(value)).filter(Boolean);
-      return (targetRobloxUserId && String(submission.robloxUserId || "").trim() === targetRobloxUserId)
-        || (targetRobloxUsername && normalizeTournamentRobloxUsername(submission.robloxUsername) === targetRobloxUsername)
-        || (targetNameKey && submissionNameKeys.includes(targetNameKey));
+      return tournamentSubmissionMatchesContext(submission, context);
     });
   if (!matched.length) return null;
 
@@ -7135,14 +7174,35 @@ function pickTournamentApprovedKills(profile = {}, registration = {}) {
 
 function getTournamentPlayerSnapshot(userId, options = {}) {
   const registration = options?.registration && typeof options.registration === "object" ? options.registration : {};
+  const snapshotRegistration = { ...registration, userId: registration.userId || userId };
   const profile = db.profiles?.[userId]
     ? getProfile(userId)
-    : findTournamentProfileByRegistration(registration);
-  if (!profile) return { hasRobloxAccount: false, approvedKills: 0 };
+    : findTournamentProfileByRegistration(snapshotRegistration);
+  if (!profile) {
+    const submissionProfile = { userId };
+    const approvedKills = pickTournamentApprovedSubmissionKills(submissionProfile, snapshotRegistration)
+      ?? pickTournamentRecentSubmissionKills(snapshotRegistration)
+      ?? 0;
+    const proofSubmission = pickTournamentProofSubmission(submissionProfile, snapshotRegistration);
+    const sourceSubmission = proofSubmission || null;
+    const normalizedKills = Number.isFinite(approvedKills) ? approvedKills : 0;
+    const robloxUserId = sourceSubmission?.robloxUserId ? String(sourceSubmission.robloxUserId) : null;
+    const robloxUsername = sourceSubmission?.robloxUsername || sourceSubmission?.username || null;
+    return {
+      hasRobloxAccount: Boolean(robloxUserId && robloxUsername),
+      verified: false,
+      robloxUserId,
+      robloxUsername,
+      robloxAvatarUrl: null,
+      approvedKills: normalizedKills,
+      killsSource: normalizedKills > 0 ? "submission" : null,
+      lastScreenshotUrl: proofSubmission ? tournamentSubmissionImageUrl(proofSubmission) : null,
+    };
+  }
   const profileRoblox = tournamentProfileRobloxIdentity(profile);
   const usableRoblox = resolveUsableVerifiedRobloxIdentity(profileRoblox);
   const roblox = usableRoblox || profileRoblox;
-  const approvedKills = pickTournamentApprovedKills(profile, registration);
+  const approvedKills = pickTournamentApprovedKills(profile, snapshotRegistration);
   const robloxUserId = roblox.userId ? String(roblox.userId) : null;
   const robloxUsername = roblox.username || null;
   const robloxAvatarUrl = roblox.avatarUrl || null;
@@ -7151,13 +7211,8 @@ function getTournamentPlayerSnapshot(userId, options = {}) {
     || Boolean(roblox.verifiedAt)
     || Boolean(roblox.hasVerifiedAccount);
 
-  let lastScreenshotUrl = null;
-  const lastSubmissionId = profile.lastSubmissionId || profile.domains?.onboarding?.lastSubmissionId;
-  if (lastSubmissionId && db.submissions?.[lastSubmissionId]) {
-    const submission = db.submissions[lastSubmissionId];
-    const candidate = submission.screenshotUrl || submission.reviewAttachmentUrl || null;
-    if (typeof candidate === "string" && /^https?:\/\//i.test(candidate)) lastScreenshotUrl = candidate;
-  }
+  const proofSubmission = pickTournamentProofSubmission(profile, snapshotRegistration);
+  const lastScreenshotUrl = proofSubmission ? tournamentSubmissionImageUrl(proofSubmission) : null;
 
   const normalizedKills = Number.isFinite(approvedKills) ? approvedKills : 0;
   return {

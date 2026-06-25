@@ -1,3 +1,6 @@
-- Antiteam helper arrival is opt-in: helper records start with arrived=false until a close-review toggle marks them arrived.
-- Manual close and idle auto-close write closeSummary.confirmedHelperIds from helpers where arrived===true only.
+- Antiteam helper arrival defaults to arrived (helper.arrived !== false) once they respond; the close-review reviewer toggles OFF no-shows. UI says "по умолчанию все отмечены как пришёл".
+- Close-review toggles (arrived / mark_all / unmark_all) PERSIST helper.arrived to the ticket via setTicketHelperArrival / setAllTicketHelpersArrival — there is no in-memory closeReviewSession anymore. This makes the close summary restart-proof and impossible to disagree with the panel (fixed the "Sorokin still counted / arrived people dropped" bugs).
+- Speed preserved: the panel re-renders OPTIMISTICALLY from memory (buildCloseReviewPayload arrivedByUserId override) right after the ACK, and the durable write is pushed to a detached persist that rides the coalesced saveDb flush — so a toggle is exactly as snappy as the old in-memory version, just durable too. Don't turn this back into a blocking `await persist` before editReply.
+- Manual close writes closeSummary.confirmedHelperIds from helpers where arrived !== false (read via resolveCloseReviewArrival, which reads the persisted flag); idle auto-close does the same.
 - Closed ticket helper result rendering should prefer closeSummary.confirmedHelperIds as the final truth so legacy tickets without explicit helper.arrived flags still render correctly.
+- See [[antiteam-kv-mode]] for the KV danger mode and [[antiteam-publish-guard]] for the one-draft-one-ticket lock.

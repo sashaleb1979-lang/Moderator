@@ -306,3 +306,56 @@ test("matchRobloxFriendsToDiscordProfiles only returns verified matching profile
     { id: 999 },
   ]), ["discord-1"]);
 });
+
+test("ensureAntiteamState memoizes on Symbol tag and preserves mutations", () => {
+  const db = {
+    sot: {
+      antiteam: {
+        config: {
+          battalionRoleId: "r1",
+        },
+      },
+    },
+  };
+
+  // First call: normalizes and returns { state, mutated: true }
+  const first = ensureAntiteamState(db);
+  const a = first.state;
+  assert.equal(first.mutated, true);
+  assert.equal(a.config.battalionRoleId, "r1");
+
+  // Verify state structure includes expected normalized keys
+  assert.ok(Object.keys(a).includes("config"));
+  assert.ok(Object.keys(a).includes("drafts"));
+  assert.ok(Object.keys(a).includes("tickets"));
+  assert.ok(Object.keys(a).includes("stats"));
+  assert.ok(Object.keys(a).includes("version"));
+
+  // Second call: fast path returns same reference without re-normalizing
+  const second = ensureAntiteamState(db);
+  assert.equal(second.state, a, "should return identical reference (same object)");
+  assert.equal(second.mutated, false);
+
+  // In-place mutation survives the fast path
+  a.config.battalionRoleId = "r2";
+  const third = ensureAntiteamState(db);
+  assert.equal(third.state, a, "fast path returns the same mutated object");
+  assert.equal(third.state.config.battalionRoleId, "r2");
+
+  // Symbol tag is not enumerable / not serialized
+  const stringified = JSON.stringify(a);
+  const parsed = JSON.parse(stringified);
+  const originalKeys = Object.keys(a).sort();
+  const parsedKeys = Object.keys(parsed).sort();
+  assert.deepEqual(parsedKeys, originalKeys, "JSON.stringify/parse preserves enumerable keys without Symbol");
+
+  // Reload re-normalizes (simulated by losing the Symbol tag)
+  const reloaded = {
+    sot: {
+      antiteam: JSON.parse(JSON.stringify(a)),
+    },
+  };
+  const r = ensureAntiteamState(reloaded);
+  assert.notEqual(r.state, a, "reloaded plain object produces a new normalized instance");
+  assert.equal(r.state.config.battalionRoleId, "r2", "reloaded state preserves serialized mutations");
+});

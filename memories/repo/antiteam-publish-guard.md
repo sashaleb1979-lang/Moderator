@@ -1,0 +1,4 @@
+- One draft = one ticket. operator.js holds a per-user publishInFlight Set; acquirePublishLock is taken synchronously at the top of the at:submit / at:photo:skip branch (before any await) and in handlePhotoMessage, so a double-click or a submit-racing-the-photo-upload can't create two tickets.
+- The lock is "handed off" to the detached finalize task when safeDeleteReply succeeds (released in that task's finally); otherwise the outer finally / photo finally releases it. A blocked second submit replies "Заявка уже отправляется".
+- This also fixed the photo "не принимает" report: previously a duplicate publish consumed the draft, so the later photo upload failed with "черновик истёк". MESSAGE CONTENT intent is already enabled in welcome-bot.js, so that was not the photo cause.
+- Canonical anti-team submit owner remains src/antiteam/operator.js. See [[antiteam-submit-tail-and-progress-cache]].

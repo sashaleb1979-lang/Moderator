@@ -192,6 +192,44 @@ test("tournament registration refreshes the public announcement and writes a log
   assert.match(JSON.stringify(message.editedPayload), /Занято мест: 1 \/ 16/);
 });
 
+test("tournament registration immediately shows a collecting notice and imports the kill proof image", async () => {
+  const calls = [];
+  const db = {};
+  const tournament = state.createTournamentFromDraft(
+    db,
+    {
+      name: "Proof Cup",
+      slots: 16,
+      startsAtIso: "2026-06-21T20:00:00.000Z",
+      announceChannelId: "channel-1",
+    },
+    { id: "tour-1", now: "2026-06-21T18:00:00.000Z" }
+  );
+  const operator = createTournamentOperator({
+    db,
+    getPlayerSnapshot: async () => {
+      calls.push("snapshot");
+      await delay(5);
+      return {
+        hasRobloxAccount: true,
+        robloxUsername: "ProofPlayer",
+        robloxUserId: "424242",
+        approvedKills: 4200,
+        lastScreenshotUrl: "https://example.test/proof.png",
+      };
+    },
+  });
+  const interaction = createButtonInteraction(buildCustomId(ACTIONS.REGISTER_OPEN, tournament.id), calls);
+
+  const handled = await operator.handleButtonInteraction(interaction);
+
+  assert.equal(handled, true);
+  assert.deepEqual(calls, ["reply", "snapshot", "editReply"]);
+  assert.match(JSON.stringify(interaction.replyPayload), /Модератор собирает вашу заявку/);
+  assert.match(JSON.stringify(interaction.editedPayload), /ProofPlayer/);
+  assert.match(JSON.stringify(interaction.editedPayload), /https:\/\/example\.test\/proof\.png/);
+});
+
 test("tournament registration relinks and edits a visible announcement when stored message id is stale", async () => {
   const calls = [];
   const logs = [];
@@ -656,6 +694,69 @@ test("tournament launch creates an unlocked private thread and adds real Discord
   assert.equal(lockedValue, true, "participant thread is locked so players can't chat");
 });
 
+test("tournament completion window attaches generated summary art and publishes organizer comment", async () => {
+  const calls = [];
+  const db = {};
+  const tournament = state.createTournamentFromDraft(
+    db,
+    {
+      name: "Final Cup",
+      slots: 16,
+      startsAtIso: "2026-06-21T20:00:00.000Z",
+      announceChannelId: "channel-1",
+    },
+    { id: "tour-1", now: "2026-06-21T18:00:00.000Z" }
+  );
+  const first = { userId: "100000000000000001", robloxUsername: "Winner", kills: 9000 };
+  const second = { userId: "100000000000000002", robloxUsername: "Runner", kills: 7000 };
+  const third = { userId: "100000000000000003", robloxUsername: "Third", kills: 5000 };
+  state.updateTournament(db, tournament.id, {
+    status: "completed",
+    announce: { channelId: "channel-1", messageId: "announce-1" },
+    results: { first, second, third, organizerComment: null },
+  });
+  let sentSummary = null;
+  const channel = {
+    id: "channel-1",
+    async send(payload) {
+      sentSummary = payload;
+      return { id: "summary-1", channelId: "channel-1" };
+    },
+  };
+  const operator = createTournamentOperator({
+    db,
+    saveDb: () => calls.push("saveDb"),
+    runSerializedMutation: async ({ mutate }) => mutate(),
+    isModerator: (member) => Boolean(member?.mod),
+    fetchChannel: async () => channel,
+    renderImage: async () => Buffer.from("png"),
+    logLine: async () => {},
+  });
+  const asMod = (interaction) => {
+    interaction.member = { mod: true };
+    interaction.user = { id: "mod-1", tag: "mod#0001" };
+    return interaction;
+  };
+
+  const open = asMod(createButtonInteraction(buildCustomId(ACTIONS.SUMMARY_OPEN, tournament.id), calls));
+  await operator.handleButtonInteraction(open);
+  assert.equal(open.updatedPayload.files.length, 1, "final window carries generated summary PNG");
+  assert.match(JSON.stringify(open.updatedPayload), /Финальное окно/);
+
+  const comment = asMod(createModalInteraction(buildCustomId(ACTIONS.SUMMARY_COMMENT, tournament.id), { comment: "Winner забрал финал чисто; Runner держался до конца." }, calls));
+  await operator.handleModalSubmitInteraction(comment);
+  assert.equal(state.getTournament(db, tournament.id).results.organizerComment, "Winner забрал финал чисто; Runner держался до конца.");
+  assert.equal(comment.editedPayload.files.length, 1, "comment save rebuilds the final card");
+
+  const publish = asMod(createButtonInteraction(buildCustomId(ACTIONS.SUMMARY_PUBLISH, tournament.id), calls));
+  await operator.handleButtonInteraction(publish);
+  assert.ok(sentSummary, "expected public summary send");
+  assert.equal(sentSummary.files.length, 1, "public summary carries generated PNG");
+  assert.match(JSON.stringify(sentSummary), /Winner забрал финал чисто/);
+  assert.equal(state.getTournament(db, tournament.id).summaryPosted, true);
+  assert.equal(state.getTournament(db, tournament.id).summaryMessageId, "summary-1");
+});
+
 test("match panel acks each tap and repaints in place via a single edit; supports one-tap re-pick", async () => {
   const seeding = require("../src/tournament/seeding");
   const db = {};
@@ -830,5 +931,9 @@ test("the single bracket image is edited in place across advances; one run advan
   assert.ok(finished.done, "server finished");
   assert.equal(state.getTournament(db, tournament.id).status, "completed");
   assert.ok(edits.length >= 2, "bracket kept being edited in place across advances");
-  assert.equal(sends.length, sendsAfterLaunch + 1, "the only extra post is the grand summary — never a per-advance repost");
+  assert.equal(sends.length, sendsAfterLaunch, "completion opens the organizer summary window without an automatic public repost");
+
+  await operator.handleButtonInteraction(asMod(createButtonInteraction(buildCustomId(ACTIONS.SUMMARY_PUBLISH, tournament.id))));
+  assert.equal(sends.length, sendsAfterLaunch + 1, "the only extra post is the organizer-published grand summary");
+  assert.equal(state.getTournament(db, tournament.id).summaryPosted, true);
 });

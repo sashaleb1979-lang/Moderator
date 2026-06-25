@@ -46,9 +46,25 @@ const ANTITEAM_COUNT_ALIASES = Object.freeze({
   "5-6": "6-10",
 });
 
-const ANTITEAM_TICKET_KINDS = Object.freeze(["standard", "clan"]);
-const ANTITEAM_TICKET_STATUSES = Object.freeze(["draft", "photo_pending", "open", "closed", "cancelled"]);
+const ANTITEAM_TICKET_KINDS = Object.freeze(["standard", "clan", "kv"]);
+const ANTITEAM_TICKET_STATUSES = Object.freeze(["draft", "photo_pending", "pending_approval", "open", "closed", "cancelled"]);
 const ANTITEAM_PING_MODES = Object.freeze(["battalion", "custom_role", "everyone", "edit_roles"]);
+
+// "КВ" (clan war) is a 4th danger mode: registering it publishes a "возможно кв"
+// that only pings the two approval targets below. Admins approve it into a real
+// KV (which then pings the edit-test roles and opens the thread for helpers) or
+// reject it, ending the request with nobody marked. These default targets are the
+// IDs the moderation team asked for; they can be overridden via config later.
+const KV_APPROVAL_PING_ROLE_ID = "1519762809066361037";
+const KV_APPROVAL_PING_USER_ID = "1011666449963688027";
+
+// Kinds that pin the request to a named anchor player (helpers connect through
+// them) instead of the requester's own Roblox.
+const ANTITEAM_ANCHOR_KINDS = Object.freeze(["clan", "kv"]);
+
+function isAnchorKind(kind) {
+  return ANTITEAM_ANCHOR_KINDS.includes(cleanString(kind, 40).toLowerCase());
+}
 const DISCORD_THREAD_AUTO_ARCHIVE_MINUTES = Object.freeze([60, 1440, 4320, 10080]);
 const ANTITEAM_HELPER_REWARD_THRESHOLDS = Object.freeze([1, 5, 10, 20, 50]);
 
@@ -226,6 +242,10 @@ function createDefaultAntiteamConfig(value = {}) {
     ),
     battalionLeadRoleId: cleanString(source.battalionLeadRoleId, 80),
     clanCallerRoleId: cleanString(source.clanCallerRoleId, 80),
+    // KV "возможно кв" approval ping targets. Empty falls back to the built-in
+    // defaults (KV_APPROVAL_PING_ROLE_ID / KV_APPROVAL_PING_USER_ID).
+    kvApprovalRoleId: cleanString(source.kvApprovalRoleId, 80),
+    kvApprovalUserId: cleanString(source.kvApprovalUserId, 80),
     pingMode: normalizeAntiteamPingMode(source.pingMode, "battalion"),
     testMode: normalizeBoolean(source.testMode, false),
     extraPingRoleId: cleanString(source.extraPingRoleId ?? source.customPingRoleId, 80),
@@ -286,8 +306,9 @@ function normalizeSelectedClanPingKeys(value = [], config = createDefaultAntitea
 function normalizeAntiteamDraft(value = {}, config = createDefaultAntiteamConfig()) {
   const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
   const kind = normalizeTicketKind(source.kind, "standard");
-  const anchorUserId = kind === "clan" ? cleanString(source.anchorUserId, 80) : "";
-  const anchorUserTag = kind === "clan" ? cleanString(source.anchorUserTag, 120) : "";
+  const anchored = isAnchorKind(kind);
+  const anchorUserId = anchored ? cleanString(source.anchorUserId, 80) : "";
+  const anchorUserTag = anchored ? cleanString(source.anchorUserTag, 120) : "";
   const now = new Date().toISOString();
   const photos = normalizePhotos(source.photos, source.photo);
   return {
@@ -296,14 +317,17 @@ function normalizeAntiteamDraft(value = {}, config = createDefaultAntiteamConfig
     userTag: cleanString(source.userTag, 120),
     anchorUserId,
     anchorUserTag,
+    // Why the anchor matters / who they are — required for KV so helpers know who
+    // to protect. Stored separately from the situation description.
+    anchorNote: anchored ? cleanString(source.anchorNote, 700) : "",
     roblox: normalizeRobloxSnapshot(source.roblox),
     // A twink/alt Roblox bound just for this mission — it never touches the
     // author's profile binding. Set when the requester confirms a temporary nick.
     robloxTemporary: normalizeBoolean(source.robloxTemporary, false),
     // Candidate twink awaiting the requester's confirmation in the setup panel.
     pendingTwink: normalizePendingTwink(source.pendingTwink),
-    level: kind === "clan" ? "clan" : normalizeAntiteamLevel(source.level, "medium"),
-    count: kind === "clan" ? "clan" : normalizeAntiteamCount(source.count, "3-5"),
+    level: anchored ? kind : normalizeAntiteamLevel(source.level, "medium"),
+    count: anchored ? kind : normalizeAntiteamCount(source.count, "3-5"),
     description: cleanString(source.description, 900),
     directJoinEnabled: normalizeBoolean(source.directJoinEnabled, false),
     manualDirectJoinUrl: cleanString(source.manualDirectJoinUrl, 2000),
@@ -380,11 +404,22 @@ function normalizeMessageRefs(value = {}) {
   };
 }
 
+function normalizeKvApproval(value = {}) {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const decision = cleanString(source.decision, 20).toLowerCase();
+  return {
+    decision: ["approved", "rejected"].includes(decision) ? decision : "",
+    decidedBy: cleanString(source.decidedBy, 80),
+    decidedAt: normalizeIsoTimestamp(source.decidedAt, null),
+  };
+}
+
 function normalizeAntiteamTicket(value = {}, config = createDefaultAntiteamConfig()) {
   const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
   const kind = normalizeTicketKind(source.kind, "standard");
-  const anchorUserId = kind === "clan" ? cleanString(source.anchorUserId, 80) : "";
-  const anchorUserTag = kind === "clan" ? cleanString(source.anchorUserTag, 120) : "";
+  const anchored = isAnchorKind(kind);
+  const anchorUserId = anchored ? cleanString(source.anchorUserId, 80) : "";
+  const anchorUserTag = anchored ? cleanString(source.anchorUserTag, 120) : "";
   const photos = normalizePhotos(source.photos, source.photo);
   const helpers = {};
   for (const [helperUserId, helper] of Object.entries(source.helpers || {})) {
@@ -400,10 +435,12 @@ function normalizeAntiteamTicket(value = {}, config = createDefaultAntiteamConfi
     createdByTag: cleanString(source.createdByTag, 120),
     anchorUserId,
     anchorUserTag,
+    anchorNote: anchored ? cleanString(source.anchorNote, 700) : "",
+    kvApproval: kind === "kv" ? normalizeKvApproval(source.kvApproval) : normalizeKvApproval(),
     roblox: normalizeRobloxSnapshot(source.roblox),
     robloxTemporary: normalizeBoolean(source.robloxTemporary, false),
-    level: kind === "clan" ? "clan" : normalizeAntiteamLevel(source.level, "medium"),
-    count: kind === "clan" ? "clan" : normalizeAntiteamCount(source.count, "3-5"),
+    level: anchored ? kind : normalizeAntiteamLevel(source.level, "medium"),
+    count: anchored ? kind : normalizeAntiteamCount(source.count, "3-5"),
     description: cleanString(source.description, 1200),
     directJoinEnabled: normalizeBoolean(source.directJoinEnabled, false),
     manualDirectJoinUrl: cleanString(source.manualDirectJoinUrl, 2000),
@@ -554,12 +591,34 @@ function normalizePhotoRequests(value = {}, config = createDefaultAntiteamConfig
   return result;
 }
 
+// Marks a container that has already been through normalizeAntiteamState in this
+// process. Symbol-keyed + non-enumerable, so it is never serialized to disk
+// (JSON.stringify ignores Symbol keys) and never leaks into the saved db — on
+// reload the loaded object is untagged and gets normalized exactly once.
+const ANTITEAM_NORMALIZED_TAG = Symbol("antiteamNormalized");
+
 function ensureAntiteamState(db = {}) {
   if (!db.sot || typeof db.sot !== "object" || Array.isArray(db.sot)) {
     db.sot = {};
   }
-  const normalized = normalizeAntiteamState(db.sot.antiteam);
-  const mutated = JSON.stringify(db.sot.antiteam || null) !== JSON.stringify(normalized);
+  const existing = db.sot.antiteam;
+  // Fast path: this exact container was already normalized to the current
+  // version and the in-memory mutation helpers (which only ever write normalized
+  // values back through the same reference) have kept it valid. Skip the deep
+  // re-normalize + double full-state JSON.stringify that previously ran on EVERY
+  // getState/getConfig/update call — by far the hottest antiteam CPU cost, and
+  // the source of event-loop stalls that made interactions slow/lost.
+  if (existing && typeof existing === "object" && existing[ANTITEAM_NORMALIZED_TAG] === ANTITEAM_VERSION) {
+    return { state: existing, mutated: false };
+  }
+  const normalized = normalizeAntiteamState(existing);
+  const mutated = JSON.stringify(existing || null) !== JSON.stringify(normalized);
+  Object.defineProperty(normalized, ANTITEAM_NORMALIZED_TAG, {
+    value: ANTITEAM_VERSION,
+    enumerable: false,
+    configurable: true,
+    writable: true,
+  });
   db.sot.antiteam = normalized;
   return { state: normalized, mutated };
 }
@@ -620,14 +679,16 @@ function createAntiteamTicketFromDraft(db = {}, draft = {}, options = {}) {
   const normalizedDraft = normalizeAntiteamDraft(draft, state.config);
   const now = cleanString(options.now, 80) || new Date().toISOString();
   const id = cleanString(options.id, 80) || createTicketId(now);
+  const status = normalizedDraft.kind === "kv" ? "pending_approval" : "open";
   const ticket = normalizeAntiteamTicket({
     id,
     kind: normalizedDraft.kind,
-    status: "open",
+    status: normalizeTicketStatus(options.status, status),
     createdBy: normalizedDraft.userId,
     createdByTag: normalizedDraft.userTag,
     anchorUserId: normalizedDraft.anchorUserId,
     anchorUserTag: normalizedDraft.anchorUserTag,
+    anchorNote: normalizedDraft.anchorNote,
     roblox: normalizedDraft.roblox,
     robloxTemporary: normalizedDraft.robloxTemporary,
     level: normalizedDraft.level,
@@ -767,6 +828,41 @@ function setTicketHelperArrival(db = {}, ticketId, helperUserId, arrived, option
   });
 }
 
+function setAllTicketHelpersArrival(db = {}, ticketId, arrived, options = {}) {
+  const now = cleanString(options.now, 80) || new Date().toISOString();
+  return updateAntiteamTicket(db, ticketId, (ticket) => {
+    for (const helper of Object.values(ticket.helpers || {})) {
+      helper.arrived = arrived === true;
+      helper.arrivedSetAt = now;
+    }
+    ticket.updatedAt = now;
+    return ticket;
+  });
+}
+
+function setKvApprovalDecision(db = {}, ticketId, decision, options = {}) {
+  const now = cleanString(options.now, 80) || new Date().toISOString();
+  const normalizedDecision = cleanString(decision, 20).toLowerCase();
+  return updateAntiteamTicket(db, ticketId, (ticket) => {
+    if (ticket.kind !== "kv") return ticket;
+    ticket.kvApproval = normalizeKvApproval({
+      decision: normalizedDecision,
+      decidedBy: cleanString(options.decidedBy, 80),
+      decidedAt: now,
+    });
+    if (normalizedDecision === "approved") {
+      ticket.status = "open";
+    } else if (normalizedDecision === "rejected") {
+      ticket.status = "cancelled";
+      ticket.closedAt = now;
+      ticket.closedBy = cleanString(options.decidedBy, 80);
+    }
+    ticket.updatedAt = now;
+    ticket.lastActivityAt = now;
+    return ticket;
+  });
+}
+
 function closeAntiteamTicket(db = {}, ticketId, options = {}) {
   const now = cleanString(options.now, 80) || new Date().toISOString();
   return updateAntiteamTicket(db, ticketId, (ticket) => {
@@ -785,7 +881,8 @@ function closeAntiteamTicket(db = {}, ticketId, options = {}) {
 
 function listOpenAntiteamTickets(db = {}) {
   const { state } = ensureAntiteamState(db);
-  return Object.values(state.tickets).filter((ticket) => ticket.status === "open" || ticket.status === "photo_pending");
+  return Object.values(state.tickets).filter((ticket) =>
+    ticket.status === "open" || ticket.status === "photo_pending" || ticket.status === "pending_approval");
 }
 
 function findIdleAntiteamTickets(db = {}, now = new Date().toISOString()) {
@@ -794,7 +891,8 @@ function findIdleAntiteamTickets(db = {}, now = new Date().toISOString()) {
   if (!Number.isFinite(nowMs)) return [];
   const closeMs = Math.max(1, state.config.missionAutoCloseMinutes) * 60 * 1000;
   return listOpenAntiteamTickets(db).filter((ticket) => {
-    if (ticket.kind === "clan") return false;
+    if (ticket.kind === "clan" || ticket.kind === "kv") return false;
+    if (ticket.status !== "open") return false;
     if (ticket.autoCloseEnabled === false) return false;
     const lastMs = Date.parse(ticket.lastActivityAt || ticket.updatedAt || ticket.createdAt || "");
     return Number.isFinite(lastMs) && nowMs - lastMs >= closeMs;
@@ -820,6 +918,7 @@ function matchRobloxFriendsToDiscordProfiles(profiles = {}, friends = []) {
 }
 
 module.exports = {
+  ANTITEAM_ANCHOR_KINDS,
   ANTITEAM_COUNTS,
   ANTITEAM_HELPER_REWARD_THRESHOLDS,
   ANTITEAM_LEVELS,
@@ -828,6 +927,8 @@ module.exports = {
   ANTITEAM_TICKET_STATUSES,
   ANTITEAM_VERSION,
   DEFAULT_CLAN_PING_ROLES,
+  KV_APPROVAL_PING_ROLE_ID,
+  KV_APPROVAL_PING_USER_ID,
   cleanString,
   adjustHelperStatsPoints,
   clearAntiteamDraft,
@@ -842,6 +943,7 @@ module.exports = {
   getAntiteamDraft,
   getRobloxConfirmation,
   incrementHelperStats,
+  isAnchorKind,
   listOpenAntiteamTickets,
   markRobloxConfirmed,
   matchRobloxFriendsToDiscordProfiles,
@@ -853,7 +955,9 @@ module.exports = {
   normalizeAntiteamTicket,
   normalizeClanPingRoles,
   recordAntiteamHelper,
+  setAllTicketHelpersArrival,
   setAntiteamDraft,
+  setKvApprovalDecision,
   setTicketHelperArrival,
   updateAntiteamTicket,
 };

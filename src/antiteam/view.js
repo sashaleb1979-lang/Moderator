@@ -21,6 +21,8 @@ const {
   ANTITEAM_COUNTS,
   ANTITEAM_HELPER_REWARD_THRESHOLDS,
   ANTITEAM_LEVELS,
+  KV_APPROVAL_PING_ROLE_ID,
+  KV_APPROVAL_PING_USER_ID,
   cleanString,
   createDefaultAntiteamConfig,
   normalizeAntiteamCount,
@@ -35,6 +37,30 @@ const {
 const ANTITEAM_COMMAND_NAME = "антитим";
 const CLAN_WAR_LABEL = "ФАЙТ С КЛАНОМ";
 const CLAN_WAR_ACCENT_COLOR = 0x8E24AA;
+const KV_LABEL = "КВ";
+const KV_PENDING_LABEL = "ВОЗМОЖНО КВ";
+const KV_ACCENT_COLOR = 0x5E35B1;
+const KV_PENDING_ACCENT_COLOR = 0x7E57C2;
+const KV_LEVEL_OPTION = Object.freeze({
+  id: "kv",
+  emoji: "🟪",
+  label: "КВ (клан-вар)",
+  description: "Заявка «возможно кв» — её одобряют админы.",
+});
+
+function isKvTicket(ticket = {}) {
+  return ticket?.kind === "kv";
+}
+
+function isKvPending(ticket = {}) {
+  return ticket?.kind === "kv" && ticket?.status === "pending_approval";
+}
+
+function formatKvApprovalTargets(config = createDefaultAntiteamConfig()) {
+  const roleId = cleanString(config.kvApprovalRoleId, 80) || KV_APPROVAL_PING_ROLE_ID;
+  const userId = cleanString(config.kvApprovalUserId, 80) || KV_APPROVAL_PING_USER_ID;
+  return { roleId, userId, mention: `<@&${roleId}> <@${userId}>` };
+}
 
 const ANTITEAM_CUSTOM_IDS = Object.freeze({
   open: "at:open",
@@ -66,6 +92,8 @@ const ANTITEAM_CUSTOM_IDS = Object.freeze({
   clanRolesSelect: "at:clan_roles",
   toggleDirect: "at:toggle:direct",
   togglePhoto: "at:toggle:photo",
+  // KV (clan war) anchor entry from the setup panel.
+  kvAnchor: "at:kv_anchor:open",
   setDirectLink: "at:direct_link:set",
   directLinkGuide: "at:direct_link:guide",
   editDescription: "at:desc:open",
@@ -785,7 +813,9 @@ function buildTwinkConfirmPayload(roblox = {}, { kind = "standard" } = {}) {
   const profileUrl = cleanString(roblox.profileUrl, 500) || (userId ? `https://www.roblox.com/users/${userId}/profile` : "");
   const targetLine = kind === "clan"
     ? "Этот аккаунт будет показан как якорь ФАЙТ С КЛАНОМ."
-    : "Этот аккаунт будет показан в заявке вместо основного.";
+    : kind === "kv"
+      ? "Этот аккаунт будет показан как якорь КВ — по нему подключаются помощники."
+      : "Этот аккаунт будет показан в заявке вместо основного.";
   const buttons = [
     new ButtonBuilder()
       .setCustomId(ANTITEAM_CUSTOM_IDS.twinkConfirm)
@@ -1006,18 +1036,29 @@ function buildDescriptionModal(draft = {}, customId = "at:desc:modal") {
 }
 
 function buildLevelSelect(draft = {}) {
+  const isKv = draft.kind === "kv";
   const selected = normalizeAntiteamLevel(draft.level, "medium");
+  const levelOptions = Object.values(ANTITEAM_LEVELS).map((level) => ({
+    label: level.label,
+    value: level.id,
+    description: level.description.slice(0, 100),
+    emoji: level.emoji,
+    default: !isKv && level.id === selected,
+  }));
+  // 4th danger mode: КВ. Picking it switches the request into clan-war mode with
+  // an admin-approved "возможно кв" gate (handled in the select interaction).
+  levelOptions.push({
+    label: KV_LEVEL_OPTION.label,
+    value: KV_LEVEL_OPTION.id,
+    description: KV_LEVEL_OPTION.description.slice(0, 100),
+    emoji: KV_LEVEL_OPTION.emoji,
+    default: isKv,
+  });
   return new ActionRowBuilder().addComponents(
     new StringSelectMenuBuilder()
       .setCustomId(ANTITEAM_CUSTOM_IDS.levelSelect)
       .setPlaceholder("Опасность тимеров")
-      .addOptions(Object.values(ANTITEAM_LEVELS).map((level) => ({
-        label: level.label,
-        value: level.id,
-        description: level.description.slice(0, 100),
-        emoji: level.emoji,
-        default: level.id === selected,
-      })))
+      .addOptions(levelOptions)
   );
 }
 
@@ -1116,7 +1157,102 @@ function buildDraftSubmitRow(draft = {}) {
   );
 }
 
+function buildKvAnchorLine(draft = {}, statusText = "") {
+  if (!cleanString(draft.anchorUserId, 80)) {
+    return "⚓ Якорь не указан — нажми «Указать якоря» ниже.";
+  }
+  return `⚓ Якорь: <@${draft.anchorUserId}> • ${getDraftRobloxLine(draft, statusText)}`;
+}
+
+function buildKvSetupPayload(draft = {}, config = createDefaultAntiteamConfig(), statusText = "") {
+  const targets = formatKvApprovalTargets(config);
+  const hasAnchor = Boolean(cleanString(draft.anchorUserId, 80));
+  const hasNote = Boolean(cleanString(draft.anchorNote, 700));
+  const hasRoblox = Boolean(cleanString(draft.roblox?.userId, 40));
+  const ready = hasAnchor && hasNote && hasRoblox;
+  const container = new ContainerBuilder()
+    .setAccentColor(KV_PENDING_ACCENT_COLOR)
+    .addTextDisplayComponents(
+      new TextDisplayBuilder().setContent(`# 🟪 ${KV_PENDING_LABEL}`),
+      new TextDisplayBuilder().setContent([
+        buildKvAnchorLine(draft, statusText),
+        `Уйдёт как «возможно кв»: пинг только ${targets.mention}. Админы могут НЕ одобрить — тогда заявка закроется без отметок.`,
+        statusText && !/roblox (взят|подтвержд|найден|готов)/i.test(cleanString(statusText, 240)) ? statusText : "",
+      ].filter(Boolean).join("\n"))
+    );
+
+  // Anchor + reason live together: a single modal collects who the anchor is and
+  // why they matter (people will keep joining them, so they must not leave).
+  container.addActionRowComponents(new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(ANTITEAM_CUSTOM_IDS.kvAnchor)
+      .setLabel(hasAnchor ? "⚓ Изменить якоря и причину" : "⚓ Указать якоря и почему он важен")
+      .setStyle(hasAnchor && hasNote ? ButtonStyle.Secondary : ButtonStyle.Primary)
+  ));
+
+  container
+    .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent([
+      "**Кто якорь и почему он важен**",
+      cleanString(draft.anchorNote, 700) || "Опиши якоря: кто это, почему на него будут стабильно заходить и почему он не ливнёт.",
+    ].join("\n")));
+
+  // Anchor Roblox — helpers connect through it, so it is mandatory before submit.
+  container
+    .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent([
+      "**Roblox якоря**",
+      hasRoblox
+        ? `Roblox: **${cleanString(draft.roblox?.username, 120) || "—"}** — помощники подключаются по нему.`
+        : "Укажи действующий Roblox якоря — без него помощники не подключатся.",
+    ].join("\n")))
+    .addActionRowComponents(new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(ANTITEAM_CUSTOM_IDS.twinkOpen)
+        .setLabel(hasRoblox ? "🎭 Сменить Roblox якоря" : "🎭 Указать Roblox якоря")
+        .setStyle(hasRoblox ? ButtonStyle.Success : ButtonStyle.Primary)
+    ));
+
+  {
+    const link = cleanString(draft.manualDirectJoinUrl, 2000);
+    container
+      .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
+      .addTextDisplayComponents(new TextDisplayBuilder().setContent([
+        "**🔗 Прямая ссылка (необязательно)**",
+        link
+          ? "Прямая ссылка добавлена ✅ — помощники смогут зайти к якорю по ней."
+          : "Необязательно: вставь прямую ссылку подключения к якорю.",
+      ].join("\n")))
+      .addActionRowComponents(new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(ANTITEAM_CUSTOM_IDS.setDirectLink)
+          .setLabel(link ? "🔗 Изменить ссылку" : "🔗 Вставить ссылку")
+          .setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder()
+          .setCustomId(ANTITEAM_CUSTOM_IDS.directLinkGuide)
+          .setLabel("❓ Где взять ссылку")
+          .setStyle(ButtonStyle.Secondary)
+      ));
+  }
+
+  container
+    .addSeparatorComponents(new SeparatorBuilder().setDivider(false))
+    .addActionRowComponents(new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(ANTITEAM_CUSTOM_IDS.submitDraft)
+        .setLabel("🟪 Отправить «возможно кв»")
+        .setStyle(ButtonStyle.Primary)
+        .setDisabled(!ready),
+      new ButtonBuilder()
+        .setCustomId(ANTITEAM_CUSTOM_IDS.cancelDraft)
+        .setLabel("✖️ Отменить")
+        .setStyle(ButtonStyle.Secondary)
+    ));
+  return buildPayload(container, { ephemeral: true });
+}
+
 function buildTicketSetupPayload(draft = {}, config = createDefaultAntiteamConfig(), statusText = "") {
+  if (draft.kind === "kv") return buildKvSetupPayload(draft, config, statusText);
   const isClan = draft.kind === "clan";
   const level = getLevelMeta(draft.level);
   const count = getCountMeta(draft.count);
@@ -1212,15 +1348,23 @@ function buildPhotoRequestPayload(draft = {}, statusText = "") {
 }
 
 function buildTicketTitle(ticket = {}) {
-  const isClosed = ticket.status === "closed";
+  const isClosed = ticket.status === "closed" || ticket.status === "cancelled";
   const testPrefix = ticket.test ? "🧪 ТЕСТ • " : "";
+  if (ticket.kind === "kv") {
+    if (isKvPending(ticket)) return `${testPrefix}🟪 ${KV_PENDING_LABEL}`;
+    return `${testPrefix}${isClosed ? "⚫" : "🟪"} ${KV_LABEL}`;
+  }
   if (ticket.kind === "clan") return `${testPrefix}${isClosed ? "⚫" : "🟣"} ${CLAN_WAR_LABEL}`;
   return `${testPrefix}${isClosed ? "⚫ Завершено" : `${getLevelMeta(ticket.level).emoji} Нужна помощь`} • ${formatCountHeadline(ticket.count)}`;
 }
 
 function buildThreadName(ticket = {}) {
-  const isClosed = ticket.status === "closed";
+  const isClosed = ticket.status === "closed" || ticket.status === "cancelled";
   const testPrefix = ticket.test ? "🧪 ТЕСТ " : "";
+  if (ticket.kind === "kv") {
+    if (isKvPending(ticket)) return `${testPrefix}🟪 ${KV_PENDING_LABEL}`;
+    return `${testPrefix}${isClosed ? "⚫" : "🟪"} ${KV_LABEL}`;
+  }
   if (ticket.kind === "clan") return `${testPrefix}${isClosed ? "⚫" : "🟣"} ${CLAN_WAR_LABEL}`;
   return `${testPrefix}${isClosed ? "⚫" : getLevelMeta(ticket.level).emoji} ${formatCountHeadline(ticket.count)} • ${formatRequesterName(ticket)}`;
 }
@@ -1304,15 +1448,25 @@ function formatHelpersBlock(ticket = {}, options = {}) {
 }
 
 function buildTicketPublicPayload(ticket = {}, config = createDefaultAntiteamConfig(), options = {}) {
-  const isClosed = ticket.status === "closed";
+  const isClosed = ticket.status === "closed" || ticket.status === "cancelled";
   const isClan = ticket.kind === "clan";
+  const isKv = ticket.kind === "kv";
+  const isPending = isKvPending(ticket);
+  const isAnchored = isClan || isKv;
   const level = getLevelMeta(ticket.level);
-  const authorLine = isClan && ticket.anchorUserId
+  const authorLine = isAnchored && ticket.anchorUserId
     ? `Попросил 👤 <@${ticket.createdBy}> • Якорь <@${ticket.anchorUserId}> • ${formatPublicRobloxLink(ticket)}`
     : `Попросил 👤 <@${ticket.createdBy}> • ${formatPublicRobloxLink(ticket)}`;
-  const dangerText = isClan
-    ? `🟣 **${CLAN_WAR_LABEL}**: якорь должен оставаться в игре до завершения тревоги.`
-    : formatPublicDifficulty(ticket);
+  let dangerText;
+  if (isKv) {
+    dangerText = isPending
+      ? `🟪 **${KV_PENDING_LABEL}**: ждём решения админов. Могут НЕ одобрить — тогда заявка закроется без отметок.`
+      : `🟪 **${KV_LABEL}**: якорь должен оставаться в игре до конца. По нему подключаются помощники.`;
+  } else if (isClan) {
+    dangerText = `🟣 **${CLAN_WAR_LABEL}**: якорь должен оставаться в игре до завершения тревоги.`;
+  } else {
+    dangerText = formatPublicDifficulty(ticket);
+  }
   // Direct-join shown as a bare lock emoji only (🔓 open / 🔒 closed); the
   // open/closed status text is dropped — the title already says Завершено/Нужна
   // помощь and the card greys out when done.
@@ -1323,8 +1477,9 @@ function buildTicketPublicPayload(ticket = {}, config = createDefaultAntiteamCon
     authorLine,
     `${dangerText} ${directEmoji}`,
   ], "—", 1400));
+  const kvAccent = isPending ? KV_PENDING_ACCENT_COLOR : KV_ACCENT_COLOR;
   const container = new ContainerBuilder()
-    .setAccentColor(isClosed ? 0x607D8B : isClan ? CLAN_WAR_ACCENT_COLOR : level.accentColor);
+    .setAccentColor(isClosed ? 0x607D8B : isKv ? kvAccent : isClan ? CLAN_WAR_ACCENT_COLOR : level.accentColor);
   if (avatarUrl) {
     // Roblox avatar on the right of the header (same URL-thumbnail pattern as the
     // profile card — Discord fetches the URL itself, no bot-side download).
@@ -1340,11 +1495,23 @@ function buildTicketPublicPayload(ticket = {}, config = createDefaultAntiteamCon
   } else {
     container.addTextDisplayComponents(titleDisplay, infoDisplay);
   }
+  const descHeading = isKv ? "Кто якорь и почему важен" : "Описание";
+  const descBody = isKv
+    ? buildQuotedDescription(ticket.anchorNote || ticket.description, "якорь не описан")
+    : buildQuotedDescription(ticket.description);
   container
     .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(`### Описание\n${buildQuotedDescription(ticket.description)}`))
-    .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(`### Помощники\n${formatHelpersBlock(ticket, options)}`));
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(`### ${descHeading}\n${descBody}`));
+  if (isPending) {
+    container
+      .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
+      .addTextDisplayComponents(new TextDisplayBuilder().setContent(
+        "### Статус\nПомощь откроется только после одобрения админами. Если отклонят — заявка закроется без отметок."));
+  } else {
+    container
+      .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
+      .addTextDisplayComponents(new TextDisplayBuilder().setContent(`### Помощники\n${formatHelpersBlock(ticket, options)}`));
+  }
 
   const photos = getTicketPhotos(ticket);
   const shouldAttachPhoto = options.attachPhoto === true && photos.length > 0;
@@ -1366,7 +1533,7 @@ function buildTicketPublicPayload(ticket = {}, config = createDefaultAntiteamCon
       .addMediaGalleryComponents(media);
   }
 
-  const publicHelpJumpUrl = isClosed ? "" : buildPublicHelpJumpUrl(ticket);
+  const publicHelpJumpUrl = (isClosed || isPending) ? "" : buildPublicHelpJumpUrl(ticket);
   const payload = buildPayload(container, {
     extraComponents: publicHelpJumpUrl ? [
       new ActionRowBuilder().addComponents(
@@ -1390,10 +1557,46 @@ function ticketButtonId(action, ticketId, extra = "") {
   return ["at", action, ticketId, extra].map((part) => cleanString(part, 80)).filter(Boolean).join(":").slice(0, 100);
 }
 
+function buildKvApprovalPanelPayload(ticket = {}) {
+  // The "возможно кв" review panel: admins approve (open + ping edit-test) or
+  // reject (close, nobody marked). Author can still fix the anchor link/Roblox.
+  const hasDirectLink = Boolean(cleanString(ticket.manualDirectJoinUrl, 2000));
+  return {
+    components: [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(ticketButtonId("kv_approve", ticket.id))
+          .setLabel("✅ Одобрить КВ")
+          .setStyle(ButtonStyle.Success),
+        new ButtonBuilder()
+          .setCustomId(ticketButtonId("kv_reject", ticket.id))
+          .setLabel("🚫 Отклонить")
+          .setStyle(ButtonStyle.Danger),
+        new ButtonBuilder()
+          .setCustomId(ticketButtonId("report", ticket.id))
+          .setLabel("⚠️ Пожаловаться")
+          .setStyle(ButtonStyle.Secondary)
+      ),
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(ticketButtonId("set_direct_link", ticket.id))
+          .setLabel(hasDirectLink ? "🔗 Изменить ссылку" : "🔗 Добавить ссылку")
+          .setStyle(hasDirectLink ? ButtonStyle.Success : ButtonStyle.Secondary),
+        new ButtonBuilder()
+          .setCustomId(ticketButtonId("change_roblox", ticket.id))
+          .setLabel("🎭 Сменить якорь-Roblox")
+          .setStyle(ButtonStyle.Secondary)
+      ),
+    ],
+  };
+}
+
 function buildThreadPanelPayload(ticket = {}, config = createDefaultAntiteamConfig()) {
-  const isClosed = ticket.status === "closed";
+  if (isKvPending(ticket)) return buildKvApprovalPanelPayload(ticket);
+  const isClosed = ticket.status === "closed" || ticket.status === "cancelled";
   const autoCloseMinutes = Math.max(1, Number.parseInt(config?.missionAutoCloseMinutes, 10) || 120);
   const autoCloseEnabled = ticket.autoCloseEnabled !== false;
+  const isAnchored = ticket.kind === "clan" || ticket.kind === "kv";
   const components = [new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId(ticketButtonId("help", ticket.id))
@@ -1419,8 +1622,8 @@ function buildThreadPanelPayload(ticket = {}, config = createDefaultAntiteamConf
 
   const hasDirectLink = Boolean(cleanString(ticket.manualDirectJoinUrl, 2000));
   const secondRow = new ActionRowBuilder();
-  // Auto-close toggle is meaningless for clan war (it has no idle auto-close).
-  if (ticket.kind !== "clan") {
+  // Auto-close toggle is meaningless for clan war / KV (no idle auto-close).
+  if (!isAnchored) {
     secondRow.addComponents(
       new ButtonBuilder()
         .setCustomId(ticketButtonId("toggle_auto_close", ticket.id))
@@ -1439,7 +1642,7 @@ function buildThreadPanelPayload(ticket = {}, config = createDefaultAntiteamConf
       .setDisabled(isClosed),
     new ButtonBuilder()
       .setCustomId(ticketButtonId("change_roblox", ticket.id))
-      .setLabel(ticket.kind === "clan" ? "🎭 Сменить якорь-Roblox" : "🎭 Сменить Roblox")
+      .setLabel(isAnchored ? "🎭 Сменить якорь-Roblox" : "🎭 Сменить Roblox")
       .setStyle(ButtonStyle.Secondary)
       .setDisabled(isClosed)
   );
@@ -1461,7 +1664,7 @@ function buildHelpReplyPayload({
   friendRequestNotified = false,
 } = {}) {
   const lines = [];
-  const targetLabel = ticket.kind === "clan" ? "якоря" : "автора";
+  const targetLabel = (ticket.kind === "clan" || ticket.kind === "kv") ? "якоря" : "автора";
   if (linkKind === "direct") {
     lines.push("Прямой вход включён. Можно подключаться сразу.");
   } else if (linkKind === "friend_direct") {
@@ -1539,6 +1742,34 @@ function buildCloseSummaryModal(ticketId) {
           .setStyle(TextInputStyle.Paragraph)
           .setRequired(false)
           .setMaxLength(1200)
+      )
+    );
+}
+
+function buildKvAnchorModal(draft = {}) {
+  return new ModalBuilder()
+    .setCustomId("at:kv_anchor:modal")
+    .setTitle("Якорь КВ")
+    .addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId("anchor")
+          .setLabel("Якорь: @упоминание или ID")
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+          .setMaxLength(80)
+          .setValue(cleanString(draft?.anchorUserId, 80))
+          .setPlaceholder("Например 1011666449963688027 или @ник")
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId("anchor_note")
+          .setLabel("Кто это и почему он важен")
+          .setStyle(TextInputStyle.Paragraph)
+          .setRequired(true)
+          .setMaxLength(700)
+          .setValue(cleanString(draft?.anchorNote, 700))
+          .setPlaceholder("Кто якорь, почему на него будут стабильно заходить и почему он не должен ливать.")
       )
     );
 }
@@ -1692,6 +1923,7 @@ module.exports = {
   buildHelperRewardRolesModal,
   buildHelperStatsPayload,
   buildHelpReplyPayload,
+  buildKvAnchorModal,
   buildModeratorPanelPayload,
   buildPanelTextModal,
   buildPingConfigModal,

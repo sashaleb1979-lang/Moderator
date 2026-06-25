@@ -29,8 +29,11 @@ test("welcome-bot tournament Roblox snapshot uses the shared profile nickname ba
   assert.match(snapshotAdapterBlock, /pickTournamentApprovedSubmissionKills\(profile, registration\)/);
   assert.match(snapshotAdapterBlock, /pickTournamentTextTierlistProfileKills\(registration\)/);
   assert.match(snapshotAdapterBlock, /pickTournamentRecentSubmissionKills\(registration\)/);
+  assert.match(snapshotAdapterBlock, /pickTournamentProofSubmission\(profile, snapshotRegistration\)/);
+  assert.match(snapshotAdapterBlock, /tournamentSubmissionImageUrl\(proofSubmission\)/);
+  assert.match(snapshotAdapterBlock, /const snapshotRegistration = \{ \.\.\.registration, userId: registration\.userId \|\| userId \};/);
   assert.match(snapshotAdapterBlock, /submission\.status === "rejected"/);
-  assert.ok(source.indexOf("const approvedKills = pickTournamentApprovedKills(profile, registration);", snapshotStart) > snapshotStart, "expected tournament snapshot to avoid zero-first kill fallback");
+  assert.ok(source.indexOf("const approvedKills = pickTournamentApprovedKills(profile, snapshotRegistration);", snapshotStart) > snapshotStart, "expected tournament snapshot to avoid zero-first kill fallback");
   assert.ok(operatorStart > snapshotStart, "expected operator wiring after snapshot adapter");
   assert.ok(source.indexOf("writeRobloxBinding:", operatorStart) > operatorStart, "expected tournament to write main Roblox lookups back to profile");
 });

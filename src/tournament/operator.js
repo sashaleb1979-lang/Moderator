@@ -83,7 +83,9 @@ function createTournamentOperator(deps = {}) {
     const updatePayload = withoutEphemeralFlag(payload);
     try {
       if (interaction.deferred || interaction.replied) return await interaction.editReply(updatePayload);
-      return await interaction.update(updatePayload);
+      const result = await interaction.update(updatePayload);
+      interaction.replied = true;
+      return result;
     } catch (error) {
       if (isUnknownInteractionError(error)) return null;
       throw error;
@@ -103,7 +105,9 @@ function createTournamentOperator(deps = {}) {
       if (interaction.deferred || interaction.replied) {
         return await interaction.followUp(ephemeralPayload);
       }
-      return await interaction.reply(ephemeralPayload);
+      const result = await interaction.reply(ephemeralPayload);
+      interaction.replied = true;
+      return result;
     } catch (error) {
       if (isUnknownInteractionError(error)) return null;
       throw error;
@@ -543,17 +547,60 @@ function createTournamentOperator(deps = {}) {
       }
     }
 
-    if (tournament.status === "completed" && !tournament.summaryPosted) {
-      const channel = await fetchChannel(tournament.announce?.channelId).catch(() => null);
-      const filename = "tournament-summary.png";
-      const buffer = await renderSummaryBuffer(tournament, await collectTournamentAvatars(tournament));
-      const payload = view.buildSummaryPostPayload(tournament, { imageFilename: buffer ? filename : "" });
-      const sendable = { ...attachImage(payload, buffer, filename), allowedMentions: { parse: [] } };
-      if (channel?.send) await channel.send(sendable).catch(() => {});
-      await persist("tournament-summary-posted", async () => {
-        state.updateTournament(db, tournamentId, { summaryPosted: true });
-      });
+    // The public grand summary is published explicitly from the organizer's
+    // completion window, after they have a chance to add the final comment.
+  }
+
+  async function buildCompletionWindowPayload(tournament, statusText = "") {
+    const filename = "tournament-summary.png";
+    const buffer = await renderSummaryBuffer(tournament, await collectTournamentAvatars(tournament));
+    const payload = view.buildCompletionPanelPayload(tournament, {
+      imageFilename: buffer ? filename : "",
+      statusText,
+    });
+    return attachImage(payload, buffer, filename);
+  }
+
+  async function renderCompletionWindow(interaction, tournamentId, { edit = false, statusText = "" } = {}) {
+    if (!requireMod(interaction)) return true;
+    const tournament = state.getTournament(db, tournamentId);
+    if (!tournament) {
+      await safeReply(interaction, ephemeralText("Турнир не найден."));
+      return true;
     }
+    const payload = await buildCompletionWindowPayload(tournament, statusText);
+    edit ? await safeUpdate(interaction, payload) : await safeReply(interaction, payload);
+    return true;
+  }
+
+  async function publishTournamentSummary(tournamentId) {
+    const tournament = state.getTournament(db, tournamentId);
+    if (!tournament) return { ok: false, reason: "missing-tournament" };
+    if (tournament.status !== "completed") return { ok: false, reason: "not-completed" };
+    if (tournament.summaryPosted) return { ok: true, skipped: "already-posted" };
+
+    const channel = await fetchChannel(tournament.announce?.channelId).catch(() => null);
+    if (!channel?.send) return { ok: false, reason: "missing-channel" };
+
+    const filename = "tournament-summary.png";
+    const buffer = await renderSummaryBuffer(tournament, await collectTournamentAvatars(tournament));
+    const payload = view.buildSummaryPostPayload(tournament, { imageFilename: buffer ? filename : "" });
+    const sendable = { ...attachImage(payload, buffer, filename), allowedMentions: { parse: [] } };
+    const message = await channel.send(sendable).catch((error) => {
+      logError("tournament: summary publish failed", error?.message || error);
+      return null;
+    });
+    if (!message) return { ok: false, reason: "send-failed" };
+
+    await persist("tournament-summary-posted", async () => {
+      state.updateTournament(db, tournamentId, {
+        summaryPosted: true,
+        summaryPostedAt: new Date().toISOString(),
+        summaryMessageId: String(message.id || ""),
+        summaryChannelId: String(message.channelId || channel.id || ""),
+      });
+    });
+    return { ok: true, messageId: String(message.id || "") };
   }
 
   // ---- participant role + announcement throttle + kills authority ----------
@@ -701,6 +748,20 @@ function createTournamentOperator(deps = {}) {
         return retryThreadSideEffects(interaction, tournamentId, Number(extra[0]) || 0);
       case ACTIONS.MANAGE_CANCEL:
         return cancelTournament(interaction, tournamentId);
+      case ACTIONS.SUMMARY_OPEN:
+        return renderCompletionWindow(interaction, tournamentId, { edit: true });
+      case ACTIONS.SUMMARY_COMMENT: {
+        if (!requireMod(interaction)) return true;
+        const tournament = state.getTournament(db, tournamentId);
+        if (!tournament) {
+          await safeReply(interaction, ephemeralText("Турнир не найден."));
+          return true;
+        }
+        await interaction.showModal(view.buildSummaryCommentModal(tournament));
+        return true;
+      }
+      case ACTIONS.SUMMARY_PUBLISH:
+        return publishSummaryAction(interaction, tournamentId);
 
       // ----- roster / participants -----
       case ACTIONS.MANAGE_ROSTER:
@@ -802,6 +863,8 @@ function createTournamentOperator(deps = {}) {
         return submitConditions(interaction);
       case ACTIONS.REG_LINK_ROBLOX:
         return submitRobloxNick(interaction, tournamentId, extra[0] || "main");
+      case ACTIONS.SUMMARY_COMMENT:
+        return submitSummaryComment(interaction, tournamentId);
       case ACTIONS.ADD_PLAYER_MODAL:
         return submitAddPlayer(interaction, tournamentId);
       default:
@@ -977,6 +1040,10 @@ function createTournamentOperator(deps = {}) {
       return true;
     }
 
+    const collectingPayload = view.buildRegCollectingPayload(tournament);
+    if (edit) await safeUpdate(interaction, collectingPayload);
+    else await safeReply(interaction, collectingPayload);
+
     const snapshot = (await Promise.resolve(getPlayerSnapshot(userId)).catch(() => ({}))) || {};
     const approvedKills = Number(snapshot.approvedKills) || 0;
 
@@ -994,7 +1061,7 @@ function createTournamentOperator(deps = {}) {
         avatarUrl: snapshot.robloxAvatarUrl,
         screenshotUrl: snapshot.lastScreenshotUrl,
       });
-      edit ? await safeUpdate(interaction, payload) : await safeReply(interaction, payload);
+      await safeUpdate(interaction, payload);
       return true;
     }
 
@@ -1004,7 +1071,7 @@ function createTournamentOperator(deps = {}) {
       screenshotUrl: snapshot.lastScreenshotUrl,
       canTwink: state.canSelfDeclareTwink(approvedKills),
     });
-    edit ? await safeUpdate(interaction, payload) : await safeReply(interaction, payload);
+    await safeUpdate(interaction, payload);
     return true;
   }
 
@@ -1188,7 +1255,10 @@ function createTournamentOperator(deps = {}) {
     }
 
     const userId = interaction.user.id;
-    await safeDeferUpdate(interaction);
+    const acked = await safeDeferUpdate(interaction);
+    if (acked) {
+      await safeUpdate(interaction, view.buildNoticePayload("Модератор фиксирует вашу заявку…"));
+    }
 
     // Authoritative kills: re-resolve from the profile so a lost in-memory
     // session can never store a zero. main → profile kills; alt/twink → declared.
@@ -1324,6 +1394,40 @@ function createTournamentOperator(deps = {}) {
     });
   }
 
+  async function submitSummaryComment(interaction, tournamentId) {
+    if (!requireMod(interaction)) return true;
+    const comment = String(interaction.fields.getTextInputValue("comment") || "").trim();
+    await safeDeferUpdate(interaction);
+    await persist("tournament-summary-comment", async () => {
+      const fresh = state.getTournament(db, tournamentId);
+      if (!fresh) return;
+      fresh.results = {
+        ...(fresh.results || {}),
+        organizerComment: comment || null,
+      };
+    });
+    await safeLogLine(`TOURNAMENT_SUMMARY_COMMENT: id=${tournamentId} chars=${comment.length} by=<@${interaction.user.id}>`);
+    return renderCompletionWindow(interaction, tournamentId, {
+      edit: true,
+      statusText: comment ? "Комментарий сохранён. Карточка пересобрана." : "Комментарий очищен.",
+    });
+  }
+
+  async function publishSummaryAction(interaction, tournamentId) {
+    if (!requireMod(interaction)) return true;
+    const acked = await safeDeferUpdate(interaction);
+    const result = await publishTournamentSummary(tournamentId);
+    const statusText = result.ok
+      ? result.skipped === "already-posted"
+        ? "Итоги уже были опубликованы."
+        : "Итоги опубликованы в канале анонса."
+      : "Не удалось опубликовать итоги: проверь канал анонса и права бота.";
+    await safeLogLine(
+      `TOURNAMENT_SUMMARY_PUBLISH: id=${tournamentId} ok=${result.ok ? "yes" : "no"} reason=${result.reason || result.skipped || "sent"} by=<@${interaction.user.id}>`
+    );
+    return renderCompletionWindow(interaction, tournamentId, { edit: acked, statusText });
+  }
+
   async function toggleRegistration(interaction, tournamentId, open) {
     if (!requireMod(interaction)) return true;
     // sync mutate → single round-trip (no defer, no shared queue, no network)
@@ -1437,7 +1541,7 @@ function createTournamentOperator(deps = {}) {
     // Snappy: re-render management now; side-effects run in the background.
     await renderManage(interaction, tournamentId, {
       edit: acked,
-      statusText: `Сервер ${serverIndex + 1} запущен. Панель боёв готова. Открываю ветку и пинг…`,
+      statusText: `Сервер ${serverIndex + 1} запущен. Панель боёв готова. Открываю закрытую ветку только для участников сервера…`,
     });
     runServerSideEffects(tournamentId, serverIndex, { postChannel: true }).catch((error) =>
       logError("tournament: launch side-effects failed", error?.message || error)
@@ -1501,7 +1605,7 @@ function createTournamentOperator(deps = {}) {
     await safeLogLine(`TOURNAMENT_FINAL_LAUNCH: id=${tournamentId} finalists=${finalists.length} by=<@${interaction.user.id}>`);
     await renderManage(interaction, tournamentId, {
       edit: acked,
-      statusText: `🏆 Финал запущен (${finalists.length} игроков). Открываю ветку и пинг…`,
+      statusText: `🏆 Финал запущен (${finalists.length} игроков). Открываю закрытую ветку только для финалистов…`,
     });
     runServerSideEffects(tournamentId, FINAL_SERVER_INDEX, { postChannel: true }).catch((error) =>
       logError("tournament: final launch side-effects failed", error?.message || error)
@@ -1547,11 +1651,22 @@ function createTournamentOperator(deps = {}) {
       threadFailed = true;
     }
 
+    let memberResult = { ids: [], added: 0, failed: 0 };
     if (existingThread?.send) {
       threadBracketMessageId = await editOrSendBracketMessage(existingThread, threadBracketMessageId, bracketPayload, buffer, filename, { allowCreate: true });
-      const memberResult = await addPlayersToPrivateThread(existingThread, players);
+      memberResult = await addPlayersToPrivateThread(existingThread, players);
       if (memberResult.ids.length) {
-        await existingThread.send({ content: memberResult.ids.map((id) => `<@${id}>`).join(" "), allowedMentions: { users: memberResult.ids } }).catch(() => {});
+        const label = serverIndex === FINAL_SERVER_INDEX ? "Финал" : `Сервер ${serverIndex + 1}`;
+        await existingThread
+          .send({
+            content: [
+              memberResult.ids.map((id) => `<@${id}>`).join(" "),
+              "",
+              `**${label} готов.** Здесь только участники этой сетки; сообщения закрыты, чтобы ветка не превращалась в чат.`,
+            ].join("\n"),
+            allowedMentions: { users: memberResult.ids },
+          })
+          .catch(() => {});
       }
       await existingThread.setLocked?.(true).catch(() => {});
     }
@@ -1563,10 +1678,12 @@ function createTournamentOperator(deps = {}) {
         s.threadId = threadId;
         s.threadBracketMessageId = threadBracketMessageId;
         s.threadFailed = threadFailed;
+        s.threadParticipantUserIds = memberResult.ids;
+        s.threadParticipantAddFailed = memberResult.failed;
       }
     });
     await safeLogLine(
-      `TOURNAMENT_LAUNCH: id=${tournamentId} server=${serverIndex + 1} thread=${threadId || "none"} threadFailed=${threadFailed} players=${players.length}`
+      `TOURNAMENT_LAUNCH: id=${tournamentId} server=${serverIndex + 1} thread=${threadId || "none"} threadFailed=${threadFailed} players=${players.length} threadMembers=${memberResult.ids.length} addFailed=${memberResult.failed}`
     );
   }
 
@@ -1583,6 +1700,9 @@ function createTournamentOperator(deps = {}) {
   async function openMatchPanel(interaction, tournamentId, serverIndex) {
     if (!requireMod(interaction)) return true;
     const tournament = state.getTournament(db, tournamentId);
+    if (tournament?.status === "completed") {
+      return renderCompletionWindow(interaction, tournamentId);
+    }
     const server = tournament ? state.getServer(tournament, serverIndex) : null;
     if (!server || !server.currentStage) {
       await safeReply(interaction, ephemeralText("Сначала запусти сервер."));
@@ -1930,12 +2050,19 @@ function createTournamentOperator(deps = {}) {
       statusText = `Этап ${server.stageNumber}`;
     });
 
-    // Repaint the SAME panel in place (with the transient "думает") for the next
-    // run/stage.
-    if (acked) await paintPanel(interaction, tournamentId, serverIndex, statusText);
-    // Edit the server's single bracket image in place (and post the grand summary
-    // once when the whole tournament finishes) — coalesced + off-tick so it never
-    // blocks the click ack.
+    const afterAdvance = state.getTournament(db, tournamentId);
+    // Repaint the SAME panel in place for the next run/stage. On the final
+    // advance, switch the organizer to the completion window with the generated
+    // summary card and comment/publish controls.
+    if (acked) {
+      if (afterAdvance?.status === "completed") {
+        await renderCompletionWindow(interaction, tournamentId, { edit: true, statusText: "Турнир завершён. Проверь итоги перед публикацией." });
+      } else {
+        await paintPanel(interaction, tournamentId, serverIndex, statusText);
+      }
+    }
+    // Edit the server's single bracket image in place. The grand summary is
+    // published later from the organizer completion window.
     scheduleServerArtUpdate(tournamentId, serverIndex);
     return true;
   }

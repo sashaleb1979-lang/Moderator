@@ -22,11 +22,17 @@ const {
   getRobloxConfirmation,
   incrementHelperStats,
   listOpenAntiteamTickets,
+  isAnchorKind,
   markRobloxConfirmed,
   matchRobloxFriendsToDiscordProfiles,
   normalizeAntiteamPingMode,
   recordAntiteamHelper,
+  setAllTicketHelpersArrival,
   setAntiteamDraft,
+  setKvApprovalDecision,
+  setTicketHelperArrival,
+  KV_APPROVAL_PING_ROLE_ID,
+  KV_APPROVAL_PING_USER_ID,
   updateAntiteamTicket,
 } = require("./state");
 const {
@@ -41,6 +47,7 @@ const {
   buildHelperRewardRolesModal,
   buildHelperStatsPayload,
   buildHelpReplyPayload,
+  buildKvAnchorModal,
   buildModeratorPanelPayload,
   buildPanelTextModal,
   buildPingConfigModal,
@@ -290,11 +297,25 @@ function createAntiteamOperator(options = {}) {
   const supportProgressCache = new Map();
   const supportProgressInFlight = new Map();
   const apiPresentCache = new Map();
-  // Live (in-memory) "who arrived" state for the close-review panel, keyed by
-  // ticketId. Toggles mutate this only — the DB is written once on close.
-  const closeReviewSessions = new Map();
+  // Per-user publish guard: a draft becomes exactly one ticket. Without it a
+  // rapid double-click on submit (or a submit + photo-upload race) would read the
+  // same draft twice and create two tickets — and the second publish, after the
+  // first consumes the draft, would also make a later photo fail with "черновик
+  // истёк". Acquired synchronously before any await so re-entry is impossible.
+  const publishInFlight = new Set();
   let submitPanelResendInFlight = null;
   let submitPanelResendQueued = false;
+
+  function acquirePublishLock(userId) {
+    const id = cleanString(userId, 80);
+    if (!id || publishInFlight.has(id)) return false;
+    publishInFlight.add(id);
+    return true;
+  }
+
+  function releasePublishLock(userId) {
+    publishInFlight.delete(cleanString(userId, 80));
+  }
 
   function formatAutoCloseSummaryText(minutes) {
     const normalizedMinutes = Math.max(1, Number.parseInt(minutes, 10) || 120);
@@ -678,6 +699,12 @@ function createAntiteamOperator(options = {}) {
     return cleanString(interaction?.user?.id, 80) === ticket.createdBy || hasAdmin(interaction?.member);
   }
 
+  // Content edits (direct link, anchor Roblox) are allowed on an open mission and
+  // on a KV that is still awaiting approval, so the author can fix it pre-decision.
+  function isTicketContentEditable(ticket = {}) {
+    return ticket?.status === "open" || (ticket?.kind === "kv" && ticket?.status === "pending_approval");
+  }
+
   function buildExtraPingPayload(ticket = {}, config = createDefaultAntiteamConfig()) {
     if (ticket.kind === "clan") return null;
     const mode = normalizeAntiteamPingMode(config.pingMode, "battalion");
@@ -710,20 +737,17 @@ function createAntiteamOperator(options = {}) {
     const roleIds = getEditPingRoleIds(config);
     if (!roleIds.length || !thread?.send) return null;
 
-    const bufferMessage = await thread.send({
-      content: ".",
-      allowedMentions: { parse: [] },
+    // Mentions MUST be present at send time. The previous "send a dot, then edit
+    // in the roles" trick never notified anyone — Discord does not push a
+    // notification for mentions added by a later edit, which is why edit-test
+    // looked like it did nothing. Send a real ping, then auto-delete to keep the
+    // channel clean (the notification has already gone out by then).
+    const pingMessage = await thread.send({
+      content: roleIds.map((roleId) => `<@&${roleId}>`).join(" "),
+      allowedMentions: { roles: roleIds },
     });
-    try {
-      if (typeof bufferMessage?.edit !== "function") return bufferMessage;
-      await bufferMessage.edit({
-        content: roleIds.map((roleId) => `<@&${roleId}>`).join(" "),
-        allowedMentions: { roles: roleIds },
-      });
-      return bufferMessage;
-    } finally {
-      scheduleTransientPingDelete(bufferMessage, ANTITEAM_EDIT_PING_DELETE_MS);
-    }
+    scheduleTransientPingDelete(pingMessage, ANTITEAM_EDIT_PING_DELETE_MS);
+    return pingMessage;
   }
 
   async function sendTicketPingMessages(thread, ticket = {}, config = createDefaultAntiteamConfig()) {
@@ -753,6 +777,44 @@ function createAntiteamOperator(options = {}) {
     }
 
     return pingMessage;
+  }
+
+  function getKvApprovalTargets(config = createDefaultAntiteamConfig()) {
+    return {
+      roleId: cleanString(config.kvApprovalRoleId, 80) || KV_APPROVAL_PING_ROLE_ID,
+      userId: cleanString(config.kvApprovalUserId, 80) || KV_APPROVAL_PING_USER_ID,
+    };
+  }
+
+  // The "возможно кв" ping: only the approval role + person, nobody else, so the
+  // server isn't pulled in before admins decide.
+  async function sendKvApprovalPing(thread, ticket = {}, config = createDefaultAntiteamConfig()) {
+    if (!thread?.send) return null;
+    const { roleId, userId } = getKvApprovalTargets(config);
+    const mentions = [roleId ? `<@&${roleId}>` : "", userId ? `<@${userId}>` : ""].filter(Boolean).join(" ");
+    if (!mentions) return null;
+    return thread.send({
+      content: `${mentions}\n🟪 **Возможно КВ** — нужно решение. Одобрите, чтобы открыть ветку и позвать edit-test, или отклоните (тогда никто не отметится).`,
+      allowedMentions: { roles: roleId ? [roleId] : [], users: userId ? [userId] : [] },
+    }).catch((error) => {
+      logError("Antiteam KV approval ping failed:", error?.message || error);
+      return null;
+    });
+  }
+
+  // On approval the KV becomes real and pings everything in edit-test. Unlike the
+  // edit_roles "buffer" trick this is a normal message, so it actually notifies.
+  async function sendKvOpenPing(thread, ticket = {}, config = createDefaultAntiteamConfig()) {
+    if (!thread?.send) return null;
+    const roleIds = getEditPingRoleIds(config);
+    if (!roleIds.length) return null;
+    return thread.send({
+      content: `${roleIds.map((roleId) => `<@&${roleId}>`).join(" ")}\n🟪 **КВ одобрено** — выходим к якорю!`,
+      allowedMentions: { roles: roleIds },
+    }).catch((error) => {
+      logError("Antiteam KV open ping failed:", error?.message || error);
+      return null;
+    });
   }
 
   async function cleanupClosedTicketResources(ticket = {}) {
@@ -1341,30 +1403,6 @@ function createAntiteamOperator(options = {}) {
     return ids;
   }
 
-  // In-memory "who arrived" state for the close-review panel. Initialised from
-  // ticket.helpers (everyone defaults to arrived) and mutated by the toggle /
-  // mark-all buttons with no DB writes; read once on close.
-  function getCloseReviewSession(ticket = {}, { reset = false } = {}) {
-    const ticketId = cleanString(ticket?.id, 80);
-    if (!ticketId) return { arrivedByUserId: {} };
-    let session = closeReviewSessions.get(ticketId);
-    if (!session || reset) {
-      const arrivedByUserId = {};
-      for (const helper of Object.values(ticket.helpers || {})) {
-        const uid = cleanString(helper.userId, 80);
-        if (uid) arrivedByUserId[uid] = helper.arrived !== false;
-      }
-      session = { arrivedByUserId, updatedAt: nowMs() };
-      closeReviewSessions.set(ticketId, session);
-      while (closeReviewSessions.size > 50) {
-        const oldestKey = closeReviewSessions.keys().next().value;
-        if (!oldestKey) break;
-        closeReviewSessions.delete(oldestKey);
-      }
-    }
-    return session;
-  }
-
   // Minimal "is this even a link" gate — reject obvious non-links without being
   // strict about the exact Roblox URL shape.
   function isLikelyDirectJoinUrl(value = "") {
@@ -1393,13 +1431,13 @@ function createAntiteamOperator(options = {}) {
     ].filter(Boolean).join("\n");
   }
 
+  // Arrival is now persisted on the helper record itself, so the close summary,
+  // re-renders and a restart mid-review all agree. Everyone defaults to arrived
+  // (helper.arrived !== false) until the reviewer toggles them off.
   function resolveCloseReviewArrival(ticket = {}, helper = {}) {
-    const session = closeReviewSessions.get(cleanString(ticket?.id, 80));
     const uid = cleanString(helper.userId, 80);
-    if (session && Object.prototype.hasOwnProperty.call(session.arrivedByUserId, uid)) {
-      return Boolean(session.arrivedByUserId[uid]);
-    }
-    return helper.arrived !== false;
+    const stored = ticket.helpers?.[uid];
+    return (stored ? stored.arrived : helper.arrived) !== false;
   }
 
   async function syncTicketMessages(ticket, { skipPresence = false } = {}) {
@@ -1439,6 +1477,20 @@ function createAntiteamOperator(options = {}) {
   }
 
   function getDraftPublishError(draft = {}) {
+    // KV requires an anchor, an explanation of why the anchor matters, and the
+    // anchor's Roblox — situation description is folded into the anchor note.
+    if (draft.kind === "kv") {
+      if (!cleanString(draft.anchorUserId, 80)) {
+        return "Укажи якоря кнопкой «⚓ Указать якоря и почему он важен».";
+      }
+      if (!cleanString(draft.anchorNote, 700)) {
+        return "Опиши якоря: кто это и почему он важен (он будет стабильно держать вход).";
+      }
+      if (!cleanString(draft.roblox?.userId, 40)) {
+        return "Укажи Roblox якоря кнопкой «🎭 Указать Roblox якоря» — без него помощники не подключатся.";
+      }
+      return "";
+    }
     if (!cleanString(draft.description, 900)) {
       return draft.kind === "clan"
         ? "Для ФАЙТ С КЛАНОМ нужно описание врагов и ситуации."
@@ -1476,11 +1528,17 @@ function createAntiteamOperator(options = {}) {
     const config = getConfig();
     if (!config.channelId) throw new Error("Канал антитима не настроен.");
 
+    // Coalesced (non-blocking) save, NOT a durable flush: nothing points at the
+    // ticket yet (no Discord message exists), so blocking the publish on a full
+    // off-thread db write here only delays the post appearing. Durability is
+    // reached a moment later in finalizeTicketPublish's message-refs persist
+    // ({ durable: true }), which flushes the whole db — this freshly-created
+    // ticket included — once a live message actually references it.
     const ticket = await persist("antiteam-ticket-create", () => createAntiteamTicketFromDraft(db, draft, {
       now: nowIso(),
       friendEligibleDiscordUserIds: [],
       test: getConfig().testMode === true,
-    }), { durable: true });
+    }));
     return { draft, ticket };
   }
 
@@ -1536,8 +1594,15 @@ function createAntiteamOperator(options = {}) {
       : null;
     const threadPanelMs = nowMs() - threadPanelStartedAt;
     const pingStartedAt = nowMs();
-    // Test missions are published but never ping the battalion.
-    const pingMessage = (thread && !ticket.test) ? await sendTicketPingMessages(thread, ticket, config) : null;
+    // Test missions are published but never ping. A KV starts as "возможно кв" and
+    // only pings the two approval targets — the battalion/edit-test ping waits for
+    // admin approval.
+    let pingMessage = null;
+    if (thread && !ticket.test) {
+      pingMessage = ticket.kind === "kv"
+        ? await sendKvApprovalPing(thread, ticket, config)
+        : await sendTicketPingMessages(thread, ticket, config);
+    }
     const pingMs = nowMs() - pingStartedAt;
     // Persist message refs immediately so help/close can locate the post. The
     // avatar lookup and the follow-up public edit (which only enrich the card)
@@ -1579,7 +1644,8 @@ function createAntiteamOperator(options = {}) {
       logError("Antiteam submit finalize tail failed:", error?.message || error);
     });
 
-    ensureBattalionRoleGrantedEventually(ticket);
+    // KV runs through an anchor, not the battalion, so it never grants that role.
+    if (ticket.kind !== "kv") ensureBattalionRoleGrantedEventually(ticket);
     runDetached(async () => {
       const panelResendStartedAt = nowMs();
       const panelResult = await resendStartPanelAfterSubmit();
@@ -1760,7 +1826,7 @@ function createAntiteamOperator(options = {}) {
   }
 
   function getFriendRequestTargetUserId(ticket = {}) {
-    return ticket.kind === "clan" && cleanString(ticket.anchorUserId, 80)
+    return isAnchorKind(ticket.kind) && cleanString(ticket.anchorUserId, 80)
       ? ticket.anchorUserId
       : ticket.createdBy;
   }
@@ -1770,7 +1836,7 @@ function createAntiteamOperator(options = {}) {
     const friendRequestsUrl = getConfig().roblox.friendRequestsUrl;
     return [
       `<@${targetUserId}>`,
-      `<@${helper.userId}> отправил тебе friend request в Roblox, чтобы подключиться к ${ticket.kind === "clan" ? "ФАЙТ С КЛАНОМ" : "антитиму"}.`,
+      `<@${helper.userId}> отправил тебе friend request в Roblox, чтобы подключиться к ${ticket.kind === "clan" ? "ФАЙТ С КЛАНОМ" : ticket.kind === "kv" ? "КВ" : "антитиму"}.`,
       helper.robloxUsername
         ? `Roblox helper-а: **${helper.robloxUsername}**${helper.robloxUserId ? ` (${helper.robloxUserId})` : ""}.`
         : "Roblox helper-а в базе не найден, ориентируйся по Discord упоминанию.",
@@ -2459,6 +2525,16 @@ function createAntiteamOperator(options = {}) {
       return true;
     }
 
+    if (id === ANTITEAM_CUSTOM_IDS.kvAnchor) {
+      const draft = getAntiteamDraft(db, interaction.user.id);
+      if (!draft) {
+        await safeReply(interaction, { content: "Черновик истёк. Начни заново.", flags: MessageFlags.Ephemeral });
+        return true;
+      }
+      await safeShowModal(interaction, buildKvAnchorModal(draft));
+      return true;
+    }
+
     if (id === ANTITEAM_CUSTOM_IDS.setDirectLink) {
       const draft = getAntiteamDraft(db, interaction.user.id);
       if (!draft) {
@@ -2508,8 +2584,22 @@ function createAntiteamOperator(options = {}) {
     }
 
     if (id === ANTITEAM_CUSTOM_IDS.submitDraft || id === ANTITEAM_CUSTOM_IDS.submitWithoutPhoto) {
+      // Reject a second concurrent submit for the same user (double-click / submit
+      // racing the photo upload) so one draft can only ever become one ticket.
+      if (!acquirePublishLock(interaction.user.id)) {
+        const busyAck = await safeDeferUpdate(interaction);
+        if (busyAck.ok) {
+          await safeEditReply(interaction, {
+            content: "Заявка уже отправляется — подожди пару секунд, не жми повторно.",
+            components: [],
+            flags: MessageFlags.Ephemeral,
+          });
+        }
+        return true;
+      }
       const ack = await safeDeferUpdate(interaction);
       let started = null;
+      let lockHandedOff = false;
       try {
         started = await beginTicketPublish(interaction.user.id, { skipPhoto: id === ANTITEAM_CUSTOM_IDS.submitWithoutPhoto });
         if (started.needsPhoto) {
@@ -2517,6 +2607,7 @@ function createAntiteamOperator(options = {}) {
         } else {
           const closedReply = ack.ok ? await safeDeleteReply(interaction) : false;
           if (closedReply) {
+            lockHandedOff = true;
             runDetached(async () => {
               try {
                 await finalizeTicketPublish(started.ticket, started.draft);
@@ -2525,8 +2616,11 @@ function createAntiteamOperator(options = {}) {
                   await rollbackTicketPublish(interaction.user.id, started.ticket, started.draft).catch(() => {});
                 }
                 await notifyDraftSubmitError(interaction, interaction.user.id, error);
+              } finally {
+                releasePublishLock(interaction.user.id);
               }
             }, (error) => {
+              releasePublishLock(interaction.user.id);
               logError("Antiteam detached submit task failed:", error?.message || error);
             });
           } else {
@@ -2559,6 +2653,8 @@ function createAntiteamOperator(options = {}) {
             await safeEditReply(interaction, { content: `Ошибка: ${error?.message || error}`, components: [], flags: MessageFlags.Ephemeral });
           }
         }
+      } finally {
+        if (!lockHandedOff) releasePublishLock(interaction.user.id);
       }
       return true;
     }
@@ -2620,7 +2716,7 @@ function createAntiteamOperator(options = {}) {
     }
 
     if (action === "set_direct_link") {
-      if (!ticket || ticket.status !== "open") {
+      if (!ticket || !isTicketContentEditable(ticket)) {
         await safeReply(interaction, { content: "Эта миссия уже закрыта или не найдена.", flags: MessageFlags.Ephemeral });
         return true;
       }
@@ -2634,7 +2730,7 @@ function createAntiteamOperator(options = {}) {
 
     // On-the-spot Roblox/twink swap from a published ticket thread (author or mod).
     if (action === "change_roblox") {
-      if (!ticket || ticket.status !== "open") {
+      if (!ticket || !isTicketContentEditable(ticket)) {
         await safeReply(interaction, { content: "Эта миссия уже закрыта или не найдена.", flags: MessageFlags.Ephemeral });
         return true;
       }
@@ -2702,6 +2798,46 @@ function createAntiteamOperator(options = {}) {
       return true;
     }
 
+    if (action === "kv_approve" || action === "kv_reject") {
+      if (!ticket || ticket.kind !== "kv") {
+        await safeReply(interaction, { content: "Это не КВ-заявка или она не найдена.", flags: MessageFlags.Ephemeral });
+        return true;
+      }
+      // Approval is admins-only; the pinged role/person are just summoned to it.
+      if (!hasAdmin(interaction.member)) {
+        await replyNoPermission(interaction);
+        return true;
+      }
+      if (ticket.status !== "pending_approval") {
+        await safeReply(interaction, { content: "Решение по этой КВ уже принято.", flags: MessageFlags.Ephemeral });
+        return true;
+      }
+      const approve = action === "kv_approve";
+      const ack = await safeDeferUpdate(interaction);
+      const updated = await persist("antiteam-kv-decision", () => setKvApprovalDecision(db, ticketId, approve ? "approved" : "rejected", {
+        now: nowIso(),
+        decidedBy: interaction.user.id,
+      }), { durable: true });
+      if (!updated) {
+        if (ack.ok) await safeReply(interaction, { content: "Не удалось обновить КВ.", flags: MessageFlags.Ephemeral });
+        return true;
+      }
+      if (ack.ok) await safeEditReply(interaction, buildThreadPanelPayload(updated, getConfig()));
+      if (approve) {
+        // Now a real KV: open for help and ping everything in edit-test for real.
+        const thread = await fetchTextChannel(updated.message?.threadId).catch(() => null);
+        if (thread && !updated.test) await sendKvOpenPing(thread, updated, getConfig()).catch(() => null);
+        await syncTicketMessages(updated).catch(() => {});
+      } else {
+        // Rejected: no help, no points — close and lock the thread.
+        await finalizeClosedTicket(updated).catch(() => {});
+      }
+      if (typeof options.logLine === "function") {
+        await options.logLine(`ANTITEAM_KV_${approve ? "APPROVED" : "REJECTED"}: ${ticketId} by ${interaction.user.id}`).catch(() => null);
+      }
+      return true;
+    }
+
     if (action === "close") {
       if (!ticket || ticket.status !== "open") {
         await safeReply(interaction, { content: "Миссия уже закрыта или не найдена.", flags: MessageFlags.Ephemeral });
@@ -2711,11 +2847,11 @@ function createAntiteamOperator(options = {}) {
         await replyNoPermission(interaction);
         return true;
       }
-      // Defer-first, then render from a fresh in-memory close session (everyone
-      // defaults to arrived). Toggles below never touch the DB.
-      const session = getCloseReviewSession(ticket, { reset: true });
+      // Render from the persisted helper.arrived flags (everyone defaults to
+      // arrived). Toggles below write straight to the ticket, so the result is
+      // restart-proof and the close summary can never disagree with the panel.
       const ack = await safeDeferReply(interaction, { flags: MessageFlags.Ephemeral });
-      if (ack.ok) await safeEditReply(interaction, buildCloseReviewPayload(ticket, 0, { arrivedByUserId: session.arrivedByUserId }));
+      if (ack.ok) await safeEditReply(interaction, buildCloseReviewPayload(ticket, 0));
       return true;
     }
 
@@ -2724,9 +2860,8 @@ function createAntiteamOperator(options = {}) {
         await replyNoPermission(interaction);
         return true;
       }
-      const session = getCloseReviewSession(ticket);
       const ack = await safeDeferUpdate(interaction);
-      if (ack.ok) await safeEditReply(interaction, buildCloseReviewPayload(ticket, Number.parseInt(extra, 10) || 0, { arrivedByUserId: session.arrivedByUserId }));
+      if (ack.ok) await safeEditReply(interaction, buildCloseReviewPayload(ticket, Number.parseInt(extra, 10) || 0));
       return true;
     }
 
@@ -2741,12 +2876,16 @@ function createAntiteamOperator(options = {}) {
         return true;
       }
       const page = Number.parseInt(pageRaw, 10) || 0;
-      // Toggle in memory only — instant, no DB write (saved once on close).
-      const session = getCloseReviewSession(ticket);
-      session.arrivedByUserId[helperId] = !resolveCloseReviewArrival(ticket, ticket.helpers[helperId]);
-      session.updatedAt = nowMs();
+      const nextArrived = !resolveCloseReviewArrival(ticket, ticket.helpers[helperId]);
       const ack = await safeDeferUpdate(interaction);
-      if (ack.ok) await safeEditReply(interaction, buildCloseReviewPayload(ticket, page, { arrivedByUserId: session.arrivedByUserId }));
+      // Render the toggle from memory immediately (just as snappy as the old
+      // in-memory panel) via the arrived override, then write durably in the
+      // background on the coalesced flush — so the panel never waits on the DB.
+      if (ack.ok) await safeEditReply(interaction, buildCloseReviewPayload(ticket, page, { arrivedByUserId: { [helperId]: nextArrived } }));
+      runDetached(() => persist("antiteam-helper-arrival", () =>
+        setTicketHelperArrival(db, ticketId, helperId, nextArrived, { now: nowIso() })), (error) => {
+        logError("Antiteam arrival persist failed:", error?.message || error);
+      });
       return true;
     }
 
@@ -2757,14 +2896,17 @@ function createAntiteamOperator(options = {}) {
       }
       const page = Number.parseInt(extra, 10) || 0;
       const value = action === "mark_all";
-      const session = getCloseReviewSession(ticket);
+      const overrides = {};
       for (const helper of Object.values(ticket.helpers || {})) {
         const uid = cleanString(helper.userId, 80);
-        if (uid) session.arrivedByUserId[uid] = value;
+        if (uid) overrides[uid] = value;
       }
-      session.updatedAt = nowMs();
       const ack = await safeDeferUpdate(interaction);
-      if (ack.ok) await safeEditReply(interaction, buildCloseReviewPayload(ticket, page, { arrivedByUserId: session.arrivedByUserId }));
+      if (ack.ok) await safeEditReply(interaction, buildCloseReviewPayload(ticket, page, { arrivedByUserId: overrides }));
+      runDetached(() => persist("antiteam-helpers-arrival-all", () =>
+        setAllTicketHelpersArrival(db, ticketId, value, { now: nowIso() })), (error) => {
+        logError("Antiteam arrival persist failed:", error?.message || error);
+      });
       return true;
     }
 
@@ -2790,7 +2932,23 @@ function createAntiteamOperator(options = {}) {
     const value = Array.isArray(interaction.values) ? interaction.values[0] : "";
     let patch = {};
     if (interaction.customId === ANTITEAM_CUSTOM_IDS.levelSelect) {
-      patch = { level: value };
+      if (value === "kv") {
+        // Switching into КВ resets the request to anchor mode: the author's own
+        // Roblox is dropped (helpers connect through the anchor, set separately).
+        patch = {
+          kind: "kv",
+          roblox: {},
+          robloxTemporary: false,
+          anchorUserId: "",
+          anchorUserTag: "",
+          anchorNote: "",
+        };
+      } else if (draft.kind === "kv") {
+        // Leaving КВ back to a normal danger level.
+        patch = { kind: "standard", level: value };
+      } else {
+        patch = { level: value };
+      }
     } else if (interaction.customId === ANTITEAM_CUSTOM_IDS.countSelect) {
       patch = { count: value };
     } else if (interaction.customId === ANTITEAM_CUSTOM_IDS.clanRolesSelect) {
@@ -2884,6 +3042,48 @@ function createAntiteamOperator(options = {}) {
     if (id === "at:roblox") return handleRobloxModal(interaction, "standard");
     if (id === "at:clan_roblox") return handleRobloxModal(interaction, "clan");
     if (id === "at:twink_modal") return handleTwinkModal(interaction);
+
+    if (id === "at:kv_anchor:modal") {
+      const draft = getAntiteamDraft(db, interaction.user.id);
+      if (!draft) {
+        const ack = await safeDeferReply(interaction, { flags: MessageFlags.Ephemeral });
+        if (ack.ok) await safeEditReply(interaction, { content: "Черновик истёк. Начни заново.", components: [] });
+        return true;
+      }
+      const anchorUserId = parseRequestedUserId(interaction.fields.getTextInputValue("anchor"), "");
+      const anchorNote = cleanString(interaction.fields.getTextInputValue("anchor_note"), 700);
+      let updated;
+      let statusText;
+      if (!anchorUserId) {
+        updated = writeDraft(interaction.user.id, { kind: "kv", anchorNote });
+        statusText = "❌ Якорь не распознан — укажи @упоминание или числовой Discord ID.";
+      } else {
+        // Pull the anchor's verified Roblox from their profile so helpers connect
+        // by it; if they have none the author sets it via «🎭 Указать Roblox якоря».
+        const anchorRoblox = getStoredRobloxSnapshot(anchorUserId);
+        const anchorMember = typeof options.fetchMember === "function"
+          ? await options.fetchMember(anchorUserId).catch(() => null)
+          : null;
+        const anchorTag = getUserTag(anchorMember?.user || anchorMember) || anchorUserId;
+        const patch = { kind: "kv", anchorUserId, anchorUserTag: anchorTag, anchorNote };
+        if (anchorRoblox?.userId) {
+          patch.roblox = anchorRoblox;
+          patch.robloxTemporary = false;
+        }
+        updated = writeDraft(interaction.user.id, patch);
+        statusText = anchorRoblox?.userId
+          ? `⚓ Якорь записан: <@${anchorUserId}> • Roblox: ${anchorRoblox.username}.`
+          : `⚓ Якорь записан: <@${anchorUserId}>. Roblox якоря в профиле не найден — укажи его кнопкой «🎭 Указать Roblox якоря».`;
+      }
+      const payload = buildTicketSetupPayload(updated, getConfig(), statusText);
+      if (interaction.message && typeof interaction.update === "function") {
+        await safeUpdate(interaction, payload);
+        return true;
+      }
+      const ack = await safeDeferReply(interaction, { flags: MessageFlags.Ephemeral });
+      if (ack.ok) await safeEditReply(interaction, payload);
+      return true;
+    }
 
     if (id === "at:desc:modal") {
       const draft = getAntiteamDraft(db, interaction.user.id);
@@ -3113,7 +3313,7 @@ function createAntiteamOperator(options = {}) {
     }
 
     if (action === "direct_link_modal") {
-      if (ticket.status !== "open") {
+      if (!isTicketContentEditable(ticket)) {
         await interaction.reply({ content: "Эта миссия уже закрыта.", flags: MessageFlags.Ephemeral });
         return true;
       }
@@ -3141,7 +3341,7 @@ function createAntiteamOperator(options = {}) {
     }
 
     if (action === "change_roblox_modal") {
-      if (ticket.status !== "open") {
+      if (!isTicketContentEditable(ticket)) {
         await interaction.reply({ content: "Эта миссия уже закрыта.", flags: MessageFlags.Ephemeral });
         return true;
       }
@@ -3190,13 +3390,11 @@ function createAntiteamOperator(options = {}) {
       }
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       const summary = interaction.fields.getTextInputValue("summary");
-      // Read the "who arrived" result from the in-memory close session (the
-      // toggles never wrote to the DB); fall back to ticket.helpers if the
-      // session was lost (e.g. a restart mid-close).
+      // "Who arrived" is read from the persisted helper.arrived flags the review
+      // panel wrote, so the recorded result always matches what the reviewer saw.
       const confirmedHelperIds = Object.values(ticket.helpers || {})
         .filter((helper) => resolveCloseReviewArrival(ticket, helper))
         .map((helper) => helper.userId);
-      closeReviewSessions.delete(cleanString(ticket.id, 80));
       const updated = await persist("antiteam-close", () => {
         const closed = closeAntiteamTicket(db, ticketId, {
           now: nowIso(),
@@ -3259,6 +3457,13 @@ function createAntiteamOperator(options = {}) {
       photo: photos[0],
       photos,
     }, { now: capturedAt }));
+    // If a button-submit is already publishing this user's draft, don't race it
+    // into a second ticket — the photo is now saved on the draft, so the in-flight
+    // publish picks it up. Just remove the upload message.
+    if (!acquirePublishLock(message.author.id)) {
+      await message.delete?.().catch(() => {});
+      return true;
+    }
     let result;
     try {
       result = await publishTicketFromDraft(message.author.id, { skipPhoto: true });
@@ -3272,6 +3477,8 @@ function createAntiteamOperator(options = {}) {
         allowedMentions: { repliedUser: true },
       }).catch(() => {});
       return true;
+    } finally {
+      releasePublishLock(message.author.id);
     }
     if (result?.ticket && typeof options.logLine === "function") {
       await options.logLine(`ANTITEAM_SUBMIT_WITH_PHOTO: <@${message.author.id}> ${result.ticket.id}`).catch(() => null);

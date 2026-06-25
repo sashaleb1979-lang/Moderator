@@ -1450,7 +1450,7 @@ test("close modal rejects moderator role without admin permissions", async () =>
   assert.equal(interaction.calls[0][1].content, "Нет прав.");
 });
 
-test("arrival toggle updates the close review in memory without a DB write", async () => {
+test("arrival toggle persists helper.arrived so the result survives a restart", async () => {
   const db = {};
   const draft = setAntiteamDraft(db, "author-1", {
     userTag: "Author",
@@ -1490,9 +1490,10 @@ test("arrival toggle updates the close review in memory without a DB write", asy
   assert.deepEqual(interaction.calls.map((call) => call[0]), ["deferUpdate", "editReply"]);
   // Panel flips to "Не пришёл" and shows the Roblox nick…
   assert.match(JSON.stringify(interaction.calls.at(-1)[1].components[0].toJSON()), /Не пришёл • Helper \(HelperRb\)/);
-  // …with no DB write — helper.arrived stays as-is until "Записать итог".
-  assert.equal(persistCalls, 0);
-  assert.equal(db.sot.antiteam.tickets["ticket-1"].helpers["helper-1"].arrived, true);
+  // …and the toggle is written straight to the ticket, so a restart mid-review
+  // (or the close summary) can never disagree with what the reviewer saw.
+  assert.equal(persistCalls, 1);
+  assert.equal(db.sot.antiteam.tickets["ticket-1"].helpers["helper-1"].arrived, false);
 });
 
 test("close modal counts untouched helpers as arrived by default", async () => {
@@ -1659,7 +1660,7 @@ test("standard draft submit sends battalion ping and transient configured role p
   assert.deepEqual(deletedMessages, ["thread-message-3"]);
 });
 
-test("standard draft submit sends edit-test buffer ping and deletes the edited buffer", async () => {
+test("standard draft submit sends a real edit-test ping and auto-deletes it", async () => {
   const db = {};
   const state = ensureAntiteamState(db).state;
   state.config.channelId = "channel-1";
@@ -1729,15 +1730,11 @@ test("standard draft submit sends edit-test buffer ping and deletes the edited b
   assert.match(JSON.stringify(sentToThread[0].components[0].toJSON()), /Помочь/);
   assert.equal(sentToThread[1].content, "<@&battalion-role> <@&extra-base-role>");
   assert.deepEqual(sentToThread[1].allowedMentions, { roles: ["battalion-role", "extra-base-role"] });
-  assert.equal(sentToThread[2].content, ".");
-  assert.deepEqual(sentToThread[2].allowedMentions, { parse: [] });
-  assert.deepEqual(editedMessages, [{
-    id: "thread-message-3",
-    payload: {
-      content: "<@&edit-role-1> <@&edit-role-2>",
-      allowedMentions: { roles: ["edit-role-1", "edit-role-2"] },
-    },
-  }]);
+  // Real ping: the edit-test roles are mentioned at SEND time (no buffer/edit),
+  // so Discord actually notifies them; the message is auto-deleted afterwards.
+  assert.equal(sentToThread[2].content, "<@&edit-role-1> <@&edit-role-2>");
+  assert.deepEqual(sentToThread[2].allowedMentions, { roles: ["edit-role-1", "edit-role-2"] });
+  assert.deepEqual(editedMessages, []);
   assert.deepEqual(scheduledDelays, [5000]);
   assert.deepEqual(deletedMessages, ["thread-message-3"]);
 });
@@ -1810,7 +1807,7 @@ test("standard draft submit skips edit-test buffer when edit roles are empty", a
   assert.deepEqual(scheduledDelays, []);
 });
 
-test("standard draft submit logs edit-test edit failures without aborting ticket publish", async () => {
+test("standard draft submit tolerates an edit-test ping send failure without aborting ticket publish", async () => {
   const db = {};
   const state = ensureAntiteamState(db).state;
   state.config.channelId = "channel-1";
@@ -1831,13 +1828,15 @@ test("standard draft submit logs edit-test edit failures without aborting ticket
     isTextBased: () => true,
     messages: { fetch: async () => null },
     send: async (payload) => {
+      // The edit-test ping is now a real ping; simulate its send rejecting.
+      if (typeof payload.content === "string" && payload.content.includes("edit-role-1")) {
+        throw new Error("send failed");
+      }
       sentToThread.push(payload);
       const id = `thread-message-${sentToThread.length}`;
       return {
         id,
-        edit: async () => {
-          throw new Error("edit failed");
-        },
+        edit: async () => {},
         delete: async () => {
           deletedMessages.push(id);
         },
@@ -1874,12 +1873,14 @@ test("standard draft submit logs edit-test edit failures without aborting ticket
   const ticket = Object.values(db.sot.antiteam.tickets)[0];
   assert.equal(ticket.message.threadPanelMessageId, "thread-message-1");
   assert.equal(ticket.message.pingMessageId, "thread-message-2");
-  assert.equal(sentToThread.length, 3);
-  assert.deepEqual(deletedMessages, ["thread-message-3"]);
-  assert.match(logErrors.join("\n"), /Antiteam edit ping failed: edit failed/);
+  // The edit-test ping send threw, but publish still completed; only battalion
+  // (sentToThread[1]) landed and the failure was logged.
+  assert.equal(sentToThread.length, 2);
+  assert.deepEqual(deletedMessages, []);
+  assert.match(logErrors.join("\n"), /Antiteam edit ping failed: send failed/);
 });
 
-test("standard draft submit sends edit-test buffer ping and deletes the edited buffer", async () => {
+test("standard draft submit sends a real edit-test ping and auto-deletes it", async () => {
   const db = {};
   const state = ensureAntiteamState(db).state;
   state.config.channelId = "channel-1";
@@ -1949,15 +1950,11 @@ test("standard draft submit sends edit-test buffer ping and deletes the edited b
   assert.match(JSON.stringify(sentToThread[0].components[0].toJSON()), /Помочь/);
   assert.equal(sentToThread[1].content, "<@&battalion-role> <@&extra-base-role>");
   assert.deepEqual(sentToThread[1].allowedMentions, { roles: ["battalion-role", "extra-base-role"] });
-  assert.equal(sentToThread[2].content, ".");
-  assert.deepEqual(sentToThread[2].allowedMentions, { parse: [] });
-  assert.deepEqual(editedMessages, [{
-    id: "thread-message-3",
-    payload: {
-      content: "<@&edit-role-1> <@&edit-role-2>",
-      allowedMentions: { roles: ["edit-role-1", "edit-role-2"] },
-    },
-  }]);
+  // Real ping: the edit-test roles are mentioned at SEND time (no buffer/edit),
+  // so Discord actually notifies them; the message is auto-deleted afterwards.
+  assert.equal(sentToThread[2].content, "<@&edit-role-1> <@&edit-role-2>");
+  assert.deepEqual(sentToThread[2].allowedMentions, { roles: ["edit-role-1", "edit-role-2"] });
+  assert.deepEqual(editedMessages, []);
   assert.deepEqual(scheduledDelays, [5000]);
   assert.deepEqual(deletedMessages, ["thread-message-3"]);
 });
@@ -2030,7 +2027,7 @@ test("standard draft submit skips edit-test buffer when edit roles are empty", a
   assert.deepEqual(scheduledDelays, []);
 });
 
-test("standard draft submit logs edit-test edit failures without aborting ticket publish", async () => {
+test("standard draft submit tolerates an edit-test ping send failure without aborting ticket publish", async () => {
   const db = {};
   const state = ensureAntiteamState(db).state;
   state.config.channelId = "channel-1";
@@ -2051,13 +2048,15 @@ test("standard draft submit logs edit-test edit failures without aborting ticket
     isTextBased: () => true,
     messages: { fetch: async () => null },
     send: async (payload) => {
+      // The edit-test ping is now a real ping; simulate its send rejecting.
+      if (typeof payload.content === "string" && payload.content.includes("edit-role-1")) {
+        throw new Error("send failed");
+      }
       sentToThread.push(payload);
       const id = `thread-message-${sentToThread.length}`;
       return {
         id,
-        edit: async () => {
-          throw new Error("edit failed");
-        },
+        edit: async () => {},
         delete: async () => {
           deletedMessages.push(id);
         },
@@ -2094,9 +2093,11 @@ test("standard draft submit logs edit-test edit failures without aborting ticket
   const ticket = Object.values(db.sot.antiteam.tickets)[0];
   assert.equal(ticket.message.threadPanelMessageId, "thread-message-1");
   assert.equal(ticket.message.pingMessageId, "thread-message-2");
-  assert.equal(sentToThread.length, 3);
-  assert.deepEqual(deletedMessages, ["thread-message-3"]);
-  assert.match(logErrors.join("\n"), /Antiteam edit ping failed: edit failed/);
+  // The edit-test ping send threw, but publish still completed; only battalion
+  // (sentToThread[1]) landed and the failure was logged.
+  assert.equal(sentToThread.length, 2);
+  assert.deepEqual(deletedMessages, []);
+  assert.match(logErrors.join("\n"), /Antiteam edit ping failed: send failed/);
 });
 
 test("draft cancel clears a live draft and confirms cancellation", async () => {
@@ -3664,7 +3665,7 @@ test("panel text modal updates and edits the published start panel", async () =>
   assert.match(JSON.stringify(interaction.calls.at(-1)[1].components[0].toJSON()), /обновлена в канале/);
 });
 
-test("close review toggles drive the result in memory, persisting only on close", async () => {
+test("close review toggles persist immediately and drive the close result", async () => {
   const db = {};
   const draft = setAntiteamDraft(db, "author-1", {
     userTag: "Author",
@@ -3695,8 +3696,10 @@ test("close review toggles drive the result in memory, persisting only on close"
   const toggle = createButtonInteraction(ticketButtonId("arrived", "ticket-1", "helper-2:0"), { id: "author-1", username: "Author" });
   assert.equal(await operator.handleButtonInteraction(toggle), true);
 
-  // No DB writes yet — open + toggle are purely in-memory.
-  assert.equal(persistCount, 0);
+  // Opening the review is read-only; the toggle persists straight to the ticket.
+  assert.equal(persistCount, 1);
+  assert.equal(db.sot.antiteam.tickets["ticket-1"].helpers["helper-2"].arrived, false);
+  assert.notEqual(db.sot.antiteam.tickets["ticket-1"].helpers["helper-1"].arrived, false);
 
   const modal = createModalInteraction(
     ticketButtonId("close_modal", "ticket-1"),
@@ -3708,7 +3711,7 @@ test("close review toggles drive the result in memory, persisting only on close"
 
   const closed = db.sot.antiteam.tickets["ticket-1"];
   assert.equal(closed.status, "closed");
-  // Only helper-1 (left green) is counted; helper-2 was toggled off in memory.
+  // Only helper-1 (left green) is counted; helper-2 was toggled off.
   assert.equal(db.sot.antiteam.stats.helpers["helper-1"].confirmedArrived, 1);
   assert.equal(db.sot.antiteam.stats.helpers["helper-2"], undefined);
 });

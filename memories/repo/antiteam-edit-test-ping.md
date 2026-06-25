@@ -1,0 +1,4 @@
+- edit-test ping (pingMode "edit_roles", configured via editPingRoleIds) now sends a REAL ping: sendEditPingMessage puts the role mentions in the message content at SEND time with allowedMentions.roles, then auto-deletes after ANTITEAM_EDIT_PING_DELETE_MS.
+- The old "send a dot, then EDIT the roles in" trick never notified anyone — Discord does not push notifications for mentions added by a later edit. That was the "edit-test поставил, а оно вообще не выполняет/не проявляется" bug.
+- KV approval reuses the same idea via sendKvOpenPing (real ping of editPingRoleIds, not auto-deleted). See [[antiteam-kv-mode]].
+- If you ever want the edit-test ping to stay visible, drop the scheduleTransientPingDelete call — the notification already fires on send regardless.
