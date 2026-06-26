@@ -2,4 +2,7 @@
 /backups/
 /.deploy-*/
 /.tmp.production-welcome-db.json
+# SQLite WAL sidecars are transient journal/shared-memory files — never commit them.
+*.sqlite-wal
+*.sqlite-shm
 assets/antiteam/direct-link-guide.png

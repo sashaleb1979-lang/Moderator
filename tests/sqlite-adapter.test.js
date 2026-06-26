@@ -220,3 +220,62 @@ maybe("createDbStore persists through the sqlite adapter across reloads", async 
     adapterB.close();
   }
 });
+
+maybe("sot is split per-subkey: changing one slice rewrites only that row", () => {
+  const dbPath = tempDbPath();
+  const adapter = createSqliteAdapter(dbPath);
+  try {
+    // Initial write: 3 sot subkeys (activity is the big one) + config.
+    let result = adapter.writeSync({
+      config: { v: 1 },
+      sot: {
+        activity: { globalUserSessions: [{ userId: "u1", startedAt: "2026-05-01T00:00:00.000Z" }] },
+        antiteam: { tickets: { t1: { status: "open" } } },
+        news: { events: [] },
+      },
+      profiles: {},
+      submissions: {},
+    });
+    // config + 3 sot subkeys = 4 changed rows.
+    assert.equal(result.changedRows, 4);
+
+    // Touch ONLY sot.antiteam; activity/news/config must stay untouched.
+    result = adapter.writeSync({
+      config: { v: 1 },
+      sot: {
+        activity: { globalUserSessions: [{ userId: "u1", startedAt: "2026-05-01T00:00:00.000Z" }] },
+        antiteam: { tickets: { t1: { status: "closed" } } },
+        news: { events: [] },
+      },
+      profiles: {},
+      submissions: {},
+    });
+    assert.equal(result.changedRows, 1);
+
+    // Deleting a sot subkey removes just its row.
+    result = adapter.writeSync({
+      config: { v: 1 },
+      sot: {
+        activity: { globalUserSessions: [{ userId: "u1", startedAt: "2026-05-01T00:00:00.000Z" }] },
+        antiteam: { tickets: { t1: { status: "closed" } } },
+      },
+      profiles: {},
+      submissions: {},
+    });
+    assert.equal(result.changedRows, 1);
+  } finally {
+    adapter.close();
+  }
+
+  // Reopened with a fresh cache, the sot tree round-trips intact.
+  const reader = createSqliteAdapter(dbPath);
+  try {
+    const raw = reader.readRaw();
+    assert.deepEqual(raw.sot, {
+      activity: { globalUserSessions: [{ userId: "u1", startedAt: "2026-05-01T00:00:00.000Z" }] },
+      antiteam: { tickets: { t1: { status: "closed" } } },
+    });
+  } finally {
+    reader.close();
+  }
+});

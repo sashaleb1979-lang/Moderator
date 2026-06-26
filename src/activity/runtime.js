@@ -2038,7 +2038,52 @@ function recordActivityMessage({ db = {}, message = {} } = {}) {
   };
 }
 
-async function flushActivityRuntime({ db = {}, now, saveDb, runSerialized, resolveMemberActivityMeta } = {}) {
+// Raw per-session logs (globalUserSessions / globalVoiceSessions) are append-only
+// and otherwise grow without bound — on prod they had reached ~9.4k rows / 6.8MB,
+// ~half of it older than the scoring window and contributing nothing to any score.
+// Both scoring paths (sumSessionEffectiveValuesByWindow / buildSmartVoiceScoreMetrics)
+// ignore anything older than scoreWindowDays, and per-user history that must outlive
+// the window lives in userSnapshots + the daily-stat rollups. So dropping sessions
+// past a generous retention window is safe and keeps the DB from growing forever.
+// The floor keeps the effective retention strictly wider than the score window even
+// if sessionRetentionDays is misconfigured, so an in-window session is never pruned.
+function pruneExpiredActivitySessions(state, now, config = {}) {
+  if (!state || typeof state !== "object") return { prunedSessions: 0, prunedVoiceSessions: 0 };
+  const toPosInt = (value, fallback) => {
+    const parsed = Number(value);
+    return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
+  };
+  const retentionDays = Math.max(
+    toPosInt(config.sessionRetentionDays, 45),
+    toPosInt(config.scoreWindowDays, 30) + 7
+  );
+  const nowMs = new Date(getActivityRuntimeNow({ now })).getTime();
+  if (!Number.isFinite(nowMs)) return { prunedSessions: 0, prunedVoiceSessions: 0 };
+  const cutoff = nowMs - retentionDays * 24 * 60 * 60 * 1000;
+
+  const keepRecent = (rows, startKey, endKey) => {
+    if (!Array.isArray(rows) || !rows.length) return { rows, removed: 0 };
+    const kept = [];
+    let removed = 0;
+    for (const row of rows) {
+      const raw = row?.[endKey] || row?.[startKey];
+      const timestamp = raw ? new Date(raw).getTime() : NaN;
+      // Keep anything within the window, plus anything we cannot date (defensive):
+      // a missing/invalid timestamp must never be treated as "ancient" and dropped.
+      if (!Number.isFinite(timestamp) || timestamp >= cutoff) kept.push(row);
+      else removed += 1;
+    }
+    return { rows: removed ? kept : rows, removed };
+  };
+
+  const sessions = keepRecent(state.globalUserSessions, "startedAt", "endedAt");
+  const voiceSessions = keepRecent(state.globalVoiceSessions, "joinedAt", "endedAt");
+  if (sessions.removed) state.globalUserSessions = sessions.rows;
+  if (voiceSessions.removed) state.globalVoiceSessions = voiceSessions.rows;
+  return { prunedSessions: sessions.removed, prunedVoiceSessions: voiceSessions.removed };
+}
+
+async function flushActivityRuntime({ db = {}, now, saveDb, runSerialized, resolveMemberActivityMeta, pruneSessions = true } = {}) {
   const execute = async () => {
     const state = ensureActivityState(db);
     const config = state.config || {};
@@ -2054,6 +2099,15 @@ async function flushActivityRuntime({ db = {}, now, saveDb, runSerialized, resol
       dirtyUsers.add(userId);
       finalizedSessionCount += 1;
     }
+
+    // Trim expired raw sessions before rebuilding so the index/snapshots reflect
+    // the kept rows and the saved state stops growing forever. Skipped for the
+    // historical-import flush (pruneSessions:false): import deliberately writes
+    // older-than-window sessions and must not garbage-collect its own writes in
+    // the same operation — the periodic background flush still enforces retention.
+    const pruneResult = pruneSessions
+      ? pruneExpiredActivitySessions(state, currentTime, config)
+      : { prunedSessions: 0, prunedVoiceSessions: 0 };
 
     const rebuiltUsers = [];
     const rebuildUserIds = new Set([...dirtyUsers, ...Object.keys(openVoiceSessions)]);
@@ -2081,6 +2135,8 @@ async function flushActivityRuntime({ db = {}, now, saveDb, runSerialized, resol
     state.runtime.lastFlushStats = {
       finalizedSessionCount,
       rebuiltUserCount: rebuiltUsers.length,
+      prunedSessionCount: pruneResult.prunedSessions,
+      prunedVoiceSessionCount: pruneResult.prunedVoiceSessions,
     };
     db.sot.activity = state;
     if (typeof saveDb === "function") {
@@ -2178,6 +2234,7 @@ async function resumeActivityRuntime({ db = {}, now, saveDb, runSerialized, reso
 
 module.exports = {
   flushActivityRuntime,
+  pruneExpiredActivitySessions,
   getEffectiveSessionBase,
   promotePersistedActivityMirrorsToSnapshots,
   rebuildActivitySnapshots,

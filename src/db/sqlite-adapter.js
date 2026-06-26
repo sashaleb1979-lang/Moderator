@@ -25,9 +25,14 @@ function isSqliteAvailable() {
 }
 
 // Top-level keys that are large keyed maps get their own row-per-entry table.
-// Everything else (config, sot, cooldowns, roleGrantMessages, comboGuide, ...)
-// is stored whole, one row per key, in `kv`.
+// `sot` additionally gets a row-per-SUBKEY table (sot.activity, sot.antiteam, …):
+// it is a multi-MB blob dominated by activity, so storing it whole meant a change
+// to ANY slice (e.g. one antiteam ticket) rewrote the entire blob. Splitting it by
+// subkey makes each write touch only the slices that actually changed. Everything
+// else (config, cooldowns, roleGrantMessages, comboGuide, …) is stored whole, one
+// row per key, in `kv`.
 const ROW_TABLES = ["profiles", "submissions"];
+const SOT_KEY = "sot";
 
 function createSqliteAdapter(dbPath, options = {}) {
   if (!isSqliteAvailable()) {
@@ -44,11 +49,15 @@ function createSqliteAdapter(dbPath, options = {}) {
   db.exec("CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, data TEXT NOT NULL);");
   db.exec("CREATE TABLE IF NOT EXISTS profiles (id TEXT PRIMARY KEY, data TEXT NOT NULL);");
   db.exec("CREATE TABLE IF NOT EXISTS submissions (id TEXT PRIMARY KEY, data TEXT NOT NULL);");
+  db.exec("CREATE TABLE IF NOT EXISTS sot (key TEXT PRIMARY KEY, data TEXT NOT NULL);");
 
   const statements = {
     kvSelectAll: db.prepare("SELECT key, data FROM kv"),
     kvUpsert: db.prepare("INSERT INTO kv(key, data) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET data = excluded.data"),
     kvDelete: db.prepare("DELETE FROM kv WHERE key = ?"),
+    sotSelectAll: db.prepare("SELECT key, data FROM sot"),
+    sotUpsert: db.prepare("INSERT INTO sot(key, data) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET data = excluded.data"),
+    sotDelete: db.prepare("DELETE FROM sot WHERE key = ?"),
     profilesSelectAll: db.prepare("SELECT id, data FROM profiles"),
     profilesUpsert: db.prepare("INSERT INTO profiles(id, data) VALUES(?, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data"),
     profilesDelete: db.prepare("DELETE FROM profiles WHERE id = ?"),
@@ -61,16 +70,18 @@ function createSqliteAdapter(dbPath, options = {}) {
   // Only mutated AFTER a successful COMMIT so a rollback can never desync it.
   const persistedCache = {
     kv: new Map(),
+    sot: new Map(),
     profiles: new Map(),
     submissions: new Map(),
   };
 
   function readRaw() {
     const kvRows = statements.kvSelectAll.all();
+    const sotRows = statements.sotSelectAll.all();
     const profileRows = statements.profilesSelectAll.all();
     const submissionRows = statements.submissionsSelectAll.all();
 
-    if (!kvRows.length && !profileRows.length && !submissionRows.length) {
+    if (!kvRows.length && !sotRows.length && !profileRows.length && !submissionRows.length) {
       return undefined; // empty database -> caller falls back to defaults
     }
 
@@ -79,6 +90,20 @@ function createSqliteAdapter(dbPath, options = {}) {
     for (const row of kvRows) {
       raw[row.key] = JSON.parse(row.data);
       persistedCache.kv.set(row.key, row.data);
+    }
+
+    // Reassemble sot from its per-subkey rows. A legacy whole-`sot` kv row (written
+    // before the split) is read into raw.sot by the kv loop above; the sot-table
+    // rows below take precedence, and that stale kv "sot" row is dropped on the next
+    // write (it is absent from kvSource there), so migration is automatic and safe.
+    persistedCache.sot.clear();
+    if (sotRows.length) {
+      const sot = {};
+      for (const row of sotRows) {
+        sot[row.key] = JSON.parse(row.data);
+        persistedCache.sot.set(row.key, row.data);
+      }
+      raw.sot = sot;
     }
 
     const profiles = {};
@@ -122,14 +147,19 @@ function createSqliteAdapter(dbPath, options = {}) {
   function writeSync(workingDb) {
     const source = workingDb || {};
 
-    // kv = every top-level key except the dedicated row-tables.
+    // kv = every top-level key except the dedicated row-tables and `sot` (which
+    // gets its own per-subkey table below).
     const kvSource = {};
     for (const key of Object.keys(source)) {
-      if (ROW_TABLES.includes(key)) continue;
+      if (ROW_TABLES.includes(key) || key === SOT_KEY) continue;
       kvSource[key] = source[key];
     }
+    const sotSource = source.sot && typeof source.sot === "object" && !Array.isArray(source.sot)
+      ? source.sot
+      : {};
 
     const kvDiff = planCollectionDiff(persistedCache.kv, kvSource);
+    const sotDiff = planCollectionDiff(persistedCache.sot, sotSource);
     const profilesDiff = planCollectionDiff(persistedCache.profiles, source.profiles || {});
     const submissionsDiff = planCollectionDiff(persistedCache.submissions, source.submissions || {});
 
@@ -137,6 +167,8 @@ function createSqliteAdapter(dbPath, options = {}) {
     try {
       for (const [key, data] of kvDiff.upserts) statements.kvUpsert.run(key, data);
       for (const key of kvDiff.deletes) statements.kvDelete.run(key);
+      for (const [key, data] of sotDiff.upserts) statements.sotUpsert.run(key, data);
+      for (const key of sotDiff.deletes) statements.sotDelete.run(key);
       for (const [id, data] of profilesDiff.upserts) statements.profilesUpsert.run(id, data);
       for (const id of profilesDiff.deletes) statements.profilesDelete.run(id);
       for (const [id, data] of submissionsDiff.upserts) statements.submissionsUpsert.run(id, data);
@@ -150,6 +182,8 @@ function createSqliteAdapter(dbPath, options = {}) {
     // Commit succeeded: sync the cache to match what is now on disk.
     for (const [key, data] of kvDiff.upserts) persistedCache.kv.set(key, data);
     for (const key of kvDiff.deletes) persistedCache.kv.delete(key);
+    for (const [key, data] of sotDiff.upserts) persistedCache.sot.set(key, data);
+    for (const key of sotDiff.deletes) persistedCache.sot.delete(key);
     for (const [id, data] of profilesDiff.upserts) persistedCache.profiles.set(id, data);
     for (const id of profilesDiff.deletes) persistedCache.profiles.delete(id);
     for (const [id, data] of submissionsDiff.upserts) persistedCache.submissions.set(id, data);
@@ -158,6 +192,7 @@ function createSqliteAdapter(dbPath, options = {}) {
     return {
       changedRows:
         kvDiff.upserts.length + kvDiff.deletes.length
+        + sotDiff.upserts.length + sotDiff.deletes.length
         + profilesDiff.upserts.length + profilesDiff.deletes.length
         + submissionsDiff.upserts.length + submissionsDiff.deletes.length,
     };

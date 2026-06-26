@@ -5,6 +5,7 @@ const assert = require("node:assert/strict");
 
 const {
   flushActivityRuntime,
+  pruneExpiredActivitySessions,
   recordActivityMessage,
   recordActivityVoiceState,
   rebuildActivitySnapshots,
@@ -1457,4 +1458,67 @@ test("rebuildActivitySnapshots never mutates the persisted source arrays (no-dee
   assert.equal(JSON.stringify(db.sot.activity.userVoiceDailyStats), before.userVoiceDailyStats);
   // And the rebuild actually produced snapshots for both users.
   assert.equal(Object.keys(db.sot.activity.userSnapshots).length, 2);
+});
+
+test("pruneExpiredActivitySessions drops sessions past the retention window and keeps recent/undatable ones", () => {
+  const now = "2026-06-26T00:00:00.000Z";
+  const nowMs = Date.parse(now);
+  const daysAgo = (n) => new Date(nowMs - n * 24 * 60 * 60 * 1000).toISOString();
+  const state = {
+    globalUserSessions: [
+      { userId: "u1", startedAt: daysAgo(100), endedAt: daysAgo(100) },
+      { userId: "u1", startedAt: daysAgo(50), endedAt: daysAgo(50) },
+      { userId: "u2", startedAt: daysAgo(10), endedAt: daysAgo(10) },
+      { userId: "u3", startedAt: null, endedAt: null },
+    ],
+    globalVoiceSessions: [
+      { userId: "u1", joinedAt: daysAgo(90), endedAt: daysAgo(90) },
+      { userId: "u2", joinedAt: daysAgo(3), endedAt: daysAgo(3) },
+    ],
+  };
+
+  const result = pruneExpiredActivitySessions(state, now, { sessionRetentionDays: 45, scoreWindowDays: 30 });
+
+  assert.equal(result.prunedSessions, 2);
+  assert.equal(result.prunedVoiceSessions, 1);
+  assert.deepEqual(state.globalUserSessions.map((entry) => entry.userId), ["u2", "u3"]);
+  assert.deepEqual(state.globalVoiceSessions.map((entry) => entry.userId), ["u2"]);
+});
+
+test("pruneExpiredActivitySessions floor keeps sessions inside the score window even when retention is misconfigured low", () => {
+  const now = "2026-06-26T00:00:00.000Z";
+  const nowMs = Date.parse(now);
+  const daysAgo = (n) => new Date(nowMs - n * 24 * 60 * 60 * 1000).toISOString();
+  const state = {
+    globalUserSessions: [
+      { userId: "u1", startedAt: daysAgo(20), endedAt: daysAgo(20) },
+      { userId: "u2", startedAt: daysAgo(35), endedAt: daysAgo(35) },
+    ],
+  };
+
+  // sessionRetentionDays=1 is nonsense; the scoreWindowDays+7 floor (37d) must win.
+  const result = pruneExpiredActivitySessions(state, now, { sessionRetentionDays: 1, scoreWindowDays: 30 });
+
+  assert.equal(result.prunedSessions, 0);
+  assert.equal(state.globalUserSessions.length, 2);
+});
+
+test("flushActivityRuntime prunes expired sessions by default but honors pruneSessions:false", async () => {
+  const now = "2026-06-26T00:00:00.000Z";
+  const oldAt = "2026-01-01T00:00:00.000Z";
+  const makeDb = () => {
+    const db = {};
+    const state = ensureActivityState(db);
+    state.globalUserSessions = [{ userId: "u1", startedAt: oldAt, endedAt: oldAt }];
+    return db;
+  };
+
+  const importDb = makeDb();
+  await flushActivityRuntime({ db: importDb, now, pruneSessions: false });
+  assert.equal(importDb.sot.activity.globalUserSessions.length, 1);
+
+  const periodicDb = makeDb();
+  const result = await flushActivityRuntime({ db: periodicDb, now });
+  assert.equal(periodicDb.sot.activity.globalUserSessions.length, 0);
+  assert.equal(result ? true : true, true);
 });

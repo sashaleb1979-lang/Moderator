@@ -3005,6 +3005,9 @@ async function importHistoricalActivity({
       db,
       now: flushAt,
       resolveMemberActivityMeta,
+      // Import writes historical (often older-than-retention) sessions; don't let
+      // this flush prune what we just imported. The periodic flush enforces retention.
+      pruneSessions: false,
     });
     const initialRoleAssignment = await applyInitialActivityRoleAssignments({
       db,

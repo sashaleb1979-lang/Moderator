@@ -215,6 +215,10 @@ function createDefaultActivityConfig() {
     includeThreads: true,
     sessionGapMinutes: 45,
     scoreWindowDays: 30,
+    // Raw per-session logs older than this are pruned on flush (see
+    // pruneExpiredActivitySessions). Must stay wider than scoreWindowDays — a
+    // runtime floor enforces that — so pruning can never drop a scored session.
+    sessionRetentionDays: 45,
     maxEffectiveSessionsPerDay: 3.2,
     sessionWeightMin: 0.35,
     sessionWeightMax: 1.15,
@@ -411,6 +415,7 @@ function normalizeActivityConfig(value = {}) {
     includeThreads: normalizeBoolean(source.includeThreads, defaults.includeThreads),
     sessionGapMinutes: normalizePositiveInteger(source.sessionGapMinutes, defaults.sessionGapMinutes),
     scoreWindowDays: normalizePositiveInteger(source.scoreWindowDays, defaults.scoreWindowDays),
+    sessionRetentionDays: normalizePositiveInteger(source.sessionRetentionDays, defaults.sessionRetentionDays),
     maxEffectiveSessionsPerDay: normalizePositiveNumber(
       source.maxEffectiveSessionsPerDay,
       defaults.maxEffectiveSessionsPerDay
@@ -522,6 +527,15 @@ function normalizeWatchedChannelRecord(value = {}, options = {}) {
 }
 
 function normalizeActivityState(value = {}) {
+  // Fast path: an object this process already normalized is kept valid in place by
+  // the activity runtime (it only ever mutates the state through ensureActivityState,
+  // which preserves WeakSet membership) — the same trust ensureActivityState already
+  // relies on. The DB write path re-normalizes the whole sot subtree on every flush
+  // via syncSotCoreDualWrite; returning the already-normalized (multi-MB) activity
+  // tree by reference here avoids a full deep re-clone of it on each save.
+  if (value && typeof value === "object" && !Array.isArray(value) && NORMALIZED_ACTIVITY_STATES.has(value)) {
+    return value;
+  }
   const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
   const defaults = createEmptyActivityState();
   const next = {

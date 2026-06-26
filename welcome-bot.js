@@ -7024,32 +7024,150 @@ function findTournamentProofAttachment(message, submission = {}) {
   return named || attachments.find(isTournamentImageAttachment) || attachments[0] || null;
 }
 
-async function resolveTournamentSubmissionImageUrl(submission = {}) {
-  const directReviewUrl = [submission.reviewAttachmentUrl, submission.reviewImage]
-    .map((value) => (typeof value === "string" ? value.trim() : ""))
-    .find((value) => /^https?:\/\//i.test(value));
-  if (directReviewUrl) return directReviewUrl;
-
-  const reviewMessage = await fetchReviewMessage(client, submission).catch((error) => {
-    console.warn(`Tournament proof fetch failed for ${submission?.id || "submission"}: ${formatRuntimeError(error)}`);
-    return null;
-  });
-  const proofAttachment = findTournamentProofAttachment(reviewMessage, submission);
-  if (proofAttachment?.url) {
-    submission.reviewAttachmentUrl = proofAttachment.url;
-    if (!submission.reviewImage || String(submission.reviewImage).startsWith("attachment://")) {
-      submission.reviewImage = proofAttachment.url;
-    }
-    saveDb();
-    return proofAttachment.url;
-  }
-
-  return tournamentSubmissionImageUrl(submission);
+// Signed Discord CDN links carry a `?ex=<hex unix-seconds>` expiry (~24h) and
+// ephemeral-attachment links can't be re-fetched at all, so a proof URL we
+// persisted at submission time is almost always dead by the time the player
+// registers. `ex` lets us detect that before handing the link to Discord.
+function discordCdnUrlExpiryMs(url) {
+  const match = /[?&]ex=([0-9a-f]+)/i.exec(String(url || ""));
+  if (!match) return 0;
+  const seconds = parseInt(match[1], 16);
+  return Number.isFinite(seconds) ? seconds * 1000 : 0;
 }
 
+// A URL we can safely embed *right now*: https, not an (unfetchable, short-lived)
+// ephemeral-attachment link, and not past its signed expiry. A dead URL renders
+// as a broken image, so we never return one — null just omits the gallery.
+function isLiveRenderableImageUrl(url) {
+  const value = typeof url === "string" ? url.trim() : "";
+  if (!/^https?:\/\//i.test(value)) return false;
+  if (/\/ephemeral-attachments\//i.test(value)) return false;
+  const expiry = discordCdnUrlExpiryMs(value);
+  if (expiry && expiry - 60000 <= Date.now()) return false;
+  return true;
+}
+
+// A regular (non-ephemeral) Discord attachment URL encodes the channel+message
+// that owns it, so we can re-fetch that message and read a freshly-signed URL.
+function parseDiscordAttachmentRef(url) {
+  const match = /(?:cdn|media)\.discord(?:app)?\.(?:com|net)\/attachments\/(\d+)\/(\d+)\//i.exec(String(url || ""));
+  return match ? { channelId: match[1], messageId: match[2] } : null;
+}
+
+// Fetch a message by channel+id and return a fresh proof attachment URL, or null.
+async function freshTournamentAttachmentUrl(channelId, messageId, submission = {}) {
+  const cid = String(channelId || "").trim();
+  const mid = String(messageId || "").trim();
+  if (!cid || !mid) return null;
+  const channel = await client.channels.fetch(cid).catch(() => null);
+  if (!channel?.isTextBased?.()) return null;
+  const message = await channel.messages.fetch(mid).catch(() => null);
+  if (!message) return null;
+  return findTournamentProofAttachment(message, submission)?.url || null;
+}
+
+// Short-TTL "<attachment name> -> fresh url" index of the review channel. Every
+// proof repost is attached as "<submissionId>_proof.png", so this recovers a
+// proof even when its stored reviewMessageId is stale — and the cache keeps a
+// burst of registrations from re-scanning history per click.
+const tournamentReviewScanCache = new Map();
+const TOURNAMENT_REVIEW_SCAN_TTL_MS = 60000;
+
+async function tournamentReviewProofIndex(channelId) {
+  const cid = String(channelId || "").trim();
+  if (!cid) return new Map();
+  const cached = tournamentReviewScanCache.get(cid);
+  if (cached && Date.now() - cached.at < TOURNAMENT_REVIEW_SCAN_TTL_MS) return cached.byName;
+
+  const byName = new Map();
+  try {
+    const channel = await client.channels.fetch(cid).catch(() => null);
+    if (channel?.isTextBased?.()) {
+      let before;
+      for (let page = 0; page < 5; page += 1) {
+        const batch = await channel.messages
+          .fetch({ limit: 100, ...(before ? { before } : {}) })
+          .catch(() => null);
+        if (!batch || !batch.size) break;
+        for (const message of batch.values()) {
+          before = message.id;
+          for (const attachment of collectionToArray(message.attachments)) {
+            const name = String(attachment?.name || attachment?.filename || "").trim();
+            if (name && attachment?.url && !byName.has(name)) byName.set(name, attachment.url);
+          }
+        }
+        if (batch.size < 100) break;
+      }
+    }
+  } catch (error) {
+    console.warn(`Tournament review channel scan failed for ${cid}: ${formatRuntimeError(error)}`);
+  }
+  tournamentReviewScanCache.set(cid, { at: Date.now(), byName });
+  return byName;
+}
+
+// Resolve one submission to a *live* proof URL. The only durable copy of the
+// screenshot is the review-channel repost's attachment, so we re-mint a fresh
+// link every time, trying several independent sources and never returning a
+// dead one.
+async function resolveTournamentSubmissionImageUrl(submission = {}) {
+  if (!submission || typeof submission !== "object") return null;
+
+  // 1) A stored URL that happens to still be alive (rare — they expire in ~24h).
+  for (const value of [submission.reviewAttachmentUrl, submission.reviewImage, submission.screenshotUrl]) {
+    if (isLiveRenderableImageUrl(value)) return String(value).trim();
+  }
+
+  // 2) Re-mint a fresh URL straight from the durable review-channel repost.
+  let fresh = await freshTournamentAttachmentUrl(submission.reviewChannelId, submission.reviewMessageId, submission);
+
+  // 3) Fall back to the player's original upload (the channel+message is encoded
+  //    in the stored URLs) in case the repost is gone but the source survives.
+  if (!fresh) {
+    const ref = parseDiscordAttachmentRef(submission.screenshotUrl)
+      || parseDiscordAttachmentRef(submission.reviewAttachmentUrl)
+      || parseDiscordAttachmentRef(submission.reviewImage);
+    if (ref) fresh = await freshTournamentAttachmentUrl(ref.channelId, ref.messageId, submission);
+  }
+
+  // 4) Last resort: scan the configured review channel for the proof by its
+  //    deterministic name, recovering a rotated/forgotten reviewMessageId.
+  const proofName = tournamentReviewAttachmentName(submission);
+  if (!fresh && proofName) {
+    const index = await tournamentReviewProofIndex(submission.reviewChannelId || getResolvedChannelId("review"));
+    if (index.has(proofName)) fresh = index.get(proofName);
+  }
+
+  if (isLiveRenderableImageUrl(fresh)) {
+    // Cache the fresh link so the rest of this ~24h window skips the refetch.
+    if (submission.reviewAttachmentUrl !== fresh) {
+      submission.reviewAttachmentUrl = fresh;
+      saveDb();
+    }
+    return fresh;
+  }
+
+  console.warn(
+    `Tournament proof image unresolved for submission ${submission.id || "?"} `
+    + `(review ${submission.reviewChannelId || "?"}/${submission.reviewMessageId || "?"}); `
+    + "the bot may lack Read Message History in the review channel or the proof message was deleted."
+  );
+  return null;
+}
+
+// Resolve a player's proof image, trying every matching submission best-first so
+// a single deleted review message never blanks the picture when an older proof
+// is still around.
 async function resolveTournamentProofImageUrl(profile = {}, registration = {}) {
-  const proofSubmission = pickTournamentProofSubmission(profile, registration);
-  return proofSubmission ? await resolveTournamentSubmissionImageUrl(proofSubmission) : null;
+  const candidates = listTournamentProofSubmissions(profile, registration);
+  for (const submission of candidates) {
+    const url = await resolveTournamentSubmissionImageUrl(submission).catch((error) => {
+      console.warn(`Tournament proof resolve threw for ${submission?.id || "?"}: ${formatRuntimeError(error)}`);
+      return null;
+    });
+    if (url) return url;
+  }
+  return null;
 }
 
 function buildTournamentSubmissionMatchContext(profile = {}, registration = {}) {
@@ -7090,10 +7208,12 @@ function tournamentSubmissionMatchesContext(submission = {}, context = {}) {
     || (context.targetNameKey && submissionNameKeys.includes(context.targetNameKey));
 }
 
-function pickTournamentProofSubmission(profile = {}, registration = {}) {
-  if (!db.submissions || typeof db.submissions !== "object") return null;
+// Every non-rejected submission with an image candidate that matches the player,
+// ranked best-first: pinned (their last submission) → approved → most recent.
+function listTournamentProofSubmissions(profile = {}, registration = {}) {
+  if (!db.submissions || typeof db.submissions !== "object") return [];
   const context = buildTournamentSubmissionMatchContext(profile, registration);
-  const candidates = Object.values(db.submissions)
+  return Object.values(db.submissions)
     .filter((submission) => {
       if (!submission || typeof submission !== "object") return false;
       if (submission.status === "rejected") return false;
@@ -7110,7 +7230,10 @@ function pickTournamentProofSubmission(profile = {}, registration = {}) {
       if (leftApproved !== rightApproved) return rightApproved - leftApproved;
       return submissionTournamentRecency(right) - submissionTournamentRecency(left);
     });
-  return candidates[0] || null;
+}
+
+function pickTournamentProofSubmission(profile = {}, registration = {}) {
+  return listTournamentProofSubmissions(profile, registration)[0] || null;
 }
 
 function tournamentProfileRobloxIdentity(profile = {}) {

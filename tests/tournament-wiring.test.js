@@ -33,7 +33,7 @@ test("welcome-bot tournament Roblox snapshot uses the shared profile nickname ba
   assert.match(snapshotAdapterBlock, /resolveTournamentSubmissionImageUrl\(proofSubmission\)/);
   assert.match(source, /reviewImage\.startsWith\("attachment:\/\/"\)/);
   assert.match(source, /fetchReviewMessage\(client, submission\)/);
-  assert.match(source, /submission\.reviewAttachmentUrl = proofAttachment\.url/);
+  assert.match(source, /submission\.reviewAttachmentUrl = fresh/);
   assert.match(snapshotAdapterBlock, /const snapshotRegistration = \{ \.\.\.registration, userId: registration\.userId \|\| userId \};/);
   assert.match(snapshotAdapterBlock, /submission\.status === "rejected"/);
   assert.ok(source.indexOf("const approvedKills = pickTournamentApprovedKills(profile, snapshotRegistration);", snapshotStart) > snapshotStart, "expected tournament snapshot to avoid zero-first kill fallback");

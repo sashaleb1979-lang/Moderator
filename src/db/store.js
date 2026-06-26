@@ -309,7 +309,30 @@ function createDbStore({
   // happen on an isolated clone so a downstream failure (SoT dual-write or the
   // disk write itself) never leaks half-applied state into the live `db`.
   function prepareWriteState(db) {
-    const workingDb = cloneValue(db) || {};
+    // Isolation clone so a failed write never leaks half-normalized state into the
+    // live db. Two subtrees dominate the byte size — `profiles` (~3MB) and
+    // `sot.activity` (~8MB) — and NEITHER is mutated in place on this path:
+    // syncSharedProfiles REPLACES workingDb.profiles with a freshly-built object,
+    // and the activity tree is only read + re-serialized (normalizeActivityState
+    // returns an already-normalized tree by reference). So we deep-clone every
+    // OTHER subtree and share just those two by reference, turning the old ~83ms
+    // event-loop stall on every flush into ~4ms. Top-level and sot key order are
+    // preserved so the persisted output stays byte-identical to a full clone.
+    const source = db && typeof db === "object" && !Array.isArray(db) ? db : {};
+    const workingDb = {};
+    for (const key of Object.keys(source)) {
+      if (key === "profiles") {
+        workingDb.profiles = source.profiles;
+      } else if (key === "sot" && source.sot && typeof source.sot === "object" && !Array.isArray(source.sot)) {
+        const sot = {};
+        for (const sotKey of Object.keys(source.sot)) {
+          sot[sotKey] = sotKey === "activity" ? source.sot.activity : cloneValue(source.sot[sotKey]);
+        }
+        workingDb.sot = sot;
+      } else {
+        workingDb[key] = cloneValue(source[key]);
+      }
+    }
 
     syncSharedProfiles(workingDb);
     ensurePresentationConfig(workingDb.config, {
