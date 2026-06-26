@@ -7201,38 +7201,43 @@ async function resolveTournamentSubmissionImageUrl(submission = {}) {
 
   let fresh = null;
 
-  // 2) Re-sign the expired stored CDN URLs (no channel read permission needed).
-  const refreshable = [...new Set(
-    [submission.screenshotUrl, submission.reviewAttachmentUrl, submission.reviewImage]
-      .map((value) => (typeof value === "string" ? value.trim() : ""))
-      .filter((value) => /^https?:\/\//i.test(value) && !/\/ephemeral-attachments\//i.test(value))
-  )];
-  if (refreshable.length) {
-    const refreshed = await refreshDiscordAttachmentUrls(refreshable);
-    for (const original of refreshable) {
-      const candidate = refreshed.get(original);
-      if (isLiveRenderableImageUrl(candidate)) { fresh = candidate; break; }
+  // 2) Re-mint a fresh URL straight from the durable review-channel repost. This
+  //    is THE copy that actually renders (the bot reposted the bytes here), so it
+  //    must be tried before refresh-urls — the player's original upload is often
+  //    deleted after intake, so a re-signed link to it would 404 (broken image).
+  fresh = await freshTournamentAttachmentUrl(submission.reviewChannelId, submission.reviewMessageId, submission);
+
+  // 3) Scan the configured review channel for the proof by its deterministic
+  //    "<id>_proof.png" name, recovering a rotated/forgotten reviewMessageId.
+  const proofName = tournamentReviewAttachmentName(submission);
+  if (!fresh && proofName) {
+    const { byName } = await tournamentReviewScan(submission.reviewChannelId || getResolvedChannelId("review"));
+    if (byName.has(proofName)) fresh = byName.get(proofName);
+  }
+
+  // 4) Re-sign expired stored CDN URLs (no channel read permission needed) — the
+  //    escape hatch when the bot can't read the review channel at all.
+  if (!fresh) {
+    const refreshable = [...new Set(
+      [submission.screenshotUrl, submission.reviewAttachmentUrl, submission.reviewImage]
+        .map((value) => (typeof value === "string" ? value.trim() : ""))
+        .filter((value) => /^https?:\/\//i.test(value) && !/\/ephemeral-attachments\//i.test(value))
+    )];
+    if (refreshable.length) {
+      const refreshed = await refreshDiscordAttachmentUrls(refreshable);
+      for (const original of refreshable) {
+        const candidate = refreshed.get(original);
+        if (isLiveRenderableImageUrl(candidate)) { fresh = candidate; break; }
+      }
     }
   }
 
-  // 3) Re-mint a fresh URL straight from the durable review-channel repost.
-  if (!fresh) fresh = await freshTournamentAttachmentUrl(submission.reviewChannelId, submission.reviewMessageId, submission);
-
-  // 4) Fall back to the player's original upload (the channel+message is encoded
-  //    in the stored URLs) in case the repost is gone but the source survives.
+  // 5) Last resort: the player's original upload, if its message still exists.
   if (!fresh) {
     const ref = parseDiscordAttachmentRef(submission.screenshotUrl)
       || parseDiscordAttachmentRef(submission.reviewAttachmentUrl)
       || parseDiscordAttachmentRef(submission.reviewImage);
     if (ref) fresh = await freshTournamentAttachmentUrl(ref.channelId, ref.messageId, submission);
-  }
-
-  // 5) Last resort: scan the configured review channel for the proof by its
-  //    deterministic name, recovering a rotated/forgotten reviewMessageId.
-  const proofName = tournamentReviewAttachmentName(submission);
-  if (!fresh && proofName) {
-    const { byName } = await tournamentReviewScan(submission.reviewChannelId || getResolvedChannelId("review"));
-    if (byName.has(proofName)) fresh = byName.get(proofName);
   }
 
   if (isLiveRenderableImageUrl(fresh)) {
@@ -7252,24 +7257,43 @@ async function resolveTournamentSubmissionImageUrl(submission = {}) {
   return null;
 }
 
+// Cheap magic-byte sniff so we never re-attach a 404/HTML body as a "picture"
+// (which Discord then shows as a broken image).
+function isLikelyImageBuffer(buffer) {
+  if (!buffer || buffer.length < 12) return false;
+  const b = buffer;
+  if (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return true; // PNG
+  if (b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return true; // JPEG
+  if (b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46) return true; // GIF
+  if (b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[8] === 0x57 && b[9] === 0x45 && b[10] === 0x42 && b[11] === 0x50) return true; // WEBP
+  return false;
+}
+
 // Turn a resolved proof URL into renderable media. When `includeFile` is set we
-// download the bytes and hand back an attachment:// reference + buffer, so the
-// image is re-uploaded fresh (immune to URL expiry / MediaGallery quirks) the
-// same way bracket art is. Falls back to embedding the URL if the download
-// fails.
+// download the bytes and re-upload them as a fresh attachment (the bracket-art
+// pattern), which is immune to URL expiry. Crucially we NEVER hand back a dead
+// link: if the bytes can't be fetched/validated we only embed the URL when it's
+// still live, otherwise we omit the image rather than render a broken gallery.
 async function buildTournamentProofMedia(url, includeFile) {
-  if (!url) return { lastScreenshotUrl: null, lastScreenshotBuffer: null, lastScreenshotFilename: null };
-  if (!includeFile) return { lastScreenshotUrl: url, lastScreenshotBuffer: null, lastScreenshotFilename: null };
+  const empty = { lastScreenshotUrl: null, lastScreenshotBuffer: null, lastScreenshotFilename: null };
+  if (!url) return empty;
+  // Callers that don't render (finalize/hydration) just want the URL as metadata.
+  if (!includeFile) return { ...empty, lastScreenshotUrl: url };
+  // The confirm card renders this, so the download IS the safety gate: we show the
+  // picture ONLY when we actually fetched valid image bytes and can re-upload them
+  // fresh. A re-signed link to a deleted upload carries a future `ex=` yet 404s, so
+  // we must verify by bytes — never embed a URL we couldn't fetch (= broken image).
   try {
     const buffer = await downloadToBuffer(url);
-    if (buffer?.length) {
+    if (isLikelyImageBuffer(buffer)) {
       const filename = "tournament-proof.png";
       return { lastScreenshotUrl: `attachment://${filename}`, lastScreenshotBuffer: buffer, lastScreenshotFilename: filename };
     }
+    console.warn(`Tournament proof download returned non-image bytes for ${String(url).slice(0, 80)}`);
   } catch (error) {
-    console.warn(`Tournament proof download failed (${formatRuntimeError(error)}); embedding URL instead.`);
+    console.warn(`Tournament proof download failed (${formatRuntimeError(error)}).`);
   }
-  return { lastScreenshotUrl: url, lastScreenshotBuffer: null, lastScreenshotFilename: null };
+  return empty;
 }
 
 // Resolve a player's proof image, trying every matching submission best-first so
