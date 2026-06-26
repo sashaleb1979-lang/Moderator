@@ -18,6 +18,7 @@ const {
   serverCountForSlots,
 } = require("../src/tournament/seeding");
 const bracketImage = require("../src/tournament/bracket-image");
+const state = require("../src/tournament/state");
 
 function players(...kills) {
   // p1..pN with the given kill counts (index order = id order)
@@ -220,4 +221,18 @@ test("serverCountForSlots buckets players into 16-cap servers", () => {
   assert.equal(serverCountForSlots(32), 2);
   assert.equal(serverCountForSlots(33), 3);
   assert.equal(serverCountForSlots(0), 1);
+});
+
+test("alt effective kills add declared alt kills to registered profile kills", () => {
+  assert.equal(
+    state.resolveEffectiveKills({ accountKind: "alt", approvedKills: 4000, declaredKills: 2000 }),
+    6000
+  );
+  const normalized = state.normalizeRegistration({
+    userId: "user-1",
+    accountKind: "alt",
+    approvedKills: 4000,
+    declaredKills: 2000,
+  });
+  assert.equal(normalized.effectiveKills, 6000);
 });

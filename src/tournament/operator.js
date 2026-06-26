@@ -514,6 +514,7 @@ function createTournamentOperator(deps = {}) {
     const filename = isFinal ? "bracket-final.png" : `bracket-server-${serverIndex + 1}.png`;
     const buffer = await renderServerBracketBuffer(tournament, server, avatars);
     const qualifying = server.qualifying;
+    const playerCount = state.tournamentPlayers(tournament, serverCount(tournament) > 1 ? { serverIndex } : {}).length;
     let title;
     let headline;
     if (server.done) {
@@ -527,12 +528,19 @@ function createTournamentOperator(deps = {}) {
       title = isFinal ? "🏆 ФИНАЛ" : "🗺 Сетка";
       headline = isFinal ? "🏆 Финал идёт" : `⚔️ Сервер ${serverIndex + 1} · идёт игра`;
     }
+    const details = [
+      isFinal
+        ? `Финальная сетка: ${playerCount} игроков, прошедших из базовых серверов.`
+        : `Эта сетка относится только к серверу ${serverIndex + 1}: ${playerCount} участников.`,
+      "Бои проводятся через модераторскую панель. Приватная ветка под этим сервером содержит только участников этой сетки и админов с доступом к каналу.",
+    ].join("\n");
     const payload = view.buildBracketPostPayload(tournament, server.currentStage, {
       serverIndex,
       serverLabel: label,
       imageFilename: buffer ? filename : "",
       title,
       headline,
+      details,
     });
     return { payload, buffer, filename };
   }
@@ -1122,9 +1130,11 @@ function createTournamentOperator(deps = {}) {
       });
       const payload = view.buildRegMainConfirmPayload(tournament, {
         robloxUsername: snapshot.robloxUsername,
+        robloxUserId: snapshot.robloxUserId,
         kills: approvedKills,
         avatarUrl: snapshot.robloxAvatarUrl,
         screenshotUrl: snapshot.lastScreenshotUrl,
+        screenshotUnavailable: snapshot.lastScreenshotUnavailable,
       });
       await safeUpdate(interaction, attachProofImage(payload, snapshot));
       return true;
@@ -1134,6 +1144,7 @@ function createTournamentOperator(deps = {}) {
     const payload = view.buildRegNoAccountPayload(tournament, {
       kills: approvedKills,
       screenshotUrl: snapshot.lastScreenshotUrl,
+      screenshotUnavailable: snapshot.lastScreenshotUnavailable,
       canTwink: state.canSelfDeclareTwink(approvedKills),
     });
     await safeUpdate(interaction, attachProofImage(payload, snapshot));
@@ -1226,8 +1237,11 @@ function createTournamentOperator(deps = {}) {
   function normalizePreview(session) {
     return {
       robloxUsername: session.robloxUsername,
+      robloxUserId: session.robloxUserId,
       robloxAvatarUrl: session.robloxAvatarUrl,
       accountKind: session.accountKind,
+      approvedKills: session.approvedKills,
+      declaredKills: session.declaredKills,
       effectiveKills:
         session.effectiveKills != null
           ? session.effectiveKills
@@ -1824,8 +1838,8 @@ function createTournamentOperator(deps = {}) {
     }
 
     let memberResult = { ids: [], added: 0, failed: 0 };
+    let pingFailed = false;
     if (existingThread?.send) {
-      threadBracketMessageId = await editOrSendBracketMessage(existingThread, threadBracketMessageId, bracketPayload, buffer, filename, { allowCreate: true });
       memberResult = await addPlayersToPrivateThread(existingThread, players);
       if (memberResult.ids.length) {
         const label = serverIndex === FINAL_SERVER_INDEX ? "Финал" : `Сервер ${serverIndex + 1}`;
@@ -1834,28 +1848,34 @@ function createTournamentOperator(deps = {}) {
             content: [
               memberResult.ids.map((id) => `<@${id}>`).join(" "),
               "",
-              `**${label} готов.** Здесь только участники этой сетки; сообщения закрыты, чтобы ветка не превращалась в чат.`,
+              `**${label} готов.** Вы добавлены в приватную ветку своей сетки. Бои ведёт модератор через панель; здесь лежит актуальная картинка ветки.`,
             ].join("\n"),
             allowedMentions: { users: memberResult.ids },
           })
-          .catch(() => {});
+          .catch((error) => {
+            pingFailed = true;
+            logError("tournament: private thread ping failed", error?.message || error);
+          });
       }
+      threadBracketMessageId = await editOrSendBracketMessage(existingThread, threadBracketMessageId, bracketPayload, buffer, filename, { allowCreate: true });
       await existingThread.setLocked?.(true).catch(() => {});
     }
+    if (memberResult.failed > 0 || pingFailed) threadFailed = true;
 
     await persist("tournament-launch-side", async () => {
       const s = state.getServer(state.getTournament(db, tournamentId), serverIndex);
-      if (s) {
+      if (s && s.currentStage) {
         s.launchMessageId = launchMessageId;
         s.threadId = threadId;
         s.threadBracketMessageId = threadBracketMessageId;
         s.threadFailed = threadFailed;
         s.threadParticipantUserIds = memberResult.ids;
         s.threadParticipantAddFailed = memberResult.failed;
+        s.threadParticipantPingFailed = pingFailed;
       }
     });
     await safeLogLine(
-      `TOURNAMENT_LAUNCH: id=${tournamentId} server=${serverIndex + 1} thread=${threadId || "none"} threadFailed=${threadFailed} players=${players.length} threadMembers=${memberResult.ids.length} addFailed=${memberResult.failed}`
+      `TOURNAMENT_LAUNCH: id=${tournamentId} server=${serverIndex + 1} thread=${threadId || "none"} threadFailed=${threadFailed} players=${players.length} threadMembers=${memberResult.ids.length} addFailed=${memberResult.failed} pingFailed=${pingFailed}`
     );
   }
 

@@ -7257,17 +7257,48 @@ async function resolveTournamentSubmissionImageUrl(submission = {}) {
   return null;
 }
 
-// Hand the resolved proof URL straight to the confirm card. We embed the live URL
-// directly — external image URLs render in this V2 card exactly like the Roblox
-// avatar does, and the gallery itself renders here (it already showed the broken
-// placeholder when the URL was dead). The earlier resolution steps guarantee the
-// URL is freshly minted from a live review message, so Discord can fetch it. We do
-// NOT download/re-attach: an `attachment://` reference is not reliably honoured in
-// an ephemeral V2 edit, and gating on our own download would wrongly drop a good
-// picture whenever the bot hit a transient fetch hiccup — the exact "it vanished"
-// the operator keeps hitting. `_includeFile` is retained for signature stability.
-async function buildTournamentProofMedia(url, _includeFile) {
-  return { lastScreenshotUrl: url || null, lastScreenshotBuffer: null, lastScreenshotFilename: null };
+function tournamentProofFilenameFromUrl(url) {
+  let sourceName = "tournament-proof.png";
+  try {
+    const parsed = new URL(String(url || ""));
+    const rawName = path.basename(parsed.pathname || "");
+    if (rawName) sourceName = rawName;
+  } catch {}
+  const extMatch = /\.(png|jpe?g|webp|gif)$/i.exec(sourceName);
+  const fallbackExt = extMatch ? extMatch[1].toLowerCase().replace("jpeg", "jpg") : "png";
+  return sanitizeFileName(sourceName, fallbackExt);
+}
+
+// For tournament registration cards the proof must be a direct Discord upload:
+// download the resolved image bytes and reference them as attachment://filename.
+// If the download fails, do not fall back to a CDN URL that may render broken.
+async function buildTournamentProofMedia(url, includeFile) {
+  const liveUrl = typeof url === "string" && url.trim() ? url.trim() : null;
+  if (!liveUrl) {
+    return { lastScreenshotUrl: null, lastScreenshotBuffer: null, lastScreenshotFilename: null, lastScreenshotUnavailable: false };
+  }
+  if (!includeFile) {
+    return { lastScreenshotUrl: null, lastScreenshotBuffer: null, lastScreenshotFilename: null, lastScreenshotUnavailable: false };
+  }
+  const filename = tournamentProofFilenameFromUrl(liveUrl);
+  try {
+    const buffer = await downloadToBuffer(liveUrl);
+    if (!buffer?.length) throw new Error("empty proof image");
+    return {
+      lastScreenshotUrl: `attachment://${filename}`,
+      lastScreenshotBuffer: buffer,
+      lastScreenshotFilename: filename,
+      lastScreenshotUnavailable: false,
+    };
+  } catch (error) {
+    console.warn(`Tournament proof image download failed: ${formatRuntimeError(error)}`);
+    return {
+      lastScreenshotUrl: null,
+      lastScreenshotBuffer: null,
+      lastScreenshotFilename: null,
+      lastScreenshotUnavailable: true,
+    };
+  }
 }
 
 // Resolve a player's proof image, trying every matching submission best-first so

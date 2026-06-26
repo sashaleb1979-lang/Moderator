@@ -31,6 +31,11 @@ test("welcome-bot tournament Roblox snapshot uses the shared profile nickname ba
   assert.match(snapshotAdapterBlock, /pickTournamentRecentSubmissionKills\(registration\)/);
   assert.match(snapshotAdapterBlock, /resolveTournamentProofImageUrl\(profile, snapshotRegistration\)/);
   assert.match(snapshotAdapterBlock, /resolveTournamentSubmissionImageUrl\(proofSubmission\)/);
+  assert.match(source, /async function buildTournamentProofMedia\(url, includeFile\)/);
+  assert.match(source, /const buffer = await downloadToBuffer\(liveUrl\);/);
+  assert.match(source, /lastScreenshotUrl: `attachment:\/\/\$\{filename\}`/);
+  assert.match(source, /lastScreenshotBuffer: buffer/);
+  assert.match(source, /lastScreenshotUnavailable: true/);
   assert.match(source, /reviewImage\.startsWith\("attachment:\/\/"\)/);
   assert.match(source, /fetchReviewMessage\(client, submission\)/);
   assert.match(source, /submission\.reviewAttachmentUrl = fresh/);

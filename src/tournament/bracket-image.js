@@ -303,51 +303,71 @@ function buildSummaryModel({ tournament, avatars = {} } = {}) {
   };
 }
 
-function previewPlayerKills(player) {
-  return Number(player && (player.kills != null ? player.kills : player.effectiveKills)) || 0;
+function previewEmptyMatch() {
+  return {
+    red: null,
+    blue: null,
+    winnerId: null,
+    placement: null,
+    previewEmpty: true,
+  };
 }
 
-// Project the WHOLE bracket from the seeded roster: each round pairs the current
-// survivors (the seeding re-pairs closest-kills/seed) and the probable winner is
-// the higher-kill player, who advances. Returns one column per round plus the
-// final survivors (a base server's top-N qualifiers). This is what lets the
-// preview show every stage and each player's likely path + opponents.
-function projectServerColumns(players, mode, qualifyCount) {
-  const columns = [];
-  let survivors = Array.isArray(players) ? players.slice() : [];
-  const stopAt = qualifyCount > 0 ? Math.max(1, Math.min(qualifyCount, survivors.length)) : 1;
-  let stageNumber = 1;
-  let semifinalLosers = [];
-  let guard = 0;
-  const winnerOf = (m) => (m.red && m.blue ? (previewPlayerKills(m.red) >= previewPlayerKills(m.blue) ? m.red : m.blue) : (m.red || m.blue));
-  while (survivors.length > stopAt && survivors.length >= 2 && guard < 16) {
-    const plan = seeding.planNextStage({ survivors, mode, stageNumber, semifinalLosers });
-    if (!plan || !plan.stage) break;
-    const raw = seeding.listStageMatches(plan.stage);
-    const matches = raw.map((m) => {
-      const winner = winnerOf(m);
-      return {
-        red: playerNode(m.red),
-        blue: playerNode(m.blue),
-        winnerId: winner ? String(winner.userId || winner.id || "") : null,
-        placement: m.placement || null,
-        cellRed: m.cellRed,
-        cellBlue: m.cellBlue,
-      };
+function previewMatchFromStageMatch(match) {
+  return {
+    red: playerNode(match.red),
+    blue: playerNode(match.blue),
+    winnerId: null,
+    placement: null,
+    cellRed: match.cellRed,
+    cellBlue: match.cellBlue,
+  };
+}
+
+// Preview is intentionally NOT a prediction. It shows only the first, real
+// placement of players; every later round is a blank bracket slot.
+function buildPreviewColumns(players, mode, qualifyCount) {
+  const source = Array.isArray(players) ? players.slice() : [];
+  if (!source.length) return { columns: [], qualifiers: [] };
+
+  const firstStage = seeding.buildStage(source, mode, 1);
+  const firstMatches = seeding.listStageMatches(firstStage).map(previewMatchFromStageMatch);
+  if (firstStage.bye) {
+    firstMatches.push({
+      red: playerNode(firstStage.bye),
+      blue: null,
+      winnerId: null,
+      placement: null,
+      bye: true,
+      tag: "бай",
     });
-    columns.push({ stage: stageNumber, kind: plan.stage.kind, isSemifinal: Boolean(plan.isSemifinal), matches });
-    if (plan.type === "placement") break;
-    // carry the two semifinal losers so the next (placement) stage can add bronze
-    semifinalLosers = plan.isSemifinal
-      ? raw.map((m) => (m.red && m.blue ? (winnerOf(m) === m.red ? m.blue : m.red) : null)).filter(Boolean)
-      : [];
-    const winners = raw.map(winnerOf).filter(Boolean);
-    if (plan.stage.bye) winners.push(plan.stage.bye);
-    survivors = winners;
+  }
+
+  const columns = [{
+    stage: 1,
+    kind: "regular",
+    isSemifinal: Boolean(firstStage.isSemifinal),
+    matches: firstMatches,
+  }];
+
+  const stopAt = qualifyCount > 0 ? Math.max(1, Math.min(qualifyCount, source.length)) : 1;
+  let survivors = Math.ceil(source.length / 2);
+  let stageNumber = 2;
+  let guard = 0;
+  while (survivors > stopAt && guard < 12) {
+    const visualSlots = Math.max(1, Math.ceil(survivors / 2));
+    columns.push({
+      stage: stageNumber,
+      kind: "preview-empty",
+      isSemifinal: survivors === 4,
+      matches: Array.from({ length: visualSlots }, previewEmptyMatch),
+    });
+    survivors = Math.ceil(survivors / 2);
     stageNumber += 1;
     guard += 1;
   }
-  return { columns, qualifiers: survivors.map(playerNode).filter(Boolean) };
+
+  return { columns, qualifiers: [] };
 }
 
 function buildPreviewModel({ tournament, servers = [], waitlist = [], avatars = {} } = {}) {
@@ -356,7 +376,7 @@ function buildPreviewModel({ tournament, servers = [], waitlist = [], avatars = 
     const rawPlayers = Array.isArray(server?.players) ? server.players : [];
     const players = rawPlayers.map(playerNode).filter(Boolean);
     const qualifyCount = Number(server?.qualifyCount) || 0;
-    const projection = projectServerColumns(rawPlayers, mode, qualifyCount);
+    const projection = buildPreviewColumns(rawPlayers, mode, qualifyCount);
     return {
       index: Number.isFinite(Number(server?.index)) ? Number(server.index) : index,
       label: server?.label || `Сервер ${index + 1}`,
@@ -365,6 +385,7 @@ function buildPreviewModel({ tournament, servers = [], waitlist = [], avatars = 
       qualifyCount,
       columns: projection.columns,
       qualifiers: projection.qualifiers,
+      previewEmptyFuture: true,
     };
   });
   const activeCount = normalizedServers.reduce((sum, server) => sum + (Number(server.playerCount) || 0), 0);
@@ -440,7 +461,10 @@ function drawEmptyBox(ctx, x, y, w) {
 // Gold-framed panel that names the four players a base server sends to the final
 // (the "top-4 → final" funnel). Each known finalist is a green, checked row with
 // avatar + kills; unfilled slots render as empty placeholders.
-function drawFinalistsPanel(ctx, finalists, decoded, x, centerY, w, count) {
+function drawFinalistsPanel(ctx, finalists, decoded, x, centerY, w, count, options = {}) {
+  const title = options.title || "ТОП-4 → ФИНАЛ";
+  const emptyLabel = options.emptyLabel || "—";
+  const showChecks = options.showChecks !== false;
   const rows = Math.max(1, count || finalists.length || 4);
   const headerH = 30;
   const rowH = 46;
@@ -449,20 +473,20 @@ function drawFinalistsPanel(ctx, finalists, decoded, x, centerY, w, count) {
   let y = Math.round(centerY - totalH / 2);
   rect(ctx, x - 6, y - 6, w + 12, totalH + 12, "#161922");
   strokeRect(ctx, x - 6, y - 6, w + 12, totalH + 12, GOLD_HEX, 2);
-  centered(ctx, "ТОП-4 → ФИНАЛ", x, y + 20, w, 16, GOLD_HEX, "bold", 11);
+  centered(ctx, title, x, y + 20, w, 16, GOLD_HEX, "bold", 11);
   y += headerH;
   for (let i = 0; i < rows; i += 1) {
     const node = finalists[i] || null;
     rect(ctx, x, y, w, rowH, node ? WIN_HEX : "#11141b");
     strokeRect(ctx, x, y, w, rowH, node ? "#3ea76a" : BORDER_HEX, 2);
     const av = rowH - 10;
-    drawAvatar(ctx, node ? decoded.get(node.id) : null, node ? node.name : "", x + 6, y + 5, av, GOLD_HEX);
+    drawAvatar(ctx, node ? decoded.get(node.id) : null, node ? node.name : "—", x + 6, y + 5, av, node ? GOLD_HEX : BORDER_HEX);
     const tx = x + 6 + av + 10;
     const tw = w - (tx - x) - 10;
-    const nameFit = fitText(ctx, node ? node.name : "—", tw, 18, 11, "bold");
-    text(ctx, nameFit.text, tx, y + 20, nameFit.px, "#ffffff", "bold");
+    const nameFit = fitText(ctx, node ? node.name : emptyLabel, tw, 18, 11, "bold");
+    text(ctx, nameFit.text, tx, y + 20, nameFit.px, node ? "#ffffff" : "#8f98a8", "bold");
     if (node) text(ctx, `${Number(node.kills).toLocaleString("ru-RU")} килов`, tx, y + 38, 13, "#d8ffe6", "regular");
-    if (node) drawCheck(ctx, x + w - 24, y + Math.floor(rowH / 2) - 8, 15, "#d8ffe6");
+    if (node && showChecks) drawCheck(ctx, x + w - 24, y + Math.floor(rowH / 2) - 8, 15, "#d8ffe6");
     y += rowH + gap;
   }
 }
@@ -789,6 +813,145 @@ function drawServerTree(ctx, server, decoded, x, y, w, multi) {
   return { height: panelH, funnel: { x: termX + PV_COL_W, y: termY } };
 }
 
+function previewColumns(server) {
+  return (Array.isArray(server?.columns) ? server.columns : []).filter((column) => Array.isArray(column.matches));
+}
+
+function drawPreviewBox(ctx, match, decoded, x, centerY, w = PV_COL_W) {
+  const top = Math.round(centerY - MATCH_H / 2);
+  if (!match || match.previewEmpty) drawEmptyBox(ctx, x, top, w);
+  else drawMatchBox(ctx, match, decoded, x, top, w);
+}
+
+function previewLeafYs(topY, leafCount) {
+  return Array.from({ length: Math.max(1, leafCount) }, (_, j) => topY + j * PV_STEP + Math.floor(MATCH_H / 2));
+}
+
+function splitPreviewColumn(column, takeLeft) {
+  const matches = Array.isArray(column?.matches) ? column.matches : [];
+  const half = Math.ceil(matches.length / 2);
+  return {
+    ...(column || {}),
+    matches: takeLeft ? matches.slice(0, half) : matches.slice(half),
+  };
+}
+
+function ensureSideColumns(columns, minColumns = 2) {
+  const out = columns.map((column, index) => ({
+    ...(column || {}),
+    stage: column?.stage || index + 1,
+    matches: Array.isArray(column?.matches) && column.matches.length ? column.matches : [previewEmptyMatch()],
+  }));
+  while (out.length < minColumns) {
+    out.push({
+      stage: out.length + 1,
+      kind: "preview-empty",
+      matches: [previewEmptyMatch()],
+    });
+  }
+  return out;
+}
+
+function average(values, fallback) {
+  const nums = (values || []).filter((value) => Number.isFinite(value));
+  return nums.length ? nums.reduce((sum, value) => sum + value, 0) / nums.length : fallback;
+}
+
+function drawPreviewSide(ctx, server, decoded, {
+  outerX,
+  topY,
+  orientation = "left",
+  columns,
+  terminalTitle = "ТОП-4 В ФИНАЛ",
+  terminalRows = 4,
+}) {
+  const sideColumns = ensureSideColumns(columns || previewColumns(server));
+  const leafCount = Math.max(1, sideColumns[0].matches.length);
+  const leafYs = previewLeafYs(topY, leafCount);
+  const ys = computeSideYs(leafYs, sideColumns.length);
+  const colX = (level) => orientation === "left"
+    ? outerX + level * (PV_COL_W + PV_COL_GAP)
+    : outerX - level * (PV_COL_W + PV_COL_GAP);
+  const terminalX = colX(sideColumns.length);
+  const terminalY = average(ys[sideColumns.length - 1], leafYs[0]);
+
+  const minX = Math.min(outerX, terminalX);
+  const headerW = Math.abs(outerX - terminalX) + PV_COL_W;
+  const title = server?.label || "Сервер";
+  text(ctx, title, minX, topY - 48, 23, "#ffffff", "bold");
+  const subtitleFit = fitText(ctx, "стартовые пары без прогноза победителей", headerW, 14, 10, "regular");
+  text(ctx, subtitleFit.text, minX, topY - 26, subtitleFit.px, "#aeb5c2", "regular");
+
+  ctx.strokeStyle = "#3a4150";
+  ctx.lineWidth = 2;
+  const connect = (x1, y1, x2, y2) => {
+    ctx.beginPath();
+    if (Math.abs(y1 - y2) < 1) {
+      ctx.moveTo(x1, y1); ctx.lineTo(x2, y2);
+    } else {
+      const mx = (x1 + x2) / 2;
+      ctx.moveTo(x1, y1); ctx.lineTo(mx, y1); ctx.lineTo(mx, y2); ctx.lineTo(x2, y2);
+    }
+    ctx.stroke();
+  };
+
+  for (let level = 0; level < sideColumns.length; level += 1) {
+    const parentYs = level + 1 < sideColumns.length ? ys[level + 1] : [terminalY];
+    const parentX = level + 1 < sideColumns.length ? colX(level + 1) : terminalX;
+    const childEdge = orientation === "left" ? colX(level) + PV_COL_W : colX(level);
+    const parentEdge = orientation === "left" ? parentX : parentX + PV_COL_W;
+    for (let k = 0; k < parentYs.length; k += 1) {
+      for (const child of [2 * k, 2 * k + 1]) {
+        if (!ys[level] || child >= ys[level].length) continue;
+        connect(childEdge, ys[level][child], parentEdge, parentYs[k]);
+      }
+    }
+  }
+
+  for (let level = 0; level < sideColumns.length; level += 1) {
+    const label = level === 0 ? "Старт" : `Раунд ${level + 1}`;
+    const x = colX(level);
+    text(ctx, label, x + 2, topY - 8, 13, "#7e8696", "bold");
+    (sideColumns[level].matches || []).forEach((match, index) => {
+      if (!ys[level] || index >= ys[level].length) return;
+      drawPreviewBox(ctx, match, decoded, x, ys[level][index]);
+    });
+  }
+
+  drawFinalistsPanel(ctx, [], decoded, terminalX, terminalY, PV_COL_W, terminalRows, {
+    title: terminalTitle,
+    emptyLabel: "пустой слот",
+    showChecks: false,
+  });
+
+  return {
+    terminalX,
+    terminalY,
+    funnel: {
+      x: orientation === "left" ? terminalX + PV_COL_W : terminalX,
+      y: terminalY,
+    },
+    leafCount,
+  };
+}
+
+function connectPreviewPoint(ctx, x1, y1, x2, y2) {
+  ctx.strokeStyle = "#3a4150";
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  if (Math.abs(y1 - y2) < 1) {
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x2, y2);
+  } else {
+    const mx = (x1 + x2) / 2;
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(mx, y1);
+    ctx.lineTo(mx, y2);
+    ctx.lineTo(x2, y2);
+  }
+  ctx.stroke();
+}
+
 async function renderPreviewCard(model = {}) {
   if (!PImage) throw new Error("pureimage не установлен.");
   ensureFonts();
@@ -796,18 +959,15 @@ async function renderPreviewCard(model = {}) {
 
   const servers = Array.isArray(model.servers) ? model.servers : [];
   const multi = Number(model.serverCount) > 1;
-
-  const feederCountOf = (server) => (Array.isArray(server.columns) ? server.columns : []).filter((c) => c.kind !== "placement").length;
-  const maxFeeders = Math.max(1, ...servers.map(feederCountOf));
-  const totalCols = maxFeeders + 1; // feeders + terminal (qualify panel / final)
-  const width = Math.max(900, PAD * 2 + totalCols * PV_COL_W + (totalCols - 1) * PV_COL_GAP + 44);
-
-  const panelGap = 28;
-  const mergeH = 120;
-  const bodyHeights = servers.reduce((sum, server) => sum + previewServerPanelHeight(server), 0);
-  const height = HEADER_H + 26
-    + bodyHeights + Math.max(0, servers.length - 1) * panelGap
-    + (multi ? mergeH + 34 : 26) + FOOTER_H;
+  const topY = HEADER_H + 86;
+  const firstLeafCount = (server) => Math.max(1, previewColumns(server)[0]?.matches?.length || 1);
+  const maxLeaves = Math.max(1, ...servers.map(firstLeafCount));
+  const sideColumnCount = multi ? Math.max(2, ...servers.map((server) => previewColumns(server).length || 1)) : 2;
+  const sideTreeWidth = (sideColumnCount + 1) * PV_COL_W + sideColumnCount * PV_COL_GAP;
+  const centerW = multi ? 300 : PV_COL_W;
+  const centerGap = 70;
+  const width = Math.max(1100, PAD * 2 + sideTreeWidth * 2 + centerGap * 2 + centerW);
+  const height = Math.max(620, topY + maxLeaves * PV_STEP + FOOTER_H);
 
   const image = PImage.make(width, height);
   const ctx = image.getContext("2d");
@@ -826,30 +986,66 @@ async function renderPreviewCard(model = {}) {
   ].filter(Boolean).join(" · ");
   text(ctx, stats, PAD, 104, 15, "#7e8696", "regular");
 
-  let y = HEADER_H + 26;
-  const funnels = [];
-  servers.forEach((server, idx) => {
-    const result = drawServerTree(ctx, server, decoded, PAD, y, width - PAD * 2, multi);
-    funnels.push(result.funnel);
-    y += result.height + (idx === servers.length - 1 ? 0 : panelGap);
-  });
+  const centerX = Math.round((width - centerW) / 2);
+  const centerY = topY + (maxLeaves - 1) * PV_STEP / 2 + Math.floor(MATCH_H / 2);
 
-  if (multi) {
-    const mergeY = y + 30;
-    const mergeW = Math.min(width - PAD * 2 - 120, 600);
-    const mergeX = Math.round((width - mergeW) / 2);
-    ctx.strokeStyle = "#3a4150";
-    ctx.lineWidth = 3;
-    for (const point of funnels) {
-      ctx.beginPath();
-      ctx.moveTo(point.x, point.y);
-      ctx.lineTo(mergeX + mergeW / 2, mergeY);
-      ctx.stroke();
-    }
-    drawPreviewFunnel(ctx, mergeX, mergeY, mergeW, mergeH, "ОБЩИЙ ФИНАЛ", "топ-4 каждого сервера собираются в одну финальную ветку", GOLD_HEX);
+  if (multi && servers.length >= 2) {
+    const leftServer = servers[0];
+    const rightServer = servers[1];
+    const left = drawPreviewSide(ctx, leftServer, decoded, {
+      outerX: PAD,
+      topY,
+      orientation: "left",
+      columns: ensureSideColumns(previewColumns(leftServer), sideColumnCount),
+      terminalTitle: "ТОП-4 СЕРВЕРА 1",
+      terminalRows: leftServer.qualifyCount || 4,
+    });
+    const right = drawPreviewSide(ctx, rightServer, decoded, {
+      outerX: width - PAD - PV_COL_W,
+      topY,
+      orientation: "right",
+      columns: ensureSideColumns(previewColumns(rightServer), sideColumnCount),
+      terminalTitle: "ТОП-4 СЕРВЕРА 2",
+      terminalRows: rightServer.qualifyCount || 4,
+    });
+    drawFinalistsPanel(ctx, [], decoded, centerX, centerY, centerW, (leftServer.qualifyCount || 4) + (rightServer.qualifyCount || 4), {
+      title: "ФИНАЛЬНЫЙ СЕРВЕР",
+      emptyLabel: "место финалиста",
+      showChecks: false,
+    });
+    connectPreviewPoint(ctx, left.funnel.x, left.funnel.y, centerX, centerY);
+    connectPreviewPoint(ctx, right.funnel.x, right.funnel.y, centerX + centerW, centerY);
+  } else {
+    const server = servers[0] || { label: "Сервер", columns: [] };
+    const cols = previewColumns(server);
+    const first = cols[0] || { matches: [previewEmptyMatch(), previewEmptyMatch()] };
+    const second = cols[1] || { kind: "preview-empty", matches: Array.from({ length: Math.max(1, Math.ceil((first.matches || []).length / 2)) }, previewEmptyMatch) };
+    const left = drawPreviewSide(ctx, server, decoded, {
+      outerX: PAD,
+      topY,
+      orientation: "left",
+      columns: [splitPreviewColumn(first, true), splitPreviewColumn(second, true)],
+      terminalTitle: "ФИНАЛЬНЫЙ ЭТАП",
+      terminalRows: 2,
+    });
+    const right = drawPreviewSide(ctx, { ...server, label: "Вторая сторона" }, decoded, {
+      outerX: width - PAD - PV_COL_W,
+      topY,
+      orientation: "right",
+      columns: [splitPreviewColumn(first, false), splitPreviewColumn(second, false)],
+      terminalTitle: "ФИНАЛЬНЫЙ ЭТАП",
+      terminalRows: 2,
+    });
+    drawFinalistsPanel(ctx, [], decoded, centerX, centerY, centerW, 4, {
+      title: "ФИНАЛ",
+      emptyLabel: "пустой слот",
+      showChecks: false,
+    });
+    connectPreviewPoint(ctx, left.funnel.x, left.funnel.y, centerX, centerY);
+    connectPreviewPoint(ctx, right.funnel.x, right.funnel.y, centerX + centerW, centerY);
   }
 
-  text(ctx, "Предпубликация: вероятный путь по килам (равный с равным). Резерв подменит выбывших.", PAD, height - 18, 15, "#7e8696", "regular");
+  text(ctx, "Предпубликация: стартовая расстановка. Следующие раунды пустые и заполняются только после реальных боёв.", PAD, height - 18, 15, "#7e8696", "regular");
   return encodePng(image);
 }
 

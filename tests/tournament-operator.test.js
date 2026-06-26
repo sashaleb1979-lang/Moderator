@@ -215,7 +215,9 @@ test("tournament registration immediately shows a collecting notice and imports 
         robloxUsername: "ProofPlayer",
         robloxUserId: "424242",
         approvedKills: 4200,
-        lastScreenshotUrl: "https://example.test/proof.png",
+        lastScreenshotUrl: "attachment://proof.png",
+        lastScreenshotBuffer: Buffer.from("proof-image"),
+        lastScreenshotFilename: "proof.png",
       };
     },
   });
@@ -227,7 +229,10 @@ test("tournament registration immediately shows a collecting notice and imports 
   assert.deepEqual(calls, ["reply", "snapshot", "editReply"]);
   assert.match(JSON.stringify(interaction.replyPayload), /Модератор собирает вашу заявку/);
   assert.match(JSON.stringify(interaction.editedPayload), /ProofPlayer/);
-  assert.match(JSON.stringify(interaction.editedPayload), /https:\/\/example\.test\/proof\.png/);
+  assert.match(JSON.stringify(interaction.editedPayload), /attachment:\/\/proof\.png/);
+  assert.doesNotMatch(JSON.stringify(interaction.editedPayload), /https:\/\/example\.test\/proof\.png/);
+  assert.equal(interaction.editedPayload.files.length, 1, "proof image is re-uploaded as a Discord attachment");
+  assert.equal(interaction.editedPayload.files[0].name, "proof.png");
 });
 
 test("tournament registrations over the planned field go to reserve and promote after withdrawal", async () => {
@@ -756,6 +761,8 @@ test("tournament launch repairs phantom multi-server roster with missing server 
 test("tournament launch creates an unlocked private thread and adds real Discord players", async () => {
   const calls = [];
   const addedMembers = [];
+  const threadPayloads = [];
+  let threadCreateOptions = null;
   let lockedValue = null;
   const db = {};
   const tournament = state.createTournamentFromDraft(
@@ -780,6 +787,7 @@ test("tournament launch creates an unlocked private thread and adds real Discord
   const thread = {
     id: "thread-1",
     async send(payload) {
+      threadPayloads.push(payload);
       calls.push(payload.content ? "threadPing" : "threadBracket");
       return { id: `thread-message-${calls.length}` };
     },
@@ -800,6 +808,7 @@ test("tournament launch creates an unlocked private thread and adds real Discord
     },
     threads: {
       async create(options) {
+        threadCreateOptions = options;
         calls.push(`threadCreate:${options.type}`);
         return thread;
       },
@@ -830,7 +839,90 @@ test("tournament launch creates an unlocked private thread and adds real Discord
   assert.equal(settled.launchMessageId, "launch-message-1");
   assert.equal(settled.threadFailed, false);
   assert.deepEqual(addedMembers, ["100000000000000001", "100000000000000002"]);
+  assert.equal(threadCreateOptions.name, "Тестовый турнир · сервер 1");
+  assert.ok(calls.indexOf("threadPing") < calls.indexOf("threadBracket"), "participant ping is the first thread message");
+  assert.match(threadPayloads[0].content, /<@100000000000000001> <@100000000000000002>/);
+  assert.deepEqual(threadPayloads[0].allowedMentions, { users: ["100000000000000001", "100000000000000002"] });
   assert.equal(lockedValue, true, "participant thread is locked so players can't chat");
+});
+
+test("tournament launching the second server keeps both match panels reachable", async () => {
+  const calls = [];
+  const db = {};
+  const tournament = state.createTournamentFromDraft(
+    db,
+    {
+      name: "Two Server Cup",
+      slots: 32,
+      plannedPlayers: 32,
+      startsAtIso: "2026-06-21T20:00:00.000Z",
+      announceChannelId: "channel-1",
+    },
+    { id: "tour-1", now: "2026-06-21T18:00:00.000Z" }
+  );
+  state.updateTournament(db, tournament.id, { announce: { channelId: "channel-1", messageId: "announce-1" } });
+  for (let i = 1; i <= 32; i += 1) {
+    state.upsertRegistration(tournament, {
+      userId: String(100000000000000000n + BigInt(i)),
+      discordName: `user-${i}`,
+      robloxUsername: `Player${i}`,
+      approvedKills: i * 100,
+      effectiveKills: i * 100,
+    });
+  }
+  const channel = {
+    id: "channel-1",
+    async send() {
+      return { id: `message-${calls.length + 1}`, channelId: "channel-1" };
+    },
+    threads: {
+      async create() {
+        return {
+          id: `thread-${calls.length + 1}`,
+          async send() { return { id: "thread-message" }; },
+          members: { async add() {} },
+          async setLocked() {},
+        };
+      },
+    },
+  };
+  const operator = createTournamentOperator({
+    db,
+    saveDb: () => calls.push("saveDb"),
+    runSerializedMutation: async ({ mutate }) => mutate(),
+    isModerator: (member) => Boolean(member?.mod),
+    fetchChannel: async () => channel,
+  });
+  const asMod = (interaction) => {
+    interaction.member = { mod: true };
+    interaction.user = { id: "mod-1", tag: "mod#0001" };
+    return interaction;
+  };
+
+  const launch1 = asMod(createButtonInteraction(buildCustomId(ACTIONS.MANAGE_LAUNCH_SERVER, tournament.id, "0"), calls));
+  await operator.handleButtonInteraction(launch1);
+  const open1Before = asMod(createButtonInteraction(buildCustomId(ACTIONS.MANAGE_START, tournament.id, "0"), calls));
+  await operator.handleButtonInteraction(open1Before);
+  assert.match(JSON.stringify(open1Before.replyPayload), /Сервер 1/);
+  assert.doesNotMatch(JSON.stringify(open1Before.replyPayload), /Сначала запусти сервер/);
+
+  const launch2 = asMod(createButtonInteraction(buildCustomId(ACTIONS.MANAGE_LAUNCH_SERVER, tournament.id, "1"), calls));
+  await operator.handleButtonInteraction(launch2);
+  const fresh = state.getTournament(db, tournament.id);
+  assert.equal(state.getServer(fresh, 0)?.launched, true);
+  assert.equal(Boolean(state.getServer(fresh, 0)?.currentStage), true);
+  assert.equal(state.getServer(fresh, 1)?.launched, true);
+  assert.equal(Boolean(state.getServer(fresh, 1)?.currentStage), true);
+
+  const open1After = asMod(createButtonInteraction(buildCustomId(ACTIONS.MANAGE_START, tournament.id, "0"), calls));
+  await operator.handleButtonInteraction(open1After);
+  const open2 = asMod(createButtonInteraction(buildCustomId(ACTIONS.MANAGE_START, tournament.id, "1"), calls));
+  await operator.handleButtonInteraction(open2);
+  assert.match(JSON.stringify(open1After.replyPayload), /Сервер 1/);
+  assert.match(JSON.stringify(open2.replyPayload), /Сервер 2/);
+  assert.doesNotMatch(JSON.stringify(open1After.replyPayload), /Сначала запусти сервер/);
+  assert.doesNotMatch(JSON.stringify(open2.replyPayload), /Сначала запусти сервер/);
+  await delay(60);
 });
 
 test("tournament completion window attaches generated summary art and publishes organizer comment", async () => {
@@ -896,7 +988,7 @@ test("tournament completion window attaches generated summary art and publishes 
   assert.equal(state.getTournament(db, tournament.id).summaryMessageId, "summary-1");
 });
 
-test("tournament preview publishes one image with all server branches and projected rounds", async () => {
+test("tournament preview publishes one image with side branches and empty future rounds", async () => {
   const calls = [];
   const logs = [];
   const db = {};
@@ -911,9 +1003,9 @@ test("tournament preview publishes one image with all server branches and projec
     },
     { id: "tour-1", now: "2026-06-21T18:00:00.000Z" }
   );
-  for (let i = 1; i <= 5; i += 1) {
+  for (let i = 1; i <= 32; i += 1) {
     state.upsertRegistration(tournament, {
-      userId: `10000000000000000${i}`,
+      userId: String(100000000000000000n + BigInt(i)),
       discordName: `user-${i}`,
       robloxUsername: `Player${i}`,
       approvedKills: i * 1000,
@@ -951,8 +1043,18 @@ test("tournament preview publishes one image with all server branches and projec
   assert.equal(renderCall.exportName, "renderPreviewCard");
   assert.equal(renderCall.model.serverCount, 2, "32 planned players are shown as two branches");
   assert.equal(renderCall.model.servers.length, 2, "both server branches are present");
-  assert.ok(renderCall.model.servers.every((server) => Array.isArray(server.columns)), "each branch carries projected round columns");
-  assert.ok(renderCall.model.servers.some((server) => (server.qualifiers || []).length > 0), "branches carry projected qualifiers for the shared final");
+  assert.ok(renderCall.model.servers.every((server) => Array.isArray(server.columns)), "each branch carries bracket columns");
+  for (const server of renderCall.model.servers) {
+    assert.deepEqual(server.qualifiers, [], "preview must not invent qualified players");
+    assert.equal(server.columns[0].matches.length, 8, "a 16-player server starts with 8 real matches");
+    assert.ok(server.columns[0].matches.some((match) => match.red && match.blue), "first column contains real players");
+    for (const match of server.columns.flatMap((column) => column.matches)) {
+      assert.equal(match.winnerId, null, "preview must not mark winners");
+    }
+    for (const column of server.columns.slice(1)) {
+      assert.ok(column.matches.every((match) => match.previewEmpty), "future rounds stay empty");
+    }
+  }
   assert.ok(sentPayload, "expected preview post");
   assert.equal(sentPayload.files.length, 1, "preview carries a single PNG");
   assert.match(JSON.stringify(sentPayload), /Предварительная сетка/);

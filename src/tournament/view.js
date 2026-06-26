@@ -401,6 +401,7 @@ function buildRegMainConfirmPayload(tournament, info = {}) {
       container.addTextDisplayComponents(headText);
     }
     if (info.screenshotUrl) container.addMediaGalleryComponents(ui.mediaImage(info.screenshotUrl, "Последний скрин-пруф"));
+    else if (info.screenshotUnavailable) container.addTextDisplayComponents(ui.td("-# Скрин заявки найден, но файл не удалось прикрепить. Напиши модератору, если нужен ручной чек."));
     container.addActionRowComponents(
       ui.row(
         btn(ACTIONS.REG_USE_MAIN, tournament.id, [], { label: "Да, на этом", style: ButtonStyle.Success, emoji: "✅" }),
@@ -444,6 +445,7 @@ function buildRegNoAccountPayload(tournament, info = {}) {
       )
     );
     if (info.screenshotUrl) container.addMediaGalleryComponents(ui.mediaImage(info.screenshotUrl, "Последний скрин-пруф"));
+    else if (info.screenshotUnavailable) container.addTextDisplayComponents(ui.td("-# Скрин заявки найден, но файл не удалось прикрепить. Напиши модератору, если нужен ручной чек."));
     const buttons = [btn(ACTIONS.REG_LINK_ROBLOX, tournament.id, ["main"], { label: "Зарегать Roblox ник", style: ButtonStyle.Success, emoji: "🔗" })];
     if (info.canTwink) buttons.push(btn(ACTIONS.REG_DECLARE_TWINK, tournament.id, [], { label: "Это твинк", style: ButtonStyle.Primary, emoji: "🥸" }));
     buttons.push(btn(ACTIONS.REG_WITHDRAW, tournament.id, [], { label: "Отмена", emoji: "✖" }));
@@ -475,7 +477,9 @@ function buildDeclareStrengthPayload(tournament, { robloxUsername, kind = "alt",
         [
           robloxUsername ? `Аккаунт **${robloxUsername}** подтверждён ✅` : "Аккаунт подтверждён ✅",
           "",
-          kind === "twink" ? "Укажи свою **истинную силу** (реальное количество килов)." : "Укажи примерно своё реальное количество килов на этом аккаунте.",
+          kind === "twink"
+            ? "Укажи свою **истинную силу** (реальное количество килов)."
+            : "Укажи килы на этом доп. аккаунте. Они прибавятся к твоим зарегистрированным килам.",
         ].join("\n")
       )
     );
@@ -490,6 +494,9 @@ function buildDeclareStrengthPayload(tournament, { robloxUsername, kind = "alt",
 
 function buildRegFinalConfirmPayload(tournament, registration = {}) {
   const profileUrl = robloxProfileUrl(registration.robloxUserId);
+  const altBreakdown = registration.accountKind === "alt" && registration.declaredKills != null
+    ? `Профиль + альт: **${fmtNumber(registration.approvedKills)} + ${fmtNumber(registration.declaredKills)} = ${fmtNumber(registration.effectiveKills)}**`
+    : null;
   const c = ui.container(COLORS.green, (container) => {
     container.addTextDisplayComponents(ui.td(`# Подтверждение · ${tournament.name}`));
     container.addSeparatorComponents(ui.separator());
@@ -497,6 +504,7 @@ function buildRegFinalConfirmPayload(tournament, registration = {}) {
       [
         `Roblox: ${profileUrl ? `[${registration.robloxUsername || "—"}](${profileUrl})` : `**${registration.robloxUsername || "—"}**`}`,
         `Аккаунт: **${ACCOUNT_KIND_LABELS[registration.accountKind] || registration.accountKind}**`,
+        altBreakdown,
         `Сила (килы для распределения): **${fmtNumber(registration.effectiveKills)}**`,
         "",
         "Всё верно? Жми «Подтвердить заявку».",
@@ -823,7 +831,7 @@ function buildRosterPayload(tournament, stagePlan, { serverIndex = 0 } = {}) {
 
 // Public bracket post (V2 container). When `imageFilename` is given the caller
 // attaches the PNG; otherwise the pairings are listed as text.
-function buildBracketPostPayload(tournament, stagePlan, { serverIndex = 0, serverLabel = "", imageFilename = "", title = "🗺 Предварительное размещение", headline = "" } = {}) {
+function buildBracketPostPayload(tournament, stagePlan, { serverIndex = 0, serverLabel = "", imageFilename = "", title = "🗺 Предварительное размещение", headline = "", details = "" } = {}) {
   const matches = seeding.listStageMatches(stagePlan);
   const multiRun = stagePlan.runs.length > 1;
   const label = serverLabel || `сервер ${serverIndex + 1}`;
@@ -831,6 +839,7 @@ function buildBracketPostPayload(tournament, stagePlan, { serverIndex = 0, serve
     if (headline) container.addTextDisplayComponents(ui.td(headline));
     container.addTextDisplayComponents(ui.td(`# ${title} · ${label}`));
     container.addTextDisplayComponents(ui.td(`-# ${tournament.name} · FT6`));
+    if (details) container.addTextDisplayComponents(ui.td(details));
     if (imageFilename) {
       container.addMediaGalleryComponents(ui.mediaImage(`attachment://${imageFilename}`, "Сетка турнира"));
     } else {
@@ -854,6 +863,7 @@ function buildPreviewPostPayload(tournament, { imageFilename = "", serverCount =
         [
           `Основной состав: **${fmtNumber(activeCount)} / ${fmtNumber(activeRegistrationLimit(tournament))}**`,
           `Серверов: **${fmtNumber(serverCount)}** · формат: **1 на 1, FT6**`,
+          "На картинке показана стартовая расстановка; будущие раунды пустые и заполняются после реальных боёв.",
           waitlistCount ? `Резерв: **${fmtNumber(waitlistCount)}** · не попадает в эту сетку, но очередь двигается при выходе игроков.` : null,
         ].filter(Boolean).join("\n")
       )
@@ -1090,7 +1100,8 @@ function buildServerDonePayload(tournament, server) {
 }
 
 function buildServerThreadName(tournament, serverIndex) {
-  return `${tournament.name} · сервер ${serverIndex + 1}`.slice(0, 100);
+  const suffix = Number(serverIndex) >= 90 ? "финал" : `сервер ${Number(serverIndex) + 1}`;
+  return `${tournament.name} · ${suffix}`.slice(0, 100);
 }
 
 module.exports = {

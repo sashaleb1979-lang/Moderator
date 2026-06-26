@@ -269,8 +269,7 @@ function tierRepresentativeKills(tier) {
 
 // Resolve the kills value used for seeding from a registration's declarations.
 //   main  → stored approvedKills
-//   alt   → declaredKills if given, else representative kills for declaredTier,
-//           else fall back to approvedKills
+//   alt   → stored approvedKills + declared alt kills/tier, else approvedKills
 //   twink → declared true strength (declaredKills or declaredTier); never below
 //           the stored approvedKills
 function resolveEffectiveKills({ accountKind, approvedKills = 0, declaredKills = null, declaredTier = null } = {}) {
@@ -282,8 +281,8 @@ function resolveEffectiveKills({ accountKind, approvedKills = 0, declaredKills =
     return Math.max(base, declared != null ? declared : (tierKills != null ? tierKills : base));
   }
   if (accountKind === "alt") {
-    if (declared != null) return declared;
-    if (tierKills != null) return tierKills;
+    if (declared != null) return base + declared;
+    if (tierKills != null) return base + tierKills;
     return base;
   }
   return base; // main
