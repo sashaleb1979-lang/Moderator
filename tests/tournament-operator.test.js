@@ -686,6 +686,73 @@ test("tournament launch persists a runnable bracket even when the private thread
   assert.ok(logs.some((line) => /private thread create failed/.test(line)));
 });
 
+test("tournament launch repairs phantom multi-server roster with missing server assignments", async () => {
+  const calls = [];
+  const logs = [];
+  const db = {};
+  const tournament = state.createTournamentFromDraft(
+    db,
+    {
+      name: "Phantom Multi Cup",
+      slots: 32,
+      plannedPlayers: 32,
+      startsAtIso: "2026-06-21T20:00:00.000Z",
+      announceChannelId: "channel-1",
+    },
+    { id: "tour-1", now: "2026-06-21T18:00:00.000Z" }
+  );
+  tournament.isPhantom = true;
+  for (const reg of state.buildPhantomRegistrations(32, { runTag: "lost" })) {
+    state.upsertRegistration(tournament, reg);
+  }
+  state.updateTournament(db, tournament.id, { status: "seeded" });
+  assert.equal(state.tournamentPlayers(tournament, { serverIndex: 0 }).length, 0, "fixture starts with the broken 0-player server split");
+
+  const channel = {
+    id: "channel-1",
+    async send() {
+      calls.push("send");
+      return { id: "message-1" };
+    },
+    threads: {
+      async create() {
+        calls.push("threadCreate");
+        return {
+          id: "thread-1",
+          async send() {
+            calls.push("threadSend");
+            return { id: "thread-message-1" };
+          },
+          members: { async add() {} },
+          async setLocked() {},
+        };
+      },
+    },
+  };
+  const operator = createTournamentOperator({
+    db,
+    saveDb: () => calls.push("saveDb"),
+    runSerializedMutation: async ({ mutate }) => mutate(),
+    isModerator: (member) => Boolean(member?.mod),
+    fetchChannel: async () => channel,
+    logLine: async (line) => logs.push(line),
+  });
+  const interaction = createButtonInteraction(buildCustomId(ACTIONS.MANAGE_LAUNCH_SERVER, tournament.id, "0"), calls);
+  interaction.member = { mod: true };
+  interaction.user = { id: "mod-1", tag: "mod#0001" };
+
+  const handled = await operator.handleButtonInteraction(interaction);
+
+  assert.equal(handled, true);
+  const fresh = state.getTournament(db, tournament.id);
+  assert.equal(state.tournamentPlayers(fresh, { serverIndex: 0 }).length, 16);
+  assert.equal(state.tournamentPlayers(fresh, { serverIndex: 1 }).length, 16);
+  assert.ok(state.getServer(fresh, 0)?.launched, "server 1 launches after split repair");
+  assert.equal(interaction.followUpPayload, undefined, "no insufficient-participants error");
+  assert.ok(logs.some((line) => /TOURNAMENT_LAUNCH_RESEED/.test(line)));
+  await delay(60);
+});
+
 test("tournament launch creates an unlocked private thread and adds real Discord players", async () => {
   const calls = [];
   const addedMembers = [];

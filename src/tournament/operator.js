@@ -1326,6 +1326,27 @@ function createTournamentOperator(deps = {}) {
     return true;
   }
 
+  function hasUsableServerAssignments(tournament) {
+    const count = serverCount(tournament);
+    if (count <= 1) return true;
+    const activePlayers = state.tournamentPlayers(tournament);
+    if (!activePlayers.length) return true;
+    return activePlayers.every((player) => {
+      const index = Number(player.serverIndex);
+      return Number.isInteger(index) && index >= 0 && index < count;
+    });
+  }
+
+  function shouldRepairServerAssignmentsForLaunch(tournament, serverIndex) {
+    if (!tournament || hasLaunchedTournamentPlay(tournament)) return false;
+    const count = serverCount(tournament);
+    if (count <= 1) return false;
+    const activePlayers = state.tournamentPlayers(tournament);
+    if (activePlayers.length < 2) return false;
+    if (!hasUsableServerAssignments(tournament)) return true;
+    return state.tournamentPlayers(tournament, { serverIndex }).length < 2;
+  }
+
   async function finalizeRegistration(interaction, tournamentId, session) {
     const tournament = state.getTournament(db, tournamentId);
     if (!tournament) {
@@ -1637,13 +1658,23 @@ function createTournamentOperator(deps = {}) {
       await safeReply(interaction, ephemeralText("Турнир не найден."));
       return true;
     }
-    // re-hydrate kills so the bracket never seeds on a stale zero
-    await persist("tournament-launch-hydrate", async () => {
+    // Re-hydrate kills so the bracket never seeds on a stale zero. Also repair
+    // pre-launch multi-server rosters that have registrations but lost their
+    // serverIndex split (for example, old phantom-filled panels after a reset).
+    let repairedSplit = false;
+    await persist("tournament-launch-prepare", async () => {
       const fresh = state.getTournament(db, tournamentId);
-      if (fresh) await hydrateZeroKillRegistrations(fresh);
+      if (!fresh) return;
+      await hydrateZeroKillRegistrations(fresh);
+      if (shouldRepairServerAssignmentsForLaunch(fresh, serverIndex)) {
+        repairedSplit = applyRosterSeeding(fresh);
+      }
     });
 
     const fresh0 = state.getTournament(db, tournamentId);
+    if (repairedSplit) {
+      await safeLogLine(`TOURNAMENT_LAUNCH_RESEED: id=${tournamentId} server=${serverIndex + 1} by=<@${interaction.user.id}>`);
+    }
     const count = serverCount(fresh0);
     const players = state.tournamentPlayers(fresh0, count > 1 ? { serverIndex } : {});
     if (players.length < 2) {
