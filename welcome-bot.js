@@ -7071,29 +7071,73 @@ async function freshTournamentAttachmentUrl(channelId, messageId, submission = {
 // proof even when its stored reviewMessageId is stale — and the cache keeps a
 // burst of registrations from re-scanning history per click.
 const tournamentReviewScanCache = new Map();
-const TOURNAMENT_REVIEW_SCAN_TTL_MS = 60000;
+const TOURNAMENT_REVIEW_SCAN_TTL_MS = 180000;
+const TOURNAMENT_REVIEW_SCAN_PAGES = 25; // up to ~2500 recent review reposts
 
-async function tournamentReviewProofIndex(channelId) {
+// Newest image attachment URL on a message (the review repost carries the proof
+// as a real attachment).
+function firstImageAttachmentUrl(message) {
+  const attachments = collectionToArray(message?.attachments).filter((attachment) => attachment?.url);
+  if (!attachments.length) return null;
+  const image = attachments.find(isTournamentImageAttachment);
+  return (image || attachments[0]).url || null;
+}
+
+// Discord ids tagged in a review repost. The bot writes "Игрок: <@id>" into the
+// embed description, and embeds never populate message.mentions, so we parse the
+// raw text for <@id> tags (plus any real content mentions as a bonus).
+function reviewMessageTaggedUserIds(message) {
+  const ids = new Set();
+  const texts = [];
+  for (const embed of message?.embeds || []) {
+    if (embed?.description) texts.push(String(embed.description));
+    for (const field of embed?.fields || []) {
+      if (field?.value) texts.push(String(field.value));
+    }
+  }
+  if (message?.content) texts.push(String(message.content));
+  for (const text of texts) {
+    for (const match of text.matchAll(/<@!?(\d{5,25})>/g)) ids.add(match[1]);
+  }
+  if (message?.mentions?.users?.size) {
+    for (const id of message.mentions.users.keys()) ids.add(String(id));
+  }
+  return ids;
+}
+
+// One pass over the review channel building two indexes off the bot's reposts:
+// attachment-name -> url (recover a proof by its "<id>_proof.png" name) and
+// player-id -> url (recover a proof straight from the "Игрок: <@id>" line — works
+// even when db.submissions no longer has the record but the picture is still in
+// the channel). Cached briefly so a burst of registrations scans only once.
+async function tournamentReviewScan(channelId) {
   const cid = String(channelId || "").trim();
-  if (!cid) return new Map();
+  if (!cid) return { byName: new Map(), byUser: new Map() };
   const cached = tournamentReviewScanCache.get(cid);
-  if (cached && Date.now() - cached.at < TOURNAMENT_REVIEW_SCAN_TTL_MS) return cached.byName;
+  if (cached && Date.now() - cached.at < TOURNAMENT_REVIEW_SCAN_TTL_MS) return cached;
 
   const byName = new Map();
+  const byUser = new Map();
   try {
     const channel = await client.channels.fetch(cid).catch(() => null);
     if (channel?.isTextBased?.()) {
       let before;
-      for (let page = 0; page < 5; page += 1) {
+      for (let page = 0; page < TOURNAMENT_REVIEW_SCAN_PAGES; page += 1) {
         const batch = await channel.messages
           .fetch({ limit: 100, ...(before ? { before } : {}) })
           .catch(() => null);
         if (!batch || !batch.size) break;
         for (const message of batch.values()) {
           before = message.id;
+          const imageUrl = firstImageAttachmentUrl(message);
           for (const attachment of collectionToArray(message.attachments)) {
             const name = String(attachment?.name || attachment?.filename || "").trim();
             if (name && attachment?.url && !byName.has(name)) byName.set(name, attachment.url);
+          }
+          if (imageUrl) {
+            for (const taggedId of reviewMessageTaggedUserIds(message)) {
+              if (!byUser.has(taggedId)) byUser.set(taggedId, imageUrl);
+            }
           }
         }
         if (batch.size < 100) break;
@@ -7102,8 +7146,19 @@ async function tournamentReviewProofIndex(channelId) {
   } catch (error) {
     console.warn(`Tournament review channel scan failed for ${cid}: ${formatRuntimeError(error)}`);
   }
-  tournamentReviewScanCache.set(cid, { at: Date.now(), byName });
-  return byName;
+  const result = { at: Date.now(), byName, byUser };
+  tournamentReviewScanCache.set(cid, result);
+  return result;
+}
+
+// Last-resort: find the clicking player's proof straight from the review channel
+// by their Discord id, no db.submissions record required. This is what makes the
+// picture resolvable "no matter what" — as long as it is in the channel.
+async function findTournamentProofImageForUser(userId) {
+  const id = String(userId || "").trim();
+  if (!id) return null;
+  const { byUser } = await tournamentReviewScan(getResolvedChannelId("review"));
+  return byUser.get(id) || null;
 }
 
 // Discord's `POST /attachments/refresh-urls` re-signs expired CDN links and —
@@ -7176,8 +7231,8 @@ async function resolveTournamentSubmissionImageUrl(submission = {}) {
   //    deterministic name, recovering a rotated/forgotten reviewMessageId.
   const proofName = tournamentReviewAttachmentName(submission);
   if (!fresh && proofName) {
-    const index = await tournamentReviewProofIndex(submission.reviewChannelId || getResolvedChannelId("review"));
-    if (index.has(proofName)) fresh = index.get(proofName);
+    const { byName } = await tournamentReviewScan(submission.reviewChannelId || getResolvedChannelId("review"));
+    if (byName.has(proofName)) fresh = byName.get(proofName);
   }
 
   if (isLiveRenderableImageUrl(fresh)) {
@@ -7453,7 +7508,8 @@ async function getTournamentPlayerSnapshot(userId, options = {}) {
     const normalizedKills = Number.isFinite(approvedKills) ? approvedKills : 0;
     const robloxUserId = sourceSubmission?.robloxUserId ? String(sourceSubmission.robloxUserId) : null;
     const robloxUsername = sourceSubmission?.robloxUsername || sourceSubmission?.username || null;
-    const proofUrl = proofSubmission ? await resolveTournamentSubmissionImageUrl(proofSubmission) : null;
+    const proofUrl = (proofSubmission ? await resolveTournamentSubmissionImageUrl(proofSubmission) : null)
+      || await findTournamentProofImageForUser(userId);
     const proofMedia = await buildTournamentProofMedia(proofUrl, options?.includeProofFile);
     return {
       hasRobloxAccount: Boolean(robloxUserId && robloxUsername),
@@ -7478,7 +7534,8 @@ async function getTournamentPlayerSnapshot(userId, options = {}) {
     || Boolean(roblox.verifiedAt)
     || Boolean(roblox.hasVerifiedAccount);
 
-  const lastScreenshotUrl = await resolveTournamentProofImageUrl(profile, snapshotRegistration);
+  const lastScreenshotUrl = (await resolveTournamentProofImageUrl(profile, snapshotRegistration))
+    || await findTournamentProofImageForUser(userId);
   const proofMedia = await buildTournamentProofMedia(lastScreenshotUrl, options?.includeProofFile);
 
   const normalizedKills = Number.isFinite(approvedKills) ? approvedKills : 0;
