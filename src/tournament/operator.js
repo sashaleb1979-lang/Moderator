@@ -1304,6 +1304,28 @@ function createTournamentOperator(deps = {}) {
     return true;
   }
 
+  // Snake-split the current roster across servers and stamp each registration
+  // with its serverIndex + seedNumber. Shared by «Пересобрать дуэты» and phantom
+  // auto-fill so a freshly filled bracket is immediately launchable (otherwise
+  // newly-added players keep serverIndex=null and get filtered out at launch).
+  function applyRosterSeeding(tournament) {
+    if (!tournament) return false;
+    const count = serverCount(tournament);
+    tournament.servers = {};
+    const buckets = seeding.splitIntoServers(state.tournamentPlayers(tournament), count);
+    buckets.forEach((bucket, serverIndex) => {
+      seeding.assignSeedNumbers(bucket).forEach((player) => {
+        const reg = state.getRegistration(tournament, player.userId || player.id);
+        if (reg) {
+          reg.seedNumber = player.seedNumber;
+          reg.serverIndex = serverIndex;
+        }
+      });
+    });
+    state.updateTournament(db, tournament.id, { status: "seeded" });
+    return true;
+  }
+
   async function finalizeRegistration(interaction, tournamentId, session) {
     const tournament = state.getTournament(db, tournamentId);
     if (!tournament) {
@@ -1527,19 +1549,8 @@ function createTournamentOperator(deps = {}) {
     const hydratedCount = await persist("tournament-form", async () => {
       const fresh = state.getTournament(db, tournamentId);
       const repaired = await hydrateZeroKillRegistrations(fresh);
-      fresh.servers = {}; // recompute from scratch
       // snake-split across servers (single server → everyone on index 0)
-      const buckets = seeding.splitIntoServers(state.tournamentPlayers(fresh), count);
-      buckets.forEach((bucket, serverIndex) => {
-        seeding.assignSeedNumbers(bucket).forEach((player) => {
-          const reg = state.getRegistration(fresh, player.userId || player.id);
-          if (reg) {
-            reg.seedNumber = player.seedNumber;
-            reg.serverIndex = serverIndex;
-          }
-        });
-      });
-      state.updateTournament(db, tournamentId, { status: "seeded" });
+      applyRosterSeeding(fresh);
       return repaired;
     });
     const fresh = state.getTournament(db, tournamentId);
@@ -2301,6 +2312,7 @@ function createTournamentOperator(deps = {}) {
     const phantoms = state.buildPhantomRegistrations(need, { runTag });
     await attachPhantomAvatars(phantoms);
 
+    let seeded = false;
     quickMutate(() => {
       const fresh = state.getTournament(db, tournamentId);
       if (!fresh) return;
@@ -2309,6 +2321,11 @@ function createTournamentOperator(deps = {}) {
         if (state.registrationCount(fresh) >= fresh.slots) break;
         state.upsertRegistration(fresh, reg);
       }
+      // Seed the freshly-filled roster so phantoms get a serverIndex and the
+      // bracket is launchable right away (no separate «Пересобрать дуэты» step).
+      if (!hasLaunchedTournamentPlay(fresh)) {
+        seeded = applyRosterSeeding(fresh);
+      }
     });
 
     const fresh = state.getTournament(db, tournamentId);
@@ -2316,7 +2333,9 @@ function createTournamentOperator(deps = {}) {
     await safeLogLine(`TOURNAMENT_PHANTOM_FILL: id=${tournamentId} added=${phantoms.length} total=${state.registrationCount(fresh)}/${fresh.slots} by=<@${interaction.user.id}>`);
     return renderManage(interaction, tournamentId, {
       edit: acked,
-      statusText: `👻 Добавлено фантомов: ${phantoms.length}. Турнир стал фантомным (не учитывается). Жми «Пересобрать дуэты».`,
+      statusText: seeded
+        ? `👻 Добавлено фантомов: ${phantoms.length}. Дуэты пересобраны — можно сразу «Запустить сервер».`
+        : `👻 Добавлено фантомов: ${phantoms.length}. Турнир стал фантомным (не учитывается). Жми «Пересобрать дуэты».`,
     });
   }
 
