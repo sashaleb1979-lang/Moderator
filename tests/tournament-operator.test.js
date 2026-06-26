@@ -829,7 +829,7 @@ test("tournament completion window attaches generated summary art and publishes 
   assert.equal(state.getTournament(db, tournament.id).summaryMessageId, "summary-1");
 });
 
-test("tournament preview publishes one image with all server branches and visible byes", async () => {
+test("tournament preview publishes one image with all server branches and projected rounds", async () => {
   const calls = [];
   const logs = [];
   const db = {};
@@ -883,7 +883,9 @@ test("tournament preview publishes one image with all server branches and visibl
   assert.equal(handled, true);
   assert.equal(renderCall.exportName, "renderPreviewCard");
   assert.equal(renderCall.model.serverCount, 2, "32 planned players are shown as two branches");
-  assert.ok(renderCall.model.servers.some((server) => server.matches.some((match) => match.bye)), "odd branch includes a visible no-pair row");
+  assert.equal(renderCall.model.servers.length, 2, "both server branches are present");
+  assert.ok(renderCall.model.servers.every((server) => Array.isArray(server.columns)), "each branch carries projected round columns");
+  assert.ok(renderCall.model.servers.some((server) => (server.qualifiers || []).length > 0), "branches carry projected qualifiers for the shared final");
   assert.ok(sentPayload, "expected preview post");
   assert.equal(sentPayload.files.length, 1, "preview carries a single PNG");
   assert.match(JSON.stringify(sentPayload), /Предварительная сетка/);

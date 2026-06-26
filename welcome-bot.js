@@ -7257,43 +7257,17 @@ async function resolveTournamentSubmissionImageUrl(submission = {}) {
   return null;
 }
 
-// Cheap magic-byte sniff so we never re-attach a 404/HTML body as a "picture"
-// (which Discord then shows as a broken image).
-function isLikelyImageBuffer(buffer) {
-  if (!buffer || buffer.length < 12) return false;
-  const b = buffer;
-  if (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return true; // PNG
-  if (b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return true; // JPEG
-  if (b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46) return true; // GIF
-  if (b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[8] === 0x57 && b[9] === 0x45 && b[10] === 0x42 && b[11] === 0x50) return true; // WEBP
-  return false;
-}
-
-// Turn a resolved proof URL into renderable media. When `includeFile` is set we
-// download the bytes and re-upload them as a fresh attachment (the bracket-art
-// pattern), which is immune to URL expiry. Crucially we NEVER hand back a dead
-// link: if the bytes can't be fetched/validated we only embed the URL when it's
-// still live, otherwise we omit the image rather than render a broken gallery.
-async function buildTournamentProofMedia(url, includeFile) {
-  const empty = { lastScreenshotUrl: null, lastScreenshotBuffer: null, lastScreenshotFilename: null };
-  if (!url) return empty;
-  // Callers that don't render (finalize/hydration) just want the URL as metadata.
-  if (!includeFile) return { ...empty, lastScreenshotUrl: url };
-  // The confirm card renders this, so the download IS the safety gate: we show the
-  // picture ONLY when we actually fetched valid image bytes and can re-upload them
-  // fresh. A re-signed link to a deleted upload carries a future `ex=` yet 404s, so
-  // we must verify by bytes — never embed a URL we couldn't fetch (= broken image).
-  try {
-    const buffer = await downloadToBuffer(url);
-    if (isLikelyImageBuffer(buffer)) {
-      const filename = "tournament-proof.png";
-      return { lastScreenshotUrl: `attachment://${filename}`, lastScreenshotBuffer: buffer, lastScreenshotFilename: filename };
-    }
-    console.warn(`Tournament proof download returned non-image bytes for ${String(url).slice(0, 80)}`);
-  } catch (error) {
-    console.warn(`Tournament proof download failed (${formatRuntimeError(error)}).`);
-  }
-  return empty;
+// Hand the resolved proof URL straight to the confirm card. We embed the live URL
+// directly — external image URLs render in this V2 card exactly like the Roblox
+// avatar does, and the gallery itself renders here (it already showed the broken
+// placeholder when the URL was dead). The earlier resolution steps guarantee the
+// URL is freshly minted from a live review message, so Discord can fetch it. We do
+// NOT download/re-attach: an `attachment://` reference is not reliably honoured in
+// an ephemeral V2 edit, and gating on our own download would wrongly drop a good
+// picture whenever the bot hit a transient fetch hiccup — the exact "it vanished"
+// the operator keeps hitting. `_includeFile` is retained for signature stability.
+async function buildTournamentProofMedia(url, _includeFile) {
+  return { lastScreenshotUrl: url || null, lastScreenshotBuffer: null, lastScreenshotFilename: null };
 }
 
 // Resolve a player's proof image, trying every matching submission best-first so
@@ -7532,8 +7506,13 @@ async function getTournamentPlayerSnapshot(userId, options = {}) {
     const normalizedKills = Number.isFinite(approvedKills) ? approvedKills : 0;
     const robloxUserId = sourceSubmission?.robloxUserId ? String(sourceSubmission.robloxUserId) : null;
     const robloxUsername = sourceSubmission?.robloxUsername || sourceSubmission?.username || null;
-    const proofUrl = (proofSubmission ? await resolveTournamentSubmissionImageUrl(proofSubmission) : null)
-      || await findTournamentProofImageForUser(userId);
+    // Image resolution does network I/O (channel scan / refresh-urls / download),
+    // so only the registration card (includeProofFile) pays for it — kill
+    // hydration and finalize never touch the picture.
+    const proofUrl = options?.includeProofFile
+      ? ((proofSubmission ? await resolveTournamentSubmissionImageUrl(proofSubmission) : null)
+        || await findTournamentProofImageForUser(userId))
+      : null;
     const proofMedia = await buildTournamentProofMedia(proofUrl, options?.includeProofFile);
     return {
       hasRobloxAccount: Boolean(robloxUserId && robloxUsername),
@@ -7558,8 +7537,10 @@ async function getTournamentPlayerSnapshot(userId, options = {}) {
     || Boolean(roblox.verifiedAt)
     || Boolean(roblox.hasVerifiedAccount);
 
-  const lastScreenshotUrl = (await resolveTournamentProofImageUrl(profile, snapshotRegistration))
-    || await findTournamentProofImageForUser(userId);
+  const lastScreenshotUrl = options?.includeProofFile
+    ? ((await resolveTournamentProofImageUrl(profile, snapshotRegistration))
+      || await findTournamentProofImageForUser(userId))
+    : null;
   const proofMedia = await buildTournamentProofMedia(lastScreenshotUrl, options?.includeProofFile);
 
   const normalizedKills = Number.isFinite(approvedKills) ? approvedKills : 0;

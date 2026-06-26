@@ -303,19 +303,68 @@ function buildSummaryModel({ tournament, avatars = {} } = {}) {
   };
 }
 
+function previewPlayerKills(player) {
+  return Number(player && (player.kills != null ? player.kills : player.effectiveKills)) || 0;
+}
+
+// Project the WHOLE bracket from the seeded roster: each round pairs the current
+// survivors (the seeding re-pairs closest-kills/seed) and the probable winner is
+// the higher-kill player, who advances. Returns one column per round plus the
+// final survivors (a base server's top-N qualifiers). This is what lets the
+// preview show every stage and each player's likely path + opponents.
+function projectServerColumns(players, mode, qualifyCount) {
+  const columns = [];
+  let survivors = Array.isArray(players) ? players.slice() : [];
+  const stopAt = qualifyCount > 0 ? Math.max(1, Math.min(qualifyCount, survivors.length)) : 1;
+  let stageNumber = 1;
+  let semifinalLosers = [];
+  let guard = 0;
+  const winnerOf = (m) => (m.red && m.blue ? (previewPlayerKills(m.red) >= previewPlayerKills(m.blue) ? m.red : m.blue) : (m.red || m.blue));
+  while (survivors.length > stopAt && survivors.length >= 2 && guard < 16) {
+    const plan = seeding.planNextStage({ survivors, mode, stageNumber, semifinalLosers });
+    if (!plan || !plan.stage) break;
+    const raw = seeding.listStageMatches(plan.stage);
+    const matches = raw.map((m) => {
+      const winner = winnerOf(m);
+      return {
+        red: playerNode(m.red),
+        blue: playerNode(m.blue),
+        winnerId: winner ? String(winner.userId || winner.id || "") : null,
+        placement: m.placement || null,
+        cellRed: m.cellRed,
+        cellBlue: m.cellBlue,
+      };
+    });
+    columns.push({ stage: stageNumber, kind: plan.stage.kind, isSemifinal: Boolean(plan.isSemifinal), matches });
+    if (plan.type === "placement") break;
+    // carry the two semifinal losers so the next (placement) stage can add bronze
+    semifinalLosers = plan.isSemifinal
+      ? raw.map((m) => (m.red && m.blue ? (winnerOf(m) === m.red ? m.blue : m.red) : null)).filter(Boolean)
+      : [];
+    const winners = raw.map(winnerOf).filter(Boolean);
+    if (plan.stage.bye) winners.push(plan.stage.bye);
+    survivors = winners;
+    stageNumber += 1;
+    guard += 1;
+  }
+  return { columns, qualifiers: survivors.map(playerNode).filter(Boolean) };
+}
+
 function buildPreviewModel({ tournament, servers = [], waitlist = [], avatars = {} } = {}) {
+  const mode = tournament?.seedingMode || "similar";
   const normalizedServers = (Array.isArray(servers) ? servers : []).map((server, index) => {
-    const stage = server?.stage || null;
-    const entry = stage ? stageEntryFromPlan(stage, {}) : null;
-    const column = entry ? columnFromStageEntry(entry) : { label: "Этап 1", matches: [] };
-    const players = Array.isArray(server?.players) ? server.players.map(playerNode).filter(Boolean) : [];
+    const rawPlayers = Array.isArray(server?.players) ? server.players : [];
+    const players = rawPlayers.map(playerNode).filter(Boolean);
+    const qualifyCount = Number(server?.qualifyCount) || 0;
+    const projection = projectServerColumns(rawPlayers, mode, qualifyCount);
     return {
       index: Number.isFinite(Number(server?.index)) ? Number(server.index) : index,
       label: server?.label || `Сервер ${index + 1}`,
       players,
       playerCount: Number(server?.playerCount) || players.length,
-      qualifyCount: Number(server?.qualifyCount) || 0,
-      matches: column.matches,
+      qualifyCount,
+      columns: projection.columns,
+      qualifiers: projection.qualifiers,
     };
   });
   const activeCount = normalizedServers.reduce((sum, server) => sum + (Number(server.playerCount) || 0), 0);
@@ -639,61 +688,105 @@ function drawPreviewFunnel(ctx, x, y, w, h, title, body, color = GOLD_HEX) {
   centered(ctx, body, x + 12, y + 56, w - 24, 15, "#cdd3dd", "regular", 9);
 }
 
-function drawPreviewServerPanel(ctx, server, decoded, x, y, w, multi) {
-  const matches = Array.isArray(server.matches) ? server.matches : [];
-  const count = Math.max(1, matches.length);
-  const panelH = 72 + count * MATCH_H + (count - 1) * 10 + 24;
+const PV_COL_W = 240;
+const PV_COL_GAP = 32;
+const PV_STEP = MATCH_H + 16;
+const PV_HEADER_H = 60;
+
+function previewStageWord(n) {
+  const abs = Math.abs(n) % 100;
+  const last = abs % 10;
+  if (abs > 10 && abs < 20) return `${n} этапов`;
+  if (last === 1) return `${n} этап`;
+  if (last >= 2 && last <= 4) return `${n} этапа`;
+  return `${n} этапов`;
+}
+
+function previewServerPanelHeight(server) {
+  const feederCols = (Array.isArray(server.columns) ? server.columns : []).filter((c) => c.kind !== "placement");
+  const leaf = feederCols[0] ? Math.max(1, feederCols[0].matches.length) : 1;
+  return PV_HEADER_H + leaf * PV_STEP + 18;
+}
+
+// Draw one server as a left→right projected bracket: a column per round, each
+// match a red/blue box with the probable winner (higher kills) highlighted and
+// wired into its next-round slot, ending in a top-N qualify panel (multi) or the
+// final + bronze boxes (single). Returns the panel height + the right-edge funnel
+// point used to wire servers into the shared final.
+function drawServerTree(ctx, server, decoded, x, y, w, multi) {
+  const allCols = Array.isArray(server.columns) ? server.columns : [];
+  const placementCol = allCols.find((c) => c.kind === "placement") || null;
+  const feederCols = allCols.filter((c) => c.kind !== "placement");
+  const feeders = feederCols.length;
+  const leaf = feederCols[0] ? Math.max(1, feederCols[0].matches.length) : 1;
+  const panelH = PV_HEADER_H + leaf * PV_STEP + 18;
+
   rect(ctx, x, y, w, panelH, PANEL_HEX);
   strokeRect(ctx, x, y, w, panelH, "#3a4150", 2);
   rect(ctx, x, y, w, 5, multi ? BLUE_HEX : GOLD_HEX);
+  text(ctx, server.label || "Сервер", x + 22, y + 36, 24, "#ffffff", "bold");
+  const stageTotal = feeders + (multi ? 1 : placementCol ? 1 : 0);
+  text(
+    ctx,
+    `${Number(server.playerCount || 0).toLocaleString("ru-RU")} игроков · ${previewStageWord(stageTotal)} · вероятный путь`,
+    x + 22, y + 58, 15, "#aeb5c2", "regular"
+  );
 
-  const label = server.label || `Сервер ${(Number(server.index) || 0) + 1}`;
-  text(ctx, label, x + 22, y + 34, 24, "#ffffff", "bold");
-  text(ctx, `${Number(server.playerCount || 0).toLocaleString("ru-RU")} игроков · этап 1`, x + 22, y + 58, 16, "#aeb5c2", "regular");
+  const bodyTop = y + PV_HEADER_H;
+  const colX = (r) => x + 18 + r * (PV_COL_W + PV_COL_GAP);
+  const termX = x + 18 + feeders * (PV_COL_W + PV_COL_GAP);
+  const leafYs = Array.from({ length: leaf }, (_, j) => bodyTop + j * PV_STEP + Math.floor(MATCH_H / 2));
+  const ys = computeSideYs(leafYs, Math.max(1, feeders));
+  const lastFeederYs = ys[feeders - 1] || leafYs;
+  const termY = lastFeederYs.reduce((s, v) => s + v, 0) / Math.max(1, lastFeederYs.length);
 
-  const matchX = x + 22;
-  const matchW = 360;
-  const noteX = matchX + matchW + 24;
-  const funnelW = 232;
-  const funnelX = x + w - funnelW - 22;
-  const noteW = Math.max(160, funnelX - noteX - 20);
-  let rowY = y + 78;
-  const funnelCY = y + panelH / 2;
-
-  if (!matches.length) {
-    drawEmptyBox(ctx, matchX, rowY, matchW);
-    text(ctx, "Участников пока нет", noteX, rowY + 32, 18, "#9aa6b8", "bold");
+  ctx.strokeStyle = "#3a4150";
+  ctx.lineWidth = 2;
+  const connect = (x1, y1, x2, y2) => {
+    ctx.beginPath();
+    if (Math.abs(y1 - y2) < 1) { ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); }
+    else { const mx = (x1 + x2) / 2; ctx.moveTo(x1, y1); ctx.lineTo(mx, y1); ctx.lineTo(mx, y2); ctx.lineTo(x2, y2); }
+    ctx.stroke();
+  };
+  for (let r = 0; r < feeders; r += 1) {
+    const parentYs = r + 1 < feeders ? ys[r + 1] : [termY];
+    const parentX = r + 1 < feeders ? colX(r + 1) : termX;
+    for (let k = 0; k < parentYs.length; k += 1) {
+      for (const child of [2 * k, 2 * k + 1]) {
+        if (!ys[r] || child >= ys[r].length) continue;
+        connect(colX(r) + PV_COL_W, ys[r][child], parentX, parentYs[k]);
+      }
+    }
   }
 
-  matches.forEach((match, idx) => {
-    drawMatchBox(ctx, match, decoded, matchX, rowY, matchW);
-    const title = match.bye ? "Одиночка" : `Бой ${idx + 1}`;
-    const details = match.bye
-      ? "пары нет · проходит дальше"
-      : match.cellRed && match.cellBlue
-        ? `ячейки ${match.cellRed}-${match.cellBlue}${match.tag ? ` · ${match.tag}` : ""}`
-        : match.tag || "пара сформирована";
-    const titleFit = fitText(ctx, title, noteW, 18, 11, "bold");
-    text(ctx, titleFit.text, noteX, rowY + 30, titleFit.px, match.bye ? GOLD_HEX : "#ffffff", "bold");
-    const detailFit = fitText(ctx, details, noteW, 15, 10, "regular");
-    text(ctx, detailFit.text, noteX, rowY + 52, detailFit.px, "#9aa6b8", "regular");
+  for (let r = 0; r < feeders; r += 1) {
+    const colYs = ys[r] || [];
+    const label = feederCols[r].isSemifinal ? "Полуфинал" : `Раунд ${r + 1}`;
+    text(ctx, label, colX(r) + 2, bodyTop - 8, 13, "#7e8696", "bold");
+    feederCols[r].matches.forEach((m, j) => {
+      if (j >= colYs.length) return;
+      drawMatchBox(ctx, m, decoded, colX(r), Math.round(colYs[j] - MATCH_H / 2), PV_COL_W);
+    });
+  }
 
-    ctx.strokeStyle = "#303541";
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(matchX + matchW, rowY + MATCH_H / 2);
-    ctx.lineTo(funnelX, funnelCY);
-    ctx.stroke();
-    rowY += MATCH_H + 10;
-  });
+  if (multi) {
+    drawFinalistsPanel(ctx, server.qualifiers || [], decoded, termX, termY, PV_COL_W, server.qualifyCount || 4);
+  } else if (placementCol) {
+    const finalM = placementCol.matches.find((m) => m.placement === "final") || placementCol.matches[0] || null;
+    const bronzeM = placementCol.matches.find((m) => m.placement === "bronze") || null;
+    const ft = Math.round(termY - MATCH_H / 2);
+    rect(ctx, termX - 4, ft - 22, PV_COL_W + 8, MATCH_H + 28, "#1a1d25");
+    strokeRect(ctx, termX - 4, ft - 22, PV_COL_W + 8, MATCH_H + 28, GOLD_HEX, 2);
+    centered(ctx, "ФИНАЛ · 1–2 место", termX, ft - 6, PV_COL_W, 13, GOLD_HEX, "bold", 9);
+    if (finalM) drawMatchBox(ctx, finalM, decoded, termX, ft, PV_COL_W); else drawEmptyBox(ctx, termX, ft, PV_COL_W);
+    if (bronzeM) {
+      const by = termY + MATCH_H + 40;
+      centered(ctx, "За 3-е место", termX, Math.round(by - MATCH_H / 2) - 8, PV_COL_W, 13, "#cd7f32", "bold", 9);
+      drawMatchBox(ctx, bronzeM, decoded, termX, Math.round(by - MATCH_H / 2), PV_COL_W);
+    }
+  }
 
-  const funnelTitle = multi ? `ТОП-${server.qualifyCount || 4} -> ФИНАЛ` : "ДАЛЬШЕ ПО СЕТКЕ";
-  const funnelBody = multi ? "смыкается в общий финал" : "победители идут до призовых мест";
-  drawPreviewFunnel(ctx, funnelX, Math.round(funnelCY - 42), funnelW, 84, funnelTitle, funnelBody, multi ? GOLD_HEX : "#57f287");
-  return {
-    height: panelH,
-    funnel: { x: funnelX + funnelW, y: funnelCY },
-  };
+  return { height: panelH, funnel: { x: termX + PV_COL_W, y: termY } };
 }
 
 async function renderPreviewCard(model = {}) {
@@ -703,14 +796,18 @@ async function renderPreviewCard(model = {}) {
 
   const servers = Array.isArray(model.servers) ? model.servers : [];
   const multi = Number(model.serverCount) > 1;
-  const width = 1280;
-  const panelGap = 26;
-  const serverHeights = servers.map((server) => {
-    const matches = Array.isArray(server.matches) ? server.matches : [];
-    return 72 + Math.max(1, matches.length) * MATCH_H + (Math.max(1, matches.length) - 1) * 10 + 24;
-  });
-  const mergeH = 118;
-  const height = HEADER_H + 22 + serverHeights.reduce((sum, h) => sum + h, 0) + Math.max(0, servers.length - 1) * panelGap + mergeH + FOOTER_H + 24;
+
+  const feederCountOf = (server) => (Array.isArray(server.columns) ? server.columns : []).filter((c) => c.kind !== "placement").length;
+  const maxFeeders = Math.max(1, ...servers.map(feederCountOf));
+  const totalCols = maxFeeders + 1; // feeders + terminal (qualify panel / final)
+  const width = Math.max(900, PAD * 2 + totalCols * PV_COL_W + (totalCols - 1) * PV_COL_GAP + 44);
+
+  const panelGap = 28;
+  const mergeH = 120;
+  const bodyHeights = servers.reduce((sum, server) => sum + previewServerPanelHeight(server), 0);
+  const height = HEADER_H + 26
+    + bodyHeights + Math.max(0, servers.length - 1) * panelGap
+    + (multi ? mergeH + 34 : 26) + FOOTER_H;
 
   const image = PImage.make(width, height);
   const ctx = image.getContext("2d");
@@ -725,22 +822,22 @@ async function renderPreviewCard(model = {}) {
     `Основной состав: ${Number(model.activeCount || 0).toLocaleString("ru-RU")} / ${Number(model.plannedPlayers || model.activeCount || 0).toLocaleString("ru-RU")}`,
     `Серверов: ${Number(model.serverCount || servers.length || 1).toLocaleString("ru-RU")}`,
     model.waitlistCount ? `резерв: ${Number(model.waitlistCount).toLocaleString("ru-RU")}` : null,
-    model.seedingMode === "seed" ? "посев" : "близкие килы",
+    model.seedingMode === "seed" ? "посев 1×N" : "близкие килы (равный с равным)",
   ].filter(Boolean).join(" · ");
   text(ctx, stats, PAD, 104, 15, "#7e8696", "regular");
 
-  let y = HEADER_H + 22;
+  let y = HEADER_H + 26;
   const funnels = [];
   servers.forEach((server, idx) => {
-    const result = drawPreviewServerPanel(ctx, server, decoded, PAD, y, width - PAD * 2, multi);
+    const result = drawServerTree(ctx, server, decoded, PAD, y, width - PAD * 2, multi);
     funnels.push(result.funnel);
     y += result.height + (idx === servers.length - 1 ? 0 : panelGap);
   });
 
-  const mergeY = y + 24;
-  const mergeX = PAD + 180;
-  const mergeW = width - PAD * 2 - 360;
   if (multi) {
+    const mergeY = y + 30;
+    const mergeW = Math.min(width - PAD * 2 - 120, 600);
+    const mergeX = Math.round((width - mergeW) / 2);
     ctx.strokeStyle = "#3a4150";
     ctx.lineWidth = 3;
     for (const point of funnels) {
@@ -749,21 +846,10 @@ async function renderPreviewCard(model = {}) {
       ctx.lineTo(mergeX + mergeW / 2, mergeY);
       ctx.stroke();
     }
-    drawPreviewFunnel(
-      ctx,
-      mergeX,
-      mergeY,
-      mergeW,
-      mergeH,
-      "ОБЩИЙ ФИНАЛ",
-      "топ-4 каждого сервера собираются в одну финальную ветку",
-      GOLD_HEX
-    );
-  } else {
-    drawPreviewFunnel(ctx, mergeX, mergeY, mergeW, mergeH, "ОДНА СЕТКА", "ветка идёт по этапам до финала и матча за 3-е место", GOLD_HEX);
+    drawPreviewFunnel(ctx, mergeX, mergeY, mergeW, mergeH, "ОБЩИЙ ФИНАЛ", "топ-4 каждого сервера собираются в одну финальную ветку", GOLD_HEX);
   }
 
-  text(ctx, "Это предпубликация: резерв не входит в сетку, но автоматически поднимается при отзыве заявки.", PAD, height - 18, 15, "#7e8696", "regular");
+  text(ctx, "Предпубликация: вероятный путь по килам (равный с равным). Резерв подменит выбывших.", PAD, height - 18, 15, "#7e8696", "regular");
   return encodePng(image);
 }
 
