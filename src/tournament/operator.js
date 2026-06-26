@@ -443,6 +443,15 @@ function createTournamentOperator(deps = {}) {
     return { ...payload, files: [...(payload.files || []), new AttachmentBuilder(buffer, { name: filename })] };
   }
 
+  // Re-upload the player's kill-proof screenshot as a real attachment (the
+  // snapshot already downloaded the bytes) so the registration card renders it
+  // reliably instead of leaning on an expiring CDN URL. No-op without a buffer.
+  function attachProofImage(payload, snapshot) {
+    return snapshot?.lastScreenshotBuffer
+      ? attachImage(payload, snapshot.lastScreenshotBuffer, snapshot.lastScreenshotFilename || "tournament-proof.png")
+      : payload;
+  }
+
   function realDiscordUserIds(players = []) {
     return players
       .map((p) => String(p?.userId || p?.id || "").trim())
@@ -1100,7 +1109,7 @@ function createTournamentOperator(deps = {}) {
     if (edit) await safeUpdate(interaction, collectingPayload);
     else await safeReply(interaction, collectingPayload);
 
-    const snapshot = (await Promise.resolve(getPlayerSnapshot(userId)).catch(() => ({}))) || {};
+    const snapshot = (await Promise.resolve(getPlayerSnapshot(userId, { includeProofFile: true })).catch(() => ({}))) || {};
     const approvedKills = Number(snapshot.approvedKills) || 0;
 
     if (snapshot.hasRobloxAccount) {
@@ -1117,7 +1126,7 @@ function createTournamentOperator(deps = {}) {
         avatarUrl: snapshot.robloxAvatarUrl,
         screenshotUrl: snapshot.lastScreenshotUrl,
       });
-      await safeUpdate(interaction, payload);
+      await safeUpdate(interaction, attachProofImage(payload, snapshot));
       return true;
     }
 
@@ -1127,7 +1136,7 @@ function createTournamentOperator(deps = {}) {
       screenshotUrl: snapshot.lastScreenshotUrl,
       canTwink: state.canSelfDeclareTwink(approvedKills),
     });
-    await safeUpdate(interaction, payload);
+    await safeUpdate(interaction, attachProofImage(payload, snapshot));
     return true;
   }
 

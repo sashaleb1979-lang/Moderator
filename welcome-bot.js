@@ -7106,10 +7106,36 @@ async function tournamentReviewProofIndex(channelId) {
   return byName;
 }
 
-// Resolve one submission to a *live* proof URL. The only durable copy of the
-// screenshot is the review-channel repost's attachment, so we re-mint a fresh
-// link every time, trying several independent sources and never returning a
-// dead one.
+// Discord's `POST /attachments/refresh-urls` re-signs expired CDN links and —
+// crucially — needs NO channel read permission. It's the durable escape hatch
+// for the common misconfig where the bot can post to the review channel but not
+// read its history (so message re-fetches 403). Returns Map<original, fresh>.
+async function refreshDiscordAttachmentUrls(urls) {
+  const list = [...new Set(
+    (Array.isArray(urls) ? urls : [urls])
+      .map((value) => (typeof value === "string" ? value.trim() : ""))
+      .filter((value) => /^https?:\/\/(?:cdn|media)\.discord(?:app)?\.(?:com|net)\//i.test(value))
+      .filter((value) => !/\/ephemeral-attachments\//i.test(value))
+  )];
+  if (!list.length) return new Map();
+  try {
+    const response = await client.rest.post("/attachments/refresh-urls", { body: { attachment_urls: list } });
+    const out = new Map();
+    for (const entry of response?.refreshed_urls || []) {
+      if (entry?.original && entry?.refreshed) out.set(entry.original, entry.refreshed);
+    }
+    return out;
+  } catch (error) {
+    console.warn(`Tournament attachment refresh-urls failed: ${formatRuntimeError(error)}`);
+    return new Map();
+  }
+}
+
+// Resolve one submission to a *live* proof URL, trying several independent
+// sources and never returning a dead one (a dead URL renders as a broken image;
+// null just omits the gallery). The refresh-urls and CDN-download steps work
+// without any channel read permission; the message-fetch/scan steps recover the
+// rest when the bot can read the review channel.
 async function resolveTournamentSubmissionImageUrl(submission = {}) {
   if (!submission || typeof submission !== "object") return null;
 
@@ -7118,10 +7144,26 @@ async function resolveTournamentSubmissionImageUrl(submission = {}) {
     if (isLiveRenderableImageUrl(value)) return String(value).trim();
   }
 
-  // 2) Re-mint a fresh URL straight from the durable review-channel repost.
-  let fresh = await freshTournamentAttachmentUrl(submission.reviewChannelId, submission.reviewMessageId, submission);
+  let fresh = null;
 
-  // 3) Fall back to the player's original upload (the channel+message is encoded
+  // 2) Re-sign the expired stored CDN URLs (no channel read permission needed).
+  const refreshable = [...new Set(
+    [submission.screenshotUrl, submission.reviewAttachmentUrl, submission.reviewImage]
+      .map((value) => (typeof value === "string" ? value.trim() : ""))
+      .filter((value) => /^https?:\/\//i.test(value) && !/\/ephemeral-attachments\//i.test(value))
+  )];
+  if (refreshable.length) {
+    const refreshed = await refreshDiscordAttachmentUrls(refreshable);
+    for (const original of refreshable) {
+      const candidate = refreshed.get(original);
+      if (isLiveRenderableImageUrl(candidate)) { fresh = candidate; break; }
+    }
+  }
+
+  // 3) Re-mint a fresh URL straight from the durable review-channel repost.
+  if (!fresh) fresh = await freshTournamentAttachmentUrl(submission.reviewChannelId, submission.reviewMessageId, submission);
+
+  // 4) Fall back to the player's original upload (the channel+message is encoded
   //    in the stored URLs) in case the repost is gone but the source survives.
   if (!fresh) {
     const ref = parseDiscordAttachmentRef(submission.screenshotUrl)
@@ -7130,7 +7172,7 @@ async function resolveTournamentSubmissionImageUrl(submission = {}) {
     if (ref) fresh = await freshTournamentAttachmentUrl(ref.channelId, ref.messageId, submission);
   }
 
-  // 4) Last resort: scan the configured review channel for the proof by its
+  // 5) Last resort: scan the configured review channel for the proof by its
   //    deterministic name, recovering a rotated/forgotten reviewMessageId.
   const proofName = tournamentReviewAttachmentName(submission);
   if (!fresh && proofName) {
@@ -7153,6 +7195,26 @@ async function resolveTournamentSubmissionImageUrl(submission = {}) {
     + "the bot may lack Read Message History in the review channel or the proof message was deleted."
   );
   return null;
+}
+
+// Turn a resolved proof URL into renderable media. When `includeFile` is set we
+// download the bytes and hand back an attachment:// reference + buffer, so the
+// image is re-uploaded fresh (immune to URL expiry / MediaGallery quirks) the
+// same way bracket art is. Falls back to embedding the URL if the download
+// fails.
+async function buildTournamentProofMedia(url, includeFile) {
+  if (!url) return { lastScreenshotUrl: null, lastScreenshotBuffer: null, lastScreenshotFilename: null };
+  if (!includeFile) return { lastScreenshotUrl: url, lastScreenshotBuffer: null, lastScreenshotFilename: null };
+  try {
+    const buffer = await downloadToBuffer(url);
+    if (buffer?.length) {
+      const filename = "tournament-proof.png";
+      return { lastScreenshotUrl: `attachment://${filename}`, lastScreenshotBuffer: buffer, lastScreenshotFilename: filename };
+    }
+  } catch (error) {
+    console.warn(`Tournament proof download failed (${formatRuntimeError(error)}); embedding URL instead.`);
+  }
+  return { lastScreenshotUrl: url, lastScreenshotBuffer: null, lastScreenshotFilename: null };
 }
 
 // Resolve a player's proof image, trying every matching submission best-first so
@@ -7391,6 +7453,8 @@ async function getTournamentPlayerSnapshot(userId, options = {}) {
     const normalizedKills = Number.isFinite(approvedKills) ? approvedKills : 0;
     const robloxUserId = sourceSubmission?.robloxUserId ? String(sourceSubmission.robloxUserId) : null;
     const robloxUsername = sourceSubmission?.robloxUsername || sourceSubmission?.username || null;
+    const proofUrl = proofSubmission ? await resolveTournamentSubmissionImageUrl(proofSubmission) : null;
+    const proofMedia = await buildTournamentProofMedia(proofUrl, options?.includeProofFile);
     return {
       hasRobloxAccount: Boolean(robloxUserId && robloxUsername),
       verified: false,
@@ -7399,7 +7463,7 @@ async function getTournamentPlayerSnapshot(userId, options = {}) {
       robloxAvatarUrl: null,
       approvedKills: normalizedKills,
       killsSource: normalizedKills > 0 ? "submission" : null,
-      lastScreenshotUrl: proofSubmission ? await resolveTournamentSubmissionImageUrl(proofSubmission) : null,
+      ...proofMedia,
     };
   }
   const profileRoblox = tournamentProfileRobloxIdentity(profile);
@@ -7415,6 +7479,7 @@ async function getTournamentPlayerSnapshot(userId, options = {}) {
     || Boolean(roblox.hasVerifiedAccount);
 
   const lastScreenshotUrl = await resolveTournamentProofImageUrl(profile, snapshotRegistration);
+  const proofMedia = await buildTournamentProofMedia(lastScreenshotUrl, options?.includeProofFile);
 
   const normalizedKills = Number.isFinite(approvedKills) ? approvedKills : 0;
   return {
@@ -7425,7 +7490,7 @@ async function getTournamentPlayerSnapshot(userId, options = {}) {
     robloxAvatarUrl,
     approvedKills: normalizedKills,
     killsSource: normalizedKills > 0 ? "profile" : null,
-    lastScreenshotUrl,
+    ...proofMedia,
   };
 }
 
