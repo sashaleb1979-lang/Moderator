@@ -7,7 +7,7 @@ const path = require("node:path");
 
 test("welcome-bot tournament Roblox snapshot uses the shared profile nickname base", () => {
   const source = fs.readFileSync(path.join(__dirname, "..", "welcome-bot.js"), "utf8");
-  const snapshotStart = source.indexOf("function getTournamentPlayerSnapshot(userId, options = {}) {");
+  const snapshotStart = source.indexOf("async function getTournamentPlayerSnapshot(userId, options = {}) {");
   const operatorStart = source.indexOf("function getTournamentOperator() {");
   const snapshotAdapterBlock = source.slice(Math.max(0, snapshotStart - 6000), operatorStart);
 
@@ -29,8 +29,11 @@ test("welcome-bot tournament Roblox snapshot uses the shared profile nickname ba
   assert.match(snapshotAdapterBlock, /pickTournamentApprovedSubmissionKills\(profile, registration\)/);
   assert.match(snapshotAdapterBlock, /pickTournamentTextTierlistProfileKills\(registration\)/);
   assert.match(snapshotAdapterBlock, /pickTournamentRecentSubmissionKills\(registration\)/);
-  assert.match(snapshotAdapterBlock, /pickTournamentProofSubmission\(profile, snapshotRegistration\)/);
-  assert.match(snapshotAdapterBlock, /tournamentSubmissionImageUrl\(proofSubmission\)/);
+  assert.match(snapshotAdapterBlock, /resolveTournamentProofImageUrl\(profile, snapshotRegistration\)/);
+  assert.match(snapshotAdapterBlock, /resolveTournamentSubmissionImageUrl\(proofSubmission\)/);
+  assert.match(source, /reviewImage\.startsWith\("attachment:\/\/"\)/);
+  assert.match(source, /fetchReviewMessage\(client, submission\)/);
+  assert.match(source, /submission\.reviewAttachmentUrl = proofAttachment\.url/);
   assert.match(snapshotAdapterBlock, /const snapshotRegistration = \{ \.\.\.registration, userId: registration\.userId \|\| userId \};/);
   assert.match(snapshotAdapterBlock, /submission\.status === "rejected"/);
   assert.ok(source.indexOf("const approvedKills = pickTournamentApprovedKills(profile, snapshotRegistration);", snapshotStart) > snapshotStart, "expected tournament snapshot to avoid zero-first kill fallback");

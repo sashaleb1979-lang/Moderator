@@ -6,7 +6,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const { isSqliteAvailable, createSqliteAdapter } = require("../src/db/sqlite-adapter");
+const { isSqliteAvailable, createSqliteAdapter, seedSqliteFromJsonIfEmpty } = require("../src/db/sqlite-adapter");
 const { createDbStore } = require("../src/db/store");
 const { createAutonomyGuardState } = require("../src/moderation/autonomy-guard");
 
@@ -130,6 +130,68 @@ function makeStoreDeps(persistence, dbPath, dataRoot) {
     persistence,
   };
 }
+
+maybe("seedSqliteFromJsonIfEmpty seeds an empty store from a JSON snapshot", () => {
+  const dbPath = tempDbPath();
+  const jsonRaw = {
+    config: { welcomePanel: { channelId: "w1" } },
+    sot: { sotVersion: 4 },
+    profiles: { u1: { name: "One" } },
+    // submissions intentionally omitted — the guard must default it.
+  };
+  const adapter = createSqliteAdapter(dbPath);
+  try {
+    const result = seedSqliteFromJsonIfEmpty(adapter, jsonRaw);
+    assert.equal(result.seeded, true);
+    assert.equal(result.reason, "seeded-from-json");
+    assert.ok(result.rows >= 3);
+    // The caller's object must not be mutated by the defaulting.
+    assert.equal(jsonRaw.submissions, undefined);
+  } finally {
+    adapter.close();
+  }
+
+  const reader = createSqliteAdapter(dbPath);
+  try {
+    assert.deepEqual(reader.readRaw(), {
+      config: { welcomePanel: { channelId: "w1" } },
+      sot: { sotVersion: 4 },
+      profiles: { u1: { name: "One" } },
+      submissions: {},
+    });
+  } finally {
+    reader.close();
+  }
+});
+
+maybe("seedSqliteFromJsonIfEmpty never clobbers an already-populated store", () => {
+  const dbPath = tempDbPath();
+  const adapter = createSqliteAdapter(dbPath);
+  try {
+    adapter.writeSync({ config: { v: 1 }, profiles: { keep: { score: 7 } }, submissions: {} });
+    const result = seedSqliteFromJsonIfEmpty(adapter, { config: { v: 999 }, profiles: { other: {} }, submissions: {} });
+    assert.equal(result.seeded, false);
+    assert.equal(result.reason, "already-populated");
+    // Live data is untouched.
+    assert.deepEqual(adapter.readRaw().profiles, { keep: { score: 7 } });
+    assert.deepEqual(adapter.readRaw().config, { v: 1 });
+  } finally {
+    adapter.close();
+  }
+});
+
+maybe("seedSqliteFromJsonIfEmpty is a no-op when there is no JSON source", () => {
+  const adapter = createSqliteAdapter(tempDbPath());
+  try {
+    assert.equal(seedSqliteFromJsonIfEmpty(adapter, undefined).reason, "no-json-source");
+    assert.equal(seedSqliteFromJsonIfEmpty(adapter, null).reason, "no-json-source");
+    assert.equal(seedSqliteFromJsonIfEmpty(adapter, []).reason, "no-json-source");
+    // Still empty — nothing was written.
+    assert.equal(adapter.readRaw(), undefined);
+  } finally {
+    adapter.close();
+  }
+});
 
 maybe("createDbStore persists through the sqlite adapter across reloads", async () => {
   const dbPath = tempDbPath();

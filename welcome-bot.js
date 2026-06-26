@@ -1104,13 +1104,22 @@ const SQLITE_DB_PATH = process.env.SQLITE_DB_PATH
 function selectDbPersistence() {
   if (DB_BACKEND !== "sqlite") return undefined;
   try {
-    const { isSqliteAvailable, createSqliteAdapter } = require("./src/db/sqlite-adapter");
+    const { isSqliteAvailable, createSqliteAdapter, seedSqliteFromJsonIfEmpty } = require("./src/db/sqlite-adapter");
     if (!isSqliteAvailable()) {
       console.warn("[db] MODERATOR_DB_BACKEND=sqlite but node:sqlite is unavailable (needs Node >= 22.5); falling back to JSON.");
       return undefined;
     }
+    const adapter = createSqliteAdapter(SQLITE_DB_PATH);
+    // One-flip safety: if SQLite is empty (backend enabled without the migration
+    // script) but a JSON db exists, seed it now so the bot never boots blank.
+    const seed = seedSqliteFromJsonIfEmpty(adapter, loadJsonFile(DB_PATH, undefined));
+    if (seed.seeded) {
+      console.log(`[db] seeded SQLite from existing JSON db (${seed.rows} rows) at ${SQLITE_DB_PATH}`);
+    } else if (seed.reason === "no-json-source") {
+      console.log(`[db] SQLite empty and no JSON db to seed from — starting fresh at ${SQLITE_DB_PATH}`);
+    }
     console.log(`[db] using SQLite backend at ${SQLITE_DB_PATH}`);
-    return createSqliteAdapter(SQLITE_DB_PATH);
+    return adapter;
   } catch (error) {
     console.warn(`[db] SQLite backend init failed, falling back to JSON: ${formatRuntimeError(error)}`);
     return undefined;
@@ -1337,6 +1346,9 @@ function flushDbOnExit() {
   if (dbExitFlushed) return;
   dbExitFlushed = true;
   flushDbSync();
+  // Cleanly close the SQLite handle AFTER the final sync flush so WAL is
+  // checkpointed into the main db file. No-op for the JSON backend.
+  try { dbPersistence?.close?.(); } catch { /* noop */ }
 }
 process.once("SIGINT", () => { flushDbOnExit(); process.exit(0); });
 process.once("SIGTERM", () => { flushDbOnExit(); process.exit(0); });
@@ -6966,10 +6978,78 @@ function submissionTournamentRecency(submission = {}) {
 }
 
 function tournamentSubmissionImageUrl(submission = {}) {
-  for (const value of [submission.reviewAttachmentUrl, submission.screenshotUrl, submission.reviewImage]) {
+  for (const value of [submission.reviewAttachmentUrl, submission.reviewImage, submission.screenshotUrl]) {
     if (typeof value === "string" && /^https?:\/\//i.test(value.trim())) return value.trim();
   }
   return null;
+}
+
+function tournamentSubmissionHasImageCandidate(submission = {}) {
+  if (tournamentSubmissionImageUrl(submission)) return true;
+  const reviewImage = String(submission.reviewImage || "").trim();
+  if (reviewImage.startsWith("attachment://")) return true;
+  return Boolean(submission.reviewChannelId && submission.reviewMessageId);
+}
+
+function collectionToArray(value) {
+  if (!value) return [];
+  if (Array.isArray(value)) return value;
+  if (typeof value.values === "function") return [...value.values()];
+  if (typeof value.first === "function") return value.first() ? [value.first()] : [];
+  if (typeof value === "object") return Object.values(value);
+  return [];
+}
+
+function tournamentReviewAttachmentName(submission = {}) {
+  const reviewImage = String(submission.reviewImage || "").trim();
+  if (reviewImage.startsWith("attachment://")) return reviewImage.slice("attachment://".length);
+  const id = String(submission.id || "").trim();
+  return id ? `${id}_proof.png` : "";
+}
+
+function isTournamentImageAttachment(attachment = {}) {
+  const contentType = String(attachment.contentType || "").toLowerCase();
+  const name = String(attachment.name || attachment.filename || "").toLowerCase();
+  const url = String(attachment.url || "").toLowerCase();
+  return contentType.startsWith("image/") || /\.(png|jpe?g|webp|gif)(?:$|\?)/i.test(name) || /\.(png|jpe?g|webp|gif)(?:$|\?)/i.test(url);
+}
+
+function findTournamentProofAttachment(message, submission = {}) {
+  const attachments = collectionToArray(message?.attachments).filter((attachment) => attachment?.url);
+  if (!attachments.length) return null;
+  const expectedName = tournamentReviewAttachmentName(submission);
+  const named = expectedName
+    ? attachments.find((attachment) => String(attachment.name || attachment.filename || "").trim() === expectedName)
+    : null;
+  return named || attachments.find(isTournamentImageAttachment) || attachments[0] || null;
+}
+
+async function resolveTournamentSubmissionImageUrl(submission = {}) {
+  const directReviewUrl = [submission.reviewAttachmentUrl, submission.reviewImage]
+    .map((value) => (typeof value === "string" ? value.trim() : ""))
+    .find((value) => /^https?:\/\//i.test(value));
+  if (directReviewUrl) return directReviewUrl;
+
+  const reviewMessage = await fetchReviewMessage(client, submission).catch((error) => {
+    console.warn(`Tournament proof fetch failed for ${submission?.id || "submission"}: ${formatRuntimeError(error)}`);
+    return null;
+  });
+  const proofAttachment = findTournamentProofAttachment(reviewMessage, submission);
+  if (proofAttachment?.url) {
+    submission.reviewAttachmentUrl = proofAttachment.url;
+    if (!submission.reviewImage || String(submission.reviewImage).startsWith("attachment://")) {
+      submission.reviewImage = proofAttachment.url;
+    }
+    saveDb();
+    return proofAttachment.url;
+  }
+
+  return tournamentSubmissionImageUrl(submission);
+}
+
+async function resolveTournamentProofImageUrl(profile = {}, registration = {}) {
+  const proofSubmission = pickTournamentProofSubmission(profile, registration);
+  return proofSubmission ? await resolveTournamentSubmissionImageUrl(proofSubmission) : null;
 }
 
 function buildTournamentSubmissionMatchContext(profile = {}, registration = {}) {
@@ -7017,7 +7097,7 @@ function pickTournamentProofSubmission(profile = {}, registration = {}) {
     .filter((submission) => {
       if (!submission || typeof submission !== "object") return false;
       if (submission.status === "rejected") return false;
-      if (!tournamentSubmissionImageUrl(submission)) return false;
+      if (!tournamentSubmissionHasImageCandidate(submission)) return false;
       const id = String(submission.id || "").trim();
       return (id && context.preferredIds.includes(id)) || tournamentSubmissionMatchesContext(submission, context);
     })
@@ -7172,7 +7252,7 @@ function pickTournamentApprovedKills(profile = {}, registration = {}) {
   return candidates.length ? candidates[0] : (submissionKills ?? recentSubmissionKills ?? 0);
 }
 
-function getTournamentPlayerSnapshot(userId, options = {}) {
+async function getTournamentPlayerSnapshot(userId, options = {}) {
   const registration = options?.registration && typeof options.registration === "object" ? options.registration : {};
   const snapshotRegistration = { ...registration, userId: registration.userId || userId };
   const profile = db.profiles?.[userId]
@@ -7196,7 +7276,7 @@ function getTournamentPlayerSnapshot(userId, options = {}) {
       robloxAvatarUrl: null,
       approvedKills: normalizedKills,
       killsSource: normalizedKills > 0 ? "submission" : null,
-      lastScreenshotUrl: proofSubmission ? tournamentSubmissionImageUrl(proofSubmission) : null,
+      lastScreenshotUrl: proofSubmission ? await resolveTournamentSubmissionImageUrl(proofSubmission) : null,
     };
   }
   const profileRoblox = tournamentProfileRobloxIdentity(profile);
@@ -7211,8 +7291,7 @@ function getTournamentPlayerSnapshot(userId, options = {}) {
     || Boolean(roblox.verifiedAt)
     || Boolean(roblox.hasVerifiedAccount);
 
-  const proofSubmission = pickTournamentProofSubmission(profile, snapshotRegistration);
-  const lastScreenshotUrl = proofSubmission ? tournamentSubmissionImageUrl(proofSubmission) : null;
+  const lastScreenshotUrl = await resolveTournamentProofImageUrl(profile, snapshotRegistration);
 
   const normalizedKills = Number.isFinite(approvedKills) ? approvedKills : 0;
   return {

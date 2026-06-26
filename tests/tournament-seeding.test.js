@@ -17,6 +17,7 @@ const {
   isStageComplete,
   serverCountForSlots,
 } = require("../src/tournament/seeding");
+const bracketImage = require("../src/tournament/bracket-image");
 
 function players(...kills) {
   // p1..pN with the given kill counts (index order = id order)
@@ -196,6 +197,21 @@ test("byes carry through to winners for assorted field sizes", () => {
       assert.ok(winners.some((w) => w.id === stage.bye.id), "bye player advances");
     }
   }
+});
+
+test("bracket image model keeps odd-player byes visible as no-pair matches", () => {
+  const stage = buildStage(players(900, 700, 500), SEEDING_MODES.SEED, 1);
+  const model = bracketImage.buildBracketModel({
+    tournament: { name: "Bye Cup", seedingMode: SEEDING_MODES.SEED },
+    server: { index: 0, currentStage: stage },
+    livePlan: stage,
+  });
+
+  const firstColumn = model.columns[0];
+  assert.ok(firstColumn, "expected first bracket column");
+  assert.equal(firstColumn.bye, null, "bye is folded into the visible match list");
+  assert.ok(firstColumn.matches.some((match) => match.bye && match.red?.name && match.blue === null), "expected visible no-pair row");
+  assert.equal(model.totalPlayers, 3);
 });
 
 test("serverCountForSlots buckets players into 16-cap servers", () => {

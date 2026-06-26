@@ -24,7 +24,15 @@ const {
 
 const { ACTIONS, COLORS, buildCustomId } = require("./commands");
 const { formatStartTime } = require("./time");
-const { TWINK_THRESHOLD, robloxProfileUrl, killsSourceLabel, phantomCount } = require("./state");
+const {
+  TWINK_THRESHOLD,
+  robloxProfileUrl,
+  killsSourceLabel,
+  phantomCount,
+  activeRegistrationLimit,
+  listWaitlistRegistrations,
+  registrationQueueInfo,
+} = require("./state");
 const seeding = require("./seeding");
 const ui = require("./ui");
 
@@ -307,6 +315,8 @@ function buildConditionsModal(draft = {}) {
 function buildAnnouncementPayload(tournament, { ping = false } = {}) {
   const taken = Object.keys(tournament.registrations || {}).length;
   const slots = tournament.slots || 16;
+  const activeLimit = activeRegistrationLimit(tournament);
+  const waitlistCount = Math.max(0, taken - activeLimit);
   const rewards = tournament.rewards || {};
   const open = tournament.registrationOpen !== false;
   const pingRoles = Array.isArray(tournament.pingRoleIds) ? tournament.pingRoleIds : [];
@@ -329,7 +339,14 @@ function buildAnnouncementPayload(tournament, { ping = false } = {}) {
     );
     container.addSeparatorComponents(ui.separator());
     container.addTextDisplayComponents(
-      ui.td(`## Занято мест: ${taken} / ${slots}\n${open ? "🟢 **Набор открыт**" : "🔴 **Набор закрыт**"}`)
+      ui.td(
+        [
+          `## Основной состав: ${Math.min(taken, activeLimit)} / ${activeLimit}`,
+          waitlistCount ? `Резерв: **${waitlistCount}** · очередь двигается, если кто-то отзовёт заявку.` : null,
+          `Всего заявок: ${taken}${slots && slots !== activeLimit ? ` / ${slots}` : ""}`,
+          open ? "🟢 **Набор открыт**" : "🔴 **Набор закрыт**",
+        ].filter(Boolean).join("\n")
+      )
     );
     if (rewardLines.length) {
       container.addSeparatorComponents(ui.separator());
@@ -506,14 +523,24 @@ function buildNoticePayload(text, { accent = COLORS.neutral } = {}) {
   return ui.v2Ephemeral(ui.container(accent, (c) => c.addTextDisplayComponents(ui.td(text))));
 }
 
-function buildRegisteredPayload(tournament, { seatNumber } = {}) {
-  const c = ui.container(COLORS.green, (container) => {
-    container.addTextDisplayComponents(ui.td("# ✅ Ты в заявке!"));
+function buildRegisteredPayload(tournament, { seatNumber, queueInfo = null, playReset = false } = {}) {
+  const waitlisted = queueInfo && queueInfo.found && !queueInfo.active;
+  const c = ui.container(waitlisted ? COLORS.orange : COLORS.green, (container) => {
+    container.addTextDisplayComponents(ui.td(waitlisted ? "# 🕒 Ты в резерве" : "# ✅ Ты в заявке!"));
     container.addTextDisplayComponents(
       ui.td(
         [
           `Турнир: **${tournament.name}**`,
-          seatNumber ? `Твоё место: **№${seatNumber}**` : null,
+          waitlisted
+            ? `Очередь: **резерв №${queueInfo.waitlistPosition}** · общий номер заявки **№${queueInfo.position}**`
+            : seatNumber
+              ? `Твоё место: **№${seatNumber}**`
+              : queueInfo?.position
+                ? `Номер заявки: **№${queueInfo.position}**`
+                : null,
+          waitlisted ? `Основной состав уже набран: **${queueInfo.activeLimit}** игроков.` : null,
+          waitlisted ? "Если кто-то отзовёт заявку до запуска, очередь подвинется автоматически." : null,
+          playReset && !waitlisted ? "Состав основы изменился, поэтому старое распределение сброшено." : null,
           tournament.startsAtIso ? `Старт: ${formatStartTime(tournament.startsAtIso)}` : null,
         ]
           .filter(Boolean)
@@ -531,6 +558,9 @@ function buildRegisteredPayload(tournament, { seatNumber } = {}) {
 
 function buildManagePanelPayload(tournament, { statusText = "", serverCount = 1, finalReady = false, finalServer = null, finalIndex = 90 } = {}) {
   const taken = Object.keys(tournament.registrations || {}).length;
+  const activeLimit = activeRegistrationLimit(tournament);
+  const activeTaken = Math.min(taken, activeLimit);
+  const waitlisted = listWaitlistRegistrations(tournament).length;
   const phantoms = phantomCount(tournament);
   const open = tournament.registrationOpen !== false;
   const servers = tournament.servers || {};
@@ -544,7 +574,8 @@ function buildManagePanelPayload(tournament, { statusText = "", serverCount = 1,
       ui.td(
         [
           `Статус: ${statusLabel(tournament.status)} · Набор: ${open ? "🟢 открыт" : "🔴 закрыт"}`,
-          `Заявок: **${fmtNumber(taken)} / ${fmtNumber(tournament.slots)}**${phantoms ? ` (из них фантомов: **${phantoms}**)` : ""} · Серверов: **${fmtNumber(serverCount)}**`,
+          `Основной состав: **${fmtNumber(activeTaken)} / ${fmtNumber(activeLimit)}** · Всего заявок: **${fmtNumber(taken)}**${waitlisted ? ` · Резерв: **${fmtNumber(waitlisted)}**` : ""}${phantoms ? ` (фантомов: **${phantoms}**)` : ""}`,
+          `Максимум сетки: **${fmtNumber(tournament.slots)}** · Серверов: **${fmtNumber(serverCount)}**`,
           `Режим: ${SEEDING_MODE_LABELS[tournament.seedingMode] || tournament.seedingMode}`,
           `Роль участника: ${tournament.participantRoleId ? `<@&${tournament.participantRoleId}>` : "—"}`,
           `Старт: ${tournament.startsAtIso ? formatStartTime(tournament.startsAtIso) : "—"}`,
@@ -596,7 +627,10 @@ function buildManagePanelPayload(tournament, { statusText = "", serverCount = 1,
     if (serverLines.length) container.addTextDisplayComponents(ui.td(`-# ${serverLines.join("\n-# ")}`));
 
     // launch row: rebuild duels + per-server launch buttons
-    const launchRow = [btn(ACTIONS.MANAGE_FORM_DUELS, tournament.id, [], { label: "Пересобрать дуэты", style: ButtonStyle.Primary, emoji: "🧩" })];
+    const launchRow = [
+      btn(ACTIONS.MANAGE_FORM_DUELS, tournament.id, [], { label: "Пересобрать дуэты", style: ButtonStyle.Primary, emoji: "🧩" }),
+      btn(ACTIONS.MANAGE_PUBLISH_PREVIEW, tournament.id, [], { label: "Предпубликация", style: ButtonStyle.Secondary, emoji: "🗺" }),
+    ];
     for (let i = 0; i < Math.min(serverCount, 3); i += 1) {
       const server = servers[String(i)];
       const qual = server?.qualifying;
@@ -661,7 +695,11 @@ function buildRosterViewerPayload(tournament, players = [], { page = 0, statusTe
 
   const c = ui.container(COLORS.teal, (container) => {
     container.addTextDisplayComponents(ui.td(`# 📋 Состав · ${tournament.name}`));
-    container.addTextDisplayComponents(ui.td(`Записано: **${players.length} / ${fmtNumber(tournament.slots)}** · страница ${current + 1}/${pageCount}`));
+    const activeLimit = activeRegistrationLimit(tournament);
+    const waitlisted = listWaitlistRegistrations(tournament).length;
+    container.addTextDisplayComponents(
+      ui.td(`Основа: **${Math.min(players.length, activeLimit)} / ${fmtNumber(activeLimit)}** · Резерв: **${fmtNumber(waitlisted)}** · всего ${players.length} · страница ${current + 1}/${pageCount}`)
+    );
     container.addSeparatorComponents(ui.separator());
 
     if (!slice.length) {
@@ -669,11 +707,13 @@ function buildRosterViewerPayload(tournament, players = [], { page = 0, statusTe
     }
     slice.forEach((p, idx) => {
       const num = current * ROSTER_PAGE_SIZE + idx + 1;
+      const queue = registrationQueueInfo(tournament, p.userId || p.id);
       const tierBadge = p.effectiveTier ? ` · T${p.effectiveTier}` : "";
       const kindBadge = p.accountKind && p.accountKind !== "main" ? ` · ${ACCOUNT_KIND_LABELS[p.accountKind]}` : "";
       const manual = p.addedManually ? " · ✋" : "";
+      const queueBadge = queue.active ? " · основа" : ` · резерв #${queue.waitlistPosition}`;
       const lineText = ui.td(
-        `**${num}.** ${playerMd(p, { withKills: true, withSource: true })}${tierBadge}${kindBadge}${manual}\n-# <@${p.userId}>`
+        `**${num}.** ${playerMd(p, { withKills: true, withSource: true })}${tierBadge}${kindBadge}${manual}${queueBadge}\n-# <@${p.userId}>`
       );
       const url = p.robloxProfileUrl || robloxProfileUrl(p.robloxUserId);
       if (url) {
@@ -801,6 +841,29 @@ function buildBracketPostPayload(tournament, stagePlan, { serverIndex = 0, serve
       });
       if (stagePlan.bye) lines.push(`🎟 ${playerMd(stagePlan.bye)} — бай`);
       for (let i = 0; i < lines.length; i += 6) container.addTextDisplayComponents(ui.td(lines.slice(i, i + 6).join("\n")));
+    }
+  });
+  return ui.v2Public(c);
+}
+
+function buildPreviewPostPayload(tournament, { imageFilename = "", serverCount = 1, activeCount = 0, waitlistCount = 0 } = {}) {
+  const c = ui.container(COLORS.gold, (container) => {
+    container.addTextDisplayComponents(ui.td(`# 🗺 Предварительная сетка · ${tournament.name}`));
+    container.addTextDisplayComponents(
+      ui.td(
+        [
+          `Основной состав: **${fmtNumber(activeCount)} / ${fmtNumber(activeRegistrationLimit(tournament))}**`,
+          `Серверов: **${fmtNumber(serverCount)}** · формат: **1 на 1, FT6**`,
+          waitlistCount ? `Резерв: **${fmtNumber(waitlistCount)}** · не попадает в эту сетку, но очередь двигается при выходе игроков.` : null,
+        ].filter(Boolean).join("\n")
+      )
+    );
+    if (imageFilename) {
+      container.addSeparatorComponents(ui.separator());
+      container.addMediaGalleryComponents(ui.mediaImage(`attachment://${imageFilename}`, "Предварительная сетка турнира"));
+    } else {
+      container.addSeparatorComponents(ui.separator());
+      container.addTextDisplayComponents(ui.td("Предварительная картинка не собралась, но состав можно пересобрать в панели турнира."));
     }
   });
   return ui.v2Public(c);
@@ -1062,6 +1125,7 @@ module.exports = {
   buildAddPlayerModal,
   buildRosterPayload,
   buildBracketPostPayload,
+  buildPreviewPostPayload,
   buildSummaryPostPayload,
   buildCompletionPanelPayload,
   buildSummaryCommentModal,

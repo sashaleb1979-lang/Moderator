@@ -103,6 +103,15 @@ function getUserTag(user = {}) {
   return cleanString(source.tag || source.username || source.globalName || source.id, 120);
 }
 
+// What a <@id> mention renders as: server nickname, else global display name,
+// else username. Used so close-review buttons read like the public mentions.
+function getMemberDisplayName(interaction = {}) {
+  const member = interaction?.member || {};
+  const user = interaction?.user || {};
+  return cleanString(member.displayName || member.nickname || user.globalName || user.displayName, 120)
+    || getUserTag(user);
+}
+
 function getMemberRoleCache(member = null) {
   return member?.roles?.cache || null;
 }
@@ -2007,6 +2016,7 @@ function createAntiteamOperator(options = {}) {
     const helperRecord = {
       userId: interaction.user.id,
       discordTag: getUserTag(interaction.user),
+      displayName: getMemberDisplayName(interaction),
       robloxUsername: helperRoblox.username,
       robloxUserId: helperRoblox.userId,
       linkKind,
@@ -2814,10 +2824,16 @@ function createAntiteamOperator(options = {}) {
       }
       const approve = action === "kv_approve";
       const ack = await safeDeferUpdate(interaction);
+      // Apply the decision in-memory and render the panel straight from it — the
+      // admin must never wait on a blocking full-db durable flush (which queues
+      // behind every activity/voice write on the shared flush queue) just to see
+      // "одобрено/отклонено". A coalesced save lands the decision on disk within
+      // the debounce window; this mirrors the close-review arrival toggle
+      // (optimistic render now, durable write rides the coalesced flush).
       const updated = await persist("antiteam-kv-decision", () => setKvApprovalDecision(db, ticketId, approve ? "approved" : "rejected", {
         now: nowIso(),
         decidedBy: interaction.user.id,
-      }), { durable: true });
+      }));
       if (!updated) {
         if (ack.ok) await safeReply(interaction, { content: "Не удалось обновить КВ.", flags: MessageFlags.Ephemeral });
         return true;

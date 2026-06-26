@@ -296,7 +296,7 @@ function createTournamentOperator(deps = {}) {
 
   const MAX_SERVERS = 3;
   function serverCount(tournament) {
-    return Math.min(MAX_SERVERS, seeding.serverCountForSlots(tournament.slots));
+    return Math.min(MAX_SERVERS, seeding.serverCountForSlots(state.activeRegistrationLimit(tournament)));
   }
   function isMultiServer(tournament) {
     return serverCount(tournament) > 1;
@@ -388,6 +388,50 @@ function createTournamentOperator(deps = {}) {
       return await renderImage("renderSummaryCard", model);
     } catch (error) {
       logError("tournament: summary render failed", error?.message || error);
+      return null;
+    }
+  }
+
+  function buildPreviewServers(tournament) {
+    const count = serverCount(tournament);
+    const activePlayers = state.tournamentPlayers(tournament);
+    const hasStoredSplit = count > 1 && activePlayers.length > 0 && activePlayers.every((player) => {
+      const index = Number(player.serverIndex);
+      return Number.isInteger(index) && index >= 0 && index < count;
+    });
+    const buckets = hasStoredSplit
+      ? Array.from({ length: count }, (_, index) => state.tournamentPlayers(tournament, { serverIndex: index }))
+      : seeding.splitIntoServers(activePlayers, count);
+    return buckets.map((players, index) => {
+      const seededPlayers = seeding.assignSeedNumbers(players);
+      return {
+        index,
+        label: `Сервер ${index + 1}`,
+        players: seededPlayers,
+        playerCount: seededPlayers.length,
+        qualifyCount: count > 1 ? Math.min(seeding.QUALIFY_PER_SERVER, Math.max(1, seededPlayers.length)) : 0,
+        stage: seeding.buildStage(seededPlayers, tournament.seedingMode, 1),
+      };
+    });
+  }
+
+  async function renderPreviewBuffer(tournament, avatars) {
+    if (!imagesEnabled) return null;
+    try {
+      const servers = buildPreviewServers(tournament);
+      const model = bracketImage.buildPreviewModel({
+        tournament: {
+          ...tournament,
+          previewServerCount: serverCount(tournament),
+          waitlistCount: state.listWaitlistRegistrations(tournament).length,
+        },
+        servers,
+        waitlist: state.listWaitlistRegistrations(tournament),
+        avatars,
+      });
+      return await renderImage("renderPreviewCard", model);
+    } catch (error) {
+      logError("tournament: preview render failed", error?.message || error);
       return null;
     }
   }
@@ -623,14 +667,21 @@ function createTournamentOperator(deps = {}) {
 
   async function syncParticipantRoles(tournament) {
     const roleId = tournament?.participantRoleId;
-    if (!roleId) return { granted: 0 };
+    if (!roleId) return { granted: 0, removed: 0 };
+    const activeIds = new Set(state.listActiveRegistrations(tournament).map((reg) => String(reg.userId)));
     let granted = 0;
+    let removed = 0;
     for (const reg of state.listRegistrations(tournament)) {
       if (!/^\d{5,25}$/.test(String(reg.userId))) continue;
-      const result = await Promise.resolve(grantRole(reg.userId, roleId, `tournament ${tournament.id} sync`)).catch(() => null);
-      if (result?.granted) granted += 1;
+      if (activeIds.has(String(reg.userId))) {
+        const result = await Promise.resolve(grantRole(reg.userId, roleId, `tournament ${tournament.id} active participant`)).catch(() => null);
+        if (result?.granted) granted += 1;
+      } else {
+        const result = await Promise.resolve(removeRole(reg.userId, roleId, `tournament ${tournament.id} waitlist`)).catch(() => null);
+        if (result?.removed) removed += 1;
+      }
     }
-    return { granted };
+    return { granted, removed };
   }
 
   // Debounced announcement refresh — never blocks the click; coalesces bursts of
@@ -738,6 +789,8 @@ function createTournamentOperator(deps = {}) {
         return toggleRegistration(interaction, tournamentId, true);
       case ACTIONS.MANAGE_FORM_DUELS:
         return formDuels(interaction, tournamentId);
+      case ACTIONS.MANAGE_PUBLISH_PREVIEW:
+        return publishPreviewAction(interaction, tournamentId);
       case ACTIONS.MANAGE_LAUNCH_SERVER:
         return launchServer(interaction, tournamentId, Number(extra[0]) || 0);
       case ACTIONS.MANAGE_LAUNCH_FINAL:
@@ -1031,7 +1084,10 @@ function createTournamentOperator(deps = {}) {
 
     if (state.getRegistration(tournament, userId)) {
       const seat = registrationSeat(tournament, userId);
-      const payload = view.buildRegisteredPayload(tournament, { seatNumber: seat });
+      const payload = view.buildRegisteredPayload(tournament, {
+        seatNumber: seat,
+        queueInfo: state.registrationQueueInfo(tournament, userId),
+      });
       edit ? await safeUpdate(interaction, payload) : await safeReply(interaction, payload);
       return true;
     }
@@ -1249,11 +1305,6 @@ function createTournamentOperator(deps = {}) {
       await safeReply(interaction, ephemeralText("Набор закрыт."));
       return true;
     }
-    if (state.isFull(tournament) && !state.getRegistration(tournament, interaction.user.id)) {
-      await safeReply(interaction, ephemeralText("Все места заняты."));
-      return true;
-    }
-
     const userId = interaction.user.id;
     const acked = await safeDeferUpdate(interaction);
     if (acked) {
@@ -1282,6 +1333,7 @@ function createTournamentOperator(deps = {}) {
     }
 
     const killsSource = accountKind === "main" ? snapshot.killsSource || "profile" : "declared";
+    let playReset = false;
     quickMutate(() => {
       const fresh = state.getTournament(db, tournamentId);
       state.upsertRegistration(fresh, {
@@ -1295,17 +1347,20 @@ function createTournamentOperator(deps = {}) {
         declaredKills,
         killsSource,
       });
+      const queue = state.registrationQueueInfo(fresh, userId);
+      if (queue.active) playReset = resetSeededTournamentAfterRosterChange(fresh);
     });
     pending.delete(pendingKey(tournamentId, userId));
 
     const fresh = state.getTournament(db, tournamentId);
-    grantParticipantRole(fresh, userId);
+    syncParticipantRoles(fresh).catch((error) => logError("tournament: participant role sync after registration failed", error?.message || error));
     scheduleAnnouncementRefresh(tournamentId, "register");
     const registration = state.getRegistration(fresh, userId) || {};
+    const queueInfo = state.registrationQueueInfo(fresh, userId);
     await safeLogLine(
-      `TOURNAMENT_REGISTER: <@${userId}> tournament="${fresh.name}" id=${fresh.id} player=${registration.robloxUsername || "unknown"} account=${registration.accountKind || "unknown"} kills=${registration.effectiveKills || 0} source=${registration.killsSource || "?"} count=${state.registrationCount(fresh)}/${fresh.slots}`
+      `TOURNAMENT_REGISTER: <@${userId}> tournament="${fresh.name}" id=${fresh.id} player=${registration.robloxUsername || "unknown"} account=${registration.accountKind || "unknown"} kills=${registration.effectiveKills || 0} source=${registration.killsSource || "?"} queue=${queueInfo.active ? "active" : `waitlist#${queueInfo.waitlistPosition}`} count=${state.registrationCount(fresh)}/${fresh.slots}`
     );
-    await safeUpdate(interaction, view.buildRegisteredPayload(fresh, { seatNumber: registrationSeat(fresh, userId) }));
+    await safeUpdate(interaction, view.buildRegisteredPayload(fresh, { seatNumber: registrationSeat(fresh, userId), queueInfo, playReset }));
     return true;
   }
 
@@ -1326,6 +1381,7 @@ function createTournamentOperator(deps = {}) {
     const fresh = state.getTournament(db, tournamentId);
     if (fresh) {
       removeParticipantRole(fresh, userId);
+      syncParticipantRoles(fresh).catch((error) => logError("tournament: participant role sync after withdrawal failed", error?.message || error));
       scheduleAnnouncementRefresh(tournamentId, "withdraw");
       await safeLogLine(
         `TOURNAMENT_WITHDRAW: <@${userId}> tournament="${fresh.name}" id=${fresh.id} player=${removed?.existing?.robloxUsername || "unknown"} count=${state.registrationCount(fresh)}/${fresh.slots} playReset=${removed?.playReset ? "yes" : "no"}`
@@ -1343,6 +1399,8 @@ function createTournamentOperator(deps = {}) {
   }
 
   function registrationSeat(tournament, userId) {
+    const queue = state.registrationQueueInfo(tournament, userId);
+    if (!queue.active) return null;
     const players = seeding.assignSeedNumbers(state.tournamentPlayers(tournament));
     const found = players.find((p) => String(p.userId || p.id) === String(userId));
     return found ? found.seedNumber : null;
@@ -1484,6 +1542,69 @@ function createTournamentOperator(deps = {}) {
     const payload = view.buildRosterPayload(fresh, plan, { serverIndex: 0, serverCount: count });
     acked ? await safeUpdate(interaction, payload) : await safeReply(interaction, payload);
     return true;
+  }
+
+  async function publishPreviewAction(interaction, tournamentId) {
+    if (!requireMod(interaction)) return true;
+    const acked = await safeDeferUpdate(interaction);
+    const tournament = state.getTournament(db, tournamentId);
+    if (!tournament) {
+      await safeReply(interaction, ephemeralText("Турнир не найден."));
+      return true;
+    }
+
+    const repaired = await persist("tournament-preview-hydrate", async () => {
+      const fresh = state.getTournament(db, tournamentId);
+      return fresh ? await hydrateZeroKillRegistrations(fresh) : 0;
+    });
+    const fresh = state.getTournament(db, tournamentId);
+    const activePlayers = state.tournamentPlayers(fresh);
+    if (!activePlayers.length) {
+      await safeReply(interaction, ephemeralText("Некого публиковать: в основном составе пока нет игроков."));
+      return true;
+    }
+
+    const channel = await fetchChannel(fresh.announce?.channelId).catch(() => null);
+    if (!channel?.send) {
+      await safeReply(interaction, ephemeralText("Не нашёл канал анонса для предпубликации."));
+      return true;
+    }
+
+    const filename = "tournament-preview.png";
+    const buffer = await renderPreviewBuffer(fresh, await collectTournamentAvatars(fresh));
+    const payload = view.buildPreviewPostPayload(fresh, {
+      imageFilename: buffer ? filename : "",
+      serverCount: serverCount(fresh),
+      activeCount: activePlayers.length,
+      waitlistCount: state.listWaitlistRegistrations(fresh).length,
+    });
+    const message = await channel
+      .send({ ...attachImage(payload, buffer, filename), allowedMentions: { parse: [] } })
+      .catch((error) => {
+        logError("tournament: preview publish failed", error?.message || error);
+        return null;
+      });
+    if (!message) {
+      await safeReply(interaction, ephemeralText("Не удалось отправить предпубликацию. Проверь права бота в канале."));
+      return true;
+    }
+
+    await persist("tournament-preview-posted", async () => {
+      state.updateTournament(db, tournamentId, {
+        preview: {
+          channelId: String(message.channelId || channel.id || ""),
+          messageId: String(message.id || ""),
+          postedAt: new Date().toISOString(),
+        },
+      });
+    });
+    await safeLogLine(
+      `TOURNAMENT_PREVIEW_PUBLISH: id=${fresh.id} servers=${serverCount(fresh)} active=${activePlayers.length} waitlist=${state.listWaitlistRegistrations(fresh).length} repaired=${repaired} by=<@${interaction.user.id}>`
+    );
+    return renderManage(interaction, tournamentId, {
+      edit: acked,
+      statusText: `Предпубликация отправлена${repaired ? `, килы обновлены у ${repaired}` : ""}.`,
+    });
   }
 
   // Launch a server: persist the runnable bracket FIRST, then fire the thread /
@@ -1739,7 +1860,7 @@ function createTournamentOperator(deps = {}) {
       await safeReply(interaction, ephemeralText("Турнир не найден."));
       return true;
     }
-    const players = seeding.assignSeedNumbers(state.tournamentPlayers(tournament));
+    const players = state.tournamentPlayers(tournament, { includeWaitlist: true });
     const payload = view.buildRosterViewerPayload(tournament, players, { page });
     edit ? await safeUpdate(interaction, payload) : await safeReply(interaction, payload);
     return true;
@@ -1753,7 +1874,7 @@ function createTournamentOperator(deps = {}) {
       return fresh ? await hydrateZeroKillRegistrations(fresh) : 0;
     });
     const tournament = state.getTournament(db, tournamentId);
-    const players = seeding.assignSeedNumbers(state.tournamentPlayers(tournament));
+    const players = state.tournamentPlayers(tournament, { includeWaitlist: true });
     const payload = view.buildRosterViewerPayload(tournament, players, { page: 0, statusText: `Килы обновлены (исправлено: ${repaired}).` });
     acked ? await safeUpdate(interaction, payload) : await safeReply(interaction, payload);
     return true;
@@ -1810,7 +1931,7 @@ function createTournamentOperator(deps = {}) {
       });
     });
     const tournament = state.getTournament(db, tournamentId);
-    grantParticipantRole(tournament, userId);
+    syncParticipantRoles(tournament).catch((error) => logError("tournament: participant role sync after manual add failed", error?.message || error));
     scheduleAnnouncementRefresh(tournamentId, "manual-add");
     await safeLogLine(`TOURNAMENT_ADD_PLAYER: <@${userId}> id=${tournamentId} kills=${kills} by=<@${interaction.user.id}>`);
     return renderManage(interaction, tournamentId, { edit: acked, statusText: `Добавлен <@${userId}> (${snapshot.robloxUsername}, ${kills} килов).` });
@@ -1854,7 +1975,7 @@ function createTournamentOperator(deps = {}) {
       });
     });
     const tournament = state.getTournament(db, tournamentId);
-    if (discordId) grantParticipantRole(tournament, discordId);
+    syncParticipantRoles(tournament).catch((error) => logError("tournament: participant role sync after manual add failed", error?.message || error));
     scheduleAnnouncementRefresh(tournamentId, "manual-add");
     await safeLogLine(`TOURNAMENT_ADD_PLAYER_MANUAL: ${resolved.username} id=${tournamentId} kills=${kills} discord=${discordId || "none"} by=<@${interaction.user.id}>`);
     return renderManage(interaction, tournamentId, { edit: true, statusText: `Добавлен ${resolved.username} (${kills} килов).` });
@@ -1875,6 +1996,7 @@ function createTournamentOperator(deps = {}) {
     const tournament = state.getTournament(db, tournamentId);
     if (tournament) {
       removeParticipantRole(tournament, userId);
+      syncParticipantRoles(tournament).catch((error) => logError("tournament: participant role sync after manual remove failed", error?.message || error));
       scheduleAnnouncementRefresh(tournamentId, "manual-remove");
     }
     await safeLogLine(`TOURNAMENT_REMOVE_PLAYER: <@${userId}> id=${tournamentId} existed=${removed} by=<@${interaction.user.id}>`);
@@ -1893,9 +2015,9 @@ function createTournamentOperator(deps = {}) {
       await safeReply(interaction, ephemeralText("Роль участника не выбрана для этого турнира."));
       return true;
     }
-    const { granted } = await syncParticipantRoles(tournament);
-    await safeLogLine(`TOURNAMENT_SYNC_ROLES: id=${tournamentId} granted=${granted} by=<@${interaction.user.id}>`);
-    return renderManage(interaction, tournamentId, { edit: acked, statusText: `Роли синхронизированы. Выдано: ${granted}.` });
+    const { granted, removed } = await syncParticipantRoles(tournament);
+    await safeLogLine(`TOURNAMENT_SYNC_ROLES: id=${tournamentId} granted=${granted} removed=${removed} by=<@${interaction.user.id}>`);
+    return renderManage(interaction, tournamentId, { edit: acked, statusText: `Роли синхронизированы. Выдано: ${granted}, снято с резерва: ${removed}.` });
   }
 
   // =========================================================================

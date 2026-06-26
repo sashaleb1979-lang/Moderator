@@ -1434,7 +1434,15 @@ function formatHelpersBlock(ticket = {}, options = {}) {
   // avoid blowing past Discord's text-component limit on absurd counts.
   const HELPER_DISPLAY_CAP = 60;
   const helperLine = helpers.slice(0, HELPER_DISPLAY_CAP)
-    .map((helper) => isClosed ? `${didHelperArrive(helper, { confirmedHelperIds }) ? "✅" : "❌"} <@${helper.userId}>` : `<@${helper.userId}>`)
+    .map((helper) => {
+      // Show the Roblox nick next to the closed ✅/❌ so it matches the
+      // close-review buttons (which also show the nick) — reviewers were thrown
+      // off when the mention rendered a different name than the button label.
+      const nick = cleanString(helper.robloxUsername, 40);
+      return isClosed
+        ? `${didHelperArrive(helper, { confirmedHelperIds }) ? "✅" : "❌"} <@${helper.userId}>${nick ? ` (${nick})` : ""}`
+        : `<@${helper.userId}>`;
+    })
     .join(" • ");
   const overflow = helpers.length > HELPER_DISPLAY_CAP ? ` +${helpers.length - HELPER_DISPLAY_CAP}` : "";
   const responseLine = isClosed
@@ -1854,7 +1862,9 @@ function buildCloseReviewPayload(ticket = {}, page = 0, options = {}) {
   for (const helper of visibleHelpers) {
     const arrived = isArrived(helper);
     const nick = cleanString(helper.robloxUsername, 40);
-    const name = cleanString(helper.discordTag || helper.userId, 60);
+    // Prefer the server display name so the button reads like the public <@id>
+    // mention; the Roblox nick is the shared anchor between the two views.
+    const name = cleanString(helper.displayName || helper.discordTag || helper.userId, 60);
     const label = `${arrived ? "Пришёл" : "Не пришёл"} • ${name}${nick ? ` (${nick})` : ""}`.slice(0, 80);
     container.addActionRowComponents(
       new ActionRowBuilder().addComponents(

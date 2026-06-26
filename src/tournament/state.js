@@ -387,6 +387,38 @@ function listRegistrations(tournament) {
   );
 }
 
+function activeRegistrationLimit(tournament) {
+  const slots = positiveInt(tournament?.slots, 16);
+  const planned = positiveInt(tournament?.plannedPlayers, slots);
+  return Math.max(1, Math.min(planned, slots));
+}
+
+function registrationQueueInfo(tournament, userId) {
+  const id = cleanString(userId, 40);
+  const list = listRegistrations(tournament);
+  const index = list.findIndex((reg) => reg.userId === id);
+  const activeLimit = activeRegistrationLimit(tournament);
+  if (index < 0) {
+    return { found: false, activeLimit, position: null, active: false, waitlistPosition: null };
+  }
+  const active = index < activeLimit;
+  return {
+    found: true,
+    activeLimit,
+    position: index + 1,
+    active,
+    waitlistPosition: active ? null : index - activeLimit + 1,
+  };
+}
+
+function listActiveRegistrations(tournament) {
+  return listRegistrations(tournament).slice(0, activeRegistrationLimit(tournament));
+}
+
+function listWaitlistRegistrations(tournament) {
+  return listRegistrations(tournament).slice(activeRegistrationLimit(tournament));
+}
+
 function registrationCount(tournament) {
   return Object.keys(ensureRegistrations(tournament)).length;
 }
@@ -397,8 +429,9 @@ function isFull(tournament) {
 
 // Player objects for the seeding engine + panels (carries roster metadata so
 // every nick can be rendered as a Roblox link with kills/source).
-function tournamentPlayers(tournament, { serverIndex = null } = {}) {
-  return listRegistrations(tournament)
+function tournamentPlayers(tournament, { serverIndex = null, includeWaitlist = false } = {}) {
+  const source = includeWaitlist ? listRegistrations(tournament) : listActiveRegistrations(tournament);
+  return source
     .filter((reg) => serverIndex == null || reg.serverIndex === serverIndex)
     .map((reg) => ({
       id: reg.userId,
@@ -500,6 +533,10 @@ module.exports = {
   removeRegistration,
   getRegistration,
   listRegistrations,
+  activeRegistrationLimit,
+  registrationQueueInfo,
+  listActiveRegistrations,
+  listWaitlistRegistrations,
   registrationCount,
   isFull,
   tournamentPlayers,

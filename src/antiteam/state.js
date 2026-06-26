@@ -377,6 +377,10 @@ function normalizeHelperRecord(value = {}, userId = "") {
   return {
     userId: cleanString(source.userId || userId, 80),
     discordTag: cleanString(source.discordTag, 120),
+    // Server display name (what a <@id> mention renders as). Stored so the
+    // close-review buttons match the public helper mentions instead of showing
+    // the raw username, which made reviewers think the wrong person was marked.
+    displayName: cleanString(source.displayName, 120),
     robloxUsername: cleanString(source.robloxUsername, 120),
     robloxUserId: cleanString(source.robloxUserId, 40),
     bridgeDiscordUserId: cleanString(source.bridgeDiscordUserId, 80),

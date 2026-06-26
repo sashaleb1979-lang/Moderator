@@ -189,7 +189,7 @@ test("tournament registration refreshes the public announcement and writes a log
   // announcement refresh is debounced — fires shortly after, not synchronously
   await delay();
   assert.ok(calls.includes("announcementEdit"), "expected debounced announcement edit");
-  assert.match(JSON.stringify(message.editedPayload), /Занято мест: 1 \/ 16/);
+  assert.match(JSON.stringify(message.editedPayload), /Основной состав: 1 \/ 16/);
 });
 
 test("tournament registration immediately shows a collecting notice and imports the kill proof image", async () => {
@@ -228,6 +228,78 @@ test("tournament registration immediately shows a collecting notice and imports 
   assert.match(JSON.stringify(interaction.replyPayload), /Модератор собирает вашу заявку/);
   assert.match(JSON.stringify(interaction.editedPayload), /ProofPlayer/);
   assert.match(JSON.stringify(interaction.editedPayload), /https:\/\/example\.test\/proof\.png/);
+});
+
+test("tournament registrations over the planned field go to reserve and promote after withdrawal", async () => {
+  const calls = [];
+  const grants = [];
+  const removals = [];
+  const db = {};
+  const tournament = state.createTournamentFromDraft(
+    db,
+    {
+      name: "Queue Cup",
+      slots: 4,
+      plannedPlayers: 2,
+      startsAtIso: "2026-06-21T20:00:00.000Z",
+      announceChannelId: "channel-1",
+      participantRoleId: "role-1",
+    },
+    { id: "tour-1", now: "2026-06-21T18:00:00.000Z" }
+  );
+  const operator = createTournamentOperator({
+    db,
+    saveDb: () => calls.push("saveDb"),
+    runSerializedMutation: async ({ mutate }) => mutate(),
+    getPlayerSnapshot: async (userId) => ({
+      hasRobloxAccount: true,
+      robloxUsername: `Player${userId.slice(-1)}`,
+      robloxUserId: userId,
+      approvedKills: 1000 + Number(userId.slice(-1)),
+      killsSource: "profile",
+    }),
+    grantRole: async (userId) => {
+      grants.push(userId);
+      return { granted: true };
+    },
+    removeRole: async (userId) => {
+      removals.push(userId);
+      return { removed: true };
+    },
+  });
+  const register = async (userId) => {
+    const interaction = createButtonInteraction(buildCustomId(ACTIONS.REG_USE_MAIN, tournament.id), calls);
+    interaction.user = { id: userId, tag: `${userId}#0001` };
+    await operator.handleButtonInteraction(interaction);
+    await delay(30);
+    return interaction;
+  };
+
+  await register("100000000000000001");
+  await register("100000000000000002");
+  const third = await register("100000000000000003");
+
+  const fresh = state.getTournament(db, tournament.id);
+  assert.equal(state.registrationQueueInfo(fresh, "100000000000000001").active, true);
+  assert.equal(state.registrationQueueInfo(fresh, "100000000000000002").active, true);
+  assert.deepEqual(
+    state.registrationQueueInfo(fresh, "100000000000000003"),
+    { found: true, activeLimit: 2, position: 3, active: false, waitlistPosition: 1 }
+  );
+  assert.match(JSON.stringify(third.editedPayload), /резерв №1/);
+  assert.ok(grants.includes("100000000000000001"));
+  assert.ok(grants.includes("100000000000000002"));
+  assert.equal(grants.includes("100000000000000003"), false, "waitlist user does not receive participant role");
+  assert.ok(removals.includes("100000000000000003"), "waitlist role is removed if present");
+
+  const withdraw = createButtonInteraction(buildCustomId(ACTIONS.REG_WITHDRAW, tournament.id), calls);
+  withdraw.user = { id: "100000000000000001", tag: "first#0001" };
+  await operator.handleButtonInteraction(withdraw);
+  await delay(60);
+
+  const promoted = state.registrationQueueInfo(state.getTournament(db, tournament.id), "100000000000000003");
+  assert.equal(promoted.active, true, "first reserve moves into the active field");
+  assert.ok(grants.includes("100000000000000003"), "promoted user receives the participant role");
 });
 
 test("tournament registration relinks and edits a visible announcement when stored message id is stale", async () => {
@@ -288,7 +360,7 @@ test("tournament registration relinks and edits a visible announcement when stor
   await delay();
   assert.ok(calls.includes("visibleAnnouncementEdit"), "expected recent visible announcement to be edited");
   assert.equal(state.getTournament(db, tournament.id).announce.messageId, "visible-message");
-  assert.match(JSON.stringify(visibleMessage.editedPayload), /Занято мест: 1 \/ 16/);
+  assert.match(JSON.stringify(visibleMessage.editedPayload), /Основной состав: 1 \/ 16/);
   assert.ok(logs.some((line) => /TOURNAMENT_ANNOUNCE_RELINK/.test(line)));
 });
 
@@ -343,7 +415,7 @@ test("tournament manage refresh republishes the announcement when no editable me
   assert.equal(handled, true);
   assert.ok(calls.includes("announcementSend"), "expected manage refresh to republish missing announcement");
   assert.equal(state.getTournament(db, tournament.id).announce.messageId, "new-message");
-  assert.match(JSON.stringify(channel.sentPayload), /Занято мест: 6 \/ 16/);
+  assert.match(JSON.stringify(channel.sentPayload), /Основной состав: 6 \/ 16/);
   assert.match(JSON.stringify(interaction.editedPayload), /Анонс: republished/);
   // management panel is now a Components V2 message (ephemeral flag stripped on update, V2 flag kept)
   assert.ok(isV2(interaction.editedPayload), "expected V2 management panel");
@@ -755,6 +827,69 @@ test("tournament completion window attaches generated summary art and publishes 
   assert.match(JSON.stringify(sentSummary), /Winner забрал финал чисто/);
   assert.equal(state.getTournament(db, tournament.id).summaryPosted, true);
   assert.equal(state.getTournament(db, tournament.id).summaryMessageId, "summary-1");
+});
+
+test("tournament preview publishes one image with all server branches and visible byes", async () => {
+  const calls = [];
+  const logs = [];
+  const db = {};
+  const tournament = state.createTournamentFromDraft(
+    db,
+    {
+      name: "Preview Cup",
+      slots: 32,
+      plannedPlayers: 32,
+      startsAtIso: "2026-06-21T20:00:00.000Z",
+      announceChannelId: "channel-1",
+    },
+    { id: "tour-1", now: "2026-06-21T18:00:00.000Z" }
+  );
+  for (let i = 1; i <= 5; i += 1) {
+    state.upsertRegistration(tournament, {
+      userId: `10000000000000000${i}`,
+      discordName: `user-${i}`,
+      robloxUsername: `Player${i}`,
+      approvedKills: i * 1000,
+      effectiveKills: i * 1000,
+    });
+  }
+  let sentPayload = null;
+  let renderCall = null;
+  const channel = {
+    id: "channel-1",
+    async send(payload) {
+      sentPayload = payload;
+      return { id: "preview-1", channelId: "channel-1" };
+    },
+  };
+  const operator = createTournamentOperator({
+    db,
+    saveDb: () => calls.push("saveDb"),
+    runSerializedMutation: async ({ mutate }) => mutate(),
+    isModerator: (member) => Boolean(member?.mod),
+    fetchChannel: async () => channel,
+    renderImage: async (exportName, model) => {
+      renderCall = { exportName, model };
+      return Buffer.from("png");
+    },
+    logLine: async (line) => logs.push(line),
+  });
+  const interaction = createButtonInteraction(buildCustomId(ACTIONS.MANAGE_PUBLISH_PREVIEW, tournament.id), calls);
+  interaction.member = { mod: true };
+  interaction.user = { id: "mod-1", tag: "mod#0001" };
+
+  const handled = await operator.handleButtonInteraction(interaction);
+
+  assert.equal(handled, true);
+  assert.equal(renderCall.exportName, "renderPreviewCard");
+  assert.equal(renderCall.model.serverCount, 2, "32 planned players are shown as two branches");
+  assert.ok(renderCall.model.servers.some((server) => server.matches.some((match) => match.bye)), "odd branch includes a visible no-pair row");
+  assert.ok(sentPayload, "expected preview post");
+  assert.equal(sentPayload.files.length, 1, "preview carries a single PNG");
+  assert.match(JSON.stringify(sentPayload), /Предварительная сетка/);
+  assert.equal(state.getTournament(db, tournament.id).preview.messageId, "preview-1");
+  assert.ok(logs.some((line) => /TOURNAMENT_PREVIEW_PUBLISH/.test(line)));
+  assert.match(JSON.stringify(interaction.editedPayload), /Предпубликация отправлена/);
 });
 
 test("match panel acks each tap and repaints in place via a single edit; supports one-tap re-pick", async () => {

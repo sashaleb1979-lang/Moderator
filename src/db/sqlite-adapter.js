@@ -182,7 +182,33 @@ function createSqliteAdapter(dbPath, options = {}) {
   };
 }
 
+// Safe one-flip enablement guard. If the SQLite store is still EMPTY (the
+// backend was switched on without first running the migration script) but a JSON
+// snapshot exists, seed SQLite from it now. Without this an empty SQLite would
+// load as a blank database and the very first flush would persist that blank
+// state over everything — silent, irreversible data loss. Strictly a no-op once
+// the SQLite store already holds rows, so it can never clobber live SQLite data
+// or fight the migration script.
+function seedSqliteFromJsonIfEmpty(adapter, jsonRaw) {
+  if (!adapter || typeof adapter.readRaw !== "function" || typeof adapter.writeSync !== "function") {
+    return { seeded: false, reason: "invalid-adapter", rows: 0 };
+  }
+  if (adapter.readRaw() !== undefined) {
+    return { seeded: false, reason: "already-populated", rows: 0 };
+  }
+  if (!jsonRaw || typeof jsonRaw !== "object" || Array.isArray(jsonRaw)) {
+    return { seeded: false, reason: "no-json-source", rows: 0 };
+  }
+  // Shallow copy so defaulting the keyed maps never mutates the caller's object.
+  const source = { ...jsonRaw };
+  source.profiles ||= {};
+  source.submissions ||= {};
+  const result = adapter.writeSync(source);
+  return { seeded: true, reason: "seeded-from-json", rows: result.changedRows };
+}
+
 module.exports = {
   isSqliteAvailable,
   createSqliteAdapter,
+  seedSqliteFromJsonIfEmpty,
 };
