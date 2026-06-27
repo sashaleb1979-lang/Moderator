@@ -22,6 +22,7 @@ const bracketImage = require("./bracket-image");
 const { killTierFor } = require("../onboard/kill-tiers");
 
 const UNKNOWN_INTERACTION_CODES = new Set([10062, 40060]);
+const DEFAULT_THREAD_ADMIN_ROLE_IDS = Object.freeze(["1486459664546926866"]);
 
 function isUnknownInteractionError(error) {
   return Boolean(error && UNKNOWN_INTERACTION_CODES.has(error.code));
@@ -35,6 +36,14 @@ function toPositiveIntOrNull(value) {
 function toPositiveKills(value) {
   const number = Number(value);
   return Number.isSafeInteger(number) && number > 0 ? number : null;
+}
+
+function normalizeSnowflakeIds(values = []) {
+  const source = Array.isArray(values) ? values : [values];
+  return source
+    .map((value) => String(value || "").trim())
+    .filter((id) => /^\d{5,25}$/.test(id))
+    .filter((id, index, ids) => ids.indexOf(id) === index);
 }
 
 function createTournamentOperator(deps = {}) {
@@ -55,7 +64,9 @@ function createTournamentOperator(deps = {}) {
     grantRole = async () => ({ skipped: "no-grant-dep" }), // (userId, roleId, reason)
     removeRole = async () => ({ skipped: "no-remove-dep" }), // (userId, roleId, reason)
     fetchMember = async () => null, // (userId) => member|null
+    threadAdminRoleIds = DEFAULT_THREAD_ADMIN_ROLE_IDS,
   } = deps;
+  const privateThreadAdminRoleIds = normalizeSnowflakeIds(threadAdminRoleIds);
 
   // Short-lived, in-memory registration sessions (not persisted — if the bot
   // restarts mid-flow the player simply clicks "Записаться" again).
@@ -453,10 +464,7 @@ function createTournamentOperator(deps = {}) {
   }
 
   function realDiscordUserIds(players = []) {
-    return players
-      .map((p) => String(p?.userId || p?.id || "").trim())
-      .filter((id) => /^\d{5,25}$/.test(id))
-      .filter((id, index, ids) => ids.indexOf(id) === index);
+    return normalizeSnowflakeIds(players.map((p) => p?.userId || p?.id || ""));
   }
 
   async function addPlayersToPrivateThread(thread, players = []) {
@@ -1322,8 +1330,9 @@ function createTournamentOperator(deps = {}) {
   // with its serverIndex + seedNumber. Shared by «Пересобрать дуэты» and phantom
   // auto-fill so a freshly filled bracket is immediately launchable (otherwise
   // newly-added players keep serverIndex=null and get filtered out at launch).
-  function applyRosterSeeding(tournament) {
+  function applyRosterSeeding(tournament, { allowDuringPlay = false } = {}) {
     if (!tournament) return false;
+    if (!allowDuringPlay && hasLaunchedTournamentPlay(tournament)) return false;
     const count = serverCount(tournament);
     tournament.servers = {};
     const buckets = seeding.splitIntoServers(state.tournamentPlayers(tournament), count);
@@ -1580,6 +1589,12 @@ function createTournamentOperator(deps = {}) {
       await safeReply(interaction, ephemeralText("Недостаточно участников для распределения (нужно минимум 2)."));
       return true;
     }
+    if (hasLaunchedTournamentPlay(tournament)) {
+      return renderManage(interaction, tournamentId, {
+        edit: acked,
+        statusText: "Сервер уже запущен: пересобирать дуэты нельзя, чтобы не стереть текущую сетку.",
+      });
+    }
     const count = serverCount(tournament);
     const hydratedCount = await persist("tournament-form", async () => {
       const fresh = state.getTournament(db, tournamentId);
@@ -1606,6 +1621,12 @@ function createTournamentOperator(deps = {}) {
     if (!tournament) {
       await safeReply(interaction, ephemeralText("Турнир не найден."));
       return true;
+    }
+    if (hasLaunchedTournamentPlay(tournament)) {
+      return renderManage(interaction, tournamentId, {
+        edit: acked,
+        statusText: "Сервер уже запущен: предпубликация больше не нужна, текущая сетка живёт в серверных постах.",
+      });
     }
 
     const repaired = await persist("tournament-preview-hydrate", async () => {
@@ -1667,45 +1688,28 @@ function createTournamentOperator(deps = {}) {
   async function launchServer(interaction, tournamentId, serverIndex) {
     if (!requireMod(interaction)) return true;
     const acked = await safeDeferUpdate(interaction);
-    const tournament = state.getTournament(db, tournamentId);
-    if (!tournament) {
-      await safeReply(interaction, ephemeralText("Турнир не найден."));
-      return true;
-    }
-    // Re-hydrate kills so the bracket never seeds on a stale zero. Also repair
-    // pre-launch multi-server rosters that have registrations but lost their
-    // serverIndex split (for example, old phantom-filled panels after a reset).
-    let repairedSplit = false;
-    await persist("tournament-launch-prepare", async () => {
+    const launchResult = await persist("tournament-launch", async () => {
       const fresh = state.getTournament(db, tournamentId);
-      if (!fresh) return;
+      if (!fresh) return { ok: false, reason: "missing" };
+      // Re-hydrate kills so the bracket never seeds on a stale zero. Also repair
+      // pre-launch multi-server rosters that have registrations but lost their
+      // serverIndex split (for example, old phantom-filled panels after a reset).
       await hydrateZeroKillRegistrations(fresh);
+      let repairedSplit = false;
       if (shouldRepairServerAssignmentsForLaunch(fresh, serverIndex)) {
         repairedSplit = applyRosterSeeding(fresh);
       }
-    });
 
-    const fresh0 = state.getTournament(db, tournamentId);
-    if (repairedSplit) {
-      await safeLogLine(`TOURNAMENT_LAUNCH_RESEED: id=${tournamentId} server=${serverIndex + 1} by=<@${interaction.user.id}>`);
-    }
-    const count = serverCount(fresh0);
-    const players = state.tournamentPlayers(fresh0, count > 1 ? { serverIndex } : {});
-    if (players.length < 2) {
-      await safeReply(interaction, ephemeralText("Недостаточно участников на сервере."));
-      return true;
-    }
-    const plan = seeding.planNextStage({ survivors: players, mode: fresh0.seedingMode, stageNumber: 1 });
-    const stagePlan = plan.type === "stage" || plan.type === "placement" ? plan.stage : null;
-    if (!stagePlan) {
-      await safeReply(interaction, ephemeralText("Не удалось сформировать сетку."));
-      return true;
-    }
+      const count = serverCount(fresh);
+      const players = state.tournamentPlayers(fresh, count > 1 ? { serverIndex } : {});
+      if (players.length < 2) return { ok: false, reason: "players" };
+      const plan = seeding.planNextStage({ survivors: players, mode: fresh.seedingMode, stageNumber: 1 });
+      const stagePlan = plan.type === "stage" || plan.type === "placement" ? plan.stage : null;
+      if (!stagePlan) return { ok: false, reason: "stage" };
 
-    // PERSIST the bracket immediately — the match panel is now usable.
-    quickMutate(() => {
-      const f = state.getTournament(db, tournamentId);
-      const server = state.ensureServer(f, serverIndex);
+      // PERSIST the bracket immediately and atomically with launch preparation.
+      // The match panel is now usable before any Discord side-effect runs.
+      const server = state.ensureServer(fresh, serverIndex);
       server.role = count > 1 ? "base" : "single";
       server.launched = true;
       server.done = false;
@@ -1722,7 +1726,22 @@ function createTournamentOperator(deps = {}) {
       server.launchMessageId = "";
       server.threadBracketMessageId = "";
       state.updateTournament(db, tournamentId, { status: "running" });
+      return { ok: true, repairedSplit, playerCount: players.length };
     });
+
+    if (!launchResult?.ok) {
+      const text = launchResult?.reason === "missing"
+        ? "Турнир не найден."
+        : launchResult?.reason === "players"
+          ? "Недостаточно участников на сервере."
+          : "Не удалось сформировать сетку.";
+      await safeReply(interaction, ephemeralText(text));
+      return true;
+    }
+
+    if (launchResult.repairedSplit) {
+      await safeLogLine(`TOURNAMENT_LAUNCH_RESEED: id=${tournamentId} server=${serverIndex + 1} by=<@${interaction.user.id}>`);
+    }
 
     // Snappy: re-render management now; side-effects run in the background.
     await renderManage(interaction, tournamentId, {
@@ -1740,38 +1759,25 @@ function createTournamentOperator(deps = {}) {
   async function launchFinalServer(interaction, tournamentId) {
     if (!requireMod(interaction)) return true;
     const acked = await safeDeferUpdate(interaction);
-    const tournament = state.getTournament(db, tournamentId);
-    if (!tournament) {
-      await safeReply(interaction, ephemeralText("Турнир не найден."));
-      return true;
-    }
-    if (!allBaseServersQualified(tournament)) {
-      await safeReply(interaction, ephemeralText("Финал откроется, когда все базовые сервера выведут свои топ-4."));
-      return true;
-    }
-    const finalists = [];
-    for (const s of qualifiedBaseServers(tournament)) {
-      for (const p of s.qualified || []) finalists.push(p);
-    }
-    if (finalists.length < 2) {
-      await safeReply(interaction, ephemeralText("Недостаточно финалистов."));
-      return true;
-    }
-    const plan = seeding.planNextStage({ survivors: finalists, mode: tournament.seedingMode, stageNumber: 1 });
-    const stagePlan = plan.type === "stage" || plan.type === "placement" ? plan.stage : null;
-    if (!stagePlan) {
-      await safeReply(interaction, ephemeralText("Не удалось сформировать финальную сетку."));
-      return true;
-    }
+    const launchResult = await persist("tournament-final-launch", async () => {
+      const fresh = state.getTournament(db, tournamentId);
+      if (!fresh) return { ok: false, reason: "missing" };
+      if (!allBaseServersQualified(fresh)) return { ok: false, reason: "not-ready" };
+      const finalists = [];
+      for (const s of qualifiedBaseServers(fresh)) {
+        for (const p of s.qualified || []) finalists.push(p);
+      }
+      if (finalists.length < 2) return { ok: false, reason: "players" };
+      const plan = seeding.planNextStage({ survivors: finalists, mode: fresh.seedingMode, stageNumber: 1 });
+      const stagePlan = plan.type === "stage" || plan.type === "placement" ? plan.stage : null;
+      if (!stagePlan) return { ok: false, reason: "stage" };
 
-    quickMutate(() => {
-      const f = state.getTournament(db, tournamentId);
       // pin finalists to the final server so its private thread adds only them
       for (const p of finalists) {
-        const reg = state.getRegistration(f, p.userId || p.id);
+        const reg = state.getRegistration(fresh, p.userId || p.id);
         if (reg) reg.serverIndex = FINAL_SERVER_INDEX;
       }
-      const server = state.ensureServer(f, FINAL_SERVER_INDEX);
+      const server = state.ensureServer(fresh, FINAL_SERVER_INDEX);
       server.role = "final";
       server.launched = true;
       server.done = false;
@@ -1786,12 +1792,25 @@ function createTournamentOperator(deps = {}) {
       server.threadId = "";
       server.launchMessageId = "";
       server.threadBracketMessageId = "";
+      return { ok: true, finalistCount: finalists.length };
     });
 
-    await safeLogLine(`TOURNAMENT_FINAL_LAUNCH: id=${tournamentId} finalists=${finalists.length} by=<@${interaction.user.id}>`);
+    if (!launchResult?.ok) {
+      const text = launchResult?.reason === "missing"
+        ? "Турнир не найден."
+        : launchResult?.reason === "not-ready"
+          ? "Финал откроется, когда все базовые сервера выведут свои топ-4."
+          : launchResult?.reason === "players"
+            ? "Недостаточно финалистов."
+            : "Не удалось сформировать финальную сетку.";
+      await safeReply(interaction, ephemeralText(text));
+      return true;
+    }
+
+    await safeLogLine(`TOURNAMENT_FINAL_LAUNCH: id=${tournamentId} finalists=${launchResult.finalistCount} by=<@${interaction.user.id}>`);
     await renderManage(interaction, tournamentId, {
       edit: acked,
-      statusText: `🏆 Финал запущен (${finalists.length} игроков). Открываю закрытую ветку только для финалистов…`,
+      statusText: `🏆 Финал запущен (${launchResult.finalistCount} игроков). Открываю закрытую ветку только для финалистов…`,
     });
     runServerSideEffects(tournamentId, FINAL_SERVER_INDEX, { postChannel: true }).catch((error) =>
       logError("tournament: final launch side-effects failed", error?.message || error)
@@ -1841,16 +1860,21 @@ function createTournamentOperator(deps = {}) {
     let pingFailed = false;
     if (existingThread?.send) {
       memberResult = await addPlayersToPrivateThread(existingThread, players);
-      if (memberResult.ids.length) {
+      const pingRoleIds = privateThreadAdminRoleIds;
+      if (memberResult.ids.length || pingRoleIds.length) {
         const label = serverIndex === FINAL_SERVER_INDEX ? "Финал" : `Сервер ${serverIndex + 1}`;
+        const mentions = [
+          ...pingRoleIds.map((id) => `<@&${id}>`),
+          ...memberResult.ids.map((id) => `<@${id}>`),
+        ].join(" ");
         await existingThread
           .send({
             content: [
-              memberResult.ids.map((id) => `<@${id}>`).join(" "),
+              mentions,
               "",
-              `**${label} готов.** Вы добавлены в приватную ветку своей сетки. Бои ведёт модератор через панель; здесь лежит актуальная картинка ветки.`,
+              `**${label} готов.** Админы и участники этой сетки добавлены в приватную ветку. Бои ведёт модератор через панель; здесь лежит актуальная картинка ветки.`,
             ].join("\n"),
-            allowedMentions: { users: memberResult.ids },
+            allowedMentions: { users: memberResult.ids, roles: pingRoleIds },
           })
           .catch((error) => {
             pingFailed = true;
@@ -1958,6 +1982,12 @@ function createTournamentOperator(deps = {}) {
       await safeReply(interaction, ephemeralText("Турнир не найден."));
       return true;
     }
+    if (hasLaunchedTournamentPlay(tournament)) {
+      return renderManage(interaction, tournamentId, {
+        edit: true,
+        statusText: "Сервер уже запущен: менять состав нельзя, чтобы не сломать текущую сетку.",
+      });
+    }
     await safeUpdate(interaction, view.buildAddPlayerPayload(tournament));
     return true;
   }
@@ -1968,6 +1998,12 @@ function createTournamentOperator(deps = {}) {
     if (!tournament) {
       await safeReply(interaction, ephemeralText("Турнир не найден."));
       return true;
+    }
+    if (hasLaunchedTournamentPlay(tournament)) {
+      return renderManage(interaction, tournamentId, {
+        edit: true,
+        statusText: "Сервер уже запущен: менять состав нельзя, чтобы не сломать текущую сетку.",
+      });
     }
     await safeUpdate(interaction, view.buildRemovePlayerPayload(tournament));
     return true;
@@ -1987,8 +2023,10 @@ function createTournamentOperator(deps = {}) {
       return true;
     }
     const member = await Promise.resolve(fetchMember(userId)).catch(() => null);
-    await persist("tournament-add-player", async () => {
+    const result = await persist("tournament-add-player", async () => {
       const fresh = state.getTournament(db, tournamentId);
+      if (!fresh) return { ok: false, reason: "missing" };
+      if (hasLaunchedTournamentPlay(fresh)) return { ok: false, reason: "locked" };
       state.upsertRegistration(fresh, {
         userId,
         discordName: member?.user?.tag || snapshot.robloxUsername || userId,
@@ -2000,7 +2038,14 @@ function createTournamentOperator(deps = {}) {
         killsSource: snapshot.killsSource || "profile",
         addedManually: true,
       });
+      return { ok: true };
     });
+    if (!result?.ok) {
+      const text = result?.reason === "locked"
+        ? "Сервер уже запущен: менять состав нельзя, чтобы не сломать текущую сетку."
+        : "Турнир не найден.";
+      return renderManage(interaction, tournamentId, { edit: acked, statusText: text });
+    }
     const tournament = state.getTournament(db, tournamentId);
     syncParticipantRoles(tournament).catch((error) => logError("tournament: participant role sync after manual add failed", error?.message || error));
     scheduleAnnouncementRefresh(tournamentId, "manual-add");
@@ -2031,8 +2076,10 @@ function createTournamentOperator(deps = {}) {
       return true;
     }
     const userId = discordId || `manual-${resolved.userId}`; // no ':' (our custom-id separator)
-    await persist("tournament-add-player-manual", async () => {
+    const result = await persist("tournament-add-player-manual", async () => {
       const fresh = state.getTournament(db, tournamentId);
+      if (!fresh) return { ok: false, reason: "missing" };
+      if (hasLaunchedTournamentPlay(fresh)) return { ok: false, reason: "locked" };
       state.upsertRegistration(fresh, {
         userId,
         discordName: resolved.username,
@@ -2044,7 +2091,14 @@ function createTournamentOperator(deps = {}) {
         killsSource: "manual",
         addedManually: true,
       });
+      return { ok: true };
     });
+    if (!result?.ok) {
+      const text = result?.reason === "locked"
+        ? "Сервер уже запущен: менять состав нельзя, чтобы не сломать текущую сетку."
+        : "Турнир не найден.";
+      return renderManage(interaction, tournamentId, { edit: true, statusText: text });
+    }
     const tournament = state.getTournament(db, tournamentId);
     syncParticipantRoles(tournament).catch((error) => logError("tournament: participant role sync after manual add failed", error?.message || error));
     scheduleAnnouncementRefresh(tournamentId, "manual-add");
@@ -2056,14 +2110,22 @@ function createTournamentOperator(deps = {}) {
     if (!requireMod(interaction)) return true;
     const acked = await safeDeferUpdate(interaction);
     const userId = String(targetUserId || "");
-    const removed = await persist("tournament-remove-player", async () => {
+    const result = await persist("tournament-remove-player", async () => {
       const fresh = state.getTournament(db, tournamentId);
-      if (!fresh) return false;
+      if (!fresh) return { ok: false, reason: "missing", removed: false };
+      if (hasLaunchedTournamentPlay(fresh)) return { ok: false, reason: "locked", removed: false };
       const existed = state.getRegistration(fresh, userId);
       state.removeRegistration(fresh, userId);
       resetSeededTournamentAfterRosterChange(fresh);
-      return Boolean(existed);
+      return { ok: true, removed: Boolean(existed) };
     });
+    if (!result?.ok) {
+      const text = result?.reason === "locked"
+        ? "Сервер уже запущен: менять состав нельзя, чтобы не сломать текущую сетку."
+        : "Турнир не найден.";
+      return renderManage(interaction, tournamentId, { edit: acked, statusText: text });
+    }
+    const removed = Boolean(result.removed);
     const tournament = state.getTournament(db, tournamentId);
     if (tournament) {
       removeParticipantRole(tournament, userId);
@@ -2354,6 +2416,12 @@ function createTournamentOperator(deps = {}) {
       await safeReply(interaction, ephemeralText("Турнир не найден."));
       return true;
     }
+    if (hasLaunchedTournamentPlay(tournament)) {
+      return renderManage(interaction, tournamentId, {
+        edit: acked,
+        statusText: "Сервер уже запущен: фантомами больше нельзя менять состав текущей сетки.",
+      });
+    }
     const need = Math.max(0, (Number(tournament.slots) || 0) - state.registrationCount(tournament));
     if (need <= 0) {
       return renderManage(interaction, tournamentId, { edit: acked, statusText: "Места уже заполнены — фантомы не нужны." });
@@ -2393,6 +2461,17 @@ function createTournamentOperator(deps = {}) {
   async function clearPhantoms(interaction, tournamentId) {
     if (!requireMod(interaction)) return true;
     const acked = await safeDeferUpdate(interaction);
+    const tournament = state.getTournament(db, tournamentId);
+    if (!tournament) {
+      await safeReply(interaction, ephemeralText("Турнир не найден."));
+      return true;
+    }
+    if (hasLaunchedTournamentPlay(tournament)) {
+      return renderManage(interaction, tournamentId, {
+        edit: acked,
+        statusText: "Сервер уже запущен: фантомов нельзя убирать из текущей сетки.",
+      });
+    }
     let removed = 0;
     quickMutate(() => {
       const fresh = state.getTournament(db, tournamentId);

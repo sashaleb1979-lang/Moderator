@@ -44,7 +44,7 @@ const ACTIONS = Object.freeze({
   MANAGE_REFRESH: "mref",
   MANAGE_CLOSE_REG: "mclose",
   MANAGE_OPEN_REG: "mopen",
-  MANAGE_FORM_DUELS: "mform", // (re)compute seeding / roster — works anytime
+  MANAGE_FORM_DUELS: "mform", // (re)compute seeding / roster before launch
   MANAGE_PUBLISH_PREVIEW: "mprev", // publish a one-image preview of all branches/servers
   MANAGE_LAUNCH_SERVER: "mlaunch", // launch server N -> persist bracket, then side-effects
   MANAGE_LAUNCH_FINAL: "mfinal", // launch the cross-server final (top-4 from each)

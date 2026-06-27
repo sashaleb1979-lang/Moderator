@@ -71,6 +71,12 @@ function fmtNumber(value) {
   return Number.isFinite(number) ? number.toLocaleString("ru-RU") : "0";
 }
 
+function hasLiveTournamentPlay(tournament) {
+  return Object.values(tournament?.servers || {}).some((server) => (
+    server && (server.launched || server.currentStage || server.done)
+  ));
+}
+
 function playerName(player) {
   if (!player) return "—";
   return player.robloxUsername || player.discordName || `игрок ${player.userId || player.id || "?"}`;
@@ -575,6 +581,7 @@ function buildManagePanelPayload(tournament, { statusText = "", serverCount = 1,
   const anyThreadFailed = Object.values(servers).some((s) => s && s.launched && s.threadFailed);
   const phantom = Boolean(tournament.isPhantom);
   const accent = phantom ? COLORS.orange : COLORS.primary;
+  const playLocked = hasLiveTournamentPlay(tournament);
 
   const c = ui.container(accent, (container) => {
     container.addTextDisplayComponents(ui.td(`# ${phantom ? "👻 " : "🛠 "}${tournament.name}${phantom ? " · ФАНТОМ" : ""}`));
@@ -607,15 +614,15 @@ function buildManagePanelPayload(tournament, { statusText = "", serverCount = 1,
     container.addActionRowComponents(
       ui.row(
         btn(ACTIONS.MANAGE_ROSTER, tournament.id, [], { label: "Кто записался", style: ButtonStyle.Primary, emoji: "📋" }),
-        btn(ACTIONS.MANAGE_ADD_PLAYER, tournament.id, [], { label: "Добавить игрока", style: ButtonStyle.Success, emoji: "➕" }),
-        btn(ACTIONS.MANAGE_REMOVE_PLAYER, tournament.id, [], { label: "Убрать игрока", emoji: "➖" }),
+        btn(ACTIONS.MANAGE_ADD_PLAYER, tournament.id, [], { label: "Добавить игрока", style: ButtonStyle.Success, emoji: "➕", disabled: playLocked }),
+        btn(ACTIONS.MANAGE_REMOVE_PLAYER, tournament.id, [], { label: "Убрать игрока", emoji: "➖", disabled: playLocked }),
         btn(ACTIONS.MANAGE_SYNC_ROLES, tournament.id, [], { label: "Синхр. роли", emoji: "🎭", disabled: !tournament.participantRoleId })
       )
     );
     container.addActionRowComponents(
       ui.row(
-        btn(ACTIONS.MANAGE_FILL_ALL, tournament.id, [], { label: "Заполнить всё (фантом)", style: ButtonStyle.Secondary, emoji: "👻" }),
-        ...(phantoms ? [btn(ACTIONS.MANAGE_CLEAR_PHANTOMS, tournament.id, [], { label: `Убрать фантомов (${phantoms})`, style: ButtonStyle.Danger, emoji: "🧹" })] : [])
+        btn(ACTIONS.MANAGE_FILL_ALL, tournament.id, [], { label: "Заполнить всё (фантом)", style: ButtonStyle.Secondary, emoji: "👻", disabled: playLocked }),
+        ...(phantoms ? [btn(ACTIONS.MANAGE_CLEAR_PHANTOMS, tournament.id, [], { label: `Убрать фантомов (${phantoms})`, style: ButtonStyle.Danger, emoji: "🧹", disabled: playLocked })] : [])
       )
     );
 
@@ -636,8 +643,8 @@ function buildManagePanelPayload(tournament, { statusText = "", serverCount = 1,
 
     // launch row: rebuild duels + per-server launch buttons
     const launchRow = [
-      btn(ACTIONS.MANAGE_FORM_DUELS, tournament.id, [], { label: "Пересобрать дуэты", style: ButtonStyle.Primary, emoji: "🧩" }),
-      btn(ACTIONS.MANAGE_PUBLISH_PREVIEW, tournament.id, [], { label: "Предпубликация", style: ButtonStyle.Secondary, emoji: "🗺" }),
+      btn(ACTIONS.MANAGE_FORM_DUELS, tournament.id, [], { label: "Пересобрать дуэты", style: ButtonStyle.Primary, emoji: "🧩", disabled: playLocked }),
+      btn(ACTIONS.MANAGE_PUBLISH_PREVIEW, tournament.id, [], { label: "Предпубликация", style: ButtonStyle.Secondary, emoji: "🗺", disabled: playLocked }),
     ];
     for (let i = 0; i < Math.min(serverCount, 3); i += 1) {
       const server = servers[String(i)];
@@ -700,6 +707,7 @@ function buildRosterViewerPayload(tournament, players = [], { page = 0, statusTe
   const pageCount = Math.max(1, Math.ceil(players.length / ROSTER_PAGE_SIZE));
   const current = Math.min(Math.max(0, page), pageCount - 1);
   const slice = players.slice(current * ROSTER_PAGE_SIZE, current * ROSTER_PAGE_SIZE + ROSTER_PAGE_SIZE);
+  const playLocked = hasLiveTournamentPlay(tournament);
 
   const c = ui.container(COLORS.teal, (container) => {
     container.addTextDisplayComponents(ui.td(`# 📋 Состав · ${tournament.name}`));
@@ -743,7 +751,7 @@ function buildRosterViewerPayload(tournament, players = [], { page = 0, statusTe
       )
     );
     container.addActionRowComponents(
-      ui.row(btn(ACTIONS.MANAGE_FILL_ALL, tournament.id, [], { label: "👻 Заполнить всё фантомами", style: ButtonStyle.Secondary }))
+      ui.row(btn(ACTIONS.MANAGE_FILL_ALL, tournament.id, [], { label: "👻 Заполнить всё фантомами", style: ButtonStyle.Secondary, disabled: playLocked }))
     );
     if (statusText) container.addTextDisplayComponents(ui.td(`-# ${statusText}`));
   });

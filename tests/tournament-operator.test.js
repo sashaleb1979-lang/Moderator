@@ -841,9 +841,86 @@ test("tournament launch creates an unlocked private thread and adds real Discord
   assert.deepEqual(addedMembers, ["100000000000000001", "100000000000000002"]);
   assert.equal(threadCreateOptions.name, "Тестовый турнир · сервер 1");
   assert.ok(calls.indexOf("threadPing") < calls.indexOf("threadBracket"), "participant ping is the first thread message");
-  assert.match(threadPayloads[0].content, /<@100000000000000001> <@100000000000000002>/);
-  assert.deepEqual(threadPayloads[0].allowedMentions, { users: ["100000000000000001", "100000000000000002"] });
+  assert.match(threadPayloads[0].content, /<@&1486459664546926866> <@100000000000000001> <@100000000000000002>/);
+  assert.deepEqual(threadPayloads[0].allowedMentions, {
+    users: ["100000000000000001", "100000000000000002"],
+    roles: ["1486459664546926866"],
+  });
   assert.equal(lockedValue, true, "participant thread is locked so players can't chat");
+});
+
+test("tournament stale roster actions after launch cannot clear a runnable server", async () => {
+  const calls = [];
+  const db = {};
+  const tournament = state.createTournamentFromDraft(
+    db,
+    {
+      name: "No Detach Cup",
+      slots: 16,
+      startsAtIso: "2026-06-21T20:00:00.000Z",
+      announceChannelId: "channel-1",
+    },
+    { id: "tour-1", now: "2026-06-21T18:00:00.000Z" }
+  );
+  for (let i = 1; i <= 16; i += 1) {
+    state.upsertRegistration(tournament, {
+      userId: String(100000000000000000n + BigInt(i)),
+      discordName: `user-${i}`,
+      robloxUsername: `Player${i}`,
+      approvedKills: i * 100,
+      effectiveKills: i * 100,
+    });
+  }
+  const channel = {
+    id: "channel-1",
+    async send() { return { id: "message-1", channelId: "channel-1" }; },
+    threads: {
+      async create() {
+        return {
+          id: "thread-1",
+          async send() { return { id: "thread-message" }; },
+          members: { async add() {} },
+          async setLocked() {},
+        };
+      },
+    },
+  };
+  const operator = createTournamentOperator({
+    db,
+    saveDb: () => calls.push("saveDb"),
+    runSerializedMutation: async ({ mutate }) => mutate(),
+    isModerator: (member) => Boolean(member?.mod),
+    fetchChannel: async () => channel,
+  });
+  const asMod = (interaction) => {
+    interaction.member = { mod: true };
+    interaction.user = { id: "mod-1", tag: "mod#0001" };
+    return interaction;
+  };
+
+  const launch = asMod(createButtonInteraction(buildCustomId(ACTIONS.MANAGE_LAUNCH_SERVER, tournament.id, "0"), calls));
+  await operator.handleButtonInteraction(launch);
+  const launchedStage = state.getServer(state.getTournament(db, tournament.id), 0)?.currentStage;
+  assert.ok(launchedStage, "fixture must start with a launched runnable server");
+
+  const staleForm = asMod(createButtonInteraction(buildCustomId(ACTIONS.MANAGE_FORM_DUELS, tournament.id), calls));
+  await operator.handleButtonInteraction(staleForm);
+  const afterForm = state.getServer(state.getTournament(db, tournament.id), 0);
+  assert.equal(afterForm?.launched, true);
+  assert.equal(afterForm?.currentStage, launchedStage, "stale mform must not reset tournament.servers");
+  assert.match(JSON.stringify(staleForm.editedPayload), /пересобирать дуэты нельзя/);
+
+  const staleFill = asMod(createButtonInteraction(buildCustomId(ACTIONS.MANAGE_FILL_ALL, tournament.id), calls));
+  await operator.handleButtonInteraction(staleFill);
+  const afterFill = state.getServer(state.getTournament(db, tournament.id), 0);
+  assert.equal(afterFill?.launched, true);
+  assert.equal(afterFill?.currentStage, launchedStage, "stale mfill must not reset the live server");
+  assert.match(JSON.stringify(staleFill.editedPayload), /фантомами больше нельзя/);
+
+  const open = asMod(createButtonInteraction(buildCustomId(ACTIONS.MANAGE_START, tournament.id, "0"), calls));
+  await operator.handleButtonInteraction(open);
+  assert.doesNotMatch(JSON.stringify(open.replyPayload), /Сначала запусти сервер/);
+  await delay(60);
 });
 
 test("tournament launching the second server keeps both match panels reachable", async () => {
