@@ -845,7 +845,7 @@ test("tournament launch creates an unlocked private thread and adds real Discord
   assert.equal(settled.launchMessageId, "launch-message-1");
   assert.equal(settled.threadFailed, false);
   assert.deepEqual(addedMembers, ["100000000000000001", "100000000000000002"]);
-  assert.equal(threadCreateOptions.name, "Тестовый турнир · сервер 1");
+  assert.equal(threadCreateOptions.name, "Тестовый турнир · просев A");
   assert.ok(calls.indexOf("threadPing") < calls.indexOf("threadBracket"), "participant ping is the first thread message");
   assert.match(
     threadPayloads[0].content,
@@ -928,7 +928,7 @@ test("tournament stale roster actions after launch cannot clear a runnable serve
 
   const open = asMod(createButtonInteraction(buildCustomId(ACTIONS.MANAGE_START, tournament.id, "0"), calls));
   await operator.handleButtonInteraction(open);
-  assert.doesNotMatch(JSON.stringify(open.replyPayload), /Сначала запусти сервер/);
+  assert.doesNotMatch(JSON.stringify(open.replyPayload), /Сначала запусти просев/);
   await delay(60);
 });
 
@@ -989,17 +989,17 @@ test("tournament launching the second server keeps both match panels reachable",
   await operator.handleButtonInteraction(launch1);
   const open1Before = asMod(createButtonInteraction(buildCustomId(ACTIONS.MANAGE_START, tournament.id, "0"), calls));
   await operator.handleButtonInteraction(open1Before);
-  assert.match(JSON.stringify(open1Before.replyPayload), /Сервер 1/);
-  assert.doesNotMatch(JSON.stringify(open1Before.replyPayload), /Сначала запусти сервер/);
+  assert.match(JSON.stringify(open1Before.replyPayload), /Просев A/);
+  assert.doesNotMatch(JSON.stringify(open1Before.replyPayload), /Сначала запусти просев/);
 
   const launch2 = asMod(createButtonInteraction(buildCustomId(ACTIONS.MANAGE_LAUNCH_SERVER, tournament.id, "1"), calls));
   await operator.handleButtonInteraction(launch2);
   const launch2Panel = JSON.stringify(launch2.editedPayload);
-  assert.match(launch2Panel, /Сервер 1 ✓/);
-  assert.match(launch2Panel, /Сервер 2 ✓/);
-  assert.match(launch2Panel, /Бои · сервер 1/);
-  assert.match(launch2Panel, /Бои · сервер 2/);
-  assert.doesNotMatch(launch2Panel, /Запустить сервер 1/);
+  assert.match(launch2Panel, /Просев A ✓/);
+  assert.match(launch2Panel, /Просев B ✓/);
+  assert.match(launch2Panel, /Бои · просев A/);
+  assert.match(launch2Panel, /Бои · просев B/);
+  assert.doesNotMatch(launch2Panel, /Запустить просев A/);
   const fresh = state.getTournament(db, tournament.id);
   assert.equal(state.getServer(fresh, 0)?.launched, true);
   assert.equal(Boolean(state.getServer(fresh, 0)?.currentStage), true);
@@ -1010,10 +1010,10 @@ test("tournament launching the second server keeps both match panels reachable",
   await operator.handleButtonInteraction(open1After);
   const open2 = asMod(createButtonInteraction(buildCustomId(ACTIONS.MANAGE_START, tournament.id, "1"), calls));
   await operator.handleButtonInteraction(open2);
-  assert.match(JSON.stringify(open1After.replyPayload), /Сервер 1/);
-  assert.match(JSON.stringify(open2.replyPayload), /Сервер 2/);
-  assert.doesNotMatch(JSON.stringify(open1After.replyPayload), /Сначала запусти сервер/);
-  assert.doesNotMatch(JSON.stringify(open2.replyPayload), /Сначала запусти сервер/);
+  assert.match(JSON.stringify(open1After.replyPayload), /Просев A/);
+  assert.match(JSON.stringify(open2.replyPayload), /Просев B/);
+  assert.doesNotMatch(JSON.stringify(open1After.replyPayload), /Сначала запусти просев/);
+  assert.doesNotMatch(JSON.stringify(open2.replyPayload), /Сначала запусти просев/);
   await delay(60);
 });
 
@@ -1088,7 +1088,7 @@ test("tournament launch is idempotent and stale match buttons can repair a lost 
   const repaired0 = state.getServer(state.getTournament(db, tournament.id), 0);
   assert.equal(repaired0?.launched, true);
   assert.ok(repaired0?.currentStage, "lost server record is repaired from server roster");
-  assert.doesNotMatch(JSON.stringify(openLost.replyPayload), /Сначала запусти сервер/);
+  assert.doesNotMatch(JSON.stringify(openLost.replyPayload), /Сначала запусти просев/);
   assert.ok(logs.some((line) => /TOURNAMENT_SERVER_REPAIRED/.test(line)));
   await delay(60);
 });
@@ -1225,10 +1225,10 @@ test("tournament preview publishes one image with side branches and empty future
   }
   assert.ok(sentPayload, "expected preview post");
   assert.equal(sentPayload.files.length, 1, "preview carries a single PNG");
-  assert.match(JSON.stringify(sentPayload), /Предварительная сетка/);
+  assert.match(JSON.stringify(sentPayload), /Стартовая схема/);
   assert.equal(state.getTournament(db, tournament.id).preview.messageId, "preview-1");
   assert.ok(logs.some((line) => /TOURNAMENT_PREVIEW_PUBLISH/.test(line)));
-  assert.match(JSON.stringify(interaction.editedPayload), /Предпубликация отправлена/);
+  assert.match(JSON.stringify(interaction.editedPayload), /Стартовая схема отправлена/);
 });
 
 test("match panel acks each tap and repaints in place via a single edit; supports one-tap re-pick", async () => {
@@ -1281,10 +1281,10 @@ test("match panel acks each tap and repaints in place via a single edit; support
   const redId = String(match.red.userId || match.red.id);
   const blueId = String(match.blue.userId || match.blue.id);
 
-  // click RED winner — ack'd instantly with deferUpdate() (Discord shows its own
-  // loading state; panel stays in place, never "interaction failed"), then a SINGLE
-  // editReply repaints it from authoritative state. No "думает" followUp, no
-  // deleteReply round-trip (those caused the on-screen "Ошибка взаимодействия").
+  // click RED winner — ack'd instantly with deferUpdate(), then a SINGLE coalesced
+  // editReply repaints the panel in place from authoritative state. The "⏳ Думаю…"
+  // loader is lazy (only posts if the repaint outlasts THINKING_NOTICE_DELAY_MS),
+  // so an instant tap never flashes a followUp — the sequence stays defer+edit.
   const redCalls = [];
   const clickRed = createButtonInteraction(buildCustomId(ACTIONS.MATCH_WIN, tournament.id, "0", match.key, "r"), redCalls);
   clickRed.member = { mod: true };
@@ -1313,6 +1313,96 @@ test("match panel acks each tap and repaints in place via a single edit; support
   assert.equal(state.getTournament(db, tournament.id).status, "completed");
   const champ = state.getServer(state.getTournament(db, tournament.id), 0).placement.first;
   assert.equal(String(champ.userId || champ.id), blueId, "the re-picked winner took the final");
+});
+
+test("rapid concurrent taps coalesce: every pick survives the final repaint and a 'думает' loader shows then clears", async () => {
+  const seeding = require("../src/tournament/seeding");
+  const db = {};
+  const tournament = state.createTournamentFromDraft(
+    db,
+    { name: "Гонка кликов", slots: 16, startsAtIso: "2026-06-21T20:00:00.000Z", announceChannelId: "channel-1" },
+    { id: "tour-1", now: "2026-06-21T18:00:00.000Z" }
+  );
+  for (let i = 1; i <= 16; i += 1) {
+    state.upsertRegistration(tournament, {
+      userId: `1000000000000000${i}`,
+      discordName: `user-${i}`,
+      robloxUsername: `Player${i}`,
+      accountKind: "main",
+      approvedKills: i * 1000,
+      effectiveKills: i * 1000,
+    });
+  }
+  const channel = {
+    id: "channel-1",
+    async send() { return { id: "m1" }; },
+    threads: {
+      async create() { return { id: "th", async send() { return { id: "x" }; }, members: { async add() {} }, async setLocked() {} }; },
+    },
+  };
+  const operator = createTournamentOperator({
+    db,
+    saveDb: () => {},
+    runSerializedMutation: async ({ mutate }) => mutate(),
+    isModerator: (member) => Boolean(member?.mod),
+    fetchChannel: async () => channel,
+  });
+
+  const launch = createButtonInteraction(buildCustomId(ACTIONS.MANAGE_LAUNCH_SERVER, tournament.id, "0"));
+  launch.member = { mod: true };
+  launch.user = { id: "mod-1", tag: "mod#0001" };
+  await operator.handleButtonInteraction(launch);
+
+  const server = state.getServer(state.getTournament(db, tournament.id), 0);
+  const runMatches = server.currentStage.runs[server.runIndex || 0].matches;
+  assert.ok(runMatches.length >= 3, "need several matches in one run to demonstrate coalescing");
+
+  // Shared edit log + a deliberately SLOW editReply so the second and later taps
+  // always arrive while the first repaint is still in flight (the production race
+  // condition). followUp/deleteFollowUp are tracked to prove the loader lifecycle.
+  const edits = [];
+  let followUps = 0;
+  let deletes = 0;
+  const makeTap = (match) => {
+    const inter = {
+      customId: buildCustomId(ACTIONS.MATCH_WIN, tournament.id, "0", match.key, "r"),
+      member: { mod: true },
+      user: { id: "mod-1", tag: "mod#0001" },
+      deferred: false,
+      replied: false,
+      async deferUpdate() { this.deferred = true; },
+      async editReply(payload) { await delay(200); edits.push(payload); return payload; },
+      async followUp(payload) { followUps += 1; this.followUpPayload = payload; return { id: "fu" }; },
+      async deleteFollowUp() { deletes += 1; },
+    };
+    return inter;
+  };
+
+  // Fire a winner tap on EVERY match of the run at once.
+  await Promise.all(runMatches.map((match) => operator.handleButtonInteraction(makeTap(match))));
+  await delay(30); // let the best-effort loader delete settle
+
+  // 1) No pick is lost: every match has its red winner recorded...
+  const decided = state.getServer(state.getTournament(db, tournament.id), 0).decisions;
+  for (const match of runMatches) {
+    const redId = String(match.red.userId || match.red.id);
+    assert.equal(decided[match.key].winnerId, redId, `match ${match.key} winner survived`);
+  }
+  // ...and the FINAL repaint the moderator actually sees reflects ALL of them
+  // (the old race let a late edit land with a stale "N-1 / N" count).
+  const lastPainted = JSON.stringify(edits[edits.length - 1]);
+  assert.ok(
+    lastPainted.includes(`Решено: **${runMatches.length} / ${runMatches.length}**`),
+    "the last in-place repaint shows every pick as decided"
+  );
+
+  // 2) Coalescing: far fewer edits than taps (a single slow repaint absorbs the
+  // whole burst into one trailing repaint).
+  assert.ok(edits.length < runMatches.length, `edits (${edits.length}) coalesced below taps (${runMatches.length})`);
+
+  // 3) The "думает" loader was shown while busy and removed when the panel settled.
+  assert.ok(followUps >= 1, "a thinking loader was posted while the repaint was slow");
+  assert.equal(deletes, followUps, "every thinking loader was deleted once the panel settled");
 });
 
 test("the single bracket image is edited in place across advances; one run advance never finishes the server", async () => {

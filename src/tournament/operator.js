@@ -19,6 +19,7 @@ const { parseMskDateTime } = require("./time");
 const seeding = require("./seeding");
 const state = require("./state");
 const bracketImage = require("./bracket-image");
+const { branchLabel, prosieveLabel } = require("./labels");
 const { killTierFor } = require("../onboard/kill-tiers");
 const { getRole: getSotRole } = require("../sot");
 
@@ -26,6 +27,10 @@ const UNKNOWN_INTERACTION_CODES = new Set([10062, 40060]);
 const DEFAULT_THREAD_ADMIN_ROLE_IDS = Object.freeze(["1486459664546926866"]);
 const AVATAR_FETCH_TIMEOUT_MS = 2500;
 const SERVER_IMAGE_RENDER_TIMEOUT_MS = 12000;
+// How long a panel repaint may run before we surface a visible "⏳ Думаю…" loader.
+// Short enough that real Discord round-trips under load show it; long enough that
+// an instant tap never flashes it.
+const THINKING_NOTICE_DELAY_MS = 240;
 
 function isUnknownInteractionError(error) {
   return Boolean(error && UNKNOWN_INTERACTION_CODES.has(error.code));
@@ -450,7 +455,7 @@ function createTournamentOperator(deps = {}) {
       const seededPlayers = seeding.assignSeedNumbers(players);
       return {
         index,
-        label: `Сервер ${index + 1}`,
+        label: prosieveLabel(index),
         players: seededPlayers,
         playerCount: seededPlayers.length,
         qualifyCount: count > 1 ? Math.min(seeding.QUALIFY_PER_SERVER, Math.max(1, seededPlayers.length)) : 0,
@@ -556,7 +561,7 @@ function createTournamentOperator(deps = {}) {
   // (completed stages + the in-progress stage, or the final podium when done).
   async function buildServerBracketArt(tournament, server, serverIndex, avatars) {
     const isFinal = serverIndex === FINAL_SERVER_INDEX;
-    const label = isFinal ? "ФИНАЛ" : `сервер ${serverIndex + 1}`;
+    const label = branchLabel(serverIndex, { lower: !isFinal });
     const filename = isFinal ? "bracket-final.png" : `bracket-server-${serverIndex + 1}.png`;
     const buffer = await renderServerBracketBuffer(tournament, server, avatars);
     const qualifying = server.qualifying;
@@ -564,21 +569,21 @@ function createTournamentOperator(deps = {}) {
     let title;
     let headline;
     if (server.done) {
-      title = qualifying ? "✅ Квалификация" : isFinal ? "🏆 Итоги финала" : "🏁 Итоги сервера";
+      title = qualifying ? "✅ Квалификация" : isFinal ? "🏆 Итоги финала" : "🏁 Итоги просева";
       headline = qualifying
-        ? `Сервер ${serverIndex + 1}: топ-${(server.qualified || []).length} вышли в финал`
+        ? `${prosieveLabel(serverIndex)}: топ-${(server.qualified || []).length} вышли в финал`
         : isFinal
         ? "Финал завершён"
-        : `Сервер ${serverIndex + 1} завершён`;
+        : `${prosieveLabel(serverIndex)} завершён`;
     } else {
       title = isFinal ? "🏆 ФИНАЛ" : "🗺 Сетка";
-      headline = isFinal ? "🏆 Финал идёт" : `⚔️ Сервер ${serverIndex + 1} · идёт игра`;
+      headline = isFinal ? "🏆 Финал идёт" : `⚔️ ${prosieveLabel(serverIndex)} · идёт игра`;
     }
     const details = [
       isFinal
-        ? `Финальная сетка: ${playerCount} игроков, прошедших из базовых серверов.`
-        : `Эта сетка относится только к серверу ${serverIndex + 1}: ${playerCount} участников.`,
-      "Бои проводятся через модераторскую панель. Приватная ветка под этим сервером содержит только участников этой сетки и админов с доступом к каналу.",
+        ? `Финальная сетка: ${playerCount} игроков, прошедших из просевов.`
+        : `В этом просеве участвует только выбранная группа игроков: ${playerCount} участников.`,
+      "Пары и результаты ведутся через панель модератора. Приватная ветка открыта для состава этой сетки и модераторов.",
     ].join("\n");
     const payload = view.buildBracketPostPayload(tournament, server.currentStage, {
       serverIndex,
@@ -1677,7 +1682,7 @@ function createTournamentOperator(deps = {}) {
     if (hasLaunchedTournamentPlay(tournament)) {
       return renderManage(interaction, tournamentId, {
         edit: acked,
-        statusText: "Сервер уже запущен: пересобирать дуэты нельзя, чтобы не стереть текущую сетку.",
+        statusText: "Просев уже запущен: пересобирать дуэты нельзя, чтобы не стереть текущую сетку.",
       });
     }
     const count = serverCount(tournament);
@@ -1710,7 +1715,7 @@ function createTournamentOperator(deps = {}) {
     if (hasLaunchedTournamentPlay(tournament)) {
       return renderManage(interaction, tournamentId, {
         edit: acked,
-        statusText: "Сервер уже запущен: предпубликация больше не нужна, текущая сетка живёт в серверных постах.",
+        statusText: "Просев уже запущен: стартовая схема больше не нужна, текущая сетка живёт в постах просевов.",
       });
     }
 
@@ -1727,7 +1732,7 @@ function createTournamentOperator(deps = {}) {
 
     const channel = await fetchChannel(fresh.announce?.channelId).catch(() => null);
     if (!channel?.send) {
-      await safeReply(interaction, ephemeralText("Не нашёл канал анонса для предпубликации."));
+      await safeReply(interaction, ephemeralText("Не нашёл канал анонса для стартовой схемы."));
       return true;
     }
 
@@ -1746,7 +1751,7 @@ function createTournamentOperator(deps = {}) {
         return null;
       });
     if (!message) {
-      await safeReply(interaction, ephemeralText("Не удалось отправить предпубликацию. Проверь права бота в канале."));
+      await safeReply(interaction, ephemeralText("Не удалось отправить стартовую схему. Проверь права бота в канале."));
       return true;
     }
 
@@ -1764,7 +1769,7 @@ function createTournamentOperator(deps = {}) {
     );
     return renderManage(interaction, tournamentId, {
       edit: acked,
-      statusText: `Предпубликация отправлена${repaired ? `, килы обновлены у ${repaired}` : ""}.`,
+      statusText: `Стартовая схема отправлена${repaired ? `, килы обновлены у ${repaired}` : ""}.`,
     });
   }
 
@@ -1797,7 +1802,7 @@ function createTournamentOperator(deps = {}) {
       const text = launchResult?.reason === "missing"
         ? "Турнир не найден."
         : launchResult?.reason === "players"
-          ? "Недостаточно участников на сервере."
+          ? "Недостаточно участников в просеве."
           : "Не удалось сформировать сетку.";
       await safeReply(interaction, ephemeralText(text));
       return true;
@@ -1811,8 +1816,8 @@ function createTournamentOperator(deps = {}) {
     await renderManage(interaction, tournamentId, {
       edit: acked,
       statusText: launchResult.already
-        ? `Сервер ${serverIndex + 1} уже запущен. Панель боёв готова.`
-        : `Сервер ${serverIndex + 1} запущен. Панель боёв готова. Открываю закрытую ветку только для участников сервера…`,
+        ? `${prosieveLabel(serverIndex)} уже запущен. Панель боёв готова.`
+        : `${prosieveLabel(serverIndex, { start: true })}. Панель боёв готова. Открываю закрытую ветку только для этого состава…`,
     });
     if (!launchResult.already) {
       runServerSideEffects(tournamentId, serverIndex, { postChannel: true }).catch((error) =>
@@ -1867,7 +1872,7 @@ function createTournamentOperator(deps = {}) {
       const text = launchResult?.reason === "missing"
         ? "Турнир не найден."
         : launchResult?.reason === "not-ready"
-          ? "Финал откроется, когда все базовые сервера выведут свои топ-4."
+          ? "Финал откроется, когда все просевы выведут свои топ-4."
           : launchResult?.reason === "players"
             ? "Недостаточно финалистов."
             : "Не удалось сформировать финальную сетку.";
@@ -1921,7 +1926,7 @@ function createTournamentOperator(deps = {}) {
       memberResult = await addPlayersToPrivateThread(existingThread, players);
       const pingRoleIds = resolvePrivateThreadRoleIds();
       if (memberResult.ids.length || pingRoleIds.length) {
-        const label = serverIndex === FINAL_SERVER_INDEX ? "Финал" : `Сервер ${serverIndex + 1}`;
+        const label = branchLabel(serverIndex, { start: true });
         const mentions = [
           ...pingRoleIds.map((id) => `<@&${id}>`),
           ...memberResult.ids.map((id) => `<@${id}>`),
@@ -1931,7 +1936,11 @@ function createTournamentOperator(deps = {}) {
             content: [
               mentions,
               "",
-              `**${label} готов.** Админы и участники этой сетки добавлены в приватную ветку. Бои ведёт модератор через панель; здесь лежит актуальная картинка ветки.`,
+              `**${label}**`,
+              serverIndex === FINAL_SERVER_INDEX
+                ? "В финале участвуют только игроки, прошедшие из просевов."
+                : "В этом просеве участвует только выбранная группа игроков.",
+              "Пары и результаты ведутся через панель модератора.",
             ].join("\n"),
             allowedMentions: { users: memberResult.ids, roles: pingRoleIds },
           })
@@ -2022,7 +2031,7 @@ function createTournamentOperator(deps = {}) {
       }
     }
     if (!server || !server.currentStage) {
-      await safeReply(interaction, ephemeralText("Сначала запусти сервер."));
+      await safeReply(interaction, ephemeralText("Сначала запусти просев."));
       return true;
     }
     await safeReply(interaction, view.buildMatchPanelPayload(tournament, server));
@@ -2086,7 +2095,7 @@ function createTournamentOperator(deps = {}) {
     if (hasLaunchedTournamentPlay(tournament)) {
       return renderManage(interaction, tournamentId, {
         edit: true,
-        statusText: "Сервер уже запущен: менять состав нельзя, чтобы не сломать текущую сетку.",
+        statusText: "Просев уже запущен: менять состав нельзя, чтобы не сломать текущую сетку.",
       });
     }
     await safeUpdate(interaction, view.buildAddPlayerPayload(tournament));
@@ -2103,7 +2112,7 @@ function createTournamentOperator(deps = {}) {
     if (hasLaunchedTournamentPlay(tournament)) {
       return renderManage(interaction, tournamentId, {
         edit: true,
-        statusText: "Сервер уже запущен: менять состав нельзя, чтобы не сломать текущую сетку.",
+        statusText: "Просев уже запущен: менять состав нельзя, чтобы не сломать текущую сетку.",
       });
     }
     await safeUpdate(interaction, view.buildRemovePlayerPayload(tournament));
@@ -2143,7 +2152,7 @@ function createTournamentOperator(deps = {}) {
     });
     if (!result?.ok) {
       const text = result?.reason === "locked"
-        ? "Сервер уже запущен: менять состав нельзя, чтобы не сломать текущую сетку."
+        ? "Просев уже запущен: менять состав нельзя, чтобы не сломать текущую сетку."
         : "Турнир не найден.";
       return renderManage(interaction, tournamentId, { edit: acked, statusText: text });
     }
@@ -2196,7 +2205,7 @@ function createTournamentOperator(deps = {}) {
     });
     if (!result?.ok) {
       const text = result?.reason === "locked"
-        ? "Сервер уже запущен: менять состав нельзя, чтобы не сломать текущую сетку."
+        ? "Просев уже запущен: менять состав нельзя, чтобы не сломать текущую сетку."
         : "Турнир не найден.";
       return renderManage(interaction, tournamentId, { edit: true, statusText: text });
     }
@@ -2222,7 +2231,7 @@ function createTournamentOperator(deps = {}) {
     });
     if (!result?.ok) {
       const text = result?.reason === "locked"
-        ? "Сервер уже запущен: менять состав нельзя, чтобы не сломать текущую сетку."
+        ? "Просев уже запущен: менять состав нельзя, чтобы не сломать текущую сетку."
         : "Турнир не найден.";
       return renderManage(interaction, tournamentId, { edit: acked, statusText: text });
     }
@@ -2258,45 +2267,121 @@ function createTournamentOperator(deps = {}) {
   // Match results + advancement
   // =========================================================================
 
-  // ---- match panel: ONE in-place panel + transient "думает" ----------------
-  // A tap is acked with deferUpdate() — the SAME panel is edited IN PLACE (no new
-  // messages, no cascade of panels). While we work we show a tiny ephemeral
-  // "думает" message and remove it the instant the panel is repainted. Per-panel
-  // edits are serialized so rapid taps can never land out of order (the old "mark
-  // one, un-mark two" race stays impossible) — each repaint reads authoritative
-  // in-memory state.
-  const panelChains = new Map(); // `${tournamentId}:${serverIndex}` -> tail Promise
+  // ---- match panel: ONE in-place panel + transient "думает" loader ----------
+  // A tap is acked instantly with deferUpdate(), then the SAME ephemeral panel is
+  // edited IN PLACE — never a new message, never a cascade. Two guarantees keep
+  // rapid tapping stable on a laggy connection:
+  //   • Coalescing: at most ONE editReply is in flight per panel. Taps that land
+  //     mid-repaint just mark the panel dirty; when the in-flight edit finishes we
+  //     repaint ONCE more from authoritative in-memory state. So a burst of taps
+  //     can never land out of order and "un-pick" an earlier choice (the old
+  //     "нажал одно — отменилось второе" race), and N quick taps cost ~1–2 edits
+  //     instead of N sequential ones — the panel stops feeling frozen.
+  //   • Visible loader: if a repaint outlasts a blink (event loop busy, Discord
+  //     rate-limit, summary render) we post a tiny ephemeral "⏳ Думаю…" note and
+  //     delete it the instant the panel settles — so the moderator always sees the
+  //     tap registered instead of staring at a still panel and re-tapping.
+  const panels = new Map(); // `${tournamentId}:${serverIndex}` -> panel pump state
 
-  function serializePanelEdit(key, fn) {
-    const prev = panelChains.get(key) || Promise.resolve();
-    const next = prev.then(fn, fn);
-    panelChains.set(key, next.catch(() => {}));
-    return next;
+  // Best-effort "bot is thinking" note. Lazy (only materializes if the work
+  // outlasts THINKING_NOTICE_DELAY_MS, so instant taps never flash it) and
+  // self-cleaning: cancel() removes it whether it was posted yet or not. The
+  // followUp/deleteFollowUp calls are guarded + swallowed so this never throws and
+  // never blocks the panel edit it shadows.
+  function scheduleThinkingNotice(interaction, text = "⏳ Думаю…") {
+    let posted = null;
+    let timer = setTimeout(() => {
+      timer = null;
+      if (typeof interaction?.followUp !== "function") return;
+      posted = Promise.resolve(interaction.followUp(ephemeralText(text)).catch(() => null));
+    }, THINKING_NOTICE_DELAY_MS);
+    if (typeof timer.unref === "function") timer.unref();
+    return {
+      cancel() {
+        if (timer) {
+          clearTimeout(timer);
+          timer = null;
+        }
+        if (!posted) return;
+        const pending = posted;
+        posted = null;
+        pending
+          .then((message) => {
+            if (message?.id && typeof interaction.deleteFollowUp === "function") {
+              return interaction.deleteFollowUp(message.id).catch(() => {});
+            }
+            return undefined;
+          })
+          .catch(() => {});
+      },
+    };
   }
 
-  // Repaint the match panel in place. The deferUpdate that already ran is the
-  // ack (Discord shows its own loading state), so this is a single editReply —
-  // no extra "thinking" message, no delete round-trips. Serialized per panel so
-  // rapid clicks can't race their edits.
-  async function paintPanel(interaction, tournamentId, serverIndex, statusText = "") {
+  // Wrap a slow one-off render (e.g. building the completion window) so it shows
+  // the same lazy "думает" loader and clears it when the render lands.
+  async function withThinkingNotice(interaction, text, fn) {
+    const notice = scheduleThinkingNotice(interaction, text);
+    try {
+      return await fn();
+    } finally {
+      notice.cancel();
+    }
+  }
+
+  // Ask the match panel to repaint. Returns a promise that settles once the panel
+  // has been edited to reflect this (and any taps coalesced alongside it).
+  function requestPanelRepaint(interaction, tournamentId, serverIndex, statusText = "") {
     const key = `${tournamentId}:${serverIndex}`;
-    await serializePanelEdit(key, async () => {
-      const tournament = state.getTournament(db, tournamentId);
-      const server = tournament ? state.getServer(tournament, serverIndex) : null;
-      if (!tournament || !server) return;
-      const payload = withoutEphemeralFlag(view.buildMatchPanelPayload(tournament, server, { statusText }));
-      try {
-        await interaction.editReply(payload);
-      } catch (error) {
-        // The repaint missed (ephemeral panel dismissed/deleted, or the token
-        // expired). The click itself IS already recorded + persisted; the only
-        // thing lost is the visual refresh. Don't fail silently — tell the mod to
-        // reopen so they aren't left clicking a frozen panel. Best-effort: if the
-        // token is also dead this followUp no-ops.
-        notifyPanelStale(interaction).catch(() => {});
-        if (!isUnknownInteractionError(error)) logError("tournament: match panel render failed", error?.message || error);
+    let panel = panels.get(key);
+    if (!panel) {
+      panel = { tournamentId, serverIndex, interaction, pending: false, running: false, statusText: "", loop: Promise.resolve() };
+      panels.set(key, panel);
+    }
+    panel.tournamentId = tournamentId;
+    panel.serverIndex = serverIndex;
+    panel.interaction = interaction; // always repaint through the freshest token
+    if (statusText) panel.statusText = statusText;
+    panel.pending = true;
+    if (panel.running) return panel.loop;
+    panel.running = true;
+    panel.loop = pumpPanel(panel);
+    return panel.loop;
+  }
+
+  async function pumpPanel(panel) {
+    const notice = scheduleThinkingNotice(panel.interaction);
+    try {
+      while (panel.pending) {
+        panel.pending = false;
+        const statusText = panel.statusText || "";
+        panel.statusText = "";
+        const tournament = state.getTournament(db, panel.tournamentId);
+        const server = tournament ? state.getServer(tournament, panel.serverIndex) : null;
+        if (!tournament || !server) continue;
+        const payload = withoutEphemeralFlag(view.buildMatchPanelPayload(tournament, server, { statusText }));
+        try {
+          await panel.interaction.editReply(payload);
+        } catch (error) {
+          // The repaint missed (ephemeral panel dismissed/deleted, or the token
+          // expired). The click itself IS already recorded + persisted; the only
+          // thing lost is the visual refresh. Don't fail silently — nudge the mod
+          // to reopen so they aren't left clicking a frozen panel.
+          notifyPanelStale(panel.interaction).catch(() => {});
+          if (!isUnknownInteractionError(error)) logError("tournament: match panel render failed", error?.message || error);
+        }
       }
-    });
+    } finally {
+      notice.cancel();
+      panel.running = false;
+    }
+    // A tap may have set pending in the synchronous gap after the loop's last
+    // check; pick it up so its repaint is never dropped. Single-threaded, so this
+    // check and the requestPanelRepaint guard can never both start a pump.
+    if (panel.pending) {
+      panel.running = true;
+      return pumpPanel(panel);
+    }
+    return undefined;
   }
 
   // Best-effort "your panel is stale, reopen it" nudge. Safe to call on a dead
@@ -2312,8 +2397,9 @@ function createTournamentOperator(deps = {}) {
   }
 
   async function recordMatch(interaction, tournamentId, extra, kind) {
-    // Ack instantly (panel stays in place, NOT a new message). paintPanel shows
-    // the "думает" loader and removes it when the panel refreshes.
+    // Ack instantly (panel stays in place, NOT a new message). requestPanelRepaint
+    // coalesces this tap with any others in flight and shows the "⏳ Думаю…" loader
+    // until the panel settles, so rapid taps can't race or feel dropped.
     const acked = await safeDeferUpdate(interaction);
     if (!requireMod(interaction)) return true;
     const serverIndex = Number(extra[0]) || 0;
@@ -2352,7 +2438,7 @@ function createTournamentOperator(deps = {}) {
       server.decisions[matchKey] = current;
     });
 
-    if (acked) await paintPanel(interaction, tournamentId, serverIndex);
+    if (acked) await requestPanelRepaint(interaction, tournamentId, serverIndex);
     return true;
   }
 
@@ -2397,7 +2483,7 @@ function createTournamentOperator(deps = {}) {
         server.qualified = results.winners;
         server.qualifying = true;
         server.done = true;
-        statusText = `Сервер ${serverIndex + 1}: топ-${results.winners.length} вышли в финал`;
+        statusText = `${prosieveLabel(serverIndex)}: топ-${results.winners.length} вышли в финал`;
         return;
       }
 
@@ -2434,9 +2520,13 @@ function createTournamentOperator(deps = {}) {
     // summary card and comment/publish controls.
     if (acked) {
       if (afterAdvance?.status === "completed") {
-        await renderCompletionWindow(interaction, tournamentId, { edit: true, statusText: "Турнир завершён. Проверь итоги перед публикацией." });
+        // The completion window builds a summary PNG (slow) — shadow it with the
+        // same "думает" loader so the mod isn't left on a frozen panel.
+        await withThinkingNotice(interaction, "⏳ Готовлю итоги турнира…", () =>
+          renderCompletionWindow(interaction, tournamentId, { edit: true, statusText: "Турнир завершён. Проверь итоги перед публикацией." })
+        );
       } else {
-        await paintPanel(interaction, tournamentId, serverIndex, statusText);
+        await requestPanelRepaint(interaction, tournamentId, serverIndex, statusText);
       }
     }
     // Edit the server's single bracket image in place. The grand summary is
@@ -2542,7 +2632,7 @@ function createTournamentOperator(deps = {}) {
     if (hasLaunchedTournamentPlay(tournament)) {
       return renderManage(interaction, tournamentId, {
         edit: acked,
-        statusText: "Сервер уже запущен: фантомами больше нельзя менять состав текущей сетки.",
+        statusText: "Просев уже запущен: фантомами больше нельзя менять состав текущей сетки.",
       });
     }
     const need = Math.max(0, (Number(tournament.slots) || 0) - state.registrationCount(tournament));
@@ -2576,7 +2666,7 @@ function createTournamentOperator(deps = {}) {
     return renderManage(interaction, tournamentId, {
       edit: acked,
       statusText: seeded
-        ? `👻 Добавлено фантомов: ${phantoms.length}. Дуэты пересобраны — можно сразу «Запустить сервер».`
+        ? `👻 Добавлено фантомов: ${phantoms.length}. Дуэты пересобраны — можно сразу «Запустить просев».`
         : `👻 Добавлено фантомов: ${phantoms.length}. Турнир стал фантомным (не учитывается). Жми «Пересобрать дуэты».`,
     });
   }
@@ -2592,7 +2682,7 @@ function createTournamentOperator(deps = {}) {
     if (hasLaunchedTournamentPlay(tournament)) {
       return renderManage(interaction, tournamentId, {
         edit: acked,
-        statusText: "Сервер уже запущен: фантомов нельзя убирать из текущей сетки.",
+        statusText: "Просев уже запущен: фантомов нельзя убирать из текущей сетки.",
       });
     }
     let removed = 0;

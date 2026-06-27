@@ -20,6 +20,7 @@ let PImage = null;
 try { PImage = require("pureimage"); } catch {}
 
 const seeding = require("./seeding");
+const { branchLabel, prosieveLabel } = require("./labels");
 
 const FONT_REG = "TournyRegular";
 const FONT_BOLD = "TournyBold";
@@ -267,7 +268,7 @@ function buildBracketModel({ tournament, server, history = [], livePlan = null, 
     ? (Array.isArray(server?.qualified) ? server.qualified : []).map(playerNode).filter(Boolean)
     : [];
   return {
-    title: `${tournament?.name || "Турнир"}${server && server.role === "final" ? " · ФИНАЛ" : server ? ` · сервер ${(server.index || 0) + 1}` : ""}`,
+    title: `${tournament?.name || "Турнир"}${server ? ` · ${branchLabel(server.index, { lower: server.role !== "final" })}` : ""}`,
     subtitle: qualifier ? `Отбор в финал · топ-4${runTag}` : server?.done ? "Итоги" : `Сетка · FT6${runTag}`,
     seedingMode: tournament?.seedingMode || "similar",
     totalPlayers: n,
@@ -379,7 +380,7 @@ function buildPreviewModel({ tournament, servers = [], waitlist = [], avatars = 
     const projection = buildPreviewColumns(rawPlayers, mode, qualifyCount);
     return {
       index: Number.isFinite(Number(server?.index)) ? Number(server.index) : index,
-      label: server?.label || `Сервер ${index + 1}`,
+      label: server?.label || prosieveLabel(index),
       players,
       playerCount: Number(server?.playerCount) || players.length,
       qualifyCount,
@@ -392,7 +393,7 @@ function buildPreviewModel({ tournament, servers = [], waitlist = [], avatars = 
   const serverCount = Number(tournament?.previewServerCount) || normalizedServers.length || 1;
   return {
     title: tournament?.name || "Турнир",
-    subtitle: `Предварительная сетка · ${activeCount} игроков · ${serverCount} сервер${serverCount === 1 ? "" : "а"}`,
+    subtitle: `Стартовая схема · ${activeCount} игроков · просевов: ${serverCount}`,
     seedingMode: tournament?.seedingMode || "similar",
     activeCount,
     plannedPlayers: Number(tournament?.plannedPlayers) || activeCount,
@@ -748,7 +749,7 @@ function drawServerTree(ctx, server, decoded, x, y, w, multi) {
   rect(ctx, x, y, w, panelH, PANEL_HEX);
   strokeRect(ctx, x, y, w, panelH, "#3a4150", 2);
   rect(ctx, x, y, w, 5, multi ? BLUE_HEX : GOLD_HEX);
-  text(ctx, server.label || "Сервер", x + 22, y + 36, 24, "#ffffff", "bold");
+  text(ctx, server.label || prosieveLabel(0), x + 22, y + 36, 24, "#ffffff", "bold");
   const stageTotal = feeders + (multi ? 1 : placementCol ? 1 : 0);
   text(
     ctx,
@@ -877,7 +878,7 @@ function drawPreviewSide(ctx, server, decoded, {
 
   const minX = Math.min(outerX, terminalX);
   const headerW = Math.abs(outerX - terminalX) + PV_COL_W;
-  const title = server?.label || "Сервер";
+  const title = server?.label || prosieveLabel(0);
   text(ctx, title, minX, topY - 48, 23, "#ffffff", "bold");
   const subtitleFit = fitText(ctx, "стартовые пары без прогноза победителей", headerW, 14, 10, "regular");
   text(ctx, subtitleFit.text, minX, topY - 26, subtitleFit.px, "#aeb5c2", "regular");
@@ -976,11 +977,11 @@ async function renderPreviewCard(model = {}) {
 
   const titleFit = fitText(ctx, model.title || "Турнир", width - PAD * 2, 36, 18, "bold");
   text(ctx, titleFit.text, PAD, 50, titleFit.px, "#ffffff", "bold");
-  text(ctx, model.subtitle || "Предварительная сетка", PAD, 80, 18, "#aeb5c2", "regular");
+  text(ctx, model.subtitle || "Стартовая схема", PAD, 80, 18, "#aeb5c2", "regular");
 
   const stats = [
     `Основной состав: ${Number(model.activeCount || 0).toLocaleString("ru-RU")} / ${Number(model.plannedPlayers || model.activeCount || 0).toLocaleString("ru-RU")}`,
-    `Серверов: ${Number(model.serverCount || servers.length || 1).toLocaleString("ru-RU")}`,
+    `Просевов: ${Number(model.serverCount || servers.length || 1).toLocaleString("ru-RU")}`,
     model.waitlistCount ? `резерв: ${Number(model.waitlistCount).toLocaleString("ru-RU")}` : null,
     model.seedingMode === "seed" ? "посев 1×N" : "близкие килы (равный с равным)",
   ].filter(Boolean).join(" · ");
@@ -997,7 +998,7 @@ async function renderPreviewCard(model = {}) {
       topY,
       orientation: "left",
       columns: ensureSideColumns(previewColumns(leftServer), sideColumnCount),
-      terminalTitle: "ТОП-4 СЕРВЕРА 1",
+      terminalTitle: `ТОП-4 ${prosieveLabel(0).toUpperCase()}`,
       terminalRows: leftServer.qualifyCount || 4,
     });
     const right = drawPreviewSide(ctx, rightServer, decoded, {
@@ -1005,18 +1006,18 @@ async function renderPreviewCard(model = {}) {
       topY,
       orientation: "right",
       columns: ensureSideColumns(previewColumns(rightServer), sideColumnCount),
-      terminalTitle: "ТОП-4 СЕРВЕРА 2",
+      terminalTitle: `ТОП-4 ${prosieveLabel(1).toUpperCase()}`,
       terminalRows: rightServer.qualifyCount || 4,
     });
     drawFinalistsPanel(ctx, [], decoded, centerX, centerY, centerW, (leftServer.qualifyCount || 4) + (rightServer.qualifyCount || 4), {
-      title: "ФИНАЛЬНЫЙ СЕРВЕР",
+      title: "ФИНАЛ",
       emptyLabel: "место финалиста",
       showChecks: false,
     });
     connectPreviewPoint(ctx, left.funnel.x, left.funnel.y, centerX, centerY);
     connectPreviewPoint(ctx, right.funnel.x, right.funnel.y, centerX + centerW, centerY);
   } else {
-    const server = servers[0] || { label: "Сервер", columns: [] };
+    const server = servers[0] || { label: prosieveLabel(0), columns: [] };
     const cols = previewColumns(server);
     const first = cols[0] || { matches: [previewEmptyMatch(), previewEmptyMatch()] };
     const second = cols[1] || { kind: "preview-empty", matches: Array.from({ length: Math.max(1, Math.ceil((first.matches || []).length / 2)) }, previewEmptyMatch) };
@@ -1045,7 +1046,7 @@ async function renderPreviewCard(model = {}) {
     connectPreviewPoint(ctx, right.funnel.x, right.funnel.y, centerX + centerW, centerY);
   }
 
-  text(ctx, "Предпубликация: стартовая расстановка. Следующие раунды пустые и заполняются только после реальных боёв.", PAD, height - 18, 15, "#7e8696", "regular");
+  text(ctx, "Стартовая схема: игроки стоят только в первом раунде. Дальше пусто до реальных боёв.", PAD, height - 18, 15, "#7e8696", "regular");
   return encodePng(image);
 }
 

@@ -24,6 +24,7 @@ const {
 
 const { ACTIONS, COLORS, buildCustomId } = require("./commands");
 const { formatStartTime } = require("./time");
+const { branchLabel, prosieveLabel } = require("./labels");
 const {
   TWINK_THRESHOLD,
   robloxProfileUrl,
@@ -590,7 +591,7 @@ function buildManagePanelPayload(tournament, { statusText = "", serverCount = 1,
         [
           `Статус: ${statusLabel(tournament.status)} · Набор: ${open ? "🟢 открыт" : "🔴 закрыт"}`,
           `Основной состав: **${fmtNumber(activeTaken)} / ${fmtNumber(activeLimit)}** · Всего заявок: **${fmtNumber(taken)}**${waitlisted ? ` · Резерв: **${fmtNumber(waitlisted)}**` : ""}${phantoms ? ` (фантомов: **${phantoms}**)` : ""}`,
-          `Максимум сетки: **${fmtNumber(tournament.slots)}** · Серверов: **${fmtNumber(serverCount)}**`,
+          `Максимум сетки: **${fmtNumber(tournament.slots)}** · Просевов: **${fmtNumber(serverCount)}**`,
           `Режим: ${SEEDING_MODE_LABELS[tournament.seedingMode] || tournament.seedingMode}`,
           `Роль участника: ${tournament.participantRoleId ? `<@&${tournament.participantRoleId}>` : "—"}`,
           `Старт: ${tournament.startsAtIso ? formatStartTime(tournament.startsAtIso) : "—"}`,
@@ -627,13 +628,13 @@ function buildManagePanelPayload(tournament, { statusText = "", serverCount = 1,
     );
 
     const multi = serverCount > 1;
-    container.addTextDisplayComponents(ui.td(multi ? `**Сетка и сервера** (мультисервер ×${serverCount})` : "**Сетка и сервера**"));
+    container.addTextDisplayComponents(ui.td(multi ? `**Сетка и просевы** · ${fmtNumber(serverCount)} ветки` : "**Сетка и просев**"));
     const serverLines = [];
     for (let i = 0; i < Math.min(serverCount, 3); i += 1) {
       const server = servers[String(i)];
       const playerCount = Object.values(tournament.registrations || {}).filter((reg) => !multi || reg?.serverIndex === i).length;
       const threadState = server?.threadFailed ? "ветка требует повтора" : server?.threadId ? "ветка закрыта" : server?.launched ? "ветка открывается" : "готов к запуску";
-      serverLines.push(`сервер ${i + 1}: **${fmtNumber(playerCount)}** игроков · ${threadState}`);
+      serverLines.push(`${prosieveLabel(i, { lower: true })}: **${fmtNumber(playerCount)}** игроков · ${threadState}`);
     }
     if (multi && finalServer?.launched) {
       const finalistCount = Object.values(tournament.registrations || {}).filter((reg) => reg?.serverIndex === finalIndex).length;
@@ -644,14 +645,14 @@ function buildManagePanelPayload(tournament, { statusText = "", serverCount = 1,
     // launch row: rebuild duels + per-server launch buttons
     const launchRow = [
       btn(ACTIONS.MANAGE_FORM_DUELS, tournament.id, [], { label: "Пересобрать дуэты", style: ButtonStyle.Primary, emoji: "🧩", disabled: playLocked }),
-      btn(ACTIONS.MANAGE_PUBLISH_PREVIEW, tournament.id, [], { label: "Предпубликация", style: ButtonStyle.Secondary, emoji: "🗺", disabled: playLocked }),
+      btn(ACTIONS.MANAGE_PUBLISH_PREVIEW, tournament.id, [], { label: "Стартовая схема", style: ButtonStyle.Secondary, emoji: "🗺", disabled: playLocked }),
     ];
     for (let i = 0; i < Math.min(serverCount, 3); i += 1) {
       const server = servers[String(i)];
       const qual = server?.qualifying;
       launchRow.push(
         btn(ACTIONS.MANAGE_LAUNCH_SERVER, tournament.id, [String(i)], {
-          label: qual ? `Сервер ${i + 1}: топ-${(server.qualified || []).length}` : server?.launched ? `Сервер ${i + 1} ✓` : `Запустить сервер ${i + 1}`,
+          label: qual ? `${prosieveLabel(i)}: топ-${(server.qualified || []).length}` : server?.launched ? `${prosieveLabel(i)} ✓` : `Запустить ${prosieveLabel(i, { lower: true })}`,
           style: server?.launched ? ButtonStyle.Secondary : ButtonStyle.Success,
           emoji: "🖥",
           disabled: Boolean(server?.launched),
@@ -664,22 +665,22 @@ function buildManagePanelPayload(tournament, { statusText = "", serverCount = 1,
     const matchRow = [];
     for (let i = 0; i < Math.min(serverCount, 3); i += 1) {
       if (servers[String(i)]?.launched) {
-        matchRow.push(btn(ACTIONS.MANAGE_START, tournament.id, [String(i)], { label: multi ? `Бои · сервер ${i + 1}` : "Панель боёв", style: ButtonStyle.Primary, emoji: "⚔️" }));
+        matchRow.push(btn(ACTIONS.MANAGE_START, tournament.id, [String(i)], { label: `Бои · ${prosieveLabel(i, { lower: true })}`, style: ButtonStyle.Primary, emoji: "⚔️" }));
       }
     }
     if (multi) {
       if (finalServer?.launched) {
-        matchRow.push(btn(ACTIONS.MANAGE_START, tournament.id, [String(finalIndex)], { label: "Бои · ФИНАЛ", style: ButtonStyle.Danger, emoji: "🏆" }));
+        matchRow.push(btn(ACTIONS.MANAGE_START, tournament.id, [String(finalIndex)], { label: "Бои · финал", style: ButtonStyle.Danger, emoji: "🏆" }));
       } else if (finalReady) {
-        matchRow.push(btn(ACTIONS.MANAGE_LAUNCH_FINAL, tournament.id, [], { label: "Запустить ФИНАЛ", style: ButtonStyle.Success, emoji: "🏆" }));
+        matchRow.push(btn(ACTIONS.MANAGE_LAUNCH_FINAL, tournament.id, [], { label: "Запустить финал", style: ButtonStyle.Success, emoji: "🏆" }));
       }
     }
     if (!matchRow.length) {
-      matchRow.push(btn(ACTIONS.MANAGE_START, tournament.id, ["0"], { label: "Панель боёв", style: ButtonStyle.Secondary, emoji: "⚔️", disabled: true }));
+      matchRow.push(btn(ACTIONS.MANAGE_START, tournament.id, ["0"], { label: `Бои · ${prosieveLabel(0, { lower: true })}`, style: ButtonStyle.Secondary, emoji: "⚔️", disabled: true }));
     }
     container.addActionRowComponents(ui.row(...matchRow.slice(0, 5)));
     if (multi && !finalReady && Object.values(servers).some((s) => s?.launched)) {
-      container.addTextDisplayComponents(ui.td(`-# Финал откроется, когда все ${serverCount} сервера выведут топ-4.`));
+      container.addTextDisplayComponents(ui.td("-# Финал откроется, когда все просевы выведут топ-4."));
     }
 
     const bottom = [];
@@ -761,7 +762,7 @@ function buildRosterViewerPayload(tournament, players = [], { page = 0, statusTe
 function buildAddPlayerPayload(tournament) {
   const c = ui.container(COLORS.green, (container) => {
     container.addTextDisplayComponents(ui.td(`# ➕ Добавить игрока · ${tournament.name}`));
-    container.addTextDisplayComponents(ui.td("Выбери участника сервера — подтянем его Roblox и килы автоматически."));
+    container.addTextDisplayComponents(ui.td("Выбери участника турнира — подтянем его Roblox и килы автоматически."));
     container.addActionRowComponents(
       ui.row(new UserSelectMenuBuilder().setCustomId(buildCustomId(ACTIONS.ADD_PLAYER_SELECT, tournament.id)).setPlaceholder("Кого добавить").setMinValues(1).setMaxValues(1))
     );
@@ -820,7 +821,7 @@ function buildRosterPayload(tournament, stagePlan, { serverIndex = 0 } = {}) {
   const matches = seeding.listStageMatches(stagePlan);
   const multiRun = stagePlan.runs.length > 1;
   const c = ui.container(COLORS.primary, (container) => {
-    container.addTextDisplayComponents(ui.td(`# 🧩 Распределение · сервер ${serverIndex + 1}`));
+    container.addTextDisplayComponents(ui.td(`# 🧩 Распределение · ${prosieveLabel(serverIndex, { lower: true })}`));
     container.addTextDisplayComponents(ui.td("Красные ячейки нечётные, синие чётные. Этап 1."));
     container.addSeparatorComponents(ui.separator());
     // group text to stay under component budget
@@ -839,10 +840,10 @@ function buildRosterPayload(tournament, stagePlan, { serverIndex = 0 } = {}) {
 
 // Public bracket post (V2 container). When `imageFilename` is given the caller
 // attaches the PNG; otherwise the pairings are listed as text.
-function buildBracketPostPayload(tournament, stagePlan, { serverIndex = 0, serverLabel = "", imageFilename = "", title = "🗺 Предварительное размещение", headline = "", details = "" } = {}) {
+function buildBracketPostPayload(tournament, stagePlan, { serverIndex = 0, serverLabel = "", imageFilename = "", title = "🗺 Стартовая сетка", headline = "", details = "" } = {}) {
   const matches = seeding.listStageMatches(stagePlan);
   const multiRun = stagePlan.runs.length > 1;
-  const label = serverLabel || `сервер ${serverIndex + 1}`;
+  const label = serverLabel || branchLabel(serverIndex, { lower: true });
   const c = ui.container(COLORS.gold, (container) => {
     if (headline) container.addTextDisplayComponents(ui.td(headline));
     container.addTextDisplayComponents(ui.td(`# ${title} · ${label}`));
@@ -865,23 +866,23 @@ function buildBracketPostPayload(tournament, stagePlan, { serverIndex = 0, serve
 
 function buildPreviewPostPayload(tournament, { imageFilename = "", serverCount = 1, activeCount = 0, waitlistCount = 0 } = {}) {
   const c = ui.container(COLORS.gold, (container) => {
-    container.addTextDisplayComponents(ui.td(`# 🗺 Предварительная сетка · ${tournament.name}`));
+    container.addTextDisplayComponents(ui.td(`# 🗺 Стартовая схема · ${tournament.name}`));
     container.addTextDisplayComponents(
       ui.td(
         [
           `Основной состав: **${fmtNumber(activeCount)} / ${fmtNumber(activeRegistrationLimit(tournament))}**`,
-          `Серверов: **${fmtNumber(serverCount)}** · формат: **1 на 1, FT6**`,
-          "На картинке показана стартовая расстановка; будущие раунды пустые и заполняются после реальных боёв.",
+          `Просевов: **${fmtNumber(serverCount)}** · формат: **1 на 1, FT6**`,
+          "На картинке показана стартовая расстановка. Дальше пусто: места заполняются только после боёв.",
           waitlistCount ? `Резерв: **${fmtNumber(waitlistCount)}** · не попадает в эту сетку, но очередь двигается при выходе игроков.` : null,
         ].filter(Boolean).join("\n")
       )
     );
     if (imageFilename) {
       container.addSeparatorComponents(ui.separator());
-      container.addMediaGalleryComponents(ui.mediaImage(`attachment://${imageFilename}`, "Предварительная сетка турнира"));
+      container.addMediaGalleryComponents(ui.mediaImage(`attachment://${imageFilename}`, "Стартовая схема турнира"));
     } else {
       container.addSeparatorComponents(ui.separator());
-      container.addTextDisplayComponents(ui.td("Предварительная картинка не собралась, но состав можно пересобрать в панели турнира."));
+      container.addTextDisplayComponents(ui.td("Стартовая картинка не собралась, но состав можно пересобрать в панели турнира."));
     }
   });
   return ui.v2Public(c);
@@ -997,7 +998,7 @@ function buildMatchPanelPayload(tournament, server, { statusText = "" } = {}) {
   if (!stagePlan) {
     return ui.v2Ephemeral(
       ui.container(COLORS.neutral, (c) => {
-        c.addTextDisplayComponents(ui.td("Сервер ещё не запущен или этап не сформирован."));
+        c.addTextDisplayComponents(ui.td("Просев ещё не запущен или этап не сформирован."));
         c.addActionRowComponents(ui.row(btn(ACTIONS.MANAGE_OPEN, tournament.id, [], { label: "К управлению", emoji: "🛠" })));
       })
     );
@@ -1026,7 +1027,7 @@ function buildMatchPanelPayload(tournament, server, { statusText = "" } = {}) {
 
   const c = ui.container(COLORS.primary, (container) => {
     container.addTextDisplayComponents(
-      ui.td(`# ⚔️ Сервер ${server.index + 1} · ${stageTitle(stagePlan)}${multiRun ? ` · прогон ${runIndex + 1}/${runs.length}` : ""}`)
+      ui.td(`# ⚔️ ${branchLabel(server.index)} · ${stageTitle(stagePlan)}${multiRun ? ` · прогон ${runIndex + 1}/${runs.length}` : ""}`)
     );
     container.addTextDisplayComponents(
       ui.td(
@@ -1090,7 +1091,7 @@ function buildMatchPanelPayload(tournament, server, { statusText = "" } = {}) {
 function buildServerDonePayload(tournament, server) {
   const placement = server.placement || {};
   const c = ui.container(COLORS.gold, (container) => {
-    container.addTextDisplayComponents(ui.td(`# 🏁 Сервер ${server.index + 1} — завершён`));
+    container.addTextDisplayComponents(ui.td(`# 🏁 ${branchLabel(server.index)} — завершён`));
     container.addTextDisplayComponents(
       ui.td(
         [
@@ -1108,7 +1109,7 @@ function buildServerDonePayload(tournament, server) {
 }
 
 function buildServerThreadName(tournament, serverIndex) {
-  const suffix = Number(serverIndex) >= 90 ? "финал" : `сервер ${Number(serverIndex) + 1}`;
+  const suffix = branchLabel(serverIndex, { lower: true });
   return `${tournament.name} · ${suffix}`.slice(0, 100);
 }
 
