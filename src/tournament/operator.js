@@ -23,6 +23,8 @@ const { killTierFor } = require("../onboard/kill-tiers");
 
 const UNKNOWN_INTERACTION_CODES = new Set([10062, 40060]);
 const DEFAULT_THREAD_ADMIN_ROLE_IDS = Object.freeze(["1486459664546926866"]);
+const AVATAR_FETCH_TIMEOUT_MS = 2500;
+const SERVER_IMAGE_RENDER_TIMEOUT_MS = 12000;
 
 function isUnknownInteractionError(error) {
   return Boolean(error && UNKNOWN_INTERACTION_CODES.has(error.code));
@@ -44,6 +46,19 @@ function normalizeSnowflakeIds(values = []) {
     .map((value) => String(value || "").trim())
     .filter((id) => /^\d{5,25}$/.test(id))
     .filter((id, index, ids) => ids.indexOf(id) === index);
+}
+
+function withTimeout(promise, timeoutMs, fallback = null) {
+  let timer = null;
+  return Promise.race([
+    Promise.resolve(promise),
+    new Promise((resolve) => {
+      timer = setTimeout(() => resolve(fallback), timeoutMs);
+      if (typeof timer.unref === "function") timer.unref();
+    }),
+  ]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
 }
 
 function createTournamentOperator(deps = {}) {
@@ -353,17 +368,18 @@ function createTournamentOperator(deps = {}) {
   const imagesEnabled = typeof renderImage === "function";
 
   // Fetch Roblox avatar buffers for every registered player, keyed by userId.
-  async function collectTournamentAvatars(tournament) {
+  async function collectTournamentAvatars(tournament, players = null) {
     if (typeof fetchImageBuffer !== "function") return {};
     const avatars = {};
     const tasks = [];
-    for (const player of state.tournamentPlayers(tournament)) {
+    const sourcePlayers = Array.isArray(players) ? players : state.tournamentPlayers(tournament);
+    for (const player of sourcePlayers) {
       const id = String(player.userId || player.id || "");
       const url = player.robloxAvatarUrl;
       if (!id || !url || avatars[id] !== undefined) continue;
       avatars[id] = null; // reserve to dedupe
       tasks.push(
-        Promise.resolve(fetchImageBuffer(url))
+        withTimeout(Promise.resolve(fetchImageBuffer(url)), AVATAR_FETCH_TIMEOUT_MS, null)
           .then((buffer) => { if (buffer) avatars[id] = buffer; })
           .catch(() => {})
       );
@@ -385,7 +401,7 @@ function createTournamentOperator(deps = {}) {
         liveRunIndex: server.runIndex || 0,
         avatars,
       });
-      return await renderImage("renderBracketCard", model);
+      return await withTimeout(renderImage("renderBracketCard", model), SERVER_IMAGE_RENDER_TIMEOUT_MS, null);
     } catch (error) {
       logError("tournament: bracket render failed", error?.message || error);
       return null;
@@ -597,7 +613,8 @@ function createTournamentOperator(deps = {}) {
     const server = state.getServer(tournament, serverIndex);
 
     if (server && server.launched) {
-      const avatars = await collectTournamentAvatars(tournament);
+      const players = state.tournamentPlayers(tournament, serverCount(tournament) > 1 ? { serverIndex } : {});
+      const avatars = await collectTournamentAvatars(tournament, players);
       const { payload, buffer, filename } = await buildServerBracketArt(tournament, server, serverIndex, avatars);
       const channel = await fetchChannel(tournament.announce?.channelId).catch(() => null);
       const thread = server.threadId ? await fetchChannel(server.threadId).catch(() => null) : null;
@@ -1370,6 +1387,52 @@ function createTournamentOperator(deps = {}) {
     return state.tournamentPlayers(tournament, { serverIndex }).length < 2;
   }
 
+  function buildInitialServerStage(tournament, serverIndex) {
+    const count = serverCount(tournament);
+    const players = state.tournamentPlayers(tournament, count > 1 ? { serverIndex } : {});
+    if (players.length < 2) return { ok: false, reason: "players", count, players };
+    const plan = seeding.planNextStage({ survivors: players, mode: tournament.seedingMode, stageNumber: 1 });
+    const stagePlan = plan.type === "stage" || plan.type === "placement" ? plan.stage : null;
+    if (!stagePlan) return { ok: false, reason: "stage", count, players };
+    return { ok: true, count, players, stagePlan };
+  }
+
+  function stampInitialServerState(tournament, serverIndex, stagePlan, count) {
+    const server = state.ensureServer(tournament, serverIndex);
+    server.role = count > 1 ? "base" : "single";
+    server.launched = true;
+    server.done = false;
+    server.qualifying = false;
+    server.qualified = [];
+    server.stageNumber = 1;
+    server.runIndex = 0;
+    server.currentStage = stagePlan;
+    server.decisions = {};
+    server.semifinalLosers = [];
+    server.history = [];
+    server.threadFailed = false;
+    server.threadId = "";
+    server.launchMessageId = "";
+    server.threadBracketMessageId = "";
+    return server;
+  }
+
+  function ensureRunnableServerState(tournament, serverIndex, { preserveExisting = true } = {}) {
+    if (!tournament) return { ok: false, reason: "missing" };
+    const existing = state.getServer(tournament, serverIndex);
+    if (preserveExisting && existing?.launched && (existing.currentStage || existing.done)) {
+      return { ok: true, already: true, server: existing, playerCount: state.tournamentPlayers(tournament, serverCount(tournament) > 1 ? { serverIndex } : {}).length };
+    }
+    if (preserveExisting && existing?.currentStage) {
+      existing.launched = true;
+      return { ok: true, repaired: true, server: existing, playerCount: state.tournamentPlayers(tournament, serverCount(tournament) > 1 ? { serverIndex } : {}).length };
+    }
+    const built = buildInitialServerStage(tournament, serverIndex);
+    if (!built.ok) return built;
+    const server = stampInitialServerState(tournament, serverIndex, built.stagePlan, built.count);
+    return { ok: true, repaired: Boolean(existing), server, playerCount: built.players.length };
+  }
+
   async function finalizeRegistration(interaction, tournamentId, session) {
     const tournament = state.getTournament(db, tournamentId);
     if (!tournament) {
@@ -1700,33 +1763,12 @@ function createTournamentOperator(deps = {}) {
         repairedSplit = applyRosterSeeding(fresh);
       }
 
-      const count = serverCount(fresh);
-      const players = state.tournamentPlayers(fresh, count > 1 ? { serverIndex } : {});
-      if (players.length < 2) return { ok: false, reason: "players" };
-      const plan = seeding.planNextStage({ survivors: players, mode: fresh.seedingMode, stageNumber: 1 });
-      const stagePlan = plan.type === "stage" || plan.type === "placement" ? plan.stage : null;
-      if (!stagePlan) return { ok: false, reason: "stage" };
-
       // PERSIST the bracket immediately and atomically with launch preparation.
-      // The match panel is now usable before any Discord side-effect runs.
-      const server = state.ensureServer(fresh, serverIndex);
-      server.role = count > 1 ? "base" : "single";
-      server.launched = true;
-      server.done = false;
-      server.qualifying = false;
-      server.qualified = [];
-      server.stageNumber = 1;
-      server.runIndex = 0;
-      server.currentStage = stagePlan;
-      server.decisions = {};
-      server.semifinalLosers = [];
-      server.history = [];
-      server.threadFailed = false;
-      server.threadId = "";
-      server.launchMessageId = "";
-      server.threadBracketMessageId = "";
+      // If this server is already running, keep its live stage/decisions intact.
+      const serverResult = ensureRunnableServerState(fresh, serverIndex, { preserveExisting: true });
+      if (!serverResult.ok) return serverResult;
       state.updateTournament(db, tournamentId, { status: "running" });
-      return { ok: true, repairedSplit, playerCount: players.length };
+      return { ok: true, repairedSplit, already: serverResult.already, repaired: serverResult.repaired, playerCount: serverResult.playerCount };
     });
 
     if (!launchResult?.ok) {
@@ -1746,11 +1788,15 @@ function createTournamentOperator(deps = {}) {
     // Snappy: re-render management now; side-effects run in the background.
     await renderManage(interaction, tournamentId, {
       edit: acked,
-      statusText: `Сервер ${serverIndex + 1} запущен. Панель боёв готова. Открываю закрытую ветку только для участников сервера…`,
+      statusText: launchResult.already
+        ? `Сервер ${serverIndex + 1} уже запущен. Панель боёв готова.`
+        : `Сервер ${serverIndex + 1} запущен. Панель боёв готова. Открываю закрытую ветку только для участников сервера…`,
     });
-    runServerSideEffects(tournamentId, serverIndex, { postChannel: true }).catch((error) =>
-      logError("tournament: launch side-effects failed", error?.message || error)
-    );
+    if (!launchResult.already) {
+      runServerSideEffects(tournamentId, serverIndex, { postChannel: true }).catch((error) =>
+        logError("tournament: launch side-effects failed", error?.message || error)
+      );
+    }
     return true;
   }
 
@@ -1826,17 +1872,8 @@ function createTournamentOperator(deps = {}) {
     if (!tournament || !server || !server.currentStage) return;
 
     const players = state.tournamentPlayers(tournament, serverCount(tournament) > 1 ? { serverIndex } : {});
-    const avatars = await collectTournamentAvatars(tournament);
-    // Render the server's live state (at launch: stage 1, no decisions yet). The
-    // very same message is edited in place on every later advance.
-    const { payload: bracketPayload, buffer, filename } = await buildServerBracketArt(tournament, server, serverIndex, avatars);
-
     const channel = await fetchChannel(tournament.announce?.channelId).catch(() => null);
     let launchMessageId = server.launchMessageId || "";
-    if (postChannel && channel) {
-      launchMessageId = await editOrSendBracketMessage(channel, launchMessageId, bracketPayload, buffer, filename, { allowCreate: true });
-    }
-
     let threadId = server.threadId || "";
     let threadBracketMessageId = server.threadBracketMessageId || "";
     let threadFailed = false;
@@ -1881,10 +1918,31 @@ function createTournamentOperator(deps = {}) {
             logError("tournament: private thread ping failed", error?.message || error);
           });
       }
+    }
+    if (memberResult.failed > 0 || pingFailed) threadFailed = true;
+
+    await persist("tournament-launch-thread", async () => {
+      const s = state.getServer(state.getTournament(db, tournamentId), serverIndex);
+      if (s && s.currentStage) {
+        s.threadId = threadId;
+        s.threadFailed = threadFailed;
+        s.threadParticipantUserIds = memberResult.ids;
+        s.threadParticipantAddFailed = memberResult.failed;
+        s.threadParticipantPingFailed = pingFailed;
+      }
+    });
+
+    // Render/post art after the thread ping. Slow avatar CDN or PNG rendering must
+    // never delay the private thread becoming visible.
+    const avatars = await collectTournamentAvatars(tournament, players);
+    const { payload: bracketPayload, buffer, filename } = await buildServerBracketArt(tournament, server, serverIndex, avatars);
+    if (postChannel && channel) {
+      launchMessageId = await editOrSendBracketMessage(channel, launchMessageId, bracketPayload, buffer, filename, { allowCreate: true });
+    }
+    if (existingThread?.send) {
       threadBracketMessageId = await editOrSendBracketMessage(existingThread, threadBracketMessageId, bracketPayload, buffer, filename, { allowCreate: true });
       await existingThread.setLocked?.(true).catch(() => {});
     }
-    if (memberResult.failed > 0 || pingFailed) threadFailed = true;
 
     await persist("tournament-launch-side", async () => {
       const s = state.getServer(state.getTournament(db, tournamentId), serverIndex);
@@ -1915,11 +1973,32 @@ function createTournamentOperator(deps = {}) {
 
   async function openMatchPanel(interaction, tournamentId, serverIndex) {
     if (!requireMod(interaction)) return true;
-    const tournament = state.getTournament(db, tournamentId);
+    let tournament = state.getTournament(db, tournamentId);
     if (tournament?.status === "completed") {
       return renderCompletionWindow(interaction, tournamentId);
     }
-    const server = tournament ? state.getServer(tournament, serverIndex) : null;
+    let server = tournament ? state.getServer(tournament, serverIndex) : null;
+    if (!server || !server.currentStage) {
+      const repair = await persist("tournament-open-panel-repair", async () => {
+        const fresh = state.getTournament(db, tournamentId);
+        if (!fresh) return { ok: false, reason: "missing" };
+        const freshServer = state.getServer(fresh, serverIndex);
+        if (freshServer?.currentStage || freshServer?.done) {
+          if (!freshServer.launched) freshServer.launched = true;
+          return { ok: true, already: true };
+        }
+        if (fresh.status !== "running" && !freshServer?.launched) return { ok: false, reason: "not-launched" };
+        const result = ensureRunnableServerState(fresh, serverIndex, { preserveExisting: false });
+        if (!result.ok) return result;
+        state.updateTournament(db, tournamentId, { status: "running" });
+        return { ok: true, repaired: true };
+      });
+      tournament = state.getTournament(db, tournamentId);
+      server = tournament ? state.getServer(tournament, serverIndex) : null;
+      if (repair?.repaired) {
+        await safeLogLine(`TOURNAMENT_SERVER_REPAIRED: id=${tournamentId} server=${serverIndex + 1} source=open-panel by=<@${interaction.user.id}>`);
+      }
+    }
     if (!server || !server.currentStage) {
       await safeReply(interaction, ephemeralText("Сначала запусти сервер."));
       return true;

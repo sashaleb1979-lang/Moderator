@@ -985,6 +985,12 @@ test("tournament launching the second server keeps both match panels reachable",
 
   const launch2 = asMod(createButtonInteraction(buildCustomId(ACTIONS.MANAGE_LAUNCH_SERVER, tournament.id, "1"), calls));
   await operator.handleButtonInteraction(launch2);
+  const launch2Panel = JSON.stringify(launch2.editedPayload);
+  assert.match(launch2Panel, /Сервер 1 ✓/);
+  assert.match(launch2Panel, /Сервер 2 ✓/);
+  assert.match(launch2Panel, /Бои · сервер 1/);
+  assert.match(launch2Panel, /Бои · сервер 2/);
+  assert.doesNotMatch(launch2Panel, /Запустить сервер 1/);
   const fresh = state.getTournament(db, tournament.id);
   assert.equal(state.getServer(fresh, 0)?.launched, true);
   assert.equal(Boolean(state.getServer(fresh, 0)?.currentStage), true);
@@ -999,6 +1005,82 @@ test("tournament launching the second server keeps both match panels reachable",
   assert.match(JSON.stringify(open2.replyPayload), /Сервер 2/);
   assert.doesNotMatch(JSON.stringify(open1After.replyPayload), /Сначала запусти сервер/);
   assert.doesNotMatch(JSON.stringify(open2.replyPayload), /Сначала запусти сервер/);
+  await delay(60);
+});
+
+test("tournament launch is idempotent and stale match buttons can repair a lost server record", async () => {
+  const calls = [];
+  const logs = [];
+  const db = {};
+  const tournament = state.createTournamentFromDraft(
+    db,
+    {
+      name: "Repair Cup",
+      slots: 32,
+      plannedPlayers: 32,
+      startsAtIso: "2026-06-21T20:00:00.000Z",
+      announceChannelId: "channel-1",
+    },
+    { id: "tour-1", now: "2026-06-21T18:00:00.000Z" }
+  );
+  state.updateTournament(db, tournament.id, { announce: { channelId: "channel-1", messageId: "announce-1" } });
+  const channel = {
+    id: "channel-1",
+    async send() { return { id: `message-${calls.length + 1}`, channelId: "channel-1" }; },
+    threads: {
+      async create() {
+        return {
+          id: `thread-${calls.length + 1}`,
+          async send() { return { id: "thread-message" }; },
+          members: { async add() {} },
+          async setLocked() {},
+        };
+      },
+    },
+  };
+  const operator = createTournamentOperator({
+    db,
+    saveDb: () => calls.push("saveDb"),
+    runSerializedMutation: async ({ mutate }) => mutate(),
+    isModerator: (member) => Boolean(member?.mod),
+    fetchChannel: async () => channel,
+    logLine: async (line) => logs.push(line),
+  });
+  const asMod = (interaction) => {
+    interaction.member = { mod: true };
+    interaction.user = { id: "mod-1", tag: "mod#0001" };
+    return interaction;
+  };
+
+  await operator.handleButtonInteraction(asMod(createButtonInteraction(buildCustomId(ACTIONS.MANAGE_FILL_ALL, tournament.id), calls)));
+  const seeded = state.getTournament(db, tournament.id);
+  assert.equal(state.tournamentPlayers(seeded, { serverIndex: 0 }).length, 16);
+  assert.equal(state.tournamentPlayers(seeded, { serverIndex: 1 }).length, 16);
+
+  await operator.handleButtonInteraction(asMod(createButtonInteraction(buildCustomId(ACTIONS.MANAGE_LAUNCH_SERVER, tournament.id, "0"), calls)));
+  const server0 = state.getServer(state.getTournament(db, tournament.id), 0);
+  const firstMatch = server0.currentStage.runs[0].matches[0];
+  await operator.handleButtonInteraction(asMod(createButtonInteraction(buildCustomId(ACTIONS.MATCH_WIN, tournament.id, "0", firstMatch.key, "r"), calls)));
+  const decisionBefore = state.getServer(state.getTournament(db, tournament.id), 0).decisions[firstMatch.key];
+
+  await operator.handleButtonInteraction(asMod(createButtonInteraction(buildCustomId(ACTIONS.MANAGE_LAUNCH_SERVER, tournament.id, "0"), calls)));
+  const afterRepeatLaunch = state.getServer(state.getTournament(db, tournament.id), 0);
+  assert.deepEqual(afterRepeatLaunch.decisions[firstMatch.key], decisionBefore, "repeat launch must not reset live decisions");
+  assert.equal(afterRepeatLaunch.currentStage, server0.currentStage, "repeat launch must keep the same stage object");
+
+  await operator.handleButtonInteraction(asMod(createButtonInteraction(buildCustomId(ACTIONS.MANAGE_LAUNCH_SERVER, tournament.id, "1"), calls)));
+  const afterSecond = state.getTournament(db, tournament.id);
+  assert.equal(state.getServer(afterSecond, 0)?.launched, true);
+  assert.equal(state.getServer(afterSecond, 1)?.launched, true);
+
+  delete afterSecond.servers["0"];
+  const openLost = asMod(createButtonInteraction(buildCustomId(ACTIONS.MANAGE_START, tournament.id, "0"), calls));
+  await operator.handleButtonInteraction(openLost);
+  const repaired0 = state.getServer(state.getTournament(db, tournament.id), 0);
+  assert.equal(repaired0?.launched, true);
+  assert.ok(repaired0?.currentStage, "lost server record is repaired from server roster");
+  assert.doesNotMatch(JSON.stringify(openLost.replyPayload), /Сначала запусти сервер/);
+  assert.ok(logs.some((line) => /TOURNAMENT_SERVER_REPAIRED/.test(line)));
   await delay(60);
 });
 
