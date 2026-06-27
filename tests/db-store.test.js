@@ -683,6 +683,59 @@ test("createDbStore.saveAsync preserves runtime state when disk write fails", as
   db.__needsSaveAfterLoad = true;
 
   await assert.rejects(() => store.saveAsync(db));
+  // The flush is flagged for retry...
   assert.equal(db.__needsSaveAfterLoad, true);
-  assert.equal(Boolean(db.sot?.channels?.review), false);
+  // ...and the normalized snapshot is now applied to the live db BEFORE the write
+  // (so a mutation landing during the cooperative serialize is never clobbered by
+  // a stale write-back). It is idempotent and re-persisted on the retry; on a hard
+  // crash it is lost with the rest of memory anyway. The win this guards is data
+  // integrity: in-memory mutations survive a failed flush instead of being rolled
+  // back to a pre-serialize snapshot.
+  assert.equal(Boolean(db.sot?.channels?.review), true);
+});
+
+test("createDbStore.saveAsync does not clobber a mutation that lands during the write window", async () => {
+  // Regression guard for the data-loss race the cooperative serializer exposed:
+  // the write-back used to run AFTER the (now multi-second, yielding) write, so a
+  // mutation landing in that window — e.g. a tournament match tap — was overwritten
+  // by the pre-serialize snapshot. Applying the snapshot BEFORE the write fixes it.
+  let enterWrite;
+  const insideWrite = new Promise((resolve) => { enterWrite = resolve; });
+  let releaseWrite;
+  const writeGate = new Promise((resolve) => { releaseWrite = resolve; });
+
+  const persistence = {
+    readRaw: () => ({}),
+    writeSync: () => ({ changedRows: 0 }),
+    async writeAsync() {
+      enterWrite();
+      await writeGate; // hold the write window open so we can mutate db meanwhile
+      return { serializeMs: 0, bytes: 0, serializeBlockMs: 0 };
+    },
+  };
+
+  const deps = createDeps();
+  const store = createDbStore({ ...deps, persistence });
+  const db = createDefaultDbState({
+    appConfig: deps.appConfig,
+    createDefaultIntegrationState: deps.createDefaultIntegrationState,
+    createOnboardModeState: deps.createOnboardModeState,
+    normalizeCharacterCatalog: deps.normalizeCharacterCatalog,
+  });
+  db.tournament = { tournaments: { t1: { servers: {} } } };
+
+  const savePromise = store.saveAsync(db);
+  await insideWrite; // now inside writeAsync (snapshot already applied to db)
+
+  // A concurrent tap records a decision while the flush's write is in flight.
+  db.tournament.tournaments.t1.servers["0"] = { decisions: { m1: { winnerId: "u1" } } };
+
+  releaseWrite();
+  await savePromise;
+
+  assert.equal(
+    db.tournament.tournaments.t1.servers["0"]?.decisions?.m1?.winnerId,
+    "u1",
+    "a mutation during the write window must survive (no stale write-back clobber)"
+  );
 });

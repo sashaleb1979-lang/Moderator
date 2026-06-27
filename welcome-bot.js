@@ -1275,9 +1275,12 @@ const DB_FLUSH_HEAVY_SERIALIZE_MS = 1000;
 let dbDirty = false;
 let dbFlushTimer = null;
 let lastSaveResult = null;
-// Synchronous on-CPU cost (clone + serialize) of the last flush. Read by the
-// loop-lag monitor for attribution and by scheduleDbFlush for adaptive backoff.
+// On-CPU cost of the last flush. `lastDbSerializeMs` is the total wall time
+// (drives scheduleDbFlush's CPU-churn backoff); `lastDbBlockMs` is the worst
+// contiguous event-loop block the flush actually caused — a few ms now that the
+// serialize yields cooperatively, vs. the multi-second freeze it used to be.
 let lastDbSerializeMs = 0;
+let lastDbBlockMs = 0;
 
 function flushDbInternal() {
   if (!dbDirty) return Promise.resolve(lastSaveResult);
@@ -1286,6 +1289,7 @@ function flushDbInternal() {
     try {
       lastSaveResult = await dbStore.saveAsync(db);
       lastDbSerializeMs = Number(lastSaveResult?.syncBlockMs) || 0;
+      lastDbBlockMs = Number(lastSaveResult?.blockMs) || 0;
       maybeLogSotDriftAfterSave(db);
       return lastSaveResult;
     } catch (error) {
@@ -1382,7 +1386,9 @@ try {
       // stall is attributable instead of anonymous. The flush, voice/activity
       // recorders and daily syncs all run through these two queues.
       const active = runSerializedDbTask.getActiveLabel?.() || runSerializedDbMutation.getActiveLabel?.() || null;
-      const lastSerialize = lastDbSerializeMs >= EVENT_LOOP_LAG_WARN_MS ? ` lastDbSerialize=${lastDbSerializeMs.toFixed(0)}ms` : "";
+      const lastSerialize = lastDbSerializeMs >= EVENT_LOOP_LAG_WARN_MS
+        ? ` lastDbSerialize=${lastDbSerializeMs.toFixed(0)}ms(block=${lastDbBlockMs.toFixed(0)}ms)`
+        : "";
       const activeText = active ? ` active=${active}` : "";
       console.warn(`[loop-lag] max=${maxMs.toFixed(0)}ms p99=${p99Ms.toFixed(0)}ms mean=${meanMs.toFixed(1)}ms (last 30s)${activeText}${lastSerialize}`);
     }
@@ -7286,15 +7292,20 @@ function tournamentProofFilenameFromUrl(url) {
   return sanitizeFileName(sourceName, fallbackExt);
 }
 
-// For tournament registration cards the proof must be a direct Discord upload:
-// download the resolved image bytes and reference them as attachment://filename.
-// If the download fails, do not fall back to a CDN URL that may render broken.
+// For tournament registration cards we PREFER a direct Discord upload: download
+// the resolved image bytes and reference them as attachment://filename, so the
+// card never depends on a CDN link that can expire. But if the bot can't pull the
+// bytes itself (host egress to the Discord CDN throttled/blocked, transient 5xx,
+// hostile User-Agent filtering) we no longer drop the picture — a freshly-signed
+// link still renders fine when Discord loads it client-side, so we hand that live
+// URL straight to the gallery. Only a stored/expired link is dropped (it would
+// render as a broken thumbnail), and isLiveRenderableImageUrl rejects those.
 async function buildTournamentProofMedia(url, includeFile) {
   const liveUrl = typeof url === "string" && url.trim() ? url.trim() : null;
-  if (!liveUrl) {
-    return { lastScreenshotUrl: null, lastScreenshotBuffer: null, lastScreenshotFilename: null, lastScreenshotUnavailable: false };
-  }
-  if (!includeFile) {
+  if (!liveUrl || !includeFile) {
+    if (includeFile && !liveUrl) {
+      console.warn("[tournament-proof] registration card has no resolvable proof image (none found, review channel unreadable, or every stored link is dead)");
+    }
     return { lastScreenshotUrl: null, lastScreenshotBuffer: null, lastScreenshotFilename: null, lastScreenshotUnavailable: false };
   }
   const filename = tournamentProofFilenameFromUrl(liveUrl);
@@ -7308,7 +7319,23 @@ async function buildTournamentProofMedia(url, includeFile) {
       lastScreenshotUnavailable: false,
     };
   } catch (error) {
-    console.warn(`Tournament proof image download failed: ${formatRuntimeError(error)}`);
+    const message = formatRuntimeError(error);
+    console.warn(`[tournament-proof] re-upload download failed: ${message}`);
+    // Distinguish a TRANSIENT failure (network/timeout/5xx — the link itself is
+    // fine, our host just couldn't pull it) from a HARD one (4xx/empty — the
+    // resource is gone or forbidden and would render as a broken thumbnail). Only
+    // for transient failures do we hand the freshly-signed link to the gallery so
+    // Discord renders it client-side; otherwise keep the "не удалось прикрепить" note.
+    const hardGone = /HTTP 4\d\d|empty proof/i.test(message);
+    if (!hardGone && isLiveRenderableImageUrl(liveUrl)) {
+      console.warn("[tournament-proof] download looked transient — falling back to live CDN URL for Discord-side render");
+      return {
+        lastScreenshotUrl: liveUrl,
+        lastScreenshotBuffer: null,
+        lastScreenshotFilename: null,
+        lastScreenshotUnavailable: false,
+      };
+    }
     return {
       lastScreenshotUrl: null,
       lastScreenshotBuffer: null,

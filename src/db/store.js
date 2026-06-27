@@ -4,6 +4,7 @@ const fs = require("node:fs");
 const fsp = require("node:fs/promises");
 const path = require("node:path");
 const { createAutonomyGuardState } = require("../moderation/autonomy-guard");
+const { stringifyCooperative } = require("../runtime/cooperative-json");
 
 function cloneValue(value) {
   return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
@@ -82,12 +83,15 @@ function saveJsonFile(filePath, value) {
 // contract but performs the disk I/O off the event loop so a large database
 // write never blocks interaction handling.
 async function saveJsonFileAsync(filePath, value) {
-  // Serialize up-front, BEFORE any await, so the synchronous (event-loop-
-  // blocking) JSON.stringify is both measurable and not interleaved oddly across
-  // ticks. Compact JSON (see saveJsonFile) halves serialize cost and file size on
-  // the large prod db — this stringify is the dominant on-CPU cost of a flush.
+  // Serialize with the COOPERATIVE serializer: byte-identical to JSON.stringify,
+  // but it yields to the event loop every few ms instead of monopolizing it for
+  // the ~3.5s a single synchronous stringify of the ~20MB prod db took on the
+  // host. That synchronous freeze was the first cause of Discord "did not respond"
+  // / frozen panels — it blew the 3s ack window AND blocked the ack watchdog's own
+  // timer. Total wall-time is ~unchanged (big maps still serialize each record via
+  // native stringify); it is just sliced so interaction handling is never starved.
   const serializeStart = process.hrtime.bigint();
-  const serialized = JSON.stringify(value);
+  const { json: serialized, maxSliceMs } = await stringifyCooperative(value);
   const serializeMs = Number(process.hrtime.bigint() - serializeStart) / 1e6;
   await fsp.mkdir(path.dirname(filePath), { recursive: true });
   const tempPath = `${filePath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;
@@ -102,7 +106,11 @@ async function saveJsonFileAsync(filePath, value) {
     }
     throw error;
   }
-  return { serializeMs, bytes: serialized.length };
+  // serializeMs = total wall time (still drives the host's heavy-flush backoff so
+  // sustained churn doesn't re-serialize non-stop). serializeBlockMs = the LONGEST
+  // uninterrupted on-CPU slice — the honest "event-loop block" figure, now a few
+  // ms instead of seconds.
+  return { serializeMs, bytes: serialized.length, serializeBlockMs: maxSliceMs };
 }
 
 function hasExistingIntegrationSourcePath(sourcePath = "", options = {}) {
@@ -383,15 +391,25 @@ function createDbStore({
     };
   }
 
-  // Async persist used by the coalesced write-behind flush. The CPU-bound
-  // normalization runs synchronously (cheap relative to disk I/O), but the
-  // actual file write is awaited off the event loop.
+  // Async persist used by the coalesced write-behind flush. prepareWriteState
+  // (clone + normalize) is synchronous; the serialize+write is awaited off the
+  // event loop (and the serialize itself yields cooperatively).
   async function saveAsync(db) {
-    // prepareWriteState (clone + normalize) and the adapter's serialize are both
-    // synchronous, event-loop-blocking work. Report the combined cost so the
-    // host can attribute loop-lag and back off the flush cadence when it's heavy.
     const prepareStart = process.hrtime.bigint();
     const { workingDb, dualWriteState } = prepareWriteState(db);
+
+    // Apply the normalized snapshot to the live db NOW, synchronously, BEFORE the
+    // (cooperative, multi-yield) serialize — not after the write like the sync
+    // path. prepareWriteState clones the non-shared subtrees, so if we wrote that
+    // pre-serialize snapshot back AFTER the serialize, any mutation that landed
+    // during the serialize's yields (e.g. a tournament match tap) would be
+    // clobbered — a real "my pick vanished" data loss that the long cooperative
+    // serialize would make routine. Applying first makes db and workingDb share
+    // references, so the serialize sees live state and concurrent mutations are
+    // preserved (persisted now or on the next flush). The only trade vs. before:
+    // if the disk write then fails, the normalized (idempotent) state is already
+    // in memory — harmless, and re-persisted on the retry.
+    replaceObjectContents(db, workingDb);
     const prepareMs = Number(process.hrtime.bigint() - prepareStart) / 1e6;
 
     let writeMeta = null;
@@ -402,17 +420,24 @@ function createDbStore({
       throw error;
     }
 
-    replaceObjectContents(db, workingDb);
-
     const serializeMs = Number(writeMeta?.serializeMs) || 0;
+    // Longest uninterrupted on-CPU slice of the serialize. With the cooperative
+    // serializer this is a few ms (it yields), vs. `serializeMs` which is the
+    // total wall time. `blockMs` is the figure that actually matters for event-loop
+    // health; `syncBlockMs` stays wall-based so the host's heavy-flush backoff
+    // (which limits CPU churn, not loop lag) is unchanged.
+    const serializeBlockMs = Number(writeMeta?.serializeBlockMs) || serializeMs;
     return {
       db,
       dbPath,
       dualWriteState,
       prepareMs,
       serializeMs,
-      // Total synchronous on-CPU footprint of this flush (clone + serialize).
+      serializeBlockMs,
+      // Total synchronous on-CPU footprint of this flush (clone + serialize wall).
       syncBlockMs: prepareMs + serializeMs,
+      // Worst contiguous event-loop block this flush actually caused.
+      blockMs: prepareMs + serializeBlockMs,
       bytes: Number(writeMeta?.bytes) || 0,
     };
   }
