@@ -30,12 +30,21 @@
 // (rare, and bounded to that one record) — orders of magnitude better than
 // stringifying the whole db at once.
 
+const { performance } = require("node:perf_hooks");
+
 const ATOMIC_FANOUT = 32;
 const MAX_RECURSE_DEPTH = 256; // guard against pathological nesting / stack depth
 const DEFAULT_SLICE_MS = 8;
+// How many emitted pieces between wall-clock checks. The yield budget is real
+// wall time, so it self-adjusts to a slow CPU — but ONLY if we sample the clock
+// often enough. Sampling too rarely (the original 1024) let a slow host run for
+// hundreds of ms between checks, re-creating the freeze; 16 keeps the worst slice
+// near the budget even on Railway's throttled CPU, while `performance.now()` (a
+// cheap double, no BigInt alloc) keeps the sampling overhead negligible.
+const CHECK_EVERY_OPS = 16;
 
 function nowMs() {
-  return Number(process.hrtime.bigint()) / 1e6;
+  return performance.now();
 }
 
 // Returns { json, maxSliceMs }. `json` is undefined only when the ROOT itself is
@@ -48,8 +57,7 @@ async function stringifyCooperative(root, options = {}) {
 
   async function maybeYield() {
     ops += 1;
-    // Sample the clock cheaply — only every 1024 emitted pieces.
-    if ((ops & 1023) !== 0) return;
+    if (ops % CHECK_EVERY_OPS !== 0) return;
     const elapsed = nowMs() - sliceStart;
     if (elapsed >= sliceMs) {
       if (elapsed > maxSliceMs) maxSliceMs = elapsed;

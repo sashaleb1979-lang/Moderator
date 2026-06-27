@@ -18530,7 +18530,7 @@ client.on("interactionCreate", async (interaction) => {
   if (customId.startsWith("t:")) {
     const tournamentMethod = interaction.isButton?.()
       ? "handleButtonInteraction"
-      : interaction.isStringSelectMenu?.() || interaction.isRoleSelectMenu?.() || interaction.isChannelSelectMenu?.()
+      : interaction.isAnySelectMenu?.()
         ? "handleSelectMenuInteraction"
         : interaction.isModalSubmit?.()
           ? "handleModalSubmitInteraction"
