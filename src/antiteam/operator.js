@@ -739,6 +739,36 @@ function createAntiteamOperator(options = {}) {
     if (timer && typeof timer.unref === "function") timer.unref();
   }
 
+  async function deleteCapturedPhotoMessage(message = null) {
+    let directError = null;
+    if (typeof message?.delete === "function") {
+      try {
+        await message.delete();
+        return true;
+      } catch (error) {
+        directError = error;
+      }
+    }
+
+    const messageId = cleanString(message?.id, 80);
+    if (messageId && typeof message?.channel?.messages?.delete === "function") {
+      try {
+        await message.channel.messages.delete(messageId);
+        return true;
+      } catch (error) {
+        logError("Antiteam photo upload cleanup failed:", error?.message || error, directError?.message || directError || "");
+        return false;
+      }
+    }
+
+    if (directError) {
+      logError("Antiteam photo upload cleanup failed:", directError?.message || directError);
+    } else {
+      logError("Antiteam photo upload cleanup skipped: message delete API is unavailable");
+    }
+    return false;
+  }
+
   async function sendEditPingMessage(thread, ticket = {}, config = createDefaultAntiteamConfig()) {
     if (ticket.kind === "clan") return null;
     const mode = normalizeAntiteamPingMode(config.pingMode, "battalion");
@@ -3458,7 +3488,7 @@ function createAntiteamOperator(options = {}) {
       }
       // The requester is in photo mode but sent text/non-image content. Keep the
       // antiteam channel clean: remove it and nudge them to send a real image.
-      await message.delete?.().catch(() => {});
+      await deleteCapturedPhotoMessage(message);
       const hint = await message.channel?.send?.({
         content: `<@${message.author.id}> для заявки антитима жду именно изображение — текст и файлы в этом канале я удаляю. Скинь скрин одним сообщением.`,
         allowedMentions: { users: [message.author.id] },
@@ -3477,13 +3507,13 @@ function createAntiteamOperator(options = {}) {
     // into a second ticket — the photo is now saved on the draft, so the in-flight
     // publish picks it up. Just remove the upload message.
     if (!acquirePublishLock(message.author.id)) {
-      await message.delete?.().catch(() => {});
+      await deleteCapturedPhotoMessage(message);
       return true;
     }
     let result;
     try {
       result = await publishTicketFromDraft(message.author.id, { skipPhoto: true });
-      await message.delete?.().catch(() => {});
+      await deleteCapturedPhotoMessage(message);
     } catch (error) {
       logError("Antiteam photo publish failed:", error?.message || error);
       // Tell the requester instead of failing silently; their photo request stays

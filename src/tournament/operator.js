@@ -27,10 +27,7 @@ const UNKNOWN_INTERACTION_CODES = new Set([10062, 40060]);
 const DEFAULT_THREAD_ADMIN_ROLE_IDS = Object.freeze(["1486459664546926866"]);
 const AVATAR_FETCH_TIMEOUT_MS = 2500;
 const SERVER_IMAGE_RENDER_TIMEOUT_MS = 12000;
-// How long a panel repaint may run before we surface a visible "⏳ Думаю…" loader.
-// Short enough that real Discord round-trips under load show it; long enough that
-// an instant tap never flashes it.
-const THINKING_NOTICE_DELAY_MS = 240;
+const THINKING_NOTICE_TTL_MS = 8000;
 
 function isUnknownInteractionError(error) {
   return Boolean(error && UNKNOWN_INTERACTION_CODES.has(error.code));
@@ -101,23 +98,6 @@ function createTournamentOperator(deps = {}) {
   // restarts mid-flow the player simply clicks "Записаться" again).
   const pending = new Map();
   const pendingKey = (tournamentId, userId) => `${tournamentId}:${userId}`;
-
-  // Run `worker` over `items` with at most `limit` in flight at once. Never
-  // rejects — each worker is expected to handle its own errors.
-  const THREAD_ADD_CONCURRENCY = 5;
-  async function mapWithConcurrency(items, limit, worker) {
-    const list = Array.isArray(items) ? items : [...items];
-    const width = Math.max(1, Math.min(limit, list.length));
-    let cursor = 0;
-    const runners = Array.from({ length: width }, async () => {
-      while (cursor < list.length) {
-        const index = cursor;
-        cursor += 1;
-        await worker(list[index], index);
-      }
-    });
-    await Promise.all(runners);
-  }
 
   // ---- response helpers (tolerate expired interactions) -------------------
 
@@ -505,27 +485,19 @@ function createTournamentOperator(deps = {}) {
     return normalizeSnowflakeIds(players.map((p) => p?.userId || p?.id || ""));
   }
 
-  async function addPlayersToPrivateThread(thread, players = []) {
-    const ids = realDiscordUserIds(players);
-    if (!ids.length || typeof thread?.members?.add !== "function") return { ids, added: 0, failed: 0 };
-
-    // Bounded-parallel: the old serial await-loop took up to 16 sequential
-    // round-trips per server, which stalled the whole launch under the guild
-    // rate-limits seen in prod ("Retry after 21s"). discord.js's REST manager
-    // already paces per-route, so a small concurrency window lets adds overlap
-    // without bursting into a global 429.
-    let added = 0;
-    let failed = 0;
-    await mapWithConcurrency(ids, THREAD_ADD_CONCURRENCY, async (id) => {
-      try {
-        await thread.members.add(id);
-        added += 1;
-      } catch (error) {
-        failed += 1;
-        logError(`tournament: private thread member add failed user=${id}`, error?.message || error);
-      }
-    });
-    return { ids, added, failed };
+  function buildPrivateThreadIntroContent({ mentions, serverIndex }) {
+    const label = branchLabel(serverIndex, { start: true });
+    return [
+      mentions,
+      "",
+      `**${label}**`,
+      serverIndex === FINAL_SERVER_INDEX
+        ? "В финале участвуют только игроки, прошедшие из просевов."
+        : "В этом просеве участвует только выбранная группа игроков.",
+      "Пары и результаты ведутся через панель модератора.",
+      "Ссылка на подключение предназначена только для тех, кто добавлен в эту приватную ветку.",
+      "Когда ссылка на подключение будет готова, её закинут сюда.",
+    ].join("\n");
   }
 
   // Edit a server's existing bracket message in place when we know its id, else
@@ -584,6 +556,7 @@ function createTournamentOperator(deps = {}) {
         ? `Финальная сетка: ${playerCount} игроков, прошедших из просевов.`
         : `В этом просеве участвует только выбранная группа игроков: ${playerCount} участников.`,
       "Пары и результаты ведутся через панель модератора. Приватная ветка открыта для состава этой сетки и модераторов.",
+      "Ссылка на подключение — только для участников этой приватной ветки; её нужно кидать сюда.",
     ].join("\n");
     const payload = view.buildBracketPostPayload(tournament, server.currentStage, {
       serverIndex,
@@ -610,6 +583,7 @@ function createTournamentOperator(deps = {}) {
   // flight per server, coalesce extra requests into a single trailing re-render,
   // and kick it off on a `setImmediate` so the click's ack always lands first.
   const artJobs = new Map(); // `${tid}:${serverIndex}` -> { running, pending }
+  const threadClosureJobs = new Set();
   function scheduleServerArtUpdate(tournamentId, serverIndex) {
     const key = `${tournamentId}:${serverIndex}`;
     let job = artJobs.get(key);
@@ -662,6 +636,67 @@ function createTournamentOperator(deps = {}) {
 
     // The public grand summary is published explicitly from the organizer's
     // completion window, after they have a chance to add the final comment.
+  }
+
+  function scheduleTournamentThreadClosure(tournamentId) {
+    if (!tournamentId || threadClosureJobs.has(tournamentId)) return;
+    threadClosureJobs.add(tournamentId);
+    setImmediate(() => {
+      closeTournamentPrivateThreads(tournamentId)
+        .catch((error) => logError("tournament: private thread close failed", error?.message || error))
+        .finally(() => threadClosureJobs.delete(tournamentId));
+    });
+  }
+
+  async function closeTournamentPrivateThreads(tournamentId) {
+    const tournament = state.getTournament(db, tournamentId);
+    if (!tournament || tournament.status !== "completed") return { closed: 0, failed: 0 };
+    const servers = Object.values(tournament.servers || {}).filter((server) => server?.threadId);
+    const uniqueThreadIds = [...new Set(servers.map((server) => String(server.threadId)).filter(Boolean))];
+    let closed = 0;
+    let failed = 0;
+    const closedIds = new Set();
+    const failedIds = new Set();
+
+    for (const threadId of uniqueThreadIds) {
+      try {
+        const thread = await fetchChannel(threadId).catch(() => null);
+        if (!thread) {
+          failed += 1;
+          failedIds.add(threadId);
+          continue;
+        }
+        if (typeof thread.setLocked === "function") await thread.setLocked(true, "tournament completed");
+        if (typeof thread.setArchived === "function") await thread.setArchived(true, "tournament completed");
+        closed += 1;
+        closedIds.add(threadId);
+      } catch (error) {
+        failed += 1;
+        failedIds.add(threadId);
+        logError(`tournament: private thread close failed thread=${threadId}`, error?.message || error);
+      }
+    }
+
+    if (closedIds.size || failedIds.size) {
+      const now = new Date().toISOString();
+      await persist("tournament-close-threads", async () => {
+        const fresh = state.getTournament(db, tournamentId);
+        if (!fresh) return;
+        for (const server of Object.values(fresh.servers || {})) {
+          const id = String(server?.threadId || "");
+          if (!id) continue;
+          if (closedIds.has(id)) {
+            server.threadClosedAt = now;
+            server.threadCloseFailed = false;
+          } else if (failedIds.has(id)) {
+            server.threadCloseFailed = true;
+          }
+        }
+      });
+    }
+
+    await safeLogLine(`TOURNAMENT_THREADS_CLOSED: id=${tournamentId} closed=${closed} failed=${failed}`);
+    return { closed, failed };
   }
 
   async function buildCompletionWindowPayload(tournament, statusText = "") {
@@ -1845,7 +1880,7 @@ function createTournamentOperator(deps = {}) {
       const stagePlan = plan.type === "stage" || plan.type === "placement" ? plan.stage : null;
       if (!stagePlan) return { ok: false, reason: "stage" };
 
-      // pin finalists to the final server so its private thread adds only them
+      // pin finalists to the final server so its private thread pings only them
       for (const p of finalists) {
         const reg = state.getRegistration(fresh, p.userId || p.id);
         if (reg) reg.serverIndex = FINAL_SERVER_INDEX;
@@ -1891,7 +1926,7 @@ function createTournamentOperator(deps = {}) {
     return true;
   }
 
-  // Post the bracket art, open the private thread, add + ping members, lock it.
+  // Post the bracket art, open the private thread, ping/invite members, keep it writable.
   // Best-effort: any failure is recorded (threadFailed) but never aborts launch.
   async function runServerSideEffects(tournamentId, serverIndex, { postChannel = true } = {}) {
     const tournament = state.getTournament(db, tournamentId);
@@ -1920,28 +1955,19 @@ function createTournamentOperator(deps = {}) {
       threadFailed = true;
     }
 
-    let memberResult = { ids: [], added: 0, failed: 0 };
+    const participantIds = realDiscordUserIds(players);
+    let memberResult = { ids: participantIds, added: 0, failed: 0 };
     let pingFailed = false;
     if (existingThread?.send) {
-      memberResult = await addPlayersToPrivateThread(existingThread, players);
       const pingRoleIds = resolvePrivateThreadRoleIds();
       if (memberResult.ids.length || pingRoleIds.length) {
-        const label = branchLabel(serverIndex, { start: true });
         const mentions = [
           ...pingRoleIds.map((id) => `<@&${id}>`),
           ...memberResult.ids.map((id) => `<@${id}>`),
         ].join(" ");
         await existingThread
           .send({
-            content: [
-              mentions,
-              "",
-              `**${label}**`,
-              serverIndex === FINAL_SERVER_INDEX
-                ? "В финале участвуют только игроки, прошедшие из просевов."
-                : "В этом просеве участвует только выбранная группа игроков.",
-              "Пары и результаты ведутся через панель модератора.",
-            ].join("\n"),
+            content: buildPrivateThreadIntroContent({ mentions, serverIndex }),
             allowedMentions: { users: memberResult.ids, roles: pingRoleIds },
           })
           .catch((error) => {
@@ -1950,7 +1976,7 @@ function createTournamentOperator(deps = {}) {
           });
       }
     }
-    if (memberResult.failed > 0 || pingFailed) threadFailed = true;
+    if (pingFailed) threadFailed = true;
 
     await persist("tournament-launch-thread", async () => {
       const s = state.getServer(state.getTournament(db, tournamentId), serverIndex);
@@ -1972,7 +1998,7 @@ function createTournamentOperator(deps = {}) {
     }
     if (existingThread?.send) {
       threadBracketMessageId = await editOrSendBracketMessage(existingThread, threadBracketMessageId, bracketPayload, buffer, filename, { allowCreate: true });
-      await existingThread.setLocked?.(true).catch(() => {});
+      await existingThread.setLocked?.(false).catch(() => {});
     }
 
     await persist("tournament-launch-side", async () => {
@@ -2009,6 +2035,7 @@ function createTournamentOperator(deps = {}) {
       return renderCompletionWindow(interaction, tournamentId);
     }
     let server = tournament ? state.getServer(tournament, serverIndex) : null;
+    let repairedPrematureClose = null;
     if (!server || !server.currentStage) {
       const repair = await persist("tournament-open-panel-repair", async () => {
         const fresh = state.getTournament(db, tournamentId);
@@ -2030,11 +2057,45 @@ function createTournamentOperator(deps = {}) {
         await safeLogLine(`TOURNAMENT_SERVER_REPAIRED: id=${tournamentId} server=${serverIndex + 1} source=open-panel by=<@${interaction.user.id}>`);
       }
     }
+    if (server?.role === "base" && server.done && server.currentStage) {
+      repairedPrematureClose = await persist("tournament-reopen-premature-base", async () => {
+        const fresh = state.getTournament(db, tournamentId);
+        const freshServer = fresh ? state.getServer(fresh, serverIndex) : null;
+        if (!fresh || !freshServer || freshServer.role !== "base" || !freshServer.done || !freshServer.currentStage) {
+          return null;
+        }
+        const results = seeding.resolveStageResults(freshServer.currentStage, freshServer.decisions || {});
+        if (results.undecided.length <= 0) return null;
+        const runs = Array.isArray(freshServer.currentStage.runs) ? freshServer.currentStage.runs : [];
+        const firstOpenRunIndex = runs.findIndex((run) => !isRunComplete(run, freshServer.decisions || {}));
+        freshServer.done = false;
+        freshServer.qualifying = false;
+        freshServer.qualified = [];
+        freshServer.placement = { first: null, second: null, third: null };
+        freshServer.runIndex = firstOpenRunIndex >= 0 ? firstOpenRunIndex : Math.max(0, Number(freshServer.runIndex) || 0);
+        state.updateTournament(db, tournamentId, { status: "running" });
+        return {
+          undecided: results.undecided.length,
+          runIndex: freshServer.runIndex,
+          runCount: runs.length || 1,
+        };
+      });
+      if (repairedPrematureClose) {
+        tournament = state.getTournament(db, tournamentId);
+        server = tournament ? state.getServer(tournament, serverIndex) : null;
+        await safeLogLine(
+          `TOURNAMENT_SERVER_REOPENED: id=${tournamentId} server=${serverIndex + 1} run=${repairedPrematureClose.runIndex + 1}/${repairedPrematureClose.runCount} undecided=${repairedPrematureClose.undecided} by=<@${interaction.user.id}>`
+        );
+      }
+    }
     if (!server || !server.currentStage) {
       await safeReply(interaction, ephemeralText("Сначала запусти просев."));
       return true;
     }
-    await safeReply(interaction, view.buildMatchPanelPayload(tournament, server));
+    const statusText = repairedPrematureClose
+      ? `Ложное завершение просева исправлено. Открыт прогон ${repairedPrematureClose.runIndex + 1}/${repairedPrematureClose.runCount}; осталось боёв: ${repairedPrematureClose.undecided}.`
+      : "";
+    await safeReply(interaction, view.buildMatchPanelPayload(tournament, server, { statusText }));
     return true;
   }
 
@@ -2277,42 +2338,55 @@ function createTournamentOperator(deps = {}) {
   //     can never land out of order and "un-pick" an earlier choice (the old
   //     "нажал одно — отменилось второе" race), and N quick taps cost ~1–2 edits
   //     instead of N sequential ones — the panel stops feeling frozen.
-  //   • Visible loader: if a repaint outlasts a blink (event loop busy, Discord
-  //     rate-limit, summary render) we post a tiny ephemeral "⏳ Думаю…" note and
-  //     delete it the instant the panel settles — so the moderator always sees the
-  //     tap registered instead of staring at a still panel and re-tapping.
+  //   • Visible loader: every repaint posts a tiny ephemeral "⏳ Думаю…" note
+  //     immediately after the tap is acked, then deletes it the instant the panel
+  //     settles — so the moderator always sees the tap registered instead of
+  //     staring at a still panel and re-tapping.
   const panels = new Map(); // `${tournamentId}:${serverIndex}` -> panel pump state
 
-  // Best-effort "bot is thinking" note. Lazy (only materializes if the work
-  // outlasts THINKING_NOTICE_DELAY_MS, so instant taps never flash it) and
-  // self-cleaning: cancel() removes it whether it was posted yet or not. The
-  // followUp/deleteFollowUp calls are guarded + swallowed so this never throws and
-  // never blocks the panel edit it shadows.
+  // Best-effort "bot is thinking" note. It materializes immediately and is
+  // self-cleaning: cancel() removes it whether the follow-up has resolved yet or
+  // not. The Discord calls are guarded + swallowed so this never throws and never
+  // blocks the panel edit it shadows.
   function scheduleThinkingNotice(interaction, text = "⏳ Думаю…") {
     let posted = null;
-    let timer = setTimeout(() => {
-      timer = null;
-      if (typeof interaction?.followUp !== "function") return;
-      posted = Promise.resolve(interaction.followUp(ephemeralText(text)).catch(() => null));
-    }, THINKING_NOTICE_DELAY_MS);
-    if (typeof timer.unref === "function") timer.unref();
+    let closed = false;
+    let ttlTimer = null;
+    const deleteNotice = () => {
+      if (closed) return;
+      closed = true;
+      if (ttlTimer) {
+        clearTimeout(ttlTimer);
+        ttlTimer = null;
+      }
+      if (!posted) return;
+      const pending = posted;
+      posted = null;
+      pending
+        .then((message) => {
+          if (!message) return undefined;
+          if (message.id && typeof interaction.deleteReply === "function") {
+            return interaction.deleteReply(message.id).catch(() => {});
+          }
+          if (typeof message.delete === "function") {
+            return message.delete().catch(() => {});
+          }
+          return undefined;
+        })
+        .catch(() => {});
+    };
+    if (typeof interaction?.followUp === "function") {
+      try {
+        posted = Promise.resolve(interaction.followUp(ephemeralText(text))).catch(() => null);
+      } catch {
+        posted = Promise.resolve(null);
+      }
+      ttlTimer = setTimeout(deleteNotice, THINKING_NOTICE_TTL_MS);
+      if (typeof ttlTimer.unref === "function") ttlTimer.unref();
+    }
     return {
       cancel() {
-        if (timer) {
-          clearTimeout(timer);
-          timer = null;
-        }
-        if (!posted) return;
-        const pending = posted;
-        posted = null;
-        pending
-          .then((message) => {
-            if (message?.id && typeof interaction.deleteFollowUp === "function") {
-              return interaction.deleteFollowUp(message.id).catch(() => {});
-            }
-            return undefined;
-          })
-          .catch(() => {});
+        deleteNotice();
       },
     };
   }
@@ -2446,6 +2520,14 @@ function createTournamentOperator(deps = {}) {
     return player ? String(player.userId || player.id || "") : "";
   }
 
+  function isRunComplete(run, decisions = {}) {
+    const matches = Array.isArray(run?.matches) ? run.matches : [];
+    return matches.length > 0 && matches.every((match) => {
+      const outcome = seeding.resolveMatchOutcome(match, decisions[match.key] || {});
+      return Boolean(outcome.winner) || outcome.void;
+    });
+  }
+
   async function advanceStage(interaction, tournamentId, serverIndex) {
     const acked = await safeDeferUpdate(interaction);
     if (!requireMod(interaction)) return true;
@@ -2457,15 +2539,25 @@ function createTournamentOperator(deps = {}) {
       if (!server || !server.currentStage) return;
       const stagePlan = server.currentStage;
       const runs = Array.isArray(stagePlan.runs) ? stagePlan.runs : [];
+      const currentRunIndex = Math.min(Math.max(0, Number(server.runIndex) || 0), Math.max(0, runs.length - 1));
+      const currentRun = runs[currentRunIndex];
+      if (!isRunComplete(currentRun, server.decisions || {})) {
+        statusText = `Прогон ${currentRunIndex + 1}/${runs.length || 1} ещё не решён. Выбери победителей всех боёв текущего прогона.`;
+        return;
+      }
 
       // advance run cursor first
-      if ((server.runIndex || 0) < runs.length - 1) {
-        server.runIndex = (server.runIndex || 0) + 1;
+      if (currentRunIndex < runs.length - 1) {
+        server.runIndex = currentRunIndex + 1;
         statusText = `Прогон ${server.runIndex + 1}/${runs.length}`;
         return;
       }
 
       const results = seeding.resolveStageResults(stagePlan, server.decisions || {});
+      if (results.undecided.length > 0) {
+        statusText = `Стадия ещё не решена: осталось боёв ${results.undecided.length}.`;
+        return;
+      }
 
       if (stagePlan.kind === "placement") {
         finalizePlacement(fresh, server, stagePlan);
@@ -2532,6 +2624,7 @@ function createTournamentOperator(deps = {}) {
     // Edit the server's single bracket image in place. The grand summary is
     // published later from the organizer completion window.
     scheduleServerArtUpdate(tournamentId, serverIndex);
+    if (afterAdvance?.status === "completed") scheduleTournamentThreadClosure(tournamentId);
     return true;
   }
 

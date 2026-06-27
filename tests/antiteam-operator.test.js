@@ -2967,6 +2967,72 @@ test("photo collector publishes ticket with multiple reattached images from one 
   assert.equal(deleted, true);
 });
 
+test("photo collector falls back to channel message delete when upload message delete fails", async () => {
+  const db = {};
+  ensureAntiteamState(db).state.config.channelId = "channel-1";
+  setAntiteamDraft(db, "user-1", {
+    userTag: "User",
+    roblox: { userId: "101", username: "Anchor" },
+    description: "Тимятся у центра.",
+    photoWanted: true,
+  }, { now: "2026-05-16T10:00:00.000Z" });
+  const state = ensureAntiteamState(db).state;
+  state.photoRequests["user-1"] = {
+    userId: "user-1",
+    channelId: "channel-1",
+    createdAt: "2026-05-16T10:00:10.000Z",
+  };
+
+  const deletedById = [];
+  const thread = {
+    id: "thread-1",
+    isTextBased: () => true,
+    messages: { fetch: async () => null },
+    send: async () => ({ id: "thread-message-1" }),
+  };
+  const channel = {
+    id: "channel-1",
+    isTextBased: () => true,
+    messages: {
+      fetch: async () => null,
+      delete: async (messageId) => {
+        deletedById.push(messageId);
+      },
+    },
+    send: async () => ({
+      id: "message-1",
+      startThread: async () => thread,
+    }),
+  };
+  const logs = [];
+  const operator = createAntiteamOperator({
+    db,
+    now: () => "2026-05-16T10:01:00.000Z",
+    saveDb() {},
+    fetchChannel: async () => channel,
+    logError: (...parts) => logs.push(parts.join(" ")),
+  });
+
+  assert.equal(await operator.handlePhotoMessage({
+    id: "upload-1",
+    author: { id: "user-1", bot: false },
+    channelId: "channel-1",
+    channel,
+    attachments: new Map([["a1", {
+      url: "https://cdn.discordapp.com/attachments/1/2/team.png",
+      name: "team.png",
+      contentType: "image/png",
+      size: 1234,
+    }]]),
+    delete: async () => {
+      throw new Error("missing direct delete");
+    },
+  }), true);
+
+  assert.deepEqual(deletedById, ["upload-1"]);
+  assert.equal(logs.some((line) => /photo upload cleanup failed/i.test(line)), false);
+});
+
 test("closing ticket edits messages and renames thread with gray marker", async () => {
   const db = {};
   const draft = setAntiteamDraft(db, "author-1", {

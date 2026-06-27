@@ -758,7 +758,7 @@ test("tournament launch repairs phantom multi-server roster with missing server 
   await delay(60);
 });
 
-test("tournament launch creates an unlocked private thread and adds real Discord players", async () => {
+test("tournament launch creates an unlocked private thread and invites real Discord players by ping only", async () => {
   const calls = [];
   const addedMembers = [];
   const threadPayloads = [];
@@ -844,18 +844,20 @@ test("tournament launch creates an unlocked private thread and adds real Discord
   assert.equal(settled.threadId, "thread-1");
   assert.equal(settled.launchMessageId, "launch-message-1");
   assert.equal(settled.threadFailed, false);
-  assert.deepEqual(addedMembers, ["100000000000000001", "100000000000000002"]);
+  assert.deepEqual(addedMembers, [], "players are invited by the first ping message, not by manual thread member adds");
   assert.equal(threadCreateOptions.name, "Тестовый турнир · просев A");
   assert.ok(calls.indexOf("threadPing") < calls.indexOf("threadBracket"), "participant ping is the first thread message");
   assert.match(
     threadPayloads[0].content,
     /<@&1486459664546926866> <@&222222222222222222> <@100000000000000001> <@100000000000000002>/
   );
+  assert.match(threadPayloads[0].content, /Ссылка на подключение предназначена только для тех, кто добавлен в эту приватную ветку/);
+  assert.match(threadPayloads[0].content, /её закинут сюда/);
   assert.deepEqual(threadPayloads[0].allowedMentions, {
     users: ["100000000000000001", "100000000000000002"],
     roles: ["1486459664546926866", "222222222222222222"],
   });
-  assert.equal(lockedValue, true, "participant thread is locked so players can't chat");
+  assert.equal(lockedValue, false, "participant thread stays unlocked so pinged players can chat");
 });
 
 test("tournament stale roster actions after launch cannot clear a runnable server", async () => {
@@ -1254,12 +1256,21 @@ test("match panel acks each tap and repaints in place via a single edit; support
       effectiveKills: i * 1000,
     });
   }
+  let threadArchived = false;
+  let threadLockCalls = 0;
+  const thread = {
+    id: "th",
+    async send() { return { id: "x" }; },
+    members: { async add() {} },
+    async setLocked() { threadLockCalls += 1; },
+    async setArchived(value) { threadArchived = value; },
+  };
   const channel = {
     id: "channel-1",
     async send() { return { id: "m1" }; },
     threads: {
       async create() {
-        return { id: "th", async send() { return { id: "x" }; }, members: { async add() {} }, async setLocked() {} };
+        return thread;
       },
     },
   };
@@ -1268,13 +1279,14 @@ test("match panel acks each tap and repaints in place via a single edit; support
     saveDb: () => {},
     runSerializedMutation: async ({ mutate }) => mutate(),
     isModerator: (member) => Boolean(member?.mod),
-    fetchChannel: async () => channel,
+    fetchChannel: async (id) => (id === "th" ? thread : channel),
   });
 
   const launch = createButtonInteraction(buildCustomId(ACTIONS.MANAGE_LAUNCH_SERVER, tournament.id, "0"));
   launch.member = { mod: true };
   launch.user = { id: "mod-1", tag: "mod#0001" };
   await operator.handleButtonInteraction(launch);
+  await delay(60);
 
   const server = state.getServer(state.getTournament(db, tournament.id), 0);
   const match = seeding.listStageMatches(server.currentStage)[0];
@@ -1283,14 +1295,13 @@ test("match panel acks each tap and repaints in place via a single edit; support
 
   // click RED winner — ack'd instantly with deferUpdate(), then a SINGLE coalesced
   // editReply repaints the panel in place from authoritative state. The "⏳ Думаю…"
-  // loader is lazy (only posts if the repaint outlasts THINKING_NOTICE_DELAY_MS),
-  // so an instant tap never flashes a followUp — the sequence stays defer+edit.
+  // loader posts immediately, then clears after the repaint lands.
   const redCalls = [];
   const clickRed = createButtonInteraction(buildCustomId(ACTIONS.MATCH_WIN, tournament.id, "0", match.key, "r"), redCalls);
   clickRed.member = { mod: true };
   clickRed.user = { id: "mod-1", tag: "mod#0001" };
   await operator.handleButtonInteraction(clickRed);
-  assert.deepEqual(redCalls, ["deferUpdate", "editReply"], "winner tap: defer ack + single in-place repaint");
+  assert.deepEqual(redCalls, ["deferUpdate", "followUp", "editReply", "deleteReply"], "winner tap: defer ack + immediate loader + single in-place repaint");
   assert.equal(state.getServer(state.getTournament(db, tournament.id), 0).decisions[match.key].winnerId, redId);
 
   // re-pick the OTHER side in one tap (buttons stay enabled — no undo dance)
@@ -1299,7 +1310,7 @@ test("match panel acks each tap and repaints in place via a single edit; support
   clickBlue.member = { mod: true };
   clickBlue.user = { id: "mod-1", tag: "mod#0001" };
   await operator.handleButtonInteraction(clickBlue);
-  assert.deepEqual(blueCalls, ["deferUpdate", "editReply"], "re-pick: defer ack + single in-place repaint");
+  assert.deepEqual(blueCalls, ["deferUpdate", "followUp", "editReply", "deleteReply"], "re-pick: defer ack + immediate loader + single in-place repaint");
   assert.equal(state.getServer(state.getTournament(db, tournament.id), 0).decisions[match.key].winnerId, blueId, "winner switched in one tap");
   assert.match(JSON.stringify(clickBlue.editedPayload), /✅/, "chosen winner highlighted");
 
@@ -1309,8 +1320,11 @@ test("match panel acks each tap and repaints in place via a single edit; support
   advance.member = { mod: true };
   advance.user = { id: "mod-1", tag: "mod#0001" };
   await operator.handleButtonInteraction(advance);
-  assert.deepEqual(advCalls, ["deferUpdate", "editReply"], "advance: defer ack + single in-place repaint");
+  assert.deepEqual(advCalls, ["deferUpdate", "followUp", "editReply", "deleteReply"], "advance: defer ack + immediate loader + single in-place repaint");
   assert.equal(state.getTournament(db, tournament.id).status, "completed");
+  await delay(60);
+  assert.equal(threadArchived, true, "private tournament thread is archived after completion");
+  assert.ok(threadLockCalls >= 2, "thread is unlocked at launch and locked again when closed");
   const champ = state.getServer(state.getTournament(db, tournament.id), 0).placement.first;
   assert.equal(String(champ.userId || champ.id), blueId, "the re-picked winner took the final");
 });
@@ -1359,7 +1373,7 @@ test("rapid concurrent taps coalesce: every pick survives the final repaint and 
 
   // Shared edit log + a deliberately SLOW editReply so the second and later taps
   // always arrive while the first repaint is still in flight (the production race
-  // condition). followUp/deleteFollowUp are tracked to prove the loader lifecycle.
+  // condition). followUp/deleteReply are tracked to prove the loader lifecycle.
   const edits = [];
   let followUps = 0;
   let deletes = 0;
@@ -1373,7 +1387,7 @@ test("rapid concurrent taps coalesce: every pick survives the final repaint and 
       async deferUpdate() { this.deferred = true; },
       async editReply(payload) { await delay(200); edits.push(payload); return payload; },
       async followUp(payload) { followUps += 1; this.followUpPayload = payload; return { id: "fu" }; },
-      async deleteFollowUp() { deletes += 1; },
+      async deleteReply() { deletes += 1; },
     };
     return inter;
   };
@@ -1403,6 +1417,93 @@ test("rapid concurrent taps coalesce: every pick survives the final repaint and 
   // 3) The "думает" loader was shown while busy and removed when the panel settled.
   assert.ok(followUps >= 1, "a thinking loader was posted while the repaint was slow");
   assert.equal(deletes, followUps, "every thinking loader was deleted once the panel settled");
+});
+
+test("stale advance on a mixed real-player server cannot qualify before every run is decided", async () => {
+  const seeding = require("../src/tournament/seeding");
+  const db = {};
+  const tournament = state.createTournamentFromDraft(
+    db,
+    {
+      name: "Mixed Cup",
+      slots: 32,
+      plannedPlayers: 32,
+      startsAtIso: "2026-06-21T20:00:00.000Z",
+      announceChannelId: "channel-1",
+    },
+    { id: "tour-1", now: "2026-06-21T18:00:00.000Z" }
+  );
+  for (let i = 1; i <= 5; i += 1) {
+    state.upsertRegistration(tournament, {
+      userId: `20000000000000000${i}`,
+      discordName: `real-${i}`,
+      robloxUsername: `Real${i}`,
+      accountKind: "main",
+      approvedKills: 20000 - i * 1000,
+      effectiveKills: 20000 - i * 1000,
+    });
+  }
+  for (const reg of state.buildPhantomRegistrations(27, { runTag: "mixed", maxKills: 15000 })) {
+    state.upsertRegistration(tournament, reg);
+  }
+
+  const channel = {
+    id: "channel-1",
+    async send() { return { id: "m1" }; },
+    threads: {
+      async create() { return { id: "th", async send() { return { id: "x" }; }, members: { async add() {} }, async setLocked() {} }; },
+    },
+  };
+  const operator = createTournamentOperator({
+    db,
+    saveDb: () => {},
+    runSerializedMutation: async ({ mutate }) => mutate(),
+    isModerator: (member) => Boolean(member?.mod),
+    fetchChannel: async () => channel,
+  });
+  const asMod = (interaction) => {
+    interaction.member = { mod: true };
+    interaction.user = { id: "mod-1", tag: "mod#0001" };
+    return interaction;
+  };
+
+  await operator.handleButtonInteraction(asMod(createButtonInteraction(buildCustomId(ACTIONS.MANAGE_FORM_DUELS, tournament.id))));
+  await operator.handleButtonInteraction(asMod(createButtonInteraction(buildCustomId(ACTIONS.MANAGE_LAUNCH_SERVER, tournament.id, "1"))));
+
+  const server = state.getServer(state.getTournament(db, tournament.id), 1);
+  assert.equal(state.tournamentPlayers(state.getTournament(db, tournament.id), { serverIndex: 1 }).length, 16);
+  assert.equal(server.currentStage.runs.length, 2, "mixed 16-player server has two first-stage runs");
+
+  const firstRun = server.currentStage.runs[0];
+  for (const match of firstRun.matches) {
+    await operator.handleButtonInteraction(asMod(createButtonInteraction(buildCustomId(ACTIONS.MATCH_WIN, tournament.id, "1", match.key, "r"))));
+  }
+  await operator.handleButtonInteraction(asMod(createButtonInteraction(buildCustomId(ACTIONS.STAGE_ADVANCE, tournament.id, "1"))));
+  assert.equal(state.getServer(state.getTournament(db, tournament.id), 1).runIndex, 1, "first advance only moves to run 2");
+
+  const staleAdvance = asMod(createButtonInteraction(buildCustomId(ACTIONS.STAGE_ADVANCE, tournament.id, "1")));
+  await operator.handleButtonInteraction(staleAdvance);
+  const afterStaleAdvance = state.getServer(state.getTournament(db, tournament.id), 1);
+  assert.equal(afterStaleAdvance.done, false, "duplicate/stale advance must not finish the base server");
+  assert.equal(afterStaleAdvance.qualifying, false, "duplicate/stale advance must not qualify a partial top-4");
+  assert.deepEqual(afterStaleAdvance.qualified, []);
+  assert.match(JSON.stringify(staleAdvance.editedPayload), /ещё не решён|осталось боёв/i);
+
+  const decidedSoFar = seeding.resolveStageResults(afterStaleAdvance.currentStage, afterStaleAdvance.decisions || {});
+  assert.equal(decidedSoFar.winners.length, 4, "fixture reproduced the dangerous partial top-4");
+  assert.equal(decidedSoFar.undecided.length, 4, "but the second run is still undecided");
+
+  afterStaleAdvance.done = true;
+  afterStaleAdvance.qualifying = true;
+  afterStaleAdvance.qualified = decidedSoFar.winners;
+  const reopen = asMod(createButtonInteraction(buildCustomId(ACTIONS.MANAGE_START, tournament.id, "1")));
+  await operator.handleButtonInteraction(reopen);
+  const afterReopen = state.getServer(state.getTournament(db, tournament.id), 1);
+  assert.equal(afterReopen.done, false, "open panel repairs an already persisted premature done flag");
+  assert.equal(afterReopen.qualifying, false, "open panel clears the premature qualifying flag");
+  assert.deepEqual(afterReopen.qualified, []);
+  assert.equal(afterReopen.runIndex, 1, "open panel returns to the first unfinished run");
+  assert.match(JSON.stringify(reopen.replyPayload), /Ложное завершение просева исправлено/);
 });
 
 test("the single bracket image is edited in place across advances; one run advance never finishes the server", async () => {
