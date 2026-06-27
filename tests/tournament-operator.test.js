@@ -1243,6 +1243,7 @@ test("match panel acks each tap and repaints in place via a single edit; support
       slots: 16,
       startsAtIso: "2026-06-21T20:00:00.000Z",
       announceChannelId: "channel-1",
+      participantRoleId: "role-tournament",
     },
     { id: "tour-1", now: "2026-06-21T18:00:00.000Z" }
   );
@@ -1256,6 +1257,7 @@ test("match panel acks each tap and repaints in place via a single edit; support
       effectiveKills: i * 1000,
     });
   }
+  const roleRemovals = [];
   let threadArchived = false;
   let threadLockCalls = 0;
   const thread = {
@@ -1280,6 +1282,10 @@ test("match panel acks each tap and repaints in place via a single edit; support
     runSerializedMutation: async ({ mutate }) => mutate(),
     isModerator: (member) => Boolean(member?.mod),
     fetchChannel: async (id) => (id === "th" ? thread : channel),
+    removeRole: async (userId, roleId, reason) => {
+      roleRemovals.push({ userId, roleId, reason });
+      return { removed: true };
+    },
   });
 
   const launch = createButtonInteraction(buildCustomId(ACTIONS.MANAGE_LAUNCH_SERVER, tournament.id, "0"));
@@ -1325,6 +1331,15 @@ test("match panel acks each tap and repaints in place via a single edit; support
   await delay(60);
   assert.equal(threadArchived, true, "private tournament thread is archived after completion");
   assert.ok(threadLockCalls >= 2, "thread is unlocked at launch and locked again when closed");
+  assert.deepEqual(
+    roleRemovals.map((entry) => [entry.userId, entry.roleId]).sort(),
+    [
+      ["100000000000000001", "role-tournament"],
+      ["100000000000000002", "role-tournament"],
+    ],
+    "completion removes the tournament waiting/participant role from all registered players"
+  );
+  assert.ok(roleRemovals.every((entry) => /completed/.test(entry.reason)));
   const champ = state.getServer(state.getTournament(db, tournament.id), 0).placement.first;
   assert.equal(String(champ.userId || champ.id), blueId, "the re-picked winner took the final");
 });

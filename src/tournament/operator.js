@@ -788,6 +788,25 @@ function createTournamentOperator(deps = {}) {
     return { granted, removed };
   }
 
+  async function cleanupParticipantRolesAfterCompletion(tournamentId) {
+    const tournament = state.getTournament(db, tournamentId);
+    const roleId = tournament?.participantRoleId;
+    if (!tournament || tournament.status !== "completed" || !roleId) return { removed: 0, failed: 0 };
+    let removed = 0;
+    let failed = 0;
+    for (const reg of state.listRegistrations(tournament)) {
+      if (!/^\d{5,25}$/.test(String(reg.userId))) continue;
+      const result = await Promise.resolve(removeRole(reg.userId, roleId, `tournament ${tournament.id} completed`)).catch((error) => {
+        failed += 1;
+        logError("tournament: cleanup participant role failed", reg.userId, error?.message || error);
+        return null;
+      });
+      if (result?.removed) removed += 1;
+    }
+    await safeLogLine(`TOURNAMENT_ROLE_CLEANUP: id=${tournamentId} removed=${removed} failed=${failed}`);
+    return { removed, failed };
+  }
+
   // Debounced announcement refresh — never blocks the click; coalesces bursts of
   // registrations into at most one edit every ~1.5s per tournament.
   const announceTimers = new Map();
@@ -2624,7 +2643,12 @@ function createTournamentOperator(deps = {}) {
     // Edit the server's single bracket image in place. The grand summary is
     // published later from the organizer completion window.
     scheduleServerArtUpdate(tournamentId, serverIndex);
-    if (afterAdvance?.status === "completed") scheduleTournamentThreadClosure(tournamentId);
+    if (afterAdvance?.status === "completed") {
+      scheduleTournamentThreadClosure(tournamentId);
+      cleanupParticipantRolesAfterCompletion(tournamentId).catch((error) =>
+        logError("tournament: participant role cleanup after completion failed", error?.message || error)
+      );
+    }
     return true;
   }
 
