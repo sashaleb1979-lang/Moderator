@@ -20,6 +20,7 @@ const seeding = require("./seeding");
 const state = require("./state");
 const bracketImage = require("./bracket-image");
 const { killTierFor } = require("../onboard/kill-tiers");
+const { getRole: getSotRole } = require("../sot");
 
 const UNKNOWN_INTERACTION_CODES = new Set([10062, 40060]);
 const DEFAULT_THREAD_ADMIN_ROLE_IDS = Object.freeze(["1486459664546926866"]);
@@ -80,13 +81,38 @@ function createTournamentOperator(deps = {}) {
     removeRole = async () => ({ skipped: "no-remove-dep" }), // (userId, roleId, reason)
     fetchMember = async () => null, // (userId) => member|null
     threadAdminRoleIds = DEFAULT_THREAD_ADMIN_ROLE_IDS,
+    appConfig = {},
   } = deps;
   const privateThreadAdminRoleIds = normalizeSnowflakeIds(threadAdminRoleIds);
+
+  function resolvePrivateThreadRoleIds() {
+    return normalizeSnowflakeIds([
+      ...privateThreadAdminRoleIds,
+      getSotRole("moderator", { db, appConfig })?.value,
+    ]);
+  }
 
   // Short-lived, in-memory registration sessions (not persisted — if the bot
   // restarts mid-flow the player simply clicks "Записаться" again).
   const pending = new Map();
   const pendingKey = (tournamentId, userId) => `${tournamentId}:${userId}`;
+
+  // Run `worker` over `items` with at most `limit` in flight at once. Never
+  // rejects — each worker is expected to handle its own errors.
+  const THREAD_ADD_CONCURRENCY = 5;
+  async function mapWithConcurrency(items, limit, worker) {
+    const list = Array.isArray(items) ? items : [...items];
+    const width = Math.max(1, Math.min(limit, list.length));
+    let cursor = 0;
+    const runners = Array.from({ length: width }, async () => {
+      while (cursor < list.length) {
+        const index = cursor;
+        cursor += 1;
+        await worker(list[index], index);
+      }
+    });
+    await Promise.all(runners);
+  }
 
   // ---- response helpers (tolerate expired interactions) -------------------
 
@@ -176,15 +202,6 @@ function createTournamentOperator(deps = {}) {
     const result = mutate();
     saveDb();
     return result;
-  }
-
-  // In-memory only mutation — does NOT trigger a DB flush. Used for the very hot
-  // match-result clicks: persisting the whole DB (a multi-MB serialize) on every
-  // single click is what froze the panel. Decisions live in memory during a run
-  // and are committed to disk once on the confirmed run/stage advance. Worst case
-  // on a crash mid-run: the mod re-enters the current run's few clicks.
-  function mutateLocal(mutate) {
-    return mutate();
   }
 
   async function safeLogLine(text) {
@@ -487,9 +504,14 @@ function createTournamentOperator(deps = {}) {
     const ids = realDiscordUserIds(players);
     if (!ids.length || typeof thread?.members?.add !== "function") return { ids, added: 0, failed: 0 };
 
+    // Bounded-parallel: the old serial await-loop took up to 16 sequential
+    // round-trips per server, which stalled the whole launch under the guild
+    // rate-limits seen in prod ("Retry after 21s"). discord.js's REST manager
+    // already paces per-route, so a small concurrency window lets adds overlap
+    // without bursting into a global 429.
     let added = 0;
     let failed = 0;
-    for (const id of ids) {
+    await mapWithConcurrency(ids, THREAD_ADD_CONCURRENCY, async (id) => {
       try {
         await thread.members.add(id);
         added += 1;
@@ -497,7 +519,7 @@ function createTournamentOperator(deps = {}) {
         failed += 1;
         logError(`tournament: private thread member add failed user=${id}`, error?.message || error);
       }
-    }
+    });
     return { ids, added, failed };
   }
 
@@ -1897,7 +1919,7 @@ function createTournamentOperator(deps = {}) {
     let pingFailed = false;
     if (existingThread?.send) {
       memberResult = await addPlayersToPrivateThread(existingThread, players);
-      const pingRoleIds = privateThreadAdminRoleIds;
+      const pingRoleIds = resolvePrivateThreadRoleIds();
       if (memberResult.ids.length || pingRoleIds.length) {
         const label = serverIndex === FINAL_SERVER_INDEX ? "Финал" : `Сервер ${serverIndex + 1}`;
         const mentions = [
@@ -2266,9 +2288,27 @@ function createTournamentOperator(deps = {}) {
       try {
         await interaction.editReply(payload);
       } catch (error) {
+        // The repaint missed (ephemeral panel dismissed/deleted, or the token
+        // expired). The click itself IS already recorded + persisted; the only
+        // thing lost is the visual refresh. Don't fail silently — tell the mod to
+        // reopen so they aren't left clicking a frozen panel. Best-effort: if the
+        // token is also dead this followUp no-ops.
+        notifyPanelStale(interaction).catch(() => {});
         if (!isUnknownInteractionError(error)) logError("tournament: match panel render failed", error?.message || error);
       }
     });
+  }
+
+  // Best-effort "your panel is stale, reopen it" nudge. Safe to call on a dead
+  // interaction (it just swallows the follow-up failure).
+  async function notifyPanelStale(interaction) {
+    try {
+      await interaction.followUp(
+        ephemeralText("⚠️ Панель устарела — изменение записано, но не отрисовалось. Открой «Панель боёв» заново, чтобы увидеть актуальное состояние.")
+      );
+    } catch (error) {
+      if (!isUnknownInteractionError(error)) logError("tournament: stale-panel notice failed", error?.message || error);
+    }
   }
 
   async function recordMatch(interaction, tournamentId, extra, kind) {
@@ -2280,8 +2320,12 @@ function createTournamentOperator(deps = {}) {
     const matchKey = extra[1];
     const side = extra[2]; // "r" | "b"
 
-    // in-memory only — NO DB flush per click (committed on run/stage advance)
-    mutateLocal(() => {
+    // Persist every click. saveDb is now a coalesced, off-thread write-behind
+    // (welcome-bot scheduleDbFlush) — the old "froze the panel" cost is gone, so
+    // there is no reason to keep decisions RAM-only. Memory-only decisions were
+    // silently wiped on every Railway redeploy/crash mid-run ("бои не
+    // проводятся"); quickMutate makes a marked run survive a restart.
+    quickMutate(() => {
       const fresh = state.getTournament(db, tournamentId);
       const server = fresh ? state.getServer(fresh, serverIndex) : null;
       if (!server || !server.currentStage) return;

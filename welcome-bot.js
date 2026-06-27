@@ -1266,9 +1266,18 @@ function buildAnalyticsPanelReply(view = "overview", statusText = "", includeFla
 // asynchronously, coalescing bursts of mutations into a single off-thread
 // write. In-memory reads are unaffected (mutations already applied to `db`).
 const DB_FLUSH_DEBOUNCE_MS = 150;
+// When a flush's synchronous serialize is heavy, space the NEXT flush out so the
+// event loop isn't blocked back-to-back under sustained writes (voice/activity
+// churn). Trades a slightly larger durability window for responsiveness; critical
+// writes use saveDbDurable()/flushDbNow() and the exit flush, which bypass this.
+const DB_FLUSH_BACKOFF_MS = 1500;
+const DB_FLUSH_HEAVY_SERIALIZE_MS = 1000;
 let dbDirty = false;
 let dbFlushTimer = null;
 let lastSaveResult = null;
+// Synchronous on-CPU cost (clone + serialize) of the last flush. Read by the
+// loop-lag monitor for attribution and by scheduleDbFlush for adaptive backoff.
+let lastDbSerializeMs = 0;
 
 function flushDbInternal() {
   if (!dbDirty) return Promise.resolve(lastSaveResult);
@@ -1276,6 +1285,7 @@ function flushDbInternal() {
   return runSerializedDbTask(async () => {
     try {
       lastSaveResult = await dbStore.saveAsync(db);
+      lastDbSerializeMs = Number(lastSaveResult?.syncBlockMs) || 0;
       maybeLogSotDriftAfterSave(db);
       return lastSaveResult;
     } catch (error) {
@@ -1290,10 +1300,11 @@ function flushDbInternal() {
 function scheduleDbFlush() {
   dbDirty = true;
   if (dbFlushTimer) return undefined;
+  const debounceMs = lastDbSerializeMs >= DB_FLUSH_HEAVY_SERIALIZE_MS ? DB_FLUSH_BACKOFF_MS : DB_FLUSH_DEBOUNCE_MS;
   dbFlushTimer = setTimeout(() => {
     dbFlushTimer = null;
     flushDbInternal().catch(() => {});
-  }, DB_FLUSH_DEBOUNCE_MS);
+  }, debounceMs);
   if (typeof dbFlushTimer.unref === "function") dbFlushTimer.unref();
   return undefined;
 }
@@ -1367,7 +1378,13 @@ try {
     if (maxMs >= EVENT_LOOP_LAG_WARN_MS) {
       const meanMs = loopDelayHistogram.mean / 1e6;
       const p99Ms = loopDelayHistogram.percentile(99) / 1e6;
-      console.warn(`[loop-lag] max=${maxMs.toFixed(0)}ms p99=${p99Ms.toFixed(0)}ms mean=${meanMs.toFixed(1)}ms (last 30s)`);
+      // Name the serialized DB task on-CPU right now (if any) so a recurring
+      // stall is attributable instead of anonymous. The flush, voice/activity
+      // recorders and daily syncs all run through these two queues.
+      const active = runSerializedDbTask.getActiveLabel?.() || runSerializedDbMutation.getActiveLabel?.() || null;
+      const lastSerialize = lastDbSerializeMs >= EVENT_LOOP_LAG_WARN_MS ? ` lastDbSerialize=${lastDbSerializeMs.toFixed(0)}ms` : "";
+      const activeText = active ? ` active=${active}` : "";
+      console.warn(`[loop-lag] max=${maxMs.toFixed(0)}ms p99=${p99Ms.toFixed(0)}ms mean=${meanMs.toFixed(1)}ms (last 30s)${activeText}${lastSerialize}`);
     }
     loopDelayHistogram.reset();
   }, 30000);
@@ -7602,6 +7619,7 @@ function getTournamentOperator() {
   if (tournamentOperator) return tournamentOperator;
   tournamentOperator = createTournamentOperator({
     db,
+    appConfig,
     saveDb,
     runSerializedMutation: runSerializedDbMutation,
     isModerator,

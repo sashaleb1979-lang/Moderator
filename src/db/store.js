@@ -82,13 +82,17 @@ function saveJsonFile(filePath, value) {
 // contract but performs the disk I/O off the event loop so a large database
 // write never blocks interaction handling.
 async function saveJsonFileAsync(filePath, value) {
+  // Serialize up-front, BEFORE any await, so the synchronous (event-loop-
+  // blocking) JSON.stringify is both measurable and not interleaved oddly across
+  // ticks. Compact JSON (see saveJsonFile) halves serialize cost and file size on
+  // the large prod db — this stringify is the dominant on-CPU cost of a flush.
+  const serializeStart = process.hrtime.bigint();
+  const serialized = JSON.stringify(value);
+  const serializeMs = Number(process.hrtime.bigint() - serializeStart) / 1e6;
   await fsp.mkdir(path.dirname(filePath), { recursive: true });
   const tempPath = `${filePath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;
   try {
-    // Compact JSON (see saveJsonFile): halves serialize cost and file size on
-    // the large prod db, which is the synchronous part of this write that still
-    // runs on the event loop before the awaited disk I/O.
-    await fsp.writeFile(tempPath, JSON.stringify(value), "utf8");
+    await fsp.writeFile(tempPath, serialized, "utf8");
     await fsp.rename(tempPath, filePath);
   } catch (error) {
     try {
@@ -98,6 +102,7 @@ async function saveJsonFileAsync(filePath, value) {
     }
     throw error;
   }
+  return { serializeMs, bytes: serialized.length };
 }
 
 function hasExistingIntegrationSourcePath(sourcePath = "", options = {}) {
@@ -382,10 +387,16 @@ function createDbStore({
   // normalization runs synchronously (cheap relative to disk I/O), but the
   // actual file write is awaited off the event loop.
   async function saveAsync(db) {
+    // prepareWriteState (clone + normalize) and the adapter's serialize are both
+    // synchronous, event-loop-blocking work. Report the combined cost so the
+    // host can attribute loop-lag and back off the flush cadence when it's heavy.
+    const prepareStart = process.hrtime.bigint();
     const { workingDb, dualWriteState } = prepareWriteState(db);
+    const prepareMs = Number(process.hrtime.bigint() - prepareStart) / 1e6;
 
+    let writeMeta = null;
     try {
-      await persistenceAdapter.writeAsync(workingDb);
+      writeMeta = await persistenceAdapter.writeAsync(workingDb);
     } catch (error) {
       db.__needsSaveAfterLoad = true;
       throw error;
@@ -393,10 +404,16 @@ function createDbStore({
 
     replaceObjectContents(db, workingDb);
 
+    const serializeMs = Number(writeMeta?.serializeMs) || 0;
     return {
       db,
       dbPath,
       dualWriteState,
+      prepareMs,
+      serializeMs,
+      // Total synchronous on-CPU footprint of this flush (clone + serialize).
+      syncBlockMs: prepareMs + serializeMs,
+      bytes: Number(writeMeta?.bytes) || 0,
     };
   }
 

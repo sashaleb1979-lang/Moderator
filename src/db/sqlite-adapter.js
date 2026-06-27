@@ -199,9 +199,14 @@ function createSqliteAdapter(dbPath, options = {}) {
   }
 
   async function writeAsync(workingDb) {
-    // node:sqlite is synchronous, but incremental writes touch only the handful
-    // of changed rows, so this stays well under a millisecond in practice.
-    return writeSync(workingDb);
+    // node:sqlite is synchronous; the on-CPU cost here is the per-row diff
+    // (stringify every changed-collection row) + the commit. Report it as
+    // serializeMs so the host can attribute event-loop lag the same way it does
+    // for the JSON backend.
+    const start = process.hrtime.bigint();
+    const result = writeSync(workingDb);
+    const serializeMs = Number(process.hrtime.bigint() - start) / 1e6;
+    return { ...result, serializeMs };
   }
 
   function close() {

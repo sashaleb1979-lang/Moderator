@@ -33,8 +33,35 @@ function createSerializedTaskRunner({
   let queueTail = Promise.resolve();
   let pendingTasks = 0;
   let queueDepthWarningActive = false;
+  // The label of the task currently occupying the queue (null when idle). Exposed
+  // via runSerializedTask.getActiveLabel() so an event-loop-lag monitor can name
+  // the task that was on-CPU when a stall happened ("6700ms stall" -> "6700ms
+  // stall during activity-daily-role-sync").
+  let activeLabel = null;
   const normalizedTaskTimeoutMs = normalizePositiveInteger(taskTimeoutMs, 0);
   const normalizedQueueWarningThreshold = normalizePositiveInteger(queueWarningThreshold, 0);
+
+  const runWithTimeout = (task, taskLabel) => {
+    let timeoutHandle = null;
+    if (normalizedTaskTimeoutMs > 0) {
+      timeoutHandle = setTimeoutFn(() => {
+        logWarning(`Serialized task still running [${taskLabel}] after ${normalizedTaskTimeoutMs}ms`);
+      }, normalizedTaskTimeoutMs);
+      if (typeof timeoutHandle?.unref === "function") {
+        timeoutHandle.unref();
+      }
+    }
+
+    activeLabel = taskLabel;
+    return Promise.resolve()
+      .then(task)
+      .finally(() => {
+        if (activeLabel === taskLabel) activeLabel = null;
+        if (timeoutHandle != null) {
+          clearTimeoutFn(timeoutHandle);
+        }
+      });
+  };
 
   const updateQueueDepthState = (taskLabel) => {
     if (normalizedQueueWarningThreshold <= 0) {
@@ -53,7 +80,7 @@ function createSerializedTaskRunner({
     }
   };
 
-  return function runSerializedTask(task, label = "task") {
+  function runSerializedTask(task, label = "task") {
     if (typeof task !== "function") {
       throw new TypeError("task must be a function");
     }
@@ -63,44 +90,8 @@ function createSerializedTaskRunner({
     updateQueueDepthState(taskLabel);
 
     const scheduledTask = queueTail.then(
-      () => {
-        let timeoutHandle = null;
-        if (normalizedTaskTimeoutMs > 0) {
-          timeoutHandle = setTimeoutFn(() => {
-            logWarning(`Serialized task still running [${taskLabel}] after ${normalizedTaskTimeoutMs}ms`);
-          }, normalizedTaskTimeoutMs);
-          if (typeof timeoutHandle?.unref === "function") {
-            timeoutHandle.unref();
-          }
-        }
-
-        return Promise.resolve()
-          .then(task)
-          .finally(() => {
-            if (timeoutHandle != null) {
-              clearTimeoutFn(timeoutHandle);
-            }
-          });
-      },
-      () => {
-        let timeoutHandle = null;
-        if (normalizedTaskTimeoutMs > 0) {
-          timeoutHandle = setTimeoutFn(() => {
-            logWarning(`Serialized task still running [${taskLabel}] after ${normalizedTaskTimeoutMs}ms`);
-          }, normalizedTaskTimeoutMs);
-          if (typeof timeoutHandle?.unref === "function") {
-            timeoutHandle.unref();
-          }
-        }
-
-        return Promise.resolve()
-          .then(task)
-          .finally(() => {
-            if (timeoutHandle != null) {
-              clearTimeoutFn(timeoutHandle);
-            }
-          });
-      }
+      () => runWithTimeout(task, taskLabel),
+      () => runWithTimeout(task, taskLabel)
     );
 
     queueTail = scheduledTask
@@ -114,13 +105,18 @@ function createSerializedTaskRunner({
       });
 
     return scheduledTask;
-  };
+  }
+
+  // Label of the task currently running on the queue, or null when idle.
+  runSerializedTask.getActiveLabel = () => activeLabel;
+
+  return runSerializedTask;
 }
 
 function createSerializedMutationRunner(options = {}) {
   const runSerializedTask = createSerializedTaskRunner(options);
 
-  return function runSerializedMutation({
+  function runSerializedMutation({
     label = "mutation",
     mutate,
     shouldPersist = null,
@@ -166,7 +162,11 @@ function createSerializedMutationRunner(options = {}) {
         throw error;
       }
     }, label);
-  };
+  }
+
+  runSerializedMutation.getActiveLabel = () => runSerializedTask.getActiveLabel();
+
+  return runSerializedMutation;
 }
 
 module.exports = {

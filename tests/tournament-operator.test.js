@@ -764,7 +764,13 @@ test("tournament launch creates an unlocked private thread and adds real Discord
   const threadPayloads = [];
   let threadCreateOptions = null;
   let lockedValue = null;
-  const db = {};
+  const db = {
+    sot: {
+      roles: {
+        moderator: { value: "222222222222222222", source: "manual" },
+      },
+    },
+  };
   const tournament = state.createTournamentFromDraft(
     db,
     {
@@ -841,10 +847,13 @@ test("tournament launch creates an unlocked private thread and adds real Discord
   assert.deepEqual(addedMembers, ["100000000000000001", "100000000000000002"]);
   assert.equal(threadCreateOptions.name, "Тестовый турнир · сервер 1");
   assert.ok(calls.indexOf("threadPing") < calls.indexOf("threadBracket"), "participant ping is the first thread message");
-  assert.match(threadPayloads[0].content, /<@&1486459664546926866> <@100000000000000001> <@100000000000000002>/);
+  assert.match(
+    threadPayloads[0].content,
+    /<@&1486459664546926866> <@&222222222222222222> <@100000000000000001> <@100000000000000002>/
+  );
   assert.deepEqual(threadPayloads[0].allowedMentions, {
     users: ["100000000000000001", "100000000000000002"],
-    roles: ["1486459664546926866"],
+    roles: ["1486459664546926866", "222222222222222222"],
   });
   assert.equal(lockedValue, true, "participant thread is locked so players can't chat");
 });
